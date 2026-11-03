@@ -272,6 +272,24 @@ nonisolated extension OCCTKernel {
         return .success((BRepHandle(shape), ShapeAncestry(history)))
     }
 
+    static func regionShellResultWithAncestry(_ handle: BRepHandle, openFaces: [Int],
+        thickness: Double, regions: [(index: Int, thickness: Double)]
+    ) -> Result<(handle: BRepHandle, ancestry: ShapeAncestry), OCCTOpError> {
+        let status = OCCTOpStatus(), history = OCCTShapeHistory()
+        let values = regions.map(\.thickness).withUnsafeBytes { Data($0) }
+        guard let shape = OCCTBridge.regionShelledShape(handle.shape,
+            openFaceIndices: packIndices(openFaces), thickness: thickness,
+            regionFaceIndices: packIndices(regions.map(\.index)), regionThicknesses: values,
+            status: status, history: history) else {
+            let error = OCCTOpError(status)
+            KernelCapture.recordFailure(op: "regionShell", inputs: [("shape", handle)],
+                params: ["thickness": thickness, "openFaces": openFaces,
+                         "regions": regions.map { ["face": Double($0.index), "thickness": $0.thickness] }], error: error)
+            return .failure(error)
+        }
+        return .success((BRepHandle(shape), ShapeAncestry(history)))
+    }
+
     static func removingFacesResultWithAncestry(
         _ handle: BRepHandle, at points: [SIMD3<Double>], tolerance: Double
     ) -> Result<(handle: BRepHandle, ancestry: ShapeAncestry), OCCTOpError> {

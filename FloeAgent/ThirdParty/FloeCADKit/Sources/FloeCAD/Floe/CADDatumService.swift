@@ -1894,6 +1894,7 @@ public final class CADDatumService {
                     guard face.area.isFinite, face.area > 0,
                           let signature = face.signature else { continue }
                     switch signature.kind {
+                    case .nativeSurface: break
                     case .planar: snapshotPlanarIndices.insert(face.index)
                     case .cylindrical: snapshotCylindricalIndices.insert(face.index)
                     }

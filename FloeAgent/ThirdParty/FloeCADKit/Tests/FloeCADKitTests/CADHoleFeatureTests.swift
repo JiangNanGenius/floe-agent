@@ -473,7 +473,7 @@ final class CADHoleFeatureTests: XCTestCase {
         let pilot = cylinders(result, radius: 3)
         XCTAssertEqual(pilot.reduce(0) { $0 + $1.area }, 2 * .pi * 3 * 7, accuracy: 1e-4)
         let cones = OCCTKernel.faceInfo(try XCTUnwrap(result.brep))
-            .filter { $0.signature == nil }
+            .filter { $0.signature?.kind == .nativeSurface(type: 2) }
         let coneArea = cones.reduce(0) { $0 + $1.area }
         XCTAssertEqual(coneArea, 27 * sqrt(2) * .pi, accuracy: 1e-4,
                        "analytic conical frustum area (aggregate tolerates seam splitting)")
@@ -1111,7 +1111,7 @@ final class CADHoleFeatureTests: XCTestCase {
                        60_000 - 126 * .pi, accuracy: 1e-3)
         let sunkBody = try XCTUnwrap(body(document, fixture.bodyID))
         let cones = OCCTKernel.faceInfo(try XCTUnwrap(sunkBody.brep))
-            .filter { $0.signature == nil }
+            .filter { $0.signature?.kind == .nativeSurface(type: 2) }
         XCTAssertEqual(cones.reduce(0) { $0 + $1.area },
                        27 * sqrt(2) * .pi, accuracy: 1e-4)
         XCTAssertEqual(cylinders(sunkBody, radius: 3).reduce(0) { $0 + $1.area },
@@ -1164,7 +1164,7 @@ final class CADHoleFeatureTests: XCTestCase {
                        60_000 - 478 * .pi / 3, accuracy: 1e-3)
         let wide = try XCTUnwrap(body(document, fixture.bodyID))
         let wideCones = OCCTKernel.faceInfo(try XCTUnwrap(wide.brep))
-            .filter { $0.signature == nil }
+            .filter { $0.signature?.kind == .nativeSurface(type: 2) }
         let wideConeArea = wideCones.reduce(0) { $0 + $1.area }
         XCTAssertEqual(wideConeArea, 40 * sqrt(2) * .pi, accuracy: 1e-4)
         let wideConeCentroid = wideCones.reduce(SIMD3<Double>.zero) {
@@ -1185,7 +1185,7 @@ final class CADHoleFeatureTests: XCTestCase {
                        60_000 - 478 * .pi / 3, accuracy: 1e-3)
         let placed = try XCTUnwrap(body(document, fixture.bodyID))
         XCTAssertEqual(centroidX(OCCTKernel.faceInfo(try XCTUnwrap(placed.brep))
-            .filter { $0.signature == nil }), 44, accuracy: 1e-5)
+            .filter { $0.signature?.kind == .nativeSurface(type: 2) }), 44, accuracy: 1e-5)
         try assertHoleIdentity(document, featureID, sketchID: circle.sketchID,
                                entityID: circle.entityID)
 

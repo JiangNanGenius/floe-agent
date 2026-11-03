@@ -834,6 +834,10 @@ struct NumericInputBar: View {
 
             if !isCompact { Spacer() }
         } actions: {
+            Button { viewModel.beginLoftSurfaceEditor(.draftLoft) } label: {
+                Label(FloeCADStrings.text("cad.loftSurface.sections","Sections"),systemImage:"list.number")
+            }
+            .accessibilityIdentifier("CADLoftSections")
             Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelLoftProfilePick()
             }

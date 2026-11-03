@@ -68,13 +68,16 @@ public nonisolated struct CADDrawingSourceFingerprint: Codable, Sendable, Equata
         public var renderSHA256: String?
         /// SHA-256 of the body's placement transform at projection time.
         public var placementSHA256: String?
+        public var materialID: String?
 
         public init(bodyID: UUID, missing: Bool,
-                    renderSHA256: String? = nil, placementSHA256: String? = nil) {
+                    renderSHA256: String? = nil, placementSHA256: String? = nil,
+                    materialID: String? = nil) {
             self.bodyID = bodyID
             self.missing = missing
             self.renderSHA256 = renderSHA256
             self.placementSHA256 = placementSHA256
+            self.materialID = materialID
         }
     }
 
@@ -227,6 +230,32 @@ public nonisolated struct CADDrawingFeatureReference: Codable, Sendable, Equatab
 /// aligned view it is an additional nudge applied after the alignment solve.
 /// `scale` is drawing mm per model mm for THIS view, so a sheet can show the
 /// same model at different scales without duplicating an editable model.
+/// Paper-space hatch controls keyed to the body's persisted material identity.
+/// The material appearance itself stays in the model; this is drafting data.
+public nonisolated struct CADDrawingSectionHatch: Codable, Sendable, Equatable {
+    public var materialID: String
+    public var angleDegrees: Double
+    public var spacingMM: Double
+    public var enabled: Bool
+    public init(materialID: String, angleDegrees: Double = 45,
+                spacingMM: Double = 2.5, enabled: Bool = true) {
+        self.materialID = materialID; self.angleDegrees = angleDegrees
+        self.spacingMM = spacingMM; self.enabled = enabled
+    }
+}
+
+/// An offset (stepped) cut, extruded along the section frame's y axis.
+/// World-space points alternate cuts parallel to frame x and risers parallel
+/// to section normal. The SAME record drives the cut and its parent-view mark.
+public nonisolated struct CADDrawingSectionPath: Codable, Sendable, Equatable {
+    public var referenceViewID: UUID
+    public var label: String
+    public var points: [SIMD3<Double>]
+    public init(referenceViewID: UUID, label: String = "A", points: [SIMD3<Double>]) {
+        self.referenceViewID = referenceViewID; self.label = label; self.points = points
+    }
+}
+
 public nonisolated struct CADDrawingSheetView: Codable, Sendable, Equatable, Identifiable {
     public var id: UUID
     public var name: String
@@ -242,6 +271,9 @@ public nonisolated struct CADDrawingSheetView: Codable, Sendable, Equatable, Ide
     /// Per-view source filter; nil/empty inherits the page's `sourceBodyIDs`.
     public var sourceBodyIDs: [UUID]?
     public var alignment: CADDrawingViewAlignment
+    public var showHiddenLines: Bool
+    public var sectionHatches: [CADDrawingSectionHatch]
+    public var sectionPath: CADDrawingSectionPath?
 
     public init(id: UUID = UUID(), name: String, kind: CADDrawingViewKind,
                 scale: Double = 1, offset: SIMD2<Double> = .zero,
@@ -252,7 +284,10 @@ public nonisolated struct CADDrawingSheetView: Codable, Sendable, Equatable, Ide
                 detailOrigin: SIMD3<Double>? = nil,
                 detailSizeMM: SIMD2<Double>? = nil,
                 sourceBodyIDs: [UUID]? = nil,
-                alignment: CADDrawingViewAlignment = CADDrawingViewAlignment()) {
+                alignment: CADDrawingViewAlignment = CADDrawingViewAlignment(),
+                showHiddenLines: Bool = true,
+                sectionHatches: [CADDrawingSectionHatch] = [],
+                sectionPath: CADDrawingSectionPath? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -266,12 +301,15 @@ public nonisolated struct CADDrawingSheetView: Codable, Sendable, Equatable, Ide
         self.detailSizeMM = detailSizeMM
         self.sourceBodyIDs = sourceBodyIDs
         self.alignment = alignment
+        self.showHiddenLines = showHiddenLines
+        self.sectionHatches = sectionHatches
+        self.sectionPath = sectionPath
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, kind, scale, offset, viewNormal, viewUp
         case sectionOrigin, sectionNormal, detailOrigin, detailSizeMM
-        case sourceBodyIDs, alignment
+        case sourceBodyIDs, alignment, showHiddenLines, sectionHatches, sectionPath
     }
 
     public init(from decoder: Decoder) throws {
@@ -293,6 +331,10 @@ public nonisolated struct CADDrawingSheetView: Codable, Sendable, Equatable, Ide
         alignment = try container.decodeIfPresent(CADDrawingViewAlignment.self,
                                                   forKey: .alignment)
             ?? CADDrawingViewAlignment()
+        showHiddenLines = try container.decodeIfPresent(Bool.self, forKey: .showHiddenLines) ?? true
+        sectionHatches = try container.decodeIfPresent([CADDrawingSectionHatch].self,
+                                                        forKey: .sectionHatches) ?? []
+        sectionPath = try container.decodeIfPresent(CADDrawingSectionPath.self, forKey: .sectionPath)
         if viewNormal == .zero { viewNormal = SIMD3(0, 0, 1) }
         if viewUp == .zero { viewUp = SIMD3(0, 1, 0) }
         if !scale.isFinite || scale <= 0 { scale = 1 }
@@ -738,7 +780,7 @@ public nonisolated struct CADDrawingPage: Codable, Sendable, Equatable, Identifi
     public var effectiveSheetViews: [CADDrawingSheetView] {
         if let sheetViews, !sheetViews.isEmpty { return sheetViews }
         return [CADDrawingSheetView(
-            name: name,
+            id: id, name: name,
             kind: kind,
             scale: scale,
             offset: .zero,
@@ -809,7 +851,9 @@ public nonisolated struct CADDrawingSet: Codable, Sendable, Equatable {
     /// service refuses). v5 is a DRAWING-JSON schema only: the surrounding
     /// `.floecad` package floor rises only when a document actually stores a
     /// v5 record (`CADDocumentFormat.drawingManufacturingVersion`).
-    public static let currentSchemaVersion = 5
+    // v6 records hidden-line display, material hatches and a shared cut/mark path.
+    // Earlier writers reject mutations of this schema rather than erase them.
+    public static let currentSchemaVersion = 6
     public var schemaVersion: Int
     public var pages: [CADDrawingPage]
     /// Document-owned template collection. Built-in presets are NOT stored

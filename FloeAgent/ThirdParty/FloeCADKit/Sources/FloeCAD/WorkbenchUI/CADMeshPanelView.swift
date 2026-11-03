@@ -73,6 +73,9 @@ struct CADMeshPanelView: View {
                                                    selectedIDs.count),
                        tint: selectedIDs.count >= 1 ? .green : .secondary)
 
+            CADPolygonMeshPanel(document: document, viewModel: viewModel,
+                selectedBodyIDs: selectedIDs, forceMesh: allowMeshDowngrade)
+
             if bodies.isEmpty {
                 PanelEmptyState(
                     text: FloeCADStrings.text("cad.workbench.mesh.empty", "No bodies to work with yet."),

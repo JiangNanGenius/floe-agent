@@ -557,6 +557,9 @@ public extension FloeCADDocument {
                     case let .cylindrical(radius):
                         row["kind"] = "cylindrical"
                         row["radiusMM"] = radius
+                    case let .nativeSurface(type):
+                        row["kind"] = "native_surface"
+                        row["surfaceType"] = type
                     case nil:
                         row["kind"] = "other"
                         row["referenceable"] = false
@@ -891,6 +894,28 @@ public extension FloeCADDocument {
     /// This is the RAW writer. Callers that claim export completeness go
     /// through `nativePartExport`, which gates these bytes on a truthful
     /// coverage receipt.
+    /// Async drawing front door; every OCCT projection is prepared off-main.
+    /// Other writer formats keep their existing exchange/coverage contract.
+    func nativeExportDataAsync(format rawFormat: String, pageID: UUID? = nil)
+        async -> Result<(Data, String), CADDocumentError> {
+        let format = rawFormat.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard ["pdf", "svg", "dxf", "png", "csv"].contains(format) else {
+            return nativeExportData(format: rawFormat, pageID: pageID)
+        }
+        do {
+            let resolvedID: UUID
+            if let pageID { resolvedID = pageID }
+            else if format == "png", let first = try CADDrawingSet.decode(from: session.document.drawingsData).pages.first {
+                resolvedID = first.id
+            } else {
+                return .failure(CADDocumentError(code: "page_required", message: "Choose a drawing page to export."))
+            }
+            let data = try await CADDrawingService(document: self).exportDataAsync(pageID: resolvedID, format: format)
+            return .success((data, "Projected drawing (\(format.uppercased()))"))
+        } catch let error as CADDocumentError { return .failure(error) }
+        catch { return .failure(CADDocumentError(code: "drawing_export_failed", message: error.localizedDescription)) }
+    }
+
     func nativeExportData(format rawFormat: String,
                           pageID: UUID?) -> Result<(data: Data, note: String), CADDocumentError> {
         nativeExportData(format: rawFormat, pageID: pageID,

@@ -815,6 +815,23 @@ final class DocumentSession {
         return result
     }
 
+    /// Discard-only memoized replay used by the native Loft/Surface sheets.
+    /// It can append one preview node without applying commands, minting live
+    /// revisions, changing saved bytes or consuming Undo/Redo.
+    func previewLoftSurface(appending node: FeatureNode? = nil) -> EvalResult? {
+        guard !isReadOnly, !isRebuilding else { return nil }
+        var graph=document.features
+        if let node {
+            guard graph.rollbackIndex == nil else { return nil }
+            graph.nodes.append(node)
+        }
+        var scratch=evalCache
+        var counter: UInt64=0
+        return graph.evaluate(sketches:document.sketches,planes:document.planes,naming:naming,
+            nextRevision:{ counter &+= 1; return counter },cache:&scratch,variables:variableValues(),
+            axes:document.axes,datumPoints:document.datumPoints)
+    }
+
     func rebuildFrom(_ id: FeatureID, edit: EditFeatureCommand? = nil,
                      title: String = "Edit Feature") {
         // Graph with the pending parameter edit applied, so replay sees the new
@@ -1236,7 +1253,9 @@ final class DocumentSession {
     }
 
     private static func hasAssociations(_ document: DesignDocument) -> Bool {
-        document.features.nodes.contains { if case .thread = $0.kind { return true }; return false }
+        document.features.nodes.contains {
+            switch $0.kind { case .thread, .loft, .surface: return true; default: return false }
+        }
             || document.planes.contains { $0.definition != nil }
             || document.sketches.contains { $0.support != nil || !$0.curveOffsetLinks.isEmpty }
             // M08: an associative axis/point is a replay input exactly like an
@@ -1464,6 +1483,9 @@ final class DocumentSession {
             return [FeatureExpressionSlot(name: definition.firstKey, unit: "mm", expr: definition.first),
                     FeatureExpressionSlot(name: definition.secondKey, unit: definition.secondUnit,
                                           storedUnit: definition.secondUnit, expr: definition.second)]
+        case let .regionShell(_, _, definition):
+            return [FeatureExpressionSlot(name: "thickness", unit: "mm", expr: definition.thickness)]
+                + definition.regions.map { FeatureExpressionSlot(name: $0.parameterKey, unit: "mm", expr: $0.thickness) }
         case let .shell(_, _, thickness):
             return [FeatureExpressionSlot(name: "thickness", unit: "mm", expr: thickness)]
         case let .thread(_, spec):
@@ -1496,7 +1518,7 @@ final class DocumentSession {
                     storedUnit: "deg", expr: angle))
             }
             return slots
-        case .primitive, .baseSolid, .sweep, .loft, .boolean, .split, .transform, .mirror, .pattern,
+        case .primitive, .baseSolid, .polygonCage, .sweep, .loft, .surface, .boolean, .split, .transform, .mirror, .pattern,
              .moveFace, .deleteFace, .replaceFace:
             return []
         }
@@ -1559,6 +1581,12 @@ final class DocumentSession {
             else if name == definition.secondKey { changed.second = expr }
             else { return nil }
             return .advancedBlend(body: body, edges: edges, definition: changed)
+        case let .regionShell(body, openFaces, definition):
+            var changed = definition
+            if name == "thickness" { changed.thickness = expr }
+            else if let index = changed.regions.firstIndex(where: { $0.parameterKey == name }) { changed.regions[index].thickness = expr }
+            else { return nil }
+            return .regionShell(body: body, openFaces: openFaces, definition: changed)
         case let .shell(body, openFaces, thickness):
             guard name == "thickness" else { return nil }
             return .shell(body: body, openFaces: openFaces, thickness: expr)
@@ -1592,7 +1620,7 @@ final class DocumentSession {
                 return nil
             }
             return .hole(target: target, profile: profile, plane: plane, spec: updated)
-        case .primitive, .baseSolid, .sweep, .loft, .boolean, .split, .transform, .mirror, .pattern,
+        case .primitive, .baseSolid, .polygonCage, .sweep, .loft, .surface, .boolean, .split, .transform, .mirror, .pattern,
              .moveFace, .deleteFace, .replaceFace:
             return nil
         }

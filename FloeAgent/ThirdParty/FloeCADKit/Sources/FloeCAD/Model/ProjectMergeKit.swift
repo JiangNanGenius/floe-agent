@@ -64,13 +64,16 @@ nonisolated enum ProjectMergeKit {
         guard !guest.features.nodes.contains(where: { if case .thread = $0.kind { return true }; return false }) else {
             throw MergeError.missingAssociativeReferences(["thread-source-version"])
         }
+        guard !guest.features.nodes.contains(where: { if case .surface = $0.kind { return true }; return false }) else {
+            throw MergeError.missingAssociativeReferences(["surface-feature-insertion"])
+        }
         let associative = guest.planes.contains { $0.definition != nil }
             || guest.sketches.contains { $0.support != nil }
             || guest.axes.contains { $0.definition != nil }
             || guest.datumPoints.contains { $0.definition != nil }
             || guest.features.nodes.contains {
                 if $0.kind.operationPlaneReference != nil { return true }
-                if case .baseSolid = $0.kind { return true }; return false
+                switch $0.kind { case .baseSolid, .polygonCage: return true; default: return false }
             }
         let hostAssociative = host.planes.contains { $0.definition != nil }
             || host.sketches.contains { $0.support != nil || $0.hasExternalReferences }
@@ -78,7 +81,7 @@ nonisolated enum ProjectMergeKit {
             || host.datumPoints.contains { $0.definition != nil }
             || host.features.nodes.contains {
                 if $0.kind.operationPlaneReference != nil { return true }
-                if case .baseSolid = $0.kind { return true }; return false
+                switch $0.kind { case .baseSolid, .polygonCage: return true; default: return false }
             }
         // One ordered rollback prefix cannot represent two independently
         // active histories. In particular, adding the guest count to a host
@@ -291,14 +294,14 @@ nonisolated enum ProjectMergeKit {
             // operation vocabulary, including a later boolean that bakes it.
             // This path activates only for the new source kind; old projects
             // retain their existing remapping behavior.
-            if guest.features.nodes.contains(where: { if case .baseSolid = $0.kind { return true }; return false }) {
+            if guest.features.nodes.contains(where: { switch $0.kind { case .baseSolid, .polygonCage: return true; default: return false } }) {
                 var local: Set<BodyID> = []
                 for node in guest.features.nodes where !node.suppressed {
                     localFramesBefore[node.id] = local
                     switch node.kind {
-                    case .baseSolid:
+                    case .baseSolid, .polygonCage:
                         local.formUnion(node.outputBodyIDs)
-                    case .primitive, .mirror:
+                    case .primitive, .surface, .mirror:
                         local.subtract(node.outputBodyIDs)
                         if case let .mirror(body, _, false) = node.kind { local.remove(body.bodyID) }
                     case let .pattern(body, spec):
@@ -306,7 +309,7 @@ nonisolated enum ProjectMergeKit {
                         else if local.contains(body.bodyID) { local.formUnion(node.outputBodyIDs) }
                         else { local.subtract(node.outputBodyIDs) }
                     case let .extrude(_, _, _, _, boolean, _, _), let .draftExtrude(_, _, _, _, _, boolean),
-                         let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _, _), let .loft(_, boolean):
+                         let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _, _), let .loft(_, boolean, _):
                         local.subtract(node.outputBodyIDs)
                         if boolean.op != .newBody, let target = boolean.resolvedTargets.first { local.remove(target.bodyID) }
                     case let .hole(target, _, _, _), let .thread(target, _): local.remove(target.bodyID)
@@ -315,7 +318,7 @@ nonisolated enum ProjectMergeKit {
                     case let .split(target, _):
                         local.remove(target.bodyID); local.subtract(node.outputBodyIDs)
                     case .transform, .pushPull, .moveFace, .scaleFace, .rotateFace,
-                         .draftFace, .chamfer, .fillet, .advancedBlend, .shell, .deleteFace, .replaceFace:
+                         .draftFace, .chamfer, .fillet, .advancedBlend, .shell, .regionShell, .deleteFace, .replaceFace:
                         break // each preserves the input's body-local geometry frame
                     }
                     localFramesAfter[node.id] = local
@@ -721,9 +724,12 @@ nonisolated enum ProjectMergeKit {
 
         func remap(_ kind: FeatureKind, translation t: SIMD3<Double>) -> FeatureKind {
             switch kind {
-            case .thread:
+            case .thread, .surface:
                 // Unreachable: insert rejects threaded guests before mapping.
                 return kind
+            case let .polygonCage(definition, placement):
+                var moved = placement; moved.translation += t
+                return .polygonCage(definition: definition, placement: moved)
             case let .baseSolid(source): return .baseSolid(source: source.translated(by: t))
             case let .primitive(spec, placement):
                 var moved = placement
@@ -764,8 +770,16 @@ nonisolated enum ProjectMergeKit {
                                   reversed: $0.reversed)
                         })
                     })
-            case let .loft(sections, boolean):
-                return .loft(sections: sections.map(remap), boolean: remap(boolean))
+            case let .loft(sections, boolean, definition):
+                var movedDefinition = definition
+                movedDefinition?.guides = definition?.guides.map { guide in
+                    SweepPathDefinition(segments:guide.segments.map {
+                        .init(sketchID:newSketch($0.sketchID),entityID:newEntity($0.entityID),reversed:$0.reversed)
+                    })
+                } ?? []
+                // World-space derivatives rotate neither under pure insertion
+                // translation nor under identity re-minting.
+                return .loft(sections:sections.map(remap),boolean:remap(boolean),definition:movedDefinition)
             case let .hole(target, profile, plane, spec):
                 // Placement lives in the sketch/plane (both remapped); the
                 // hole owns only type/depth/recess/direction.
@@ -832,6 +846,10 @@ nonisolated enum ProjectMergeKit {
                 changed.supportFaces = definition.supportFaces.map { remap($0) }
                 return .advancedBlend(body: remap(body),
                     edges: edges.map { remap($0, translation: t) }, definition: changed)
+            case let .regionShell(body, openFaces, definition):
+                var changed = definition
+                for i in changed.regions.indices { changed.regions[i].face = remap(changed.regions[i].face, translation: t) }
+                return .regionShell(body: remap(body), openFaces: openFaces.map { remap($0, translation: t) }, definition: changed)
             case let .shell(body, openFaces, thickness):
                 return .shell(body: remap(body),
                               openFaces: openFaces.map { remap($0, translation: t) },

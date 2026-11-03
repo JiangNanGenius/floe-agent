@@ -42,6 +42,7 @@ nonisolated enum CADDocumentFormat {
     /// floor or bump ordinary documents just because this build can write 7.
     static let drawingManufacturingVersion = 7
     static let supportedVersion = 7
+    static let loftSurfaceVersion = 7
     /// Root-coordinated unreleased floor; only actual normal-offset links raise it.
     static let sketchCurveEditVersion = 7
     static let sceneLightingVersion = 7
@@ -72,6 +73,8 @@ nonisolated enum CADDocumentFormat {
     static let operationPlaneReferenceVersion = 7
     static let advancedPatternVersion = 7
     static let advancedBlendVersion = 7
+    static let regionalShellVersion = 7
+    static let polygonMeshVersion = 7
     /// Coordinated package floor for a document that actually stores
     /// user-named versions. Ordinary documents keep their existing schema
     /// floor; only a package that gains a checkpoint is raised to this floor.
@@ -155,6 +158,22 @@ nonisolated enum CADDocumentFormat {
 
     static func requiredFormat(document: DesignDocument) -> Int {
         var required = legacyVersion
+        if document.features.nodes.contains(where: {
+            if case .regionShell = $0.kind { return true }
+            return $0.kind.shellParameters?.openFaces.contains(where: {
+                if case .nativeSurface = $0.signature.kind { return true }; return false
+            }) == true
+        }) { required = max(required, regionalShellVersion) }
+        if document.features.nodes.contains(where: {
+            switch $0.kind {
+            case .surface: return true
+            case let .loft(_,_,definition): return definition != nil
+            default: return false
+            }
+        }) { required = max(required,loftSurfaceVersion) }
+        if document.features.nodes.contains(where: { if case .polygonCage = $0.kind { return true }; return false }) {
+            required = max(required, polygonMeshVersion)
+        }
         required = max(required, sceneLightingIntent(document.sceneSettingsData).version)
         if document.features.nodes.contains(where: {
             if case let .pattern(_, spec) = $0.kind { return spec.kind == .curve || spec.featureSeed != nil }; return false
@@ -285,6 +304,7 @@ nonisolated enum CADDocumentFormat {
             case let .pushPull(face, _, _), let .moveFace(face, _), let .scaleFace(face, _),
                  let .rotateFace(face, _, _), let .draftFace(face, _, _, _, _), let .replaceFace(face, _, _, _, _):
                 refs = [face]
+            case let .regionShell(_, faces, definition): refs = faces + definition.regions.map(\.face)
             case let .shell(_, faces, _), let .deleteFace(_, faces): refs = faces
             default: refs = []
             }
@@ -701,6 +721,21 @@ nonisolated enum CADDocumentFormat {
         }) { throw CADDocumentFormatError.opaqueAssociations }
         let encoder = JSONEncoder()
         for node in document.features.nodes {
+            switch node.kind {
+            case let .loft(sections,_,definition):
+                try definition?.requireSupported(sectionCount:sections.count)
+                _ = try encoder.encode(node.kind)
+            case let .surface(definition):
+                try definition.validate()
+                guard node.outputBodyIDs.count == 1,
+                      definition.operation == .loft || node.outputBodyIDs.first == definition.sources.first?.bodyID else {
+                    throw CADDocumentFormatError.malformedAssociation("surface-feature-output")
+                }
+                _ = try encoder.encode(node.kind)
+            default: break
+            }
+        }
+        for node in document.features.nodes {
             if case let .advancedBlend(_, edges, definition) = node.kind {
                 if definition.version != 1 { throw CADDocumentFormatError.opaqueAssociations }
                 do { try definition.validate(edgeCount: edges.count); _ = try encoder.encode(node.kind) }
@@ -1030,6 +1065,106 @@ nonisolated enum CADDocumentFormat {
             guard let object = try? JSONSerialization.jsonObject(with: row.kind) as? [String: Any] else {
                 continue
             }
+            if let shell = object["regionShell"] as? [String: Any] {
+                result.requiredVersion = max(result.requiredVersion, regionalShellVersion)
+                guard let definition = shell["definition"] as? [String: Any],
+                      let rawVersion = definition["version"], let version = jsonIntegerValue(rawVersion), version > 0 else {
+                    throw CADDocumentFormatError.malformedAssociation("regional-shell")
+                }
+                let known: Set<String> = ["version", "thickness", "regions"]
+                let rows = definition["regions"] as? [[String: Any]]
+                let futureFields = !Set(shell.keys).isSubset(of: ["body", "openFaces", "definition"])
+                    || !Set(definition.keys).isSubset(of: known)
+                    || rows?.contains(where: { !Set($0.keys).isSubset(of: ["id", "face", "thickness"]) }) == true
+                    || containsFutureShellSurface(shell)
+                if version > ShellRegionDefinition.supportedVersion || futureFields { result.opaqueFeatures.insert(row.featureID) }
+                else {
+                    do {
+                        let decoded = try JSONDecoder().decode(FeatureKind.self, from: row.kind)
+                        guard case let .regionShell(body, faces, definition) = decoded else { throw ShellRegionDefinition.Failure.invalid }
+                        try definition.validate(body: body, openFaces: faces)
+                    } catch { throw CADDocumentFormatError.malformedAssociation("regional-shell") }
+                }
+            }
+            if let shell = object["shell"] as? [String: Any], let faces = shell["openFaces"] as? [[String: Any]],
+               faces.contains(where: { ($0["signature"] as? [String: Any])?["kind"].flatMap { ($0 as? [String: Any])?["nativeSurface"] } != nil }) {
+                result.requiredVersion = max(result.requiredVersion, regionalShellVersion)
+                if containsFutureShellSurface(shell) { result.opaqueFeatures.insert(row.featureID) }
+            }
+            for key in ["loft","surface"] {
+                guard let payload = object[key] as? [String:Any] else { continue }
+                guard let raw = payload["definition"], !(raw is NSNull) else {
+                    if key == "surface" { throw CADDocumentFormatError.malformedAssociation("surface-definition") }
+                    // Missing definition is the released legacy contract, including mesh holes.
+                    continue
+                }
+                result.requiredVersion=max(result.requiredVersion,loftSurfaceVersion)
+                guard let definition = raw as? [String:Any], let rawVersion=definition["version"],
+                      let version=jsonIntegerValue(rawVersion), version > 0 else {
+                    throw CADDocumentFormatError.malformedAssociation("loft-surface-definition")
+                }
+                let keys: Set<String> = key == "loft" ? ["version","ruled","guides","start","end"]
+                    : ["version","operation","sections","sources","ruled","tolerance","trim","thickness","requireClosed"]
+                let nestedPaths=(definition[key == "loft" ? "guides" : "sections"] as? [[String:Any]]) ?? []
+                let futurePath=nestedPaths.contains { path in
+                    if let raw=path["version"], let value=jsonIntegerValue(raw), value > SweepPathDefinition.supportedVersion { return true }
+                    return false
+                }
+                let unknownOperation = key == "surface" && (definition["operation"] as? String).map {
+                    CADSurfaceDefinition.Operation(rawValue:$0) == nil
+                } == true
+                if version > 1 || !Set(definition.keys).isSubset(of:keys) || futurePath || unknownOperation {
+                    // The original feature row survives in the established
+                    // opaqueFeatures path. No writer/replay drops its bytes.
+                    result.opaqueFeatures.insert(row.featureID)
+                    continue
+                }
+                do {
+                    let decoded=try JSONDecoder().decode(FeatureKind.self,from:row.kind)
+                    switch decoded {
+                    case let .loft(sections,_,definition):
+                        try definition?.validate(sectionCount:sections.count)
+                    case let .surface(definition):
+                        try definition.validate()
+                    default: throw CADDocumentFormatError.malformedAssociation("loft-surface-definition")
+                    }
+                } catch { throw CADDocumentFormatError.malformedAssociation("loft-surface-definition") }
+            }
+            if let mesh = object["polygonCage"] as? [String: Any] {
+                result.requiredVersion = max(result.requiredVersion, polygonMeshVersion)
+                guard let definition = mesh["definition"] as? [String: Any],
+                      let version = jsonIntegerValue(definition["version"]), version > 0 else {
+                    throw CADDocumentFormatError.malformedAssociation("polygon-cage")
+                }
+                let modifiers = definition["modifiers"] as? [[String: Any]]
+                let knownOperations: Set<String> = ["subdivision","mirror","bevel"]
+                let future = version > CADPolygonMeshDefinition.supportedVersion
+                    || !Set(mesh.keys).isSubset(of: ["definition","placement"])
+                    || (mesh["placement"] as? [String: Any]).map { !Set($0.keys).isSubset(of: ["translation","rotation","scale"]) } == true
+                    || !Set(definition.keys).isSubset(of: ["version","cage","modifiers"])
+                    || (definition["cage"] as? [String: Any]).map { cage in
+                        if !Set(cage.keys).isSubset(of: ["vertices","edges","faces"]) { return true }
+                        for (key,allowed) in [("vertices",Set(["id","point"])),("edges",Set(["id","a","b"])),("faces",Set(["id","vertices"]))] {
+                            if let rows = cage[key] as? [[String: Any]], rows.contains(where: { !Set($0.keys).isSubset(of: allowed) }) { return true }
+                        }
+                        return false
+                    } == true
+                    || modifiers?.contains(where: {
+                        guard Set($0.keys).isSubset(of: ["id","enabled","operation"]),
+                              let operation = $0["operation"] as? [String: Any], operation.count == 1,
+                              let kind = operation.keys.first else { return true }
+                        let keys: Set<String> = kind == "subdivision" ? ["levels"] : kind == "mirror" ? ["axis","offset"] : ["edge","width"]
+                        return !knownOperations.contains(kind) || (operation[kind] as? [String: Any]).map { !Set($0.keys).isSubset(of: keys) } != false
+                    }) == true
+                if future { result.opaqueFeatures.insert(row.featureID) }
+                else {
+                    do {
+                        let decoded = try JSONDecoder().decode(FeatureKind.self, from: row.kind)
+                        guard case let .polygonCage(definition, placement) = decoded else { throw CADPolygonFailure.invalid("Invalid polygon cage.") }
+                        try definition.validate(); try CADPolygonMeshDefinition.validatePlacement(placement)
+                    } catch { throw CADDocumentFormatError.malformedAssociation("polygon-cage") }
+                }
+            }
             if let blend = object["advancedBlend"] as? [String: Any] {
                 result.requiredVersion = max(result.requiredVersion, advancedBlendVersion)
                 guard let definition = blend["definition"] as? [String: Any],
@@ -1341,6 +1476,20 @@ nonisolated enum CADDocumentFormat {
             }
             return true
         }
+        return false
+    }
+
+    /// OCCT's support enum is a versioned reference semantic here. A future
+    /// type cannot be silently treated as today's generic surface.
+    private static func containsFutureShellSurface(_ value: Any) -> Bool {
+        if let object = value as? [String: Any] {
+            if let payload = object["nativeSurface"] as? [String: Any] {
+                guard Set(payload.keys) == ["type"], let type = jsonIntegerValue(payload["type"]),
+                      (2...10).contains(type) else { return true }
+            }
+            return object.values.contains { containsFutureShellSurface($0) }
+        }
+        if let values = value as? [Any] { return values.contains { containsFutureShellSurface($0) } }
         return false
     }
 

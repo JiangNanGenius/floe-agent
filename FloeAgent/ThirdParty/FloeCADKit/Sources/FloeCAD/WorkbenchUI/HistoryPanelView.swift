@@ -138,7 +138,7 @@ struct HistoryPanelView: View {
     private func iconName(for id: FeatureID) -> String {
         guard let node = viewModel.session.document.features.node(id) else { return "gearshape" }
         switch node.kind {
-        case .primitive, .baseSolid: return "cube"
+        case .primitive, .baseSolid, .polygonCage: return "cube"
         case .extrude: return "square.stack.3d.up"
         case .draftExtrude: return "square.stack.3d.up.trianglebadge.exclamationmark"
         case .boolean: return "circle.lefthalf.filled"
@@ -153,13 +153,14 @@ struct HistoryPanelView: View {
         case .thread: return "bolt.horizontal"
         case .sweep: return "scribble.variable"
         case .loft: return "square.on.square.dashed"
+        case .surface: return "square.3.layers.3d"
         case .transform: return "move.3d"
         case .mirror: return "flip.horizontal"
         case .pattern: return "square.grid.3x3"
         case .chamfer: return "square.on.circle"
         case .fillet: return "circle.circle"
         case let .advancedBlend(_, _, law): return law.mode.isFillet ? "circle.circle" : "square.on.circle"
-        case .shell: return "cube.transparent"
+        case .shell, .regionShell: return "cube.transparent"
         case .deleteFace: return "square.slash"
         case .replaceFace: return "arrow.up.and.down.square"
         }

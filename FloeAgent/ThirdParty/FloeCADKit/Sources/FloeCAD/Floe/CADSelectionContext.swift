@@ -114,6 +114,18 @@ public struct CADSelectionContext: Sendable, Equatable {
         }
     }
 
+    /// Stable authored polygon identities, kept separate from native B-rep
+    /// face/edge queries and their render-triangle selection descriptors.
+    public struct PolygonCage: Sendable, Equatable {
+        public var bodyID: String
+        public var cageDigest: String
+        public var faceIDs: [String]
+        public var edgeIDs: [String]
+        public var vertexIDs: [String]
+        public var showingControlCage: Bool
+    }
+    public var polygonCage: PolygonCage? = nil
+
     public var documentRevision: Int64
     public var changeCount: Int
     public var bodies: [Body]
@@ -139,14 +151,14 @@ public struct CADSelectionContext: Sendable, Equatable {
     }
 
     public var isEmpty: Bool {
-        bodies.isEmpty && faces.isEmpty && edges.isEmpty && sketch == nil && instances.isEmpty
+        bodies.isEmpty && faces.isEmpty && edges.isEmpty && sketch == nil && instances.isEmpty && polygonCage == nil
     }
 
     /// Stable key for SwiftUI change observation. It includes every live
     /// selection input, so the workbench notifies its host only on a real
     /// selection change, not on every render tick.
     public var observationKey: String {
-        [
+        var parts = [
             String(documentRevision),
             String(changeCount),
             bodies.map(\.id).joined(separator: ","),
@@ -154,7 +166,11 @@ public struct CADSelectionContext: Sendable, Equatable {
             edges.map { "\($0.bodyID):\($0.midpoint)" }.joined(separator: "|"),
             sketch.map { "\($0.id):\($0.entityIDs.joined(separator: ","))" } ?? "-",
             instances.map(\.id).joined(separator: ","),
-        ].joined(separator: "#")
+        ]
+        if let cage = polygonCage {
+            parts.append("polygon:" + cage.bodyID + ":" + cage.cageDigest + ":" + cage.faceIDs.joined() + ":" + cage.edgeIDs.joined() + ":" + cage.vertexIDs.joined() + ":" + String(cage.showingControlCage))
+        }
+        return parts.joined(separator: "#")
     }
 
     /// JSON-safe representation for a tool/assistant context envelope.
@@ -163,7 +179,8 @@ public struct CADSelectionContext: Sendable, Equatable {
             "document_revision": documentRevision,
             "change_count": changeCount,
             "selection_count": bodies.count + faces.count + edges.count
-                + (sketch?.entityIDs.count ?? 0) + instances.count,
+                + (sketch?.entityIDs.count ?? 0) + instances.count
+                + (polygonCage?.faceIDs.count ?? 0) + (polygonCage?.edgeIDs.count ?? 0) + (polygonCage?.vertexIDs.count ?? 0),
             "truncated": truncated,
             "bodies": bodies.map { body in
                 ["id": body.id, "name": body.name, "volume_mm3": body.volumeMM3,
@@ -195,6 +212,11 @@ public struct CADSelectionContext: Sendable, Equatable {
             ]
         } else {
             object["sketch"] = NSNull()
+        }
+        if let cage = polygonCage {
+            object["polygon_cage"] = ["body_id":cage.bodyID,"cage_digest":cage.cageDigest,
+                "face_ids":cage.faceIDs,"edge_ids":cage.edgeIDs,"vertex_ids":cage.vertexIDs,
+                "showing_control_cage":cage.showingControlCage]
         }
         return object
     }
@@ -234,6 +256,9 @@ public struct CADSelectionContext: Sendable, Equatable {
         if !instances.isEmpty {
             let labels = instances.prefix(6).map { "\($0.name) [\($0.id)] body \($0.bodyID)" }
             parts.append("\(instances.count) assembly instance(s): " + labels.joined(separator: ", "))
+        }
+        if let cage = polygonCage {
+            parts.append("polygon cage " + cage.bodyID + " digest " + cage.cageDigest + "; face IDs " + cage.faceIDs.joined(separator: ",") + "; edge IDs " + cage.edgeIDs.joined(separator: ",") + "; vertex IDs " + cage.vertexIDs.joined(separator: ",") + "; use mesh topology/modifier actions, not B-rep face indices")
         }
         if truncated { parts.append("(selection list truncated to the bounded caps)") }
         return parts.joined(separator: " ")
@@ -416,8 +441,8 @@ public struct CADSelectionContext: Sendable, Equatable {
 public extension FloeCADDocument {
     @MainActor
     func assistantSelectionContext() -> CADSelectionContext {
-        let inputs = viewModel().assistantSelectionInputs
-        return CADSelectionContext.capture(
+        let model = viewModel(), inputs = model.assistantSelectionInputs
+        var context = CADSelectionContext.capture(
             document: self,
             bodyIDs: inputs.bodyIDs,
             facePicks: inputs.facePicks,
@@ -426,5 +451,14 @@ public extension FloeCADDocument {
             sketchEntityIDs: inputs.sketchEntityIDs,
             instanceIDs: inputs.instanceIDs
         )
+        if let active = model.activePolygonCage {
+            let current = model.polygonSelectionDigest == active.definition.digest
+            let faces = current ? [model.polygonFaceSelection].compactMap { $0 }.filter { id in active.definition.cage.faces.contains { $0.id == id } } : []
+            let edges = current ? [model.polygonEdgeSelection].compactMap { $0 }.filter { id in active.definition.cage.edges.contains { $0.id == id } } : []
+            let vertices = current ? model.polygonVertexSelection.prefix(8).filter { id in active.definition.cage.vertices.contains { $0.id == id } } : []
+            context.polygonCage = .init(bodyID:active.body.id.raw.uuidString,cageDigest:active.definition.digest,
+                faceIDs:faces.map(\.uuidString),edgeIDs:edges.map(\.uuidString),vertexIDs:vertices.map(\.uuidString),showingControlCage:model.polygonCageShowControl)
+        }
+        return context
     }
 }

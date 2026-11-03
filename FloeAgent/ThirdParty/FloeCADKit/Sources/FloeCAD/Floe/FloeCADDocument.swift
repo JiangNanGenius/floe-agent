@@ -215,6 +215,7 @@ public final class FloeCADDocument {
 
     public func markClosed() {
         CADAssemblyService.cancelInterference(for: self)
+        CADDrawingService.cancelProjection(for: self)
         CADMeshService.cancelActiveOperation(for: self)
         CADUVService.cancel(for: self)
         #if canImport(AVFoundation) && canImport(RealityKit) && canImport(UIKit)

@@ -39,7 +39,7 @@ public final class CADParameterService {
         "variable.create", "variable.update", "variable.delete",
         "feature.setExpression",
         "undo", "redo",
-    ] + CADDatumService.actions + CADSketchCurveService.actions + CADThreadService.actions
+    ] + CADDatumService.actions + CADSketchCurveService.actions + CADThreadService.actions + CADLoftSurfaceService.actions
 
     /// Sketch-entity kinds with a real typed geometry edit. Polygon remains
     /// query-only until its side/rotation semantics are promoted with the same
@@ -65,6 +65,9 @@ public final class CADParameterService {
         if let failure = revisionPinFailure(args) { return failure }
         if CADSketchCurveService.actions.contains(action) {
             return CADSketchCurveService(document: document).handle(action: action, args: args)
+        }
+        if CADLoftSurfaceService.actions.contains(action) {
+            return CADLoftSurfaceService(document:document).handle(action:action,args:args)
         }
         if CADThreadService.actions.contains(action) {
             return CADThreadService(document: document).handle(action: action, args: args)
@@ -4500,7 +4503,7 @@ public final class CADParameterService {
         case let .extrude(_, _, _, _, boolean, _, _),
              let .draftExtrude(_, _, _, _, _, boolean),
              let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _, _),
-             let .loft(_, boolean):
+             let .loft(_, boolean, _):
             guard boolean.op != .newBody, let target = boolean.resolvedTargets.first else { return [] }
             return [target.bodyID]
         case let .boolean(_, target, _):
@@ -4509,14 +4512,15 @@ public final class CADParameterService {
             return [target.bodyID]
         case let .split(target, _): return [target.bodyID]
         case let .transform(body, _), let .advancedBlend(body, _, _), let .chamfer(body, _, _),
-             let .fillet(body, _, _), let .shell(body, _, _), let .deleteFace(body, _):
+             let .fillet(body, _, _), let .shell(body, _, _), let .regionShell(body, _, _), let .deleteFace(body, _):
             return [body.bodyID]
         case let .pushPull(face, _, _), let .moveFace(face, _), let .scaleFace(face, _),
              let .rotateFace(face, _, _), let .draftFace(face, _, _, _, _),
              let .replaceFace(face, _, _, _, _):
             return [face.body.bodyID]
         case let .pattern(body, spec): return spec.featureSeed == nil ? [] : [body.bodyID]
-        case .primitive, .baseSolid, .mirror:
+        case let .surface(definition): return definition.operation == .loft ? [] : definition.sources.prefix(1).map(\.bodyID)
+        case .primitive, .baseSolid, .polygonCage, .mirror:
             return []
         }
     }
@@ -4964,6 +4968,17 @@ public final class CADParameterService {
         }
 
         switch node.kind {
+        case let .surface(definition):
+            kindName = "surface"
+            add("definition", "unitless", (try? JSONSerialization.jsonObject(with:JSONEncoder().encode(definition))) ?? NSNull(),
+                editable:false,note:"Use surface.update for one atomic feature edit.")
+        case let .polygonCage(definition, _):
+            kindName = "polygonCage"
+            add("control_vertex_count", "unitless", definition.cage.vertices.count, editable: false)
+            add("control_edge_count", "unitless", definition.cage.edges.count, editable: false)
+            add("control_face_count", "unitless", definition.cage.faces.count, editable: false)
+            add("modifier_count", "unitless", definition.modifiers.count, editable: false)
+            add("cage_digest", "unitless", definition.digest, editable: false)
         case let .baseSolid(source):
             kindName = "importedSolid"
             add("source_sha256", "unitless", source.sha256, editable: false)
@@ -5094,9 +5109,13 @@ public final class CADParameterService {
                 add("helix_pitch", "mm", helix.pitch, note: "Non-zero; sign is handedness.")
                 add("helix_turns", "unitless", helix.turns, minimum: 1e-6)
             }
-        case let .loft(sections, _):
+        case let .loft(sections, _, definition):
             kindName = "loft"
             add("section_count", "unitless", sections.count, editable: false)
+            add("sections", "unitless", (try? JSONSerialization.jsonObject(with:JSONEncoder().encode(sections))) ?? NSNull(),
+                editable:false,note:"Use loft.update to replace or reorder the sections on this same feature.")
+            add("definition", "unitless", definition.flatMap { try? JSONSerialization.jsonObject(with:JSONEncoder().encode($0)) } ?? NSNull(),
+                editable:false,note:"Guide and specified end derivative constraints are not supported; they are refused.")
         case let .boolean(kind, _, tools):
             kindName = "boolean"
             add("boolean_kind", "unitless", String(describing: kind), editable: false)
@@ -5181,6 +5200,18 @@ public final class CADParameterService {
             add(definition.secondKey, definition.secondUnit, definition.second.value,
                 minimum: 1e-6, maximum: definition.mode == .distanceAngleChamfer ? 90 : nil)
             add("edge_count", "unitless", edges.count, editable: false)
+            unit = "mm"
+        case let .regionShell(_, openFaces, definition):
+            kindName = "shell"
+            add("thickness", "mm", definition.thickness.value)
+            add("open_face_count", "unitless", openFaces.count, editable: false)
+            for region in definition.regions {
+                add(region.parameterKey, "mm", region.thickness.value)
+            }
+            if let data = try? JSONEncoder().encode(definition.regions),
+               let rows = try? JSONSerialization.jsonObject(with: data) {
+                add("wall_regions", nil, rows, editable: false)
+            }
             unit = "mm"
         case let .shell(_, openFaces, thickness):
             kindName = "shell"
@@ -5293,7 +5324,7 @@ public final class CADParameterService {
         switch kind {
         case .primitive, .extrude, .draftExtrude, .revolve, .pattern,
              .pushPull, .scaleFace, .rotateFace, .draftFace, .chamfer,
-             .fillet, .advancedBlend, .shell, .hole, .thread, .sweep, .replaceFace, .mirror:
+             .fillet, .advancedBlend, .shell, .regionShell, .hole, .thread, .sweep, .replaceFace, .mirror:
             return true
         default:
             return false
@@ -5315,16 +5346,17 @@ public final class CADParameterService {
         case let .draftExtrude(_, _, _, _, _, boolean),
              let .revolve(_, _, _, _, boolean),
              let .sweep(_, _, _, boolean, _, _),
-             let .loft(_, boolean):
+             let .loft(_, boolean, _):
             return boolean.resolvedTargets
         case let .hole(target, _, _, _), let .thread(target, _): return [target]
         case let .split(target, _): return [target]
+        case let .surface(definition): return definition.sources
         case let .transform(body, _), let .mirror(body, _, _),
              let .pattern(body, _), let .chamfer(body, _, _),
-             let .fillet(body, _, _), let .advancedBlend(body, _, _), let .shell(body, _, _),
+             let .fillet(body, _, _), let .advancedBlend(body, _, _), let .shell(body, _, _), let .regionShell(body, _, _),
              let .deleteFace(body, _):
             return [body]
-        case .primitive, .baseSolid,
+        case .primitive, .baseSolid, .polygonCage,
              .pushPull, .moveFace, .scaleFace, .rotateFace, .draftFace, .replaceFace:
             return []
         }
@@ -5338,6 +5370,7 @@ public final class CADParameterService {
              let .scaleFace(face, _), let .rotateFace(face, _, _),
              let .draftFace(face, _, _, _, _), let .replaceFace(face, _, _, _, _):
             return [face]
+        case let .regionShell(_, openFaces, definition): return openFaces + definition.regions.map(\.face)
         case let .shell(_, openFaces, _): return openFaces
         case let .deleteFace(_, faces): return faces
         default: return []
@@ -5726,6 +5759,25 @@ public final class CADParameterService {
             catch { return fail("blend", "Distances must be positive; an angle must be between 0 and 90 degrees.") }
             guard !requireChange || changed != definition else { return fail("blend", "Nothing changed.") }
             return .success(.advancedBlend(body: body, edges: edges, definition: changed))
+        case let .regionShell(body, openFaces, definition):
+            let allowed = ["thickness"] + definition.regions.map(\.parameterKey)
+            guard changes.keys.allSatisfy({ allowed.contains($0) }) else { return unknown(allowed) }
+            var changed = definition
+            if changes["thickness"] != nil {
+                guard let t = value("thickness") else { return fail("thickness", "Use a non-zero wall thickness.") }
+                changed.thickness = Expr(value: t)
+            }
+            for i in changed.regions.indices {
+                let key = changed.regions[i].parameterKey
+                if changes[key] != nil {
+                    guard let t = value(key) else { return fail(key, "Use a non-zero wall thickness.") }
+                    changed.regions[i].thickness = Expr(value: t)
+                }
+            }
+            do { try changed.validate(body: body, openFaces: openFaces) }
+            catch { return fail("thickness", error.localizedDescription) }
+            guard !requireChange || changed != definition else { return fail("thickness", "Nothing changed.") }
+            return .success(.regionShell(body: body, openFaces: openFaces, definition: changed))
         case let .shell(body, openFaces, thickness):
             guard changes.keys.allSatisfy({ $0 == "thickness" }) else { return unknown(["thickness"]) }
             guard let t = value("thickness"), abs(t) > 1e-6 else {

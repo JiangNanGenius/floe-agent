@@ -735,9 +735,9 @@ nonisolated enum OCCTKernel {
     /// votes garbage against a different tessellation.
     nonisolated struct KernelFaceInfo: Sendable {
         let index: Int
-        /// Nil for surface kinds `FaceSignature` cannot express (torus,
-        /// sphere, swept surfaces) — listed for discovery, not
-        /// referenceable by a FaceRef.
+        /// Exact support kind. Non-planar/non-cylindrical supports use the
+        /// native surface kind and require a qualified native face identity;
+        /// they never acquire planar editing or axis semantics.
         let signature: FaceSignature?
         let normal: SIMD3<Double>
         let centroid: SIMD3<Double>
@@ -759,15 +759,25 @@ nonisolated enum OCCTKernel {
     /// them into the closed loops a drawing shows.
     static func sectionPolylines(_ handle: BRepHandle, origin: SIMD3<Double>,
                                  normal: SIMD3<Double>, deflection: Double = 0.05) -> [[SIMD3<Double>]] {
+        sectionPolylinesChecked(handle, origin: origin, normal: normal, deflection: deflection) ?? []
+    }
+
+    /// Nil is failure; an empty array is a completed cut with no intersection.
+    static func sectionPolylinesChecked(_ handle: BRepHandle, origin: SIMD3<Double>,
+                                        normal: SIMD3<Double>, deflection: Double = 0.05)
+        -> [[SIMD3<Double>]]? {
         var plane: [Double] = [origin.x, origin.y, origin.z, normal.x, normal.y, normal.z]
         let data = Data(bytes: &plane, count: 6 * MemoryLayout<Double>.size)
-        guard let out = OCCTBridge.section(of: handle.shape, plane: data, deflection: deflection) else { return [] }
+        guard let out = OCCTBridge.section(of: handle.shape, plane: data, deflection: deflection) else { return nil }
         let values: [Double] = out.withUnsafeBytes { Array($0.bindMemory(to: Double.self)) }
         var result: [[SIMD3<Double>]] = []
         var i = 0
         while i < values.count {
-            let count = Int(values[i]); i += 1
-            guard count >= 1, i + count * 3 <= values.count else { break }
+            let rawCount = values[i]; i += 1
+            guard rawCount.isFinite, rawCount >= 1, rawCount <= 100000,
+                  rawCount.rounded() == rawCount else { return nil }
+            let count = Int(rawCount)
+            guard i + count * 3 <= values.count else { return nil }
             var pts: [SIMD3<Double>] = []
             pts.reserveCapacity(count)
             for k in 0..<count {
@@ -812,7 +822,9 @@ nonisolated enum OCCTKernel {
                 axisPoint = (rawAxisPoint.x.isFinite && rawAxisPoint.y.isFinite
                              && rawAxisPoint.z.isFinite) ? rawAxisPoint : nil
             default:
-                signature = nil
+                let type = Int(values[base + 9])
+                signature = FaceSignature(kind: .nativeSurface(type: type), normal: normal,
+                    centroid: centroid, area: area, planeOffset: 0)
                 axisPoint = nil
             }
             out.append(KernelFaceInfo(index: Int(values[base]),
@@ -821,6 +833,14 @@ nonisolated enum OCCTKernel {
                                       axisPoint: axisPoint))
         }
         return out
+    }
+
+    /// A point strictly inside the exact trimmed support, never a facet centroid.
+    static func faceSample(_ handle: BRepHandle, index: Int) -> SIMD3<Double>? {
+        guard let bytes = OCCTBridge.faceSample(of: handle.shape, index: index), bytes.count == 24 else { return nil }
+        let values = bytes.withUnsafeBytes { Array($0.bindMemory(to: Double.self)) }
+        guard values.allSatisfy(\.isFinite) else { return nil }
+        return SIMD3(values[0], values[1], values[2])
     }
 
     /// Round the analytic edges nearest `points` to `radius`. `points` are

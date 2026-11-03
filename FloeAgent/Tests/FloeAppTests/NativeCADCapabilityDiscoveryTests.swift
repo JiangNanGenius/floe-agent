@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
+import Foundation
 import Testing
 @testable import FloeApp
-import FloeCAD
+@testable import FloeCAD
 import FloeWorkbench
 
 @Suite("Native CAD capability discovery")
@@ -81,5 +82,42 @@ struct NativeCADCapabilityDiscoveryTests {
         #expect(capabilities["viewport_capture"] != nil)
         #expect(capabilities["animation_actions"] as? [String] == CadNativeEditActions.animation.sorted())
     }
+    @Test func loftSurfaceActionsAndCompletePagedHelpReachActualTypedDecoders() throws {
+        #expect(CadNativeEditActions.loftSurface.isSubset(of:CadNativeEditActions.parameters))
+        #expect(CadNativeEditActions.loftSurface.isSubset(of:Set(CADParameterService.actions)))
+        let topic=try #require(CadDocumentHelp.fullText(for:"loft-surfaces"))
+        #expect(topic.contains("legacy"));#expect(topic.contains("Guides"));#expect(topic.contains("refused"))
+        var page=0,assembled=""
+        while true {
+            let row=try #require(CadDocumentHelp.page(.init(topic:"loft-surfaces",page:page,pageSize:1000)))
+            assembled += row.text
+            guard let next=row.nextPage else { break };page=next
+        }
+        #expect(page > 0);#expect(assembled == topic)
+        let schema=try #require(JSONSerialization.jsonObject(with:Data(CadDocumentTool.parametersJSON.utf8)) as? [String:Any])
+        let properties=try #require(schema["properties"] as? [String:Any])
+        #expect(((properties["payload"] as? [String:Any])?["description"] as? String)?.contains("loft-surfaces") == true)
+        for example in CadNativeEditActions.loftSurfaceExamples {
+            let payload=try #require(JSONSerialization.jsonObject(with:Data(example.utf8)) as? [String:Any])
+            let action=try #require(payload["action"] as? String)
+            #expect(CadNativeEditActions.parameters.contains(action))
+            let envelope=try JSONSerialization.data(withJSONObject:["action":"parameters","path":"example.floecad","payload":example])
+            let request=try JSONDecoder().decode(CadDocumentArguments.self,from:envelope)
+            #expect(request.action == .parameters);#expect(request.payload == example)
+            if action == "loft.create" {
+                let data=try JSONSerialization.data(withJSONObject:try #require(payload["sections"]))
+                let refs=try JSONDecoder().decode([ProfileRef].self,from:data)
+                let definition=try JSONDecoder().decode(LoftDefinition.self,
+                    from:JSONSerialization.data(withJSONObject:try #require(payload["definition"])))
+                try definition.requireSupported(sectionCount:refs.count)
+            }
+            if action == "surface.create" || action == "surface.update" {
+                let data=try JSONSerialization.data(withJSONObject:try #require(payload["definition"]))
+                let definition=try JSONDecoder().decode(CADSurfaceDefinition.self,from:data)
+                try definition.validate()
+            }
+        }
+    }
+
 }
 #endif

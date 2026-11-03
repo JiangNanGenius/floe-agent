@@ -108,7 +108,15 @@ nonisolated struct ResolvedFace: Sendable {
     var planar: FaceTopology.PlanarFace?
     var cylinder: FaceTopology.CylindricalFace?
     var confidence: Double
-    var triangles: [Int] { planar?.triangles ?? cylinder?.triangles ?? [] }
+    /// Exact support for surfaces not represented by the planar/cylinder editors.
+    nonisolated struct NativeSurface: Sendable {
+        var index: Int
+        var signature: FaceSignature
+        var triangles: [Int]
+        var point: SIMD3<Double>
+    }
+    var native: NativeSurface? = nil
+    var triangles: [Int] { native?.triangles ?? planar?.triangles ?? cylinder?.triangles ?? [] }
     /// The matched table entry's kernel-history name, when the table has one
     /// for the matched face — what the step-5b opportunistic upgrade writes
     /// back onto legacy refs. Nil is normal (no table, unnamed face).
@@ -276,8 +284,6 @@ nonisolated struct SignatureNaming: TopoNaming {
     func resolve(_ ref: FaceRef, in body: Body, table: FaceTable?) -> ResolvedFace? {
         guard ref.body.bodyID == body.id else { return nil }
         let faces = Self.enumerate(body.render)
-        guard !faces.isEmpty else { return nil }
-
         // NAME FIRST (docs/TOPO_NAMING_HISTORY_DESIGN.md step 4): an exact
         // kernel-history identity hit outranks any geometric score, because
         // identity is what the score was always trying to approximate. Table
@@ -317,6 +323,7 @@ nonisolated struct SignatureNaming: TopoNaming {
                                 identityProof: name.isStableFaceIdentity ? .recordedQualifiedName : .currentGeometry)
         }
 
+        guard !faces.isEmpty else { return nil }
         // Some old refs already contain an author-owned primitive/cap role.
         // Reconstruct only that exact creator+role identity, never an edge or
         // face ordinal. This preserves ordinary legacy box/cap parameter edits.
@@ -386,6 +393,14 @@ nonisolated struct SignatureNaming: TopoNaming {
               kindCompatible(signature.kind, ref.signature.kind) else { return nil }
         let selected = channel.indices.filter { channel[$0] == native }
         guard !selected.isEmpty else { return nil }
+        if case .nativeSurface = signature.kind {
+            guard ref.elementName?.isStableFaceIdentity == true,
+                  ref.elementName?.requiresExactSignature != true || exactSignature(signature, ref.signature),
+                  let point = OCCTKernel.faceSample(brep, index: index) else { return nil }
+            return ResolvedFace(confidence: 1,
+                native: .init(index: index, signature: signature, triangles: selected, point: point),
+                elementName: ref.elementName, identityProof: .recordedQualifiedName)
+        }
         var mesh = body.render
         mesh.indices = selected.flatMap { triangle in
             Array(body.render.indices[(triangle * 3)..<(triangle * 3 + 3)])
@@ -449,6 +464,7 @@ nonisolated struct SignatureNaming: TopoNaming {
         switch (a, b) {
         case (.planar, .planar): return true
         case (.cylindrical, .cylindrical): return true
+        case let (.nativeSurface(a), .nativeSurface(b)): return a == b
         default: return false
         }
     }
@@ -472,6 +488,8 @@ nonisolated struct SignatureNaming: TopoNaming {
         case let (.cylindrical(radiusA), .cylindrical(radiusB)):
             return radiusA > 0 && radiusB > 0 && near(radiusA, radiusB)
                 && abs(alignment) >= 1 - 1e-8
+        case let (.nativeSurface(typeA), .nativeSurface(typeB)):
+            return typeA == typeB && alignment >= 1 - 1e-8
         default: return false
         }
     }

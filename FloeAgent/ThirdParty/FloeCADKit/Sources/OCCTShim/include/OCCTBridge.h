@@ -315,6 +315,32 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 + (nullable OCCTShape *)threadOrientedSolid:(OCCTShape *)shape
     NS_SWIFT_NAME(threadOrientedSolid(_:));
 
+/// Exact open-section loft. Nested arrays retain each section's authored
+/// edge order/orientation. No sampled points, inferred closure or solid caps.
++ (nullable OCCTShape *)surfaceLoftWithCurves:(NSArray<NSArray<NSData *> *> *)curves
+                                  reversed:(NSArray<NSArray<NSNumber *> *> *)reversed
+                                     bases:(NSArray<OCCTPlaneBasis *> *)bases
+                                     ruled:(BOOL)ruled
+                                 tolerance:(double)tolerance
+                                    status:(OCCTOpStatus *)status
+    NS_SWIFT_NAME(surfaceLoft(curves:reversed:bases:ruled:tolerance:status:));
+/// Exact single-face iso-rectangle trim, planar free-boundary patch, sewing,
+/// or signed-thickness solid. Unsupported domains fail without a result.
++ (nullable OCCTShape *)surfaceOperation:(NSString *)operation
+                                shapes:(NSArray<OCCTShape *> *)shapes
+                            parameters:(NSData *)parameters
+                             tolerance:(double)tolerance
+                         requireClosed:(BOOL)requireClosed
+                                status:(OCCTOpStatus *)status
+    NS_SWIFT_NAME(surfaceOperation(_:shapes:parameters:tolerance:requireClosed:status:));
+/// Actual surface D2: P, dU, dV, dUU, dUV, dVV (18 doubles). The
+/// requested UV must lie inside the actual trimmed face. No finite differences.
++ (nullable NSData *)surfaceDifferential:(OCCTShape *)shape faceIndex:(NSInteger)faceIndex
+                                      u:(double)u v:(double)v
+    NS_SWIFT_NAME(surfaceDifferential(_:faceIndex:u:v:));
+/// Real topological closure, independent from a builder's IsDone flag.
++ (NSDictionary<NSString *, id> *)surfaceDiagnostics:(OCCTShape *)shape;
+
 /// Loft through ordered section profiles, each on its own plane.
 ///
 /// `sections` is one dictionary-free parallel set of arrays: every index i
@@ -640,7 +666,7 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 /// axisPoint xyz` — in 1-based indexed-map order. `kindCode`: 0 planar
 /// (`extra` = plane offset n·centroid), 1 cylindrical (`normal` = axis
 /// direction, `extra` = radius, `axisPoint` = the cylinder's OWN analytic
-/// axis placement point), 2 other (`extra` = 0, `axisPoint` = 0,0,0).
+/// axis placement point), 2 native surface (`extra` = GeomAbs_SurfaceType, `axisPoint` = 0,0,0).
 /// Face-orientation is honoured, so a planar normal points OUT of the solid.
 /// This is the identity source for bodies whose RENDER is not the kernel
 /// tessellation (revolve/sweep/loft assign their brep) — the mesh-table
@@ -650,6 +676,17 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 /// not its axis on a partial face: it is the exact point a construction axis
 /// must be built on (M08 R2), never a centroid/bbox substitute.
 + (nullable NSData *)faceInfoOfShape:(OCCTShape *)shape;
+/// Exact trimmed interior sample (three doubles), nil when none is provable.
++ (nullable NSData *)faceSampleOfShape:(OCCTShape *)shape index:(NSInteger)index;
+/// Per-input-face offsets through OCCT's own intersection/arc join engine.
+/// Indices are int32, thicknesses doubles. Input remains independent of output.
++ (nullable OCCTShape *)regionShelledShape:(OCCTShape *)shape
+                          openFaceIndices:(NSData *)openFaces
+                                thickness:(double)thickness
+                        regionFaceIndices:(NSData *)regionFaces
+                        regionThicknesses:(NSData *)regionThicknesses
+                                   status:(nullable OCCTOpStatus *)status
+                                  history:(nullable OCCTShapeHistory *)history;
 
 /// The plane's intersection with the shape (`BRepAlgoAPI_Section`), as
 /// packed doubles: per section edge `count, x1 y1 z1, … xN yN zN` in the
@@ -660,6 +697,18 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 + (nullable NSData *)sectionOfShape:(OCCTShape *)shape
                               plane:(NSData *)plane
                          deflection:(double)deflection;
+
+/// Exact B-rep edge/face visibility, with all placed sources in ONE HLR run
+/// (including inter-part occlusion). No triangulation is consulted. `frame`
+/// contains nine doubles: origin, viewing normal, in-plane x axis. Returns
+/// versioned JSON edge records with sourceIndex, hidden, role and analytic
+/// line/circle/arc or chord-bounded polyline geometry in projector XY. Nil on
+/// invalid input, kernel/discretization failure or budget exhaustion; [] is
+/// a successful empty view. Smooth seams/iso-lines are not drafting edges.
++ (nullable NSData *)hiddenLineProjectionOfShapes:(NSArray<OCCTShape *> *)shapes
+                                           frame:(NSData *)frame
+                                      deflection:(double)deflection
+    NS_SWIFT_NAME(hiddenLineProjection(shapes:frame:deflection:));
 
 /// Every edge with exactly two distinct adjacent faces, as packed int32
 /// triples `(edgeIndex, faceA, faceB)` — 1-based indexed-map numbering

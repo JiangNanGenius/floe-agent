@@ -12,8 +12,8 @@
 //  authoring identity when several features exist, and genuinely ambiguous
 //  authorship is reported rather than guessed).
 //
-//  E12 (hidden-line classification), E14 (hatching/complex sections) and the
-//  other separate acceptance ids are deliberately NOT claimed here.
+//  The historical cases below cover E11/E13/E15. The appended E12/E14
+//  component tests do not claim independent-CAD or presented-UI acceptance.
 //
 
 import XCTest
@@ -936,3 +936,346 @@ final class CADDrawingMultiViewAssociativityTests: XCTestCase {
         document.close()
     }
 }
+
+// E12/E14 source packet: these tests require the pinned native OCCT archive.
+// They are component behavior tests, not independent-CAD or presented-UI proof.
+extension CADDrawingMultiViewAssociativityTests {
+    func testExactHLRMutualOcclusionHiddenStyleAndReopen() async throws {
+        let small = try XCTUnwrap(OCCTKernel.primitiveShape(
+            .box(width: 10, depth: 10, height: 4), placement: .identity))
+        let cover = try XCTUnwrap(OCCTKernel.primitiveShape(
+            .box(width: 40, depth: 40, height: 4),
+            placement: Transform3D(translation: SIMD3(0, 0, 50))))
+        let alone = try XCTUnwrap(OCCTKernel.hiddenLineProjection([small],
+            normal: SIMD3(0, 0, 1), xAxis: SIMD3(1, 0, 0)))
+        XCTAssertTrue(alone.contains { !$0.hidden })
+        let together = try XCTUnwrap(OCCTKernel.hiddenLineProjection([small, cover],
+            normal: SIMD3(0, 0, 1), xAxis: SIMD3(1, 0, 0)))
+        XCTAssertTrue(together.contains { $0.sourceIndex == 0 && $0.hidden })
+        XCTAssertFalse(together.contains { $0.sourceIndex == 0 && !$0.hidden },
+                       "A larger nearer B-rep must hide the OTHER body's edges")
+        XCTAssertTrue(together.contains { $0.sourceIndex == 1 && !$0.hidden })
+
+        let document = try await makeDocument("E12-HLR")
+        let fixture = try makePlateWithHole(document)
+        let service = CADDrawingService(document: document)
+        let created = service.handle(action: "addPage", args: [
+            "name": "Occluded bore", "kind": "side", "bodyIDs": [fixture.bodyID],
+            "viewNormal": [0.0, 0.0, 1.0], "viewUp": [1.0, 0.0, 0.0],
+            "showDimensions": false, "showCenterlines": false,
+        ])
+        XCTAssertEqual(created["ok"] as? Bool, true, "\(created)")
+        let page = try XCTUnwrap(created["page"] as? [String: Any])
+        let pageID = try XCTUnwrap(page["id"] as? String)
+        let id = try XCTUnwrap(UUID(uuidString: pageID))
+        let viewID = try XCTUnwrap((page["views"] as? [[String: Any]])?.first?["id"] as? String)
+        XCTAssertEqual(viewID, pageID, "legacy view identity must be stable")
+        var geometry = service.pageGeometry(pageID: id)
+        XCTAssertEqual(geometry["projectionMethod"] as? String, "occt-brep-hlr")
+        XCTAssertEqual(geometry["projectionComplete"] as? Bool, true)
+        XCTAssertGreaterThan(geometry["hiddenEdgeCount"] as? Int ?? 0, 0)
+        let hidden = (geometry["entities"] as? [[String: Any]] ?? []).filter { $0["layer"] as? String == "hidden" }
+        XCTAssertFalse(hidden.isEmpty, "the occluded curved bore must have classified drawing edges")
+        let visibleBefore = (geometry["entities"] as? [[String: Any]] ?? []).filter { $0["layer"] as? String != "hidden" }
+        let dxf = String(decoding: try service.exportData(pageID: id, format: "dxf"), as: UTF8.self)
+        XCTAssertTrue(dxf.contains("0\nLTYPE\n2\nHIDDEN\n"))
+        XCTAssertTrue(dxf.contains("49\n2\n49\n-1\n"))
+        XCTAssertTrue(dxf.contains("8\nHIDDEN\n"))
+        let svg = String(decoding: try service.exportData(pageID: id, format: "svg"), as: UTF8.self)
+        XCTAssertTrue(svg.contains("id=\"HIDDEN\""))
+        XCTAssertTrue(svg.contains("stroke-dasharray=\"2 1\""))
+        let toggle = service.handle(action: "updateView", args: [
+            "pageID": pageID, "viewID": viewID, "showHiddenLines": false,
+        ])
+        XCTAssertEqual(toggle["ok"] as? Bool, true, "\(toggle)")
+        geometry = service.pageGeometry(pageID: id)
+        let offEntities = geometry["entities"] as? [[String: Any]] ?? []
+        XCTAssertFalse(offEntities.contains { $0["layer"] as? String == "hidden" })
+        XCTAssertEqual(offEntities.count, visibleBefore.count)
+        XCTAssertGreaterThan(geometry["hiddenEdgeCount"] as? Int ?? 0, 0,
+                             "hiding ink must not erase the actual classification")
+        let undo = CADParameterService(document: document).handle(action: "undo", args: [:])
+        XCTAssertEqual(undo["ok"] as? Bool, true)
+        XCTAssertTrue((service.pageGeometry(pageID: id)["entities"] as? [[String: Any]] ?? [])
+            .contains { $0["layer"] as? String == "hidden" })
+        let redo = CADParameterService(document: document).handle(action: "redo", args: [:])
+        XCTAssertEqual(redo["ok"] as? Bool, true)
+        let save = await document.save()
+        XCTAssertTrue(save.succeeded, save.error ?? "")
+        document.close()
+        let reopened = try await FloeCADDocument.open(at: document.url)
+        defer { reopened.close() }
+        let reopenedService = CADDrawingService(document: reopened)
+        geometry = reopenedService.pageGeometry(pageID: id)
+        XCTAssertFalse((geometry["entities"] as? [[String: Any]] ?? []).contains { $0["layer"] as? String == "hidden" })
+        let again = reopenedService.handle(action: "updateView", args: [
+            "pageID": pageID, "viewID": viewID, "showHiddenLines": true,
+            "viewNormal": [0.0, 1.0, 0.0], "viewUp": [1.0, 0.0, 0.0],
+        ])
+        XCTAssertEqual(again["ok"] as? Bool, true, "\(again)")
+        let circles = reopenedService.pageGeometry(pageID: id)["entities"] as? [[String: Any]] ?? []
+        XCTAssertTrue(circles.contains { row in
+            row["kind"] as? String == "circle" && abs((row["radius"] as? Double ?? 0) - 5) < 1e-8
+        }, "the through bore must remain an analytic R5 circle, not mesh chords")
+        let exactBody = try XCTUnwrap(reopened.session.document.bodies.first { $0.id.raw.uuidString == fixture.bodyID })
+        let mesh = Body(name: "Mesh preview only", transform: exactBody.transform,
+                        primitive: nil, render: exactBody.render, revision: exactBody.meshRevision &+ 1)
+        reopened.session.perform(AddBodyCommand(body: mesh, title: "Mesh-only source"))
+        let meshPage = reopenedService.handle(action: "addPage", args: [
+            "kind": "front", "name": "Unclassified", "bodyIDs": [mesh.id.raw.uuidString],
+        ])
+        let meshPageID = try XCTUnwrap(UUID(uuidString: (meshPage["page"] as? [String: Any])?["id"] as? String ?? ""))
+        let approximate = reopenedService.pageGeometry(pageID: meshPageID)
+        XCTAssertEqual(approximate["projectionMethod"] as? String, "mesh-unclassified")
+        XCTAssertEqual(approximate["projectionComplete"] as? Bool, false)
+        XCTAssertEqual(approximate["outputBlocked"] as? Bool, true)
+        XCTAssertThrowsError(try reopenedService.exportData(pageID: meshPageID, format: "dxf")) { error in
+            XCTAssertEqual((error as? CADDocumentError)?.code, "incomplete_projection")
+        }
+    }
+
+    func testMaterialHatchesSteppedCutMarkerUndoAndReopen() async throws {
+        // Even-odd fixture deliberately gives outer and inner wires the SAME
+        // winding. Hole preservation must not depend on that orientation.
+        let outer = SectionLoop(closed: true, points: [SIMD2(0, 0), SIMD2(20, 0), SIMD2(20, 20), SIMD2(0, 20)], area: 400)
+        let inner = SectionLoop(closed: true, points: [SIMD2(8, 8), SIMD2(12, 8), SIMD2(12, 12), SIMD2(8, 12)], area: 16)
+        let strokes = try XCTUnwrap(CADDrawingSectionDrafting.hatches(loops: [outer, inner], angleDegrees: 0, spacingMM: 1))
+        XCTAssertTrue(strokes.contains { abs($0.0.y - 10) < 1e-8 })
+        for (a, b) in strokes where abs(a.y - 10) < 1e-8 {
+            XCTAssertTrue(max(a.x, b.x) <= 8 + 1e-8 || min(a.x, b.x) >= 12 - 1e-8,
+                          "no section hatch may cross the bore")
+        }
+        let document = try await makeDocument("E14-offset")
+        let fixture = try makePlateWithHole(document)
+        // A real curved second part: unlike a uniform extrusion, its section
+        // changes when the offset plane moves, giving an actual cut witness.
+        let sphereBody = BodyID()
+        let sphere = FeatureNode(name: "Brass sphere", kind: .primitive(
+            spec: .sphere(radius: 20), placement: Transform3D(translation: SIMD3(130, 0, 30))),
+            outputBodyIDs: [sphereBody])
+        document.session.recordAndRebuild([sphere], title: "Second material")
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty)
+        let secondID = sphereBody.raw.uuidString
+        for (bodyID, materialID) in [(fixture.bodyID, "steel"), (secondID, "brass")] {
+            let body = try XCTUnwrap(document.session.document.bodies.first { $0.id.raw.uuidString == bodyID })
+            var material = BodyMaterialSpec.default
+            material.materialID = materialID; material.materialName = materialID.capitalized
+            document.session.perform(SetMaterialCommand(bodyIDs: [body.id], material: material,
+                                                       document: document.session.document))
+        }
+        let assembly = CADAssemblyService(document: document)
+        for bodyID in [fixture.bodyID, secondID] {
+            let instance = assembly.handle(action: "addInstance", args: ["bodyID": bodyID])
+            XCTAssertEqual(instance["ok"] as? Bool, true, "\(instance)")
+        }
+        let service = CADDrawingService(document: document)
+        let created = service.handle(action: "multiViewSheet", args: [
+            "bodyIDs": [fixture.bodyID, secondID], "assemblyMode": true,
+            "sectionOrigin": [0.0, 5.0, 30.0],
+            "sectionNormal": [0.0, 1.0, 0.0], "showDimensions": false, "showCenterlines": false,
+        ])
+        XCTAssertEqual(created["ok"] as? Bool, true, "\(created)")
+        let page = try XCTUnwrap(created["page"] as? [String: Any])
+        let pageID = try XCTUnwrap(page["id"] as? String), id = try XCTUnwrap(UUID(uuidString: pageID))
+        let views = try XCTUnwrap(page["views"] as? [[String: Any]])
+        let cutID = try XCTUnwrap(views.first { $0["kind"] as? String == "section" }?["id"] as? String)
+        let parentID = try XCTUnwrap(views.first { $0["kind"] as? String != "section" }?["id"] as? String)
+        let parentEdit = service.handle(action: "updateView", args: [
+            "pageID": pageID, "viewID": parentID, "viewNormal": [0.0, 0.0, 1.0],
+            "viewUp": [1.0, 0.0, 0.0],
+        ])
+        XCTAssertEqual(parentEdit["ok"] as? Bool, true)
+        let path: [String: Any] = ["referenceViewID": parentID, "label": "B",
+            "points": [[0.0,5.0,30.0], [110.0,5.0,30.0], [110.0,7.0,30.0], [150.0,7.0,30.0]]]
+        let edit = service.handle(action: "updateView", args: [
+            "pageID": pageID, "viewID": cutID, "sectionPath": path,
+            "sectionHatches": [
+                ["materialID": "steel", "angleDegrees": 45.0, "spacingMM": 2.0, "enabled": true],
+                ["materialID": "brass", "angleDegrees": -45.0, "spacingMM": 3.0, "enabled": true],
+            ],
+        ])
+        XCTAssertEqual(edit["ok"] as? Bool, true, "\(edit)")
+        var geometry = service.pageGeometry(pageID: id)
+        XCTAssertEqual(geometry["sectionComplete"] as? Bool, true, "\(geometry)")
+        XCTAssertEqual(geometry["outputBlocked"] as? Bool, false)
+        let cutRow = try XCTUnwrap((geometry["views"] as? [[String: Any]])?.first { $0["id"] as? String == cutID })
+        XCTAssertEqual(cutRow["projectionMethod"] as? String, "occt-brep-offset-section")
+        let hatches = (geometry["entities"] as? [[String: Any]] ?? []).filter { $0["layer"] as? String == "hatch" }
+        XCTAssertGreaterThan(hatches.count, 10)
+        let slopes = hatches.compactMap { row -> Double? in
+            guard let a = row["a"] as? [Double], let b = row["b"] as? [Double], a.count == 2, b.count == 2,
+                  abs(b[0] - a[0]) > 1e-8 else { return nil }
+            return (b[1] - a[1]) / (b[0] - a[0])
+        }
+        XCTAssertTrue(slopes.contains { abs($0 - 1) < 1e-6 })
+        XCTAssertTrue(slopes.contains { abs($0 + 1) < 1e-6 })
+        let texts = geometry["texts"] as? [[String: Any]] ?? []
+        XCTAssertEqual(texts.filter { $0["text"] as? String == "B" }.count, 2)
+        XCTAssertTrue(texts.contains { $0["text"] as? String == "B–B" })
+        let marker = try XCTUnwrap((geometry["entities"] as? [[String: Any]])?.first {
+            $0["layer"] as? String == "section-mark" && $0["kind"] as? String == "polyline"
+        })
+        let markPoints = try XCTUnwrap(marker["points"] as? [[Double]])
+        XCTAssertEqual(markPoints.count, 4)
+        XCTAssertEqual(markPoints[2][1] - markPoints[1][1], 2, accuracy: 1e-6,
+                       "the two-mm riser must exist in actual parent-view linework")
+        let svg = String(decoding: try service.exportData(pageID: id, format: "svg"), as: UTF8.self)
+        let dxf = String(decoding: try service.exportData(pageID: id, format: "dxf"), as: UTF8.self)
+        XCTAssertTrue(svg.contains("id=\"HATCH\"")); XCTAssertTrue(svg.contains("B–B"))
+        XCTAssertTrue(dxf.contains("8\nHATCH\n")); XCTAssertTrue(dxf.contains("8\nSECTION_MARKS\n"))
+
+        // Changing the path changes BOTH actual stepped cut data and labels;
+        // undo restores the one record, including its generated marker.
+        var changedPath = path; changedPath["label"] = "C"
+        changedPath["points"] = [[0.0,5.0,30.0], [110.0,5.0,30.0], [110.0,8.0,30.0], [150.0,8.0,30.0]]
+        let changed = service.handle(action: "updateView", args: ["pageID": pageID, "viewID": cutID, "sectionPath": changedPath])
+        XCTAssertEqual(changed["ok"] as? Bool, true)
+        let changedGeometry = service.pageGeometry(pageID: id)
+        XCTAssertTrue((changedGeometry["texts"] as? [[String: Any]] ?? []).contains { $0["text"] as? String == "C–C" })
+        let beforeBounds = try XCTUnwrap(cutRow["localBounds"] as? [[Double]])
+        let afterRow = try XCTUnwrap((changedGeometry["views"] as? [[String: Any]])?.first { $0["id"] as? String == cutID })
+        let afterBounds = try XCTUnwrap(afterRow["localBounds"] as? [[Double]])
+        XCTAssertGreaterThan(afterBounds[1][0], beforeBounds[1][0] + 0.3,
+                             "sphere center y20: moving the actual cut from y7 to y8 increases its projected radius")
+        XCTAssertEqual(CADParameterService(document: document).handle(action: "undo", args: [:])["ok"] as? Bool, true)
+        geometry = service.pageGeometry(pageID: id)
+        XCTAssertTrue((geometry["texts"] as? [[String: Any]] ?? []).contains { $0["text"] as? String == "B–B" })
+        let badPath: [String: Any] = ["referenceViewID": parentID, "label": "X",
+            "points": [[0.0,5.0,30.0], [100.0,7.0,30.0]]]
+        let before = document.session.document.drawingsData
+        let rejected = service.handle(action: "updateView", args: ["pageID": pageID, "viewID": cutID, "sectionPath": badPath])
+        XCTAssertEqual(rejected["error"] as? String, "unsupported_section_path")
+        XCTAssertEqual(document.session.document.drawingsData, before)
+        let save = await document.save(); XCTAssertTrue(save.succeeded, save.error ?? "")
+        document.close()
+        let reopened = try await FloeCADDocument.open(at: document.url)
+        defer { reopened.close() }
+        let reopenedService = CADDrawingService(document: reopened)
+        geometry = reopenedService.pageGeometry(pageID: id)
+        XCTAssertEqual(geometry["sectionComplete"] as? Bool, true)
+        XCTAssertTrue((geometry["texts"] as? [[String: Any]] ?? []).contains { $0["text"] as? String == "B–B" })
+        let savedSet = try CADDrawingSet.decode(from: reopened.session.document.drawingsData)
+        let savedCut = try XCTUnwrap(savedSet.pages.first?.sheetViews?.first { $0.id.uuidString == cutID })
+        XCTAssertEqual(savedCut.sectionPath?.points[2].y, 7)
+        XCTAssertEqual(savedCut.sectionHatches.map(\.spacingMM), [2, 3])
+        XCTAssertEqual(savedSet.schemaVersion, 6)
+    }
+}
+
+
+#if DEBUG
+private nonisolated final class DrawingProjectionTestLatch: @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var mainThread = true
+    func pause() {
+        lock.lock(); mainThread = Thread.isMainThread; lock.unlock()
+        entered.signal()
+        _ = release.wait(timeout: .now() + 10)
+    }
+    var ranOnMainThread: Bool {
+        lock.lock(); defer { lock.unlock() }; return mainThread
+    }
+}
+
+extension CADDrawingMultiViewAssociativityTests {
+    private func awaitWorker(_ latch: DrawingProjectionTestLatch) async -> Bool {
+        await Task.detached { latch.entered.wait(timeout: .now() + 10) == .success }.value
+    }
+
+    func testDrawingWorkerRunsOffMainAndDiscardsCancellation() async throws {
+        let document = try await makeDocument("E12-worker-cancel")
+        defer { document.close() }
+        let fixture = try makePlateWithHole(document)
+        let service = CADDrawingService(document: document)
+        let created = service.handle(action: "addPage", args: [
+            "kind": "front", "name": "Worker", "bodyIDs": [fixture.bodyID],
+        ])
+        let id = try XCTUnwrap(UUID(uuidString: (created["page"] as? [String: Any])?["id"] as? String ?? ""))
+        let original = document.session.document.drawingsData
+        let latch = DrawingProjectionTestLatch()
+        CADDrawingService.testProjectionWorkerProbe = { latch.pause() }
+        defer {
+            CADDrawingService.testProjectionWorkerProbe = nil
+            CADDrawingService.testProjectionBeforeCommitProbe = nil
+            latch.release.signal()
+        }
+        let request = Task { @MainActor in
+            let reply = await service.handleAsync(action: "project", args: ["pageID": id.uuidString])
+            return (try? JSONSerialization.data(withJSONObject: reply)) ?? Data()
+        }
+        let entered = await awaitWorker(latch)
+        XCTAssertTrue(entered, "real serial drawing worker never entered")
+        XCTAssertFalse(latch.ranOnMainThread)
+        // This continuation runs while the native worker is held. If projection
+        // had remained synchronous MainActor code it could never get here.
+        XCTAssertTrue(Thread.isMainThread)
+        request.cancel()
+        latch.release.signal()
+        let replyBytes = await request.value
+        let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: replyBytes) as? [String: Any])
+        XCTAssertEqual(reply["error"] as? String, "drawing_cancelled", "\(reply)")
+        XCTAssertEqual(document.session.document.drawingsData, original,
+                       "cancelled projection may not publish even cache metadata")
+        CADDrawingService.testProjectionWorkerProbe = nil
+        let next = await service.pageGeometryAsync(pageID: id)
+        XCTAssertEqual(next["projectionMethod"] as? String, "occt-brep-hlr")
+        XCTAssertEqual(next["projectionComplete"] as? Bool, true)
+        XCTAssertGreaterThan(next["visibleEdgeCount"] as? Int ?? 0, 0)
+        XCTAssertFalse((next["entities"] as? [[String: Any]] ?? []).isEmpty)
+    }
+
+    func testDrawingWorkerRejectsChangedRevisionAndClosedOwner() async throws {
+        let document = try await makeDocument("E14-worker-fence")
+        defer { document.close() }
+        let fixture = try makePlateWithHole(document)
+        let service = CADDrawingService(document: document)
+        let created = service.handle(action: "addPage", args: [
+            "kind": "front", "name": "Fence", "bodyIDs": [fixture.bodyID],
+        ])
+        let id = try XCTUnwrap(UUID(uuidString: (created["page"] as? [String: Any])?["id"] as? String ?? ""))
+        let latch = DrawingProjectionTestLatch()
+        CADDrawingService.testProjectionBeforeCommitProbe = { latch.pause() }
+        defer {
+            CADDrawingService.testProjectionWorkerProbe = nil
+            CADDrawingService.testProjectionBeforeCommitProbe = nil
+            latch.release.signal()
+        }
+        let request = Task { @MainActor in
+            let reply = await service.pageGeometryAsync(pageID: id)
+            return (try? JSONSerialization.data(withJSONObject: reply)) ?? Data()
+        }
+        let entered = await awaitWorker(latch)
+        XCTAssertTrue(entered, "real projection never reached the post-compute fence")
+        XCTAssertFalse(latch.ranOnMainThread)
+        let edit = service.handle(action: "updatePage", args: ["pageID": id.uuidString, "title": "New revision"])
+        XCTAssertEqual(edit["ok"] as? Bool, true)
+        let edited = document.session.document.drawingsData
+        latch.release.signal()
+        let rejectedBytes = await request.value
+        let rejected = try XCTUnwrap(JSONSerialization.jsonObject(with: rejectedBytes) as? [String: Any])
+        XCTAssertEqual(rejected["error"] as? String, "drawing_source_changed", "\(rejected)")
+        XCTAssertEqual(document.session.document.drawingsData, edited)
+
+        let closedLatch = DrawingProjectionTestLatch()
+        CADDrawingService.testProjectionBeforeCommitProbe = { closedLatch.pause() }
+        let closing = Task { @MainActor in
+            let reply = await service.pageGeometryAsync(pageID: id)
+            return (try? JSONSerialization.data(withJSONObject: reply)) ?? Data()
+        }
+        let closeEntered = await awaitWorker(closedLatch)
+        XCTAssertTrue(closeEntered)
+        document.close()
+        let replacement = try await makeDocument("Replacement owner")
+        defer { replacement.close(); closedLatch.release.signal() }
+        let replacementBytes = replacement.session.document.drawingsData
+        closedLatch.release.signal()
+        let closedBytes = await closing.value
+        let closed = try XCTUnwrap(JSONSerialization.jsonObject(with: closedBytes) as? [String: Any])
+        XCTAssertEqual(closed["error"] as? String, "document_closed", "\(closed)")
+        XCTAssertEqual(replacement.session.document.drawingsData, replacementBytes,
+                       "an old document result cannot publish into the replacement owner")
+    }
+}
+#endif

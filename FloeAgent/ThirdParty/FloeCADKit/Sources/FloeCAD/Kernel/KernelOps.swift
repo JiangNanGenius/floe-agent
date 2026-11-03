@@ -384,12 +384,13 @@ nonisolated extension KernelOps {
         p1: SIMD3<Double>,
         normalA: SIMD3<Double>,
         normalB: SIMD3<Double>,
-        setback: Double
+        setback: Double,
+        isCancelled: @escaping @Sendable () -> Bool = { false }
     ) -> Euclid.Mesh {
         blendEdges(
             mesh: mesh,
             edges: [BlendEdgeSpec(p0: p0, p1: p1, normalA: normalA, normalB: normalB)],
-            amount: setback, isFillet: false)
+            amount: setback, isFillet: false, isCancelled: isCancelled)
     }
 
     /// Fillet (round) a single convex straight edge to `radius`. Subtracts the
@@ -425,7 +426,8 @@ nonisolated extension KernelOps {
         mesh: Euclid.Mesh,
         edges: [BlendEdgeSpec],
         amount: Double,
-        isFillet: Bool
+        isFillet: Bool,
+        isCancelled: @escaping @Sendable () -> Bool = { false }
     ) -> Euclid.Mesh {
         func finite(_ value: SIMD3<Double>) -> Bool {
             value.x.isFinite && value.y.isFinite && value.z.isFinite
@@ -452,6 +454,7 @@ nonisolated extension KernelOps {
                 return Euclid.Mesh([])
             }
             for chain in chains {
+                guard !isCancelled() else { return Euclid.Mesh([]) }
                 let tool: Euclid.Mesh?
                 if chain.segments.count == 1 {
                     let s = chain.segments[0]
@@ -482,8 +485,9 @@ nonisolated extension KernelOps {
                 // The whole point of the convex/concave split: a convex blend
                 // takes the corner AWAY, a concave one FILLS it in.
                 result = convex
-                    ? result.subtracting(tool).makeWatertight()
-                    : result.union(tool).makeWatertight()
+                    ? result.subtracting(tool, isCancelled: isCancelled).makeWatertight(isCancelled: isCancelled)
+                    : result.union(tool, isCancelled: isCancelled).makeWatertight(isCancelled: isCancelled)
+                guard !isCancelled() else { return Euclid.Mesh([]) }
             }
         }
         return result

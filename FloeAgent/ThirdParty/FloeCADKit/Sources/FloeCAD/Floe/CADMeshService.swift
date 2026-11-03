@@ -335,7 +335,7 @@ public final class CADMeshService {
     public nonisolated static let actions: [String] = [
         "combine", "boolean", "transform", "recomputeNormals",
         "repair", "simplify", "material", "image", "boundary", "text",
-    ]
+    ] + CADPolygonMeshService.actions
     public nonisolated static let advertisedActions: [String] = actions.filter { $0 != "text" }
 
     private let document: FloeCADDocument
@@ -389,6 +389,10 @@ public final class CADMeshService {
     /// the caller's actor. A caller cancellation is still observed at every
     /// service boundary and before the one commit.
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
+        if CADPolygonMeshService.actions.contains(action) {
+            if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "mesh", action: action) { return refusal }
+            return CADPolygonMeshService(document: document).handle(action: action, args: args)
+        }
         let cancellation = CADMeshCancellation()
         if Task.isCancelled { cancellation.cancel() }
         return handle(action: action, args: args, cancellation: cancellation)
@@ -400,7 +404,11 @@ public final class CADMeshService {
     /// The caller's task cancellation flips the thread-safe token immediately
     /// and cancels the joined worker; a late result is discarded before commit.
     public func handleAsync(action: String, args: [String: Any]) async -> [String: Any] {
-        await handleAsync(action: action, args: args, cancellation: CADMeshCancellation())
+        if CADPolygonMeshService.actions.contains(action) {
+            if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "mesh", action: action) { return refusal }
+            return await CADPolygonMeshService(document: document).handleAsync(action: action, args: args)
+        }
+        return await handleAsync(action: action, args: args, cancellation: CADMeshCancellation())
     }
 
     func handleAsync(action: String, args: [String: Any],
@@ -462,7 +470,8 @@ public final class CADMeshService {
     /// The visible panel and document close use this owner-level path.
     @discardableResult
     static func cancelActiveOperation(for document: FloeCADDocument) -> Bool {
-        guard let run = activeRuns[ObjectIdentifier(document)] else { return false }
+        let polygonCancelled = CADPolygonMeshService.cancelActiveOperation(for: document)
+        guard let run = activeRuns[ObjectIdentifier(document)] else { return polygonCancelled }
         run.cancel()
         return true
     }
@@ -470,7 +479,11 @@ public final class CADMeshService {
     /// Current progress identity for the one active operation, or nil. The
     /// service (not a view) owns this state.
     func activeOperationStatus() -> [String: Any]? {
-        guard let run = Self.activeRuns[ObjectIdentifier(document)] else { return nil }
+        if let polygon = CADPolygonMeshService.activeOperationStatus(for: document),
+           polygon["cancelRequested"] as? Bool == false { return polygon }
+        guard let run = Self.activeRuns[ObjectIdentifier(document)] else {
+            return CADPolygonMeshService.activeOperationStatus(for: document)
+        }
         return ["ok": true,
                 "active": true,
                 "action": run.action,
@@ -480,6 +493,7 @@ public final class CADMeshService {
 
     private func beginRun(action: String,
                           cancellation: CADMeshCancellation) -> CADMeshOperationRun {
+        _ = CADPolygonMeshService.cancelActiveOperation(for: document)
         let key = ObjectIdentifier(document)
         Self.activeRuns[key]?.cancel()
         let run = CADMeshOperationRun(documentKey: key,

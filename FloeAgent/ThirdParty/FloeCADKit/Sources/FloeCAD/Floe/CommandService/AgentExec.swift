@@ -66,6 +66,11 @@ nonisolated struct LoftSection: Sendable, Equatable {
     let seed: SIMD2<Double>
 }
 
+nonisolated struct ShellRegionInput: Sendable, Equatable {
+    var face: Int
+    var thickness: Double
+}
+
 nonisolated enum AgentExecOp: Sendable, Equatable {
     case createSketch(name: String, plane: SketchPlane)
     /// Import a mesh file (glb/gltf/usdz/obj/zip) from a path on the host
@@ -120,7 +125,7 @@ nonisolated enum AgentExecOp: Sendable, Equatable {
     case blend(body: BodyID, isFillet: Bool, amount: Double, edges: [Int], advanced: AdvancedBlendDefinition? = nil, flip: Bool = false)
     /// Open faces are 1-based kernel face indices from `GET /v1/faces?body=`;
     /// EMPTY means a fully-enclosed hollow.
-    case shell(body: BodyID, thickness: Double, openFaces: [Int])
+    case shell(body: BodyID, thickness: Double, openFaces: [Int], regions: [ShellRegionInput] = [])
     /// Spine points are WORLD-space mm, ≥2 — the same representation
     /// `FeatureKind.sweep` stores (a sweep's path is routinely drawn on a
     /// different plane than its profile, so plane-local would be ambiguous).
@@ -712,8 +717,32 @@ nonisolated enum AgentExec {
             }
             // Empty (or absent) openFaces = a fully-enclosed hollow.
             let openFaces = try edgeIndices(a, "openFaces", allowEmpty: true)
+            var regions: [ShellRegionInput] = []
+            if let raw = a["regions"] {
+                guard let rows = raw as? [[String: Any]], !rows.isEmpty, rows.count <= 128 else {
+                    return .failure(.init(code: "bad_regions", message: "regions must contain 1 to 128 face/thickness pairs."))
+                }
+                for row in rows {
+                    guard Set(row.keys) == ["face", "thickness"],
+                          let number = row["face"] as? NSNumber,
+                          CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite,
+                          number.doubleValue >= 1, number.doubleValue <= Double(Int32.max),
+                          number.doubleValue.rounded() == number.doubleValue else {
+                        return .failure(.init(code: "bad_regions", message: "Each wall region needs one existing face index."))
+                    }
+                    let wall = try double(row, "thickness")
+                    guard abs(wall) > 1e-6, (wall > 0) == (thickness > 0) else {
+                        return .failure(.init(code: "bad_regions", message: "Wall thicknesses must be non-zero and use the same side."))
+                    }
+                    regions.append(.init(face: number.intValue, thickness: wall))
+                }
+                guard Set(regions.map(\.face)).count == regions.count,
+                      Set(regions.map(\.face)).isDisjoint(with: Set(openFaces)) else {
+                    return .failure(.init(code: "bad_regions", message: "A wall face cannot repeat or also be an opening."))
+                }
+            }
             return .success(.shell(body: body, thickness: thickness,
-                                   openFaces: openFaces))
+                                   openFaces: openFaces, regions: regions))
         } catch let e as AgentExecError { return .failure(e) } catch { return .failure(unexpected) }
     }
 

@@ -506,16 +506,16 @@ final class CADCommandExecutor {
                     sections: sections.map {
                         execProfileRef(sketchID: $0.sketch, seed: $0.seed, in: session)
                     },
-                    boolean: intent),
+                    boolean: intent, definition:LoftDefinition()),
                 outputBodyIDs: [BodyID()]), on: viewModel)
 
         case let .blend(bodyID, isFillet, amount, edges, advanced, flip):
             return execBlend(body: bodyID, isFillet: isFillet, amount: amount,
                              edgeIndices: edges, advanced: advanced, flip: flip, on: viewModel)
 
-        case let .shell(bodyID, thickness, openFaces):
+        case let .shell(bodyID, thickness, openFaces, regions):
             return execShell(body: bodyID, thickness: thickness,
-                             openFaces: openFaces, on: viewModel)
+                             openFaces: openFaces, regions: regions, on: viewModel)
 
         case let .pushPull(bodyID, face, distance, radial):
             if radial { return execRadialOffset(body: bodyID, face: face, distance: distance, on: viewModel) }
@@ -1107,9 +1107,12 @@ final class CADCommandExecutor {
             case let .cylindrical(radius):
                 row["kind"] = "cylindrical"
                 row["radiusMM"] = radius
+            case let .nativeSurface(type):
+                row["kind"] = "native_surface"
+                row["surfaceType"] = type
+                row["referenceable"] = names[info.index]?.isStableFaceIdentity == true
             case nil:
-                // Torus/sphere/swept surfaces: listed for discovery, but a
-                // FaceRef cannot express them — say so up front.
+                // A missing/corrupt support record remains unreferenceable.
                 row["kind"] = "other"
                 row["referenceable"] = false
             }
@@ -1307,7 +1310,7 @@ final class CADCommandExecutor {
     /// feature.shell: open faces by kernel index, minted into FaceRefs with
     /// both signature and name.
     private func execShell(body bodyID: BodyID, thickness: Double,
-                           openFaces: [Int],
+                           openFaces: [Int], regions: [ShellRegionInput],
                            on viewModel: EditorViewModel) -> AgentResponse {
         let session = viewModel.session
         let context: (body: Body, brep: BRepHandle)
@@ -1321,15 +1324,23 @@ final class CADCommandExecutor {
         var ref = bodyRef(bodyID, session)
         let refs: [FaceRef]
         let prefix: [FeatureNode]
-        switch mintFaceRefs(openFaces, context: context, bodyRef: ref, session) {
+        switch mintFaceRefs(openFaces + regions.map(\.face), context: context, bodyRef: ref, session) {
         case let .ok(minted, owner, sources): refs = minted; ref = owner; prefix = sources
         case let .reply(reply): return reply
         }
-        let node = FeatureNode(
-            name: "Shell",
-            kind: .shell(body: ref, openFaces: refs,
-                         thickness: Expr(value: thickness)),
-            outputBodyIDs: [bodyID])
+        let openingRefs = Array(refs.prefix(openFaces.count))
+        let kind: FeatureKind
+        if regions.isEmpty { kind = .shell(body: ref, openFaces: openingRefs, thickness: Expr(value: thickness)) }
+        else {
+            let definition = ShellRegionDefinition(thickness: Expr(value: thickness),
+                regions: zip(refs.dropFirst(openFaces.count), regions).map {
+                    .init(face: $0.0, thickness: Expr(value: $0.1.thickness))
+                })
+            do { try definition.validate(body: ref, openFaces: openingRefs) }
+            catch { return .failure(422, "Unprocessable Entity", error: "bad_regions", message: error.localizedDescription) }
+            kind = .regionShell(body: ref, openFaces: openingRefs, definition: definition)
+        }
+        let node = FeatureNode(name: "Shell", kind: kind, outputBodyIDs: [bodyID])
         return record(node, on: viewModel, prefix: prefix)
     }
 
@@ -1587,9 +1598,7 @@ final class CADCommandExecutor {
             }
             guard let signature = info.signature else {
                 return .reply(.failure(409, "Conflict", error: "unreferenceable_face",
-                                       message: "Kernel face \(index) is a surface kind a FaceRef "
-                                              + "cannot express (torus/sphere/swept) — pick a planar "
-                                              + "or cylindrical face from /v1/faces."))
+                                       message: "The selected exact face has no readable support identity. Select it again."))
             }
             guard let name = names[index], name.isStableFaceIdentity else {
                 return .reply(.failure(409, "Conflict", error: "face_identity_unavailable",

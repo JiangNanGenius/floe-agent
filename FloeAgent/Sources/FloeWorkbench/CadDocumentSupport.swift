@@ -287,7 +287,26 @@ public enum CadNativeEditActions {
         "uv.read", "uv.seams", "uv.unwrap", "uv.pack", "uv.transform", "uv.createSet",
         "uv.activateSet", "uv.removeSet", "uv.status", "uv.cancel",
     ]
-    public static let parameters: Set<String> = [
+    /// Same parameters route; the engine validates geometry and transaction
+    /// ownership. Documentation and examples use the existing complete/paged
+    /// CadDocumentHelp protocol, not another model tool or grant path.
+    public static let loftSurface: Set<String> = [
+        "loft.describe","loft.create","loft.update","surface.catalog",
+        "surface.create","surface.update","surface.inspect",
+    ]
+    public static let loftSurfaceExamples: [String] = [
+        #"{"action":"loft.describe","feature_id":"30000000-0000-0000-0000-000000000001"}"#,
+        #"{"action":"loft.create","sections":[{"sketchID":{"raw":"10000000-0000-0000-0000-000000000001"},"entityIDs":["20000000-0000-0000-0000-000000000001"],"holeEntityIDs":[]},{"sketchID":{"raw":"10000000-0000-0000-0000-000000000002"},"entityIDs":["20000000-0000-0000-0000-000000000002"],"holeEntityIDs":[]}],"definition":{"version":1,"ruled":false}}"#,
+        #"{"action":"loft.update","feature_id":"30000000-0000-0000-0000-000000000001","changes":{"sections":[{"sketchID":{"raw":"10000000-0000-0000-0000-000000000002"},"entityIDs":["20000000-0000-0000-0000-000000000002"],"holeEntityIDs":[]},{"sketchID":{"raw":"10000000-0000-0000-0000-000000000001"},"entityIDs":["20000000-0000-0000-0000-000000000001"],"holeEntityIDs":[]}],"definition":{"version":1,"ruled":true}}}"#,
+        #"{"action":"surface.catalog"}"#,
+        #"{"action":"surface.create","definition":{"version":1,"operation":"loft","sections":[{"version":1,"segments":[{"sketchID":"10000000-0000-0000-0000-000000000001","entityID":"20000000-0000-0000-0000-000000000001","reversed":false}]},{"version":1,"segments":[{"sketchID":"10000000-0000-0000-0000-000000000002","entityID":"20000000-0000-0000-0000-000000000002","reversed":false}]}],"ruled":true}}"#,
+        #"{"action":"surface.create","definition":{"version":1,"operation":"trim","sources":[{"producer":{"raw":"30000000-0000-0000-0000-000000000001"},"bodyID":{"raw":"40000000-0000-0000-0000-000000000001"}}],"trim":{"uMin":0.2,"uMax":0.8,"vMin":0.2,"vMax":0.8}}}"#,
+        #"{"action":"surface.create","definition":{"version":1,"operation":"patch","sources":[{"producer":{"raw":"30000000-0000-0000-0000-000000000001"},"bodyID":{"raw":"40000000-0000-0000-0000-000000000001"}}]}}"#,
+        #"{"action":"surface.create","definition":{"version":1,"operation":"sew","sources":[{"producer":{"raw":"30000000-0000-0000-0000-000000000001"},"bodyID":{"raw":"40000000-0000-0000-0000-000000000001"}},{"producer":{"raw":"30000000-0000-0000-0000-000000000002"},"bodyID":{"raw":"40000000-0000-0000-0000-000000000002"}}],"requireClosed":false}}"#,
+        #"{"action":"surface.update","feature_id":"30000000-0000-0000-0000-000000000002","definition":{"version":1,"operation":"thicken","sources":[{"producer":{"raw":"30000000-0000-0000-0000-000000000001"},"bodyID":{"raw":"40000000-0000-0000-0000-000000000001"}}],"thickness":2}}"#,
+        #"{"action":"surface.inspect","body_id":"40000000-0000-0000-0000-000000000001"}"#,
+    ]
+    public static let parameters: Set<String> = Set<String>([
         "list", "update", "updateSketchEntity", "deleteSketchEntity",
         "trimSketchCurve", "extendSketchCurve", "offsetSketchCurve", "unlinkSketchOffset",
         "setSketchDimension", "removeSketchDimension",
@@ -304,7 +323,7 @@ public enum CadNativeEditActions {
         "datum.point.create", "datum.point.update", "datum.point.delete",
         "sketch.setSupport", "sketch.clearSupport",
         "undo", "redo",
-    ]
+    ]).union(loftSurface)
     /// Authored/read animation operations. `capture`/`export` are media
     /// operations handled by the host, not document mutations.
     public static let animationReads: Set<String> = [
@@ -614,7 +633,7 @@ public enum NativeCADCapabilityMatrix: Sendable {
                     + "exact B-rep bodies. Surface bodies support move/rotate/scale, material, "
                     + "save/reopen, undo and IGES re-export; solid boolean/fillet/shell and "
                     + "STEP export require closed solids, so surfaces are excluded there with "
-                    + "a truthful reason. No M17 surface authoring or IGES assembly metadata."),
+                    + "a truthful reason. Imported surfaces are not captured as graph-owned authoring inputs; native authored surfaces use the versioned parameters actions. No IGES assembly metadata."),
         FormatRow(format: "stl", aliases: [], geometryClass: "mesh",
                   create: false, import: true, view: true, edit: false,
                   export: ["stl", "obj", "obj_bundle", "3mf", "glb", "usdz"],
@@ -1485,6 +1504,39 @@ public enum CadServiceOperationCatalog: Sendable {
     ]
 
     private static let meshOperations: [Operation] = [
+        Operation(kind: "mesh", action: "topology.create", mutating: true,
+                  summary: "Create a polygon box with persistent vertex, edge and polygon-face identities.",
+                  arguments: [arg("width", "number"), arg("height", "number"), arg("depth", "number")], examples: []),
+        Operation(kind: "mesh", action: "topology.capture", mutating: true,
+                  summary: "Capture actual polygon boundaries as a new stored control cage; explicit forceMesh is required for analytic solids.",
+                  arguments: [arg("bodyID", "uuid", required: true), arg("forceMesh", "boolean")], examples: []),
+        Operation(kind: "mesh", action: "topology.inspect", mutating: false,
+                  summary: "Read stored cage identities, digest, modifier order and evaluated geometry counts.",
+                  arguments: [arg("bodyID", "uuid", required: true)], examples: []),
+        Operation(kind: "mesh", action: "topology.extrude", mutating: true,
+                  summary: "Extrude a named control face outward; refuse self-overlap and preserve the original on failure.",
+                  arguments: [arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("faceID", "uuid", required: true), arg("distance", "number", required: true)], examples: []),
+        Operation(kind: "mesh", action: "topology.inset", mutating: true,
+                  summary: "Inset a convex planar control polygon with exact edge distance; refuse collapsing edges.",
+                  arguments: [arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("faceID", "uuid", required: true), arg("distance", "number", required: true)], examples: []),
+        Operation(kind: "mesh", action: "topology.loopCut", mutating: true,
+                  summary: "Split the full quad edge ring by stable edge identity; triangles and poles refuse atomically.",
+                  arguments: [arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("edgeID", "uuid", required: true), arg("fraction", "number")], examples: []),
+        Operation(kind: "mesh", action: "topology.weld", mutating: true,
+                  summary: "Weld selected nearby vertices to the first ID; reject broken manifold fans, reversed faces and opened closed cages.",
+                  arguments: [arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("vertexIDs", "[uuid]", required: true), arg("tolerance", "number", required: true)], examples: []),
+        Operation(kind: "mesh", action: "modifier.add", mutating: true,
+                  summary: "Add Catmull-Clark subdivision, boundary/outside-plane mirror or one convex right-angle bevel to the non-destructive stack.",
+                  arguments: [arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("kind", "subdivision | mirror | bevel", required: true), arg("levels", "integer"), arg("axis", "0 | 1 | 2"), arg("offset", "number"), arg("edgeID", "uuid"), arg("width", "number")], examples: []),
+        Operation(kind: "mesh", action: "modifier.update", mutating: true,
+                  summary: "Enable, disable or update a modifier; incompatible geometry/order keeps the old model.",
+                  arguments: [arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("modifierID", "uuid", required: true), arg("enabled", "boolean"), arg("kind", "subdivision | mirror | bevel"), arg("levels", "integer"), arg("axis", "integer"), arg("offset", "number"), arg("edgeID", "uuid"), arg("width", "number")], examples: []),
+        Operation(kind: "mesh", action: "modifier.move", mutating: true,
+                  summary: "Move a modifier to a zero-based position, preserving its identity and control cage.",
+                  arguments: [arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("modifierID", "uuid", required: true), arg("index", "integer", required: true)], examples: []),
+        Operation(kind: "mesh", action: "modifier.remove", mutating: true,
+                  summary: "Remove one modifier without changing the control cage.",
+                  arguments: [arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("modifierID", "uuid", required: true)], examples: []),
         Operation(kind: "mesh", action: "combine", mutating: true,
                   summary: "Combine bodies into one new body.",
                   arguments: [arg("bodyIDs", "[uuid]", required: true, note: "alias bodyID; <= 32 bodies"),

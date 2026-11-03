@@ -213,6 +213,8 @@ nonisolated struct FaceSignature: Codable, Hashable, Sendable {
     nonisolated enum Kind: Codable, Hashable, Sendable {
         case planar
         case cylindrical(radius: Double)
+        /// Exact OCCT support type; only a qualified native face name may replay it.
+        case nativeSurface(type: Int)
     }
     var kind: Kind
     var normal: SIMD3<Double>

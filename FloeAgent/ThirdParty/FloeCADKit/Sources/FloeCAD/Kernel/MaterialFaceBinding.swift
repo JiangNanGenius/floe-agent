@@ -801,6 +801,7 @@ nonisolated extension OCCTKernel.KernelFaceInfo {
 nonisolated extension FaceSignature.Kind {
     var materialKindName: String {
         switch self {
+        case .nativeSurface(let type): return "nativeSurface:\(type)"
         case .planar: return "planar"
         case .cylindrical(let radius): return "cylindrical:\(radius)"
         }

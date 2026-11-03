@@ -622,7 +622,7 @@ final class FloeCAD3DBridge {
             let action = payload["action"] as? String ?? "pages"
             var args = payload
             args["action"] = nil
-            let reply = native.drawing.handle(action: action, args: args)
+            let reply = await native.drawing.handleAsync(action: action, args: args)
             return try jsonString(reply)
 
         case "script":
@@ -1407,7 +1407,7 @@ final class FloeCAD3DBridge {
                 throw error
             }
         }
-        switch document.nativeExportData(format: format, pageID: pageID) {
+        switch await document.nativeExportDataAsync(format: format, pageID: pageID) {
         case .success(let (data, note)):
             return NativeExportResult(data: data, note: note,
                                       revision: document.revision,

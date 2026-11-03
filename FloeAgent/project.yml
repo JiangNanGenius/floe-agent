@@ -1393,6 +1393,10 @@ targets:
       # legacy absolute axis) or a datum-point row raises the coordinated floor.
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeAxisFormatFloorTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADHoleFeatureTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADLoftSurfaceWorkflowTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADLoftSurfaceNativeEntryTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADShellRegionTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPolygonMeshTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADThreadEngineProbeTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPresentationUITests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyDrawingExtensionTests.swift

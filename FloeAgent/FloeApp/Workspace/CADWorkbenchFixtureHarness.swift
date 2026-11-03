@@ -214,6 +214,30 @@ enum CADQualificationFixture {
         }
     }
 
+    /// M17 native form fixture. Seeds two real open sketch lines ONLY.
+    /// No loft/surface/thickness command or callback is run by the fixture.
+    @MainActor
+    static func openSurfaceForm(reset: Bool) async throws -> FloeCADDocument {
+        let url=try fixtureURL("surface-form.floecad")
+        if reset,FileManager.default.fileExists(atPath:url.path) { try FileManager.default.removeItem(at:url) }
+        if FileManager.default.fileExists(atPath:url.path) { return try await FloeCADDocument.open(at:url) }
+        let document=try await FloeCADDocument.create(at:url,name:"Surface form")
+        do {
+            for (name,z) in [("Open A",0.0),("Open B",10.0)] {
+                let result=try run(document,"""
+                {"op":"sketch.create","args":{"name":"\(name)","origin":[0,0,\(z)],"xAxis":[1,0,0],"yAxis":[0,1,0]}}
+                """)
+                let sketch=try text(result,"sketchID")
+                _=try run(document,"""
+                {"op":"sketch.addEntities","args":{"sketchID":"\(sketch)","entities":[{"kind":"line","a":[0,0],"b":[20,0]}]}}
+                """)
+            }
+            let saved=await document.save()
+            guard saved.succeeded else { throw CADDocumentError(code:"fixture_save_failed",message:saved.error ?? "Surface input fixture save failed.") }
+            return document
+        } catch { document.close();throw error }
+    }
+
     /// M02 native UI fixture: a real closed arc+spline section (welded and
     /// G1-tangent at both junctions) with one driving radius, a locked arc
     /// centre and one real Extrude consuming it. This is a saved package built
@@ -856,6 +880,9 @@ struct CADWorkbenchFixtureHarness: View {
                 } else if arguments.contains("--ui-test-cad-exact-curves") {
                     document = try await CADExactCurveUIFixture.open(
                         reopen: arguments.contains("--ui-test-cad-exact-curves-reopen"))
+                } else if arguments.contains("--ui-test-cad-surface-form") {
+                    document=try await CADQualificationFixture.openSurfaceForm(
+                        reset:arguments.contains("--ui-test-cad-surface-form-reset"))
                 } else if arguments.contains("--ui-test-cad-sketch-loop") {
                     document = try await CADQualificationFixture.openSplineLoop()
                 } else if arguments.contains("--ui-test-cad-sketch-conflict") {

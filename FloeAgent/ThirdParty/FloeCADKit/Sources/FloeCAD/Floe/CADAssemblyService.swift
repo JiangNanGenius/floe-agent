@@ -3174,6 +3174,7 @@ public final class CADAssemblyService {
                 let kind: String
                 let radius: Double?
                 switch signature.kind {
+                case .nativeSurface: continue
                 case .planar: kind = "planar"; radius = nil
                 case .cylindrical(let value): kind = "cylindrical"; radius = value
                 }
@@ -3564,6 +3565,8 @@ public final class CADAssemblyService {
         }
         let kindName: String
         switch signature.kind {
+        case .nativeSurface:
+            return .failure(CADAssemblyServiceError(code: "unsupported_face", message: "Select a planar or cylindrical assembly reference."))
         case .planar: kindName = "face"
         case .cylindrical: kindName = "axis"
         }

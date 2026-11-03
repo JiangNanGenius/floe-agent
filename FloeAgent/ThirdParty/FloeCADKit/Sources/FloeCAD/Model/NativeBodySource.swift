@@ -118,12 +118,16 @@ nonisolated struct NativeBodySource: Codable, Sendable {
     /// search for a replacement. Numerical integration can round on BRep read;
     /// any index/type/geometry disagreement rejects the complete restoration.
     private static func matches(_ lhs: FaceSignature?, _ rhs: FaceSignature?) -> Bool {
-        guard let lhs, let rhs else { return lhs == nil && rhs == nil }
+        // Released snapshots did not fingerprint non-planar/non-cylindrical
+        // supports. Their immutable digest still binds the exact same bytes.
+        if rhs == nil { if case .nativeSurface? = lhs?.kind { return true }; return lhs == nil }
+        guard let lhs, let rhs else { return false }
         func close(_ a: Double, _ b: Double) -> Bool {
             a.isFinite && b.isFinite && abs(a - b) <= 1e-8 * max(1, abs(a), abs(b))
         }
         switch (lhs.kind, rhs.kind) {
         case (.planar, .planar): break
+        case let (.nativeSurface(a), .nativeSurface(b)): guard a == b else { return false }
         case let (.cylindrical(a), .cylindrical(b)): guard close(a, b) else { return false }
         default: return false
         }

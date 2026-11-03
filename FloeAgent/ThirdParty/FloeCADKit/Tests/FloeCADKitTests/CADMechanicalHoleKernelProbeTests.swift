@@ -219,7 +219,7 @@ final class CADMechanicalHoleKernelProbeTests: XCTestCase {
             try section(cut, at: 7, radius: r, file: file, line: line)
         case .countersink:
             try cylinder(cut, radius: r, from: cut.coneDepth, to: thickness, file: file, line: line)
-            let other = OCCTKernel.faceInfo(cut.result).filter { $0.signature == nil }
+            let other = OCCTKernel.faceInfo(cut.result).filter { $0.signature?.kind == .nativeSurface(type: 2) }
             XCTAssertFalse(other.isEmpty, file: file, line: line)
             let area = other.reduce(0) { $0 + $1.area }
             let slant = hypot(kind.openingRadius - r, cut.coneDepth)

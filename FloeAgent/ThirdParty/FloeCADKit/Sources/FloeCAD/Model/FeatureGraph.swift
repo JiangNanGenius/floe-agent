@@ -386,6 +386,8 @@ nonisolated enum FeatureKind: Codable, Sendable {
     /// Stores the original once; downstream edits never use their own output
     /// as an implicit input. No model-authored source bytes are accepted.
     case baseSolid(source: NativeBodySource)
+    /// Authored polygon cage; render mesh is a derived, separately evaluated output.
+    case polygonCage(definition: CADPolygonMeshDefinition, placement: Transform3D)
     case extrude(
         profile: ProfileRef,
         plane: PlaneRef,
@@ -416,7 +418,8 @@ nonisolated enum FeatureKind: Codable, Sendable {
     /// absent, i.e. nil). See `HelixSpec`.
     case sweep(profile: ProfileRef, plane: PlaneRef, spine: [PointWrapper], boolean: BooleanIntent,
                helix: HelixSpec?, path: SweepPathDefinition? = nil)
-    case loft(sections: [ProfileRef], boolean: BooleanIntent)
+    case loft(sections: [ProfileRef], boolean: BooleanIntent, definition: LoftDefinition? = nil)
+    case surface(definition: CADSurfaceDefinition)
     case boolean(kind: BooleanKind, target: BodyRef, tools: [BodyRef])
     /// Two deterministic outputs. The first preserves target.bodyID and the
     /// second is minted once in outputBodyIDs, never during replay.
@@ -456,6 +459,8 @@ nonisolated enum FeatureKind: Codable, Sendable {
     /// faces open (empty = fully enclosed hollow). Exact solids support flat
     /// and cylindrical openings; the mesh approximation remains planar.
     case shell(body: BodyRef, openFaces: [FaceRef], thickness: Expr)
+    /// Exact per-face wall thicknesses. The ordinary shell case stays byte-compatible.
+    case regionShell(body: BodyRef, openFaces: [FaceRef], definition: ShellRegionDefinition)
     /// Spec §4.16: remove the referenced faces and HEAL the surrounding
     /// surfaces back together, deleting the feature (hole, pocket, boss) they
     /// belong to. B-rep only — a mesh has no surfaces to extend.
@@ -539,8 +544,11 @@ nonisolated extension FeatureNode {
             ids.insert(profile.sketchID)
             for segment in path?.segments ?? [] { ids.insert(segment.sketchID) }
             addPlane(plane)
-        case let .loft(sections, _):
+        case let .loft(sections, _, definition):
             for ref in sections { ids.insert(ref.sketchID) }
+            for guide in definition?.guides ?? [] { for edge in guide.segments { ids.insert(edge.sketchID) } }
+        case let .surface(definition):
+            ids.formUnion(definition.sketchIDs)
         case let .mirror(_, plane, _):
             addPlane(plane)
         case let .pattern(_, spec):
@@ -548,8 +556,8 @@ nonisolated extension FeatureNode {
         case let .split(_, cutter):
             addPlane(cutter.plane)
             if let profile = cutter.profile { ids.insert(profile.sketchID) }
-        case .primitive, .baseSolid, .thread, .boolean, .transform, .pushPull, .moveFace,
-             .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .advancedBlend, .shell,
+        case .primitive, .baseSolid, .polygonCage, .thread, .boolean, .transform, .pushPull, .moveFace,
+             .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .advancedBlend, .shell, .regionShell,
              .deleteFace, .replaceFace:
             break
         }
@@ -570,8 +578,8 @@ nonisolated extension FeatureNode {
              let .hole(_, _, plane, _), let .mirror(_, plane, _):
             add(plane)
         case let .split(_, cutter): add(cutter.plane)
-        case .primitive, .baseSolid, .thread, .loft, .boolean, .transform, .pattern, .pushPull, .moveFace,
-             .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .advancedBlend, .shell,
+        case .primitive, .baseSolid, .polygonCage, .thread, .loft, .surface, .boolean, .transform, .pattern, .pushPull, .moveFace,
+             .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .advancedBlend, .shell, .regionShell,
              .deleteFace, .replaceFace:
             break
         }
@@ -607,13 +615,15 @@ nonisolated extension FeatureNode {
     /// the memo is only as correct as this enumeration.
     var consumedBodyIDs: [BodyID] {
         switch kind {
-        case .primitive, .baseSolid:
+        case .primitive, .baseSolid, .polygonCage:
             return []
+        case let .surface(definition):
+            return definition.sources.map(\.bodyID)
         case let .extrude(_, _, _, _, boolean, _, termination):
             return Array(Set(boolean.resolvedTargets.map(\.bodyID) + (termination?.targets.map(\.bodyID) ?? [])))
         case let .draftExtrude(_, _, _, _, _, boolean),
              let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _, _),
-             let .loft(_, boolean):
+             let .loft(_, boolean, _):
             return boolean.resolvedTargets.map(\.bodyID)
         case let .boolean(_, target, tools):
             return [target.bodyID] + tools.map(\.bodyID)
@@ -621,7 +631,7 @@ nonisolated extension FeatureNode {
             return [target.bodyID]
         case let .split(target, _): return [target.bodyID]
         case let .transform(body, _), let .mirror(body, _, _), let .pattern(body, _),
-             let .chamfer(body, _, _), let .fillet(body, _, _), let .advancedBlend(body, _, _), let .shell(body, _, _),
+             let .chamfer(body, _, _), let .fillet(body, _, _), let .advancedBlend(body, _, _), let .shell(body, _, _), let .regionShell(body, _, _),
              let .deleteFace(body, _):
             return [body.bodyID]
         case let .pushPull(face, _, _), let .moveFace(face, _), let .scaleFace(face, _),
@@ -984,6 +994,18 @@ nonisolated extension FeatureGraph {
                 yAxis: inverseRotation.act(operationPlane.yAxis))
         } else { localOperationPlane = nil }
         switch node.kind {
+        case let .polygonCage(definition, placement):
+            guard let id = node.outputBodyIDs.first, node.outputBodyIDs.count == 1 else {
+                state.errors[node.id] = .brokenRef("A polygon cage must own one body."); return
+            }
+            do {
+                try CADPolygonMeshDefinition.validatePlacement(placement)
+                let evaluated = try CADPolygonMeshKernel.evaluate(definition)
+                var body = Body(id: id, name: node.name, transform: placement,
+                    render: evaluated.render, edges: evaluated.edges, revision: nextRevision())
+                body.euclid = evaluated.mesh
+                state.put(body, table: state.naming.faceTable(for: body, createdBy: node.id, scheme: .generic))
+            } catch { state.errors[node.id] = .kernelFailure(error.localizedDescription) }
         case let .baseSolid(source):
             evalBaseSolid(node, source: source, into: &state, next: nextRevision)
         case let .primitive(spec, placement):
@@ -1030,8 +1052,10 @@ nonisolated extension FeatureGraph {
             evalSweep(
                 node, profileRef: profile, planeRef: plane, spine: spine,
                 boolean: boolean, helix: helix, path: path, into: &state, next: nextRevision)
-        case let .loft(sections, boolean):
-            evalLoft(node, sectionRefs: sections, boolean: boolean, into: &state, next: nextRevision)
+        case let .loft(sections, boolean, definition):
+            evalLoft(node, sectionRefs: sections, boolean: boolean, definition: definition, into: &state, next: nextRevision)
+        case let .surface(definition):
+            evalSurface(node, definition: definition, into: &state, next: nextRevision)
         case let .mirror(body, plane, keepOriginal):
             evalMirror(
                 node, bodyRef: body, planeRef: plane, keepOriginal: keepOriginal,
@@ -1049,6 +1073,9 @@ nonisolated extension FeatureGraph {
         case let .advancedBlend(body, edges, definition):
             evalEdgeBlend(node, bodyRef: body, edgeRefs: edges, amount: definition.first.value,
                 isFillet: definition.mode.isFillet, advanced: definition, into: &state, next: nextRevision)
+        case let .regionShell(body, openFaces, definition):
+            evalShell(node, bodyRef: body, openFaceRefs: openFaces,
+                thickness: definition.thickness.value, regions: definition, into: &state, next: nextRevision)
         case let .shell(body, openFaces, thickness):
             evalShell(
                 node, bodyRef: body, openFaceRefs: openFaces,
@@ -1712,6 +1739,13 @@ nonisolated extension FeatureGraph {
         case let .replaceFace(face, origin, normal, flip, support) where face == ref:
             return .replaceFace(face: upgraded, targetOrigin: origin,
                                 targetNormal: normal, flip: flip, planeReference: support)
+        case let .regionShell(body, faces, definition):
+            guard faces.contains(ref) || definition.regions.contains(where: { $0.face == ref }) else { return nil }
+            var changed = definition
+            for i in changed.regions.indices where changed.regions[i].face == ref {
+                changed.regions[i].face = upgraded
+            }
+            return .regionShell(body: body, openFaces: faces.map { $0 == ref ? upgraded : $0 }, definition: changed)
         case let .shell(body, openFaces, thickness) where openFaces.contains(ref):
             return .shell(body: body,
                           openFaces: openFaces.map { $0 == ref ? upgraded : $0 },
@@ -2105,6 +2139,7 @@ nonisolated extension FeatureGraph {
     /// true surface (the facet centroid itself sits a hair inside the
     /// cylinder, and a whole-wall centroid would sit on the axis).
     static func pointOnFace(_ resolved: ResolvedFace, mesh: RenderMesh) -> SIMD3<Double>? {
+        if let native = resolved.native { return native.point }
         if let planar = resolved.planar {
             return pointOnPlanarFace(planar, mesh: mesh)
         }
@@ -2320,9 +2355,14 @@ nonisolated extension FeatureGraph {
         bodyRef: BodyRef,
         openFaceRefs: [FaceRef],
         thickness: Double,
+        regions: ShellRegionDefinition? = nil,
         into state: inout EvalState,
         next nextRevision: () -> UInt64
     ) {
+        if let regions {
+            do { try regions.validate(body: bodyRef, openFaces: openFaceRefs) }
+            catch { state.errors[node.id] = .kernelFailure("Invalid regional shell: \(error.localizedDescription)"); return }
+        }
         // Signed: positive hollows inward, negative grows the wall outward.
         guard thickness.isFinite, abs(thickness) > 1e-6 else {
             state.errors[node.id] = .kernelFailure("shell thickness must be finite and non-zero")
@@ -2333,7 +2373,9 @@ nonisolated extension FeatureGraph {
             return
         }
         if refuseExactSurface(node, "Shell", body: body, into: &state) { return }
-        let table = state.faceTables[body.id]
+        let table = state.faceTables[body.id].map {
+            CADFaceNamingSnapshot.prepare($0, for: body, names: state.kernelNames[body.id])
+        }
         var openFaces = [ResolvedFace]()
         var upgrades = [(FaceRef, ResolvedFace)]()
         for ref in openFaceRefs {
@@ -2371,9 +2413,37 @@ nonisolated extension FeatureGraph {
                 state.errors[node.id] = .brokenRef("shell opening has no point on its surface")
                 return
             }
-            switch OCCTKernel.shellResultWithAncestry(
-                brep, openingAt: openPoints, thickness: thickness,
-                tolerance: OCCTKernel.matchTolerance(for: brep)) {
+            let operation: Result<(handle: BRepHandle, ancestry: ShapeAncestry), OCCTOpError>
+            if let regions {
+                guard let table, let names = table.nativeFaceNames,
+                      table.nativeBodyID == body.id, table.nativeMeshRevision == body.meshRevision else {
+                    state.errors[node.id] = .brokenRef("shell requires its current native face identities"); return
+                }
+                func index(_ ref: FaceRef) -> Int? {
+                    guard let name = ref.elementName, name.isStableFaceIdentity else { return nil }
+                    let hits = names.filter { $0.value == name }
+                    return hits.count == 1 ? hits.first?.key : nil
+                }
+                let openings = openFaceRefs.compactMap(index)
+                var overrides: [(index: Int, thickness: Double)] = []
+                for region in regions.regions {
+                    guard let resolved = state.naming.resolvePersisted(region.face, in: body, table: table),
+                          let native = index(region.face) else {
+                        state.errors[node.id] = .brokenRef("shell wall region did not resolve"); return
+                    }
+                    upgrades.append((region.face, resolved))
+                    overrides.append((native, region.thickness.value))
+                }
+                guard openings.count == openFaceRefs.count else {
+                    state.errors[node.id] = .brokenRef("shell opening native identity did not resolve"); return
+                }
+                operation = OCCTKernel.regionShellResultWithAncestry(brep, openFaces: openings,
+                    thickness: thickness, regions: overrides)
+            } else {
+                operation = OCCTKernel.shellResultWithAncestry(brep, openingAt: openPoints,
+                    thickness: thickness, tolerance: OCCTKernel.matchTolerance(for: brep))
+            }
+            switch operation {
             case let .success((hollow, ancestry)):
                 var result = Body(
                     id: body.id, name: body.name, transform: body.transform, primitive: nil,
@@ -2406,6 +2476,9 @@ nonisolated extension FeatureGraph {
             return
         }
 
+        guard regions == nil else {
+            state.errors[node.id] = .kernelFailure("regional wall thicknesses require an exact solid"); return
+        }
         let planarFaces = openFaces.compactMap(\.planar)
         guard planarFaces.count == openFaces.count else {
             state.errors[node.id] = .kernelFailure("curved shell openings require an analytic solid")
@@ -3173,7 +3246,142 @@ nonisolated extension FeatureGraph {
                       into: &state, next: nextRevision)
     }
 
+    private func evalSurface(_ node: FeatureNode, definition: CADSurfaceDefinition,
+                             into state: inout EvalState, next: () -> UInt64) {
+        do {
+            try definition.validate()
+            guard node.outputBodyIDs.count == 1, let id = node.outputBodyIDs.first,
+                  definition.operation == .loft || definition.sources.first?.bodyID == id else {
+                throw LoftSurfaceError.invalid("A surface step must keep its original source body ID.")
+            }
+            let handle: BRepHandle
+            if definition.operation == .loft {
+                handle = try OCCTKernel.loftSurface(definition) { state.sketch($0) }
+            } else {
+                var inputs: [BRepHandle] = []
+                for reference in definition.sources {
+                    guard state.associative.lastBodyWriters[reference.bodyID] == reference.producer,
+                          let body = state.bodies[reference.bodyID], let surface = body.surfaceBRep,
+                          body.brep == nil, let placed = OCCTKernel.transformed(surface,by:body.transform) else {
+                        throw LoftSurfaceError.invalid("A surface input was removed, suppressed or changed. Select its current feature explicitly.")
+                    }
+                    inputs.append(placed)
+                }
+                handle = try OCCTKernel.surfaceOperation(definition,inputs:inputs)
+            }
+            let health = OCCTKernel.healthReport(for:handle)
+            let diagnostic = OCCTKernel.surfaceDiagnostics(handle)
+            guard health.error == nil, health.isValid, diagnostic["error"] == nil,
+                  handle.containsSolid == (definition.operation == .thicken) else {
+                throw LoftSurfaceError.invalid("The surface step did not produce valid exact geometry.")
+            }
+            var body = Body(id:id,name:node.name,transform:.identity,primitive:nil,
+                render:RenderMesh(positions:[],normals:[],indices:[]),revision:next())
+            let adopted = handle.containsSolid ? body.adoptBRep(handle) : body.adoptSurfaceBRep(handle)
+            guard adopted else { throw LoftSurfaceError.invalid("The exact surface could not be displayed.") }
+            if let prior = state.bodies[id] { body = body.keepingAppearance(of:prior);body.name=prior.name }
+            // No guessed face ordinals are published as stable identities.
+            // Surface topology changes clear the old names through state.put.
+            state.put(body,table:state.naming.faceTable(for:body,createdBy:node.id,scheme:.generic))
+            for source in definition.sources.dropFirst() { state.remove(source.bodyID) }
+        } catch let error as OCCTOpError { state.errors[node.id] = .kernelFailure(error.message) }
+        catch { state.errors[node.id] = .kernelFailure(error.localizedDescription) }
+    }
+
     private func evalLoft(
+        _ node: FeatureNode,
+        sectionRefs: [ProfileRef],
+        boolean: BooleanIntent,
+        definition: LoftDefinition?,
+        into state: inout EvalState,
+        next nextRevision: () -> UInt64
+    ) {
+        // Resolve each section's profile (outer + holes) AND its plane, in order.
+        // ANY unresolvable section is a broken reference: error out rather than
+        // silently lofting a subset (e.g. deleting a middle section's sketch must
+        // surface a broken-ref badge, not reshape the body into an A->C loft the
+        // user never authored). Matches revolve/sweep/mirror's error contract.
+        guard let definition else {
+            evalLegacyLoft(node,sectionRefs:sectionRefs,boolean:boolean,into:&state,next:nextRevision)
+            return
+        }
+        do { try definition.requireSupported(sectionCount:sectionRefs.count) }
+        catch { state.errors[node.id] = .kernelFailure(error.localizedDescription); return }
+        var sections: [(profile: Profile, holes: [Profile], plane: SketchPlane)] = []
+        for ref in sectionRefs {
+            guard let sketch = state.sketch(ref.sketchID), !ref.entityIDs.isEmpty,
+                  Set(ref.entityIDs + ref.holeEntityIDs.flatMap { $0 }).isSubset(of: Set(sketch.entities.map(\.id))),
+                  let (outer, holes) = state.resolveProfile(ref), holes.count == ref.holeEntityIDs.count,
+                  let plane = state.resolvePlane(PlaneRef(source: .sketch(ref.sketchID))) else {
+                state.errors[node.id] = .brokenRef("loft section profile/plane unresolved")
+                return
+            }
+            sections.append((outer, holes, plane))
+        }
+        guard sections.count >= 2 else {
+            state.errors[node.id] = .brokenRef("loft needs >= 2 sections")
+            return
+        }
+        guard let holeCount = sections.first?.holes.count,
+              sections.allSatisfy({ $0.holes.count == holeCount }) else {
+            state.errors[node.id] = .brokenRef("Every loft section must explicitly pair the same number of inner loops.")
+            return
+        }
+        guard OCCTKernel.useOCCTAsSourceOfTruth else {
+            // A newly authored exact loft cannot become a mesh when a runtime
+            // configuration changes. Keep the prior shape through rejection.
+            state.errors[node.id] = .kernelFailure("Exact loft construction is unavailable.")
+            return
+        }
+        let history = OCCTShapeHistory()
+        guard var solid = OCCTKernel.loftSolid(sections: sections.map { ($0.profile,$0.plane) },
+                ruled: definition.ruled, history: history), solid.containsSolid else {
+            state.errors[node.id] = .kernelFailure("The exact outer loft could not be built.")
+            return
+        }
+        var names = ElementNaming.extrudeNames(creator: node.id, ancestry: ShapeAncestry(history),
+            outer: sections[0].profile, holes: [])
+        for index in 0..<holeCount {
+            let holeHistory = OCCTShapeHistory()
+            guard let bore = OCCTKernel.loftSolid(sections: sections.map { ($0.holes[index],$0.plane) },
+                    ruled: definition.ruled, history: holeHistory) else {
+                state.errors[node.id] = .kernelFailure("An exact inner-loop loft could not be built.")
+                return
+            }
+            let boreNames = ElementNaming.extrudeNames(creator: node.id, ancestry: ShapeAncestry(holeHistory),
+                outer: sections[0].holes[index], holes: [])
+            switch OCCTKernel.booleanResultWithAncestry(solid,bore,op:OCCTKernel.booleanOp(.subtract)) {
+            case let .success((outcome, ancestry)):
+                guard outcome.solidCount == 1 else {
+                    state.errors[node.id] = .kernelFailure("An inner loop split the loft into disjoint solids."); return
+                }
+                let removed=OCCTKernel.volume(solid)-OCCTKernel.volume(outcome.handle)
+                let boreVolume=OCCTKernel.volume(bore)
+                guard boreVolume.isFinite, boreVolume > 0, removed.isFinite,
+                      abs(removed-boreVolume) <= max(1e-5,boreVolume*1e-6) else {
+                    state.errors[node.id] = .kernelFailure("A loft inner loop exits the outer shell or overlaps another hole."); return
+                }
+                solid = outcome.handle
+                names = ElementNaming.composeNames(operation:node.id, ancestry:ancestry, inputNames:[names,boreNames])
+            case let .failure(error):
+                state.errors[node.id] = .kernelFailure("Exact loft inner-loop cut: \(error.message)"); return
+            }
+        }
+        let health = OCCTKernel.healthReport(for:solid)
+        guard health.error == nil, health.isValid, health.counts["solids"] == 1,
+              (OCCTKernel.surfaceDiagnostics(solid)["free_edges"] as? Int) == 0 else {
+            state.errors[node.id] = .kernelFailure("The loft is not one valid, closed exact solid."); return
+        }
+        // Both CSG and display now derive from the actual holed BRep. A
+        // Euclid fallback or independently reconstructed mesh cannot certify it.
+        let render = OCCTKernel.renderMesh(from:solid)
+        let mesh = EuclidBridge.euclidMesh(from:RenderMesh(positions:render.positions,normals:render.normals,indices:render.indices))
+        emitFullSolid(node,mesh:mesh,brep:solid,kernelNames:names,nativeRender:true,
+            boolean:boolean,scheme:.loftCaps(start:sections[0].plane,end:sections[sections.count-1].plane),
+            into:&state,next:nextRevision)
+    }
+
+    private func evalLegacyLoft(
         _ node: FeatureNode,
         sectionRefs: [ProfileRef],
         boolean: BooleanIntent,

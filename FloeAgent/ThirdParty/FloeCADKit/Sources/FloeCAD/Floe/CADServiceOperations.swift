@@ -100,10 +100,10 @@ public nonisolated enum CADServiceOperations {
     ]
 
     /// Mutating mesh actions. `boundary` is read-only.
-    public static let mutatingMeshActions: Set<String> = [
+    public static let mutatingMeshActions: Set<String> = Set([
         "combine", "boolean", "transform", "recomputeNormals",
         "repair", "simplify", "material", "text", "image",
-    ]
+    ]).union(CADPolygonMeshService.mutatingActions)
 
     /// Document write protection only. This does not change discovery,
     /// proposal classification or permission policy; read/export actions and
@@ -117,7 +117,7 @@ public nonisolated enum CADServiceOperations {
         case "script": writesDocument = mutatingScriptActions.contains(action)
         case "mesh": writesDocument = mutatingMeshActions.contains(action)
         case "material": writesDocument = ["create", "update", "remove", "apply", "applyFaces", "reassignFaces", "mapping", "textures", "libraryImport", "environment.update", "environment.import", "undo", "redo"].contains(action) || CADUVService.mutations.contains(action)
-        case "parameter": writesDocument = CADParameterService.actions.contains(action) && action != "list" && !CADThreadService.reads.contains(action)
+        case "parameter": writesDocument = CADParameterService.actions.contains(action) && action != "list" && !CADThreadService.reads.contains(action) && !CADLoftSurfaceService.reads.contains(action)
         case "scene": writesDocument = CADViewOverlayService.mutationActions.contains(action)
         default: writesDocument = false
         }
@@ -173,7 +173,7 @@ public enum CADServiceOperationExecutor {
         case "assembly":
             reply = await CADAssemblyService(document: document).handleAsync(action: action, args: args)
         case "drawing":
-            reply = CADDrawingService(document: document).handle(action: action, args: args)
+            reply = await CADDrawingService(document: document).handleAsync(action: action, args: args)
         case "script":
             reply = await CADScriptService(document: document).handle(action: action, args: args)
         case "mesh":

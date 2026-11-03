@@ -594,6 +594,7 @@ struct FloeCADEditorView: View {
     @State private var importRequest: ImportRequest = .stl
     @State private var showImporter = false
     @State private var showScreenshotOptions = false
+    @State private var showShellOptions = false
     /// Insert Image (plan §B10): Photos picker + image file importer.
     @State private var showPhotoPicker = false
     @State private var photoPickerItem: PhotosPickerItem?
@@ -1125,6 +1126,13 @@ struct FloeCADEditorView: View {
             set: { viewModel.shellThickness = max(0, $0) })
         return AdaptiveBar(style: .capsule, spacing: 12) {
             Image(systemName: "cube.transparent")
+            Button {
+                showShellOptions = true
+            } label: {
+                Label(FloeCADStrings.text("cad.shell.wallOptions", "Wall thicknesses"), systemImage: "slider.horizontal.3")
+            }
+            .accessibilityIdentifier("ShellWallOptions")
+            .sheet(isPresented: $showShellOptions) { ShellOptionsSheet(viewModel: viewModel) }
             Text(viewModel.shellBodyID == nil
                  ? "Tap a body to shell"
                  : viewModel.shellSelectedFaces.isEmpty
@@ -1132,6 +1140,10 @@ struct FloeCADEditorView: View {
                     : "\(viewModel.shellSelectedFaces.count) face\(viewModel.shellSelectedFaces.count == 1 ? "" : "s") open")
                 .font(.subheadline)
                 .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+            if viewModel.shellPickingRegions {
+                Text(FloeCADStrings.text("cad.shell.pickWall", "Tap walls to set thickness"))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if horizontalSizeClass != .compact { Divider().frame(height: 20) }
             HStack(spacing: 6) {
                 Text("Thickness").font(.caption).foregroundStyle(.barLabel).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
@@ -2933,6 +2945,7 @@ struct FloeCADEditorView: View {
                 HoleOptionsSheet(viewModel: viewModel, draft: draft)
             }
             .modifier(CADDatumEditorSheets(viewModel: viewModel))
+            .modifier(CADLoftSurfaceEditorSheets(viewModel:viewModel))
             .sheet(isPresented: Binding(
                 get: { viewModel.showThreadEditor },
                 set: { viewModel.showThreadEditor = $0 }

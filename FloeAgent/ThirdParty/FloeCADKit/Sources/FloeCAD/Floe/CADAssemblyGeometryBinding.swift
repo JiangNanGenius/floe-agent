@@ -47,6 +47,7 @@ nonisolated enum CADAssemblyGeometryResolver {
         else { return nil }
         let point: SIMD3<Double>
         switch signature.kind {
+        case .nativeSurface: return nil
         case .planar: point = face.centroid
         case .cylindrical:
             guard let axis = face.axisPoint else { return nil }

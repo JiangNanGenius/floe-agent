@@ -95,6 +95,7 @@ struct CADDrawingPreview {
     var viewCount: Int = 1
     var isMultiView: Bool = false
     var sectionComplete: Bool = true
+    var projectionComplete: Bool = true
     var outputBlocked: Bool = false
     var views: [[String: Any]] = []
 
@@ -111,6 +112,7 @@ struct CADDrawingPreview {
         viewCount = page["viewCount"] as? Int ?? viewRows?.count ?? 1
         isMultiView = page["isMultiView"] as? Bool ?? ((viewRows?.count ?? 0) > 1)
         sectionComplete = reply["sectionComplete"] as? Bool ?? true
+        projectionComplete = reply["projectionComplete"] as? Bool ?? true
         outputBlocked = reply["outputBlocked"] as? Bool ?? false
         views = viewRows ?? []
         entities = (reply["entities"] as? [[String: Any]] ?? []).compactMap(Self.parseEntity)
@@ -248,6 +250,8 @@ struct CADDrawingPanelView: View {
     @State private var preview: CADDrawingPreview?
     @State private var previewPage: [String: Any]?
     @State private var activeSheet: CADDrawingSheetRoute?
+    @State private var projectionTask: Task<Void, Never>?
+    @State private var projectionGeneration = UUID()
 
     /// Explicit source body: the current viewport selection ONLY (never a
     /// silent first body).
@@ -295,7 +299,20 @@ struct CADDrawingPanelView: View {
                     .foregroundStyle(.secondary)
             }
 
-            if busy { ProgressView().controlSize(.small) }
+            if busy {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    if projectionTask != nil {
+                        Button(FloeCADStrings.text("cad.ui.common.cancel", "Cancel")) {
+                            projectionGeneration = UUID()
+                            projectionTask?.cancel()
+                            projectionTask = nil
+                            busy = false
+                        }
+                        .accessibilityIdentifier("CADDrawingProjectionCancel")
+                    }
+                }
+            }
             PanelOutcome(reply: outcome)
 
             if let preview {
@@ -380,7 +397,8 @@ struct CADDrawingPanelView: View {
                                         .buttonStyle(.bordered)
                                         .controlSize(.small)
                                         .accessibilityIdentifier("CADDrawingViews-\(page["id"] as? String ?? "")"))
-                                } else {
+                                }
+                                if page["isMultiView"] as? Bool != true {
                                     panelHitTarget(Button(FloeCADStrings.label("cad.workbench.drawing.edit", "Edit")) {
                                         activeSheet = .edit(CADDrawingPageEditorRequest(page: page))
                                     }
@@ -465,6 +483,16 @@ struct CADDrawingPanelView: View {
             }
         }
         .task { refresh() }
+        .onDisappear {
+            projectionGeneration = UUID()
+            projectionTask?.cancel(); projectionTask = nil; busy = false
+        }
+        .onChange(of: ObjectIdentifier(document)) { _, _ in
+            projectionGeneration = UUID()
+            projectionTask?.cancel(); projectionTask = nil
+            preview = nil; previewPage = nil; exportURL = nil; activeSheet = nil; busy = false
+            refresh()
+        }
         .sheet(item: $activeSheet) { route in
             switch route {
             case .views(let request):
@@ -546,7 +574,7 @@ struct CADDrawingPanelView: View {
         busy = true
         Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "standardSheet",
+            let reply = await service.handleAsync(action: "standardSheet",
                                        args: ["bodyID": bodyID.uuidString, "title": document.name])
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             outcome = reply
@@ -560,7 +588,7 @@ struct CADDrawingPanelView: View {
         busy = true
         Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "multiViewSheet",
+            let reply = await service.handleAsync(action: "multiViewSheet",
                                        args: ["bodyID": bodyID.uuidString,
                                               "title": document.name, "paper": "a3"])
             if reply["mutated"] as? Bool == true { _ = await document.save() }
@@ -574,7 +602,7 @@ struct CADDrawingPanelView: View {
         busy = true
         Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "assemblySheet",
+            let reply = await service.handleAsync(action: "assemblySheet",
                                        args: ["title": document.name])
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             outcome = reply
@@ -585,16 +613,21 @@ struct CADDrawingPanelView: View {
 
     private func showGeometry(_ page: [String: Any]) {
         guard let id = page["id"] as? String, let uuid = UUID(uuidString: id) else { return }
-        let service = CADDrawingService(document: document)
-        // The explicit View action refreshes the derived projection identity
-        // through the same service used by the assistant. This is cache
-        // metadata, not an extra user edit/undo step.
-        let reply = service.handle(action: "project", args: ["pageID": uuid.uuidString])
-        outcome = reply
-        if reply["ok"] as? Bool == true {
-            previewPage = page
-            preview = CADDrawingPreview(reply: reply)
-            if reply["mutated"] as? Bool == true { refresh() }
+        projectionTask?.cancel()
+        let generation = UUID()
+        projectionGeneration = generation
+        busy = true
+        projectionTask = Task { @MainActor in
+            let service = CADDrawingService(document: document)
+            let reply = await service.handleAsync(action: "project", args: ["pageID": uuid.uuidString])
+            guard projectionGeneration == generation, !Task.isCancelled, !document.isClosed else { return }
+            busy = false; projectionTask = nil
+            outcome = reply
+            if reply["ok"] as? Bool == true {
+                previewPage = page
+                preview = CADDrawingPreview(reply: reply)
+                if reply["mutated"] as? Bool == true { refresh() }
+            }
         }
     }
 
@@ -603,7 +636,7 @@ struct CADDrawingPanelView: View {
         busy = true
         Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "removePage", args: ["pageID": uuid.uuidString])
+            let reply = await service.handleAsync(action: "removePage", args: ["pageID": uuid.uuidString])
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             outcome = reply
             if preview?.pageID == uuid {
@@ -617,11 +650,15 @@ struct CADDrawingPanelView: View {
 
     private func export(_ page: [String: Any], format: String) {
         guard let id = page["id"] as? String, let uuid = UUID(uuidString: id) else { return }
+        projectionTask?.cancel()
+        let generation = UUID()
+        projectionGeneration = generation
         busy = true
-        Task { @MainActor in
+        projectionTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
             do {
-                let data = try service.exportData(pageID: uuid, format: format)
+                let data = try await service.exportDataAsync(pageID: uuid, format: format)
+                guard projectionGeneration == generation, !Task.isCancelled, !document.isClosed else { return }
                 let url = FileManager.default.temporaryDirectory
                     .appendingPathComponent("\(document.name)-\(page["kind"] as? String ?? "page").\(format)")
                 try data.write(to: url, options: [.atomic])
@@ -631,9 +668,10 @@ struct CADDrawingPanelView: View {
                                                             "%@ export ready (%lld bytes).",
                                                             format.uppercased(), data.count)]
             } catch {
+                guard projectionGeneration == generation, !Task.isCancelled, !document.isClosed else { return }
                 outcome = ["ok": false, "message": error.localizedDescription]
             }
-            busy = false
+            busy = false; projectionTask = nil
         }
     }
 }
@@ -699,7 +737,8 @@ struct CADDrawingVectorPreview: View {
     private func color(for layer: String) -> Color {
         switch layer {
         case "outline": return .primary
-        case "edges": return .secondary
+        case "edges", "hidden", "unclassified": return .secondary
+        case "hatch", "section-mark": return .orange
         case "section": return .orange
         case "dimension": return .teal
         case "centerline": return .gray
@@ -723,8 +762,9 @@ struct CADDrawingVectorPreview: View {
                                tint: .blue)
                 }
                 if !preview.sectionComplete || preview.outputBlocked {
-                    PanelBadge(text: FloeCADStrings.text("cad.workbench.drawing.incompleteSection",
-                                                         "incomplete section"),
+                    PanelBadge(text: preview.sectionComplete && !preview.projectionComplete
+                        ? FloeCADStrings.text("cad.workbench.drawing.incompleteProjection", "Projection unavailable")
+                        : FloeCADStrings.text("cad.workbench.drawing.incompleteSection", "incomplete section"),
                                tint: .red)
                 }
                 if preview.stale {
@@ -784,7 +824,7 @@ struct CADDrawingVectorPreview: View {
                     }
                 }
                 for (layer, path) in paths {
-                    let dashed = layer == "centerline"
+                    let dashed = layer == "centerline" || layer == "hidden"
                     context.stroke(path, with: .color(color(for: layer)),
                                    style: StrokeStyle(lineWidth: layer == "outline" ? 1.6 : 1.0,
                                                       dash: dashed ? [4, 3] : []))
@@ -913,6 +953,7 @@ enum CADDrawingSheetRoute: Identifiable {
 
 private struct CADDrawingPageEditorSheet: View {
     let document: FloeCADDocument
+    @State private var drawingTask: Task<Void, Never>?
     let page: [String: Any]?
     let preferredSourceBodyID: UUID?
     @Binding var busy: Bool
@@ -1199,6 +1240,7 @@ private struct CADDrawingPageEditorSheet: View {
         }
         .presentationDetents([.medium, .large])
         .task { loadExplodedViews() }
+        .onDisappear { drawingTask?.cancel(); drawingTask = nil }
     }
 
     private func loadExplodedViews() {
@@ -1258,15 +1300,16 @@ private struct CADDrawingPageEditorSheet: View {
         let pageID = page?["id"] as? String
         busy = true
         errorText = nil
-        Task { @MainActor in
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
             let reply: [String: Any]
             if let pageID {
                 var update = args
                 update["pageID"] = pageID
-                reply = service.handle(action: "updatePage", args: update)
+                reply = await service.handleAsync(action: "updatePage", args: update)
             } else {
-                reply = service.handle(action: "addPage", args: args)
+                reply = await service.handleAsync(action: "addPage", args: args)
             }
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             busy = false
@@ -1281,8 +1324,17 @@ private struct CADDrawingPageEditorSheet: View {
 }
 // MARK: - Shared-sheet views editor
 
+private struct DrawingHatchEditorRow: Identifiable {
+    var id: String
+    var name: String
+    var angle: String
+    var spacing: String
+    var enabled: Bool
+}
+
 private struct CADDrawingViewsSheet: View {
     let document: FloeCADDocument
+    @State private var drawingTask: Task<Void, Never>?
     let page: [String: Any]
     let onChanged: ([String: Any]) -> Void
 
@@ -1299,6 +1351,12 @@ private struct CADDrawingViewsSheet: View {
     @State private var gap = "14"
     @State private var sectionOrigin = ["0", "0", "0"]
     @State private var sectionNormal = ["0", "0", "1"]
+    @State private var showHiddenLines = true
+    @State private var hatchRows: [DrawingHatchEditorRow] = []
+    @State private var steppedSection = false
+    @State private var cutPoints: [[String]] = []
+    @State private var cutLabel = "A"
+    @State private var cutReferenceID: String?
     @State private var addKind = "front"
     @State private var busy = false
     @State private var errorText: String?
@@ -1397,6 +1455,11 @@ private struct CADDrawingViewsSheet: View {
                         .disabled(alignment == "free")
                         CADPanelNumberField(title: FloeCADStrings.text("cad.workbench.drawing.alignmentGap",
                                                                        "Gap (mm)"), text: $gap)
+                        if kind != "section" {
+                            Toggle(FloeCADStrings.text("cad.workbench.drawing.hiddenLines", "Hidden lines"),
+                                   isOn: $showHiddenLines)
+                                .accessibilityIdentifier("CADDrawingHiddenLines")
+                        }
                         if kind == "section" {
                             HStack(spacing: 10) {
                                 CADPanelNumberField(title: "Ox", text: binding($sectionOrigin, 0))
@@ -1407,6 +1470,50 @@ private struct CADDrawingViewsSheet: View {
                                 CADPanelNumberField(title: "Nx", text: binding($sectionNormal, 0))
                                 CADPanelNumberField(title: "Ny", text: binding($sectionNormal, 1))
                                 CADPanelNumberField(title: "Nz", text: binding($sectionNormal, 2))
+                            }
+                            ForEach($hatchRows) { $hatch in
+                                VStack(alignment: .leading) {
+                                    Toggle(hatch.name, isOn: $hatch.enabled)
+                                    HStack {
+                                        CADPanelNumberField(title: FloeCADStrings.text("cad.workbench.drawing.hatchAngle", "Hatch angle (°)"), text: $hatch.angle)
+                                        CADPanelNumberField(title: FloeCADStrings.text("cad.workbench.drawing.hatchSpacing", "Spacing (mm)"), text: $hatch.spacing)
+                                    }
+                                }
+                            }
+                            Toggle(FloeCADStrings.text("cad.workbench.drawing.steppedSection", "Stepped cut"),
+                                   isOn: $steppedSection)
+                            if steppedSection {
+                                TextField(FloeCADStrings.text("cad.workbench.drawing.cutLabel", "Section label"), text: $cutLabel)
+                                Picker(FloeCADStrings.text("cad.workbench.drawing.cutReference", "Cutting mark view"), selection: $cutReferenceID) {
+                                    Text(FloeCADStrings.text("cad.workbench.drawing.noReference", "None")).tag(String?.none)
+                                    ForEach(Array(otherViews.enumerated()), id: \.offset) { _, view in
+                                        if let id = view["id"] as? String,
+                                           ["front", "top", "side", "iso", "exploded"].contains(view["kind"] as? String ?? "") {
+                                            Text(view["name"] as? String ?? id).tag(String?.some(id))
+                                        }
+                                    }
+                                }
+                                Text(FloeCADStrings.text("cad.workbench.drawing.cutPathHint",
+                                    "Enter parallel cuts joined by perpendicular steps."))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                ForEach(cutPoints.indices, id: \.self) { index in
+                                    HStack {
+                                        ForEach(0..<3, id: \.self) { axis in
+                                            CADPanelNumberField(title: ["X", "Y", "Z"][axis], text: Binding(
+                                                get: { cutPoints.indices.contains(index) && cutPoints[index].indices.contains(axis) ? cutPoints[index][axis] : "" },
+                                                set: { value in
+                                                    if cutPoints.indices.contains(index), cutPoints[index].indices.contains(axis) { cutPoints[index][axis] = value }
+                                                }))
+                                        }
+                                        Button(role: .destructive) { if cutPoints.indices.contains(index) { cutPoints.remove(at: index) } } label: {
+                                            Image(systemName: "minus.circle")
+                                        }
+                                        .accessibilityLabel(FloeCADStrings.text("cad.workbench.drawing.removeCutPoint", "Remove cut point"))
+                                    }
+                                }
+                                Button(FloeCADStrings.text("cad.workbench.drawing.addCutPoint", "Add cut point")) {
+                                    cutPoints.append(cutPoints.last ?? sectionOrigin)
+                                }.disabled(cutPoints.count >= 32)
                             }
                         }
                         Button(FloeCADStrings.text("cad.workbench.drawing.saveView", "Save view")) {
@@ -1465,6 +1572,7 @@ private struct CADDrawingViewsSheet: View {
             .task { reload() }
         }
         .presentationDetents([.medium, .large])
+        .onDisappear { drawingTask?.cancel(); drawingTask = nil; busy = false }
     }
 
     private func binding(_ values: Binding<[String]>, _ index: Int) -> Binding<String> {
@@ -1488,6 +1596,23 @@ private struct CADDrawingViewsSheet: View {
         guard let selectedID,
               let row = views.first(where: { ($0["id"] as? String) == selectedID }) else { return }
         kind = row["kind"] as? String ?? "front"
+        showHiddenLines = row["showHiddenLines"] as? Bool ?? true
+        let materials = row["sectionMaterials"] as? [[String: String]] ?? []
+        let styles = row["sectionHatches"] as? [[String: Any]] ?? []
+        hatchRows = materials.enumerated().compactMap { index, material in
+            guard let id = material["materialID"] else { return nil }
+            let style = styles.first { $0["materialID"] as? String == id }
+            return DrawingHatchEditorRow(id: id, name: id == "unassigned" ? FloeCADStrings.text("cad.workbench.drawing.defaultMaterial", "Default material") : (material["name"] ?? id),
+                angle: CADPanelTransform.format(style?["angleDegrees"] as? Double ?? (index.isMultiple(of: 2) ? 45 : -45)),
+                spacing: CADPanelTransform.format(style?["spacingMM"] as? Double ?? 2.5),
+                enabled: style?["enabled"] as? Bool ?? true)
+        }
+        if let path = row["sectionPath"] as? [String: Any] {
+            steppedSection = true
+            cutLabel = path["label"] as? String ?? "A"
+            cutReferenceID = path["referenceViewID"] as? String
+            cutPoints = (path["points"] as? [[Double]] ?? []).map { $0.map(CADPanelTransform.format) }
+        } else { steppedSection = false; cutPoints = []; cutReferenceID = nil }
         name = row["name"] as? String ?? ""
         scale = CADPanelTransform.format(row["scale"] as? Double ?? 1)
         if let offset = row["offset"] as? [Double], offset.count == 2 {
@@ -1524,17 +1649,33 @@ private struct CADDrawingViewsSheet: View {
             "offset": [x, y],
             "alignmentPlacement": alignment,
             "gapMM": Double(gap) ?? 14,
+            "showHiddenLines": showHiddenLines,
         ]
         if alignment != "free", let referenceID { args["alignmentReferenceID"] = referenceID }
         if kind == "section" {
             args["sectionOrigin"] = sectionOrigin.compactMap(Double.init)
             args["sectionNormal"] = sectionNormal.compactMap(Double.init)
+            guard hatchRows.allSatisfy({ Double($0.angle)?.isFinite == true && Double($0.spacing)?.isFinite == true }),
+                  !steppedSection || (cutReferenceID != nil && cutPoints.count >= 2
+                      && cutPoints.allSatisfy({ $0.count == 3 && $0.allSatisfy { Double($0)?.isFinite == true } })) else {
+                errorText = FloeCADStrings.text("cad.workbench.drawing.invalidSectionSettings", "Check the hatch settings and cutting path.")
+                return
+            }
+            args["sectionHatches"] = hatchRows.map { row -> [String: Any] in
+                ["materialID": row.id, "angleDegrees": Double(row.angle)!,
+                 "spacingMM": Double(row.spacing)!, "enabled": row.enabled]
+            }
+            if steppedSection, let cutReferenceID {
+                args["sectionPath"] = ["referenceViewID": cutReferenceID, "label": cutLabel,
+                                       "points": cutPoints.map { $0.compactMap(Double.init) }]
+            } else { args["sectionPath"] = NSNull() }
         }
         busy = true
         errorText = nil
-        Task { @MainActor in
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "updateView", args: args)
+            let reply = await service.handleAsync(action: "updateView", args: args)
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             busy = false
             onChanged(reply)
@@ -1551,9 +1692,10 @@ private struct CADDrawingViewsSheet: View {
         guard let pageID else { return }
         busy = true
         errorText = nil
-        Task { @MainActor in
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "addView",
+            let reply = await service.handleAsync(action: "addView",
                                        args: ["pageID": pageID, "kind": addKind,
                                               "name": localizedDrawingKind(addKind),
                                               "scale": Double(scale) ?? 1])
@@ -1574,9 +1716,10 @@ private struct CADDrawingViewsSheet: View {
         guard let pageID, let selectedID else { return }
         busy = true
         errorText = nil
-        Task { @MainActor in
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "removeView",
+            let reply = await service.handleAsync(action: "removeView",
                                        args: ["pageID": pageID, "viewID": selectedID,
                                               "removeAnnotations": true])
             if reply["mutated"] as? Bool == true { _ = await document.save() }
@@ -1596,9 +1739,10 @@ private struct CADDrawingViewsSheet: View {
         guard let pageID else { return }
         busy = true
         errorText = nil
-        Task { @MainActor in
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "layoutViews", args: ["pageID": pageID])
+            let reply = await service.handleAsync(action: "layoutViews", args: ["pageID": pageID])
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             busy = false
             onChanged(reply)
@@ -1616,6 +1760,7 @@ private struct CADDrawingViewsSheet: View {
 
 private struct CADDrawingBOMSheet: View {
     let document: FloeCADDocument
+    @State private var drawingTask: Task<Void, Never>?
     let page: [String: Any]
     let onChanged: ([String: Any]) -> Void
 
@@ -1714,26 +1859,32 @@ private struct CADDrawingBOMSheet: View {
             .task { load() }
         }
         .presentationDetents([.medium, .large])
+        .onDisappear { drawingTask?.cancel(); drawingTask = nil; busy = false }
     }
 
     private func load() {
-        guard let pageID = pageID else { return }
-        let reply = CADDrawingService(document: document).pageGeometry(pageID: UUID(uuidString: pageID) ?? UUID())
-        let bom = reply["bom"] as? [String: Any] ?? [:]
-        entries = bom["entries"] as? [[String: Any]] ?? []
-        issues = bom["issues"] as? [String] ?? []
-        showBOM = page["showBOM"] as? Bool ?? false
-        if reply["ok"] as? Bool != true {
-            errorText = reply["message"] as? String
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
+            guard let pageID = pageID else { return }
+            let reply = await CADDrawingService(document: document).pageGeometryAsync(pageID: UUID(uuidString: pageID) ?? UUID())
+            guard !Task.isCancelled, !document.isClosed, reply["error"] as? String != "drawing_cancelled", reply["error"] as? String != "drawing_source_changed" else { return }
+            let bom = reply["bom"] as? [String: Any] ?? [:]
+            entries = bom["entries"] as? [[String: Any]] ?? []
+            issues = bom["issues"] as? [String] ?? []
+            showBOM = page["showBOM"] as? Bool ?? false
+            if reply["ok"] as? Bool != true {
+                errorText = reply["message"] as? String
+            }
         }
     }
 
     private func derive() {
         guard let pageID else { return }
         busy = true
-        Task { @MainActor in
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "setBOM",
+            let reply = await service.handleAsync(action: "setBOM",
                                        args: ["pageID": pageID, "showBOM": true])
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             busy = false
@@ -1751,9 +1902,10 @@ private struct CADDrawingBOMSheet: View {
     private func setVisible(_ value: Bool) {
         guard let pageID else { return }
         busy = true
-        Task { @MainActor in
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "updatePage",
+            let reply = await service.handleAsync(action: "updatePage",
                                        args: ["pageID": pageID, "showBOM": value])
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             busy = false
@@ -1769,6 +1921,7 @@ private struct CADDrawingBOMSheet: View {
 
 private struct CADDrawingBalloonSheet: View {
     let document: FloeCADDocument
+    @State private var drawingTask: Task<Void, Never>?
     let page: [String: Any]
     let onChanged: ([String: Any]) -> Void
 
@@ -1886,26 +2039,31 @@ private struct CADDrawingBalloonSheet: View {
             .task { load() }
         }
         .presentationDetents([.medium, .large])
+        .onDisappear { drawingTask?.cancel(); drawingTask = nil; busy = false }
     }
 
     private func load() {
-        guard let pageID, let uuid = UUID(uuidString: pageID) else { return }
-        let reply = CADDrawingService(document: document).pageGeometry(pageID: uuid)
-        instances = reply["instances"] as? [[String: Any]] ?? []
-        balloons = reply["balloons"] as? [[String: Any]] ?? []
-        bomRows = ((reply["bom"] as? [String: Any])?["entries"] as? [[String: Any]]) ?? []
-        views = (page["views"] as? [[String: Any]])
-            ?? ((reply["page"] as? [String: Any])?["views"] as? [[String: Any]])
-            ?? []
-        if viewID == nil, views.count > 1 { viewID = views.first?["id"] as? String }
-        if instanceID == nil {
-            instanceID = instances.first?["instanceID"] as? String
-        }
-        if let first = bomRows.first?["itemNumber"] as? Int {
-            itemNumber = "\(first)"
-        }
-        if reply["ok"] as? Bool != true {
-            errorText = reply["message"] as? String
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
+            guard let pageID, let uuid = UUID(uuidString: pageID) else { return }
+            let reply = await CADDrawingService(document: document).pageGeometryAsync(pageID: uuid)
+            guard !Task.isCancelled, !document.isClosed, reply["error"] as? String != "drawing_cancelled", reply["error"] as? String != "drawing_source_changed" else { return }
+            instances = reply["instances"] as? [[String: Any]] ?? []
+            balloons = reply["balloons"] as? [[String: Any]] ?? []
+            bomRows = ((reply["bom"] as? [String: Any])?["entries"] as? [[String: Any]]) ?? []
+            views = (page["views"] as? [[String: Any]])
+                ?? ((reply["page"] as? [String: Any])?["views"] as? [[String: Any]])
+                ?? []
+            if viewID == nil, views.count > 1 { viewID = views.first?["id"] as? String }
+            if instanceID == nil {
+                instanceID = instances.first?["instanceID"] as? String
+            }
+            if let first = bomRows.first?["itemNumber"] as? Int {
+                itemNumber = "\(first)"
+            }
+            if reply["ok"] as? Bool != true {
+                errorText = reply["message"] as? String
+            }
         }
     }
 
@@ -1921,9 +2079,10 @@ private struct CADDrawingBalloonSheet: View {
             args["anchor"] = [x, y]
         }
         busy = true
-        Task { @MainActor in
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "addBalloon", args: args)
+            let reply = await service.handleAsync(action: "addBalloon", args: args)
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             busy = false
             onChanged(reply)
@@ -1939,9 +2098,10 @@ private struct CADDrawingBalloonSheet: View {
     private func remove(_ balloonID: String) {
         guard let pageID, let uuid = UUID(uuidString: balloonID) else { return }
         busy = true
-        Task { @MainActor in
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "removeBalloon",
+            let reply = await service.handleAsync(action: "removeBalloon",
                                        args: ["pageID": pageID, "balloonID": uuid.uuidString])
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             busy = false
@@ -1957,6 +2117,7 @@ private struct CADDrawingBalloonSheet: View {
 
 private struct CADDrawingDimensionSheet: View {
     let document: FloeCADDocument
+    @State private var drawingTask: Task<Void, Never>?
     let page: [String: Any]
     let onChanged: ([String: Any]) -> Void
 
@@ -2234,6 +2395,7 @@ private struct CADDrawingDimensionSheet: View {
             .task { load() }
         }
         .presentationDetents([.medium, .large])
+        .onDisappear { drawingTask?.cancel(); drawingTask = nil; busy = false }
     }
 
     private var pointsComplete: Bool {
@@ -2243,19 +2405,23 @@ private struct CADDrawingDimensionSheet: View {
     }
 
     private func load() {
-        guard let pageID, let uuid = UUID(uuidString: pageID) else { return }
-        let reply = CADDrawingService(document: document).pageGeometry(pageID: uuid)
-        instances = reply["instances"] as? [[String: Any]] ?? []
-        manual = reply["manualDimensions"] as? [[String: Any]] ?? []
-        views = (page["views"] as? [[String: Any]])
-            ?? ((reply["page"] as? [String: Any])?["views"] as? [[String: Any]])
-            ?? []
-        if viewID == nil, views.count > 1 { viewID = views.first?["id"] as? String }
-        if instanceID == nil { instanceID = instances.first?["instanceID"] as? String }
-        prefill()
-        loadCandidates()
-        if reply["ok"] as? Bool != true {
-            errorText = reply["message"] as? String
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
+            guard let pageID, let uuid = UUID(uuidString: pageID) else { return }
+            let reply = await CADDrawingService(document: document).pageGeometryAsync(pageID: uuid)
+            guard !Task.isCancelled, !document.isClosed, reply["error"] as? String != "drawing_cancelled", reply["error"] as? String != "drawing_source_changed" else { return }
+            instances = reply["instances"] as? [[String: Any]] ?? []
+            manual = reply["manualDimensions"] as? [[String: Any]] ?? []
+            views = (page["views"] as? [[String: Any]])
+                ?? ((reply["page"] as? [String: Any])?["views"] as? [[String: Any]])
+                ?? []
+            if viewID == nil, views.count > 1 { viewID = views.first?["id"] as? String }
+            if instanceID == nil { instanceID = instances.first?["instanceID"] as? String }
+            prefill()
+            loadCandidates()
+            if reply["ok"] as? Bool != true {
+                errorText = reply["message"] as? String
+            }
         }
     }
 
@@ -2268,13 +2434,17 @@ private struct CADDrawingDimensionSheet: View {
     }
 
     private func loadCandidates() {
-        guard let pageID else { return }
-        var args: [String: Any] = ["pageID": pageID]
-        if let viewID { args["viewID"] = viewID }
-        let reply = CADDrawingService(document: document)
-            .handle(action: "dimensionCandidates", args: args)
-        candidates = reply["candidates"] as? [[String: Any]] ?? []
-        candidateIndex = nil
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
+            guard let pageID else { return }
+            var args: [String: Any] = ["pageID": pageID]
+            if let viewID { args["viewID"] = viewID }
+            let reply = await CADDrawingService(document: document)
+                .handleAsync(action: "dimensionCandidates", args: args)
+            guard !Task.isCancelled, !document.isClosed, reply["error"] as? String != "drawing_cancelled", reply["error"] as? String != "drawing_source_changed" else { return }
+            candidates = reply["candidates"] as? [[String: Any]] ?? []
+            candidateIndex = nil
+        }
     }
 
     private func prefill() {
@@ -2345,9 +2515,10 @@ private struct CADDrawingDimensionSheet: View {
             args["tolerance"] = tolerance
         }
         busy = true
-        Task { @MainActor in
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "addDimension", args: args)
+            let reply = await service.handleAsync(action: "addDimension", args: args)
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             busy = false
             onChanged(reply)
@@ -2486,9 +2657,10 @@ private struct CADDrawingDimensionSheet: View {
             "tolerance": tolerance,
         ]
         busy = true
-        Task { @MainActor in
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "updateDimension", args: args)
+            let reply = await service.handleAsync(action: "updateDimension", args: args)
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             busy = false
             onChanged(reply)
@@ -2512,9 +2684,10 @@ private struct CADDrawingDimensionSheet: View {
         guard let pageID, let uuid = UUID(uuidString: dimensionID) else { return }
         if editingDimensionID == dimensionID { editingDimensionID = nil }
         busy = true
-        Task { @MainActor in
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "removeDimension",
+            let reply = await service.handleAsync(action: "removeDimension",
                                        args: ["pageID": pageID, "dimensionID": uuid.uuidString])
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             busy = false
@@ -2530,6 +2703,7 @@ private struct CADDrawingDimensionSheet: View {
 
 private struct CADDrawingAnnotationSheet: View {
     let document: FloeCADDocument
+    @State private var drawingTask: Task<Void, Never>?
     let page: [String: Any]
     let onChanged: ([String: Any]) -> Void
 
@@ -2627,19 +2801,24 @@ private struct CADDrawingAnnotationSheet: View {
             .task { load() }
         }
         .presentationDetents([.medium, .large])
+        .onDisappear { drawingTask?.cancel(); drawingTask = nil; busy = false }
     }
 
     private func load() {
-        guard let pageID, let uuid = UUID(uuidString: pageID) else { return }
-        let reply = CADDrawingService(document: document).pageGeometry(pageID: uuid)
-        instances = reply["instances"] as? [[String: Any]] ?? []
-        annotations = reply["annotations"] as? [[String: Any]] ?? []
-        views = (page["views"] as? [[String: Any]])
-            ?? ((reply["page"] as? [String: Any])?["views"] as? [[String: Any]])
-            ?? []
-        if viewID == nil, views.count > 1 { viewID = views.first?["id"] as? String }
-        if reply["ok"] as? Bool != true {
-            errorText = reply["message"] as? String
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
+            guard let pageID, let uuid = UUID(uuidString: pageID) else { return }
+            let reply = await CADDrawingService(document: document).pageGeometryAsync(pageID: uuid)
+            guard !Task.isCancelled, !document.isClosed, reply["error"] as? String != "drawing_cancelled", reply["error"] as? String != "drawing_source_changed" else { return }
+            instances = reply["instances"] as? [[String: Any]] ?? []
+            annotations = reply["annotations"] as? [[String: Any]] ?? []
+            views = (page["views"] as? [[String: Any]])
+                ?? ((reply["page"] as? [String: Any])?["views"] as? [[String: Any]])
+                ?? []
+            if viewID == nil, views.count > 1 { viewID = views.first?["id"] as? String }
+            if reply["ok"] as? Bool != true {
+                errorText = reply["message"] as? String
+            }
         }
     }
 
@@ -2654,9 +2833,10 @@ private struct CADDrawingAnnotationSheet: View {
         if let instanceID { args["instanceID"] = instanceID }
         if let viewID { args["viewID"] = viewID }
         busy = true
-        Task { @MainActor in
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "addAnnotation", args: args)
+            let reply = await service.handleAsync(action: "addAnnotation", args: args)
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             busy = false
             onChanged(reply)
@@ -2672,9 +2852,10 @@ private struct CADDrawingAnnotationSheet: View {
     private func remove(_ annotationID: String) {
         guard let pageID, let uuid = UUID(uuidString: annotationID) else { return }
         busy = true
-        Task { @MainActor in
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "removeAnnotation",
+            let reply = await service.handleAsync(action: "removeAnnotation",
                                        args: ["pageID": pageID, "annotationID": uuid.uuidString])
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             busy = false
@@ -2691,6 +2872,7 @@ private struct CADDrawingAnnotationSheet: View {
 
 private struct CADDrawingManufacturingSheet: View {
     let document: FloeCADDocument
+    @State private var drawingTask: Task<Void, Never>?
     let page: [String: Any]
     let onChanged: ([String: Any]) -> Void
 
@@ -2898,6 +3080,7 @@ private struct CADDrawingManufacturingSheet: View {
             .task { load() }
         }
         .presentationDetents([.medium, .large])
+        .onDisappear { drawingTask?.cancel(); drawingTask = nil; busy = false }
     }
 
     @ViewBuilder
@@ -3042,42 +3225,50 @@ private struct CADDrawingManufacturingSheet: View {
     }
 
     private func load() {
-        guard let pageID, let uuid = UUID(uuidString: pageID) else { return }
-        let reply = CADDrawingService(document: document).pageGeometry(pageID: uuid)
-        annotations = reply["manufacturingAnnotations"] as? [[String: Any]] ?? []
-        views = (page["views"] as? [[String: Any]])
-            ?? ((reply["page"] as? [String: Any])?["views"] as? [[String: Any]])
-            ?? []
-        if viewID == nil, views.count > 1 { viewID = views.first?["id"] as? String }
-        loadCandidates()
-        if reply["ok"] as? Bool != true {
-            errorText = reply["message"] as? String
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
+            guard let pageID, let uuid = UUID(uuidString: pageID) else { return }
+            let reply = await CADDrawingService(document: document).pageGeometryAsync(pageID: uuid)
+            guard !Task.isCancelled, !document.isClosed, reply["error"] as? String != "drawing_cancelled", reply["error"] as? String != "drawing_source_changed" else { return }
+            annotations = reply["manufacturingAnnotations"] as? [[String: Any]] ?? []
+            views = (page["views"] as? [[String: Any]])
+                ?? ((reply["page"] as? [String: Any])?["views"] as? [[String: Any]])
+                ?? []
+            if viewID == nil, views.count > 1 { viewID = views.first?["id"] as? String }
+            loadCandidates()
+            if reply["ok"] as? Bool != true {
+                errorText = reply["message"] as? String
+            }
         }
     }
 
     private func loadCandidates() {
-        guard let pageID else { return }
-        var args: [String: Any] = ["pageID": pageID]
-        if let viewID { args["viewID"] = viewID }
-        let reply = CADDrawingService(document: document)
-            .handle(action: "dimensionCandidates", args: args)
-        let rows = reply["candidates"] as? [[String: Any]] ?? []
-        candidates = requiresHole
-            ? rows.filter { row in
-                guard let reference = row["reference"] as? [String: Any] else { return false }
-                return reference["featureID"] is String
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
+            guard let pageID else { return }
+            var args: [String: Any] = ["pageID": pageID]
+            if let viewID { args["viewID"] = viewID }
+            let reply = await CADDrawingService(document: document)
+                .handleAsync(action: "dimensionCandidates", args: args)
+            guard !Task.isCancelled, !document.isClosed, reply["error"] as? String != "drawing_cancelled", reply["error"] as? String != "drawing_source_changed" else { return }
+            let rows = reply["candidates"] as? [[String: Any]] ?? []
+            candidates = requiresHole
+                ? rows.filter { row in
+                    guard let reference = row["reference"] as? [String: Any] else { return false }
+                    return reference["featureID"] is String
+                }
+                : rows
+            // Re-select the annotation's existing source when it is still present
+            // in this view. A missing source is NOT replaced by the first
+            // candidate: nil keeps the stored reference on update.
+            candidateIndex = nil
+            if let preferredFeature,
+               let index = candidates.firstIndex(where: { row in
+                   guard let reference = row["reference"] as? [String: Any] else { return false }
+                   return Self.reference(reference, matches: preferredFeature)
+               }) {
+                candidateIndex = index
             }
-            : rows
-        // Re-select the annotation's existing source when it is still present
-        // in this view. A missing source is NOT replaced by the first
-        // candidate: nil keeps the stored reference on update.
-        candidateIndex = nil
-        if let preferredFeature,
-           let index = candidates.firstIndex(where: { row in
-               guard let reference = row["reference"] as? [String: Any] else { return false }
-               return Self.reference(reference, matches: preferredFeature)
-           }) {
-            candidateIndex = index
         }
     }
 
@@ -3326,9 +3517,10 @@ private struct CADDrawingManufacturingSheet: View {
         args[payloadKey] = payload
         let action = editing ? "updateManufacturingAnnotation" : "addManufacturingAnnotation"
         busy = true
-        Task { @MainActor in
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: action, args: args)
+            let reply = await service.handleAsync(action: action, args: args)
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             busy = false
             onChanged(reply)
@@ -3352,9 +3544,10 @@ private struct CADDrawingManufacturingSheet: View {
             preferredFeature = nil
         }
         busy = true
-        Task { @MainActor in
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: "removeManufacturingAnnotation",
+            let reply = await service.handleAsync(action: "removeManufacturingAnnotation",
                                        args: ["pageID": pageID,
                                               "annotationID": uuid.uuidString])
             if reply["mutated"] as? Bool == true { _ = await document.save() }
@@ -3391,6 +3584,7 @@ private struct CADDrawingRevisionRowDraft: Identifiable, Equatable {
 
 private struct CADDrawingTemplateSheet: View {
     let document: FloeCADDocument
+    @State private var drawingTask: Task<Void, Never>?
     let onChanged: ([String: Any]) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -3632,6 +3826,7 @@ private struct CADDrawingTemplateSheet: View {
             .task { load() }
         }
         .presentationDetents([.medium, .large])
+        .onDisappear { drawingTask?.cancel(); drawingTask = nil; busy = false }
     }
 
     private func loadEditor(_ row: [String: Any]) {
@@ -3833,9 +4028,10 @@ private struct CADDrawingTemplateSheet: View {
     private func run(action: String, args: [String: Any],
                      onSuccess: @escaping ([String: Any]) -> Void) {
         busy = true
-        Task { @MainActor in
+        drawingTask?.cancel()
+        drawingTask = Task { @MainActor in
             let service = CADDrawingService(document: document)
-            let reply = service.handle(action: action, args: args)
+            let reply = await service.handleAsync(action: action, args: args)
             if reply["mutated"] as? Bool == true { _ = await document.save() }
             busy = false
             onChanged(reply)

@@ -55,6 +55,72 @@ protocol ViewportCameraControl: AnyObject {
 @MainActor
 @Observable
 final class EditorViewModel {
+    var polygonCageEditingBody: BodyID?
+    var polygonCageShowControl = true
+    nonisolated enum PolygonPickMode: String, CaseIterable { case face, edge, vertex }
+    var polygonPickMode: PolygonPickMode = .face
+    var polygonFaceSelection: UUID?
+    var polygonEdgeSelection: UUID?
+    var polygonVertexSelection: [UUID] = []
+    var polygonSelectionDigest: String?
+
+    var activePolygonCage: (node: FeatureNode, definition: CADPolygonMeshDefinition, body: Body)? {
+        guard let id = polygonCageEditingBody else { return nil }
+        return CADPolygonMeshService.currentCage(in: session, bodyID: id)
+    }
+    func beginPolygonCageEditing(_ id: BodyID) {
+        cancelTransientPicks(); cancelTool()
+        polygonCageEditingBody = id; polygonCageShowControl = true
+        polygonFaceSelection = nil; polygonEdgeSelection = nil; polygonVertexSelection = []
+        polygonSelectionDigest = activePolygonCage?.definition.digest
+        mode = .selected(id); selection = [id]
+    }
+    func endPolygonCageEditing() {
+        polygonCageEditingBody = nil; polygonFaceSelection = nil; polygonEdgeSelection = nil
+        polygonVertexSelection = []; polygonSelectionDigest = nil
+    }
+    func refreshPolygonCageSelection() {
+        guard let active = activePolygonCage else { endPolygonCageEditing(); return }
+        if !active.definition.cage.faces.contains(where: { $0.id == polygonFaceSelection }) { polygonFaceSelection = nil }
+        if !active.definition.cage.edges.contains(where: { $0.id == polygonEdgeSelection }) { polygonEdgeSelection = nil }
+        polygonVertexSelection = polygonVertexSelection.filter { id in active.definition.cage.vertices.contains { $0.id == id } }
+        polygonSelectionDigest = active.definition.digest
+    }
+    private func polygonCagePreview(for body: Body) -> Body? {
+        guard polygonCageShowControl, polygonCageEditingBody == body.id,
+              let active = activePolygonCage, let result = try? CADPolygonMeshKernel.evaluate(active.definition) else { return nil }
+        var preview = body; preview.render = result.controlRender; preview.edges = result.controlEdges
+        preview.meshRevision = (1 << 60) | body.meshRevision
+        return preview
+    }
+    private func handlePolygonCageTap(ray: Ray) {
+        guard let active = activePolygonCage, polygonCageShowControl,
+              let result = try? CADPolygonMeshKernel.evaluate(active.definition),
+              let hit = HitTester.pickBody(ray: ray, in: scene), hit.bodyID == active.body.id,
+              result.controlFaceIDs.indices.contains(hit.triangleIndex),
+              let face = active.definition.cage.faces.first(where: { $0.id == result.controlFaceIDs[hit.triangleIndex] }) else { return }
+        let local = simd_inverse(active.body.transform.matrixFloat) * SIMD4(hit.worldPoint,1)
+        let point = SIMD3<Double>(Double(local.x),Double(local.y),Double(local.z)), points = active.definition.cage.points
+        switch polygonPickMode {
+        case .face: polygonFaceSelection = face.id
+        case .edge:
+            let keys = Set(active.definition.cage.keys(face))
+            let edges = active.definition.cage.edges.filter { keys.contains($0.key) }
+            func distance(_ edge: CADPolygonCage.Edge) -> Double {
+                let a = points[edge.a]!, b = points[edge.b]!, delta = b - a
+                let t = min(1,max(0,simd_dot(point - a,delta) / simd_length_squared(delta)))
+                return simd_distance(point,a + delta * t)
+            }
+            polygonEdgeSelection = edges.min(by: { distance($0) < distance($1) })?.id
+        case .vertex:
+            if let id = face.vertices.min(by: { simd_distance(points[$0]!,point) < simd_distance(points[$1]!,point) }) {
+                if polygonVertexSelection.contains(id) { polygonVertexSelection.removeAll { $0 == id } }
+                else { polygonVertexSelection.append(id) }
+            }
+        }
+        polygonSelectionDigest = active.definition.digest
+    }
+
     let session: DocumentSession
     /// Transient, document-owned exploded-view display state (never persisted,
     /// never an undo command). The viewport applies its offsets instead of the
@@ -156,6 +222,11 @@ final class EditorViewModel {
         case .faceSelected(let id):
             parts.append("face:\(id.raw.uuidString):\(toolContext?.faceTriangles.count ?? 0)")
         default: parts.append("mode:other")
+        }
+        if let id = polygonCageEditingBody {
+            parts += ["polygon:" + id.raw.uuidString, String(polygonCageShowControl), polygonPickMode.rawValue,
+                      polygonFaceSelection?.uuidString ?? "-", polygonEdgeSelection?.uuidString ?? "-",
+                      polygonVertexSelection.map(\.uuidString).joined(), polygonSelectionDigest ?? "-"]
         }
         return parts.joined(separator: "#")
     }
@@ -1907,11 +1978,12 @@ final class EditorViewModel {
             if case .faceSelected(let faceBodyID) = mode, faceBodyID == body.id {
                 selectionState = SelectionStateNone.rawValue
             }
+            let displayed = includeSectionPlaneChrome ? (polygonCagePreview(for: body) ?? body) : body
             drawables.append(BodyDrawable(
                 id: body.id,
-                renderMesh: body.render,
-                edges: body.edges,
-                meshRevision: body.meshRevision,
+                renderMesh: displayed.render,
+                edges: displayed.edges,
+                meshRevision: displayed.meshRevision,
                 modelMatrix: body.transform.matrixFloat,
                 baseColor: SIMD4(0.72, 0.74, 0.78, 1),
                 selectionState: selectionState,
@@ -1920,6 +1992,34 @@ final class EditorViewModel {
             ))
         }
         var scene = ViewportScene(bodies: drawables)
+        if includeSectionPlaneChrome, polygonCageShowControl, let id = polygonFaceSelection,
+           let active = activePolygonCage, let result = try? CADPolygonMeshKernel.evaluate(active.definition) {
+            var triangles: [SIMD3<Float>] = []
+            for triangle in result.controlFaceIDs.indices where result.controlFaceIDs[triangle] == id {
+                for corner in 0..<3 {
+                    let p = result.controlRender.positions[Int(result.controlRender.indices[triangle * 3 + corner])]
+                    let world = active.body.transform.matrixFloat * SIMD4(p,1)
+                    triangles.append(SIMD3(world.x,world.y,world.z))
+                }
+            }
+            if !triangles.isEmpty { scene.profileFills.append(SketchFillBatch(triangles: triangles,color: SIMD4(0.16,0.55,1,0.72))) }
+        }
+        if includeSectionPlaneChrome, polygonCageShowControl, let active = activePolygonCage {
+            let points = active.definition.cage.points, matrix = active.body.transform.matrixFloat
+            func world(_ p: SIMD3<Double>) -> SIMD3<Float> {
+                let value = matrix * SIMD4(SIMD3<Float>(p),1); return SIMD3(value.x,value.y,value.z)
+            }
+            var lines: [SIMD3<Float>] = []
+            if let edge = active.definition.cage.edges.first(where: { $0.id == polygonEdgeSelection }) {
+                lines += [world(points[edge.a]!),world(points[edge.b]!)]
+            }
+            for id in polygonVertexSelection {
+                guard let point = points[id] else { continue }
+                let d = 0.15
+                for axis in 0..<3 { var delta = SIMD3<Double>.zero; delta[axis] = d; lines += [world(point - delta),world(point + delta)] }
+            }
+            if !lines.isEmpty { scene.sketchLines.append(SketchLineBatch(segments: lines,color: SIMD4(1,0.4,0.1,1))) }
+        }
         scene.gridPlane = activeSketch?.plane
 
         // Assembly instances: the shared immutable source body's mesh is
@@ -2084,7 +2184,7 @@ final class EditorViewModel {
         if case .pickingShellFaces = mode, let body = shellSourceBody {
             let matrix = body.transform.matrixFloat
             var triangles: [SIMD3<Float>] = []
-            for face in shellSelectedFaces {
+            for face in shellSelectedFaces + shellWallRegions.map(\.face) {
                 for t in face.triangles where t < body.render.triangleCount {
                     for k in 0..<3 {
                         let index = Int(body.render.indices[t * 3 + k])
@@ -4797,6 +4897,7 @@ final class EditorViewModel {
     /// sketching, import. Notably reverts the rotate preview, which mutates
     /// transforms outside the undo stack until committed.
     private func cancelTransientPicks() {
+        endPolygonCageEditing()
         cancelSymmetryAxisPick()
         cancelRotateAxis()
         cancelTranslate()
@@ -5276,13 +5377,15 @@ final class EditorViewModel {
     func referenceEditLabel(_ id: FeatureID) -> String? {
         switch session.document.features.node(id)?.kind {
         case .fillet, .chamfer, .advancedBlend: return "Edit Edges"
-        case .shell, .deleteFace: return "Edit Faces"
+        case .shell, .regionShell, .deleteFace: return "Edit Faces"
         case .boolean: return "Edit Tool"
         case .mirror, .pattern, .transform: return "Edit Body"
         case .pushPull, .moveFace, .scaleFace, .rotateFace: return "Edit Face"
         case .extrude, .draftExtrude, .revolve, .sweep: return "Edit Profile"
         case .hole: return FloeCADStrings.text("cad.hole.edit", "Edit Hole")
         case .thread: return FloeCADStrings.text("cad.thread.edit", "Edit Thread")
+        case .loft: return FloeCADStrings.text("cad.loftSurface.editLoft", "Edit Loft")
+        case .surface: return FloeCADStrings.text("cad.loftSurface.editSurface", "Edit Surface")
         default: return nil
         }
     }
@@ -5293,7 +5396,7 @@ final class EditorViewModel {
     func beginReferenceEdit(_ id: FeatureID) -> Bool {
         switch session.document.features.node(id)?.kind {
         case .fillet, .chamfer, .advancedBlend: return beginBlendEdit(id)
-        case .shell: return beginShellEdit(id)
+        case .shell, .regionShell: return beginShellEdit(id)
         case .deleteFace: return beginDeleteFaceEdit(id)
         case .boolean: return beginBooleanEdit(id)
         case .mirror, .pattern, .transform: return beginFeatureBodyEdit(id)
@@ -5303,6 +5406,10 @@ final class EditorViewModel {
         case .thread:
             beginThreadEditor(id)
             return true
+        case .loft:
+            beginLoftSurfaceEditor(.loft(id)); return loftSurfaceEditor != nil
+        case .surface:
+            beginLoftSurfaceEditor(.surface(id)); return loftSurfaceEditor != nil
         default: return false
         }
     }
@@ -5861,6 +5968,24 @@ final class EditorViewModel {
     /// Resolved faces (body-LOCAL space) the user has toggled OPEN. Empty is
     /// valid: Shapr3D's whole-body Shell yields an enclosed hollow.
     var shellSelectedFaces: [ResolvedFace] = []
+    nonisolated struct ShellWallSelection: Identifiable {
+        var id: UUID = UUID()
+        var face: ResolvedFace
+        var thickness: Double
+    }
+    var shellWallRegions: [ShellWallSelection] = []
+    var shellPickingRegions = false
+    var shellRegionThickness: Double = 2
+
+    func setShellWallThickness(_ id: UUID, value: Double) {
+        guard let index = shellWallRegions.firstIndex(where: { $0.id == id }) else { return }
+        shellWallRegions[index].thickness = value
+        updateShellPreview()
+    }
+    func removeShellWallRegion(_ id: UUID) {
+        shellWallRegions.removeAll { $0.id == id }
+        updateShellPreview()
+    }
     /// Editing an existing shell node (History "Edit Faces"): the node, its
     /// consumed-body ref, and the replayed INPUT body the pick and preview
     /// run against — the document's copy is already hollow.
@@ -5889,6 +6014,8 @@ final class EditorViewModel {
         cancelTransientPicks()
         cancelTool()
         shellSelectedFaces = []
+        shellWallRegions = []
+        shellPickingRegions = false
         shellBodyID = selection.count == 1 ? selection.first : nil
         if let id = shellBodyID, let body = session.document.body(with: id),
            refuseExactSurface(body, operation: "Shell") {
@@ -5911,8 +6038,8 @@ final class EditorViewModel {
     @discardableResult
     func beginShellEdit(_ id: FeatureID) -> Bool {
         guard let node = session.document.features.node(id),
-              case let .shell(bodyRef, openFaces, thickness) = node.kind
-        else { return false }
+              let parameters = node.kind.shellParameters else { return false }
+        let (bodyRef, openFaces, thickness, regionDefinition) = parameters
         guard let input = session.inputState(before: id), input.errors.isEmpty,
               let source = input.bodies.first(where: { $0.id == bodyRef.bodyID }) else {
             errorMessage = "Couldn't rebuild the shape this shell started from."
@@ -5920,20 +6047,32 @@ final class EditorViewModel {
         }
         if refuseExactSurface(source, operation: "Shell") { return false }
         let naming = SignatureNaming()
+        let prepared = input.faceTables[bodyRef.bodyID].map {
+            CADFaceNamingSnapshot.prepare($0, for: source, names: input.kernelNames[bodyRef.bodyID])
+        }
         let resolved = openFaces.compactMap {
-            naming.resolvePersisted($0, in: source, table: input.faceTables[bodyRef.bodyID])
+            naming.resolvePersisted($0, in: source, table: prepared)
         }
         guard resolved.count == openFaces.count else {
             errorMessage = FloeCADStrings.text("cad.error.shellOpeningMissing", "An opening has changed. Select its face again.")
             return false
         }
+        var walls: [ShellWallSelection] = []
+        for region in regionDefinition?.regions ?? [] {
+            guard let face = naming.resolvePersisted(region.face, in: source, table: prepared) else {
+                errorMessage = FloeCADStrings.text("cad.shell.regionMissing", "A wall region has changed. Select its face again.")
+                return false
+            }
+            walls.append(.init(id: region.id, face: face, thickness: region.thickness.value))
+        }
         cancelTransientPicks()
         cancelTool()
         shellSelectedFaces = resolved
+        shellWallRegions = walls
         shellEditingFeature = id
         shellEditBodyRef = bodyRef
         shellEditSource = source
-        shellEditFaceTable = input.faceTables[bodyRef.bodyID]
+        shellEditFaceTable = prepared
         shellBodyID = bodyRef.bodyID
         shellThickness = thickness.value
         shellPreview = nil
@@ -5971,6 +6110,8 @@ final class EditorViewModel {
     /// state WITHOUT touching `selection` (same contract as `resetBlendState`).
     private func resetShellState() {
         shellSelectedFaces = []
+        shellWallRegions = []
+        shellPickingRegions = false
         shellBodyID = nil
         shellPreview = nil
         shellEditingFeature = nil
@@ -5997,6 +6138,7 @@ final class EditorViewModel {
         if shellBodyID != hit.bodyID {
             shellBodyID = hit.bodyID
             shellSelectedFaces = []
+            shellWallRegions = []
             shellThickness = Self.defaultShellThickness(for: body)
         }
         // While the live preview replaces the body in `scene`, the hit's
@@ -6013,10 +6155,18 @@ final class EditorViewModel {
             baseColor: SIMD4(0.72, 0.74, 0.78, 1),
             selectionState: SelectionStateNone.rawValue
         )])
-        guard let originalHit = HitTester.pickBody(ray: ray, in: originalScene),
-              var face = Self.shellPickedFace(
+        guard let originalHit = HitTester.pickBody(ray: ray, in: originalScene) else { return }
+        let table = editing ? shellEditFaceTable : session.lastFaceTables[body.id].flatMap {
+            session.lastNamingRevisions[body.id] == body.meshRevision
+                ? CADFaceNamingSnapshot.prepare($0, for: body, names: session.lastKernelNames[body.id]) : nil
+        }
+        let exact = Self.shellNativeFace(in: body, triangle: originalHit.triangleIndex, table: table)
+        let needsNative = (shellPickingRegions && exact != nil) || exact.map {
+            if case .nativeSurface = $0.native?.signature.kind { return true }; return false
+        } == true
+        guard var face = needsNative ? exact : Self.shellPickedFace(
                   in: body.render, seedTriangle: originalHit.triangleIndex) else {
-            errorMessage = FloeCADStrings.text("cad.error.shellPlanarOnly", "Select a flat or cylindrical face.")
+            errorMessage = FloeCADStrings.text("cad.shell.selectFace", "Select a face on the exact solid.")
             return
         }
         guard body.brep != nil || face.cylinder == nil else {
@@ -6024,16 +6174,79 @@ final class EditorViewModel {
             return
         }
         face.elementName = editing
-            ? shellEditFaceTable?.entries.first { $0.triangles.contains(originalHit.triangleIndex) }?.elementName
+            ? mintElementName(body: body, triangle: originalHit.triangleIndex, table: shellEditFaceTable)
             : mintElementName(body: body, triangle: originalHit.triangleIndex)
-        // Toggle: same triangle set already picked → close it again.
+        if let brep = body.brep {
+            // A flat display facet of a sphere/spline is not a planar INPUT
+            // face. Prove the actual named support before showing any preview.
+            guard let name = face.elementName,
+                  let names = table?.nativeFaceNames ?? session.lastKernelNames[body.id] else {
+                errorMessage = Self.faceIdentityUnavailableMessage; return
+            }
+            let matches = names.filter { $0.value == name }
+            let signature = face.native?.signature ?? face.planar.map { SignatureNaming.signature(planar: $0) }
+                ?? face.cylinder.map { SignatureNaming.signature(cylinder: $0) }
+            guard matches.count == 1, let index = matches.first?.key, let signature,
+                  let actual = OCCTKernel.faceInfo(brep).first(where: { $0.index == index })?.signature,
+                  SignatureNaming.kindCompatible(signature.kind, actual.kind) else {
+                errorMessage = Self.faceIdentityUnavailableMessage; return
+            }
+        }
         let key = Set(face.triangles)
+        if shellPickingRegions {
+            guard shellRegionThickness.isFinite, shellRegionThickness > 1e-6,
+                  !shellSelectedFaces.contains(where: { Set($0.triangles) == key }) else {
+                errorMessage = FloeCADStrings.text("cad.shell.regionIsOpen", "Choose a wall face and a positive thickness."); return
+            }
+            if let index = shellWallRegions.firstIndex(where: { Set($0.face.triangles) == key }) {
+                shellWallRegions.remove(at: index)
+            } else {
+                shellWallRegions.append(.init(face: face, thickness: shellRegionThickness))
+            }
+            updateShellPreview(); return
+        }
+        guard !shellWallRegions.contains(where: { Set($0.face.triangles) == key }) else {
+            errorMessage = FloeCADStrings.text("cad.shell.removeRegionFirst", "Remove this wall thickness before opening the face."); return
+        }
+        // Toggle: same triangle set already picked → close it again.
         if let idx = shellSelectedFaces.firstIndex(where: { Set($0.triangles) == key }) {
             shellSelectedFaces.remove(at: idx)
         } else {
             shellSelectedFaces.append(face)
         }
         updateShellPreview()
+    }
+
+    nonisolated static func shellNativeFace(in body: Body, triangle: Int, table: FaceTable?) -> ResolvedFace? {
+        guard let table, table.nativeBodyID == body.id, table.nativeMeshRevision == body.meshRevision,
+              let channel = table.nativeFaceChannel, channel.count == body.render.triangleCount,
+              channel.indices.contains(triangle), let brep = body.brep else { return nil }
+        let index = Int(channel[triangle])
+        guard let name = table.nativeFaceNames?[index], name.isStableFaceIdentity,
+              let signature = OCCTKernel.faceInfo(brep).first(where: { $0.index == index })?.signature,
+              let point = OCCTKernel.faceSample(brep, index: index) else { return nil }
+        return ResolvedFace(confidence: 1,
+            native: .init(index: index, signature: signature,
+                triangles: channel.indices.filter { channel[$0] == UInt32(index) }, point: point),
+            elementName: name, identityProof: .recordedQualifiedName)
+    }
+
+    private func shellFeatureKind(source: Body, bodyRef: BodyRef) -> FeatureKind? {
+        let refs = shellSelectedFaces.compactMap {
+            Self.shellFaceRef(face: $0, bodyRef: bodyRef, creator: bodyRef.producer,
+                elementName: mintElementName(body: source, triangle: $0.triangles.first, table: shellEditFaceTable))
+        }
+        guard refs.count == shellSelectedFaces.count else { return nil }
+        if shellWallRegions.isEmpty { return .shell(body: bodyRef, openFaces: refs, thickness: Expr(value: shellThickness)) }
+        var regions: [ShellRegionDefinition.Region] = []
+        for wall in shellWallRegions {
+            guard let ref = Self.shellFaceRef(face: wall.face, bodyRef: bodyRef, creator: bodyRef.producer,
+                elementName: mintElementName(body: source, triangle: wall.face.triangles.first, table: shellEditFaceTable)) else { return nil }
+            regions.append(.init(id: wall.id, face: ref, thickness: Expr(value: wall.thickness)))
+        }
+        let definition = ShellRegionDefinition(thickness: Expr(value: shellThickness), regions: regions)
+        guard (try? definition.validate(body: bodyRef, openFaces: refs)) != nil else { return nil }
+        return .regionShell(body: bodyRef, openFaces: refs, definition: definition)
     }
 
     nonisolated static func shellPickedFace(in mesh: RenderMesh, seedTriangle: Int) -> ResolvedFace? {
@@ -6075,17 +6288,39 @@ final class EditorViewModel {
     /// stays for brep-less bodies. Nil = invalid.
     private func shelledBody(source: Body, revision: UInt64) -> Body? {
         if OCCTKernel.useOCCTAsSourceOfTruth, let brep = source.brep {
-            guard let openPoints = Self.shellOpenPoints(for: shellSelectedFaces, mesh: source.render),
-                  let hollow = try? OCCTKernel.shellResult(
-                brep, openingAt: openPoints, thickness: shellThickness,
-                tolerance: OCCTKernel.matchTolerance(for: brep)).get() else {
-                return nil
+            let hollow: BRepHandle
+            if !shellWallRegions.isEmpty {
+                guard let owner = shellEditBodyRef ?? featureNode(owning: source.id).map({ BodyRef(producer: $0.id, bodyID: source.id) }),
+                      let kind = shellFeatureKind(source: source, bodyRef: owner),
+                      let parameters = kind.shellParameters, let definition = parameters.regions,
+                      let table = shellEditFaceTable ?? session.lastFaceTables[source.id],
+                      table.nativeBodyID == source.id, table.nativeMeshRevision == source.meshRevision,
+                      let names = table.nativeFaceNames ?? session.lastKernelNames[source.id] else { return nil }
+                func index(_ ref: FaceRef) -> Int? {
+                    guard let name = ref.elementName else { return nil }
+                    let hits = names.filter { $0.value == name }
+                    return hits.count == 1 ? hits.first?.key : nil
+                }
+                let openings = parameters.openFaces.compactMap(index)
+                let regionIndices = definition.regions.compactMap { index($0.face) }
+                guard openings.count == parameters.openFaces.count, regionIndices.count == definition.regions.count,
+                      let result = try? OCCTKernel.regionShellResultWithAncestry(brep, openFaces: openings,
+                        thickness: shellThickness, regions: zip(regionIndices, definition.regions).map {
+                            (index: $0.0, thickness: $0.1.thickness.value)
+                        }).get() else { return nil }
+                hollow = result.handle
+            } else {
+                guard let openPoints = Self.shellOpenPoints(for: shellSelectedFaces, mesh: source.render),
+                      let result = try? OCCTKernel.shellResult(brep, openingAt: openPoints,
+                        thickness: shellThickness, tolerance: OCCTKernel.matchTolerance(for: brep)).get() else { return nil }
+                hollow = result
             }
             var result = Body(
                 id: source.id, name: source.name, transform: source.transform,
                 primitive: nil, euclidMesh: source.euclidMesh(), revision: revision)
             return result.adoptBRep(hollow) ? result : nil
         }
+        guard shellWallRegions.isEmpty else { return nil }
         let planarFaces = shellSelectedFaces.compactMap(\.planar)
         guard planarFaces.count == shellSelectedFaces.count else { return nil }
         let mesh = KernelOps.shell(
@@ -6124,7 +6359,7 @@ final class EditorViewModel {
     /// node so it rebuilds parametrically. Open faces pin by geometric
     /// signature against the owning feature's body (same scheme as push/pull).
     func commitShell() {
-        guard case .pickingShellFaces = mode,
+        guard case .pickingShellFaces = mode, canCommitShell,
               let bodyID = shellBodyID,
               let source = session.document.body(with: bodyID),
               shellThickness.isFinite, shellThickness > 1e-6
@@ -6140,19 +6375,18 @@ final class EditorViewModel {
         // shell node on top of the first.
         if let featureID = shellEditingFeature, let bodyRef = shellEditBodyRef,
            let input = shellEditSource {
-            let faceRefs = shellSelectedFaces.compactMap {
-                Self.shellFaceRef(face: $0, bodyRef: bodyRef, creator: bodyRef.producer,
-                                  elementName: mintElementName(body: input, triangle: $0.triangles.first))
+            guard let after = shellFeatureKind(source: input, bodyRef: bodyRef) else {
+                errorMessage = Self.faceIdentityUnavailableMessage; return
             }
-            guard faceRefs.count == shellSelectedFaces.count else {
-                errorMessage = Self.faceIdentityUnavailableMessage
-                return
-            }
-            let after = FeatureKind.shell(
-                body: bodyRef, openFaces: faceRefs, thickness: Expr(value: shellThickness))
+            let checkpoint = session.captureEditCheckpoint()
             prepareForHistoryChange()
             resetShellState()
             session.editFeature(featureID, to: after)
+            if session.lastEvalErrors[featureID] != nil || !session.lastRebuildRejection.isEmpty {
+                session.restoreEditCheckpoint(checkpoint)
+                errorMessage = FloeCADStrings.text("cad.shell.failedKept", "The shell could not be updated. The previous shape was kept.")
+                return
+            }
             session.save()
             mode = .selected(bodyID)
             selection = [bodyID]
@@ -6177,28 +6411,28 @@ final class EditorViewModel {
         // Parametric node only for a feature-owned body (same rule as blends).
         if let owner = featureNode(owning: bodyID) {
             let bodyRef = BodyRef(producer: owner.id, bodyID: bodyID)
-            let faceRefs = shellSelectedFaces.compactMap {
-                Self.shellFaceRef(face: $0, bodyRef: bodyRef, creator: owner.id,
-                                  elementName: mintElementName(
-                                      body: source,
-                                      triangle: $0.triangles.first))
+            guard let kind = shellFeatureKind(source: source, bodyRef: bodyRef) else {
+                errorMessage = Self.faceIdentityUnavailableMessage; return
             }
-            guard faceRefs.count == shellSelectedFaces.count else {
-                errorMessage = Self.faceIdentityUnavailableMessage
-                return
+            let node = FeatureNode(name: "Shell", kind: kind, outputBodyIDs: [bodyID])
+            if case .regionShell = kind {
+                let checkpoint = session.captureEditCheckpoint()
+                session.recordAndRebuild([node], title: "Shell")
+                guard session.lastEvalErrors[node.id] == nil, session.lastRebuildRejection.isEmpty else {
+                    session.restoreEditCheckpoint(checkpoint)
+                    errorMessage = FloeCADStrings.text("cad.shell.failedKept", "The shell could not be updated. The previous shape was kept.")
+                    return
+                }
+            } else {
+                session.perform(CompositeCommand(
+                    title: "Shell", commands: [replace, AppendFeatureCommand(node: node)]))
             }
-            let node = FeatureNode(
-                name: "Shell",
-                kind: .shell(
-                    body: bodyRef, openFaces: faceRefs,
-                    thickness: Expr(value: shellThickness)),
-                outputBodyIDs: [bodyID])
-            session.perform(CompositeCommand(
-                title: "Shell", commands: [replace, AppendFeatureCommand(node: node)]))
         } else {
             session.perform(replace)
         }
         shellSelectedFaces = []
+        shellWallRegions = []
+        shellPickingRegions = false
         shellBodyID = nil
         shellPreview = nil
         mode = .selected(source.id)
@@ -6811,7 +7045,8 @@ final class EditorViewModel {
         elementName: ElementName? = nil
     ) -> FaceRef? {
         let signature: FaceSignature
-        if let planar = face.planar {
+        if let native = face.native { signature = native.signature }
+        else if let planar = face.planar {
             signature = SignatureNaming.signature(planar: planar)
         } else if let cylinder = face.cylinder {
             signature = SignatureNaming.signature(cylinder: cylinder)
@@ -7039,7 +7274,7 @@ final class EditorViewModel {
             case let .hole(body, _, _, _):
                 return body.bodyID == target ? PatternSeedChoice(id: node.id, name: node.name) : nil
             case let .extrude(_, _, _, _, value, _, _), let .draftExtrude(_, _, _, _, _, value),
-                 let .revolve(_, _, _, _, value), let .sweep(_, _, _, value, _, _), let .loft(_, value):
+                 let .revolve(_, _, _, _, value), let .sweep(_, _, _, value, _, _), let .loft(_, value, _):
                 intent = value
             default: intent = nil
             }
@@ -7675,6 +7910,7 @@ final class EditorViewModel {
     }
 
     private func sanitizeAfterHistoryChange() {
+        if polygonCageEditingBody != nil { refreshPolygonCageSelection() }
         // X22: undo/redo may have restored another section/annotation state;
         // the live mirror follows the document, never the other way around.
         reloadViewOverlayFromDocument()
@@ -8026,6 +8262,10 @@ final class EditorViewModel {
     }
 
     private func handleTap(ray: Ray) {
+        if polygonCageEditingBody != nil, polygonCageShowControl {
+            if activePolygonCage != nil { handlePolygonCageTap(ray: ray); return }
+            endPolygonCageEditing()
+        }
         // Any viewport tap dismisses pending gizmo numeric entry and an
         // Items plane selection.
         axisEntryPart = nil
@@ -9218,6 +9458,7 @@ final class EditorViewModel {
         var sweepPathSegments: [SweepPathDefinition.Segment] = []
         /// Ordered loft sections (seeded with the armed profile; taps append).
         var loftProfiles: [(profile: Profile, holes: [Profile], plane: SketchPlane, sketchID: SketchID)] = []
+        var loftRuled=false
         /// Boolean badge: manual result override (auto = sample-point rules).
         var booleanOverride: BooleanOverride = .auto
         /// Symmetric sides: solid centered on the plane, total depth 2×.
@@ -9751,9 +9992,16 @@ final class EditorViewModel {
                 alongPath: spine
             )
         case .loft:
-            mesh = KernelOps.loft(
-                profiles: context.loftProfiles.map { ($0.profile, $0.holes, $0.plane) }
-            )
+            guard context.loftProfiles.count >= 2,let node=loftFeatureNode(context:context,
+                boolean:BooleanIntent(op:.newBody,resolvedTargets:[]),outputBodyIDs:[toolPreviewID]),
+                let result=session.previewLoftSurface(appending:FeatureNode(id:loftPreviewFeatureID,
+                    name:node.name,kind:node.kind,outputBodyIDs:node.outputBodyIDs)),result.errors[loftPreviewFeatureID] == nil,
+                var body=result.bodies.first(where:{ $0.id == toolPreviewID }),body.brep != nil else {
+                context.preview=nil; context.isPendingValid=false; return
+            }
+            context.previewRevision &+= 1; body.meshRevision=context.previewRevision
+            context.preview=body; context.isPendingValid=true
+            return
         }
         updatePendingValidity(&context, toolMesh: mesh)
         guard !mesh.polygons.isEmpty else {
@@ -10588,6 +10836,10 @@ final class EditorViewModel {
                    resolvedTargets: [BodyRef(
                        producer: targetOwner.id, bodyID: targets[0].target.id)]),
                outputBodyIDs: [targets[0].target.id]) {
+            if case .loft=context.kind {
+                commitNativeLoftNode(node,context:context)
+                return
+            }
             session.recordAndRebuild([node], extra: hides, title: title)
             if session.lastEvalErrors[node.id] == nil {
                 finishToolCommit(selecting: targets[0].target.id)
@@ -10596,6 +10848,10 @@ final class EditorViewModel {
             session.undo()
         }
 
+        if case .loft=context.kind {
+            errorMessage=FloeCADStrings.text("cad.loftSurface.exactTarget","Choose one exact solid for this loft result.")
+            return
+        }
         var commands: [DocumentCommand] = []
         for entry in targets {
             let merged: Euclid.Mesh
@@ -10692,6 +10948,10 @@ final class EditorViewModel {
             context: context,
             boolean: BooleanIntent(op: .newBody, resolvedTargets: []),
             outputBodyIDs: [body.id]) {
+            if case .loft=context.kind {
+                commitNativeLoftNode(node,context:context)
+                return
+            }
             session.recordAndRebuild([node], extra: hides, title: title)
             if session.lastEvalErrors[node.id] == nil,
                session.document.bodies.contains(where: { $0.id == body.id }) {
@@ -10744,6 +11004,7 @@ final class EditorViewModel {
     }
 
     func cancelTool() {
+        if case .draftLoft?=loftSurfaceEditor { loftSurfaceEditor=nil }
         let originals = [faceMoveSession?.source, faceScaleSession?.source, faceRotateSession?.source].compactMap { $0 }
         if !originals.isEmpty {
             session.preview { document in
@@ -11080,6 +11341,41 @@ final class EditorViewModel {
         toolContext = context
     }
 
+    /// Apply the sheet's local draft without touching history or saved bytes.
+    /// The actual preview uses the same exact feature evaluator as commit.
+    @discardableResult
+    func configureNativeLoftDraft(sections: [ProfileRef],ruled: Bool,expectedChangeCount: Int) -> Bool {
+        guard session.changeCount == expectedChangeCount,var context=toolContext,case .loft=context.kind else { return false }
+        let choices=loftSurfaceUISnapshot().closedSections
+        var resolved: [(profile:Profile,holes:[Profile],plane:SketchPlane,sketchID:SketchID)]=[]
+        for reference in sections {
+            let matches=choices.filter { $0.matches(reference) }
+            guard matches.count == 1,let choice=matches.first else { return false }
+            resolved.append((choice.profile,choice.holes,choice.plane,choice.reference.sketchID))
+        }
+        guard (2...64).contains(resolved.count) else { return false }
+        context.loftProfiles=resolved;context.loftRuled=ruled
+        context.profile=resolved[0].profile;context.holes=resolved[0].holes
+        context.plane=resolved[0].plane;context.sketchID=resolved[0].sketchID
+        rebuildToolPreview(&context)
+        guard context.preview?.brep != nil,context.isPendingValid else {
+            errorMessage=FloeCADStrings.text("cad.loftSurface.failed","Couldn't apply these settings. Your design is unchanged.")
+            return false
+        }
+        toolContext=context
+        return true
+    }
+
+    private func commitNativeLoftNode(_ node: FeatureNode,context: ToolContext) {
+        guard case let .loft(sections,boolean,definition)=node.kind else { return }
+        let args: [String:Any]=["sections":loftSurfaceJSON(sections),"boolean":loftSurfaceJSON(boolean),
+            "definition":definition.map { loftSurfaceJSON($0) } ?? NSNull(),"expected_change_count":session.changeCount]
+        let reply=performLoftSurfaceAction("loft.create",args:args)
+        guard reply["ok"] as? Bool == true,let ids=reply["body_ids"] as? [String],
+              let raw=ids.first.flatMap(UUID.init(uuidString:)) else { return }
+        finishToolCommit(selecting:BodyID(raw:raw))
+    }
+
     private func commitLoft(_ context: ToolContext) {
         guard context.loftProfiles.count >= 2 else {
             cancelTool()
@@ -11096,7 +11392,6 @@ final class EditorViewModel {
         }
         guard let preview = context.preview else {
             errorMessage = "The loft produced no geometry."
-            cancelTool()
             return
         }
         commitToolResult(
@@ -15497,6 +15792,27 @@ final class EditorViewModel {
         }
     }
 
+    var loftSurfaceEditor: CADLoftSurfaceEditorDestination?
+    private let loftPreviewFeatureID=FeatureID()
+
+    func beginLoftSurfaceEditor(_ destination: CADLoftSurfaceEditorDestination) {
+        guard !session.isReadOnly else { return }
+        switch destination {
+        case .draftLoft:
+            guard case .loft?=toolContext?.kind else { return }
+        case let .loft(id), let .surface(id?):
+            guard let index=session.document.features.index(of:id),
+                  index < (session.document.features.rollbackIndex ?? session.document.features.nodes.count),
+                  !session.document.features.nodes[index].suppressed else { return }
+            cancelTransientPicks()
+        case .surface(nil):
+            guard session.document.features.rollbackIndex == nil else { return }
+            cancelTool()
+            cancelTransientPicks()
+        }
+        loftSurfaceEditor=destination
+    }
+
     var showThreadEditor = false
     var threadEditingFeatureID: FeatureID?
     func beginThreadEditor(_ id: FeatureID? = nil) {
@@ -19580,7 +19896,7 @@ final class EditorViewModel {
         }
         return FeatureNode(
             name: "Loft",
-            kind: .loft(sections: sections, boolean: boolean),
+            kind: .loft(sections: sections, boolean: boolean, definition:LoftDefinition(ruled:context.loftRuled)),
             outputBodyIDs: outputBodyIDs
         )
     }
@@ -19925,6 +20241,8 @@ final class EditorViewModel {
             return [FeatureScalar(key: .primary,
                                     label: FloeCADStrings.text("cad.feature.radius", "Radius"),
                                     unit: "mm", value: radius.value)]
+        case let .regionShell(_, _, definition):
+            return [FeatureScalar(key: .primary, label: FloeCADStrings.text("cad.feature.thickness", "Thickness"), unit: "mm", value: definition.thickness.value)]
         case let .shell(_, _, thickness):
             return [FeatureScalar(key: .primary,
                                     label: FloeCADStrings.text("cad.feature.thickness", "Thickness"),
@@ -20578,6 +20896,9 @@ final class EditorViewModel {
         case let .advancedBlend(body, edges, definition):
             var changed = definition; changed.first = expr
             return .advancedBlend(body: body, edges: edges, definition: changed)
+        case let .regionShell(body, openFaces, definition):
+            var changed = definition; changed.thickness = expr
+            return .regionShell(body: body, openFaces: openFaces, definition: changed)
         case let .shell(body, openFaces, _):
             return .shell(body: body, openFaces: openFaces, thickness: expr)
         case let .draftExtrude(profile, plane, _, taperAngle, symmetric, boolean):
@@ -20753,6 +21074,10 @@ final class EditorViewModel {
         switch kind {
         case let .primitive(spec, _):
             return spec.displayName
+        case let .surface(definition):
+            return CADLoftSurfaceService.surfaceTitle(definition.operation)
+        case .polygonCage:
+            return FloeCADStrings.text("cad.mesh.cage", "Polygon cage")
         case .baseSolid:
             return FloeCADStrings.text("cad.feature.importedBody", "Imported body")
         case let .extrude(_, _, distance, _, boolean, _, _):
@@ -20821,6 +21146,8 @@ final class EditorViewModel {
             case .twoDistanceChamfer: return FloeCADStrings.text("cad.blend.twoDistances", "Two-Distance Chamfer")
             case .distanceAngleChamfer: return FloeCADStrings.text("cad.blend.distanceAngle", "Distance-Angle Chamfer")
             }
+        case let .regionShell(_, _, definition):
+            return f("cad.shell.regionTitle", "Shell %@ mm (%@ wall regions)", fmt(definition.thickness.value), String(definition.regions.count))
         case let .shell(_, openFaces, thickness):
             if openFaces.isEmpty {
                 return f("cad.feature.shellClosed", "Shell %@ mm (hollow)", fmt(thickness.value))

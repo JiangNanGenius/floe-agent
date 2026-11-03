@@ -176,6 +176,9 @@ struct ToolPaletteView: View {
                              viewModel.beginCreate(.hole)
                          }
                      }),
+            ToolItem(id:"Surface",label:FloeCADStrings.text("cad.material.section.surface","Surface"),
+                     icon:"square.3.layers.3d",enabled:viewModel.canBeginNativeSurfaceEditor,
+                     accessibilityID:"CADSurfaceButton",run:{ viewModel.beginLoftSurfaceEditor(.surface(nil)) }),
             ToolItem(id: "Thread", label: FloeCADStrings.text("cad.thread.title", "Metric thread"),
                      icon: "bolt.horizontal", enabled: !viewModel.session.document.bodies.isEmpty,
                      accessibilityID: "CADThreadButton", run: { viewModel.beginThreadEditor() }),

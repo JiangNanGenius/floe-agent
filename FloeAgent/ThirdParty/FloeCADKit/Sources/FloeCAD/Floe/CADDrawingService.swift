@@ -11,14 +11,12 @@
 //
 //  Contract notes
 //  --------------
-//  * Projection is real: front/top/side/iso pages run `ProjectionKit`
-//    (`projectSilhouette` → "outline", `project` → "edges"); section pages run
-//    `OCCTKernel.sectionPolylines` + `SectionKit.loops`; detail pages re-project
-//    a standard view and clip it to a model-space window. Near-circular line
-//    chains are recognized as circles/arcs (bounded residual + chord-length
-//    checks) and, when a matching analytic cylinder face is found on the body's
-//    B-rep, the exact kernel radius replaces the tessellation fit — so a Ø10
-//    hole dimensions as exactly 10 even though the render mesh is Float32.
+//  * Orthographic projection uses exact OCCT B-rep HLR across all placed
+//    sources together. Lines/circles/arcs stay analytic; other output curves
+//    are sampled at 0.005 mm chord deflection. Mesh-only/kernel-failed views
+//    remain explicitly unclassified previews and block drawing export.
+//    Sections use BRepAlgoAPI_Section, closed-loop even-odd material hatches,
+//    and persisted parallel offset cuts shared with their parent-view marks.
 //  * Scale is drawing mm per model mm: projected/exported coordinates are
 //    model length × `page.scale` (0.5 = half size). Dimension `value`s are the
 //    true MODEL lengths (projected span ÷ scale); their leader/extension
@@ -59,7 +57,7 @@
 //    body or a missing body/instance is marked `sectionComplete:false` and
 //    `outputBlocked:true`; `exportData` refuses it with `incomplete_section`
 //    instead of emitting a partial section as a complete drawing. This is
-//    not E12 hidden-line classification and does not claim E14 hatching.
+//    separate from an HLR failure, which reports incomplete_projection.
 //  * Export layers: GEOMETRY (outline/edges/section), DIMENSIONS,
 //    CENTERLINES, ANNOTATIONS (manual dimensions/balloons/text), BOM (sheet
 //    table) and TITLE (sheet frame + title block + text). DXF is R12 ASCII,
@@ -108,9 +106,57 @@ public final class CADDrawingService {
     ]
 
     private let document: FloeCADDocument
+    private static var projectionRuns: [ObjectIdentifier: DrawingProjectionRun] = [:]
+    private static var projectionCaches: [ObjectIdentifier: DrawingProjectionCache] = [:]
+    private static var projectionGenerations: [ObjectIdentifier: UUID] = [:]
+    private var preparedViews: [UUID: PageProjection] = [:]
+    private var preparedToken: DrawingProjectionToken?
+
+    #if DEBUG
+    /// Runs inside the real serial worker, never in main-actor preparation.
+    static var testProjectionWorkerProbe: (@Sendable () -> Void)?
+    /// Source changes/cancellation here must be refused by the join fence.
+    static var testProjectionBeforeCommitProbe: (@Sendable () -> Void)?
+    #endif
 
     public init(document: FloeCADDocument) {
         self.document = document
+    }
+
+    /// Production route for drawing actions. Heavy projections run on owned
+    /// B-rep copies off-main; the synchronous facade is compatibility/test-only.
+    public func handleAsync(action: String, args: [String: Any]) async -> [String: Any] {
+        guard !document.isClosed else { return fail("document_closed", "The document is closed.") }
+        if let pageID = uuidValue(args["pageID"]) ?? uuidValue(args["id"]),
+           !["removePage", "updatePage", "updateView", "addView", "removeView"].contains(action) {
+            if let refusal = await prepareProjection(pageID: pageID) { return refusal }
+        }
+        if Task.isCancelled { return fail("drawing_cancelled", "Drawing calculation was cancelled.") }
+        return handle(action: action, args: args)
+    }
+
+    public func pageGeometryAsync(pageID: UUID) async -> [String: Any] {
+        if let refusal = await prepareProjection(pageID: pageID) { return refusal }
+        return pageGeometry(pageID: pageID)
+    }
+
+    public func exportDataAsync(pageID: UUID, format: String) async throws -> Data {
+        if format.lowercased() != "csv", let refusal = await prepareProjection(pageID: pageID) {
+            throw CADDocumentError(code: refusal["error"] as? String ?? "drawing_refused",
+                                   message: refusal["message"] as? String ?? "Drawing calculation failed.")
+        }
+        return try exportData(pageID: pageID, format: format)
+    }
+
+    public func cancelProjection() {
+        Self.cancelProjection(for: document)
+    }
+
+    static func cancelProjection(for document: FloeCADDocument) {
+        let key = ObjectIdentifier(document)
+        projectionRuns[key]?.cancel()
+        projectionGenerations.removeValue(forKey: key)
+        projectionCaches.removeValue(forKey: key)
     }
 
     // MARK: - Action router
@@ -229,6 +275,10 @@ public final class CADDrawingService {
             }
         }
         let projection = projectPage(page)
+        if !projection.projectionComplete && !projection.sectionIncomplete {
+            throw CADDocumentError(code: "incomplete_projection",
+                message: "Exact B-rep projection did not complete for every source. Drawing output is blocked.")
+        }
         if projection.outputBlocked || projection.sectionIncomplete
             || projection.sectionCoverage.contains(where: { !$0.included }) {
             let missingCount = projection.missing.count + projection.missingInstances.count
@@ -355,7 +405,7 @@ public final class CADDrawingService {
         var candidates: [[String: Any]] = []
         var notes: [String] = []
         for view in views {
-            guard let plane = plane(for: page, view: view) else { continue }
+            guard let plane = Self.plane(for: page, view: view) else { continue }
             let projectionOffset = projection.views.first {
                 $0.view.id == view.id
             }?.offset ?? .zero
@@ -461,7 +511,7 @@ public final class CADDrawingService {
             return boolean.resolvedTargets.contains { $0.bodyID == target }
         case let .sweep(_, _, _, boolean, _, _):
             return boolean.resolvedTargets.contains { $0.bodyID == target }
-        case let .loft(_, boolean):
+        case let .loft(_, boolean, _):
             return boolean.resolvedTargets.contains { $0.bodyID == target }
         case let .boolean(_, body, tools):
             return body.bodyID == target || tools.contains { $0.bodyID == target }
@@ -639,7 +689,16 @@ public final class CADDrawingService {
         switch buildPage(args: args, existing: updated.pages[index]) {
         case .failure(let error):
             return fail(error.code, error.message)
-        case .success(let page):
+        case .success(var page):
+            // A legacy page promoted by the hidden-line switch keeps its
+            // existing page editor. Mirror its sole view through the same
+            // validated view builder so later scale/orientation edits apply.
+            if let views = page.sheetViews, views.count == 1 {
+                switch buildSheetView(args: args, existing: views[0], page: page, views: views) {
+                case .failure(let error): return fail(error.code, error.message)
+                case .success(let view): page.sheetViews = [view]
+                }
+            }
             updated.pages[index] = page
             if let failure = persist(updated) { return failure }
             return ["ok": true,
@@ -1328,6 +1387,13 @@ public final class CADDrawingService {
         case .success(let view):
             views[viewIndex] = view
             if view.kind == .exploded { page.assemblyMode = true }
+            if views.count == 1 {
+                page.kind = view.kind; page.scale = view.scale
+                page.viewNormal = view.viewNormal; page.viewUp = view.viewUp
+                page.sectionOrigin = view.sectionOrigin; page.sectionNormal = view.sectionNormal
+                page.detailOrigin = view.detailOrigin; page.detailSizeMM = view.detailSizeMM
+                page.sourceBodyIDs = view.sourceBodyIDs ?? page.sourceBodyIDs
+            }
             page.sheetViews = views
             updated.pages[pageIndex] = page
             if let failure = persist(updated) { return failure }
@@ -1360,6 +1426,9 @@ public final class CADDrawingService {
         }
         guard views.count > 1 else {
             return fail("last_view", "A sheet needs at least one view; remove the page instead.")
+        }
+        guard !views.contains(where: { $0.sectionPath?.referenceViewID == viewID }) else {
+            return fail("view_has_section_marks", "Move or remove this view's section cutting marks first.")
         }
         let danglingAnnotations = page.manualDimensions.filter { $0.viewID == viewID }.count
             + page.balloons.filter { $0.viewID == viewID }.count
@@ -1654,12 +1723,84 @@ public final class CADDrawingService {
             }
             name = value
         }
-        return .success(CADDrawingSheetView(
+        var showHiddenLines = existing?.showHiddenLines ?? true
+        if let raw = args["showHiddenLines"] {
+            guard let value = raw as? Bool else {
+                return .failure(CADDrawingServiceError(code: "bad_hidden_lines", message: "showHiddenLines must be boolean."))
+            }
+            showHiddenLines = value
+        }
+        var hatches = existing?.sectionHatches ?? []
+        if let raw = args["sectionHatches"] {
+            guard let data = try? JSONSerialization.data(withJSONObject: raw),
+                  let value = try? JSONDecoder().decode([CADDrawingSectionHatch].self, from: data),
+                  value.count <= 32,
+                  Set(value.map(\.materialID)).count == value.count,
+                  value.allSatisfy({ !$0.materialID.isEmpty && $0.materialID.count <= 128
+                      && $0.angleDegrees.isFinite && abs($0.angleDegrees) <= 180
+                      && $0.spacingMM.isFinite && (0.2...50).contains($0.spacingMM) }) else {
+                return .failure(CADDrawingServiceError(code: "bad_section_hatches",
+                    message: "Hatches require unique materialID, finite angle ±180° and paper spacing 0.2–50 mm."))
+            }
+            hatches = value
+        }
+        var path = existing?.sectionPath
+        if let raw = args["sectionPath"] {
+            if raw is NSNull { path = nil }
+            else {
+                guard let data = try? JSONSerialization.data(withJSONObject: raw),
+                      let value = try? JSONDecoder().decode(CADDrawingSectionPath.self, from: data) else {
+                    return .failure(CADDrawingServiceError(code: "bad_section_path", message: "Invalid stepped cutting path."))
+                }
+                path = value
+            }
+        }
+        if let path {
+            guard kind == .section, let origin = sectionOrigin, let normal = sectionNormal,
+                  !path.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  path.label.count <= 16, !path.label.contains("\n"),
+                  views.contains(where: { $0.id == path.referenceViewID && $0.id != existing?.id
+                      && $0.kind.isOrthographic }) else {
+                return .failure(CADDrawingServiceError(code: "bad_section_path",
+                    message: "A stepped section needs a label and another orthographic view for its cutting mark."))
+            }
+            let frame = SectionKit.frame(normal: normal, xAxisHint: viewUp)
+            guard CADDrawingSectionDrafting.strips(path: path, origin: origin, normal: normal,
+                                                  xAxis: frame.xAxis, yAxis: frame.yAxis) != nil else {
+                return .failure(CADDrawingServiceError(code: "unsupported_section_path",
+                    message: "Use monotonic parallel cuts joined by perpendicular steps; oblique cuts are unsupported."))
+            }
+        }
+        let candidate = CADDrawingSheetView(
             id: existing?.id ?? UUID(), name: name, kind: kind, scale: scale,
             offset: offset, viewNormal: viewNormal, viewUp: viewUp,
             sectionOrigin: sectionOrigin, sectionNormal: sectionNormal,
             detailOrigin: detailOrigin, detailSizeMM: detailSizeMM,
-            sourceBodyIDs: sourceBodyIDs, alignment: alignment))
+            sourceBodyIDs: sourceBodyIDs, alignment: alignment,
+            showHiddenLines: showHiddenLines, sectionHatches: hatches, sectionPath: path)
+        if let path, let reference = views.first(where: { $0.id == path.referenceViewID }),
+           !validSectionMark(path: path, reference: reference) {
+            return .failure(CADDrawingServiceError(code: "bad_section_marker_view",
+                message: "Choose a view that can show every cut and step; the cutting mark cannot collapse to a point."))
+        }
+        for owner in views {
+            if let linked = owner.sectionPath, linked.referenceViewID == candidate.id,
+               !validSectionMark(path: linked, reference: candidate) {
+                return .failure(CADDrawingServiceError(code: "view_has_section_marks",
+                    message: "This view must continue to show its linked cutting marks."))
+            }
+        }
+        return .success(candidate)
+    }
+
+    private func validSectionMark(path: CADDrawingSectionPath,
+                                  reference: CADDrawingSheetView) -> Bool {
+        guard reference.kind.isOrthographic, simd_length(reference.viewNormal) > 1e-9 else { return false }
+        let frame = SectionKit.frame(normal: reference.viewNormal, xAxisHint: reference.viewUp)
+        return zip(path.points, path.points.dropFirst()).allSatisfy { a, b in
+            let delta = b - a
+            return hypot(simd_dot(delta, frame.xAxis), simd_dot(delta, frame.yAxis)) > 1e-6
+        }
     }
 
     // MARK: - Export action
@@ -2209,7 +2350,7 @@ public final class CADDrawingService {
         } else {
             view = page.effectiveSheetViews[0]
         }
-        let viewPlane = plane(for: page, view: view)
+        let viewPlane = Self.plane(for: page, view: view)
         let scale = view.scale
         let context = ResolvedViewContext(view: view, offset: .zero, plane: viewPlane,
                                           scale: scale, isLegacy: page.sheetViews == nil)
@@ -3301,7 +3442,7 @@ public final class CADDrawingService {
                   let source = body(for: effectiveBodyID(instance)) else {
                 return fail("unknown_instance", "instanceID must reference a live assembly instance.")
             }
-            guard let plane = plane(for: page, view: view),
+            guard let plane = Self.plane(for: page, view: view),
                   let world = instanceWorldTransform(instance: instance, source: source, page: page),
                   let local = bodyLocalPointFromDrawing(position, plane: plane,
                                                        scale: view.scale,
@@ -3360,7 +3501,7 @@ public final class CADDrawingService {
                let instance = loadAssemblyValue()?.instance(binding.instanceID ?? UUID()),
                let source = binding.bodyID.flatMap({ body(for: $0) })
                     ?? body(for: effectiveBodyID(instance)),
-               let plane = plane(for: page, view: view),
+               let plane = Self.plane(for: page, view: view),
                let world = instanceWorldTransform(instance: instance, source: source, page: page),
                let local = bodyLocalPointFromDrawing(parsed, plane: plane,
                                                      scale: view.scale,
@@ -3850,6 +3991,138 @@ public final class CADDrawingService {
         }
     }
 
+    // MARK: - Projection ownership / worker
+
+    private func projectionToken(page: CADDrawingPage) -> DrawingProjectionToken {
+        DrawingProjectionToken(revision: document.store.revision,
+            changeCount: document.session.changeCount,
+            drawings: document.session.document.drawingsData,
+            source: liveFingerprint(for: page))
+    }
+
+    private func preparedProjection(page: CADDrawingPage,
+                                    view: CADDrawingSheetView) -> PageProjection? {
+        guard preparedToken == projectionToken(page: page) else { return nil }
+        return preparedViews[view.id]
+    }
+
+    private func prepareProjection(pageID: UUID) async -> [String: Any]? {
+        guard !document.isClosed else { return fail("document_closed", "The document is closed.") }
+        guard !Task.isCancelled else { return fail("drawing_cancelled", "Drawing calculation was cancelled.") }
+        let key = ObjectIdentifier(document)
+        let generation = UUID()
+        Self.projectionGenerations[key] = generation
+        defer {
+            if Self.projectionGenerations[key] == generation { Self.projectionGenerations.removeValue(forKey: key) }
+        }
+        // Do not queue another 64MB snapshot behind a non-preemptible phase.
+        // A newer request supersedes waiters before they allocate geometry.
+        if let previous = Self.projectionRuns[key] {
+            previous.cancel()
+            await previous.join()
+        }
+        guard !document.isClosed, !Task.isCancelled,
+              Self.projectionGenerations[key] == generation else {
+            return fail("drawing_cancelled", "Drawing calculation was cancelled; its result was discarded.")
+        }
+        let set: CADDrawingSet
+        switch loadSet() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let value): set = value
+        }
+        guard let page = set.pages.first(where: { $0.id == pageID }) else {
+            return fail("unknown_page", "No drawing page with that id.")
+        }
+        let token = projectionToken(page: page)
+        Self.projectionCaches = Self.projectionCaches.filter { $0.value.document != nil }
+        if let cached = Self.projectionCaches[key], cached.pageID == pageID, cached.token == token {
+            preparedToken = token; preparedViews = cached.views
+            return nil
+        }
+        guard Self.projectionRuns.count < 2 else {
+            return fail("drawing_busy", "Another drawing calculation is finishing; try again after it stops.")
+        }
+        let run = DrawingProjectionRun()
+        Self.projectionRuns[key] = run
+        defer {
+            if Self.projectionRuns[key] === run { Self.projectionRuns.removeValue(forKey: key) }
+        }
+        // Only serialized geometry and immutable mesh/material/TRS values cross
+        // the actor boundary. Worker deserialization owns fresh native curves.
+        var serialized: [UUID: DrawingProjectionGeometry] = [:]
+        var plans: [DrawingProjectionPlan] = []
+        var chargedBytes = 0
+        for view in page.effectiveSheetViews {
+            let resolved = projectionSources(for: page, sourceBodyIDs: view.sourceBodyIDs)
+            var header = PageProjection()
+            header.notes = resolved.notes; header.missing = resolved.missingBodies
+            header.missingInstances = resolved.missingInstances
+            header.explodedViewID = resolved.explodedViewID; header.explodedViewName = resolved.explodedViewName
+            header.sectionIncomplete = view.kind == .section && (!resolved.missingBodies.isEmpty || !resolved.missingInstances.isEmpty)
+            var inputs: [DrawingProjectionSourceSnapshot] = []
+            for source in resolved.sources {
+                let id = source.body.id.raw
+                let geometry: DrawingProjectionGeometry
+                if let cached = serialized[id] { geometry = cached }
+                else {
+                    let solid = source.body.brep.flatMap(OCCTKernel.serialize)
+                    let surface = source.body.surfaceBRep.flatMap(OCCTKernel.serialize)
+                    if (source.body.brep != nil && solid == nil) || (source.body.surfaceBRep != nil && surface == nil) {
+                        return fail("drawing_snapshot_failed", "An exact source could not be copied; nothing was projected.")
+                    }
+                    chargedBytes += (solid?.count ?? 0) + (surface?.count ?? 0)
+                    guard chargedBytes <= 64 * 1024 * 1024 else {
+                        return fail("drawing_snapshot_budget", "The drawing source exceeds the calculation budget.")
+                    }
+                    geometry = DrawingProjectionGeometry(solid: solid, surface: surface)
+                    serialized[id] = geometry
+                }
+                inputs.append(DrawingProjectionSourceSnapshot(id: id, instanceID: source.instanceID,
+                    name: source.name, transform: source.body.transform, render: source.body.render,
+                    revision: source.body.meshRevision, material: source.body.material, geometry: geometry))
+            }
+            plans.append(DrawingProjectionPlan(page: page, view: view, sources: inputs, header: header))
+        }
+        let cancellation = run.cancellation
+        #if DEBUG
+        let probe = Self.testProjectionWorkerProbe
+        let beforeCommit = Self.testProjectionBeforeCommitProbe
+        #else
+        let probe: (@Sendable () -> Void)? = nil
+        #endif
+        let frozenPlans = plans
+        let task = Task.detached(priority: .userInitiated) {
+            let result = await DrawingProjectionWorker.shared.compute(plans: frozenPlans,
+                cancellation: cancellation, probe: probe)
+            #if DEBUG
+            beforeCommit?()
+            #endif
+            return result
+        }
+        run.attach(task)
+        let computed = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: { cancellation.cancel(); task.cancel() }
+        guard !document.isClosed else { return fail("document_closed", "The document is closed.") }
+        guard !Task.isCancelled, !cancellation.isCancelled,
+              Self.projectionRuns[key] === run,
+              Self.projectionGenerations[key] == generation else {
+            return fail("drawing_cancelled", "Drawing calculation was cancelled; its result was discarded.")
+        }
+        // Re-read the exact owner, revision/change count, drawing data and source
+        // fingerprint after the join; no old result may publish to a new state.
+        guard case .success(let current) = loadSet(),
+              let currentPage = current.pages.first(where: { $0.id == pageID }),
+              projectionToken(page: currentPage) == token else {
+            return fail("drawing_source_changed", "The document changed during calculation; refresh the drawing.")
+        }
+        guard let computed else { return fail("drawing_calculation_failed", "The drawing source could not be reopened for calculation.") }
+        preparedToken = token; preparedViews = computed
+        Self.projectionCaches[key] = DrawingProjectionCache(document: document,
+            pageID: pageID, token: token, views: computed)
+        return nil
+    }
+
     // MARK: - Projection
 
     /// Resolved geometry inputs for one page. In assembly mode these are the
@@ -3914,9 +4187,10 @@ public final class CADDrawingService {
             }
         }
         if occurrences.count > maxInstances {
+            result.missingInstances.append(contentsOf: occurrences.dropFirst(maxInstances).map { $0.instance.id })
             occurrences = Array(occurrences.prefix(maxInstances))
-            result.notes.append("Projection is bounded to \(maxInstances) assembly instances; "
-                                + "later instances were omitted.")
+            result.notes.append("Projection exceeds \(maxInstances) assembly instances; "
+                                + "the preview is incomplete and drawing output is blocked.")
         }
         if occurrences.isEmpty {
             result.notes.append("No visible assembly instance matches this page's source bodies.")
@@ -3989,6 +4263,11 @@ public final class CADDrawingService {
             item.missingInstances = local.missingInstances
             item.sectionCoverage = local.sectionCoverage
             item.sectionComplete = local.sectionComplete
+            item.projectionMethod = local.projectionMethod
+            item.projectionComplete = local.projectionComplete
+            item.visibleEdgeCount = local.visibleEdgeCount
+            item.hiddenEdgeCount = local.hiddenEdgeCount
+            item.outputBlocked = local.outputBlocked
             item.localBounds = entityBounds(local.entities)
             item.bounds = item.localBounds
             perView.append(item)
@@ -4031,11 +4310,42 @@ public final class CADDrawingService {
             result.missingInstances.append(contentsOf: item.missingInstances)
             result.sectionCoverage.append(contentsOf: item.sectionCoverage)
         }
+        // Markers use the same persisted world path as the actual offset cuts.
+        // A parent-view move/scale change updates both mark and label placement.
+        for view in views where view.kind == .section {
+            guard let path = view.sectionPath,
+                  let parent = perView.first(where: { $0.view.id == path.referenceViewID }),
+                  let plane = Self.plane(for: page, view: parent.view) else { continue }
+            let points = path.points.map { p -> SIMD2<Double> in
+                SIMD2(simd_dot(p, plane.xAxis), simd_dot(p, plane.yAxis)) * parent.view.scale + parent.offset
+            }
+            result.entities.append(ProjectedEntity(shape: .polyline(points: points, closed: false), layer: "section-mark"))
+            guard points.count >= 2 else { continue }
+            for (point, neighbor) in [(points[0], points[1]), (points[points.count - 1], points[points.count - 2])] {
+                let delta = point - neighbor
+                guard simd_length(delta) > 1e-8 else { continue }
+                let u = simd_normalize(delta), v = SIMD2(-u.y, u.x)
+                for sign in [-1.0, 1.0] {
+                    result.entities.append(ProjectedEntity(shape: .line(point, point - u * 3 + v * sign * 1.2), layer: "section-mark"))
+                }
+                result.sectionMarkTexts.append(DrawingText(text: path.label,
+                    position: point + u * 4, height: 3, layer: "section-mark"))
+            }
+            // Section label is derived from that same path label, never a copy.
+            if let cut = perView.first(where: { $0.view.id == view.id }), let bounds = cut.bounds {
+                result.sectionMarkTexts.append(DrawingText(text: "\(path.label)–\(path.label)",
+                    position: SIMD2(bounds.min.x, bounds.min.y - 5), height: 3, layer: "section-mark"))
+            }
+        }
         result.notes = notes
         result.missing = Array(Set(result.missing))
         result.missingInstances = Array(Set(result.missingInstances))
         result.sectionIncomplete = perView.contains { !$0.sectionComplete }
-        result.outputBlocked = result.sectionIncomplete
+        result.projectionMethod = "per-view"
+        result.projectionComplete = perView.allSatisfy(\.projectionComplete)
+        result.visibleEdgeCount = perView.reduce(0) { $0 + $1.visibleEdgeCount }
+        result.hiddenEdgeCount = perView.reduce(0) { $0 + $1.hiddenEdgeCount }
+        result.outputBlocked = result.sectionIncomplete || perView.contains(where: \.outputBlocked)
         result.explodedViewID = page.explodedViewID
         result.explodedViewName = page.explodedViewName
         return result
@@ -4117,6 +4427,8 @@ public final class CADDrawingService {
         guard view.scale.isFinite, view.scale > 0 else {
             var result = PageProjection()
             result.notes = resolved.notes + ["view scale is invalid; nothing was projected."]
+            result.projectionComplete = false
+            result.outputBlocked = true
             result.missing = resolved.missingBodies
             result.missingInstances = resolved.missingInstances
             if view.kind == .section {
@@ -4139,6 +4451,8 @@ public final class CADDrawingService {
             header.notes.append("The section is INCOMPLETE: one or more sources are missing.")
         }
         guard !resolved.sources.isEmpty else {
+            header.projectionComplete = false
+            header.outputBlocked = true
             if view.kind == .section {
                 header.sectionIncomplete = true
                 header.sectionComplete = false
@@ -4163,7 +4477,7 @@ public final class CADDrawingService {
 
     /// The in-plane frame for one view: `SectionKit.frame(normal:xAxisHint:)`
     /// with the VIEW's normal and up hint, matching section loop coordinates.
-    private func plane(for page: CADDrawingPage,
+    private nonisolated static func plane(for page: CADDrawingPage,
                        view: CADDrawingSheetView) -> SketchPlane? {
         let normal: SIMD3<Double>
         switch view.kind {
@@ -4179,38 +4493,82 @@ public final class CADDrawingService {
     }
 
     private func projectView(page: CADDrawingPage, view: CADDrawingSheetView,
+                              sources: [ProjectionSource], header: PageProjection) -> PageProjection {
+        if let prepared = preparedProjection(page: page, view: view) { return prepared }
+        // Compatibility/test-only synchronous facade. Production UI, tool and
+        // native export routes prepare via the joined off-main worker first.
+        return Self.computeOrdinaryProjection(page: page, view: view, sources: sources, header: header)
+    }
+
+    fileprivate nonisolated static func computeOrdinaryProjection(page: CADDrawingPage, view: CADDrawingSheetView,
                              sources: [ProjectionSource],
-                             header: PageProjection) -> PageProjection {
-        guard let plane = plane(for: page, view: view) else {
+                             header: PageProjection, cancellation: CADMeshCancellation? = nil) -> PageProjection {
+        if cancellation?.isCancelled == true { var r = header; r.outputBlocked = true; r.projectionComplete = false; return r }
+        guard let plane = Self.plane(for: page, view: view) else {
             var result = header
             result.notes.append("view direction is invalid")
+            result.projectionComplete = false; result.outputBlocked = true
+            return result
+        }
+        // All placed B-reps enter the SAME exact edge/face HLR calculation.
+        // Per-body runs would miss inter-part occlusion in assemblies.
+        let placed = sources.compactMap { source -> BRepHandle? in
+            guard let shape = source.body.brep ?? source.body.surfaceBRep else { return nil }
+            return OCCTKernel.transformed(shape, by: source.body.transform)
+        }
+        guard placed.count == sources.count,
+              let edges = OCCTKernel.hiddenLineProjection(placed, normal: plane.normal,
+                                                          xAxis: plane.xAxis) else {
+            var result = header
+            // Retain a useful preview but label its method and block exact
+            // drawing output. Mesh edges have NO known hidden/visible class.
+            result.entities = sources.flatMap { source in
+                ProjectionKit.project(body: source.body, onto: plane)
+                    .map { Self.convert($0, layer: "unclassified").scaled(by: view.scale) }
+            }
+            result.projectionMethod = "mesh-unclassified"
+            result.projectionComplete = false
+            result.outputBlocked = true
+            result.notes.append("Exact B-rep visibility is unavailable; this is an unclassified preview and drawing output is blocked.")
             return result
         }
         var entities: [ProjectedEntity] = []
         var groups: [UUID: [ProjectedEntity]] = [:]
-        for source in sources {
-            let outline = ProjectionKit.projectSilhouette(body: source.body, onto: plane)
-                .map { convert($0, layer: "outline") }
-            let edges = ProjectionKit.project(body: source.body, onto: plane)
-                .map { convert($0, layer: "edges") }
-            let exact = exactCylinderCircles(bodies: [source.body], plane: plane,
-                                             normal: plane.normal)
-            var projected = dedupe(circularize(outline, exact: exact)
-                                    + circularize(edges, exact: exact))
-            projected = projected.map { $0.scaled(by: view.scale) }
-            entities.append(contentsOf: projected)
-            if let id = source.instanceID {
-                groups[id, default: []].append(contentsOf: projected)
+        for edge in edges where !edge.hidden || view.showHiddenLines {
+            let shape: ProjectedEntity.Shape
+            switch edge.curve {
+            case let .line(a, b): shape = .line(a, b)
+            case let .circle(c, r): shape = .circle(center: c, radius: r)
+            case let .arc(c, r, a, b): shape = .arc(center: c, radius: r, startAngle: a, endAngle: b)
+            case let .polyline(points): shape = .polyline(points: points, closed: false)
             }
+            let entity = ProjectedEntity(shape: shape, layer: edge.hidden ? "hidden"
+                : (edge.outline ? "outline" : "edges")).scaled(by: view.scale)
+            entities.append(entity)
+            if let id = sources[edge.sourceIndex].instanceID { groups[id, default: []].append(entity) }
         }
-        return completedProjection(header: header, view: view,
-                                   entities: entities, groups: groups,
-                                   sources: sources)
+        if cancellation?.isCancelled == true { var r = header; r.outputBlocked = true; r.projectionComplete = false; return r }
+        var result = Self.completedProjection(header: header, view: view,
+                                          entities: entities, groups: groups, sources: sources)
+        result.projectionMethod = "occt-brep-hlr"
+        result.projectionComplete = header.missing.isEmpty && header.missingInstances.isEmpty
+        result.outputBlocked = !result.projectionComplete
+        result.visibleEdgeCount = edges.filter { !$0.hidden }.count
+        result.hiddenEdgeCount = edges.filter(\.hidden).count
+        return result
     }
 
     private func projectSection(page: CADDrawingPage, view: CADDrawingSheetView,
+                              sources: [ProjectionSource], header: PageProjection) -> PageProjection {
+        if let prepared = preparedProjection(page: page, view: view) { return prepared }
+        // Compatibility/test-only synchronous facade. Production UI, tool and
+        // native export routes prepare via the joined off-main worker first.
+        return Self.computeSectionProjection(page: page, view: view, sources: sources, header: header)
+    }
+
+    fileprivate nonisolated static func computeSectionProjection(page: CADDrawingPage, view: CADDrawingSheetView,
                                 sources: [ProjectionSource],
-                                header: PageProjection) -> PageProjection {
+                                header: PageProjection, cancellation: CADMeshCancellation? = nil) -> PageProjection {
         guard let origin = view.sectionOrigin,
               let storedNormal = view.sectionNormal,
               simd_length(storedNormal) > 1e-9 else {
@@ -4218,24 +4576,30 @@ public final class CADDrawingService {
             result.notes.append("section views need sectionOrigin and sectionNormal")
             result.sectionComplete = false
             result.sectionIncomplete = true
+            result.projectionComplete = false
             result.outputBlocked = true
             return result
         }
         let normal = simd_normalize(storedNormal)
         let frame = SectionKit.frame(normal: normal, xAxisHint: view.viewUp)
+        guard let strips = CADDrawingSectionDrafting.strips(path: view.sectionPath,
+                origin: origin, normal: normal, xAxis: frame.xAxis, yAxis: frame.yAxis),
+              view.sectionPath == nil || page.effectiveSheetViews.contains(where: {
+                  $0.id == view.sectionPath?.referenceViewID && $0.id != view.id && $0.kind.isOrthographic
+              }) else {
+            var result = header
+            result.sectionComplete = false; result.projectionComplete = false; result.outputBlocked = true
+            result.notes.append("The stepped section path or its parent view is invalid; no cut is substituted.")
+            return result
+        }
         var entities: [ProjectedEntity] = []
         var groups: [UUID: [ProjectedEntity]] = [:]
         var coverage: [CADDrawingSectionCoverage] = []
-        var incomplete = false
-        let assembly = loadAssemblyValue()
+        var incomplete = header.sectionIncomplete
+        let materials = Array(Set(sources.map { $0.body.material?.materialID ?? "unassigned" })).sorted()
         for source in sources {
-            let coverageBodyID: UUID
-            if let instanceID = source.instanceID,
-               let instance = assembly?.instance(instanceID) {
-                coverageBodyID = effectiveBodyID(instance)
-            } else {
-                coverageBodyID = source.body.id.raw
-            }
+            if cancellation?.isCancelled == true { incomplete = true; break }
+            let coverageBodyID = source.body.id.raw
             let item = CADDrawingSectionCoverage(
                 bodyID: coverageBodyID,
                 instanceID: source.instanceID,
@@ -4247,88 +4611,111 @@ public final class CADDrawingService {
                 incomplete = true
                 continue
             }
-            // The kernel section runs on the body-local solid: map the world
-            // plane in, then the resulting points back out.
-            let localOrigin = bodyLocal(origin, source.body.transform)
-            let localNormal = normalizeDirection(
-                source.body.transform.rotation.inverse.act(normal))
-            // A fine chord deflection keeps curved section boundaries (bores,
-            // rounds) faithful at drawing scale; the default 0.05 mm visibly
-            // underestimates small hole areas.
-            let polylines = OCCTKernel.sectionPolylines(brep, origin: localOrigin,
-                                                        normal: localNormal,
-                                                        deflection: 0.005)
-            let worldPieces = polylines.map { piece in
-                piece.map { source.body.transform.applying(to: $0) }
+            let materialID = source.body.material?.materialID ?? "unassigned"
+            let materialIndex = materials.firstIndex(of: materialID) ?? 0
+            let hatch = view.sectionHatches.first(where: { $0.materialID == materialID })
+                ?? CADDrawingSectionHatch(materialID: materialID,
+                                         angleDegrees: materialIndex.isMultiple(of: 2) ? 45 : -45)
+            guard hatch.angleDegrees.isFinite, hatch.spacingMM.isFinite,
+                  abs(hatch.angleDegrees) <= 180, (0.2...50).contains(hatch.spacingMM) else {
+                incomplete = true; coverage[coverage.count - 1].included = false; continue
             }
-            let loops = SectionKit.loops(from: worldPieces, origin: origin,
-                                         xAxis: frame.xAxis, yAxis: frame.yAxis)
             var projected: [ProjectedEntity] = []
-            for loop in loops where loop.points.count >= 2 {
-                projected.append(ProjectedEntity(
-                    shape: .polyline(points: loop.points.map { $0 * view.scale },
-                                     closed: loop.closed),
-                    layer: "section",
-                    area: loop.area * view.scale * view.scale))
+            for strip in strips {
+                if cancellation?.isCancelled == true { incomplete = true; break }
+                let localOrigin = Self.bodyLocal(strip.origin, source.body.transform)
+                let localNormal = Self.normalizeDirection(source.body.transform.rotation.inverse.act(normal))
+                guard let polylines = OCCTKernel.sectionPolylinesChecked(brep, origin: localOrigin,
+                        normal: localNormal, deflection: 0.005) else {
+                    incomplete = true; coverage[coverage.count - 1].included = false; continue
+                }
+                let worldPieces = polylines.map { $0.map { source.body.transform.applying(to: $0) } }
+                let loops = SectionKit.loops(from: worldPieces, origin: origin,
+                                             xAxis: frame.xAxis, yAxis: frame.yAxis)
+                // A solid section must form closed loops before material fill.
+                // Keep the original boundary visible but block incomplete output.
+                if loops.contains(where: { !$0.closed }) { incomplete = true; coverage[coverage.count - 1].included = false }
+                for loop in loops where loop.points.count >= 2 {
+                    if view.sectionPath == nil {
+                        projected.append(ProjectedEntity(shape: .polyline(
+                            points: loop.points.map { $0 * view.scale }, closed: loop.closed),
+                            layer: "section", area: loop.area * view.scale * view.scale))
+                    } else {
+                        let count = loop.closed ? loop.points.count : loop.points.count - 1
+                        for i in 0..<count {
+                            if let (a, b) = CADDrawingSectionDrafting.clip(loop.points[i],
+                                    loop.points[(i + 1) % loop.points.count], minX: strip.minX, maxX: strip.maxX) {
+                                projected.append(ProjectedEntity(shape: .line(a * view.scale, b * view.scale), layer: "section"))
+                            }
+                        }
+                    }
+                }
+                let scaledLoops = loops.map { SectionLoop(closed: $0.closed,
+                    points: $0.points.map { $0 * view.scale }, area: $0.area * view.scale * view.scale) }
+                if hatch.enabled, !scaledLoops.isEmpty {
+                    if let lines = CADDrawingSectionDrafting.hatches(loops: scaledLoops,
+                            angleDegrees: hatch.angleDegrees, spacingMM: hatch.spacingMM,
+                            minX: strip.minX * view.scale, maxX: strip.maxX * view.scale) {
+                        projected.append(contentsOf: lines.map { ProjectedEntity(shape: .line($0.0, $0.1), layer: "hatch") })
+                    } else { incomplete = true; coverage[coverage.count - 1].included = false }
+                }
+                if projected.count > 200000 { incomplete = true; coverage[coverage.count - 1].included = false; break }
             }
             entities.append(contentsOf: projected)
             if let id = source.instanceID {
                 groups[id, default: []].append(contentsOf: projected)
             }
         }
-        var result = completedProjection(header: header, view: view,
+        var result = Self.completedProjection(header: header, view: view,
                                          entities: entities, groups: groups,
                                          sources: sources)
         result.sectionCoverage = coverage
+        result.projectionMethod = view.sectionPath == nil ? "occt-brep-section" : "occt-brep-offset-section"
+        result.projectionComplete = !incomplete
         result.sectionComplete = !incomplete
         result.sectionIncomplete = incomplete
         result.outputBlocked = incomplete
         if incomplete {
-            result.notes.append("\(coverage.filter { !$0.analyticBRep }.count) "
-                                + "mesh-only body/bodies have no analytic section; "
-                                + "this section is INCOMPLETE and vector output is blocked.")
+            result.notes.append("This section is INCOMPLETE (missing B-rep, failed cut, open contour or drafting budget); output is blocked.")
         }
         return result
     }
 
     private func projectDetail(page: CADDrawingPage, view: CADDrawingSheetView,
+                               sources: [ProjectionSource], header: PageProjection) -> PageProjection {
+        if let prepared = preparedProjection(page: page, view: view) { return prepared }
+        return Self.computeDetailProjection(page: page, view: view, sources: sources, header: header)
+    }
+
+    fileprivate nonisolated static func computeDetailProjection(page: CADDrawingPage, view: CADDrawingSheetView,
                                sources: [ProjectionSource],
-                               header: PageProjection) -> PageProjection {
+                               header: PageProjection, cancellation: CADMeshCancellation? = nil) -> PageProjection {
         var header = header
-        guard let plane = plane(for: page, view: view),
+        guard let plane = Self.plane(for: page, view: view),
               let centerPoint = view.detailOrigin,
               let windowSize = view.detailSizeMM,
               windowSize.x > 0, windowSize.y > 0 else {
             header.notes.append("detail window is missing; projecting the full view.")
-            return projectView(page: page, view: view, sources: sources, header: header)
+            return Self.computeOrdinaryProjection(page: page, view: view, sources: sources, header: header, cancellation: cancellation)
         }
         let width = windowSize.x
         let height = windowSize.y
         let center = plane.toLocal(centerPoint)
         let rect = (min: SIMD2(center.x - width / 2, center.y - height / 2),
                     max: SIMD2(center.x + width / 2, center.y + height / 2))
-        var entities: [ProjectedEntity] = []
-        var groups: [UUID: [ProjectedEntity]] = [:]
-        for source in sources {
-            let projected = ProjectionKit.projectSilhouette(body: source.body, onto: plane)
-                + ProjectionKit.project(body: source.body, onto: plane)
-            var clippedEntities: [ProjectedEntity] = []
-            for entity in projected {
-                clippedEntities.append(contentsOf: clipped(convert(entity, layer: "detail"),
-                                                           to: rect))
-            }
-            clippedEntities = clippedEntities.map { $0.scaled(by: view.scale) }
-            entities.append(contentsOf: clippedEntities)
-            if let id = source.instanceID {
-                groups[id, default: []].append(contentsOf: clippedEntities)
-            }
+        var unscaled = view
+        unscaled.scale = 1
+        var result = Self.computeOrdinaryProjection(page: page, view: unscaled, sources: sources, header: header, cancellation: cancellation)
+        result.entities = result.entities.flatMap { Self.clipped($0, to: rect) }.map { $0.scaled(by: view.scale) }
+        result.instances = result.instances.map { instance in
+            var value = instance
+            value.entities = value.entities.flatMap { Self.clipped($0, to: rect) }.map { $0.scaled(by: view.scale) }
+            return value
         }
-        return completedProjection(header: header, view: view,
-                                   entities: entities, groups: groups,
-                                   sources: sources)
+        return result
     }
 
-    private func completedProjection(header: PageProjection,
+    private nonisolated static func completedProjection(header: PageProjection,
                                      view: CADDrawingSheetView,
                                      entities: [ProjectedEntity],
                                      groups: [UUID: [ProjectedEntity]],
@@ -4344,7 +4731,7 @@ public final class CADDrawingService {
         return result
     }
 
-    private func convert(_ entity: SketchEntity, layer: String) -> ProjectedEntity {
+    private nonisolated static func convert(_ entity: SketchEntity, layer: String) -> ProjectedEntity {
         switch entity {
         case let .line(_, a, b):
             return ProjectedEntity(shape: .line(a, b), layer: layer)
@@ -5028,7 +5415,7 @@ public final class CADDrawingService {
         if let projected {
             return ResolvedViewContext(view: projected.view,
                                        offset: projected.offset,
-                                       plane: plane(for: page, view: projected.view),
+                                       plane: Self.plane(for: page, view: projected.view),
                                        scale: projected.view.scale,
                                        isLegacy: false,
                                        entities: projected.entities)
@@ -5037,7 +5424,7 @@ public final class CADDrawingService {
             viewID.map { $0 == item.id } ?? true
         } ?? page.effectiveSheetViews[0]
         return ResolvedViewContext(view: view, offset: .zero,
-                                   plane: plane(for: page, view: view),
+                                   plane: Self.plane(for: page, view: view),
                                    scale: view.scale,
                                    isLegacy: page.sheetViews == nil,
                                    entities: projection.entities)
@@ -6192,7 +6579,7 @@ public final class CADDrawingService {
                     page.effectiveSheetViews.first(where: { $0.id == id })
                 } ?? page.effectiveSheetViews[0]
                 let context = ResolvedViewContext(view: view, offset: .zero,
-                                                  plane: plane(for: page, view: view),
+                                                  plane: Self.plane(for: page, view: view),
                                                   scale: view.scale,
                                                   isLegacy: page.sheetViews == nil)
                 if case .failure(let message) = resolveFeatureFace(feature, page: page,
@@ -6230,7 +6617,7 @@ public final class CADDrawingService {
                     page.effectiveSheetViews.first(where: { $0.id == id })
                 } ?? page.effectiveSheetViews[0]
                 let context = ResolvedViewContext(view: view, offset: .zero,
-                                                  plane: plane(for: page, view: view),
+                                                  plane: Self.plane(for: page, view: view),
                                                   scale: view.scale,
                                                   isLegacy: page.sheetViews == nil)
                 if case .failure(let message) = resolveFeatureFace(
@@ -6265,7 +6652,7 @@ public final class CADDrawingService {
                               projection: PageProjection,
                               resolved: ResolvedAnnotations) -> RenderGraphics {
         var entities = projection.entities
-        var texts: [DrawingText] = []
+        var texts: [DrawingText] = projection.sectionMarkTexts
         if page.showDimensions {
             for dim in dimensions(for: page, projection: projection) {
                 for (a, b) in dim.extensionLines {
@@ -6722,6 +7109,11 @@ public final class CADDrawingService {
             "ok": true,
             "mutated": mutated,
             "noRasterization": true,
+            "projectionMethod": projection.projectionMethod,
+            "projectionComplete": projection.projectionComplete,
+            "curveDeflectionMM": 0.005,
+            "visibleEdgeCount": projection.visibleEdgeCount,
+            "hiddenEdgeCount": projection.hiddenEdgeCount,
             "page": pagePayload(page),
             "sectionComplete": !sectionIncomplete,
             "missingExplodedView": missingExplodedView,
@@ -6756,6 +7148,11 @@ public final class CADDrawingService {
                     "entityCount": item.entities.count,
                     "instanceCount": item.instances.count,
                     "sectionComplete": item.sectionComplete,
+                    "projectionMethod": item.projectionMethod,
+                    "projectionComplete": item.projectionComplete,
+                    "visibleEdgeCount": item.visibleEdgeCount,
+                    "hiddenEdgeCount": item.hiddenEdgeCount,
+                    "outputBlocked": item.outputBlocked,
                     "notes": item.notes,
                     "missingBodyIDs": item.missing.map(\.uuidString),
                     "missingInstanceIDs": item.missingInstances.map(\.uuidString),
@@ -6813,6 +7210,15 @@ public final class CADDrawingService {
             "offset": pointPayload(view.offset),
             "viewNormal": vectorPayload(view.viewNormal),
             "viewUp": vectorPayload(view.viewUp),
+            "showHiddenLines": view.showHiddenLines,
+            "sectionHatches": jsonObject(view.sectionHatches) ?? [],
+            "sectionPath": view.sectionPath.flatMap { jsonObject($0) } ?? NSNull(),
+            "sectionMaterials": Array(Dictionary(grouping: document.session.document.bodies,
+                by: { $0.material?.materialID ?? "unassigned" }).keys).sorted().map { id in
+                    ["materialID": id, "name": document.session.document.bodies.first(where: {
+                        ($0.material?.materialID ?? "unassigned") == id
+                    })?.material?.materialName ?? id]
+            },
             "alignment": [
                 "placement": view.alignment.placement.rawValue,
                 "referenceViewID": (view.alignment.referenceViewID?.uuidString as Any?) ?? NSNull(),
@@ -6866,9 +7272,8 @@ public final class CADDrawingService {
             "viewCount": page.effectiveSheetViews.count,
             "isMultiView": page.isMultiViewSheet,
         ]
-        if page.sheetViews != nil {
-            payload["views"] = page.effectiveSheetViews.map { viewPayload($0) }
-        }
+        payload["hasSheetViews"] = page.sheetViews != nil
+        payload["views"] = page.effectiveSheetViews.map { viewPayload($0) }
         payload["bomEntryCount"] = page.bom?.entries.count ?? 0
         if let viewID = page.explodedViewID { payload["explodedViewID"] = viewID.uuidString }
         if let viewName = page.explodedViewName { payload["explodedViewName"] = viewName }
@@ -7605,7 +8010,7 @@ public final class CADDrawingService {
         let rect = (min: rectMin, max: rectMax)
         switch entity.shape {
         case let .line(a, b):
-            return clipSegment(a, b, rect: rect) != nil
+            return Self.clipSegment(a, b, rect: rect) != nil
         case let .circle(center, radius):
             let closest = SIMD2(Swift.min(Swift.max(center.x, rectMin.x), rectMax.x),
                                 Swift.min(Swift.max(center.y, rectMin.y), rectMax.y))
@@ -7617,7 +8022,7 @@ public final class CADDrawingService {
         case let .polyline(points, _):
             guard points.count >= 2 else { return false }
             for index in 0..<(points.count - 1) {
-                if clipSegment(points[index], points[index + 1], rect: rect) != nil {
+                if Self.clipSegment(points[index], points[index + 1], rect: rect) != nil {
                     return true
                 }
             }
@@ -7840,12 +8245,14 @@ public final class CADDrawingService {
         }
         for entity in graphics.entities {
             let isCenterline = entity.layer == "centerline"
+            let isHidden = entity.layer == "hidden"
+            let isHatch = entity.layer == "hatch"
             context.setStrokeColor(gray: 0, alpha: 1)
             let baseWidth = graphics.lineWidthMM.isFinite && graphics.lineWidthMM > 0
                 ? graphics.lineWidthMM : 0.25
-            let width = isCenterline ? max(0.12, baseWidth * 0.72) : baseWidth
+            let width = (isCenterline || isHidden || isHatch) ? max(0.12, baseWidth * 0.72) : baseWidth
             context.setLineWidth(max(width, minimumStrokeMM))
-            context.setLineDash(phase: 0, lengths: isCenterline ? [3, 1.5] : [])
+            context.setLineDash(phase: 0, lengths: isHidden ? [2, 1] : (isCenterline ? [3, 1.5] : []))
             let path = CGMutablePath()
             switch entity.shape {
             case let .line(a, b):
@@ -7976,7 +8383,7 @@ public final class CADDrawingService {
         out += "<svg xmlns=\"http://www.w3.org/2000/svg\""
         out += " width=\"\(number(width))mm\" height=\"\(number(height))mm\""
         out += " viewBox=\"0 0 \(number(width)) \(number(height))\">\n"
-        let layerOrder = ["outline", "edges", "geometry", "section", "dimension",
+        let layerOrder = ["hidden", "outline", "edges", "geometry", "section", "hatch", "section-mark", "dimension",
                           "centerline", "annotation", "balloon", "bom", "title"]
         // All model/annotation layers merge into ONE SVG group per named layer
         // (GEOMETRY/DIMENSIONS/CENTERLINES/TITLE) so a document never emits
@@ -7989,7 +8396,7 @@ public final class CADDrawingService {
             groupedEntities[name, default: []].append(contentsOf: graphics.entities.filter { $0.layer == layer })
             groupedTexts[name, default: []].append(contentsOf: graphics.texts.filter { $0.layer == layer })
         }
-        for groupName in ["GEOMETRY", "DIMENSIONS", "CENTERLINES", "ANNOTATIONS", "BOM", "TITLE"] {
+        for groupName in ["HIDDEN", "GEOMETRY", "HATCH", "SECTION_MARKS", "DIMENSIONS", "CENTERLINES", "ANNOTATIONS", "BOM", "TITLE"] {
             let entities = groupedEntities[groupName] ?? []
             let texts = groupedTexts[groupName] ?? []
             guard !entities.isEmpty || !texts.isEmpty else { continue }
@@ -7997,7 +8404,8 @@ public final class CADDrawingService {
                 let strokeWidth = abs(graphics.lineWidthMM - 0.25) < 1e-9
                     ? "0.25" : number(graphics.lineWidthMM)
                 out += "<g id=\"\(groupName)\" fill=\"none\" stroke=\"#000000\""
-                out += " stroke-width=\"\(strokeWidth)\">\n"
+                let dash = groupName == "HIDDEN" ? " stroke-dasharray=\"2 1\"" : ""
+                out += " stroke-width=\"\(strokeWidth)\"\(dash)>\n"
                 for entity in entities {
                     switch entity.shape {
                     case let .line(a, b):
@@ -8008,13 +8416,12 @@ public final class CADDrawingService {
                         out += " cy=\"\(number(flipped(center.y)))\""
                         out += " r=\"\(number(radius))\"/>\n"
                     case let .arc(center, radius, startAngle, endAngle):
-                        let points = SketchEntity.arcPoints(
-                            center: center, radius: radius, startAngle: startAngle,
-                            endAngle: endAngle, segmentsPerTurn: 64)
-                        if let path = svgPath(points, closed: false, flip: flipped,
-                                              number: number) {
-                            out += path
-                        }
+                        var stop = endAngle
+                        while stop <= startAngle { stop += 2 * .pi }
+                        let a = center + SIMD2(cos(startAngle), sin(startAngle)) * radius
+                        let b = center + SIMD2(cos(stop), sin(stop)) * radius
+                        let large = stop - startAngle > .pi ? 1 : 0
+                        out += "<path d=\"M \(number(a.x)) \(number(flipped(a.y))) A \(number(radius)) \(number(radius)) 0 \(large) 0 \(number(b.x)) \(number(flipped(b.y)))\"/>\n"
                     case let .polyline(points, closed):
                         if let path = svgPath(points, closed: closed, flip: flipped,
                                               number: number) {
@@ -8068,9 +8475,13 @@ public final class CADDrawingService {
         out += "9\n$INSUNITS\n70\n4\n"
         out += "9\n$MEASUREMENT\n70\n1\n"
         out += "0\nENDSEC\n"
-        out += "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n6\n"
-        for layer in ["GEOMETRY", "DIMENSIONS", "CENTERLINES", "ANNOTATIONS", "BOM", "TITLE"] {
-            out += "0\nLAYER\n2\n\(layer)\n70\n0\n62\n7\n6\nCONTINUOUS\n"
+        out += "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n70\n2\n"
+        out += "0\nLTYPE\n2\nCONTINUOUS\n70\n0\n3\nSolid line\n72\n65\n73\n0\n40\n0\n"
+        out += "0\nLTYPE\n2\nHIDDEN\n70\n0\n3\nHidden edges\n72\n65\n73\n2\n40\n3\n49\n2\n49\n-1\n"
+        out += "0\nENDTAB\n0\nTABLE\n2\nLAYER\n70\n9\n"
+        for layer in ["GEOMETRY", "HIDDEN", "HATCH", "SECTION_MARKS", "DIMENSIONS", "CENTERLINES", "ANNOTATIONS", "BOM", "TITLE"] {
+            let type = layer == "HIDDEN" ? "HIDDEN" : "CONTINUOUS"
+            out += "0\nLAYER\n2\n\(layer)\n70\n0\n62\n7\n6\n\(type)\n"
         }
         out += "0\nENDTAB\n0\nENDSEC\n"
         out += "0\nSECTION\n2\nENTITIES\n"
@@ -8119,6 +8530,9 @@ public final class CADDrawingService {
 
     private func dxfLayer(_ layer: String) -> String {
         switch layer {
+        case "hidden": return "HIDDEN"
+        case "hatch": return "HATCH"
+        case "section-mark": return "SECTION_MARKS"
         case "dimension": return "DIMENSIONS"
         case "centerline": return "CENTERLINES"
         case "annotation", "balloon": return "ANNOTATIONS"
@@ -8130,6 +8544,9 @@ public final class CADDrawingService {
 
     private func svgLayerName(_ layer: String) -> String {
         switch layer {
+        case "hidden": return "HIDDEN"
+        case "hatch": return "HATCH"
+        case "section-mark": return "SECTION_MARKS"
         case "dimension": return "DIMENSIONS"
         case "centerline": return "CENTERLINES"
         case "annotation", "balloon": return "ANNOTATIONS"
@@ -8195,22 +8612,26 @@ public final class CADDrawingService {
         return (resolvedLow, resolvedHigh)
     }
 
-    private func clipped(_ entity: ProjectedEntity,
+    private nonisolated static func clipped(_ entity: ProjectedEntity,
                          to rect: (min: SIMD2<Double>, max: SIMD2<Double>))
         -> [ProjectedEntity] {
         switch entity.shape {
         case let .line(a, b):
-            guard let (c, d) = clipSegment(a, b, rect: rect) else { return [] }
+            guard let (c, d) = Self.clipSegment(a, b, rect: rect) else { return [] }
             return [ProjectedEntity(shape: .line(c, d), layer: entity.layer)]
-        case let .circle(center, _):
-            return contains(rect, center) ? [entity] : []
-        case let .arc(center, _, _, _):
-            return contains(rect, center) ? [entity] : []
+        case let .circle(center, radius):
+            return Self.clippedCircularEntity(entity, center: center, radius: radius,
+                                         start: 0, end: 2 * .pi, to: rect)
+        case let .arc(center, radius, start, end):
+            var stop = end
+            while stop <= start { stop += 2 * .pi }
+            return Self.clippedCircularEntity(entity, center: center, radius: radius,
+                                         start: start, end: stop, to: rect)
         case let .polyline(points, _):
             guard points.count >= 2 else { return [] }
             var pieces: [ProjectedEntity] = []
             for index in 0..<(points.count - 1) {
-                if let (c, d) = clipSegment(points[index], points[index + 1], rect: rect) {
+                if let (c, d) = Self.clipSegment(points[index], points[index + 1], rect: rect) {
                     pieces.append(ProjectedEntity(shape: .line(c, d), layer: entity.layer))
                 }
             }
@@ -8218,14 +8639,45 @@ public final class CADDrawingService {
         }
     }
 
-    private func contains(_ rect: (min: SIMD2<Double>, max: SIMD2<Double>),
+    private nonisolated static func clippedCircularEntity(_ entity: ProjectedEntity, center: SIMD2<Double>,
+                                       radius: Double, start: Double, end: Double,
+                                       to rect: (min: SIMD2<Double>, max: SIMD2<Double>)) -> [ProjectedEntity] {
+        guard radius.isFinite, radius > 0, start.isFinite, end.isFinite,
+              end > start, end - start <= 2 * .pi + 1e-8 else { return [] }
+        var cuts = [start, end]
+        func include(_ raw: Double) {
+            var angle = raw + ceil((start - raw) / (2 * .pi)) * (2 * .pi)
+            if angle < start { angle += 2 * .pi }
+            if angle > start + 1e-10 && angle < end - 1e-10 { cuts.append(angle) }
+        }
+        for x in [rect.min.x, rect.max.x] {
+            let value = (x - center.x) / radius
+            if abs(value) <= 1 { let angle = acos(value); include(angle); include(-angle) }
+        }
+        for y in [rect.min.y, rect.max.y] {
+            let value = (y - center.y) / radius
+            if abs(value) <= 1 { let angle = asin(value); include(angle); include(.pi - angle) }
+        }
+        cuts.sort()
+        var intervals: [(Double, Double)] = []
+        for (a, b) in zip(cuts, cuts.dropFirst()) where b - a > 1e-10 {
+            let mid = (a + b) / 2
+            if Self.contains(rect, center + SIMD2(cos(mid), sin(mid)) * radius) { intervals.append((a, b)) }
+        }
+        if intervals.count == 1, abs(intervals[0].0 - start) < 1e-9,
+           abs(intervals[0].1 - end) < 1e-9 { return [entity] }
+        return intervals.map { ProjectedEntity(shape: .arc(center: center, radius: radius,
+            startAngle: $0.0, endAngle: $0.1), layer: entity.layer) }
+    }
+
+    private nonisolated static func contains(_ rect: (min: SIMD2<Double>, max: SIMD2<Double>),
                           _ point: SIMD2<Double>) -> Bool {
         point.x >= rect.min.x - 1e-9 && point.x <= rect.max.x + 1e-9
             && point.y >= rect.min.y - 1e-9 && point.y <= rect.max.y + 1e-9
     }
 
     /// Liang–Barsky segment/rectangle clip; nil when nothing remains.
-    private func clipSegment(_ a: SIMD2<Double>, _ b: SIMD2<Double>,
+    private nonisolated static func clipSegment(_ a: SIMD2<Double>, _ b: SIMD2<Double>,
                              rect: (min: SIMD2<Double>, max: SIMD2<Double>))
         -> (SIMD2<Double>, SIMD2<Double>)? {
         var t0 = 0.0
@@ -8250,13 +8702,13 @@ public final class CADDrawingService {
         return (a + delta * t0, a + delta * t1)
     }
 
-    private func bodyLocal(_ world: SIMD3<Double>, _ transform: Transform3D) -> SIMD3<Double> {
+    private nonisolated static func bodyLocal(_ world: SIMD3<Double>, _ transform: Transform3D) -> SIMD3<Double> {
         let unscaled = transform.rotation.inverse.act(world - transform.translation)
         let scale = transform.scale
         return abs(scale) > 1e-12 ? unscaled / scale : unscaled
     }
 
-    private func normalizeDirection(_ vector: SIMD3<Double>) -> SIMD3<Double> {
+    private nonisolated static func normalizeDirection(_ vector: SIMD3<Double>) -> SIMD3<Double> {
         let length = simd_length(vector)
         return length > 1e-12 ? vector / length : SIMD3<Double>(0, 0, 1)
     }
@@ -8415,7 +8867,8 @@ public final class CADDrawingService {
                     bodyID: id,
                     missing: false,
                     renderSHA256: CADScriptService.renderHash(body.render),
-                    placementSHA256: Self.transformHash(body.transform))
+                    placementSHA256: Self.transformHash(body.transform),
+                    materialID: body.material?.materialID)
             })
         }
         let assembly = loadAssemblyValue()
@@ -8445,7 +8898,8 @@ public final class CADDrawingService {
                 bodyID: id,
                 missing: false,
                 renderSHA256: CADScriptService.renderHash(body.render),
-                placementSHA256: Self.transformHash(body.transform))
+                placementSHA256: Self.transformHash(body.transform),
+                    materialID: body.material?.materialID)
         }
         let instanceSources = instances.map { instance -> CADDrawingSourceFingerprint.InstanceSource in
             let id = effectiveBodyID(instance)
@@ -8611,8 +9065,8 @@ private nonisolated struct CADDrawingServiceError: Error {
     let message: String
 }
 
-private nonisolated struct ProjectedEntity {
-    nonisolated enum Shape {
+private nonisolated struct ProjectedEntity: Sendable {
+    nonisolated enum Shape: Sendable {
         case line(SIMD2<Double>, SIMD2<Double>)
         case circle(center: SIMD2<Double>, radius: Double)
         case arc(center: SIMD2<Double>, radius: Double,
@@ -8682,7 +9136,12 @@ private nonisolated struct ProjectedEntity {
     }
 }
 
-private nonisolated struct PageProjection {
+private nonisolated struct PageProjection: Sendable {
+    var projectionMethod = "none"
+    var projectionComplete = true
+    var visibleEdgeCount = 0
+    var hiddenEdgeCount = 0
+    var sectionMarkTexts: [DrawingText] = []
     var entities: [ProjectedEntity] = []
     var notes: [String] = []
     var missing: [UUID] = []
@@ -8703,7 +9162,12 @@ private nonisolated struct PageProjection {
     var outputBlocked: Bool = false
 }
 
-private nonisolated struct CADDrawingViewProjection {
+private nonisolated struct CADDrawingViewProjection: Sendable {
+    var projectionMethod = "none"
+    var projectionComplete = true
+    var visibleEdgeCount = 0
+    var hiddenEdgeCount = 0
+    var outputBlocked = false
     var view: CADDrawingSheetView
     var offset: SIMD2<Double> = .zero
     var entities: [ProjectedEntity] = []
@@ -8717,7 +9181,7 @@ private nonisolated struct CADDrawingViewProjection {
     var bounds: (min: SIMD2<Double>, max: SIMD2<Double>)?
 }
 
-private nonisolated struct CADDrawingSectionCoverage {
+private nonisolated struct CADDrawingSectionCoverage: Sendable {
     var bodyID: UUID
     var instanceID: UUID?
     var name: String
@@ -8733,7 +9197,7 @@ private nonisolated struct ProjectionSource {
     var body: Body
 }
 
-private nonisolated struct ProjectedInstance {
+private nonisolated struct ProjectedInstance: Sendable {
     var id: UUID
     var name: String
     var entities: [ProjectedEntity]
@@ -8762,7 +9226,7 @@ private nonisolated struct DrawingDimension {
     var dimensionLine: (SIMD2<Double>, SIMD2<Double>)?
 }
 
-private nonisolated struct DrawingText {
+private nonisolated struct DrawingText: Sendable {
     var text: String
     var position: SIMD2<Double>
     var height: Double
@@ -8792,4 +9256,107 @@ private nonisolated struct FittedCircle {
 private nonisolated struct NodeKey: Hashable {
     let x: Int64
     let y: Int64
+}
+
+
+private nonisolated struct DrawingProjectionToken: Equatable, Sendable {
+    let revision: Int
+    let changeCount: Int
+    let drawings: Data?
+    let source: CADDrawingSourceFingerprint
+}
+
+private nonisolated struct DrawingProjectionGeometry: Sendable {
+    let solid: Data?
+    let surface: Data?
+}
+
+private nonisolated struct DrawingProjectionSourceSnapshot: Sendable {
+    let id: UUID
+    let instanceID: UUID?
+    let name: String
+    let transform: Transform3D
+    let render: RenderMesh
+    let revision: UInt64
+    let material: BodyMaterialSpec?
+    let geometry: DrawingProjectionGeometry
+}
+
+private nonisolated struct DrawingProjectionPlan: Sendable {
+    let page: CADDrawingPage
+    let view: CADDrawingSheetView
+    let sources: [DrawingProjectionSourceSnapshot]
+    let header: PageProjection
+}
+
+@MainActor
+private final class DrawingProjectionRun {
+    let cancellation = CADMeshCancellation()
+    private var task: Task<[UUID: PageProjection]?, Never>?
+    func attach(_ task: Task<[UUID: PageProjection]?, Never>) {
+        self.task = task
+        if cancellation.isCancelled { task.cancel() }
+    }
+    func cancel() { cancellation.cancel(); task?.cancel() }
+    func join() async { if let task { _ = await task.value } }
+}
+
+@MainActor
+private final class DrawingProjectionCache {
+    weak var document: FloeCADDocument?
+    let pageID: UUID
+    let token: DrawingProjectionToken
+    let views: [UUID: PageProjection]
+    init(document: FloeCADDocument, pageID: UUID, token: DrawingProjectionToken,
+         views: [UUID: PageProjection]) {
+        self.document = document; self.pageID = pageID; self.token = token; self.views = views
+    }
+}
+
+/// One native drawing computation at a time, following the service-owned
+/// interference/mesh worker pattern. A cancelled HLR phase is joined, then
+/// discarded: 7.8.1 Update/Hide cannot be forcibly interrupted.
+private actor DrawingProjectionWorker {
+    static let shared = DrawingProjectionWorker()
+    func compute(plans: [DrawingProjectionPlan], cancellation: CADMeshCancellation,
+                 probe: (@Sendable () -> Void)?) -> [UUID: PageProjection]? {
+        if cancellation.isCancelled || Task.isCancelled { return nil }
+        probe?()
+        var results: [UUID: PageProjection] = [:]
+        for plan in plans {
+            if cancellation.isCancelled || Task.isCancelled { return nil }
+            var sources: [ProjectionSource] = []
+            for snapshot in plan.sources {
+                if cancellation.isCancelled || Task.isCancelled { return nil }
+                var body = Body(id: BodyID(raw: snapshot.id), name: snapshot.name,
+                    transform: snapshot.transform, primitive: nil,
+                    render: snapshot.render, revision: snapshot.revision)
+                body.material = snapshot.material
+                if let data = snapshot.geometry.solid {
+                    guard let handle = OCCTKernel.deserialize(data) else { return nil }
+                    body.brep = handle
+                }
+                if let data = snapshot.geometry.surface {
+                    guard let handle = OCCTKernel.deserialize(data) else { return nil }
+                    body.surfaceBRep = handle
+                }
+                sources.append(ProjectionSource(instanceID: snapshot.instanceID,
+                                                name: snapshot.name, body: body))
+            }
+            let projection: PageProjection
+            if plan.view.kind == .section {
+                projection = CADDrawingService.computeSectionProjection(page: plan.page,
+                    view: plan.view, sources: sources, header: plan.header, cancellation: cancellation)
+            } else if plan.view.kind == .detail {
+                projection = CADDrawingService.computeDetailProjection(page: plan.page,
+                    view: plan.view, sources: sources, header: plan.header, cancellation: cancellation)
+            } else {
+                projection = CADDrawingService.computeOrdinaryProjection(page: plan.page,
+                    view: plan.view, sources: sources, header: plan.header, cancellation: cancellation)
+            }
+            if cancellation.isCancelled || Task.isCancelled { return nil }
+            results[plan.view.id] = projection
+        }
+        return results
+    }
 }
