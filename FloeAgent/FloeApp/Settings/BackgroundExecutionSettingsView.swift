@@ -87,14 +87,6 @@ struct BackgroundExecutionSettingsView: View {
     var body: some View {
         Form {
             Section {
-                NavigationLink {
-                    ScreenShareGuideView(center: center.environment.screenShareCenter)
-                } label: {
-                    Label("screenshare.guide.title", systemImage: "rectangle.inset.filled.and.person.filled")
-                }
-                .accessibilityIdentifier("background.screenShare.guide")
-            }
-            Section {
                 Toggle("background.features.enhanced", isOn: Binding(
                     get: { center.backgroundExecutionOptions.enhancedBackgroundEnabled },
                     set: { value in Task { await center.setEnhancedBackgroundEnabled(value) } }
@@ -156,12 +148,25 @@ struct BackgroundExecutionSettingsView: View {
                         .accessibilityIdentifier("background.pip.policyCaption")
                 }
 
-                Toggle("background.features.screen_feedback", isOn: Binding(
-                    get: { center.backgroundExecutionOptions.screenFeedbackEnabled },
-                    set: { value in Task { await center.setScreenFeedbackEnabled(value) } }
-                ))
-                .disabled(!statusPiPEnabled)
-                .accessibilityIdentifier("background.screenFeedback.toggle")
+                HStack {
+                    Text("background.features.screen_feedback")
+                    NavigationLink {
+                        ScreenShareGuideView(center: center.environment.screenShareCenter)
+                    } label: {
+                        Image(systemName: "info.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("screenshare.guide.title")
+                    .accessibilityIdentifier("background.screenShare.guide")
+                    Spacer()
+                    Toggle("background.features.screen_feedback", isOn: Binding(
+                        get: { center.backgroundExecutionOptions.screenFeedbackEnabled },
+                        set: { value in Task { await center.setScreenFeedbackEnabled(value) } }
+                    ))
+                    .labelsHidden()
+                    .disabled(!statusPiPEnabled)
+                    .accessibilityIdentifier("background.screenFeedback.toggle")
+                }
                 if let caption = prerequisiteCaption(.screenFeedback) {
                     Text(caption)
                         .font(.footnote)

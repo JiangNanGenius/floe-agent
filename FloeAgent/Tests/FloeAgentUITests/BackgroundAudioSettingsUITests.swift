@@ -24,6 +24,8 @@ final class BackgroundAudioSettingsUITests: XCTestCase {
         XCTAssertTrue(audio.exists)
         XCTAssertTrue(pip.exists)
         XCTAssertTrue(feedback.exists)
+        XCTAssertEqual(app.switches.matching(identifier: "background.screenFeedback.toggle").count, 1)
+        XCTAssertTrue(app.buttons["background.screenShare.guide"].firstMatch.exists)
         let original = (enabled(enhanced), enabled(audio), enabled(pip), enabled(feedback))
         try XCTSkipIf(!original.0 && (original.1 || original.2 || original.3),
                       "Retain the saved legacy combination: UI policy cannot reconstruct it after mutation")
