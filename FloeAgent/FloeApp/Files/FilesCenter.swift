@@ -162,6 +162,42 @@ final class FilesCenter: ObservableObject {
         return attachment
     }
 
+    /// Small data-only context attachments use the SAME staging/resolution
+    /// and composer ownership as picked documents, without recents or a
+    /// bookmark fallback. No whole model/file copy or user file is created.
+    func registerContextJSON(_ data: Data, displayName: String,
+                             conversationID: UUID) throws -> AttachmentRef {
+        guard !data.isEmpty, data.count <= 64 * 1024,
+              (try JSONSerialization.jsonObject(with: data)) is [String: Any] else {
+            throw FloeError.validationFailed(FloeL10n.l("cad.selection.attachFailed"))
+        }
+        let id=UUID(), relative="cad-context-\(id.uuidString).json"
+        let url=attachmentsStagingDirectory.appendingPathComponent(relative)
+        try data.write(to: url, options: .atomic)
+        return AttachmentRef(id:id,conversationID:conversationID,kind:.document,
+            displayName:displayName,uti:UTType.json.identifier,byteCount:data.count,
+            sha256:FloeDigest.sha256Hex(data),storage:.applicationSupport,relativePath:relative)
+    }
+
+    /// Only the fresh, not-adopted context produced above may be removed.
+    /// Callers must not invoke this for an attachment accepted by a draft.
+    func discardUnadoptedContextJSON(_ attachment: AttachmentRef,
+                                     conversationID: UUID) throws {
+        guard attachment.conversationID == conversationID,attachment.storage == .applicationSupport,
+              attachment.kind == .document,
+              !ComposerDraftStore.shared.attachments(for:conversationID).contains(where: { $0.id == attachment.id }),
+              attachment.relativePath == "cad-context-\(attachment.id.uuidString).json" else {
+            throw FloeError.validationFailed("Invalid unadopted context owner")
+        }
+        let url=attachmentsStagingDirectory.appendingPathComponent(attachment.relativePath!)
+        let values=try url.resourceValues(forKeys:[.isRegularFileKey,.isSymbolicLinkKey])
+        guard values.isRegularFile == true,values.isSymbolicLink != true,
+              try FloeDigest.sha256Hex(ofFileAt:url) == attachment.sha256 else {
+            throw FloeError.validationFailed("Context staging identity changed")
+        }
+        try FileManager.default.removeItem(at:url)
+    }
+
     /// Stages image bytes without manufacturing a security-scoped URL;
     /// normalize them to JPEG exactly like document-picked images. Context
     /// snapshots can omit the recent-files list while retaining normal

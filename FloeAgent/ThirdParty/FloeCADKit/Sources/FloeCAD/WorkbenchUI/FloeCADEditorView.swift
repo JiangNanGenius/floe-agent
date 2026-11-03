@@ -3089,7 +3089,10 @@ struct FloeCADEditorView: View {
                     edgePicks: inputs.edgePicks,
                     sketchID: inputs.sketchID,
                     sketchEntityIDs: inputs.sketchEntityIDs,
-                    instanceIDs: inputs.instanceIDs)
+                    instanceIDs: inputs.instanceIDs,
+                    featureIDs: inputs.featureIDs,
+                planeID: inputs.planeID,
+                    historyGeneration: inputs.historyGeneration)
                 observer.handler(context)
             }
     }

@@ -136,6 +136,9 @@ struct FilePreviewView: View {
                                                 canvasActions: CADCanvasActionBridge.actions(
                                                     assetStore: environment.creativeAssetStore),
                                                 onSelectionContextChange: {basicMachiningSelection=$0}))
+                    .modifier(CADSelectionAssistantEntry(document: floecadDocument, selection: basicMachiningSelection,
+                        relativePath: displayedPath, root: center.fileService?.guardResolver.rootURL,
+                        workspaceID: center.currentWorkspace?.id, conversationID: conversationID))
                     .modifier(CADBasicMachiningEntry(document:floecadDocument,selection:basicMachiningSelection,
                         workspace:center,root:center.fileService?.guardResolver.rootURL,workspaceID:center.currentWorkspace?.id,conversationID:engineeringConversationID))
                     .safeAreaInset(edge: .top) {

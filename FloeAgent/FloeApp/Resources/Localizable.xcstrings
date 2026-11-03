@@ -20003,6 +20003,74 @@
         }
       }
     },
+    "cad.selection.askAssistant" : {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ask About Selection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对此提问"
+          }
+        }
+      }
+    },
+    "cad.selection.changed" : {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The selection changed. Select it again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择已改变，请重新选择。"
+          }
+        }
+      }
+    },
+    "cad.selection.attachment" : {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Selected 3D Part.json"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所选3D部位.json"
+          }
+        }
+      }
+    },
+    "cad.selection.attachFailed" : {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t attach the selection. Try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未能添加所选部位，请重试。"
+          }
+        }
+      }
+    },
     "cad.ui.common.done": {
       "extractionState": "manual",
       "localizations": {

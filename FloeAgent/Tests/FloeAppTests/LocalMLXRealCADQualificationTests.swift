@@ -368,7 +368,10 @@ final class LocalMLXRealCADQualificationTests: XCTestCase {
     func testFoundationAvailabilityAndAdvertisedCapabilitiesAreTruthful() async throws {
         environment = try await appQualificationEnvironment()
         provider = LocalProviderAdapter.providerProfile
-        _ = try await assertFoundationAvailabilityAndCapabilities()
+        // Availability reporting must also be truthful on an ineligible host.
+        // The separate real Foundation CAD selector still requires a ready
+        // tool runtime; this check never counts as successful inference.
+        _ = try await assertFoundationAvailabilityAndCapabilities(requireToolRuntimeReady: false)
     }
 
     func testActualFoundationCanQueryEditUndoSaveAndColdReopenSuppliedNativeCADFixture() async throws {
@@ -412,7 +415,9 @@ final class LocalMLXRealCADQualificationTests: XCTestCase {
     }
 
     @discardableResult
-    private func assertFoundationAvailabilityAndCapabilities() async throws -> AppleFoundationModelAvailability {
+    private func assertFoundationAvailabilityAndCapabilities(
+        requireToolRuntimeReady: Bool = true
+    ) async throws -> AppleFoundationModelAvailability {
         let availability = await AppleFoundationModelRuntime.shared.availability()
         let adapter = LocalProviderAdapter(runtime: environment.localModelRuntime, store: environment.localModelStore)
         let advertised = try await adapter.listModels(provider: provider, credentials: ProviderCredentials())
@@ -437,11 +442,15 @@ final class LocalMLXRealCADQualificationTests: XCTestCase {
         if case .available(let tokens, _, let tools, _) = availability {
             XCTAssertEqual(row.limits.contextTokens, tokens)
             XCTAssertEqual(row.capabilities.contains(.tools), tools)
-            guard tools else { throw reachabilityFailure("Foundation is available but tool calling is unavailable.") }
+            if requireToolRuntimeReady && !tools {
+                throw reachabilityFailure("Foundation is available but tool calling is unavailable.")
+            }
         } else {
             XCTAssertFalse(row.capabilities.contains(.tools))
             XCTAssertTrue(row.displayName.contains(reason), "The visible row must include the actual unavailable reason.")
-            throw reachabilityFailure("Foundation is not ready: \(reason); \(availability). No system setting changed.")
+            if requireToolRuntimeReady {
+                throw reachabilityFailure("Foundation is not ready: \(reason); \(availability). No system setting changed.")
+            }
         }
         return availability
     }

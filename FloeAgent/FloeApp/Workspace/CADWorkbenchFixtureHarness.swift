@@ -679,6 +679,7 @@ enum CADQualificationFixture {
 struct CADWorkbenchFixtureHarness: View {
     @EnvironmentObject private var environment: AppEnvironment
     @State private var document: FloeCADDocument?
+    @State private var m30Fixture: CADM30SelectedTargetUIFixture?
     @State private var error: String?
     /// E26: set when the fixture seeded a workspace-owned .floecad package and
     /// a real pending import proposal; the product FilePreviewView is then the
@@ -843,7 +844,11 @@ struct CADWorkbenchFixtureHarness: View {
             Self.installMeshPanelFlowProbeIfRequested()
             do {
                 let arguments = ProcessInfo.processInfo.arguments
-                if arguments.contains("--ui-test-cad-sculpt") {
+                if arguments.contains(CADM30SelectedTargetUIFixture.argument) {
+                    let fixture = try await CADM30SelectedTargetUIFixture.prepare(in: environment)
+                    m30Fixture = fixture
+                    document = fixture.document
+                } else if arguments.contains("--ui-test-cad-sculpt") {
                     document=try await CADQualificationFixture.openSculpt(reset:arguments.contains("--ui-test-cad-sculpt-reset"))
                 } else if arguments.contains("--ui-test-cad-texture-paint") {
                     document=try await CADQualificationFixture.openTexturePaint(reset:arguments.contains("--ui-test-cad-texture-paint-reset"))
@@ -940,8 +945,21 @@ struct CADWorkbenchFixtureHarness: View {
     @ViewBuilder
     private func workbench(_ document: FloeCADDocument) -> some View {
         NavigationStack {
-            FloeCADWorkbenchView(document: document)
-                .modifier(FloeCADHostChrome(document: document))
+            if let fixture = m30Fixture {
+                FloeCADWorkbenchView(document: document, onSelectionContextChange: { fixture.observe($0) })
+                    .modifier(FloeCADHostChrome(document: document,
+                        onSelectionContextChange: { fixture.observe($0) },
+                        onSaveCompleted: { fixture.didSave($0) }))
+                    .modifier(CADSelectionAssistantEntry(document: document, selection: fixture.observed,
+                        relativePath: document.url.lastPathComponent,
+                        root: environment.workspaceCenter.currentRootURL,
+                        workspaceID: fixture.workspaceID, conversationID: fixture.conversationID,
+                        onContextAttached: { fixture.didAttach($0) }))
+                    .overlay(alignment: .bottomLeading) { CADM30SelectedTargetReadback(fixture: fixture) }
+            } else {
+                FloeCADWorkbenchView(document: document)
+                    .modifier(FloeCADHostChrome(document: document))
+            }
         }
     }
 }

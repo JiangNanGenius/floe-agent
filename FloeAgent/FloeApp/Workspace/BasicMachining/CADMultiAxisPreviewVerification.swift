@@ -164,7 +164,7 @@ enum CADMultiAxisPreviewVerification {
                 fixtureStates.append(.init(id:f.id,state:state))
             }
         }
-        let stl=files.removeValue(forKey:"stock.stl")!;_ = files.removeValue(forKey:"stock.occupancy")
+        let stl=files.removeValue(forKey:"stock.stl")!
         return CADBasicMachiningVerified(stlData:stl,manifestData:md,stlSHA256:FloeDigest.sha256Hex(stl),manifestSHA256:FloeDigest.sha256Hex(md),removedMM3:Double(nominal.cells)*h*h*h-nominal.volume,remainingMM3:nominal.volume,supplementalFiles:files,previewSummary:.init(continuousRemainingLowerMM3:lower.volume,continuousRemainingUpperMM3:upper.volume,fixtures:fixtureStates))
     }
 }

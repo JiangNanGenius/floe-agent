@@ -31,9 +31,12 @@ struct CADMultiAxisPreviewView:View {
             Form {
                 Section {
                     Text(part?.name ?? t("先选中一个已保存的实体零件","Select one saved solid part first"))
-                    Text(t("以向外取整的零件包围盒为毛坯，零件形状只作参考。","Uses the outward-rounded part bounds as blank stock; the part geometry is reference only.")).font(.footnote).foregroundStyle(.secondary)
-                    Text(t("预览刀尖移动与刀轴倾转后的毛坯去料，显示体素近似及连续运动的体积范围。刀路规划、车铣与整机安全检查尚不支持。","Preview stock removal as the tip moves and tool axis tilts, with voxel meshes and a continuous-motion volume bracket. CAM planning, turn-mill and complete machine safety checks are unavailable."))
+                    Text(t("以零件外框为毛坯，预览刀具移动与倾转后的去料。","Preview material removal from a blank around the part as the tool moves and tilts."))
                         .font(.footnote).foregroundStyle(.secondary)
+                    DisclosureGroup(t("预览范围","Preview scope")) {
+                        Text(t("结果为近似网格及体积范围，不生成加工程序。夹具检测仅覆盖所设的圆柱刀柄和盒状夹具。","Results include approximate meshes and a volume range. No machining program is generated. Fixture checks cover the configured cylindrical holder and box fixture."))
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
                 Section(t("刀具与毛坯 · mm","Tool and stock · mm")) {
                     Picker(t("体素大小","Voxel size"),selection:$resolution) {ForEach([0.25,0.5,1.0],id:\.self){Text($0,format:.number).tag($0)}}
@@ -46,14 +49,14 @@ struct CADMultiAxisPreviewView:View {
                 Section(t("刀柄与夹具","Holder and fixture")) {
                     Toggle(t("检查一个圆柱刀柄与盒状夹具","Check one cylindrical holder and box fixture"),isOn:$checkFixture)
                     if checkFixture {number(t("刀柄半径 · mm","Holder radius · mm"),$holderRadius);number(t("刀柄长度 · mm","Holder length · mm"),$holderLength);number(t("距刀尖 · mm","Offset from tip · mm"),$holderOffset);vector(t("夹具最小坐标 · mm","Fixture minimum · mm"),$fixtureMin);vector(t("夹具最大坐标 · mm","Fixture maximum · mm"),$fixtureMax)
-                        Text(t("采样未发现接触仍可能需要细化；只有通过连续运动避让证明才显示“避让通过”。","A sampled miss can still require refinement. Clearance is shown only with a continuous-motion certificate.")).font(.footnote).foregroundStyle(.secondary)
+                        Text(t("显示“需细化”时，可减小体素大小后重新预览。","If refinement is needed, choose a smaller voxel size and preview again.")).font(.footnote).foregroundStyle(.secondary)
                     }
                 }.disabled(running)
                 Section {
                     if running {ProgressView(t("正在准备或计算，可在任务中查看进度","Preparing or computing; progress is available in Jobs"))}
                     if let study {
                         Text(stateText(study.state)).font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("cad.multiAxis.state")
-                        if let error=study.error {Text(error).font(.footnote).textSelection(.enabled)}
+                        if let error=study.error {DisclosureGroup(t("错误详情","Error details")){Text(error).font(.footnote).textSelection(.enabled)}}
                         if study.state == .ready,let summary=study.previewSummary,let artifact=study.artifact {
                             if let volume=study.remainingMM3 {LabeledContent(t("名义剩余体积 · mm³","Nominal remaining · mm³"),value:volume.formatted(.number.precision(.fractionLength(3))))}
                             Text(t("连续剩余体积范围：","Continuous remaining volume: ")+summary.continuousRemainingLowerMM3.formatted(.number.precision(.fractionLength(3)))+" – "+summary.continuousRemainingUpperMM3.formatted(.number.precision(.fractionLength(3)))+" mm³")
@@ -66,7 +69,7 @@ struct CADMultiAxisPreviewView:View {
                     }
                     if let message {Text(message).font(.footnote).textSelection(.enabled)}
                     Button(t("准备环境并预览","Prepare and preview")){startPreview()}.disabled(running||part==nil||document.isReadOnly).accessibilityIdentifier("cad.multiAxis.start")
-                    Text(t("沿用当前任务的 Mac 环境。首次准备会下载约 29 MB 依赖。","Uses this task's Mac environment. First preparation downloads about 29 MB.")).font(.footnote).foregroundStyle(.secondary)
+                    Text(t("使用当前任务的 Mac。首次使用会下载约 29 MB，可在任务中查看进度。","Uses this task's Mac. First use downloads about 29 MB; progress is available in Jobs.")).font(.footnote).foregroundStyle(.secondary)
                 }
             }.navigationTitle(t("多轴去料预览","Multi-axis Stock Preview"))
                 .toolbar{ToolbarItem(placement:.cancellationAction){Button(t("完成","Done")){dismiss()}}}

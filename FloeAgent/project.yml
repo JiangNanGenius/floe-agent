@@ -710,10 +710,14 @@ targets:
       - path: Tests/FloeAppTests/SkillRuntimeTargetTests.swift
       - path: Tests/FloeAppTests/CADBasicMachiningTests.swift
       - path: Tests/FloeAppTests/CADMultiAxisPreviewTests.swift
+      - path: Tests/FloeAppTests/CADMultiAxisPreviewBridgeQualificationTests.swift
       - path: Tests/FloeAppTests/IOSBridgeIntegrationTests.swift
       - path: Tests/FloeAppTests/TaskEnvironmentOwnershipTests.swift
       - path: Tests/FloeAppTests/TaskRemoteEnvironmentLiveTests.swift
       - path: Tests/FloeAppTests/NativeCADLiveLLMTests.swift
+      - path: Tests/FloeAppTests/CADM30SelectedTargetLiveLLMTests.swift
+      - path: Tests/FloeAppTests/CADM30SelectionAttachmentContractTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADM30SelectionAndGeometryContractTests.swift
       - path: Tests/FloeAppTests/NativeCADImportParityTests.swift
       - path: Tests/Fixtures/CADImport
         type: folder

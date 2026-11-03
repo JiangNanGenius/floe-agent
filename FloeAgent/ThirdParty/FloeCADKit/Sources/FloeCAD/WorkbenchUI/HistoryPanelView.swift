@@ -18,6 +18,22 @@ struct HistoryPanelView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {
                 sectionHeader(FloeCADStrings.text("cad.toolbar.history", "History"))
+                if !viewModel.historyConstructionPlanes.isEmpty {
+                    sectionHeader(FloeCADStrings.text("cad.ui.items.planes", "Planes"))
+                    ForEach(viewModel.historyConstructionPlanes, id: \.id) { plane in
+                        let selected = viewModel.selectedPlane?.id == plane.id
+                        Button { viewModel.selectHistoryPlane(plane.id) } label: {
+                            Label(plane.name, systemImage: "square.3.layers.3d")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(8)
+                                .background(selected ? Color.accentColor.opacity(0.16) : .clear,
+                                            in: RoundedRectangle(cornerRadius: 6))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("HistoryPlane-" + plane.name)
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    }
+                }
                 if viewModel.historyRows.isEmpty {
                     emptyRow(FloeCADStrings.text("cad.ui.history.noFeatures", "No features yet"))
                 }
@@ -31,6 +47,7 @@ struct HistoryPanelView: View {
                     HistoryRowView(
                         icon: iconName(for: row.id),
                         row: row,
+                        isSelected: viewModel.selectedHistoryFeatureIDs.contains(row.id),
                         onSelect: { viewModel.selectFeature(row.id) },
                         onRename: { viewModel.renameFeature(row.id, to: $0) },
                         onToggleSuppressed: {
@@ -177,6 +194,7 @@ struct HistoryPanelView: View {
 private struct HistoryRowView: View {
     let icon: String
     let row: EditorViewModel.FeatureRow
+    let isSelected: Bool
     let onSelect: () -> Void
     let onRename: (String) -> Void
     let onToggleSuppressed: () -> Void
@@ -563,6 +581,9 @@ private struct HistoryRowView: View {
                 .disabled(row.isRolledBack)
             }
         }
+        .background(isSelected ? Color.accentColor.opacity(0.12) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
         .contextMenu {

@@ -30,6 +30,9 @@ struct FloeCADHostChrome: ViewModifier {
     /// existing fullscreen/FilePreview hosts unchanged.
     var onSelectionContextChange: (@MainActor (CADSelectionContext) -> Void)? = nil
 
+    /// Optional observation of the real host save; no replacement save path.
+    var onSaveCompleted: (@MainActor (CADSaveOutcome) -> Void)? = nil
+
     @State private var saving = false
     @State private var saveOutcome: String?
     @State private var fullScreen = false
@@ -111,6 +114,7 @@ struct FloeCADHostChrome: ViewModifier {
         saving = true
         defer { saving = false }
         let outcome = await document.save()
+        onSaveCompleted?(outcome)
         saveOutcome = outcome.error
             ?? FloeCADStrings.text("cad.host.saved", "Saved")
     }

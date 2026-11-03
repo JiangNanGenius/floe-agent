@@ -145,19 +145,29 @@ final class EditorViewModel {
     let explodedPreview: CADExplodedViewPreview
     var mode: EditorMode = .idle {
         didSet {
-            if mode != oldValue { cancelActiveAssociatedSketchDrag() }
+            if mode != oldValue {
+                selectedHistoryFeatureIDs.removeAll()
+                cancelActiveAssociatedSketchDrag()
+            }
             if let id=sculptEditingBody,mode != .selected(id) { endSculptEditing() }
             if !mode.isSketching || mode.sketchTool != nil { sketchTransformActive = false }
             // An Items plane selection lives only while idle.
             if mode != .idle { selectedPlaneID = nil }
         }
     }
-    var selection: Set<BodyID> = []
+    /// Per-editor History selection; never stored in the document or Undo.
+    var selectedHistoryFeatureIDs: Set<FeatureID> = []
+    var historySelectionGeneration: UInt64 = 0
+    var selection: Set<BodyID> = [] {
+        didSet { if selection != oldValue { selectedHistoryFeatureIDs.removeAll() } }
+    }
 
     /// Assembly instance selection (runtime only; the persisted assembly is
     /// untouched). A viewport tap on a placed instance selects the INSTANCE —
     /// the shared source body's mesh is referenced, never duplicated.
-    var selectedAssemblyInstances: Set<UUID> = []
+    var selectedAssemblyInstances: Set<UUID> = [] {
+        didSet { if selectedAssemblyInstances != oldValue { selectedHistoryFeatureIDs.removeAll() } }
+    }
 
     /// Multi-select chip (plan §B13, spec §8.1): while on, viewport taps
     /// toggle whole bodies in and out of `selection` instead of replacing
@@ -171,6 +181,9 @@ final class EditorViewModel {
     /// view model never invents a document identity.
     struct AssistantSelectionInputs {
         var bodyIDs: Set<BodyID>
+        var featureIDs: Set<FeatureID>
+        var planeID: ConstructionPlaneID?
+        var historyGeneration: UInt64
         var facePicks: [CADSelectionContext.FaceTrianglePick]
         var edgePicks: [CADSelectionContext.EdgeSegmentPick]
         var sketchID: SketchID?
@@ -211,6 +224,9 @@ final class EditorViewModel {
         }
         return AssistantSelectionInputs(
             bodyIDs: bodyIDs,
+            featureIDs: selectedHistoryFeatureIDs.filter { session.document.features.node($0) != nil },
+            planeID: selectedPlane?.id,
+            historyGeneration: historySelectionGeneration,
             facePicks: facePicks,
             edgePicks: edgePicks,
             sketchID: sketch?.id,
@@ -227,6 +243,9 @@ final class EditorViewModel {
         var parts: [String] = [
             String(session.changeCount),
             "preview:\(explodedPreview.revision)",
+            selectedHistoryFeatureIDs.map(\.raw.uuidString).sorted().joined(separator: ","),
+            "history:\(historySelectionGeneration)",
+            selectedPlane?.id.raw.uuidString ?? "-",
             selection.map(\.raw.uuidString).sorted().joined(separator: ","),
             selectedAssemblyInstances.map(\.uuidString).sorted().joined(separator: ","),
             selectedSketchEntityIDs.map(\.uuidString).sorted().joined(separator: ","),
@@ -7949,6 +7968,12 @@ final class EditorViewModel {
     }
 
     private func sanitizeAfterHistoryChange() {
+        if let id = selectedPlaneID, !session.document.planes.contains(where: { $0.id == id }) {
+            selectedPlaneID = nil
+        }
+        selectedHistoryFeatureIDs = selectedHistoryFeatureIDs.filter {
+            session.document.features.node($0) != nil
+        }
         if polygonCageEditingBody != nil { refreshPolygonCageSelection() }
         // X22: undo/redo may have restored another section/annotation state;
         // the live mirror follows the document, never the other way around.
@@ -8043,6 +8068,10 @@ final class EditorViewModel {
     // MARK: - Viewport events
 
     func handle(_ event: ViewportEvent) {
+        // A real viewport pick replaces the History target, even if it hits
+        // the same output body. Never leak a previous datum/feature identity.
+        selectedHistoryFeatureIDs.removeAll()
+        selectedPlaneID = nil
         switch event {
         case .tap(let ray):
             handleTap(ray: ray)
@@ -19285,6 +19314,8 @@ final class EditorViewModel {
     /// Body row tap: select the body (primitive rows open dimension editing).
     func selectItemBody(_ id: BodyID) {
         guard let body = session.document.body(with: id) else { return }
+        selectedHistoryFeatureIDs.removeAll()
+        selectedPlaneID = nil
         if case .sketching = mode { finishSketch() }
         cancelTransientPicks()
         cancelTool()
@@ -19308,6 +19339,8 @@ final class EditorViewModel {
                   faceTriangles.allSatisfy({ $0 >= 0 && $0 < body.render.triangleCount }) else { return false }
         }
         if bodyID == nil && instanceID == nil && selectionAdditive { return true }
+        selectedHistoryFeatureIDs.removeAll()
+        selectedPlaneID = nil
         let oldBodies = selection
         let oldInstances = selectedAssemblyInstances
         cancelTransientPicks()
@@ -19374,6 +19407,7 @@ final class EditorViewModel {
     /// Plane row tap: select the plane (Shapr3D) rather than doing nothing;
     /// Sketch then enters a new sketch on it.
     func selectItemPlane(_ id: ConstructionPlaneID) {
+        selectedHistoryFeatureIDs.removeAll()
         guard session.document.planes.contains(where: { $0.id == id }) else { return }
         if case .sketching = mode { finishSketch() }
         cancelTransientPicks()
@@ -20637,6 +20671,19 @@ final class EditorViewModel {
         return true
     }
 
+    /// Construction planes retain their actual typed identity. They are not
+    /// FeatureGraph nodes and must never receive an invented FeatureID.
+    var historyConstructionPlanes: [ConstructionPlane] {
+        _ = session.changeCount
+        return session.document.planes.filter { $0.definition != nil }
+    }
+
+    func selectHistoryPlane(_ id: ConstructionPlaneID) {
+        selectItemPlane(id)
+        guard selectedPlane?.id == id else { return }
+        historySelectionGeneration &+= 1
+    }
+
     /// The ordered history rows, derived from the graph + last eval errors.
     var historyRows: [FeatureRow] {
         _ = session.changeCount // re-derive when the document changes
@@ -20730,16 +20777,23 @@ final class EditorViewModel {
         session.save()
     }
 
-    /// Select the bodies a feature owns, reusing the normal body-selection state.
+    /// Real History tap: retain the feature identity as well as its ordinary
+    /// output-body selection. Construction features can legitimately own no body.
     func selectFeature(_ id: FeatureID) {
         guard let node = session.document.features.node(id) else { return }
         let ids = node.outputBodyIDs.filter { session.document.body(with: $0) != nil }
-        guard !ids.isEmpty else { return }
+        if case .sketching = mode { finishSketch() }
+        cancelTransientPicks()
         cancelTool()
+        selectedPlaneID = nil
+        selectedImageID = nil
+        selectedSketchEntityIDs.removeAll()
+        selectedAssemblyInstances.removeAll()
         selection = Set(ids)
-        if ids.count == 1, let first = ids.first {
-            mode = .selected(first)
-        }
+        if ids.count == 1, let first = ids.first { mode = .selected(first) }
+        else { mode = .idle }
+        selectedHistoryFeatureIDs = [id]
+        historySelectionGeneration &+= 1
     }
 
     /// Rename a history node (and its output bodies, so the Items panel stays in

@@ -74,9 +74,22 @@ enum CADBasicMachiningSnapshot {
         return result
     }
     @discardableResult
-    static func requireCurrent(_ source:CADBasicMachiningSource) async throws -> FloeCADDocument {
+    static func requireCurrent(_ source:CADBasicMachiningSource,
+                               allowMetadataOnlyReopen:Bool=false) async throws -> FloeCADDocument {
         let document=try await FloeCAD3DBridge.shared.openDocument(at:source.documentURL)
         let disk=await FloeCADDocument.storedIdentity(at:source.documentURL)
+        if allowMetadataOnlyReopen {
+            // A completed result may be read after the owner closes/saves the
+            // unchanged model. Keep its original source receipt; this never
+            // authorizes collecting, resuming or committing an in-flight job.
+            guard !document.isClosed,!document.hasUnsavedChanges,
+                  document.revision>=source.revision,document.modelSHA256==source.modelSHA256,
+                  disk?.revision==document.revision,disk?.contentSHA256==document.contentSHA256,
+                  disk?.modelSHA256==source.modelSHA256 else {
+                throw FloeError.validationFailed("The source part has changed. Keep this result as history and run a new simulation.")
+            }
+            return document
+        }
         try requireLiveCurrent(document,source:source)
         guard disk?.revision==source.revision,disk?.contentSHA256==source.contentSHA256,disk?.modelSHA256==source.modelSHA256 else {
             throw FloeError.validationFailed("The source part has changed. Keep this result as history and run a new simulation.")

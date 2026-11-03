@@ -85,6 +85,39 @@ final class CADBasicMachiningTests:XCTestCase {
         XCTAssertEqual(try shell.resolvedTimeout,240);XCTAssertEqual(shell.timeoutPolicy,"hard");XCTAssertNotNil(shell.script)
         XCTAssertNil(shell.skillID,"No invented dotnet Skill dependency kind or parallel execution tool")
     }
+    func testCompletedResultSurvivesMetadataOnlyReopenWithoutRelaxingJobFence()async throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent("machining-completed-reopen-\(UUID())")
+        try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+        nativeRoot=root;let url=root.appendingPathComponent("Part.floecad")
+        _=try await FloeCADDocument.create(at:url,name:"Part")
+        let document=try await FloeCAD3DBridge.shared.openDocument(at:url)
+        let sketch=document.executeJSON(Data(#"{"op":"sketch.create","args":{"name":"Base"}}"#.utf8))
+        XCTAssertTrue(sketch.isOK,sketch.message ?? "")
+        let sketchID=try XCTUnwrap((try JSONSerialization.jsonObject(with:sketch.payload) as? [String:Any])?["sketchID"] as? String)
+        for command in [
+            "{\"op\":\"sketch.addEntities\",\"args\":{\"sketchID\":\"\(sketchID)\",\"entities\":[{\"kind\":\"rect\",\"min\":[0,0],\"max\":[8,8]}]}}",
+            "{\"op\":\"feature.extrude\",\"args\":{\"sketchID\":\"\(sketchID)\",\"seedPoint\":[4,4],\"distance\":8}}"
+        ] {let result=document.executeJSON(Data(command.utf8));XCTAssertTrue(result.isOK,result.message ?? "")}
+        let saved=await document.save();XCTAssertTrue(saved.succeeded,saved.error ?? "")
+        let snapshot=try XCTUnwrap(JSONSerialization.jsonObject(with:document.snapshotJSON()) as? [String:Any])
+        let bodyID=try XCTUnwrap(UUID(uuidString:try XCTUnwrap((snapshot["bodies"] as? [[String:Any]])?.first?["id"] as? String)))
+        let source=try await CADBasicMachiningSnapshot.capture(documentURL:url,bodyID:bodyID,
+            destination:root.appendingPathComponent("snapshot"),cancellation:CancellationToken())
+        await FloeCAD3DBridge.shared.releaseDocument(at:url)
+        let reopened=try await CADBasicMachiningSnapshot.requireCurrent(source,allowMetadataOnlyReopen:true)
+        XCTAssertEqual(reopened.modelSHA256,source.modelSHA256)
+        XCTAssertGreaterThanOrEqual(reopened.revision,source.revision)
+        if reopened.revision != source.revision || reopened.contentSHA256 != source.contentSHA256 {
+            do{_ = try await CADBasicMachiningSnapshot.requireCurrent(source);XCTFail("A completed-result read must not relax the in-flight source CAS")}catch{}
+        }
+        let edit=reopened.executeJSON(Data("{\"op\":\"sketch.addEntities\",\"args\":{\"sketchID\":\"\(sketchID)\",\"entities\":[{\"kind\":\"circle\",\"center\":[2,2],\"radius\":0.5}]}}".utf8))
+        XCTAssertTrue(edit.isOK,edit.message ?? "")
+        do{_ = try await CADBasicMachiningSnapshot.requireCurrent(source,allowMetadataOnlyReopen:true);XCTFail("Unsaved model edits must invalidate completed results")}catch{}
+        let changed=await reopened.save();XCTAssertTrue(changed.succeeded,changed.error ?? "")
+        XCTAssertNotEqual(reopened.modelSHA256,source.modelSHA256)
+        do{_ = try await CADBasicMachiningSnapshot.requireCurrent(source,allowMetadataOnlyReopen:true);XCTFail("Saved model edits must invalidate completed results")}catch{}
+    }
+
     func testRealCADSnapshotAddsNoUndoAndRejectsChangedSourceAfterReopen()async throws {
         let root=FileManager.default.temporaryDirectory.appendingPathComponent("basic-machining-cad-\(UUID())")
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)

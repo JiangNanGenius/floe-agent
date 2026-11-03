@@ -231,7 +231,7 @@ final class CADBasicMachiningCenter {
     func refreshFromUI(_ id:UUID) async throws->CADBasicMachiningStudy {
         var s=try study(id)
         if s.state == .ready {
-            do{try await CADBasicMachiningSnapshot.requireCurrent(s.source)}catch{s.state = .stale;s.error=error.localizedDescription;try save(s)}
+            do{try await CADBasicMachiningSnapshot.requireCurrent(s.source,allowMetadataOnlyReopen:true)}catch{s.state = .stale;s.error=error.localizedDescription;try save(s)}
             return s
         }
         let context=ToolContext(runID:s.createdRunID,workspaceRootURL:s.workspaceRoot,cancellation:CancellationToken(),environmentID:s.environmentID,conversationID:s.conversationID)

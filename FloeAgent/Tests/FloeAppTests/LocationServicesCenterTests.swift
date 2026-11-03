@@ -22,6 +22,7 @@ import FloeTools
 private final class FakeLocationDriver: LocationServiceDriving {
     private var storedAuthorizationStatus: CLAuthorizationStatus
     private var storedLocationServicesEnabled = true
+    var accuracyAuthorization: CLAccuracyAuthorization = .fullAccuracy
     var onEvent: (@MainActor (LocationDriverEvent) -> Void)?
 
     /// Counts real "system reads". The shared production service must not
@@ -103,6 +104,10 @@ private final class FakeLocationDriver: LocationServiceDriving {
         onEvent?(.oneShotResult(id: id, result: .failure(.unavailable("no fix"))))
     }
 
+    func deliverCoarseFix(_ location: SendableLocation) {
+        onEvent?(.coarseLocationUpdate(location))
+    }
+
     func failUpdates() {
         onEvent?(.coarseUpdatesFailed)
     }
@@ -173,6 +178,113 @@ struct LocationServicesCenterTests {
             NSError(domain: kCLErrorDomain, code: CLError.Code.denied.rawValue)))
         #expect(CoreLocationDriver.shouldStopCoarseUpdates(after:
             NSError(domain: "test.unrelated", code: CLError.Code.locationUnknown.rawValue)))
+    }
+
+    private func activateBackgroundUpdates(_ service: LocationServicesCenter) {
+        service.applyBackgroundLocationInputs(
+            supportEnabled: true, workEligible: true, fullyBackgroundScene: false
+        )
+        service.applyBackgroundLocationInputs(
+            supportEnabled: true, workEligible: true, fullyBackgroundScene: true
+        )
+    }
+
+    @Test("The explicit location tool consumes a fresh background fix with its actual accuracy")
+    func toolConsumesBackgroundFix() async throws {
+        let (service, driver) = makeService(status: .authorizedWhenInUse)
+        activateBackgroundUpdates(service)
+        driver.deliverCoarseFix(sample(accuracy: 3_000, timestamp: Date()))
+        let output = try await AppleCurrentLocationTool(locationService: service).execute(
+            AppleCurrentLocationTool.Arguments(),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        #expect(output.exitStatus == 0)
+        #expect(output.summary.contains("latitude=-33.86"))
+        #expect(output.summary.contains("accuracyMeters=3000.0"))
+        #expect(driver.startedFixIDs.isEmpty)
+        #expect(service.backgroundState == .active)
+    }
+
+    @Test("Stale, invalid and future background fixes cannot replace a new one-shot", arguments: [
+        SendableLocation(latitude: -33, longitude: 151, accuracy: 3_000,
+                         timestamp: Date(timeIntervalSince1970: 1_700_000_000)),
+        SendableLocation(latitude: 91, longitude: 151, accuracy: 3_000, timestamp: Date()),
+        SendableLocation(latitude: -33, longitude: 151, accuracy: -1, timestamp: Date()),
+        SendableLocation(latitude: -33, longitude: 151, accuracy: 3_000,
+                         timestamp: Date().addingTimeInterval(3_600))
+    ])
+    func invalidBackgroundFixRequiresOneShot(_ invalid: SendableLocation) async throws {
+        let (service, driver) = makeService(status: .authorizedWhenInUse)
+        activateBackgroundUpdates(service)
+        driver.deliverCoarseFix(invalid)
+        let task = Task { try await service.currentLocation() }
+        try await waitUntil { driver.startedFixIDs.count == 1 }
+        let id = try #require(driver.startedFixIDs.first)
+        let expected = sample(latitude: 12, longitude: 34, accuracy: 75, timestamp: Date())
+        driver.deliverFix(id: id, location: expected)
+        #expect(try await task.value == expected)
+    }
+
+    @Test("A callback after the background owner stops is not a current fix")
+    func stoppedBackgroundFixIsIgnored() async throws {
+        let (service, driver) = makeService(status: .authorizedWhenInUse)
+        activateBackgroundUpdates(service)
+        enterForeground(service)
+        driver.deliverCoarseFix(sample(timestamp: Date()))
+        let task = Task { try await service.currentLocation() }
+        try await waitUntil { driver.startedFixIDs.count == 1 }
+        let id = try #require(driver.startedFixIDs.first)
+        let expected = sample(latitude: 20, longitude: 21, timestamp: Date())
+        driver.deliverFix(id: id, location: expected)
+        #expect(try await task.value == expected)
+    }
+
+    @Test("Turning Precise Location off discards a previously cached precise fix")
+    func reducedAccuracyDoesNotExposeOldPreciseFix() async throws {
+        let (service, driver) = makeService(status: .authorizedWhenInUse)
+        activateBackgroundUpdates(service)
+        driver.deliverCoarseFix(sample(accuracy: 10, timestamp: Date()))
+        driver.accuracyAuthorization = .reducedAccuracy
+        let task = Task { try await service.currentLocation() }
+        try await waitUntil { driver.startedFixIDs.count == 1 }
+        let id = try #require(driver.startedFixIDs.first)
+        let approximate = sample(latitude: -34, longitude: 151, accuracy: 5_000, timestamp: Date())
+        driver.deliverFix(id: id, location: approximate)
+        #expect(try await task.value == approximate)
+    }
+
+    @Test("Revocation or disabled location services blocks a cached fix", arguments: [false, true])
+    func unavailableAuthorizationNeverReturnsCachedFix(disableServices: Bool) async {
+        let (service, driver) = makeService(status: .authorizedWhenInUse)
+        activateBackgroundUpdates(service)
+        driver.deliverCoarseFix(sample(timestamp: Date()))
+        if disableServices { driver.locationServicesEnabled = false }
+        else { driver.deliverAuthorization(.denied) }
+        let result = await Task { try await service.currentLocation() }.result
+        guard case .failure(let error) = result else {
+            Issue.record("cached coordinates must not bypass current authorization")
+            return
+        }
+        #expect(error as? FloeError == .validationFailed(disableServices
+            ? "Location Services are disabled" : "Location permission was denied"))
+        #expect(driver.startedFixIDs.isEmpty)
+    }
+
+    @Test("An already cancelled read cannot return a cached position")
+    func cancelledReadCannotReturnCachedFix() async {
+        let (service, driver) = makeService(status: .authorizedWhenInUse)
+        activateBackgroundUpdates(service)
+        driver.deliverCoarseFix(sample(timestamp: Date()))
+        let result = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await service.currentLocation()
+        }.result
+        guard case .failure(let error) = result else {
+            Issue.record("cancelled read must not return a cached position")
+            return
+        }
+        #expect(error as? FloeError == .cancelled)
+        #expect(driver.startedFixIDs.isEmpty)
     }
 
     // MARK: - Authorization

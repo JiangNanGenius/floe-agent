@@ -5,7 +5,8 @@
 //  • the single first-launch When-In-Use authorization request,
 //  • one-shot current-location fixes for `apple.location.current`,
 //  • the optional background assist that lets an explicit, already-authorized
-//    weather/nearby task finish while the app is in the background.
+//    task finish while the app is in the background; recent fixes are reusable
+//    by the explicit location tool without an extra GPS request.
 //
 // There is deliberately NO separate location switch. Background support follows
 // the EXISTING honored background capabilities (enhanced background processing,
@@ -71,6 +72,7 @@ enum LocationFixFailure: Error, Equatable, Sendable {
 enum LocationDriverEvent: Sendable {
     case authorizationChanged(CLAuthorizationStatus)
     case oneShotResult(id: UInt64, result: Result<SendableLocation, LocationFixFailure>)
+    case coarseLocationUpdate(SendableLocation)
     case coarseUpdatesFailed
 }
 
@@ -79,6 +81,7 @@ enum LocationDriverEvent: Sendable {
 @MainActor
 protocol LocationServiceDriving: AnyObject {
     var authorizationStatus: CLAuthorizationStatus { get }
+    var accuracyAuthorization: CLAccuracyAuthorization { get }
     var locationServicesEnabled: Bool { get }
     var onEvent: (@MainActor (LocationDriverEvent) -> Void)? { get set }
 
@@ -181,6 +184,10 @@ final class CoreLocationDriver: NSObject, LocationServiceDriving {
 
     var authorizationStatus: CLAuthorizationStatus {
         authorizationManager.authorizationStatus
+    }
+
+    var accuracyAuthorization: CLAccuracyAuthorization {
+        authorizationManager.accuracyAuthorization
     }
 
     var locationServicesEnabled: Bool {
@@ -290,9 +297,10 @@ extension CoreLocationDriver: @preconcurrency CLLocationManagerDelegate {
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        // Coarse background updates exist to keep the prepared session honest
-        // while real work runs. Coordinates are deliberately not read, stored
-        // or logged here.
+        guard manager === _updatesManager, let value=locations.last else { return }
+        onEvent?(.coarseLocationUpdate(SendableLocation(
+            latitude:value.coordinate.latitude,longitude:value.coordinate.longitude,
+            accuracy:value.horizontalAccuracy,timestamp:value.timestamp)))
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: any Error) {
@@ -357,6 +365,12 @@ final class LocationServicesCenter: ObservableObject {
 
     @Published private(set) var authorizationStatus: CLAuthorizationStatus
     @Published private(set) var backgroundState: BackgroundState = .idle
+    /// Memory-only recent background fix, consumed by the same explicit
+    /// location tool as a one-shot. Accuracy remains the system's real value.
+    /// Reduced-accuracy reads request a fresh fix so a previous precise fix
+    /// cannot outlive the user's choice to turn Precise Location off.
+    private var latestBackgroundLocation: SendableLocation?
+    private static let maximumCachedLocationAge: TimeInterval = 15
 
     private let driver: any LocationServiceDriving
     /// False only for the shared instance inside an App-hosted unit test.
@@ -435,7 +449,11 @@ final class LocationServicesCenter: ObservableObject {
         if status != authorizationStatus {
             handleAuthorizationChange(status)
         }
+        if driver.accuracyAuthorization != .fullAccuracy {
+            latestBackgroundLocation = nil
+        }
         if !driver.locationServicesEnabled {
+            latestBackgroundLocation = nil
             for id in Array(pendingFixes.keys) {
                 resolveFix(id: id, with: .failure(.servicesDisabled))
             }
@@ -477,11 +495,15 @@ final class LocationServicesCenter: ObservableObject {
         // A request cancelled before it starts must not touch the system.
         if Task.isCancelled { throw FloeError.cancelled }
         guard allowsSystemLocation else { throw floeError(for: .systemSuppressed) }
-        guard driver.locationServicesEnabled else { throw floeError(for: .servicesDisabled) }
+        guard driver.locationServicesEnabled else {
+            latestBackgroundLocation = nil
+            throw floeError(for: .servicesDisabled)
+        }
 
         var status = driver.authorizationStatus
         if status != authorizationStatus { authorizationStatus = status }
         if status == .denied || status == .restricted {
+            latestBackgroundLocation = nil
             throw floeError(for: .permissionDenied)
         }
         if status == .notDetermined {
@@ -503,6 +525,16 @@ final class LocationServicesCenter: ObservableObject {
                 throw floeError(for: .authorizationUnanswered)
             }
         }
+        // No new GPS/session work is needed for a fresh, authorized update.
+        // A coarse/approximate fix keeps its actual accuracy in the response;
+        // it is never presented as a precise or newly measured position.
+        if driver.accuracyAuthorization == .fullAccuracy,
+           let cached = latestBackgroundLocation,
+           Self.usableBackgroundLocation(cached, at: Date()) {
+            if Task.isCancelled { throw FloeError.cancelled }
+            return cached
+        }
+        latestBackgroundLocation = nil
         // A backgrounded app needs the session that was prepared while it was
         // still foregrounded (and kept because real work is eligible). Without
         // it, fail with guidance instead of a silent 15-second timeout.
@@ -735,6 +767,13 @@ final class LocationServicesCenter: ObservableObject {
             handleAuthorizationChange(status)
         case .oneShotResult(let id, let result):
             resolveFix(id: id, with: result)
+        case .coarseLocationUpdate(let value):
+            guard updatesRunning,
+                  authorizationStatus == .authorizedWhenInUse || authorizationStatus == .authorizedAlways,
+                  driver.locationServicesEnabled,
+                  driver.accuracyAuthorization == .fullAccuracy,
+                  Self.usableBackgroundLocation(value, at: Date()) else { return }
+            latestBackgroundLocation = value
         case .coarseUpdatesFailed:
             // Honest failure: clear the assist and do not start a retry loop.
             // A later real transition (new foreground preparation, a new run,
@@ -746,6 +785,9 @@ final class LocationServicesCenter: ObservableObject {
 
     private func handleAuthorizationChange(_ status: CLAuthorizationStatus) {
         authorizationStatus = status
+        if driver.accuracyAuthorization != .fullAccuracy {
+            latestBackgroundLocation = nil
+        }
         if status != .notDetermined {
             for id in Array(authorizationWaiters.keys) {
                 resolveAuthorizationWaiter(id: id, status: status)
@@ -753,6 +795,7 @@ final class LocationServicesCenter: ObservableObject {
         }
         switch status {
         case .denied, .restricted:
+            latestBackgroundLocation = nil
             // Revocation clears the assist immediately AND resolves every
             // outstanding one-shot with an honest permission failure. Unlike
             // a support toggle, revoked permission makes a later fix
@@ -763,10 +806,19 @@ final class LocationServicesCenter: ObservableObject {
                 resolveFix(id: id, with: .failure(.permissionDenied))
             }
         case .notDetermined:
+            latestBackgroundLocation = nil
             break
         default:
             reconcileBackgroundLifecycle()
         }
+    }
+
+    private static func usableBackgroundLocation(_ value: SendableLocation, at now: Date) -> Bool {
+        value.latitude.isFinite && (-90...90).contains(value.latitude)
+            && value.longitude.isFinite && (-180...180).contains(value.longitude)
+            && value.accuracy.isFinite && value.accuracy >= 0
+            && value.timestamp <= now.addingTimeInterval(1)
+            && now.timeIntervalSince(value.timestamp) <= maximumCachedLocationAge
     }
 
     // MARK: - Error mapping

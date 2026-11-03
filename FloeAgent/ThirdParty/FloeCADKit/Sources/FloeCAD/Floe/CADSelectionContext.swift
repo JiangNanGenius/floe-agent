@@ -114,6 +114,27 @@ public struct CADSelectionContext: Sendable, Equatable {
         }
     }
 
+    /// The actual native History target, resolved against this document.
+    /// A construction feature need not have an output body.
+    public struct Feature: Sendable, Equatable {
+        public var id: String
+        public var name: String
+        public var outputBodyIDs: [String]
+        public init(id: String, name: String, outputBodyIDs: [String]) {
+            self.id = id; self.name = name; self.outputBodyIDs = outputBodyIDs
+        }
+    }
+    public struct DatumPlane: Sendable, Equatable {
+        public var id: String
+        public var name: String
+        public var kind: String
+        public var origin: [Double]
+        public var normal: [Double]
+    }
+    public var datumPlane: DatumPlane? = nil
+    public var features: [Feature] = []
+    public var historySelectionGeneration: UInt64 = 0
+
     /// Stable authored polygon identities, kept separate from native B-rep
     /// face/edge queries and their render-triangle selection descriptors.
     public struct PolygonCage: Sendable, Equatable {
@@ -151,7 +172,7 @@ public struct CADSelectionContext: Sendable, Equatable {
     }
 
     public var isEmpty: Bool {
-        bodies.isEmpty && faces.isEmpty && edges.isEmpty && sketch == nil && instances.isEmpty && polygonCage == nil
+        datumPlane == nil && features.isEmpty && bodies.isEmpty && faces.isEmpty && edges.isEmpty && sketch == nil && instances.isEmpty && polygonCage == nil
     }
 
     /// Stable key for SwiftUI change observation. It includes every live
@@ -161,6 +182,9 @@ public struct CADSelectionContext: Sendable, Equatable {
         var parts = [
             String(documentRevision),
             String(changeCount),
+            features.map(\.id).joined(separator: ","),
+            datumPlane?.id ?? "-",
+            String(historySelectionGeneration),
             bodies.map(\.id).joined(separator: ","),
             faces.map { "\($0.bodyID):\($0.triangleCount):\($0.centroid)" }.joined(separator: "|"),
             edges.map { "\($0.bodyID):\($0.midpoint)" }.joined(separator: "|"),
@@ -178,10 +202,12 @@ public struct CADSelectionContext: Sendable, Equatable {
         var object: [String: Any] = [
             "document_revision": documentRevision,
             "change_count": changeCount,
-            "selection_count": bodies.count + faces.count + edges.count
+            "selection_count": features.count + (datumPlane == nil ? 0 : 1) + bodies.count + faces.count + edges.count
                 + (sketch?.entityIDs.count ?? 0) + instances.count
                 + (polygonCage?.faceIDs.count ?? 0) + (polygonCage?.edgeIDs.count ?? 0) + (polygonCage?.vertexIDs.count ?? 0),
             "truncated": truncated,
+            "features": features.map { ["id": $0.id, "name": $0.name, "output_body_ids": $0.outputBodyIDs] },
+            "history_selection_generation": historySelectionGeneration,
             "bodies": bodies.map { body in
                 ["id": body.id, "name": body.name, "volume_mm3": body.volumeMM3,
                  "bounds": body.bounds, "analytic_brep": body.analyticBRep]
@@ -202,6 +228,10 @@ public struct CADSelectionContext: Sendable, Equatable {
             },
             "revision_source": "live FloeCADDocument",
         ]
+        if let plane = datumPlane {
+            object["datum_plane"] = ["id": plane.id, "name": plane.name,
+                "kind": plane.kind, "origin": plane.origin, "normal": plane.normal]
+        } else { object["datum_plane"] = NSNull() }
         if let sketch {
             object["sketch"] = [
                 "id": sketch.id,
@@ -231,6 +261,12 @@ public struct CADSelectionContext: Sendable, Equatable {
         var parts: [String] = [
             "Selected CAD context (trusted document revision \(documentRevision), change \(changeCount)):"
         ]
+        if let plane = datumPlane {
+            parts.append("Datum plane: \(plane.name) [\(plane.id)], kind=\(plane.kind)")
+        }
+        if !features.isEmpty {
+            parts.append("History feature(s): " + features.prefix(8).map { "\($0.name) [\($0.id)]" }.joined(separator: ", "))
+        }
         if !bodies.isEmpty {
             let labels = bodies.prefix(8).map { "\($0.name) [\($0.id)]" }
             parts.append("\(bodies.count) bod\(bodies.count == 1 ? "y" : "ies"): "
@@ -312,7 +348,10 @@ public struct CADSelectionContext: Sendable, Equatable {
         edgePicks: [EdgeSegmentPick] = [],
         sketchID: SketchID? = nil,
         sketchEntityIDs: Set<UUID> = [],
-        instanceIDs: Set<UUID> = []
+        instanceIDs: Set<UUID> = [],
+        featureIDs: Set<FeatureID> = [],
+        planeID: ConstructionPlaneID? = nil,
+        historyGeneration: UInt64 = 0
     ) -> CADSelectionContext {
         let design = document.session.document
         var truncated = false
@@ -424,7 +463,7 @@ public struct CADSelectionContext: Sendable, Equatable {
             }
         }
 
-        return CADSelectionContext(
+        var result = CADSelectionContext(
             documentRevision: Int64(document.revision),
             changeCount: document.session.changeCount,
             bodies: rows,
@@ -433,6 +472,23 @@ public struct CADSelectionContext: Sendable, Equatable {
             sketch: sketchRow,
             instances: instanceRows,
             truncated: truncated)
+        let liveFeatures = featureIDs.compactMap { design.features.node($0) }
+            .sorted { $0.id.raw.uuidString < $1.id.raw.uuidString }
+        if liveFeatures.count > 16 { result.truncated = true }
+        result.datumPlane = planeID.flatMap { id in
+            design.planes.first { $0.id == id }.map { plane in
+                DatumPlane(id: id.raw.uuidString, name: plane.name,
+                    kind: plane.definition?.kind.rawValue ?? "static",
+                    origin: [plane.plane.origin.x, plane.plane.origin.y, plane.plane.origin.z],
+                    normal: [plane.plane.normal.x, plane.plane.normal.y, plane.plane.normal.z])
+            }
+        }
+        result.features = liveFeatures.prefix(16).map {
+            Feature(id: $0.id.raw.uuidString, name: $0.name,
+                    outputBodyIDs: $0.outputBodyIDs.map(\.raw.uuidString))
+        }
+        result.historySelectionGeneration = historyGeneration
+        return result
     }
 }
 
@@ -449,7 +505,10 @@ public extension FloeCADDocument {
             edgePicks: inputs.edgePicks,
             sketchID: inputs.sketchID,
             sketchEntityIDs: inputs.sketchEntityIDs,
-            instanceIDs: inputs.instanceIDs
+            instanceIDs: inputs.instanceIDs,
+            featureIDs: inputs.featureIDs,
+            planeID: inputs.planeID,
+            historyGeneration: inputs.historyGeneration
         )
         if let active = model.activePolygonCage {
             let current = model.polygonSelectionDigest == active.definition.digest

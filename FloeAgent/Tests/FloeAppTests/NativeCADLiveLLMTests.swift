@@ -187,6 +187,7 @@ import GRDB
 import FloeProviders
 import FloeTools
 import FloeWorkbench
+import FloeWorkspace
 import FloeAgentRuntime
 import FloeEnvironments
 import FloeSecurity
@@ -1661,7 +1662,7 @@ private final class NativeCADLiveSession {
     private let route: NativeCADLiveRoute
     private let optIn: NativeCADLiveOptIn
     private let ledger: NativeCADLiveLedger
-    private let conversationID = UUID()
+    private let conversationID: UUID
     private let documentName: String
     private let title: String
 
@@ -1681,25 +1682,33 @@ private final class NativeCADLiveSession {
     private var cleanupStarted = false
     private var failureDescription: String?
     private var documentWitnessCount = 0
+    private var m30BeforeCleanup: (@MainActor ([UUID]) async throws -> Void)?
+    private var m30Attachments: [AttachmentRef] = []
+    private var m30AttachmentPaths: Set<String> = []
 
     init(
         environment: AppEnvironment,
         center: ConversationCenter,
         route: NativeCADLiveRoute,
-        optIn: NativeCADLiveOptIn
+        optIn: NativeCADLiveOptIn,
+        m30Witness: CADM30SelectionWitness? = nil,
+        m30Ledger: NativeCADLiveLedger? = nil,
+        m30StartedAt: Date? = nil
     ) {
         self.environment = environment
         self.center = center
         self.route = route
         self.optIn = optIn
-        self.ledger = NativeCADLiveLedger(
+        self.conversationID = m30Witness?.conversationID ?? UUID()
+        if let m30StartedAt { self.sessionStartedAt = m30StartedAt }
+        self.ledger = m30Ledger ?? NativeCADLiveLedger(
             pricing: route.pricing,
             maxCost: optIn.maxCost,
             maxInputTokens: optIn.maxInputTokens,
             maxOutputTokens: optIn.maxOutputTokens,
             maxTotalTokens: optIn.maxTotalTokens
         )
-        self.documentName = "NativeBracket-\(String(UUID().uuidString.prefix(8))).floecad"
+        self.documentName = m30Witness?.documentName ?? "NativeBracket-\(String(UUID().uuidString.prefix(8))).floecad"
         self.title = "Native CAD live acceptance \(String(UUID().uuidString.prefix(6)))"
     }
 
@@ -2083,6 +2092,7 @@ private final class NativeCADLiveSession {
             runID: runID,
             goal: goal,
             workspaceID: firstTurn ? nil : workspaceID,
+            attachments: m30Attachments,
             conversationMode: "chat",
             initialPolicy: DraftTaskPolicy(approvalMode: .automatic),
             providerID: route.provider.id,
@@ -2110,7 +2120,7 @@ private final class NativeCADLiveSession {
         let policy = TaskPolicy(
             conversationID: conversationID,
             approvalMode: TaskApprovalMode.automatic.rawValue,
-            allowedToolNames: Set([CadDocumentTool.name]),
+            allowedToolNames: Set([CadDocumentTool.name]).union(m30Attachments.isEmpty ? [] : [WorkspaceReadFileTool.name]),
             filePaths: [],
             networkAllowed: false,
             browserControlAllowed: false,
@@ -2151,6 +2161,7 @@ private final class NativeCADLiveSession {
             workspaceID: prepared.workspace.id,
             memoryQuery: "",
             conversationHistory: history,
+            currentUserAttachments: prepared.attachments,
             automaticReasoningEffortIngress: .continuation
         )
         services.append(service)
@@ -2192,7 +2203,8 @@ private final class NativeCADLiveSession {
         try NativeCADLiveEvidence.assertToolSurface(
             events: events,
             documentName: documentName,
-            turn: runIDs.count
+            turn: runIDs.count,
+            readOnlyAttachmentPaths: m30AttachmentPaths
         )
         guard let record = try await environment.runStore.run(id: runID) else {
             throw NativeCADLiveError.runIncomplete(
@@ -3243,6 +3255,13 @@ private final class NativeCADLiveSession {
             return
         }
 
+        if let m30BeforeCleanup {
+            do { try await m30BeforeCleanup(runIDs) }
+            catch {
+                XCTFail("M30 exact event export failed; owned rows/file retained: \(error)")
+                return
+            }
+        }
         if failureDescription != nil, let documentURL,
            FileManager.default.fileExists(atPath: documentURL.path) {
             do {
@@ -3551,10 +3570,12 @@ private enum NativeCADLiveEvidence {
     static func assertToolSurface(
         events: [RunEventRecord],
         documentName: String,
-        turn: Int
+        turn: Int,
+        readOnlyAttachmentPaths: Set<String> = []
     ) throws {
         var requests = 0
         var successfulResults = 0
+        var witnessedAttachmentReads: Set<String> = []
         for event in events {
             switch event.kind {
             case .approval:
@@ -3569,6 +3590,16 @@ private enum NativeCADLiveEvidence {
                 // authority. It must not count as a native CAD operation,
                 // nor fail an otherwise native-only geometry acceptance.
                 if tool == "tools.search" { continue }
+                if tool == WorkspaceReadFileTool.name, !readOnlyAttachmentPaths.isEmpty {
+                    guard let callID=payload["id"] as? String,
+                          let input=payload["input"] as? String,
+                          let args=NativeCADLiveJSON.object(input),
+                          let path=args["path"] as? String, readOnlyAttachmentPaths.contains(path) else {
+                        XCTFail("M30 attachment read escaped the one UI-attached context path"); continue
+                    }
+                    witnessedAttachmentReads.insert(callID)
+                    continue
+                }
                 XCTAssertEqual(tool, CadDocumentTool.name, "Turn \(turn) called a tool outside the CAD-only ceiling.")
                 requests += 1
                 guard let input = payload["input"] as? String,
@@ -3599,6 +3630,11 @@ private enum NativeCADLiveEvidence {
                     continue
                 }
                 if tool == "tools.search" { continue }
+                if tool == WorkspaceReadFileTool.name, !readOnlyAttachmentPaths.isEmpty {
+                    XCTAssertTrue((payload["id"] as? String).map { witnessedAttachmentReads.contains($0) } == true)
+                    XCTAssertEqual(payload["status"] as? String,"ok")
+                    continue
+                }
                 XCTAssertEqual(tool, CadDocumentTool.name)
                 let status = payload["status"] as? String
                 XCTAssertFalse(status == "needsUser", "Turn \(turn) stopped for user input.")
@@ -5674,6 +5710,157 @@ final class NativeCADLiveVisionContractTests: XCTestCase {
             ).isEmpty,
             "A truncated source digest must not become an image receipt."
         )
+    }
+}
+
+
+// MARK: M30 selected-target continuation — shared service, route, ledger and vision checks
+
+@MainActor final class CADM30SelectedTargetLiveDriver {
+    private let environment: AppEnvironment
+    private let route: NativeCADLiveRoute
+    private let optIn: NativeCADLiveOptIn
+    private let installed: NativeCADLiveOwnedRoute?
+    private let ledger: NativeCADLiveLedger
+    private let startedAt = Date()
+    var executionTimeAllowance: TimeInterval { optIn.executionTimeAllowance }
+    private init(environment: AppEnvironment, route: NativeCADLiveRoute,
+                 optIn: NativeCADLiveOptIn, installed: NativeCADLiveOwnedRoute?) {
+        self.environment=environment; self.route=route; self.optIn=optIn; self.installed=installed
+        ledger=NativeCADLiveLedger(pricing: route.pricing, maxCost: optIn.maxCost,
+            maxInputTokens: optIn.maxInputTokens, maxOutputTokens: optIn.maxOutputTokens,
+            maxTotalTokens: optIn.maxTotalTokens)
+    }
+    static func make() async throws -> CADM30SelectedTargetLiveDriver {
+        let optIn=try NativeCADLiveOptIn.load()
+        let environment=try await appQualificationEnvironment()
+        let installed=try await NativeCADLiveOwnedRoute.installIfRequested(environment: environment)
+        do {
+            let route=try NativeCADLiveRoute.select(optIn: optIn, center: environment.conversationCenter)
+            try NativeCADLivePreflight.requireNativeCADCapabilities()
+            try NativeCADLivePreflight.requireDirectVision(route: route)
+            return .init(environment: environment, route: route, optIn: optIn, installed: installed)
+        } catch { try? await installed?.remove(environment: environment); throw error }
+    }
+    func close() async throws { try await installed?.remove(environment: environment) }
+    static func receiptObjects(_ text: String) -> [[String: Any]] { NativeCADLiveJSON.objects(in: text) }
+    func run(witness: CADM30SelectionWitness, goal: String,
+             verify: @MainActor (CADM30RealTurnEvidence, URL) async throws -> Void) async throws {
+        guard try await environment.conversationStore.conversation(id: witness.conversationID) != nil else {
+            throw NativeCADLiveError.invalidDocument("UI-owned conversation missing; never reseed")
+        }
+        try await environment.workspaceCenter.openTaskWorkspace(conversationID: witness.conversationID)
+        guard let workspace=environment.workspaceCenter.currentWorkspace,
+              workspace.kind == .privateTask, workspace.id == witness.workspaceID,
+              workspace.internalRelativePath == "PrivateTasks/\(witness.conversationID.uuidString)",
+              let root=environment.workspaceCenter.currentRootURL else {
+            throw NativeCADLiveError.invalidDocument("UI workspace identity changed")
+        }
+        let url=root.appendingPathComponent(witness.documentName, isDirectory: true)
+        guard let identity=await FloeCADDocument.storedIdentity(at: url),
+              identity.revision == witness.revision,
+              identity.contentSHA256 == witness.contentSHA256,
+              identity.modelSHA256 == witness.modelSHA256,
+              try FloeDigest.sha256Hex(ofFileAt: url.appendingPathComponent("document.json")) == witness.documentJSONSHA256 else {
+            throw NativeCADLiveError.invalidDocument("UI witness/package bytes or revision changed")
+        }
+        let initial=try await FloeCADDocument.open(at: url)
+        do { _=try CADM30SelectedTargetFixture.inspect(initial, descriptor: witness.descriptor, edited: false); initial.close() }
+        catch { initial.close(); throw error }
+        let session=NativeCADLiveSession(environment: environment, center: environment.conversationCenter,
+            route: route, optIn: optIn, m30Witness: witness, m30Ledger: ledger, m30StartedAt: startedAt)
+        try session.adoptM30(witness: witness, root: root)
+        do {
+            let evidence=try await session.runM30(goal: goal, witness: witness)
+            try await verify(evidence, url)
+            try session.attachM30Package(phase: "M30-final")
+            await session.cleanup()
+        } catch { session.recordFailure(error); await session.cleanup(); throw error }
+    }
+}
+
+extension NativeCADLiveSession {
+    func adoptM30(witness: CADM30SelectionWitness, root: URL) throws {
+        guard conversationID == witness.conversationID, documentName == witness.documentName else {
+            throw NativeCADLiveError.invalidDocument("M30 adoption mismatch")
+        }
+        guard let attachment=witness.selectionAttachment,
+              ComposerDraftStore.shared.attachments(for:witness.conversationID).contains(attachment) else {
+            throw NativeCADLiveError.invalidDocument("Actual UI composer attachment missing; no substitute context")
+        }
+        let staged=try environment.filesCenter.resolveURL(for:attachment)
+        guard try FloeDigest.sha256Hex(ofFileAt:staged) == attachment.sha256,
+              let attached=NativeCADLiveJSON.object(try Data(contentsOf:staged)),
+              attached["path"] as? String == witness.documentName,
+              NativeCADLiveJSON.int(attached["revision"]) == witness.revision,
+              attached["model_sha256"] as? String == witness.modelSHA256,
+              let selection=attached["selection"] as? [String:Any],
+              let expected=NativeCADLiveJSON.object(witness.selectionContextJSON),
+              NSDictionary(dictionary:selection).isEqual(to:expected) else {
+            throw NativeCADLiveError.invalidDocument("Actual UI attachment bytes/selected target/revision changed")
+        }
+        m30Attachments=[attachment]
+        m30AttachmentPaths=["Attachments/\(attachment.id.uuidString)/\((attachment.displayName as NSString).lastPathComponent)"]
+        workspaceID=witness.workspaceID; workspaceRoot=root
+        documentURL=root.appendingPathComponent(documentName, isDirectory: true)
+        try attachM30Package(phase: "M30-UI-selected-initial")
+        let encoder=JSONEncoder(); encoder.outputFormatting=[.prettyPrinted,.sortedKeys]
+        let witnessBytes=try encoder.encode(witness)
+        let witnessAttachment=XCTAttachment(data: witnessBytes, uniformTypeIdentifier: "public.json")
+        witnessAttachment.name="M30-\(witness.descriptor.target.rawValue)-exact-UI-witness.json"; witnessAttachment.lifetime = .keepAlways
+        XCTContext.runActivity(named: "M30 UI-selected same-file input") { $0.add(witnessAttachment) }
+        // This sink runs AFTER cancel/join, BEFORE owned run_events deletion,
+        // including every failure path. Default nil preserves all old tests.
+        m30BeforeCleanup = { [environment, route] runIDs in
+            var rows: [[String: Any]]=[]
+            let allowed=Set([CadDocumentTool.name,"tools.search",WorkspaceReadFileTool.name])
+            for runID in runIDs {
+                let events=try await environment.runStore.events(runID: runID)
+                for event in events.sorted(by: { $0.sequence < $1.sequence })
+                    where event.kind == .toolRequest || event.kind == .toolResult {
+                    guard let payload=NativeCADLiveJSON.object(event.payloadJSON),
+                          let tool=payload["tool"] as? String, allowed.contains(tool) else {
+                        throw NativeCADLiveError.invalidDocument("Refusing to retain non-synthetic/unexpected tool payload")
+                    }
+                    rows.append(["runID":runID.uuidString,"seq":event.sequence,"kind":event.kind.rawValue,
+                        "payloadJSON":event.payloadJSON,"payloadSHA256":FloeDigest.sha256Hex(Data(event.payloadJSON.utf8))])
+                }
+            }
+            let data=try JSONSerialization.data(withJSONObject:["schema":1,"nonce":witness.nonce.uuidString,
+                "target":witness.descriptor.target.rawValue,"runIDs":runIDs.map(\.uuidString),
+                "providerID":route.provider.id.uuidString,"modelID":route.model.id.uuidString,
+                "remoteModelID":route.model.remoteModelID,"events":rows], options:[.prettyPrinted,.sortedKeys])
+            let directory=try CADM30SelectionWitness.directory(witness.nonce)
+            try data.write(to: directory.appendingPathComponent(witness.descriptor.target.rawValue+"-ordered-tool-events.json"), options:.atomic)
+            let attachment=XCTAttachment(data:data,uniformTypeIdentifier:"public.json")
+            attachment.name="M30-\(witness.descriptor.target.rawValue)-ordered-tool-events.json"; attachment.lifetime = .keepAlways
+            XCTContext.runActivity(named:"M30 exact ordered synthetic tool evidence before cleanup") { $0.add(attachment) }
+        }
+    }
+    func attachM30Package(phase: String) throws {
+        try attachDocumentWitness(at: XCTUnwrap(documentURL), phase: phase)
+    }
+    func runM30(goal: String, witness: CADM30SelectionWitness) async throws -> CADM30RealTurnEvidence {
+        try await saveOwnedTaskPolicy(conversationID: conversationID)
+        let prepared=try await prepare(goal: goal, firstTurn: false)
+        let events=try await runTurn(prepared: prepared, goal: goal, observeVision: true)
+        let capture=try validateCapture(events: events, runID: prepared.run.id,
+            requirement: .exactly(witness.revision), preferLast: false)
+        guard capture.contentSHA256 == witness.contentSHA256 else { throw NativeCADLiveError.invalidCapture("Capture/UI witness mismatch") }
+        let receipt=try requireVisionReceipt(runID: prepared.run.id, capture: capture)
+        attach(capture.png, name:"M30-\(witness.descriptor.target.rawValue)-pre-edit-actual-PNG")
+        let metadata: [String:Any] = ["runID":receipt.runID.uuidString,"providerID":receipt.providerID.uuidString,
+            "modelID":receipt.modelID.uuidString,"remoteModelID":receipt.remoteModelID,
+            "sourceSHA256":receipt.sourceSHA256,"attachedSHA256":receipt.attachedSHA256,
+            "deliveredSHA256":receipt.deliveredSHA256,"bytes":receipt.deliveredByteCount,
+            "representation":receipt.representation,"mime":receipt.deliveredMIMEType,
+            "captureCallIDs":receipt.captureCallIDs,"resultCallIDs":receipt.resultCallIDs,
+            "pendingCallIDs":receipt.pendingCallIDs,"modelDeclaresVision":receipt.modelDeclaresVision,
+            "imagePartCount":receipt.imagePartCount]
+        return .init(runID:prepared.run.id,events:events,captureSequence:capture.resultSequence,
+            captureCallID:capture.callID,captureRevision:capture.revision,
+            captureContentSHA256:capture.contentSHA256,imageSHA256:capture.imageSHA256,
+            visionReceiptJSON:try JSONSerialization.data(withJSONObject:metadata,options:[.sortedKeys,.prettyPrinted]))
     }
 }
 
