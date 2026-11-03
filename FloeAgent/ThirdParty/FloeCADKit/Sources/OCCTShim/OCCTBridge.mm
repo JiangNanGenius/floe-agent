@@ -5127,8 +5127,12 @@ static OCCTShape *OS3DPlanarSupportShell(const TopoDS_Shape &source,
             OS3D_GUARDED(status, "planar support halfspace", originalHalf = halfspace(support, 0));
             BRepAlgoAPI_Common proof; configure(proof, owned, originalHalf);
             OS3D_GUARDED(status, "planar support common proof", proof.Build(progress->Start()));
-            if (deadline->Fired() || !proof.IsDone() || proof.HasErrors() || proof.HasWarnings())
-                throw Standard_Failure("planar support common proof failed");
+            if (deadline->Fired() || !proof.IsDone() || proof.HasErrors() || proof.HasWarnings()) {
+                std::ostringstream report; proof.DumpErrors(report); proof.DumpWarnings(report);
+                const std::string reason = "planar support common proof failed: " + report.str();
+                OS3DSetStatus(status,OCCTOpCodeKernelRefused,[NSString stringWithFormat:@"support %d common done=%d errors=%d warnings=%d deadline=%d report=%s",support.sourceFace,(int)proof.IsDone(),(int)proof.HasErrors(),(int)proof.HasWarnings(),(int)deadline->Fired(),reason.c_str()]);
+                return nil;
+            }
             const TopoDS_Shape contained = closedSingle(proof.Shape());
             const double commonVolume = contained.IsNull() ? 0 : OS3DVolume(contained);
             if (contained.IsNull() || !std::isfinite(commonVolume) || fabs(commonVolume - before) > volumeTolerance) {
@@ -7331,7 +7335,14 @@ static OCCTShape *OS3DSurfaceResult(const TopoDS_Shape &shape, bool solid,
         OS3D_GUARDED(status,"guided loft",maker.Build());
         if (!maker.IsDone()) return refusal(__LINE__);
         const double approximation=maker.ErrorOnSurface();
-        if (!std::isfinite(approximation) || approximation > tol || !maker.MakeSolid()) return refusal(__LINE__);
+        if (!std::isfinite(approximation) || approximation > tol) {
+            OS3DSetStatus(status,OCCTOpCodeInvalidResult,[NSString stringWithFormat:@"Guided surface error %.17g mm exceeds %.17g mm.",approximation,tol]);
+            return refusal(__LINE__);
+        }
+        if (!maker.MakeSolid()) {
+            OS3DSetStatus(status,OCCTOpCodeInvalidResult,@"The guided shell could not be closed into a solid.");
+            return refusal(__LINE__);
+        }
         const TopoDS_Shape solid=maker.Shape();
         if (solid.IsNull() || OS3DSurfaceCount(solid,TopAbs_FACE) > 1024) return refusal(__LINE__);
         OCCTShape *validated=OS3DSurfaceResult(solid,true,tol,status);if (!validated) return refusal(__LINE__);

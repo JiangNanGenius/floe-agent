@@ -10,19 +10,27 @@ import XCTest
     private func any(_ id:String)->XCUIElement { app.descendants(matching:.any).matching(identifier:id).firstMatch }
     private func reveal(_ id:String)->XCUIElement {
         let element=any(id)
-        let paintForm=any("CADTexturePaintForm"),materialForm=any("CADMaterialInspectorForm")
-        let form=paintForm.exists ? paintForm : materialForm
-        XCTAssertTrue(form.waitForExistence(timeout:10))
-        for _ in 0..<7 where !element.exists || !element.isHittable { scroll(form,up:true) }
-        for _ in 0..<9 where !element.exists || !element.isHittable { scroll(form,up:false) }
-        XCTAssertTrue(element.waitForExistence(timeout:20),app.debugDescription)
-        XCTAssertTrue(element.isHittable,app.debugDescription);return element
-    }
-    private func scroll(_ form:XCUIElement,up:Bool) {
-        // The centre is the live painting canvas, so a centre swipe paints
-        // or rotates instead of scrolling. Use the Form's real margin.
-        form.coordinate(withNormalizedOffset:CGVector(dx:0.985,dy:up ? 0.9 : 0.35))
-            .press(forDuration:0.05,thenDragTo:form.coordinate(withNormalizedOffset:CGVector(dx:0.985,dy:up ? 0.35 : 0.9)))
+        for _ in 0..<16 {
+            let paint=any("CADTexturePaintForm"),material=any("CADMaterialInspectorForm")
+            let form=paint.exists ? paint : material
+            XCTAssertTrue(form.waitForExistence(timeout:10))
+            var visible=form.frame.intersection(app.frame).insetBy(dx:8,dy:8)
+            let bar=app.navigationBars["Texture painting"]
+            if paint.exists && bar.exists {
+                let top=max(visible.minY,bar.frame.maxY+4)
+                visible=CGRect(x:visible.minX,y:top,width:visible.width,height:max(0,visible.maxY-top))
+            }
+            if element.exists && element.isHittable && visible.contains(element.frame) { return element }
+            let above=element.exists && element.frame.minY<visible.minY
+            // The centre is the real painting canvas; scroll in the native
+            // Form margin and only towards the currently missing row.
+            form.coordinate(withNormalizedOffset:CGVector(dx:0.985,dy:above ? 0.6 : 0.9))
+                .press(forDuration:0.05,thenDragTo:form.coordinate(withNormalizedOffset:CGVector(dx:0.985,dy:above ? 0.9 : 0.6)))
+        }
+        let diagnostic=XCTAttachment(string:app.debugDescription)
+        diagnostic.name="Texture form control not visible: \(id)";diagnostic.lifetime = .keepAlways;add(diagnostic)
+        XCTAssertTrue(element.exists && element.isHittable,"Missing visible real control \(id): \(app.debugDescription)")
+        return element
     }
     private func openPaint() {
         let material=app.buttons["MaterialButton"]

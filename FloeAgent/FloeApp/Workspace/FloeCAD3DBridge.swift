@@ -830,7 +830,7 @@ final class FloeCAD3DBridge {
             "assembly_actions": CadServiceOperationCatalog.actionNames(forKind: "assembly"),
             "drawing_actions": CadServiceOperationCatalog.actionNames(forKind: "drawing"),
             "script_actions": CadServiceOperationCatalog.actionNames(forKind: "script"),
-            "mesh_actions": CadServiceOperationCatalog.actionNames(forKind: "mesh"),
+            "mesh_actions": CADMeshService.advertisedActions,
             // Derived from the executable assembly service, not a retired
             // gate: there is no fixed pair limit (the old max_pairs=32 is
             // gone). Complete pair details are bounded by the explicit byte
