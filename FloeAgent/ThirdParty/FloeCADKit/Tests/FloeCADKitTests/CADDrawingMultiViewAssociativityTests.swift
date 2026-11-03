@@ -1018,7 +1018,7 @@ extension CADDrawingMultiViewAssociativityTests {
             row["kind"] as? String == "circle" && abs((row["radius"] as? Double ?? 0) - 5) < 1e-8
         }, "the through bore must remain an analytic R5 circle, not mesh chords")
         let exactBody = try XCTUnwrap(reopened.session.document.bodies.first { $0.id.raw.uuidString == fixture.bodyID })
-        let mesh = Body(name: "Mesh preview only", transform: exactBody.transform,
+        let mesh = Body(id: BodyID(), name: "Mesh preview only", transform: exactBody.transform,
                         primitive: nil, render: exactBody.render, revision: exactBody.meshRevision &+ 1)
         reopened.session.perform(AddBodyCommand(body: mesh, title: "Mesh-only source"))
         let meshPage = reopenedService.handle(action: "addPage", args: [
@@ -1174,6 +1174,7 @@ private nonisolated final class DrawingProjectionTestLatch: @unchecked Sendable 
         entered.signal()
         _ = release.wait(timeout: .now() + 10)
     }
+    func waitUntilEntered() -> Bool { entered.wait(timeout: .now() + 10) == .success }
     var ranOnMainThread: Bool {
         lock.lock(); defer { lock.unlock() }; return mainThread
     }
@@ -1181,7 +1182,29 @@ private nonisolated final class DrawingProjectionTestLatch: @unchecked Sendable 
 
 extension CADDrawingMultiViewAssociativityTests {
     private func awaitWorker(_ latch: DrawingProjectionTestLatch) async -> Bool {
-        await Task.detached { latch.entered.wait(timeout: .now() + 10) == .success }.value
+        await Task.detached { latch.waitUntilEntered() }.value
+    }
+
+    func testAnnotationWriteRetainsAcceptedWorkerGeometryWithoutMainThreadReprojection() async throws {
+        let document = try await makeDocument("E12-annotation-worker")
+        defer { document.close() }
+        let fixture = try makePlateWithHole(document)
+        let service = CADDrawingService(document: document)
+        let created = service.handle(action: "addPage", args: [
+            "kind": "front", "name": "Annotation worker", "bodyIDs": [fixture.bodyID]])
+        let id = try XCTUnwrap(UUID(uuidString: (created["page"] as? [String: Any])?["id"] as? String ?? ""))
+        var synchronousFallbacks = 0
+        CADDrawingService.testSynchronousProjectionFallbackProbe = { synchronousFallbacks += 1 }
+        defer { CADDrawingService.testSynchronousProjectionFallbackProbe = nil }
+        let result = await service.handleAsync(action: "addAnnotation", args: [
+            "pageID": id.uuidString, "text": "Actual saved annotation", "position": [10.0, 20.0]])
+        XCTAssertEqual(result["ok"] as? Bool, true, "\(result)")
+        XCTAssertEqual(synchronousFallbacks, 0, "Annotation persistence must not repeat HLR on MainActor")
+        XCTAssertEqual(try CADDrawingSet.decode(from: document.session.document.drawingsData).pages.first?.annotations.last?.text,
+                       "Actual saved annotation")
+        let geometry = await service.pageGeometryAsync(pageID: id)
+        XCTAssertEqual(geometry["projectionComplete"] as? Bool, true)
+        XCTAssertEqual(synchronousFallbacks, 0)
     }
 
     func testDrawingWorkerRunsOffMainAndDiscardsCancellation() async throws {

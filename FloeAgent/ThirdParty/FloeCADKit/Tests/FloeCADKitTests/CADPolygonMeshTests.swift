@@ -195,9 +195,11 @@ final class CADPolygonMeshTests: XCTestCase {
         let count = doc.session.undoStack.undoCommands.count
         let service = CADMeshService(document:doc)
         let operation = Task { @MainActor in
-            await service.handleAsync(action:"modifier.add",args:["bodyID":id.raw.uuidString,"cageDigest":before.digest,"kind":"subdivision","levels":2])
+            let reply = await service.handleAsync(action:"modifier.add",args:["bodyID":id.raw.uuidString,"cageDigest":before.digest,"kind":"subdivision","levels":2])
+            return (try? JSONSerialization.data(withJSONObject: reply)) ?? Data()
         }
-        operation.cancel(); let cancelled = await operation.value
+        operation.cancel()
+        let cancelled = try XCTUnwrap(JSONSerialization.jsonObject(with: await operation.value) as? [String: Any])
         XCTAssertEqual(cancelled["ok"] as? Bool,false); XCTAssertEqual(try cage(doc,id),before)
         XCTAssertEqual(doc.session.undoStack.undoCommands.count,count)
         let originalBody = try XCTUnwrap(doc.session.document.body(with:id))

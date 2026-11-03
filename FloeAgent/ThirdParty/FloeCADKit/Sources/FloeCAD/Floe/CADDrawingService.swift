@@ -110,11 +110,13 @@ public final class CADDrawingService {
     private static var projectionCaches: [ObjectIdentifier: DrawingProjectionCache] = [:]
     private static var projectionGenerations: [ObjectIdentifier: UUID] = [:]
     private var preparedViews: [UUID: PageProjection] = [:]
+    private var preparedPageID: UUID?
     private var preparedToken: DrawingProjectionToken?
 
     #if DEBUG
     /// Runs inside the real serial worker, never in main-actor preparation.
     static var testProjectionWorkerProbe: (@Sendable () -> Void)?
+    static var testSynchronousProjectionFallbackProbe: (() -> Void)?
     /// Source changes/cancellation here must be refused by the join fence.
     static var testProjectionBeforeCommitProbe: (@Sendable () -> Void)?
     #endif
@@ -4036,7 +4038,7 @@ public final class CADDrawingService {
         let token = projectionToken(page: page)
         Self.projectionCaches = Self.projectionCaches.filter { $0.value.document != nil }
         if let cached = Self.projectionCaches[key], cached.pageID == pageID, cached.token == token {
-            preparedToken = token; preparedViews = cached.views
+            preparedPageID = pageID; preparedToken = token; preparedViews = cached.views
             return nil
         }
         guard Self.projectionRuns.count < 2 else {
@@ -4117,7 +4119,7 @@ public final class CADDrawingService {
             return fail("drawing_source_changed", "The document changed during calculation; refresh the drawing.")
         }
         guard let computed else { return fail("drawing_calculation_failed", "The drawing source could not be reopened for calculation.") }
-        preparedToken = token; preparedViews = computed
+        preparedPageID = pageID; preparedToken = token; preparedViews = computed
         Self.projectionCaches[key] = DrawingProjectionCache(document: document,
             pageID: pageID, token: token, views: computed)
         return nil
@@ -4497,6 +4499,9 @@ public final class CADDrawingService {
         if let prepared = preparedProjection(page: page, view: view) { return prepared }
         // Compatibility/test-only synchronous facade. Production UI, tool and
         // native export routes prepare via the joined off-main worker first.
+        #if DEBUG
+        Self.testSynchronousProjectionFallbackProbe?()
+        #endif
         return Self.computeOrdinaryProjection(page: page, view: view, sources: sources, header: header)
     }
 
@@ -8763,6 +8768,20 @@ public final class CADDrawingService {
         // identity on a later edit.
         updated.schemaVersion = CADDrawingSet.currentSchemaVersion
         do {
+            // A synchronous annotation-only write may advance the token of the
+            // already accepted projection. An asynchronous result still passes
+            // the strict original revision/data fence in prepareProjection.
+            let preservedPage: CADDrawingPage?
+            if let pageID = preparedPageID,
+               let before = try? CADDrawingSet.decode(from: document.session.document.drawingsData).pages.first(where: { $0.id == pageID }),
+               let after = updated.pages.first(where: { $0.id == pageID }),
+               preparedToken == projectionToken(page: before),
+               before.effectiveSheetViews == after.effectiveSheetViews,
+               before.assemblyMode == after.assemblyMode,
+               before.explodedViewID == after.explodedViewID,
+               before.explodedViewName == after.explodedViewName {
+                preservedPage = after
+            } else { preservedPage = nil }
             let data = try updated.encoded()
             if projectionCacheOnly {
                 document.session.refreshDrawingProjectionData(data)
@@ -8770,6 +8789,7 @@ public final class CADDrawingService {
                 document.session.perform(SetDrawingsDataCommand(
                     before: document.session.document.drawingsData, after: data))
             }
+            if let page = preservedPage { preparedToken = projectionToken(page: page) }
             return nil
         } catch {
             return fail("encode_failed",
