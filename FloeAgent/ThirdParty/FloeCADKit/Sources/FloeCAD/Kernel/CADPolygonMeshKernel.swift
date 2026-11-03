@@ -70,6 +70,13 @@ nonisolated enum CADPolygonMeshKernel {
             controlRender: control.render, controlFaceIDs: control.channel, controlEdges: .init(segments: lines))
         cache.put(key,result); return result
     }
+    /// Euclid quantizes vertex positions at construction. Hit provenance must
+    /// compare against those exact delivered positions, not the unquantized
+    /// double cage, especially after multi-resolution sculpt deformation.
+    static func renderedControlPoint(_ point: SIMD3<Double>) -> SIMD3<Float> {
+        let vertex = Euclid.Vertex(Vector(point.x, point.y, point.z), Vector(0, 0, 1))
+        return SIMD3(Float(vertex.position.x), Float(vertex.position.y), Float(vertex.position.z))
+    }
     static func render(_ cage: CADPolygonCage, smooth: Bool) throws -> (mesh: Euclid.Mesh, render: RenderMesh, channel: [UUID]) {
         let points = cage.points
         var sums: [UUID: SIMD3<Double>] = [:]

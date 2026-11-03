@@ -96,7 +96,7 @@ import RealityKit
         let file=directory.appendingPathComponent("owned-future-library.json");try future.write(to:file)
         XCTAssertThrowsError(try CADMaterialLibraryFileStore.write(.empty,to:file));XCTAssertEqual(try Data(contentsOf:file),future)
         let supplied=Data(#"{"version":1,"clearcoat":0.7,"coatRoughness":0.2,"anisotropyLevel":0.6,"anisotropyAngle":0.3,"specular":0.4,"sheen":[0.1,0.2,0.3]}"#.utf8)
-        let reply=CADMaterialService(document:doc).handle(action:"apply",args:["bodyID":id,"advanced":try JSONSerialization.jsonObject(with:supplied)])
+        let reply=CADMaterialService(document:doc).handle(action:"apply",args:["bodyID":id.raw.uuidString,"advanced":try JSONSerialization.jsonObject(with:supplied)])
         XCTAssertEqual(reply["ok"] as? Bool,true,"\(reply)");XCTAssertEqual(doc.session.document.body(with:id)?.material?.advanced?.clearcoat,0.7)
     }
     func testJoinedWorkerStaleCancellationCloseAndSaveFailure() async throws {
@@ -142,11 +142,18 @@ import RealityKit
     }
     func testRealPresentNonemptyPixelsForEachAdvancedSurfaceClass() async throws {
         let (doc,id)=try await fixture();let clip=try doc.createAnimationClip(name:"Material still",duration:0.1,isLooping:false)
-        let camera=try doc.saveCamera(CADSavedCamera(name:"Surface witness",projection:.perspective,targetMM:SIMD3(0,20,0),distanceMM:120,azimuthRadians:0.4,elevationRadians:0.2,frameAspect:1));try doc.selectCamera(id:camera.id)
+        let body=try XCTUnwrap(doc.session.document.body(with:id)),positions=body.render.positions
+        let lo=positions.reduce(SIMD3<Float>(repeating:.greatestFiniteMagnitude),simd_min),hi=positions.reduce(SIMD3<Float>(repeating:-.greatestFiniteMagnitude),simd_max)
+        let camera=try doc.saveCamera(CADSavedCamera(name:"Surface witness",projection:.perspective,targetMM:SIMD3<Double>((lo+hi)/2),distanceMM:Double(max(hi.x-lo.x,max(hi.y-lo.y,hi.z-lo.z)))*3,azimuthRadians:0.4,elevationRadians:0.2,frameAspect:1));try doc.selectCamera(id:camera.id)
         var material=try XCTUnwrap(doc.session.document.body(with:id)?.material);material.advanced=nil
         doc.session.perform(SetMaterialCommand(bodyIDs:[id],material:material,document:doc.session.document));let saved=await doc.save();XCTAssertTrue(saved.succeeded)
+        doc.session.perform(SetItemVisibilityCommand(item:.body(id),isHidden:true))
+        let emptyFrame=try await doc.captureAnimationFramePNG(clipID:clip.id,time:0,width:128,height:128),empty=try pixels(emptyFrame.imageData)
+        doc.session.perform(SetItemVisibilityCommand(item:.body(id),isHidden:false))
         let baseline=try await doc.captureAnimationFramePNG(clipID:clip.id,time:0,width:128,height:128),base=try pixels(baseline.imageData)
-        func foreground(_ image:CADExportImage.Pixels) -> Int { stride(from:0,to:image.rgba.count,by:4).filter { image.rgba[$0]>30 && Double(image.rgba[$0])>Double(image.rgba[$0+2])*1.2 }.count }
+        // A dark metal reflects its neutral environment. Compare against an
+        // actual same-camera empty render instead of assuming red pixels.
+        func foreground(_ image:CADExportImage.Pixels) -> Int { stride(from:0,to:image.rgba.count,by:4).filter { offset in (0..<3).contains { abs(Int(image.rgba[offset+$0])-Int(empty.rgba[offset+$0]))>6 } }.count }
         XCTAssertGreaterThan(foreground(base),20)
         let baselineAttachment=XCTAttachment(data:baseline.imageData,uniformTypeIdentifier:"public.png");baselineAttachment.name="advanced-baseline";baselineAttachment.lifetime = .keepAlways;add(baselineAttachment)
         var variants:[(String,CADAdvancedMaterial)]=[]

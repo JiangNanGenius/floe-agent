@@ -138,6 +138,7 @@ struct CADMechanicalPanel: View {
                 .font(.footnote).foregroundStyle(.secondary)
         }
         .disabled(busy)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("CADMechanicalPanel")
         .onAppear { load() }
         .onChange(of:selected) { _,_ in load() }

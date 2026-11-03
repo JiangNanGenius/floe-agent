@@ -42,12 +42,10 @@ import XCTest
         XCTAssertTrue(done.waitForExistence(timeout:10));XCTAssertTrue(done.isHittable);done.tap();gone(done)
     }
     private func visibleBounds(_ container:XCUIElement) -> CGRect {
-        var frame=container.frame.intersection(app.frame).insetBy(dx:6,dy:10)
-        for bar in app.navigationBars.allElementsBoundByIndex where bar.exists && bar.isHittable && bar.frame.intersects(frame) {
-            let top=max(frame.minY,bar.frame.maxY+5)
-            frame=CGRect(x:frame.minX,y:top,width:frame.width,height:max(0,frame.maxY-top))
-        }
-        return frame
+        // The native Form/ScrollView already supplies its visible viewport.
+        // Background navigation bars can remain in the AX hierarchy beneath
+        // a sheet; subtracting them collapses a valid viewport to 56 points.
+        container.frame.intersection(app.frame).insetBy(dx:6,dy:10)
     }
     private func edgeScroll(_ container:XCUIElement,up:Bool) {
         let bounds=visibleBounds(container)

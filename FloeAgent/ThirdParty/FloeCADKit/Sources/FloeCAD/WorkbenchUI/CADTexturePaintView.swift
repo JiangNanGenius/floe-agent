@@ -91,7 +91,10 @@ struct CADTexturePaintView:View {
                     Section(text("surface","Paint on the surface")) {
                         if state.mesh.triangleCount<=10000 {
                             CADTexturePaintCanvas(mesh:state.mesh,image:image,yaw:model.yaw,pitch:model.pitch,enabled:!model.busy && model.canEdit,onStroke:model.stroke)
-                                .frame(height:310).accessibilityIdentifier("CADTexturePaintCanvas")
+                                .frame(height:310)
+                                .accessibilityElement(children:.ignore)
+                                .accessibilityLabel(text("title","Texture painting"))
+                                .accessibilityIdentifier("CADTexturePaintCanvas")
                         } else { Text(text("previewBudget","The painting preview supports up to 10,000 triangles. Simplify a copy first.")) }
                         Text(text("strokeHelp","Draw on the surface. Each stroke is one undoable edit. The brush stays inside the touched UV island."))
                             .font(.footnote).foregroundStyle(.secondary)

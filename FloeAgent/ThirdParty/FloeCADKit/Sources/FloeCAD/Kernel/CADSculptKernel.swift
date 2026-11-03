@@ -92,7 +92,7 @@ nonisolated enum CADSculptKernel {
             let local=(vertices[0]+vertices[1]+vertices[2])/3,world=placement.matrixFloat*SIMD4(local,1)
             let face=faces[evaluated.controlFaceIDs[triangle]]
             let weights=vertices.map { point -> Double in
-                guard let id=face?.vertices.first(where:{ SIMD3<Float>(points[$0]!)==point }) else { return 0 }
+                guard let id=face?.vertices.first(where:{ CADPolygonMeshKernel.renderedControlPoint(points[$0]!)==point }) else { return 0 }
                 return resolved.mask[id] ?? 0
             }
             return ["triangle":triangle,"barycentric":[1.0/3,1.0/3,1.0/3],"world_center":[Double(world.x),Double(world.y),Double(world.z)],"mask_average":weights.reduce(0,+)/3]
@@ -110,7 +110,7 @@ nonisolated enum CADSculptKernel {
             let points=(0..<3).map { source.render.positions[Int(source.render.indices[sample.triangle*3+$0])] }
             let weights=sample.barycentric
             let point=SIMD3<Double>(points[0])*weights.x+SIMD3<Double>(points[1])*weights.y+SIMD3<Double>(points[2])*weights.z
-            let seeds=points.compactMap { point in face.vertices.first { SIMD3<Float>(sourcePoints[$0]!)==point } }
+            let seeds=points.compactMap { point in face.vertices.first { CADPolygonMeshKernel.renderedControlPoint(sourcePoints[$0]!)==point } }
             guard seeds.count==3,Set(seeds).count==3 else { throw CADPolygonFailure.invalid("The sculpt hit no longer identifies an actual triangle's vertices.") }
             return (point,seeds,sample.pressure)
         }

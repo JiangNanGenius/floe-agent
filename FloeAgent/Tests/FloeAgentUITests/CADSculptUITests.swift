@@ -25,8 +25,15 @@ import XCTest
         XCTAssertTrue(mesh.waitForExistence(timeout:10));mesh.tap()
         let start=app.buttons["CADSculptStart"].firstMatch
         XCTAssertTrue(start.waitForExistence(timeout:10))
-        for _ in 0..<4 where !start.isHittable { app.swipeUp() }
-        if !start.isHittable { for _ in 0..<4 where !start.isHittable { app.swipeDown() } }
+        let scroll=app.scrollViews["CADWorkbenchToolsScroll"].firstMatch
+        XCTAssertTrue(scroll.waitForExistence(timeout:10))
+        for _ in 0..<8 where !start.isHittable {
+            scroll.coordinate(withNormalizedOffset:CGVector(dx:0.98,dy:0.85))
+                .press(forDuration:0.05,thenDragTo:scroll.coordinate(withNormalizedOffset:CGVector(dx:0.98,dy:0.3)))
+        }
+        if !start.isHittable {
+            let evidence=XCTAttachment(string:app.debugDescription);evidence.name="Sculpt entry not reachable";evidence.lifetime = .keepAlways;add(evidence)
+        }
         XCTAssertTrue(start.isHittable);XCTAssertTrue(start.isEnabled);start.tap()
         XCTAssertTrue(app.otherElements["CADSculptHUD"].waitForExistence(timeout:15))
     }

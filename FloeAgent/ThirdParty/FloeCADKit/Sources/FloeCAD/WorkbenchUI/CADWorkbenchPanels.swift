@@ -390,6 +390,7 @@ struct CADWorkbenchToolsPanel: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
             }
+            .accessibilityIdentifier("CADWorkbenchToolsScroll")
             .navigationTitle(FloeCADStrings.text("cad.workbench.tools", "CAD Tools"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

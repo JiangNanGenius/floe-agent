@@ -89,6 +89,7 @@ import simd
         .onChange(of:jointID) { _,_ in loadPose() }
         .onChange(of:vertexID) { _,_ in loadWeights() }
         .fileExporter(isPresented:$showExport,document:export,contentType:UTType(filenameExtension:"glb") ?? .data,defaultFilename:"rig-animation") { result in if case .failure(let error)=result { message=error.localizedDescription } }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("CADRigPanel")
     }
     private func field(_ key:String,_ fallback:String,_ value:Binding<String>) -> some View {
