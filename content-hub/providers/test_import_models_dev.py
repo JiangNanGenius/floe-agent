@@ -507,7 +507,7 @@ class CommittedCatalogTests(unittest.TestCase):
     def test_content_source_version_and_plan_mappings(self):
         content = json.loads(CONTENT.read_text(encoding="utf-8"))
         self.assertEqual(content["version"], "1.1.5")
-        self.assertEqual(content["minimumAppVersion"], "1.7.64")
+        self.assertEqual(content["minimumAppVersion"], "1.7.69")
         self.assertEqual(content["id"], "floe.providers.compatibility")
         self.assertEqual(content["kind"], "providers")
         self.assertFalse(content["containsScripts"])

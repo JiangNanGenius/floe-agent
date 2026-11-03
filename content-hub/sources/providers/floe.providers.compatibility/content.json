@@ -3,7 +3,7 @@
   "id": "floe.providers.compatibility",
   "version": "1.1.5",
   "kind": "providers",
-  "minimumAppVersion": "1.7.64",
+  "minimumAppVersion": "1.7.69",
   "sourceRevision": "",
   "containsScripts": false,
   "requiredCapabilities": [],

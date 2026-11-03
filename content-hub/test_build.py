@@ -39,8 +39,8 @@ STAGED_IDS = set()
 # equality applies again. A downgrade, an unapproved candidate, or a
 # same-version rewrite is rejected.
 STAGED_VERSIONS = {
-    "floe.providers.compatibility": ("1.1.2", "1.1.3"),
-    "floe.search.providers": ("1.0.0", "1.1.0"),
+    "floe.providers.compatibility": ("1.1.2", "1.1.5"),
+    "floe.search.providers": ("1.1.0", "1.2.1"),
 }
 
 # The immutable provider archives that must survive this staging step
@@ -51,11 +51,13 @@ IMMUTABLE_PROVIDER_PACKAGE_SHA256 = {
     "1.0.0": "e91cd711624abbd6cec518b0abe8abe2cad9198bc40e8ec8172fdb339aaffdc3",
     "1.1.0": "290e7962f9659eb8d22d08586176bb9559c4b98532a50a57abe72fe444a1f33d",
     "1.1.2": "18918f534afa7fd9b378d7f18dce457f28935f8e7675ea004e2af2916b546ec9",
+    "1.1.3": "d1451266092fd058489bac8b9a6d59d261abb33b908c847b8e19daa69655ca56",
 }
 
 # Historical search archives remain immutable before and after promotion.
 IMMUTABLE_SEARCH_PACKAGE_SHA256 = {
     "1.0.0": "5d85ea6f3804c6108a273f229c613e947307c0cef1b0de6aaf18f3af53a6543c",
+    "1.1.0": "4cc46189a235f3e33408e8916edb98466822b6922d5ab82ca4d0e4f91aa9fab6",
 }
 
 # The pinned content-hub trust root. A local fixture key must never be passed
@@ -69,22 +71,22 @@ PINNED_PUBLIC_KEY = {
 # sources by build.plan(); these constants ensure a future source drift cannot
 # slip through without an explicit version/review update.
 PROVIDER_CANDIDATE = {
-    "version": "1.1.3",
-    "minimumAppVersion": "1.7.64",
-    "size": 160903,
-    "sha256": "d1451266092fd058489bac8b9a6d59d261abb33b908c847b8e19daa69655ca56",
-    "contentDigest": "c856365cef34d8053280d482bf7709da47706a5b589dfec539c1fe690150152c",
+    "version": "1.1.5",
+    "minimumAppVersion": "1.7.69",
+    "size": 161665,
+    "sha256": "ea1e15dd73e1d3d0207cc072697cade4c5776527f7dbbc59241f3f5a2af633ae",
+    "contentDigest": "2fc87f118c289bd3c0a08eed0ca868bc107d3bccceb2656a2604999b27289bbf"
 }
 
-# Exact reviewed search-catalog candidate. 1.1.0 adds the compiled DeepSeek
-# adapter kind, so it must target App 1.7.65; 1.7.64 would fail closed and drop
-# the new entry. Both the old feed and this exact promoted entry are checked.
+# Exact reviewed search-catalog candidate. It includes the Moonshot adapter
+# and requires the current compatible app; older clients retain their catalog.
+# Both the immutable old feed and this exact promoted entry are checked.
 SEARCH_CATALOG_CANDIDATE = {
-    "version": "1.1.0",
-    "minimumAppVersion": "1.7.65",
-    "size": 8881,
-    "sha256": "4cc46189a235f3e33408e8916edb98466822b6922d5ab82ca4d0e4f91aa9fab6",
-    "contentDigest": "ca7ac3cc9e168df2674caa34d66edff9dae415f64387806f130bceba7d5f8b21",
+    "version": "1.2.1",
+    "minimumAppVersion": "1.7.69",
+    "size": 10149,
+    "sha256": "efa933d9629bcfaf364a76c7a5f3276e57a1ddd14127bea4fe4be0ef89600007",
+    "contentDigest": "3d24fadff9959b8c2c4325650d9fc1fd3eae5968a03959206566acf04248b17e"
 }
 
 SEARCH_CATALOG_ADAPTERS = {
@@ -92,6 +94,7 @@ SEARCH_CATALOG_ADAPTERS = {
     "tencent-wsa": "tencentWSA",
     "volcengine": "volcengine",
     "deepseek": "deepseek",
+    "moonshot": "moonshot",
     "brave": "brave",
     "tavily": "tavily",
     "exa": "exa",
@@ -135,7 +138,7 @@ class ContentHubBuildTests(unittest.TestCase):
             PINNED_PUBLIC_KEY,
         )
         # The signed feed keeps its old entries and signature, while the
-        # approved 1.1.3 candidate package must already carry exactly the
+        # approved 1.1.5 candidate package must already carry exactly the
         # deterministic archive built from the current sources.
         state = build.check_staged(
             build.ROOT,
@@ -204,10 +207,10 @@ class ContentHubBuildTests(unittest.TestCase):
         published_search = next(
             entry for entry in state["index"]["entries"] if entry["id"] == identifier
         )
-        self.assertIn(published_search["version"], ("1.0.0", search["version"]))
-        if published_search["version"] == "1.0.0":
-            self.assertEqual(published_search["minimumAppVersion"], "1.7.47")
-            self.assertEqual(published_search["sha256"], IMMUTABLE_SEARCH_PACKAGE_SHA256["1.0.0"])
+        self.assertIn(published_search["version"], ("1.1.0", search["version"]))
+        if published_search["version"] == "1.1.0":
+            self.assertEqual(published_search["minimumAppVersion"], "1.7.65")
+            self.assertEqual(published_search["sha256"], IMMUTABLE_SEARCH_PACKAGE_SHA256["1.1.0"])
         else:
             self.assertEqual(published_search, search)
         published_search_path = build.ROOT / published_search["path"][len(build.PATH_PREFIX):]
@@ -260,7 +263,7 @@ class ContentHubBuildTests(unittest.TestCase):
         source_downgrade = copy.deepcopy(entries)
         source_provider = next(entry for entry in source_downgrade if entry["id"] == identifier)
         source_provider["version"] = "1.1.2"
-        source_provider["path"] = source_provider["path"].replace("/1.1.3/", "/1.1.2/")
+        source_provider["path"] = source_provider["path"].replace("/1.1.5/", "/1.1.2/")
         with self.assertRaisesRegex(ValueError, "is not the approved staged candidate"):
             build.validate_staged_sources(source_downgrade, published, EXPECTED_IDS, STAGED_IDS, STAGED_VERSIONS)
         moved = copy.deepcopy(published)
@@ -270,7 +273,7 @@ class ContentHubBuildTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "neither the pinned published"):
             build.validate_staged_sources(
                 entries, moved, EXPECTED_IDS, STAGED_IDS,
-                {identifier: ("1.1.2", "1.1.3")},
+                {identifier: ("1.1.2", "1.1.5")},
             )
 
     def test_staged_validation_rejects_rewrites_and_requires_exact_promotion(self):
@@ -285,7 +288,7 @@ class ContentHubBuildTests(unittest.TestCase):
         promoted = copy.deepcopy(entries)
         provider = next(entry for entry in promoted if entry["id"] == identifier)
         provider["releaseNotes"]["en"] = "Promoted with rewritten metadata"
-        with self.assertRaisesRegex(ValueError, "promoted 1.1.3 source differs"):
+        with self.assertRaisesRegex(ValueError, "promoted 1.1.5 source differs"):
             build.validate_staged_sources(entries, promoted, EXPECTED_IDS, STAGED_IDS, STAGED_VERSIONS)
 
         source_provider = next(entry for entry in entries if entry["id"] == identifier)
@@ -358,8 +361,7 @@ class ContentHubBuildTests(unittest.TestCase):
         self.assertEqual(envelope["id"], "floe.search.providers")
         self.assertEqual(envelope["kind"], "providers")
         self.assertEqual(envelope["version"], SEARCH_CATALOG_CANDIDATE["version"])
-        # 1.1.0 adds the DeepSeek adapter kind compiled in App 1.7.65; an
-        # older 1.7.64 app would fail closed and drop the new entry.
+        # Require the complete compiled adapter set, including Moonshot.
         self.assertEqual(
             envelope["minimumAppVersion"], SEARCH_CATALOG_CANDIDATE["minimumAppVersion"]
         )
@@ -420,15 +422,15 @@ class ContentHubBuildTests(unittest.TestCase):
         self.assertEqual(files["content.json"], (source / "content.json").read_bytes())
         self.assertEqual(build.canonical(files), SEARCH_CATALOG_CANDIDATE["contentDigest"])
 
-        # The signed feed may retain 1.0.0 or promote this exact reviewed entry.
+        # The signed feed may retain 1.1.0 or promote this exact reviewed entry.
         index = json.loads((build.ROOT / "index.json").read_bytes())
         published = next(
             entry for entry in index["entries"] if entry["id"] == "floe.search.providers"
         )
-        self.assertIn(published["version"], ("1.0.0", staged["version"]))
-        if published["version"] == "1.0.0":
-            self.assertEqual(published["minimumAppVersion"], "1.7.47")
-            self.assertEqual(published["sha256"], IMMUTABLE_SEARCH_PACKAGE_SHA256["1.0.0"])
+        self.assertIn(published["version"], ("1.1.0", staged["version"]))
+        if published["version"] == "1.1.0":
+            self.assertEqual(published["minimumAppVersion"], "1.7.65")
+            self.assertEqual(published["sha256"], IMMUTABLE_SEARCH_PACKAGE_SHA256["1.1.0"])
         else:
             self.assertEqual(published, staged)
 

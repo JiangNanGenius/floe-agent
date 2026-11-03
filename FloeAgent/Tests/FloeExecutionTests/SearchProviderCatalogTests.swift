@@ -4,7 +4,7 @@
 // Pure and deterministic: no network, no Keychain, no app target. The bundled
 // catalog is read from the checkout so the shipped defaults are part of the
 // contract, and the staged content-hub envelope is checked for the
-// catalog-aware minimum app version (1.7.65).
+// catalog-aware minimum app version (1.7.69).
 
 import Foundation
 import Testing
@@ -267,10 +267,9 @@ struct SearchProviderCatalogTests {
         #expect(envelope["id"] as? String == "floe.search.providers")
         #expect(envelope["kind"] as? String == "providers")
         #expect(envelope["version"] as? String == "1.2.1")
-        // A search catalog must never activate on an older app that does not
-        // understand the payload/flow. 1.7.65 is the first build that compiles
-        // the DeepSeek adapter kind, so 1.7.64 would fail closed and drop it.
-        #expect(envelope["minimumAppVersion"] as? String == "1.7.65")
+        // The updated catalog requires this app's full compiled adapter set,
+        // including Moonshot; older DeepSeek-only builds must not install it.
+        #expect(envelope["minimumAppVersion"] as? String == "1.7.69")
         #expect(envelope["containsScripts"] as? Bool == false)
         #expect((envelope["releaseNotes"] as? [String: String])?["en"]?.isEmpty == false)
         #expect((envelope["releaseNotes"] as? [String: String])?["zh-Hans"]?.isEmpty == false)
