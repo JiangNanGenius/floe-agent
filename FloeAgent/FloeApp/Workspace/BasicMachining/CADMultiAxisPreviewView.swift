@@ -14,11 +14,19 @@ struct CADMultiAxisPreviewView:View {
     let conversationID:UUID
     @EnvironmentObject private var environment:AppEnvironment
     @Environment(\.dismiss) private var dismiss
-    @State private var resolution=1.0,radius=2.0,length=10.0
-    @State private var start=[0.0,0.0,0.0],end=[4.0,2.0,1.0]
-    @State private var axis0=[0.0,0.0,1.0],axis1=[0.5,-0.4330127018922193,0.75]
-    @State private var checkFixture=false,holderRadius=3.0,holderLength=6.0,holderOffset=10.0
-    @State private var fixtureMin=[20.0,20.0,20.0],fixtureMax=[22.0,22.0,22.0]
+    @State private var resolution=1.0
+    @State private var radius=2.0
+    @State private var length=10.0
+    @State private var start=[0.0,0.0,0.0]
+    @State private var end=[4.0,2.0,1.0]
+    @State private var axis0=[0.0,0.0,1.0]
+    @State private var axis1=[0.5,-0.4330127018922193,0.75]
+    @State private var checkFixture=false
+    @State private var holderRadius=3.0
+    @State private var holderLength=6.0
+    @State private var holderOffset=10.0
+    @State private var fixtureMin=[20.0,20.0,20.0]
+    @State private var fixtureMax=[22.0,22.0,22.0]
     @State private var study:CADBasicMachiningStudy?
     @State private var starting=false
     @State private var message:String?
