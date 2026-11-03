@@ -26,7 +26,7 @@ public struct CADM30TargetDescriptor: Codable, Sendable {
 }
 
 @MainActor public enum CADM30SelectedTargetFixture {
-    public static func fail(_ message: String) -> CADDocumentError {
+    public nonisolated static func fail(_ message: String) -> CADDocumentError {
         CADDocumentError(code: "m30_fixture", message: message)
     }
     private static func json(_ object: Any) throws -> String {
