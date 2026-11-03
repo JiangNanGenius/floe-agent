@@ -33,7 +33,7 @@ private enum CADHoleFormLaunch {
 }
 
 @MainActor
-private enum CADHoleFormUI {
+enum CADHoleFormUI {
     static let conditionalFieldIDs = [
         "HoleDepth",
         "HoleCounterboreDiameter",

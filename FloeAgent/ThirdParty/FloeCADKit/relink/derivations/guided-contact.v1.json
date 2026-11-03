@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "id": "occt-guided-contact-continuation-v1",
+  "displayName": "OCCT closed-profile contact branch continuation",
+  "status": "required",
+  "approach": "single-object-surgical-reconstruction",
+  "purpose": "Select only true-contact extrema within existing Precision::Confusion and continue the nearest preceding unwrapped rotation angle; preserve Standard_Type repair and every non-target archive member.",
+  "occt": {
+    "name": "Open CASCADE Technology",
+    "version": "7.8.1",
+    "commit": "bd2a789f15235755ce4d1a3b07379a2e062fdc2e",
+    "repository": "https://github.com/Open-Cascade-SAS/OCCT",
+    "license": "LGPL-2.1-only with Open CASCADE exception 1.0",
+    "baseSource": {
+      "path": "relink/derivations/guided-contact/base/src/GeomFill/GeomFill_LocationGuide.cxx",
+      "size": 41606,
+      "sha256": "e458c7240aa9b22f85df744a9e9bb90e9636ea38e2a0d30eef27ad2cf24aa7f6"
+    },
+    "overlaySource": {
+      "path": "relink/derivations/guided-contact/overlay/src/GeomFill/GeomFill_LocationGuide.cxx",
+      "size": 42461,
+      "sha256": "0bc5e2eee03340fad555a92a63b978e47b12331f1e0e231a24f0025a6ff2480e"
+    },
+    "patch": {
+      "path": "relink/derivations/guided-contact/minimal.patch",
+      "size": 1892,
+      "sha256": "f9e79074a1efe9fd5c0b1ecb1f51dc0fc9d15db8db4e8ca2aa8d0ed7c6a9c45c"
+    }
+  },
+  "member": {
+    "name": "GeomFill_LocationGuide.cxx.o",
+    "publicSymbolPattern": "^(__ZN22GeomFill_LocationGuide|__ZNK22GeomFill_LocationGuide|__ZT[ISV]22GeomFill_LocationGuide$)",
+    "expectedPublicSymbols": [
+      "__ZN22GeomFill_LocationGuide10SetOrigineEdd",
+      "__ZN22GeomFill_LocationGuide11SetIntervalEdd",
+      "__ZN22GeomFill_LocationGuide11SetRotationEdRd",
+      "__ZN22GeomFill_LocationGuide12SetToleranceEdd",
+      "__ZN22GeomFill_LocationGuide13EraseRotationEv",
+      "__ZN22GeomFill_LocationGuide13GetAverageLawER6gp_MatR6gp_Vec",
+      "__ZN22GeomFill_LocationGuide14GetMaximalNormEv",
+      "__ZN22GeomFill_LocationGuide19get_type_descriptorEv",
+      "__ZN22GeomFill_LocationGuide2D0EdR6gp_MatR6gp_Vec",
+      "__ZN22GeomFill_LocationGuide2D0EdR6gp_MatR6gp_VecR18NCollection_Array1I8gp_Pnt2dE",
+      "__ZN22GeomFill_LocationGuide2D1EdR6gp_MatR6gp_VecS1_S3_R18NCollection_Array1I8gp_Pnt2dERS4_I8gp_Vec2dE",
+      "__ZN22GeomFill_LocationGuide2D2EdR6gp_MatR6gp_VecS1_S3_S1_S3_R18NCollection_Array1I8gp_Pnt2dERS4_I8gp_Vec2dESA_",
+      "__ZN22GeomFill_LocationGuide3SetERKN11opencascade6handleI19GeomFill_SectionLawEEbdddRd",
+      "__ZN22GeomFill_LocationGuide5InitXEd",
+      "__ZN22GeomFill_LocationGuide7SetTrsfERK6gp_Mat",
+      "__ZN22GeomFill_LocationGuide8SetCurveERKN11opencascade6handleI15Adaptor3d_CurveEE",
+      "__ZN22GeomFill_LocationGuideC1ERKN11opencascade6handleI27GeomFill_TrihedronWithGuideEE",
+      "__ZN22GeomFill_LocationGuideC2ERKN11opencascade6handleI27GeomFill_TrihedronWithGuideEE",
+      "__ZN22GeomFill_LocationGuideD0Ev",
+      "__ZN22GeomFill_LocationGuideD1Ev",
+      "__ZN22GeomFill_LocationGuideD2Ev",
+      "__ZNK22GeomFill_LocationGuide10IsRotationERd",
+      "__ZNK22GeomFill_LocationGuide10ResolutionEidRdS0_",
+      "__ZNK22GeomFill_LocationGuide11DynamicTypeEv",
+      "__ZNK22GeomFill_LocationGuide11ErrorStatusEv",
+      "__ZNK22GeomFill_LocationGuide11GetIntervalERdS0_",
+      "__ZNK22GeomFill_LocationGuide11NbIntervalsE13GeomAbs_Shape",
+      "__ZNK22GeomFill_LocationGuide11TraceNumberEv",
+      "__ZNK22GeomFill_LocationGuide13IsTranslationERd",
+      "__ZNK22GeomFill_LocationGuide18HasLastRestrictionEv",
+      "__ZNK22GeomFill_LocationGuide19ComputeAutomaticLawERN11opencascade6handleI21TColgp_HArray1OfPnt2dEE",
+      "__ZNK22GeomFill_LocationGuide19HasFirstRestrictionEv",
+      "__ZNK22GeomFill_LocationGuide4CopyEv",
+      "__ZNK22GeomFill_LocationGuide5GuideEv",
+      "__ZNK22GeomFill_LocationGuide7SectionEv",
+      "__ZNK22GeomFill_LocationGuide8GetCurveEv",
+      "__ZNK22GeomFill_LocationGuide8RotationER6gp_Pnt",
+      "__ZNK22GeomFill_LocationGuide9GetDomainERdS0_",
+      "__ZNK22GeomFill_LocationGuide9IntervalsER18NCollection_Array1IdE13GeomAbs_Shape",
+      "__ZTI22GeomFill_LocationGuide",
+      "__ZTS22GeomFill_LocationGuide",
+      "__ZTV22GeomFill_LocationGuide"
+    ],
+    "expectedPublicSymbolsSha256": "7abd295b42b48005aaf9310b7c776add5ff7f67e13a8405e89d5b24886c6cfbe"
+  },
+  "archive": {
+    "format": "bsd-ar",
+    "indexMemberName": "__.SYMDEF",
+    "replacement": "single-object",
+    "indexRebuild": "ranlib",
+    "preserve": "member order and every non-index, non-target member record byte-for-byte"
+  },
+  "build": {
+    "headersPath": "Vendor/OCCT.xcframework/ios-arm64/Headers",
+    "sourceFileName": "GeomFill_LocationGuide.cxx",
+    "objectFileName": "GeomFill_LocationGuide.cxx.o",
+    "compiler": "clang++",
+    "indexTool": "ranlib",
+    "symbolTool": "nm",
+    "compileFlags": [
+      "-std=c++17",
+      "-O3",
+      "-DNDEBUG",
+      "-fvisibility=default",
+      "-fexceptions",
+      "-frtti",
+      "-Wall",
+      "-Wextra",
+      "-Werror"
+    ],
+    "headersTreeAlgorithm": "sha256-json-map-v1: SHA-256 of compact sorted JSON {relative path: file SHA-256} over the pinned device headers tree",
+    "headersTreeSha256": "e7287b86ec61dea2dc96b1f6c5bdf16eff822c6c39af3d12965c1dbab948ad2a",
+    "headersFileCount": 7963
+  },
+  "slices": {
+    "device": {
+      "arch": "arm64",
+      "machoPlatform": "IOS",
+      "minos": "16.0",
+      "target": "arm64-apple-ios16.0",
+      "sdk": "iphoneos",
+      "sdkVersionAtBaseBuild": "26.2",
+      "installPath": "Vendor/OCCT.xcframework/ios-arm64/libOCCT-OS64.a",
+      "baseSize": 149038056,
+      "baseSha256": "bb43f464af9162fde65b667414ba340dfd79b170cff7287688ec97d44db9b067",
+      "baseMemberCount": 5412,
+      "baseMemberOrderSha256": "d152ffd0e16f316d3289e83d164e24f398dd8661b25b2ece3949242c8b4c6c1b",
+      "baseNonTargetMembersDigestSha256": "7772613f3f4a3afbecf192055e5105a692ebe4f2a1565eab2890063e1a3c71cb",
+      "baseIndexMemberSize": 18165908,
+      "baseIndexPayloadSize": 18165888,
+      "baseIndexPayloadSha256": "afd20d63038af9880171c94cfab3095678c990f4d6e5d8aed236830b031d8f46",
+      "baseTargetPayloadSize": 78328,
+      "baseTargetPayloadSha256": "40ef18488831fa6cd4e9ff6945998665c9ebe171e18b1d219be622c4f351c6fe"
+    },
+    "simulator": {
+      "arch": "arm64",
+      "machoPlatform": "IOSSIMULATOR",
+      "minos": "16.0",
+      "target": "arm64-apple-ios16.0-simulator",
+      "sdk": "iphonesimulator",
+      "sdkVersionAtBaseBuild": "26.2",
+      "installPath": "Vendor/OCCT.xcframework/ios-arm64-simulator/libOCCT-SIMULATORARM64.a",
+      "baseSize": 147188808,
+      "baseSha256": "06a284928c1fe1c7c516e8eb629ee9b022b3505403045d29f346ffdcb1c0ed7e",
+      "baseMemberCount": 5412,
+      "baseMemberOrderSha256": "d152ffd0e16f316d3289e83d164e24f398dd8661b25b2ece3949242c8b4c6c1b",
+      "baseNonTargetMembersDigestSha256": "02b4ffc8f93ea94e26865d623a699a30747b79decc8fbaa67512e9a6e55565bd",
+      "baseIndexMemberSize": 18165908,
+      "baseIndexPayloadSize": 18165888,
+      "baseIndexPayloadSha256": "e47b4e6f5ec1bdb4002bf0a6530e6d150a9aa9fa2facf0b54d5adcdae7004d69",
+      "baseTargetPayloadSize": 76944,
+      "baseTargetPayloadSha256": "fc543732b57b53becab32384a1f03a936f0fba6f9f773db4c3c2f998d2e85662"
+    }
+  },
+  "qualifiedToolchain": {
+    "xcodeVersion": "27.1",
+    "xcodeBuild": "27A9275",
+    "sdkVersion": "27.1",
+    "clangVersionPrefix": "Apple clang version 21.0.0",
+    "note": "The release owner's local qualification toolchain. Other Xcode/SDK versions may derive a byte-different but ABI-compatible slice for CI or development; bootstrap --release-check rejects them as unqualified."
+  },
+  "limitations": [
+    "One additional object is rebuilt after the existing Standard_Type lifetime derivation, not a full OCCT rebuild.",
+    "The manifest retains original upstream archive pins; nested input receipt plus parent expectedResult anchors this second-stage base.",
+    "Root compiled both stage-two objects on Xcode27.1 and preserved every other member. Original native guided workflow still needs actual geometry validation; no tolerance/fixture is changed."
+  ],
+  "inputDerivation": {
+    "id": "occt-standard-type-lifetime-v1",
+    "recipeSha256": "d375d63871a53c2efb72047d8ebc2864c834b53c9d686da6943cab23968992f8"
+  }
+}

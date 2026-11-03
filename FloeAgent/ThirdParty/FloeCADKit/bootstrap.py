@@ -243,6 +243,7 @@ def validate_manifest(data: dict) -> None:
                         "artifact %r derivation.%s must be relative"
                         % (art.get("name"), key)
                     )
+            _validate_parent_derivation(derivation, art.get("name"))
             expected = derivation.get("expectedResult")
             if expected is not None:
                 if not isinstance(expected, dict):
@@ -262,6 +263,34 @@ def validate_manifest(data: dict) -> None:
                         "artifact %r derivation.expectedResult.sha256 is invalid"
                         % art.get("name")
                     )
+
+
+def _validate_parent_derivation(derivation, artifact_name):
+    parent = derivation.get("parent")
+    if parent is None:
+        return
+    if not isinstance(parent, dict) or "parent" in parent:
+        raise ManifestError("artifact %r requires exactly one input derivation stage" % artifact_name)
+    for key in ("id", "recipe", "recipeSha256", "receiptPath"):
+        if not isinstance(parent.get(key), str) or not parent[key].strip():
+            raise ManifestError("artifact %r input derivation missing %r" % (artifact_name, key))
+    if not _is_hex(parent["recipeSha256"], 64):
+        raise ManifestError("artifact %r input derivation recipe hash is invalid" % artifact_name)
+    for key in ("recipe", "receiptPath"):
+        if os.path.isabs(parent[key]) or parent[key].startswith(("/", "\\")):
+            raise ManifestError("artifact %r input derivation path must be relative" % artifact_name)
+    expected = parent.get("expectedResult")
+    if (not isinstance(expected, dict) or isinstance(expected.get("size"), bool)
+            or not isinstance(expected.get("size"), int) or expected["size"] < 0
+            or not _is_hex(expected.get("sha256"), 64)):
+        raise ManifestError("artifact %r input derivation needs a tracked expectedResult" % artifact_name)
+
+
+def _input_artifact(art):
+    parent = art.get("derivation", {}).get("parent")
+    if parent is None:
+        return None
+    return dict(art, derivation=parent)
 
 
 def _is_hex(value: object, length: int) -> bool:
@@ -388,7 +417,22 @@ def _load_derivation(root: str, art: dict):
         )
     except dc.DerivationError as exc:
         raise DerivationError(str(exc))
-    if (slice_cfg["baseSize"] != art["size"]
+    parent_art = _input_artifact(art)
+    if parent_art is not None:
+        _validate_parent_derivation(art["derivation"], art.get("name"))
+        _load_derivation(root, parent_art)  # retains the upstream archive anchor
+        parent = parent_art["derivation"]
+        expected = dc.expected_result(parent)
+        binding = recipe.get("inputDerivation") or {}
+        if not isinstance(binding, dict):
+            raise DerivationError("recipe inputDerivation must be an object")
+        if (binding.get("id") != parent["id"]
+                or binding.get("recipeSha256") != parent["recipeSha256"]):
+            raise DerivationError("recipe does not bind the declared input derivation")
+        if (slice_cfg["baseSize"] != expected["size"]
+                or slice_cfg["baseSha256"].lower() != expected["sha256"]):
+            raise DerivationError("second-stage base pin differs from input expectedResult")
+    elif (slice_cfg["baseSize"] != art["size"]
             or slice_cfg["baseSha256"].lower() != art["sha256"].lower()):
         raise DerivationError(
             "recipe base pin does not match the manifest artifact"
@@ -406,26 +450,40 @@ def _read_json_file(path: str, label: str) -> dict:
         raise DerivationError("cannot read %s %s: %s" % (label, path, exc))
 
 
-def _validate_derivation_paths(root: str, art: dict, archive_path: str,
-                               receipt_path: str, strict_toolchain: bool = False,
-                               require_expected: bool = False,
-                               warnings=None) -> dict:
+def _validate_derivation_receipt(root, art, receipt, installed_size, installed_sha,
+                                 strict_toolchain=False, require_expected=False,
+                                 warnings=None):
     dc, oa, recipe, slice_name, slice_cfg = _load_derivation(root, art)
-    receipt = _read_json_file(receipt_path, "derivation receipt")
-    installed_size = os.path.getsize(archive_path)
-    installed_sha = sha256_file(archive_path)
-    manifest_artifact = {
-        "installPath": art["installPath"],
-        "size": art["size"],
-        "sha256": art["sha256"],
-    }
+    # The final stage starts from the pinned parent output; the parent receipt
+    # is separately validated against the unchanged upstream manifest anchor.
+    stage_input = {"installPath": art["installPath"],
+                   "size": slice_cfg["baseSize"], "sha256": slice_cfg["baseSha256"]}
     problems, qualified = dc.validate_receipt(
-        recipe, manifest_artifact, receipt, installed_size, installed_sha
+        recipe, stage_input, receipt, installed_size, installed_sha
     )
-    archive_problems, summary = dc.verify_installed_archive(
-        archive_path, recipe, slice_cfg, receipt
-    )
-    problems.extend(archive_problems)
+    for key in ("baseSource", "overlaySource", "patch"):
+        item = recipe["occt"][key]
+        source = dc.resolve_relative(root, item["path"], "recipe.occt.%s.path" % key)
+        if not file_matches(source, item["size"], item["sha256"]):
+            problems.append("tracked derivation %s does not match recipe source hash" % key)
+    parent_qualified = True
+    parent_art = _input_artifact(art)
+    if parent_art is not None:
+        parent = parent_art["derivation"]
+        binding = receipt.get("inputDerivation") or {}
+        if not isinstance(binding, dict):
+            raise DerivationError("receipt inputDerivation must be an object")
+        if (binding.get("id") != parent["id"]
+                or binding.get("recipeSha256") != parent["recipeSha256"]
+                or not isinstance(binding.get("receipt"), dict)):
+            problems.append("missing or mismatched input derivation receipt")
+        else:
+            parent_info = _validate_derivation_receipt(
+                root, parent_art, binding["receipt"],
+                slice_cfg["baseSize"], slice_cfg["baseSha256"],
+                strict_toolchain=strict_toolchain, require_expected=True,
+                warnings=warnings)
+            parent_qualified = parent_info["qualified"]
     expected = dc.expected_result(art["derivation"])
     if expected is None:
         if require_expected:
@@ -468,11 +526,28 @@ def _validate_derivation_paths(root: str, art: dict, archive_path: str,
         raise DerivationError(dc.describe_problems(problems))
     return {
         "receipt": receipt,
-        "summary": summary,
-        "qualified": qualified,
+        "summary": receipt.get("archive"),
+        "qualified": qualified and parent_qualified,
         "toolchain": dc.toolchain_summary(receipt),
         "expected": expected,
     }
+
+
+def _validate_derivation_paths(root: str, art: dict, archive_path: str,
+                               receipt_path: str, strict_toolchain: bool = False,
+                               require_expected: bool = False,
+                               warnings=None) -> dict:
+    receipt = _read_json_file(receipt_path, "derivation receipt")
+    info = _validate_derivation_receipt(
+        root, art, receipt, os.path.getsize(archive_path), sha256_file(archive_path),
+        strict_toolchain=strict_toolchain, require_expected=require_expected,
+        warnings=warnings)
+    dc, oa, recipe, _, slice_cfg = _load_derivation(root, art)
+    problems, summary = dc.verify_installed_archive(archive_path, recipe, slice_cfg, receipt)
+    if problems:
+        raise DerivationError(dc.describe_problems(problems))
+    info["summary"] = summary
+    return info
 
 
 def _artifact_status_detail(root: str, art: dict,
@@ -542,7 +617,7 @@ def _fetch_verified_temp(dest_dir: str, art: dict, source: dict,
     return tmp_path
 
 
-def _run_derive_tool(root: str, art: dict, recipe: dict, slice_name: str,
+def _run_single_derive_tool(root: str, art: dict, recipe: dict, slice_name: str,
                      base_path: str, output_path: str, receipt_path: str, log):
     tool = os.path.join(package_root(), "relink", "derivations",
                         "derive_standard_type_slice.py")
@@ -560,8 +635,8 @@ def _run_derive_tool(root: str, art: dict, recipe: dict, slice_name: str,
         "--receipt", receipt_path,
         "--timeout", str(int(timeout)),
     ]
-    log("derive %s (single-object Standard_Type backport; %s)"
-        % (art.get("name", art["installPath"]),
+    log("derive %s (single-object %s; %s)"
+        % (art.get("name", art["installPath"]), recipe["member"]["name"],
            os.environ.get("DEVELOPER_DIR", "system Xcode")))
     try:
         result = subprocess.run(
@@ -580,6 +655,37 @@ def _run_derive_tool(root: str, art: dict, recipe: dict, slice_name: str,
             "derivation failed (exit %d): %s"
             % (result.returncode, redact(detail[-1500:]))
         )
+
+
+def _run_derive_tool(root, art, recipe, slice_name, base_path, output_path,
+                     receipt_path, log, prepared_input_receipt=None):
+    parent_art = _input_artifact(art)
+    if parent_art is None:
+        return _run_single_derive_tool(root, art, recipe, slice_name, base_path,
+                                       output_path, receipt_path, log)
+    staging = tempfile.mkdtemp(prefix=".floecad-input-", dir=os.path.dirname(output_path))
+    try:
+        parent = parent_art["derivation"]
+        if prepared_input_receipt is None:
+            _, _, parent_recipe, parent_slice, _ = _load_derivation(root, parent_art)
+            parent_archive = os.path.join(staging, "input.a")
+            parent_receipt = os.path.join(staging, "input-receipt.json")
+            _run_single_derive_tool(root, parent_art, parent_recipe, parent_slice,
+                                   base_path, parent_archive, parent_receipt, log)
+            info = _validate_derivation_paths(root, parent_art, parent_archive,
+                                              parent_receipt, require_expected=True)
+            prepared_input_receipt = info["receipt"]
+            base_path = parent_archive
+        _run_single_derive_tool(root, art, recipe, slice_name, base_path,
+                                output_path, receipt_path, log)
+        receipt = _read_json_file(receipt_path, "derived receipt")
+        receipt["inputDerivation"] = {"id": parent["id"],
+            "recipeSha256": parent["recipeSha256"], "receipt": prepared_input_receipt}
+        with open(receipt_path, "w", encoding="utf-8") as handle:
+            json.dump(receipt, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def _install_receipt(source_path: str, receipt_path: str) -> None:
@@ -620,7 +726,21 @@ def install_derived_artifact(root: str, art: dict, source: dict, deadline: float
 
     dc, oa, recipe, slice_name, slice_cfg = _load_derivation(root, art)
     temp_base = None
-    if kind == "unprepared":
+    prepared_input_receipt = None
+    parent_art = _input_artifact(art)
+    if parent_art is not None and os.path.exists(dest) and os.path.exists(receipt_path):
+        # Reuse a fully verified existing lifetime-repaired slice. This avoids
+        # downloading/rebuilding an unchanged first stage and also works offline.
+        try:
+            info = _validate_derivation_paths(root, parent_art, dest, receipt_path,
+                                              require_expected=True)
+            prepared_input_receipt = info["receipt"]
+        except DerivationError:
+            pass
+    if prepared_input_receipt is not None:
+        base_path = dest
+        log("reuse  %s verified input derivation" % name)
+    elif kind == "unprepared":
         base_path = dest
         log("prepare %s: the pinned upstream base is present but lacks the "
             "required repair; reconstructing the single Standard_Type object"
@@ -644,7 +764,7 @@ def install_derived_artifact(root: str, art: dict, source: dict, deadline: float
     warnings = []
     try:
         _run_derive_tool(root, art, recipe, slice_name, base_path, derived_tmp,
-                         receipt_tmp, log)
+                         receipt_tmp, log, prepared_input_receipt=prepared_input_receipt)
         info = _validate_derivation_paths(
             root, art, derived_tmp, receipt_tmp, warnings=warnings
         )
@@ -654,7 +774,13 @@ def install_derived_artifact(root: str, art: dict, source: dict, deadline: float
             previous = _read_json_file(receipt_path, "existing derivation receipt")
             previous_sha = ((previous.get("archive") or {}).get("sha256"))
             new_sha = sha256_file(derived_tmp)
-            if previous_sha and previous_sha != new_sha:
+            parent = der.get("parent") or {}
+            expected_parent = parent.get("expectedResult") or {}
+            upgrading_verified_input = (
+                parent_art is not None
+                and previous.get("recipeSha256") == parent.get("recipeSha256")
+                and previous_sha == expected_parent.get("sha256"))
+            if previous_sha and previous_sha != new_sha and not upgrading_verified_input:
                 raise DerivationError(
                     "derivation is not reproducible on this toolchain: the "
                     "existing receipt records %s but the new derivation produced "

@@ -1,0 +1,52 @@
+--- a/src/GeomFill/GeomFill_LocationGuide.cxx
++++ b/src/GeomFill/GeomFill_LocationGuide.cxx
+@@ -384,24 +384,40 @@
+     else { // on prend le point d'intersection 
+       // d'angle le plus proche de P
+       
+-      Standard_Real MinDist = RealLast();
++      // A closed section (in particular a rectangle) has several exact
++      // contacts with its surface of revolution. Round-off in distance must
++      // not choose a different rotational branch at the next station.
++      // Admit only contacts within the existing Extrema 3D tolerance, then
++      // continue the angle nearest the previous station / preceding path law.
++      Standard_Real MinAngle = RealLast();
+       Standard_Integer jref = 0;
+       for (Standard_Integer j = 1; j <= DistMini.NbExt(); j++)
+       {
+-        Standard_Real aDist = DistMini.SquareDistance(j);
+-        if (aDist < MinDist)
++        if (DistMini.SquareDistance(j) > Precision::SquareConfusion())
++          continue;
++        Extrema_POnCurv aPc;
++        Extrema_POnSurf aPs;
++        DistMini.Points(j, aPc, aPs);
++        Standard_Real aV;
++        aPs.Parameter(a1, aV);
++        InGoodPeriod(CurAngle, 2*M_PI, a1);
++        const Standard_Real aDelta = Abs(a1 - CurAngle);
++        if (aDelta < MinAngle)
+         {
+-          MinDist = aDist;
++          MinAngle = aDelta;
+           jref = j;
+         }
+       }
+-      MinDist = Sqrt(MinDist);
++      if (jref == 0)
++      {
++        myStatus = GeomFill_ImpossibleContact;
++        return;
++      }
+       DistMini.Points(jref, Pc, Ps);
+-      
+       Ps.Parameter(theU, theV);
+-      a1 = theU;
+-      
+-      InGoodPeriod (CurAngle, 2*M_PI, a1);
++      // Store the same unwrapped angle used for branch selection, including
++      // ii == 1 where PrecAngle belongs to the preceding location law.
++      InGoodPeriod(CurAngle, 2*M_PI, theU);
+     }//else
+     
+     // Controle de w 

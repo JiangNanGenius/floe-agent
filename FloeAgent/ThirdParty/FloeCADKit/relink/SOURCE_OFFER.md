@@ -92,3 +92,7 @@ slice because it lacks the reviewed lifetime repair.
 - This checkout is an **unreleased implementation**: no tag, upload or
   distribution has been produced from it.
 - The release owner performs the final license review before distribution.
+
+### Closed-profile guide contact backport
+
+The additional OCCT 7.8.1 modification is retained in `derivations/guided-contact/`: the original and modified `src/GeomFill/GeomFill_LocationGuide.cxx` plus `minimal.patch`, under the upstream LGPL-2.1/Open CASCADE exception terms preserved in the files. `derivations/guided-contact.v1.json` declares the single-member build recipe and qualified toolchain. Bootstrap composes this after the existing Standard_Type lifetime derivation, retains the upstream archive anchor, and verifies the source/recipe hashes, nested parent receipt and final expected result. The unchanged single-object derivation producer can rebuild this member without rebuilding the full OCCT library.

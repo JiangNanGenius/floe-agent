@@ -96,3 +96,9 @@ record referenced by the handoff.
   regression scope before release.
 - OCCT remains LGPL-2.1 with the Open CASCADE exception; the base, patched
   source and diff are retained here for source availability and relinking.
+
+## Closed-profile guide contact: second derivation stage
+
+`guided-contact.v1.json` adds a single `GeomFill_LocationGuide.cxx.o` replacement after the required Standard_Type lifetime repair. The manifest retains the original upstream archive pins and declares the existing lifetime descriptor as `derivation.parent`; the child recipe binds its ID/hash and pins the exact parent outputs. The final receipt embeds the validated parent receipt. Both stages retain ordinary source, symbol, toolchain and expected-result checks; every non-target member of stage two, including Standard_Type, remains byte-identical.
+
+A verified installed parent is reused, including offline. A fresh bootstrap derives the lifetime object first and the contact object second. `--check` validates both receipts and source hashes without writing; `--release-check` requires both qualified toolchains and tracked expected results. No LOCAL exemption is used. Full source and the minimal LGPL backport are retained in `guided-contact/{base,overlay,minimal.patch}`. The existing generic producer also supports `record` for already compiled, independently verified object/archive pairs; recording metadata never substitutes for native geometry tests.
