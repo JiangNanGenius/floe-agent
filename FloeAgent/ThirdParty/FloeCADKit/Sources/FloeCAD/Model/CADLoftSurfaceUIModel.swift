@@ -64,7 +64,7 @@ nonisolated enum CADLoftSurfaceUIModel {
     static func closedSections(sketches: [Sketch]) -> [CADLoftSectionChoice] {
         sketches.flatMap { sketch in
             let all=ProfileDetector.detectProfiles(in:sketch)
-            return all.enumerated().compactMap { index,profile in
+            return all.enumerated().compactMap { index,profile -> CADLoftSectionChoice? in
                 guard !profile.sourceEntityIDs.isEmpty else { return nil }
                 let holes=ProfileDetector.holes(of:profile,among:all)
                 let ref=ProfileRef(sketchID:sketch.id,entityIDs:profile.sourceEntityIDs.sorted { $0.uuidString < $1.uuidString },
@@ -77,7 +77,7 @@ nonisolated enum CADLoftSurfaceUIModel {
     }
     static func openEdges(sketches: [Sketch]) -> [CADSurfaceEdgeChoice] {
         sketches.flatMap { sketch in
-            sketch.entities.enumerated().compactMap { index,entity in
+            sketch.entities.enumerated().compactMap { index,entity -> CADSurfaceEdgeChoice? in
                 guard let curve=try? SketchCurveDefinition(entity), !curve.interval.periodic else { return nil }
                 return CADSurfaceEdgeChoice(sketchID:sketch.id,entityID:entity.id,title:"\(sketch.name) · \(index+1)")
             }
