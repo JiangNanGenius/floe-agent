@@ -814,6 +814,13 @@ private enum NativeCADLivePrepaidRoute {
             maximumOutputTokens: 393_216,
             review: "Official Agent Plan supported-models page, updated 2026-10-29: native image input."
         ),
+        ReviewedModel(
+            remoteModelID: "kimi-k3.1-pro",
+            supportsVision: true,
+            documentedContextTokens: recordedContextTokens,
+            maximumOutputTokens: 1_048_576,
+            review: "Maintained Agent Plan catalog bounds; exact same-plan native image input observed with a synthetic color probe. Actual CAD image/geometry acceptance is still required."
+        ),
     ]
 
     static func reviewedModel(_ remoteModelID: String?) -> ReviewedModel? {
@@ -5595,6 +5602,24 @@ final class NativeCADLiveVisionContractTests: XCTestCase {
             ),
             "An output limit beyond the reviewed row must be refused."
         )
+    }
+
+    func testKimiProVisionRouteKeepsExactModelEndpointAndLargeOutputLimits() {
+        let provider = makeProvider()
+        let model = makeModel(remoteModelID: "kimi-k3.1-pro", vision: true,
+                              contextTokens: 1_048_576, maxOutputTokens: 65_536)
+        XCTAssertTrue(NativeCADLivePrepaidRoute.matches(provider: provider, model: model))
+        XCTAssertFalse(NativeCADLivePrepaidRoute.matches(provider: provider,
+            model: makeModel(remoteModelID: "kimi-k3.1-pro", vision: false)))
+        XCTAssertFalse(NativeCADLivePrepaidRoute.matches(provider: provider,
+            model: makeModel(remoteModelID: "kimi-k3", vision: true)),
+            "A related model name must not authorize an unreviewed route.")
+        XCTAssertFalse(NativeCADLivePrepaidRoute.matches(
+            provider: makeProvider(baseURL: URL(string: "https://ark.cn-beijing.volces.com/api/v3")!), model: model),
+            "The metered endpoint must not satisfy the Agent Plan test route.")
+        XCTAssertFalse(NativeCADLivePrepaidRoute.matches(provider: provider,
+            model: makeModel(remoteModelID: "kimi-k3.1-pro", vision: true,
+                             maxOutputTokens: 1_048_577)))
     }
 
     /// The X35 undo and the M11 variable/formula workflow share the same typed

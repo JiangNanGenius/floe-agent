@@ -6479,7 +6479,12 @@
           "reasoning": true
         },
         "kimi-k3.1-pro": {
+          "attachment": true,
           "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
           "maxOutputTokens": 1048576,
           "output": [
             "text"

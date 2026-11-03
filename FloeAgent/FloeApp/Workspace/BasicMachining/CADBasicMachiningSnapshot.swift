@@ -11,8 +11,16 @@ enum CADBasicMachiningSnapshot {
         let document=try await FloeCAD3DBridge.shared.openDocument(at:documentURL)
         guard !document.isReadOnly,!document.isClosed else { throw FloeError.validationFailed("Save an editable CAD part before starting machining.") }
         try cancellation.throwIfCancelled()
-        let save=await document.save()
-        guard save.error==nil,!document.hasUnsavedChanges else { throw FloeError.validationFailed(save.error ?? "The CAD document changed during save.") }
+        // Explicit Save commits project metadata even for a clean document.
+        // Snapshotting must reuse that saved identity; only pending edits need
+        // the existing revision-guarded save path (the same flush-if-dirty rule
+        // used by native proposal preparation).
+        if document.hasUnsavedChanges {
+            let save=await document.save()
+            guard save.error==nil else { throw FloeError.validationFailed(save.error ?? "The CAD document changed during save.") }
+        }
+        try cancellation.throwIfCancelled()
+        guard !document.isClosed,!document.hasUnsavedChanges else { throw FloeError.validationFailed("The CAD document changed during save.") }
         let expected=CADBasicMachiningSource(documentURL:documentURL,bodyID:bodyID,revision:document.revision,
             contentSHA256:document.contentSHA256,modelSHA256:document.modelSHA256,members:[:])
         guard !expected.modelSHA256.isEmpty else { throw FloeError.validationFailed("The native part has no complete saved model identity.") }
@@ -20,6 +28,9 @@ enum CADBasicMachiningSnapshot {
               stored.contentSHA256==expected.contentSHA256,stored.modelSHA256==expected.modelSHA256 else {
             throw FloeError.validationFailed("The saved native part identity could not be verified.")
         }
+        // storedIdentity awaited off-main I/O; reject an intervening live edit
+        // or owner release before beginning the member copy.
+        try requireLiveCurrent(document,source:expected)
         let result=try await Task.detached(priority:.userInitiated) { () throws -> CADBasicMachiningSource in
             let fm=FileManager.default
             func member(_ relative:String)throws->URL {
@@ -55,9 +66,9 @@ enum CADBasicMachiningSnapshot {
         }.value
         try cancellation.throwIfCancelled()
         let after=await FloeCADDocument.storedIdentity(at:documentURL)
-        guard !document.isClosed,!document.hasUnsavedChanges,document.revision==expected.revision,
-              document.modelSHA256==expected.modelSHA256,
-              after?.revision==expected.revision,after?.contentSHA256==expected.contentSHA256 else {
+        try requireLiveCurrent(document,source:expected)
+        guard after?.revision==expected.revision,after?.contentSHA256==expected.contentSHA256,
+              after?.modelSHA256==expected.modelSHA256 else {
             throw FloeError.validationFailed("The native part changed while its snapshot was being captured.")
         }
         return result

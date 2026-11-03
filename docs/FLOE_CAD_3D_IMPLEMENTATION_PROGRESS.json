@@ -1829,8 +1829,14 @@
         "acceptance_pending": "编辑/重排截面与导轨并保留同一特征ID；带内环放样保持明确精确等级；起止切向/曲率约束可量化检查。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "024c5216"
+        ],
+        "evidence": "docs/qualification/cad-shell-specialist-sculpt-compact-20261103/README.md",
+        "physical_device_claim": false,
+        "live_LLM_claim": false,
+        "scope": "App334/024c5216 full Swift6 objects passed134.95s/no drift. Actual native319 original CADGuidedLoftWorkflowTests6/6PASS/0skip, including retained3sections, middle-guide contact, same-feature updates/undo/save-reopen and original atomic-rejection assertions. Whole selected batch22:19PASS3E38FAIL retained; no full-batch pass claim."
       },
       "verification_plan": {
         "priority": "P2",
@@ -10251,8 +10257,8 @@
       "actual_OBJ": "真实OBJ/MTL/PNG显示、缺失贴图及仅资源变化后的旧帧拒绝通过。",
       "scope": "本地实际渲染与资源来源；不冒充原生可编辑BRep，也不代替真实LLM视觉连续编辑。"
     },
-    "accepted_original_criteria": 101,
-    "pending_original_criteria": 5,
+    "accepted_original_criteria": 102,
+    "pending_original_criteria": 4,
     "device_acceptance": "iPad通过的功能复用验收，iPhone仅确认界面；不使用用户手机。",
     "latest_native_batch": {
       "source": "582810ed58f8d3d63e23967909b74898af502c60",
@@ -10620,6 +10626,15 @@
       "originalFailuresRetained": true,
       "physicalDevice": false,
       "reusedUnchangedEvidence": true
+    },
+    "guided_loft_contact_recovery": {
+      "source": "024c5216c2b76076871a444d8089fd4bf05381bb",
+      "actualAppCompile": true,
+      "originalNativeTestsPassed": 6,
+      "originalFailuresRetained": true,
+      "wholeSelectedBatch": "19 passed,3 basic-machining failures,0 skipped",
+      "liveLLMClaim": false,
+      "physicalDeviceClaim": false
     }
   },
   "verification_strategy": {

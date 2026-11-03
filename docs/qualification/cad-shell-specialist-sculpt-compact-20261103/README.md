@@ -22,4 +22,10 @@ The guide failures remain M16 work. The texture failure remains X10 work. Neithe
 
 **X37 — current device acceptance policy.** The user explicitly assigns functional validation to the canonical iPad Simulator and limits iPhone acceptance to compact layout. Reuse ui268 (6/6), ui271 (8/8) and ui276 (2/2), together with current per-feature iPad controls and save/reopen results. The original criterion remains recorded, with the device-policy exception separate. Compact fixtures are not described as physical iPhone, physical Pencil or actual operating-system split-screen tests.
 
-Original failures, run records, screenshots and videos remain retained. The original 106 criterion texts and their hashes are unchanged. The reconciled original-criterion count is **101/106**; M16, M30, E38, X10 and X34 remain open. Full E38 professional manufacturing is separately deferred by the user and does not block unrelated delivery.
+## Guided-loft recovery
+
+App334 (`024c5216c2b76076871a444d8089fd4bf05381bb`) passed the complete Swift 6 App/test object build in 134.95 seconds without source drift. The original six `CADGuidedLoftWorkflowTests` all passed in `native319-guided-machining-moonshot`, including the unchanged three-section/guide-contact cases, same-feature updates, undo/save/reopen and atomic refusal checks. The formal two-slice native derivation retained the original tolerances and fixtures. M16 is accepted within its existing bounded exact line/conic section scope; finite independent residual samples are not a universal whole-curve certificate.
+
+The whole native319 run remains **19 passed, 3 basic-machining failures, 0 skipped**. Two fixture failures used a retired Simulator container path; the third found an unwanted saved-revision change during snapshot capture. Those failures remain recorded and require their own recovery. They are not guided-loft failures.
+
+Original failures, run records, screenshots and videos remain retained. The original 106 criterion texts and their hashes are unchanged. The reconciled original-criterion count is **102/106**; M30, E38, X10 and X34 remain open. Full E38 professional manufacturing is separately deferred by the user and does not block unrelated delivery.

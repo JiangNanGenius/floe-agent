@@ -20,7 +20,17 @@ final class CADBasicMachiningTests:XCTestCase {
     }
     private func fixture()throws->(URL,CADBasicMachiningStudy) {
         let path=try XCTUnwrap(ProcessInfo.processInfo.environment["FLOE_BASIC_MACHINING_FIXTURE_ROOT"],"Pass the retained component fixture root; this is not real Bridge/job evidence")
-        let root=URL(fileURLWithPath:path,isDirectory:true)
+        let root:URL
+        // Simulator app upgrades relocate the data container. Resolve a
+        // task-owned cached fixture inside the current process container,
+        // rather than retaining the previous installation's absolute UUID.
+        if path.hasPrefix("app-cache:") {
+            let name=String(path.dropFirst("app-cache:".count))
+            guard !name.isEmpty,!name.contains("/"),!name.contains("\\"),name != ".",name != ".." else {
+                throw CocoaError(.fileReadInvalidFileName)
+            }
+            root=try XCTUnwrap(FileManager.default.urls(for:.cachesDirectory,in:.userDomainMask).first).appendingPathComponent(name,isDirectory:true)
+        } else { root=URL(fileURLWithPath:path,isDirectory:true) }
         let o=try XCTUnwrap(JSONSerialization.jsonObject(with:Data(contentsOf:root.appendingPathComponent("fixture-context.json"))) as? [String:Any])
         let owner=try XCTUnwrap(o["ownerBinding"] as? [String:Any]),source=try XCTUnwrap(o["source"] as? [String:Any])
         let relative=try XCTUnwrap(o["relativeDirectory"] as? String)

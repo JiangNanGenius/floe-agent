@@ -134,7 +134,7 @@ struct CADTexturePaintView:View {
                             Button(FloeCADStrings.text("cad.ui.common.undo","Undo")) { model.history(redo:false) }.disabled(!model.document.session.undoStack.canUndo || model.busy).accessibilityIdentifier("CADTexturePaintUndo")
                             Spacer()
                             Button(FloeCADStrings.text("cad.ui.common.redo","Redo")) { model.history(redo:true) }.disabled(!model.document.session.undoStack.canRedo || model.busy).accessibilityIdentifier("CADTexturePaintRedo")
-                        }
+                        }.buttonStyle(.borderless)
                     }
                 } else if model.error==nil { ProgressView() }
                 if model.busy { ProgressView(text("working","Updating texture…")).accessibilityIdentifier("CADTexturePaintBusy") }
