@@ -357,7 +357,7 @@ final class LocalMLXRealCADQualificationTests: XCTestCase {
             runID: runID,
             goal: goal,
             workspaceID: firstTurn ? nil : workspaceRecordID,
-            conversationMode: "agent",
+            conversationMode: ConversationMode.chat.rawValue,
             initialPolicy: DraftTaskPolicy(approvalMode: .automatic),
             providerID: provider.id,
             modelID: model.id,

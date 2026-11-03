@@ -287,6 +287,8 @@ public nonisolated struct CADSceneSettings: Codable, Equatable, Sendable {
     public var viewOverlay: CADViewOverlayState?
     /// X19 references/parents and empty-group local poses; payloads stay in their original stores.
     public var sceneObjects: CADSceneObjectHierarchy?
+    /// X27 parameters and one bounded deterministic sphere-proxy cache.
+    public var spherePhysics: CADSpherePhysicsRecord?
     /// Additive offline still-export preferences; absent in older documents.
     public var stillRender: CADStillRenderSettings?
 

@@ -21102,6 +21102,8 @@ final class EditorViewModel {
             return CADLoftSurfaceService.surfaceTitle(definition.operation)
         case let .mechanical(definition, _):
             return CADMechanicalService.title(definition)
+        case .voxelRemesh:
+            return FloeCADStrings.text("cad.mesh.voxel.title", "Voxel reconstruction")
         case .polygonCage:
             return FloeCADStrings.text("cad.mesh.cage", "Polygon cage")
         case .baseSolid:

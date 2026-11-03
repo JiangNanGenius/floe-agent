@@ -276,6 +276,11 @@ actor CadDocumentCenter: CadDocumentHost {
                 return try await nativeLongOperation(resolved: resolved, url: url,
                                                      requestJSON: Self.encodeNativeJSON(normalized),
                                                      kind: kind, access: access)
+            case "scene":
+                // The bounded solver observes the real tool-run token, not
+                // only Swift Task cancellation. Reads/cancel remain reentrant.
+                return try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: requestJSON,
+                                                              cancellation: cancellation)
             default:
                 return try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: requestJSON)
             }

@@ -353,6 +353,14 @@ struct CADWorkbenchToolsPanel: View {
                             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     }
                     .accessibilityIdentifier("CADSceneObjectsOpen")
+                    NavigationLink {
+                        ScrollView { CADSpherePhysicsPanel(document: document).padding(16) }
+                            .navigationTitle(FloeCADStrings.text("cad.physics.title", "Sphere physics"))
+                    } label: {
+                        Label(FloeCADStrings.text("cad.physics.title", "Sphere physics"), systemImage: "circle.hexagongrid")
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    }
+                    .accessibilityIdentifier("CADSpherePhysicsOpen")
                     Picker("", selection: $mode) {
                         Text(FloeCADStrings.label("cad.workbench.panel.assembly", "Assembly")).tag(0)
                         Text(FloeCADStrings.label("cad.workbench.panel.drawing", "Drawings")).tag(1)

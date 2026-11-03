@@ -103,7 +103,7 @@ public nonisolated enum CADServiceOperations {
     public static let mutatingMeshActions: Set<String> = Set([
         "combine", "boolean", "transform", "recomputeNormals",
         "repair", "simplify", "material", "text", "image",
-    ]).union(CADPolygonMeshService.mutatingActions)
+    ]).union(CADPolygonMeshService.mutatingActions).union(CADVoxelRemeshService.mutations)
 
     /// Document write protection only. This does not change discovery,
     /// proposal classification or permission policy; read/export actions and

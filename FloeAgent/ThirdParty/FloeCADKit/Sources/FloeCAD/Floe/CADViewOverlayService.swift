@@ -24,6 +24,7 @@ public final class CADViewOverlayService {
         "removeSection", "setMeasurementsVisible", "addMeasurement",
         "removeMeasurement", "clearMeasurements", "undo", "redo",
     ] + CADSceneObjectService.reads.sorted() + CADSceneObjectService.mutations.sorted()
+        + CADSpherePhysicsService.reads.sorted() + CADSpherePhysicsService.mutations.sorted()
 
     /// Actions that write the document. `get` and the no-op success paths are
     /// read-only. Kept here so the host/tool can pre-classify without parsing
@@ -32,7 +33,7 @@ public final class CADViewOverlayService {
         "setSection", "setSectionEnabled", "flipSection", "removeSection",
         "setMeasurementsVisible", "addMeasurement", "removeMeasurement",
         "clearMeasurements", "undo", "redo",
-    ]).union(CADSceneObjectService.mutations)
+    ]).union(CADSceneObjectService.mutations).union(CADSpherePhysicsService.mutations)
 
     private let document: FloeCADDocument
 
@@ -53,6 +54,9 @@ public final class CADViewOverlayService {
             return refusal
         }
         if let failure = revisionPinFailure(args) { return failure }
+        if CADSpherePhysicsService.reads.contains(action) || CADSpherePhysicsService.mutations.contains(action) {
+            return CADSpherePhysicsService(document: document).handleSync(action: action, args: args)
+        }
         if CADSceneObjectService.reads.contains(action) || CADSceneObjectService.mutations.contains(action) {
             return CADSceneObjectService(document: document).handle(action: action, args: args)
         }
@@ -74,6 +78,17 @@ public final class CADViewOverlayService {
                 "Unknown scene action '\(action)'. Use "
                     + Self.actions.joined(separator: ", ") + ".")
         }
+    }
+
+    public func handleAsync(action: String, args: [String: Any],
+                            cancellation: (any MeshImportCancellationChecking)? = nil) async -> [String: Any] {
+        guard !document.isClosed else { return Self.fail("document_closed", "The document is closed.") }
+        if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "scene", action: action) { return refusal }
+        if let failure = revisionPinFailure(args) { return failure }
+        if CADSpherePhysicsService.reads.contains(action) || CADSpherePhysicsService.mutations.contains(action) {
+            return await CADSpherePhysicsService(document: document).handle(action: action, args: args, externalCancellation: cancellation)
+        }
+        return handle(action: action, args: args)
     }
 
     /// Optional revision pin. EVERY supplied `revision`/`expected_revision`

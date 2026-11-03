@@ -110,6 +110,12 @@ public extension FloeCADDocument {
                     detail: "The saved animation uses a newer schema; this build reads schema \(CADAnimationDocument.currentSchemaVersion) and preserves the original bytes.")],
                 hasStoredData: true, storedDataSHA256: digest)
         }
+        if intent.isMalformed, intent.containsPhysicsCache {
+            return CADAnimationLoadState(animation: CADAnimationDocument(),
+                issues: [CADAnimationIssue(id: "animation-malformed-physics", kind: .corruptData,
+                    detail: "The saved simulation reference is unreadable. Its original data is preserved and cannot be edited.")],
+                hasStoredData: true, storedDataSHA256: digest)
+        }
         if intent.isMalformed, intent.containsTimingCurve {
             return CADAnimationLoadState(
                 animation: CADAnimationDocument(),
@@ -172,11 +178,13 @@ public extension FloeCADDocument {
         }
         let snapshot = sceneSnapshot(includeExplodedPreview: false)
         let bounds = Self.animationWorldBounds(snapshot.bodies)
-        return CADAnimationSceneContext(
+        var result = CADAnimationSceneContext(
             instances: instances,
             bodyRevisions: Dictionary(uniqueKeysWithValues:
                 bodiesByID.map { ($0.key, $0.value.meshRevision) }),
             boundsMinMM: bounds?.min, boundsMaxMM: bounds?.max)
+        result.spherePhysics = spherePhysicsPlayback()
+        return result
     }
 
     /// Visible leaf assembly instances that can receive a part track, with
@@ -226,6 +234,7 @@ public extension FloeCADDocument {
                     ? "This document has no animation clip yet."
                     : "No animation clip has that id.")
         }
+        try validatePhysicsAnimationClip(clip)
         let evaluation = CADAnimationEvaluator.evaluate(
             clip: clip, at: time, context: animationSceneContext())
         var issues = state.issues
@@ -1217,6 +1226,22 @@ public extension FloeCADDocument {
     @discardableResult
     private func commitAnimation(_ candidate: CADAnimationDocument,
                                  title: String) throws -> CADAnimationDocument {
+        // Simulated clips reference a cache. Generic authoring may select or
+        // delete them but cannot silently turn them into preset keyframes.
+        let storedAnimation = animationDocument
+        for clip in candidate.clips where clip.physicsCacheID != nil {
+            guard storedAnimation.clips.contains(where: { $0.id == clip.id && $0.physicsCacheID == clip.physicsCacheID }) else {
+                throw CADDocumentError(code: "physics_clip_read_only", message: FloeCADStrings.text("cad.physics.clipReadOnly", "Reconfigure and simulate the proxies to change this clip's motion."))
+            }
+        }
+        for old in storedAnimation.clips where old.physicsCacheID != nil {
+            if var comparison = candidate.clips.first(where: { $0.id == old.id }) {
+                comparison.name = old.name; comparison.speed = old.speed; comparison.isLooping = old.isLooping
+                guard comparison == old else {
+                    throw CADDocumentError(code: "physics_clip_read_only", message: FloeCADStrings.text("cad.physics.clipReadOnly", "Reconfigure and simulate the proxies to change this clip's motion."))
+                }
+            }
+        }
         let clean = candidate.sanitized()
         guard !clean.hasInvalidTimingCurve else {
             throw CADDocumentError(
@@ -1329,7 +1354,7 @@ public extension FloeCADDocument {
 
     static func clipJSON(_ clip: CADAnimationClip) -> [String: Any] {
         [
-            "id": clip.id.uuidString,
+            "id": clip.id.uuidString, "physics_cache_id": clip.physicsCacheID?.uuidString ?? "",
             "name": clip.name,
             "duration": clip.duration,
             "loop": clip.isLooping,

@@ -13,10 +13,16 @@ import XCTest
         let paintForm=any("CADTexturePaintForm"),materialForm=any("CADMaterialInspectorForm")
         let form=paintForm.exists ? paintForm : materialForm
         XCTAssertTrue(form.waitForExistence(timeout:10))
-        for _ in 0..<7 where !element.exists || !element.isHittable { form.swipeUp() }
-        for _ in 0..<9 where !element.exists || !element.isHittable { form.swipeDown() }
+        for _ in 0..<7 where !element.exists || !element.isHittable { scroll(form,up:true) }
+        for _ in 0..<9 where !element.exists || !element.isHittable { scroll(form,up:false) }
         XCTAssertTrue(element.waitForExistence(timeout:20),app.debugDescription)
         XCTAssertTrue(element.isHittable,app.debugDescription);return element
+    }
+    private func scroll(_ form:XCUIElement,up:Bool) {
+        // The centre is the live painting canvas, so a centre swipe paints
+        // or rotates instead of scrolling. Use the Form's real margin.
+        form.coordinate(withNormalizedOffset:CGVector(dx:0.985,dy:up ? 0.9 : 0.35))
+            .press(forDuration:0.05,thenDragTo:form.coordinate(withNormalizedOffset:CGVector(dx:0.985,dy:up ? 0.35 : 0.9)))
     }
     private func openPaint() {
         let material=app.buttons["MaterialButton"]

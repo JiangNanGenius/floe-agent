@@ -5077,10 +5077,13 @@ static OCCTShape *OS3DPlanarSupportShell(const TopoDS_Shape &source,
         const TopoDS_Shape owned = copy.Shape();
         const double before = OS3DVolume(owned), inputTolerance = OS3DMaxTolerance(owned);
         if (!std::isfinite(before) || before <= 0 || !std::isfinite(inputTolerance)
-            || inputTolerance > 1e-6 || !OS3DFiniteBounds(owned) || !BRepCheck_Analyzer(owned).IsValid()) {
+            || inputTolerance > 1e-5 || !OS3DFiniteBounds(owned) || !BRepCheck_Analyzer(owned).IsValid()) {
             OS3DSetStatus(status, OCCTOpCodeKernelRefused, [NSString stringWithFormat:@"support input health volume=%.17g tolerance=%.17g finite=%d valid=%d", before, inputTolerance, (int)OS3DFiniteBounds(owned), (int)BRepCheck_Analyzer(owned).IsValid()]); return nil;
         }
-        const double allowedTolerance = std::max(1e-6, inputTolerance * 10);
+        // Admit healthy source geometry within the same 1e-5 mm native
+        // ceiling required of the result. Never multiply a valid input
+        // tolerance into a looser output precision claim.
+        const double allowedTolerance = std::min(1e-5, std::max(1e-6, inputTolerance * 10));
         const double volumeTolerance = std::max(1e-9, before * 1e-8);
         NSString *closedRefusal = @"";
         auto closedSingle = [&](const TopoDS_Shape &shape) -> TopoDS_Shape {
@@ -7222,9 +7225,15 @@ static OCCTShape *OS3DSurfaceResult(const TopoDS_Shape &shape, bool solid,
                                         metrics:(NSMutableDictionary<NSString *,id> *)metrics
                                          status:(OCCTOpStatus *)status {
     OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"The sections and auxiliary guide could not form a solid.");
+    auto refusal = [&](int line) -> OCCTShape * {
+#if DEBUG
+        NSLog(@"Guided loft refused at native line %d: %@", line, status.detail ?: @"native builder returned no result");
+#endif
+        return nil;
+    };
     if (NSThread.isMainThread || loops.count < 2 || loops.count > 8 || bases.count != loops.count
         || conics.count != loops.count || segments.count != loops.count || guideCurves.count < 1
-        || guideCurves.count > 8 || guideBases.count != guideCurves.count || reversed.count != guideCurves.count) return nil;
+        || guideCurves.count > 8 || guideBases.count != guideCurves.count || reversed.count != guideCurves.count) return refusal(__LINE__);
     OS3DSignalScope signalScope;
     try {
         OCC_CATCH_SIGNALS
@@ -7232,7 +7241,7 @@ static OCCTShape *OS3DSurfaceResult(const TopoDS_Shape &shape, bool solid,
         const gp_Pnt origin(bases[0]->_o[0],bases[0]->_o[1],bases[0]->_o[2]);
         const gp_Pnt last(bases.lastObject->_o[0],bases.lastObject->_o[1],bases.lastObject->_o[2]);
         const gp_Vec along(origin,last);const double length=along.Magnitude();
-        if (!std::isfinite(length) || length <= tol || length > 1000000) return nil;
+        if (!std::isfinite(length) || length <= tol || length > 1000000) return refusal(__LINE__);
         const gp_Dir direction(along);double prior=-1;
         BRepBuilderAPI_MakePolygon primary;
         std::vector<gp_Pnt> centers;
@@ -7244,42 +7253,42 @@ static OCCTShape *OS3DSurfaceResult(const TopoDS_Shape &shape, bool solid,
             const double station=offset.Dot(gp_Vec(direction));
             if (station <= prior+tol || offset.Crossed(gp_Vec(direction)).Magnitude() > tol
                 || normal.Magnitude() < 1e-9 || std::abs(gp_Dir(normal).Dot(direction)) < 1-1e-9) {
-                OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"Guided sections must be ordered on one straight main spine through their origins, with parallel section planes normal to that spine.");return nil;
+                OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"Guided sections must be ordered on one straight main spine through their origins, with parallel section planes normal to that spine.");return refusal(__LINE__);
             }
             prior=station;centers.push_back(center);primary.Add(center);
             TopoDS_Wire wire;
             if (conics[i].length >= 5*sizeof(double)) wire=ConicWire((const double *)conics[i].bytes,0);
             if (wire.IsNull() && segments[i].length) wire=SegWire(segments[i],0);
             if (wire.IsNull()) wire=PolyWire(loops[i],0);
-            if (wire.IsNull() || OS3DSurfaceCount(wire,TopAbs_EDGE) > 64) return nil;
-            BRepBuilderAPI_MakeFace face(wire,Standard_True);if (!face.IsDone()) return nil;
+            if (wire.IsNull() || OS3DSurfaceCount(wire,TopAbs_EDGE) > 64) return refusal(__LINE__);
+            BRepBuilderAPI_MakeFace face(wire,Standard_True);if (!face.IsDone()) return refusal(__LINE__);
             localFaces.push_back(face.Face());
             wires.push_back(TopoDS::Wire(BRepBuilderAPI_Transform(wire,OS3DBasisTransform(bases[i]),Standard_True).Shape()));
         }
-        if (!primary.IsDone()) return nil;const TopoDS_Wire spine=primary.Wire();
+        if (!primary.IsDone()) return refusal(__LINE__);const TopoDS_Wire spine=primary.Wire();
         BRepBuilderAPI_MakeWire railMaker;std::vector<Handle(Geom_Curve)> railCurves;
         gp_Pnt firstRail,previousRail;bool hasPrevious=false;
         for (NSUInteger i=0;i<guideCurves.count;++i) {
             Handle(Geom_Curve) curve=OS3DSketchCurveDefinition(guideCurves[i],false);
-            if (curve.IsNull()) return nil;
+            if (curve.IsNull()) return refusal(__LINE__);
             curve=Handle(Geom_Curve)::DownCast(curve->Transformed(OS3DBasisTransform(guideBases[i])));
-            BRepBuilderAPI_MakeEdge edgeMaker(curve);if (!edgeMaker.IsDone()) return nil;
+            BRepBuilderAPI_MakeEdge edgeMaker(curve);if (!edgeMaker.IsDone()) return refusal(__LINE__);
             TopoDS_Edge edge=edgeMaker.Edge();if (reversed[i].boolValue) edge.Reverse();
-            TopoDS_Vertex a,b;TopExp::Vertices(edge,a,b,Standard_True);if(a.IsNull() || b.IsNull()) return nil;
+            TopoDS_Vertex a,b;TopExp::Vertices(edge,a,b,Standard_True);if(a.IsNull() || b.IsNull()) return refusal(__LINE__);
             const gp_Pnt pa=BRep_Tool::Pnt(a),pb=BRep_Tool::Pnt(b);
             if (hasPrevious && previousRail.Distance(pa) > tol) {
-                OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"The stored guide order/reversal no longer connects.");return nil;
+                OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"The stored guide order/reversal no longer connects.");return refusal(__LINE__);
             }
             if (!hasPrevious) firstRail=pa;previousRail=pb;hasPrevious=true;
-            railMaker.Add(edge);if (!railMaker.IsDone()) return nil;railCurves.push_back(curve);
+            railMaker.Add(edge);if (!railMaker.IsDone()) return refusal(__LINE__);railCurves.push_back(curve);
         }
-        if (firstRail.Distance(previousRail) <= tol) return nil;
+        if (firstRail.Distance(previousRail) <= tol) return refusal(__LINE__);
         auto pointDistance=[](const gp_Pnt &point,const TopoDS_Shape &shape) {
             BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(point).Vertex(),shape);
             return distance.IsDone() ? distance.Value() : std::numeric_limits<double>::infinity();
         };
         if (pointDistance(firstRail,wires.front()) > tol || pointDistance(previousRail,wires.back()) > tol) {
-            OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"The ordered guide endpoints must meet the first and last section boundaries.");return nil;
+            OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"The ordered guide endpoints must meet the first and last section boundaries.");return refusal(__LINE__);
         }
         // The plane-intersection mode has a single, unambiguous authored rail
         // point at EVERY supplied section. Do not replace a missed section.
@@ -7288,7 +7297,7 @@ static OCCTShape *OS3DSurfaceResult(const TopoDS_Shape &shape, bool solid,
             std::vector<gp_Pnt> hits;
             for (auto &curve:railCurves) {
                 GeomAPI_IntCS intersection(curve,plane);
-                if (!intersection.IsDone() || intersection.NbSegments() != 0) return nil;
+                if (!intersection.IsDone() || intersection.NbSegments() != 0) return refusal(__LINE__);
                 for (int k=1;k<=intersection.NbPoints();++k) {
                     const gp_Pnt point=intersection.Point(k);bool duplicate=false;
                     for (const auto &priorPoint:hits) if (point.Distance(priorPoint) <= tol) duplicate=true;
@@ -7296,7 +7305,7 @@ static OCCTShape *OS3DSurfaceResult(const TopoDS_Shape &shape, bool solid,
                 }
             }
             if (hits.size() != 1 || pointDistance(hits[0],wires[index]) > tol) {
-                OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"The guide must meet every supplied section boundary once.");return nil;
+                OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"The guide must meet every supplied section boundary once.");return refusal(__LINE__);
             }
         }
         BRepOffsetAPI_MakePipeShell maker(spine);
@@ -7312,20 +7321,20 @@ static OCCTShape *OS3DSurfaceResult(const TopoDS_Shape &shape, bool solid,
                 const TopoDS_Vertex vertex=TopoDS::Vertex(spineVertices(j));
                 if (BRep_Tool::Pnt(vertex).Distance(centers[i]) <= tol) { location=vertex;break; }
             }
-            if (location.IsNull()) return nil;
+            if (location.IsNull()) return refusal(__LINE__);
             maker.Add(wires[i],location,Standard_False,Standard_False);
         }
         TopTools_ListOfShape retainedProfiles;maker.Profiles(retainedProfiles);
-        if (retainedProfiles.Extent() != (int)wires.size()) return nil;
+        if (retainedProfiles.Extent() != (int)wires.size()) return refusal(__LINE__);
         // Deliberately NOT a deadline claim: the pinned Build ignores range.
         // The Swift serial worker joins this bounded operation then fences it.
         OS3D_GUARDED(status,"guided loft",maker.Build());
-        if (!maker.IsDone()) return nil;
+        if (!maker.IsDone()) return refusal(__LINE__);
         const double approximation=maker.ErrorOnSurface();
-        if (!std::isfinite(approximation) || approximation > tol || !maker.MakeSolid()) return nil;
+        if (!std::isfinite(approximation) || approximation > tol || !maker.MakeSolid()) return refusal(__LINE__);
         const TopoDS_Shape solid=maker.Shape();
-        if (solid.IsNull() || OS3DSurfaceCount(solid,TopAbs_FACE) > 1024) return nil;
-        OCCTShape *validated=OS3DSurfaceResult(solid,true,tol,status);if (!validated) return nil;
+        if (solid.IsNull() || OS3DSurfaceCount(solid,TopAbs_FACE) > 1024) return refusal(__LINE__);
+        OCCTShape *validated=OS3DSurfaceResult(solid,true,tol,status);if (!validated) return refusal(__LINE__);
         // Independent actual-face distance samples. Sampling is labelled in
         // the report, never promoted to a full-curve exactness certificate.
         BRep_Builder builder;TopoDS_Compound boundary;builder.MakeCompound(boundary);
@@ -7341,15 +7350,15 @@ static OCCTShape *OS3DSurfaceResult(const TopoDS_Shape &shape, bool solid,
             return true;
         };
         for (const auto &curve:railCurves) if (!sample(curve,curve->FirstParameter(),curve->LastParameter(),33,guideResidual,guideSamples)) {
-            OS3DSetStatus(status,OCCTOpCodeInvalidResult,@"The built surface does not meet the authored guide within tolerance.");return nil;
+            OS3DSetStatus(status,OCCTOpCodeInvalidResult,@"The built surface does not meet the authored guide within tolerance.");return refusal(__LINE__);
         }
         for (const auto &wire:wires) for (TopExp_Explorer e(wire,TopAbs_EDGE);e.More();e.Next()) {
             Standard_Real first,last;TopLoc_Location location;
             Handle(Geom_Curve) curve=BRep_Tool::Curve(TopoDS::Edge(e.Current()),location,first,last);
-            if (curve.IsNull()) return nil;
+            if (curve.IsNull()) return refusal(__LINE__);
             curve=Handle(Geom_Curve)::DownCast(curve->Transformed(location.Transformation()));
             if (!sample(curve,first,last,9,sectionResidual,sectionSamples)) {
-                OS3DSetStatus(status,OCCTOpCodeInvalidResult,@"The built surface does not preserve an authored section within tolerance.");return nil;
+                OS3DSetStatus(status,OCCTOpCodeInvalidResult,@"The built surface does not preserve an authored section within tolerance.");return refusal(__LINE__);
             }
         }
         // Ask native history on the exact wire/edges consumed by Add.
@@ -7378,8 +7387,8 @@ static OCCTShape *OS3DSurfaceResult(const TopoDS_Shape &shape, bool solid,
         metrics[@"faces"]=@(OS3DFaceCount(solid));metrics[@"profile_count"]=@(retainedProfiles.Extent());
         return validated;
     } catch (Standard_Failure &failure) {
-        OS3DSetStatus(status,OCCTOpCodeKernelRefused,OS3DCrashMessage("guided loft",failure.GetMessageString()));return nil;
-    } catch (...) { return nil; }
+        OS3DSetStatus(status,OCCTOpCodeKernelRefused,OS3DCrashMessage("guided loft",failure.GetMessageString()));return refusal(__LINE__);
+    } catch (...) { return refusal(__LINE__); }
 }
 
 

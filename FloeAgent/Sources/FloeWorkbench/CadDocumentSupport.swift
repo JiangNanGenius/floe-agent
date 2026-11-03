@@ -342,12 +342,13 @@ public enum CadNativeEditActions {
     ]
     /// X22 persisted section / measurement overlay. `get` is read-only; every
     /// other action is one existing sceneSettings undoable edit.
-    public static let sceneReads: Set<String> = ["get", "objects", "object.resources"]
+    public static let sceneReads: Set<String> = ["get", "objects", "object.resources", "physics.get", "physics.status", "physics.cancel"]
     public static let sceneMutations: Set<String> = [
         "setSection", "setSectionEnabled", "flipSection", "removeSection",
         "setMeasurementsVisible", "addMeasurement", "removeMeasurement",
         "clearMeasurements", "undo", "redo",
         "object.createGroup", "object.reparent", "object.transform", "object.rename", "object.remove",
+        "physics.configure", "physics.run", "physics.clear",
     ]
     public static let scene: Set<String> = sceneReads.union(sceneMutations)
 
@@ -1547,6 +1548,18 @@ public enum CadServiceOperationCatalog: Sendable {
     ]
 
     private static let meshOperations: [Operation] = [
+        Operation(kind: "mesh", action: "voxel.catalog", mutating: false,
+                  summary: "Bounded scan reconstruction scope, grid/time/query budgets and representation grade.", arguments: [], examples: []),
+        Operation(kind: "mesh", action: "voxel.remesh", mutating: true,
+                  summary: "Rebuild one enclosed scan mesh with conservative voxelization and exterior flood fill; original body and immutable scan snapshot retained. New closed manifold cubical mesh, never BRep. Reports actual world voxel size, independent bidirectional sampled deviation and complete conservative upper bound. Rejects thin/open scans, non-manifold voxel contacts and grid/deviation budgets. No UV transfer or feature-preserving quad flow. One undo, saved feature/body identities.",
+                  arguments: [arg("bodyID", "uuid", required: true), arg("voxelSize", "mm", note: "0.001…10000; default 1; <=96 cells/axis, <=262144 cells"), arg("maxDeviation", "mm", note: "1…20 voxels, default 4 voxels; full certificate required")],
+                  examples: [#"{"bodyID":"<scan uuid>","voxelSize":1,"maxDeviation":4}"#]),
+        Operation(kind: "mesh", action: "voxel.inspect", mutating: false,
+                  summary: "Inspect the latest unchanged reconstruction; returns definitionDigest, actual resolution, mesh health and measured distance certificate. Direct downstream mesh edits refuse authored measurements.",
+                  arguments: [arg("bodyID", "uuid", required: true)], examples: []),
+        Operation(kind: "mesh", action: "voxel.update", mutating: true,
+                  summary: "Rebuild from the stored immutable scan with changed voxelSize/maxDeviation. Requires current definitionDigest from voxel.inspect, keeps feature/body ID and commits one undo; cancelled/stale/failing work preserves original model and redo.",
+                  arguments: [arg("bodyID", "uuid", required: true), arg("definitionDigest", "sha256", required: true), arg("voxelSize", "mm"), arg("maxDeviation", "mm")], examples: []),
         Operation(kind: "mesh", action: "combine", mutating: true,
                   summary: "Combine bodies into one new body.",
                   arguments: [arg("bodyIDs", "[uuid]", required: true, note: "alias bodyID; <= 32 bodies"),

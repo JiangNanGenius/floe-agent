@@ -7,6 +7,7 @@ import XCTest
 
 @MainActor final class CADLoftSurfaceFormAcceptanceUITests: XCTestCase {
     private func launch(reset: Bool) -> XCUIApplication {
+        continueAfterFailure=false
         let app=XCUIApplication()
         app.launchArguments=["-AppleLanguages","(en)","-AppleLocale","en_US","-floe.cad.unit","mm",
             "-ui-testing","-ui-testing-ipad","--ui-test-cad-fixture","--ui-test-cad-surface-form"]
@@ -47,12 +48,10 @@ import XCTest
     }
     private func number(_ app: XCUIApplication,_ id: String,_ value: String) {
         let field=visible(app,id)
-        // Select the real numeric word. Deleting from a guessed caret position
-        // previously left the initial 1 and typed 2 before it (21), so the
-        // saved-geometry assertion correctly caught the test's wrong input.
-        field.coordinate(withNormalizedOffset:CGVector(dx:0.95,dy:0.5)).doubleTap()
-        let selectAll = app.menuItems["Select All"].firstMatch
-        if selectAll.waitForExistence(timeout:1), selectAll.isHittable { selectAll.tap() }
+        // Use UIKit's real Select All shortcut, independent of caret or
+        // context-menu timing. Assert the exact bound value before Apply.
+        field.tap()
+        field.typeKey("a",modifierFlags:.command)
         field.typeText(value)
         XCTAssertEqual(field.value as? String,value,"The real numeric field must contain the requested value before Apply")
     }

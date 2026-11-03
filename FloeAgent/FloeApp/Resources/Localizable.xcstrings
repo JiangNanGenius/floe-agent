@@ -136733,6 +136733,761 @@
           }
         }
       }
+    },
+    "cad.mesh.voxel.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Voxel reconstruction"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "体素重建"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.scope": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rebuild one enclosed scan as a uniform voxel surface. The original scan is kept; textures are not transferred."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将单个封闭扫描体重建为均匀体素表面。保留原扫描体，不传递纹理。"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.size": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Voxel size (mm)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "体素尺寸（mm）"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.deviation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deviation limit (mm)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "偏差上限（mm）"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.inspect": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inspect reconstruction"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查重建体"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.grid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Grid: %@ × %@ × %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "网格：%@ × %@ × %@"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.actualSize": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actual voxel size: %@ mm"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实际体素尺寸：%@ mm"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.measured": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sampled deviation: %@ mm; full-surface upper bound: %@ mm"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "采样偏差：%@ mm；完整表面偏差上界：%@ mm"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.quads": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ quads · closed mesh"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 个四边面 · 封闭网格"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.invalid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a finite voxel size and deviation limit."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请输入有效的体素尺寸和偏差上限。"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.createUndo": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reconstruct Scan"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重建扫描体"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.updateUndo": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update Reconstruction"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新重建体"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.details": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Details"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "详情"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.budgetError": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use larger voxels or a larger deviation limit to fit the reconstruction budget."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请增大体素尺寸或偏差上限，以满足重建预算。"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.distanceError": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The result exceeds the deviation limit. Try smaller voxels."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结果超出偏差上限，请尝试减小体素尺寸。"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.scopeError": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This scan cannot be reconstructed at this voxel size. See details."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前体素尺寸无法重建此扫描体，请查看详情。"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.cancelled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reconstruction cancelled. The scan was kept."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已取消重建，原扫描体已保留。"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.timeout": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reconstruction reached its time limit. Try larger voxels."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重建达到时限，请尝试增大体素尺寸。"
+          }
+        }
+      }
+    },
+    "cad.mesh.voxel.requestError": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the selected body and reconstruction values. See details."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请检查所选实体和重建参数，具体原因见详情。"
+          }
+        }
+      }
+    },
+    "cad.physics.invalid": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the sphere proxy and simulation values."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请检查球形碰撞代理和仿真参数。"
+          }
+        }
+      }
+    },
+    "cad.physics.overlap": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Separate the sphere proxies before simulating."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仿真前请先分开相互重叠的球形代理。"
+          }
+        }
+      }
+    },
+    "cad.physics.stale": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The source changed. Configure and simulate the proxies again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "源对象已变更。请重新配置并仿真碰撞代理。"
+          }
+        }
+      }
+    },
+    "cad.physics.cancelled": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Simulation was cancelled. No new cache was applied."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仿真已取消，未应用新缓存。"
+          }
+        }
+      }
+    },
+    "cad.physics.budget": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This simulation exceeded its limits. Reduce its duration or contacts."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仿真超出限制，请缩短时长或减少接触。"
+          }
+        }
+      }
+    },
+    "cad.physics.contact": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "These contacts could not be resolved within the supported scope."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前支持范围无法求解这些接触。"
+          }
+        }
+      }
+    },
+    "cad.physics.busy": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A simulation is finishing. Wait for it to stop before starting another."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一项仿真正在结束，请稍后再试。"
+          }
+        }
+      }
+    },
+    "cad.physics.command": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sphere physics"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "球体物理"
+          }
+        }
+      }
+    },
+    "cad.physics.defaultName": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sphere proxies"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "球形碰撞代理"
+          }
+        }
+      }
+    },
+    "cad.physics.clipReadOnly": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reconfigure and simulate the proxies to change this clip's motion."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要修改此片段的运动，请重新配置并仿真代理。"
+          }
+        }
+      }
+    },
+    "cad.physics.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sphere physics"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "球体物理"
+          }
+        }
+      }
+    },
+    "cad.physics.scope": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sphere collision proxies and one static ground plane. No friction or spin. Mass, restitution and velocity apply to all selected proxies."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用球形碰撞代理和一个静态地面，不计算摩擦或自转。质量、恢复系数和初速度会应用到全部所选代理。"
+          }
+        }
+      }
+    },
+    "cad.physics.noInstances": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add visible parts in Assembly before configuring their sphere proxies."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先在装配中添加可见零件，再配置其球形代理。"
+          }
+        }
+      }
+    },
+    "cad.physics.radius": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Radius (mm)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "半径（毫米）"
+          }
+        }
+      }
+    },
+    "cad.physics.duration": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Duration (s)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "时长（秒）"
+          }
+        }
+      }
+    },
+    "cad.physics.gravity": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gravity Y (mm/s²)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Y 向重力（毫米／秒²）"
+          }
+        }
+      }
+    },
+    "cad.physics.ground": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ground Y (mm)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "地面 Y（毫米）"
+          }
+        }
+      }
+    },
+    "cad.physics.restitution": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restitution (0–1)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "恢复系数（0–1）"
+          }
+        }
+      }
+    },
+    "cad.physics.mass": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mass (kg)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "质量（千克）"
+          }
+        }
+      }
+    },
+    "cad.physics.velocityX": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Initial velocity X (mm/s)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "初始 X 速度（毫米／秒）"
+          }
+        }
+      }
+    },
+    "cad.physics.velocityY": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Initial velocity Y (mm/s)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "初始 Y 速度（毫米／秒）"
+          }
+        }
+      }
+    },
+    "cad.physics.velocityZ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Initial velocity Z (mm/s)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "初始 Z 速度（毫米／秒）"
+          }
+        }
+      }
+    },
+    "cad.physics.configure": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configure"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配置"
+          }
+        }
+      }
+    },
+    "cad.physics.simulate": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Simulate"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仿真"
+          }
+        }
+      }
+    },
+    "cad.physics.cancel": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消"
+          }
+        }
+      }
+    },
+    "cad.physics.ready": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cache ready. Replay, frame capture and video export use the existing Present timeline."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "缓存已就绪。请在展示时间轴回放、截帧或导出视频。"
+          }
+        }
+      }
+    },
+    "cad.physics.clear": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear simulation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清除仿真"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

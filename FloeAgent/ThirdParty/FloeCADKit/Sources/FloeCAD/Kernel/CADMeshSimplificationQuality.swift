@@ -162,7 +162,7 @@ nonisolated enum CADMeshSimplificationQuality {
             && a.isOriented == b.isOriented && a.inwardComponentCount == b.inwardComponentCount
     }
 
-    private static func nearest(_ point: SIMD3<Double>, _ geometry: CADInterferenceMeshGeometry,
+    static func nearest(_ point: SIMD3<Double>, _ geometry: CADInterferenceMeshGeometry,
                                 _ stop: () -> Bool) -> Double? {
         var best = Double.infinity, stack = [0]
         let box = CADInterferenceAABB(points: [point])

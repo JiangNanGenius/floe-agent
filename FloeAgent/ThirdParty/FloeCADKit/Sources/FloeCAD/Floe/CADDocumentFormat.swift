@@ -47,6 +47,7 @@ nonisolated enum CADDocumentFormat {
     static let sketchCurveEditVersion = 7
     static let sceneLightingVersion = 7
     static let sceneObjectHierarchyVersion = 7
+    static let spherePhysicsVersion = 7
     static let standardThreadVersion = 7
     /// Shared unreleased format-7 floor. A pre-contract writer ignores an
     /// edge's qualifier and would reinterpret it as an ordinal. Raise only
@@ -76,6 +77,7 @@ nonisolated enum CADDocumentFormat {
     static let advancedBlendVersion = 7
     static let regionalShellVersion = 7
     static let polygonMeshVersion = 7
+    static let voxelRemeshVersion = 7
     static let specialistMechanicalVersion = 7
     /// Coordinated package floor for a document that actually stores
     /// user-named versions. Ordinary documents keep their existing schema
@@ -173,6 +175,9 @@ nonisolated enum CADDocumentFormat {
             default: return false
             }
         }) { required = max(required,loftSurfaceVersion) }
+        if document.features.nodes.contains(where: { if case .voxelRemesh = $0.kind { return true }; return false }) {
+            required = max(required, voxelRemeshVersion)
+        }
         if document.features.nodes.contains(where: { if case .polygonCage = $0.kind { return true }; return false }) {
             required = max(required, polygonMeshVersion)
         }
@@ -181,6 +186,7 @@ nonisolated enum CADDocumentFormat {
         }
         required = max(required, max(sceneLightingIntent(document.sceneSettingsData).version,
                        sceneObjectHierarchyIntent(document.sceneSettingsData).version))
+        required = max(required, spherePhysicsIntent(document.sceneSettingsData).version)
         if document.features.nodes.contains(where: {
             if case let .pattern(_, spec) = $0.kind { return spec.kind == .curve || spec.featureSeed != nil }; return false
         }) { required = max(required, advancedPatternVersion) }
@@ -871,9 +877,11 @@ nonisolated enum CADDocumentFormat {
         var result = Assessment()
         let lighting = sceneLightingIntent(sceneSettings)
         result.requiredVersion = max(result.requiredVersion, lighting.version)
+        let physics = spherePhysicsIntent(sceneSettings)
+        result.requiredVersion = max(result.requiredVersion, physics.version)
         let hierarchy = sceneObjectHierarchyIntent(sceneSettings)
         result.requiredVersion = max(result.requiredVersion, hierarchy.version)
-        result.opaqueSceneAppearance = lighting.opaque || hierarchy.opaque
+        result.opaqueSceneAppearance = lighting.opaque || hierarchy.opaque || physics.opaque
         if assemblyRequiresNestedFormat(assembly) {
             result.requiredVersion = max(result.requiredVersion, nestedAssemblyVersion)
         }
@@ -893,7 +901,7 @@ nonisolated enum CADDocumentFormat {
         let animationIntent = CADAnimationFormat.intent(animation)
         result.requiredVersion = max(result.requiredVersion,
                                      animationIntent.requiredVersion)
-        if animationIntent.isFutureSchema { result.opaqueAnimation = true }
+        if animationIntent.isFutureSchema || (animationIntent.containsPhysicsCache && animationIntent.isMalformed) { result.opaqueAnimation = true }
         for body in bodies {
             if let uv = body.uv {
                 result.requiredVersion = max(result.requiredVersion, uvAuthoringVersion)
@@ -1193,6 +1201,29 @@ nonisolated enum CADDocumentFormat {
                     } catch { throw CADDocumentFormatError.malformedAssociation("specialist-mechanical") }
                 }
             }
+            if let mesh = object["voxelRemesh"] as? [String: Any] {
+                result.requiredVersion = max(result.requiredVersion, voxelRemeshVersion)
+                guard let definition = mesh["definition"] as? [String: Any],
+                      let version = jsonIntegerValue(definition["version"]), version > 0 else {
+                    throw CADDocumentFormatError.malformedAssociation("voxel-remesh")
+                }
+                let source = definition["source"] as? [String: Any]
+                let future = version > CADVoxelRemeshDefinition.supportedVersion
+                    || definition["algorithm"] as? String != CADVoxelRemeshDefinition.algorithmV1
+                    || !Set(mesh.keys).isSubset(of: ["definition","placement"])
+                    || (mesh["placement"] as? [String: Any]).map { !Set($0.keys).isSubset(of: ["translation","rotation","scale"]) } == true
+                    || !Set(definition.keys).isSubset(of: ["version","algorithm","id","sourceBodyID","source","voxelSizeMM","maxDeviationMM"])
+                    || source.map { !Set($0.keys).isSubset(of: ["positions","normals","indices","texcoords"]) } == true
+                    || (definition["sourceBodyID"] as? [String: Any]).map { !Set($0.keys).isSubset(of: ["raw"]) } == true
+                if future { result.opaqueFeatures.insert(row.featureID) }
+                else {
+                    do {
+                        let decoded = try JSONDecoder().decode(FeatureKind.self,from:row.kind)
+                        guard case let .voxelRemesh(definition,placement) = decoded else { throw CADVoxelFailure.invalid("Invalid voxel reconstruction.") }
+                        try definition.validate(); try CADPolygonMeshDefinition.validatePlacement(placement)
+                    } catch { throw CADDocumentFormatError.malformedAssociation("voxel-remesh") }
+                }
+            }
             if let mesh = object["polygonCage"] as? [String: Any] {
                 result.requiredVersion = max(result.requiredVersion, polygonMeshVersion)
                 guard let definition = mesh["definition"] as? [String: Any],
@@ -1473,6 +1504,12 @@ nonisolated enum CADDocumentFormat {
     /// Older scene-settings writers would silently drop hierarchy references.
     /// Raise the existing coordinated unreleased floor only for actual intent;
     /// unknown/future/malformed hierarchy bytes remain opaque and read-only.
+    static func spherePhysicsIntent(_ data: Data?) -> (version: Int, opaque: Bool) {
+        guard let data, let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = root["spherePhysics"], !(raw is NSNull) else { return (legacyVersion, false) }
+        return (spherePhysicsVersion, (try? CADSpherePhysicsCodec.record(data)) == nil)
+    }
+
     static func sceneObjectHierarchyIntent(_ data: Data?) -> (version: Int, opaque: Bool) {
         guard let data, let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let graph = root["sceneObjects"], !(graph is NSNull) else { return (legacyVersion, false) }

@@ -165,7 +165,8 @@ final class CADAnimationAuthoringTests: XCTestCase {
         // A brand-new/default clip must not be stamped with schema 2 merely
         // because this build can write it; the curve itself is the intent.
         XCTAssertEqual(CADAnimationDocument.legacySchemaVersion, 1)
-        XCTAssertEqual(CADAnimationDocument.currentSchemaVersion, 2)
+        XCTAssertEqual(CADAnimationDocument.timingCurveSchemaVersion, 2)
+        XCTAssertEqual(CADAnimationDocument.currentSchemaVersion, 3, "Physics cache references add schema 3; curve-only clips remain schema 2")
         let fresh = CADAnimationDocument()
         XCTAssertEqual(fresh.schemaVersion, CADAnimationDocument.legacySchemaVersion)
         XCTAssertEqual(fresh.requiredSchemaVersion, 1)

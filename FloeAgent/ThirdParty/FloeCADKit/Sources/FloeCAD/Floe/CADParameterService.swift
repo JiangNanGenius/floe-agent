@@ -4536,7 +4536,7 @@ public final class CADParameterService {
             return [face.body.bodyID]
         case let .pattern(body, spec): return spec.featureSeed == nil ? [] : [body.bodyID]
         case let .surface(definition): return definition.operation == .loft ? [] : definition.sources.prefix(1).map(\.bodyID)
-        case .primitive, .baseSolid, .polygonCage, .mechanical, .mirror:
+        case .primitive, .baseSolid, .polygonCage, .voxelRemesh, .mechanical, .mirror:
             return []
         }
     }
@@ -4994,6 +4994,11 @@ public final class CADParameterService {
                 add(slot.name, slot.unit, slot.expr.value)
             }
             add("manufacturing", "unitless", CADMechanicalService.describe(definition), editable: false)
+        case let .voxelRemesh(definition, _):
+            kindName = "voxelRemesh"
+            add("voxel_size", "mm", definition.voxelSizeMM, editable: false, note: "Use mesh voxel.update with the current definitionDigest.")
+            add("max_deviation", "mm", definition.maxDeviationMM, editable: false)
+            add("definition_digest", "unitless", definition.digest, editable: false)
         case let .polygonCage(definition, _):
             kindName = "polygonCage"
             add("control_vertex_count", "unitless", definition.cage.vertices.count, editable: false)
@@ -5378,7 +5383,7 @@ public final class CADParameterService {
              let .fillet(body, _, _), let .advancedBlend(body, _, _), let .shell(body, _, _), let .regionShell(body, _, _),
              let .deleteFace(body, _):
             return [body]
-        case .primitive, .baseSolid, .polygonCage, .mechanical,
+        case .primitive, .baseSolid, .polygonCage, .voxelRemesh, .mechanical,
              .pushPull, .moveFace, .scaleFace, .rotateFace, .draftFace, .replaceFace:
             return []
         }

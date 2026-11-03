@@ -1403,6 +1403,8 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADLoftSurfaceNativeEntryTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADShellRegionTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPolygonMeshTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSpherePhysicsTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADVoxelRemeshTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMechanicalTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADThreadEngineProbeTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPresentationUITests.swift

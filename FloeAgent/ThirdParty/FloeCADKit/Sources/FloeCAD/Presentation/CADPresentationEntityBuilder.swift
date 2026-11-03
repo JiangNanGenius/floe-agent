@@ -851,11 +851,14 @@ final class CADPresentationEntityBuilder {
     /// rebuilding its mesh/material or changing its authored size/visibility.
     /// Used by animation frames and by any caller that re-dresses the scene
     /// while a transient pose is applied.
-    static func updateFloor(in stage: Entity, bounds: CADPresentationBounds?) {
+    static func updateFloor(in stage: Entity, bounds: CADPresentationBounds?, physicsFloorYMM: Double? = nil) {
         guard let floor = stage.children.first(where: {
             $0.name == "CADPresentationFloor"
         }) else { return }
         floor.position = CADPresentationFloorPlacement.position(for: bounds)
+        if let y = physicsFloorYMM, y.isFinite {
+            floor.position = SIMD3(0, Float(y / 1000) - CADPresentationFloorPlacement.clearance, 0)
+        }
     }
 
     private func addLights(to stage: Entity, environment: CADPresentationEnvironment) {

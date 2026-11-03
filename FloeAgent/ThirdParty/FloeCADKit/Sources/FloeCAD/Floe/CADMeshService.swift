@@ -335,7 +335,7 @@ public final class CADMeshService {
     public nonisolated static let actions: [String] = [
         "combine", "boolean", "transform", "recomputeNormals",
         "repair", "simplify", "material", "image", "boundary", "text",
-    ] + CADPolygonMeshService.actions
+    ] + CADPolygonMeshService.actions + CADVoxelRemeshService.actions
     public nonisolated static let advertisedActions: [String] = actions.filter { $0 != "text" }
 
     private let document: FloeCADDocument
@@ -389,6 +389,10 @@ public final class CADMeshService {
     /// the caller's actor. A caller cancellation is still observed at every
     /// service boundary and before the one commit.
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
+        if CADVoxelRemeshService.actions.contains(action) {
+            if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "mesh", action: action) { return refusal }
+            return CADVoxelRemeshService(document: document).handle(action: action, args: args)
+        }
         if CADPolygonMeshService.actions.contains(action) {
             if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "mesh", action: action) { return refusal }
             return CADPolygonMeshService(document: document).handle(action: action, args: args)
@@ -404,6 +408,10 @@ public final class CADMeshService {
     /// The caller's task cancellation flips the thread-safe token immediately
     /// and cancels the joined worker; a late result is discarded before commit.
     public func handleAsync(action: String, args: [String: Any]) async -> [String: Any] {
+        if CADVoxelRemeshService.actions.contains(action) {
+            if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "mesh", action: action) { return refusal }
+            return await CADVoxelRemeshService(document: document).handleAsync(action: action, args: args)
+        }
         if CADPolygonMeshService.actions.contains(action) {
             if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "mesh", action: action) { return refusal }
             return await CADPolygonMeshService(document: document).handleAsync(action: action, args: args)
@@ -471,7 +479,8 @@ public final class CADMeshService {
     @discardableResult
     static func cancelActiveOperation(for document: FloeCADDocument) -> Bool {
         let polygonCancelled = CADPolygonMeshService.cancelActiveOperation(for: document)
-        guard let run = activeRuns[ObjectIdentifier(document)] else { return polygonCancelled }
+        let voxelCancelled = CADVoxelRemeshService.cancelActiveOperation(for: document)
+        guard let run = activeRuns[ObjectIdentifier(document)] else { return polygonCancelled || voxelCancelled }
         run.cancel()
         return true
     }
@@ -479,10 +488,13 @@ public final class CADMeshService {
     /// Current progress identity for the one active operation, or nil. The
     /// service (not a view) owns this state.
     func activeOperationStatus() -> [String: Any]? {
+        if let voxel = CADVoxelRemeshService.activeOperationStatus(for: document),
+           voxel["cancelRequested"] as? Bool == false { return voxel }
         if let polygon = CADPolygonMeshService.activeOperationStatus(for: document),
            polygon["cancelRequested"] as? Bool == false { return polygon }
         guard let run = Self.activeRuns[ObjectIdentifier(document)] else {
-            return CADPolygonMeshService.activeOperationStatus(for: document)
+            return CADVoxelRemeshService.activeOperationStatus(for: document)
+                ?? CADPolygonMeshService.activeOperationStatus(for: document)
         }
         return ["ok": true,
                 "active": true,
@@ -494,6 +506,7 @@ public final class CADMeshService {
     private func beginRun(action: String,
                           cancellation: CADMeshCancellation) -> CADMeshOperationRun {
         _ = CADPolygonMeshService.cancelActiveOperation(for: document)
+        _ = CADVoxelRemeshService.cancelActiveOperation(for: document)
         let key = ObjectIdentifier(document)
         Self.activeRuns[key]?.cancel()
         let run = CADMeshOperationRun(documentKey: key,

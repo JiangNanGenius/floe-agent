@@ -23,6 +23,7 @@ import AppIntents
 
 final class FloeApplicationDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        MacMetalCacheLocation.prepare()
         RuntimeDiagnostics.shared.start()
         Task {
             await WhisperModelStore.shared.restoreInstallation()
@@ -75,6 +76,7 @@ struct FloeAgentApp: App {
     @StateObject private var router: AppRouter
 
     init() {
+        MacMetalCacheLocation.prepare()
         // Apply the saved in-app language before any catalog lookup.
         FloeL10n.bootstrap()
         // Route Floe-owned CAD workbench chrome to the same catalog. A missing

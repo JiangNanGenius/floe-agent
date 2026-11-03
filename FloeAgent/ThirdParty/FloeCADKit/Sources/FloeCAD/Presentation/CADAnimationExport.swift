@@ -538,6 +538,7 @@ public extension FloeCADDocument {
         let clip = clipID.flatMap { state.animation.clip(withID: $0) }
             ?? state.animation.activeClip
         guard let clip else { throw CADAnimationExportError.noClip }
+        try validatePhysicsAnimationClip(clip)
         // X22: the section cut is built into each body mesh in its own local
         // space, so a part track would carry the cut with the moving part
         // instead of leaving the plane fixed in world space. Refuse the
@@ -673,6 +674,7 @@ public extension FloeCADDocument {
         let clip = clipID.flatMap { state.animation.clip(withID: $0) }
             ?? state.animation.activeClip
         guard let clip else { throw CADAnimationExportError.noClip }
+        try validatePhysicsAnimationClip(clip)
         let time = Self.animationFrameTime(
             frame: frame, fps: fps, duration: clip.duration)
         return try await captureAnimationFramePNG(
@@ -717,6 +719,7 @@ public extension FloeCADDocument {
         let clip = clipID.flatMap { state.animation.clip(withID: $0) }
             ?? state.animation.activeClip
         guard let clip else { throw CADAnimationExportError.noClip }
+        try validatePhysicsAnimationClip(clip)
         // X22: the section cut is built into each body mesh in its own local
         // space, so a part track would carry the cut with the moving part
         // instead of leaving the plane fixed in world space. Refuse the
@@ -778,7 +781,7 @@ public extension FloeCADDocument {
             instanceTransforms: frame.matrices,
             token: String(format: "capture|%@|%.6f", clip.id.uuidString, clamped),
             expectedGeneration: generation,
-            lease: lease)
+            lease: lease, physicsFloorYMM: frame.evaluation.physicsFloorYMM)
         guard applied else {
             Self.logAnimationExportStale(
                 "capture-apply-rejected",
@@ -1293,7 +1296,7 @@ public extension FloeCADDocument {
                     instanceTransforms: frame.matrices,
                     token: String(format: "export|%@|%.6f", clip.id.uuidString, time),
                     expectedGeneration: generation,
-                    lease: exportLease) else {
+                    lease: exportLease, physicsFloorYMM: frame.evaluation.physicsFloorYMM) else {
                     Self.logAnimationExportStale(
                         "frame-apply-rejected",
                         changeCount: liveChangeCount,

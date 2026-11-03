@@ -301,7 +301,7 @@ final class CADAnimationPlaybackModel {
         let applied = controller.applyAnimation(
             camera: camera, instanceTransforms: matrices,
             token: token, expectedGeneration: startGeneration,
-            lease: nil)
+            lease: nil, physicsFloorYMM: evaluation.physicsFloorYMM)
         if !applied, controller.renderGeneration != startGeneration {
             stop()
             return

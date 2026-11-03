@@ -5,7 +5,8 @@
 //  Persisted, renderer-neutral keyframe animation for a native FloeCAD
 //  document. Clips animate the presentation camera and assembly instance
 //  translation/rotation only; they never store geometry, never replace the
-//  assembly baseline and never describe a physics/kinematics simulation.
+//  assembly baseline. Ordinary authored tracks are not a simulation; an
+//  explicit physics-backed clip references one validated scene-settings cache.
 //
 //  Units and axes
 //  --------------
@@ -35,7 +36,8 @@ public nonisolated struct CADAnimationDocument: Codable, Sendable, Equatable {
     /// curve was later removed.
     public static let legacySchemaVersion = 1
     public static let timingCurveSchemaVersion = 2
-    public static let currentSchemaVersion = timingCurveSchemaVersion
+    public static let physicsSchemaVersion = 3
+    public static let currentSchemaVersion = physicsSchemaVersion
     public static let defaultDurationSeconds: Double = 5
     public static let minimumDurationSeconds: Double = 0.1
     public static let maximumDurationSeconds: Double = 600
@@ -85,7 +87,8 @@ public nonisolated struct CADAnimationDocument: Codable, Sendable, Equatable {
     /// presence requires schema 2 even if a bad/older writer left the header
     /// at 1.
     public var requiredSchemaVersion: Int {
-        clips.contains { clip in
+        if clips.contains(where: { $0.physicsCacheID != nil }) { return Self.physicsSchemaVersion }
+        return clips.contains { clip in
             clip.tracks.contains { track in
                 track.keyframes.contains { $0.timingCurve != nil }
             }
@@ -144,6 +147,8 @@ public nonisolated struct CADAnimationClip: Codable, Sendable, Equatable, Identi
     public var isLooping: Bool
     public var speed: Double
     public var tracks: [CADAnimationTrack]
+    /// References the sole sceneSettings cache; no preset/baked key duplication.
+    public var physicsCacheID: UUID? = nil
 
     public init(id: UUID = UUID(),
                 name: String,
@@ -784,6 +789,7 @@ public nonisolated struct CADAnimationSceneContext: Sendable, Equatable {
     public var bodyRevisions: [UUID: UInt64]
     public var boundsMinMM: SIMD3<Double>?
     public var boundsMaxMM: SIMD3<Double>?
+    public var spherePhysics: CADSpherePhysicsPlayback? = nil
 
     public init(instances: [UUID: Instance] = [:],
                 bodyRevisions: [UUID: UInt64] = [:],
@@ -807,19 +813,21 @@ public nonisolated struct CADAnimationEvaluation: Sendable, Equatable {
     /// assembly instance identity.
     public var instances: [UUID: CADAnimationInstanceValue]
     public var issues: [CADAnimationIssue]
+    public var physicsFloorYMM: Double? = nil
 
     public init(clipID: UUID,
                 time: Double,
                 duration: Double,
                 camera: CADAnimationCameraValue? = nil,
                 instances: [UUID: CADAnimationInstanceValue] = [:],
-                issues: [CADAnimationIssue] = []) {
+                issues: [CADAnimationIssue] = [], physicsFloorYMM: Double? = nil) {
         self.clipID = clipID
         self.time = time
         self.duration = duration
         self.camera = camera
         self.instances = instances
         self.issues = issues
+        self.physicsFloorYMM = physicsFloorYMM
     }
 
     public var hasOverrides: Bool { camera != nil || !instances.isEmpty }
@@ -922,6 +930,7 @@ public nonisolated struct CADAnimationFormatIntent: Sendable, Equatable {
     public var requiredVersion = CADAnimationDocument.legacySchemaVersion
     public var declaredSchemaVersion: Int?
     public var containsTimingCurve = false
+    public var containsPhysicsCache = false
     /// A curve member this build cannot verify. The original bytes must be
     /// preserved; no reader/writer may replace it with linear/ease.
     public var isMalformed = false
@@ -978,6 +987,11 @@ public nonisolated enum CADAnimationFormat {
             return result
         }
         for clip in clips {
+            if let raw = clip["physicsCacheID"], !(raw is NSNull) {
+                result.containsPhysicsCache = true
+                result.requiredVersion = max(result.requiredVersion, 7)
+                if schema < CADAnimationDocument.physicsSchemaVersion || (raw as? String).flatMap(UUID.init(uuidString:)) == nil { result.isMalformed = true }
+            }
             guard let rawTracks = clip["tracks"],
                   let tracks = rawTracks as? [[String: Any]] else {
                 result.isMalformed = true

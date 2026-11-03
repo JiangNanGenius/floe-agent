@@ -73,6 +73,8 @@ struct CADMeshPanelView: View {
                                                    selectedIDs.count),
                        tint: selectedIDs.count >= 1 ? .green : .secondary)
 
+            CADVoxelRemeshPanel(document: document, viewModel: viewModel, selectedBodyIDs: selectedIDs)
+
             CADPolygonMeshPanel(document: document, viewModel: viewModel,
                 selectedBodyIDs: selectedIDs, forceMesh: allowMeshDowngrade)
 

@@ -283,7 +283,8 @@ final class FloeCAD3DBridge {
         _ = await releaseDocumentOutcome(at: url, expected: expected)
     }
 
-    func handle(url: URL, requestJSON: String) async throws -> String {
+    func handle(url: URL, requestJSON: String,
+                cancellation: CancellationToken? = nil) async throws -> String {
         guard let data = requestJSON.data(using: .utf8),
               let request = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let kind = request["kind"] as? String else {
@@ -477,8 +478,8 @@ final class FloeCAD3DBridge {
             try Self.requireRevisionPin(request, document: document)
             let changeBefore = document.liveChangeCount
             let checkpoint = document.captureEditCheckpoint()
-            var reply = CADViewOverlayService(document: document).handle(
-                action: action, args: payload)
+            var reply = await CADViewOverlayService(document: document).handleAsync(
+                action: action, args: payload, cancellation: cancellation)
             if Self.bool(reply["mutated"]) == true {
                 let changeAfter = document.liveChangeCount
                 if changeAfter == changeBefore {

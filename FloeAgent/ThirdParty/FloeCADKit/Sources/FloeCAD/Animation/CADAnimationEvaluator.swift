@@ -19,6 +19,17 @@ public nonisolated enum CADAnimationEvaluator {
                                 context: CADAnimationSceneContext) -> CADAnimationEvaluation {
         let duration = CADAnimationClip.validDuration(clip.duration)
         let clamped = time.isFinite ? min(max(time, 0), duration) : 0
+        if let cacheID = clip.physicsCacheID {
+            guard let physics = context.spherePhysics, physics.cache.id == cacheID,
+                  physics.cache.clipID == clip.id, clip.tracks.isEmpty,
+                  abs(clip.duration - physics.definition.duration) <= 1e-9 else {
+                return CADAnimationEvaluation(clipID: clip.id, time: clamped, duration: duration,
+                    issues: [CADAnimationIssue(id: "physics-stale-" + clip.id.uuidString, kind: .sourceBindingChanged,
+                        clipID: clip.id, detail: "The sphere simulation cache is missing or stale; simulate its proxies again.")])
+            }
+            return CADAnimationEvaluation(clipID: clip.id, time: clamped, duration: duration,
+                instances: physics.values(at: clamped), physicsFloorYMM: physics.definition.floorY)
+        }
         var issues: [CADAnimationIssue] = []
         var camera: CADAnimationCameraValue?
         var instances: [UUID: CADAnimationInstanceValue] = [:]
