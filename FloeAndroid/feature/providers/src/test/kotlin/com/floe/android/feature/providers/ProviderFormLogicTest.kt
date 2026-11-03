@@ -132,6 +132,20 @@ class ProviderFormLogicTest {
         )!!.single()
         assertTrue(image.hiddenFromPrimaryPicker)
         assertTrue(ModelCapabilityUi.IMAGE_GENERATION in image.capabilities)
+        // The closed native save validation requires contextTokens > 0 for
+        // EVERY selected model (media rows included); iOS seeds all manual
+        // rows with the same generic limits, and 0 previously refused the
+        // whole Ark image-provider save as invalidEnvelope (modelLimitsInvalid).
+        assertEquals(128_000, image.contextTokens)
+        assertEquals(8_192, image.maxOutputTokens)
+
+        val video = ProviderFormLogic.stageManualModel(
+            emptyList(), "seedance-2.5", "Video one", "staged-3", ProviderServiceRoleUi.VIDEO,
+        )!!.single()
+        assertTrue(video.hiddenFromPrimaryPicker)
+        assertTrue(ModelCapabilityUi.VIDEO_GENERATION in video.capabilities)
+        assertEquals(128_000, video.contextTokens)
+        assertEquals(8_192, video.maxOutputTokens)
     }
 
     @Test

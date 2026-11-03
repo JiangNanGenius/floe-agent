@@ -772,10 +772,13 @@ class RuntimeHost internal constructor(
     internal suspend fun prepareC07DataExchangeForRootStop(): Boolean =
         if (c07DataExchangeDelegate.isInitialized()) c07DataExchange.prepareForRootStop() else true
 
-    internal suspend fun prepareFontsForRootStop(): Boolean = fontTools.stopAndJoin()
+    internal suspend fun prepareFontsForRootStop(): Boolean =
+        if (fontToolsDelegate.isInitialized()) fontTools.stopAndJoin() else true
 
     internal fun resumeFontsAfterRefusedStop() {
-        if (nativeRootEpoch()?.let { it > 0L } == true) fontTools.resumeAfterRefusedStop()
+        if (fontToolsDelegate.isInitialized() && nativeRootEpoch()?.let { it > 0L } == true) {
+            fontTools.resumeAfterRefusedStop()
+        }
     }
 
 
@@ -881,13 +884,18 @@ class RuntimeHost internal constructor(
     ): String? = privacyConfirmationIssuer?.invoke(
         expectedNativeEpoch, operation, previewDigest, invocationID, action)
 
-    private val fontTools = com.floe.android.host.fonts.FontToolHostPump(appContext, scope, ::nativeRootEpoch)
+    // create() injects appContext after construction; instantiate only once
+    // the Application starts this host and its owned services.
+    private val fontToolsDelegate = lazy {
+        com.floe.android.host.fonts.FontToolHostPump(appContext, scope, ::nativeRootEpoch)
+    }
+    private val fontTools by fontToolsDelegate
 
     /** Called once by the Application owner, off-main. */
     fun start() {
         if (!started.compareAndSet(false, true)) return
         platformExtension?.onHostStarted(this)
-        fontTools.start()
+        if (appContextOrNull != null) fontTools.start()
         observationJob = scope.launch(ioDispatcher) { observeCapabilities() }
         providers.start()
         conversations.start()
@@ -1127,7 +1135,7 @@ class RuntimeHost internal constructor(
                 }
                 // C07 only reacts if the settings surface already created
                 // the controller; no backup/restore work starts implicitly.
-                fontTools.start()
+                if (appContextOrNull != null) fontTools.start()
                 if (c07DataExchangeDelegate.isInitialized()) {
                     c07DataExchange.onOwnedStoreReady()
                 }

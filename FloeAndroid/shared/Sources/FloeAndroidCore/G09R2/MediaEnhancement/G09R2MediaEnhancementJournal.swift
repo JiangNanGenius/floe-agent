@@ -83,10 +83,23 @@ public struct G09R2EnhancementJournal: Sendable {
         self.root = root.standardizedFileURL
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
+        // Deferred Date encoding preserves the exact reference-time Double.
+        encoder.dateEncodingStrategy = .deferredToDate
         self.encoder = encoder
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let value = try decoder.singleValueContainer()
+            if let seconds = try? value.decode(Double.self), seconds.isFinite {
+                return Date(timeIntervalSinceReferenceDate: seconds)
+            }
+            // Source-only predecessors wrote ISO8601 strings; keep them readable.
+            let text = try value.decode(String.self)
+            guard text.utf8.count <= 64,
+                  let date = ISO8601DateFormatter().date(from: text) else {
+                throw DecodingError.dataCorruptedError(in: value, debugDescription: "Invalid journal date")
+            }
+            return date
+        }
         self.decoder = decoder
     }
 

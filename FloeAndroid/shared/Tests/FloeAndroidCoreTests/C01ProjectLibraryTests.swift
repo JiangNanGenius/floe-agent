@@ -218,6 +218,47 @@ final class C01ProjectLibraryTests: XCTestCase {
         }
     }
 
+    /// The list page row must carry every managed-identity column the
+    /// shared row parser validates (`kind`, `root_bookmark`,
+    /// `internal_relative_path`). Regression: the list SELECT once omitted
+    /// those columns; GRDB returns nil for an unselected column, the parser
+    /// guard then dropped every row, and `project.list` answered a
+    /// successful-looking empty page while create/get/rename kept working.
+    func testListPageSurfacesEveryManagedProjectWithExactRevision() async throws {
+        try await withFixture { fixture in
+            let lifecycle = RecordingLifecycle()
+            let projects = library(fixture, lifecycle: lifecycle)
+            let first = try await projects.create(name: "One")
+            let second = try await projects.create(name: "Two")
+
+            let listed = try await projects.list()
+            XCTAssertEqual(
+                listed.map(\.id).sorted { $0.uuidString < $1.uuidString },
+                [first.id, second.id].sorted { $0.uuidString < $1.uuidString })
+            XCTAssertEqual(listed.first { $0.id == first.id }?.name, "One")
+            XCTAssertEqual(listed.first { $0.id == second.id }?.name, "Two")
+            // The outer revision is the exact persisted updated_at of each
+            // row — a dropped/re-parsed row can never satisfy this.
+            XCTAssertEqual(listed.first { $0.id == first.id }?.revision,
+                           first.revision)
+            XCTAssertEqual(listed.first { $0.id == second.id }?.revision,
+                           second.revision)
+
+            // A row that fails the managed-identity predicate (path not
+            // 'Projects/'||id) must never surface, and it must not squeeze
+            // out the real rows either.
+            try await fixture.cluster.workspaceStore.saveWorkspace(
+                WorkspaceRecord(name: "Shadow",
+                                rootBookmark: Data(),
+                                kind: .project,
+                                internalRelativePath: "Elsewhere/\(UUID().uuidString)"))
+            let after = try await projects.list()
+            XCTAssertEqual(
+                after.map(\.id).sorted { $0.uuidString < $1.uuidString },
+                [first.id, second.id].sorted { $0.uuidString < $1.uuidString })
+        }
+    }
+
     // MARK: - Pre-first-run assignment
 
     func testAssignIsPreFirstRunAndRefusesExistingOrNonemptyTasks() async throws {

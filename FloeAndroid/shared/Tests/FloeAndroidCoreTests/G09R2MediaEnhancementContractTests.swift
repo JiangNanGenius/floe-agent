@@ -242,8 +242,8 @@ final class G09R2MediaEnhancementContractTests: XCTestCase {
     func testProbeParserReadsRationalFPSAndHDR() throws {
         let json = """
         {"streams":[{"codec_name":"hevc","width":3840,"height":2160,\
-"avg_frame_rate":"24000/1001","nb_frames":240,"duration":"10.01",\
-"color_transfer":"smpte2084"}],"format":{"duration":"10.01"}}
+        "avg_frame_rate":"24000/1001","nb_frames":240,"duration":"10.01",\
+        "color_transfer":"smpte2084"}],"format":{"duration":"10.01"}}
         """
         let facts = try G09R2EnhancementProbeParser.parseVideoFacts(
             json, byteCount: 100, sha256: "c")
@@ -448,6 +448,42 @@ final class G09R2MediaEnhancementContractTests: XCTestCase {
         XCTAssertEqual(
             decoded.endpointID,
             G09R2EnhancerBackendConfiguration.defaultEndpointID)
+    }
+
+    func testJournalReadsLegacyISO8601Dates() async throws {
+        let root = tempRoot()
+        let record = G09R2EnhancementRecord(
+            jobID: "job-legacy-date", projectID: UUID(), state: .running,
+            request: .init(inputRelativePath: "Assets/clip.mp4",
+                           operation: .superResolution(scaleFactor: 2), outputFileName: "out.mp4"),
+            sourceFacts: videoSource(),
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_001))
+        let legacy = JSONEncoder()
+        legacy.dateEncodingStrategy = .iso8601
+        let directory = root.appendingPathComponent("Enhancements/.jobs", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try legacy.encode(record).write(to: directory.appendingPathComponent("job-legacy-date.json"))
+        let read = try await G09R2EnhancementJournal(root: root).read(jobID: record.jobID)
+        XCTAssertEqual(read, record)
+    }
+
+    func testFailedJournalEncodingPreservesPriorRecord() async throws {
+        let journal = G09R2EnhancementJournal(root: tempRoot())
+        let record = G09R2EnhancementRecord(
+            jobID: "job-invalid-encoding", projectID: UUID(), state: .running,
+            request: .init(inputRelativePath: "Assets/clip.mp4",
+                           operation: .interpolation(targetFPS: 60), outputFileName: "out.mp4"),
+            sourceFacts: videoSource(), createdAt: Date(), updatedAt: Date())
+        try await journal.write(record: record)
+        var invalid = record
+        invalid.request.operation = .interpolation(targetFPS: .nan)
+        do {
+            try await journal.write(record: invalid)
+            XCTFail("Non-finite JSON must fail before replacing the prior journal")
+        } catch is EncodingError { }
+        let retained = try await journal.read(jobID: record.jobID)
+        XCTAssertEqual(retained, record)
     }
 
     func testConcurrentJournalUpdatesPreserveAcceptedHandleAndProgress() async throws {

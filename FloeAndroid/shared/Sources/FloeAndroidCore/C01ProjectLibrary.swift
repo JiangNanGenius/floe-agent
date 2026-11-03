@@ -601,8 +601,16 @@ public actor C01ProjectLibrary {
         let boundedLimit = min(max(limit, 1), Self.maximumPageLimit)
         let boundedOffset = min(max(offset, 0), 100_000)
         let rows = try await database.reader { db -> [C01ProjectRow] in
+            // The SELECT must carry every column the shared row parser
+            // validates (`projectRow(from:)`: kind/root_bookmark/
+            // internal_relative_path). GRDB returns nil for a column that
+            // is not in the result set, and a nil managed-identity column
+            // fails the parser guard — the row would be silently dropped
+            // and every page would look authoritatively empty.
             try Row.fetchAll(db, sql: """
-                SELECT w.id, w.name, w.created_at, w.updated_at,
+                SELECT w.id, w.name, w.kind, w.root_bookmark,
+                       w.internal_relative_path,
+                       w.created_at, w.updated_at,
                        (SELECT COUNT(*) FROM conversation_workspace_ownership o
                         JOIN conversations c ON c.id = o.conversation_id
                         WHERE o.workspace_id = w.id

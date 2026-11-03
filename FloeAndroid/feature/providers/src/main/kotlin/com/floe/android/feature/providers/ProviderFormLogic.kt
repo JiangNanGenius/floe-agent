@@ -166,9 +166,15 @@ object ProviderFormLogic {
     /**
      * Stages one manual model row (⇄ addManualModel): trims the wire id, uses
      * it as display name when no name is typed, applies the role's staging
-     * defaults (conversation 128k/8192 limits and visible; media hidden from
-     * the primary picker) and selects it. Presentation defaults only — the
-     * host's Swift validation is authoritative at save.
+     * defaults (media rows hidden from the primary picker) and selects it.
+     * Limits are the SAME generic 128k/8192 every manual row gets on iOS —
+     * the closed native validation requires `contextTokens > 0` for every
+     * selected model (ProviderConfigurationValidation.issues(for:)), so a
+     * media row seeded with 0 refused the whole provider save as
+     * `invalidEnvelope` (`modelLimitsInvalid`) before any effect
+     * (alpha24-candidate04 Samsung ArkPlanImageQA observation, UI trees
+     * 228-236). Presentation defaults only — the host's Swift validation is
+     * authoritative at save.
      */
     fun stageManualModel(
         existing: List<ModelDraftRowUi>,
@@ -228,8 +234,11 @@ object ProviderFormLogic {
                 setOf(ModelCapabilityUi.VIDEO_GENERATION)
         },
         reasoningEffort = ReasoningEffortUi.AUTOMATIC,
-        contextTokens = if (role == ProviderServiceRoleUi.CONVERSATION) 128_000 else 0,
-        maxOutputTokens = if (role == ProviderServiceRoleUi.CONVERSATION) 8_192 else 0,
+        // iOS addManualModel seeds 128_000/8_192 for EVERY role; the native
+        // save validation requires a positive context for all models, media
+        // rows included (0 refused the save as invalidEnvelope).
+        contextTokens = 128_000,
+        maxOutputTokens = 8_192,
         source = ModelSourceUi.MANUAL,
         selectedForSave = true,
     )
