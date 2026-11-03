@@ -551,6 +551,7 @@ struct FloeCADEditorView: View {
     /// Measured height of the bottom bar stack, fed by `BottomBarHeightKey`.
     /// The palette and the corner chips inset above it — see `bottomBarInset`.
     @State private var bottomBarHeight: CGFloat = 0
+    @State private var bottomControlsFrame: CGRect?
     /// The tool palette's frame (global coordinates), measured for the
     /// viewport's phone safe area — see `ViewportSafeArea`.
     @State private var paletteFrame: CGRect?
@@ -564,6 +565,16 @@ struct FloeCADEditorView: View {
     /// stays the floor so nothing moves on iPad; a taller compact bar pushes
     /// them further up instead of being overlapped by them.
     private var bottomBarInset: CGFloat { max(96, bottomBarHeight + 16) }
+    /// Centred editing panels need not shorten a palette beside them. Keep
+    /// full clearance only when their actual horizontal bounds intersect.
+    private var paletteBottomInset: CGFloat {
+        guard let controls = bottomControlsFrame, let palette = paletteFrame else {
+            return bottomBarInset
+        }
+        let overlaps = controls.width > 0 && controls.height > 0
+            && controls.minX < palette.maxX && palette.minX < controls.maxX
+        return overlaps ? max(12, bottomBarHeight + 16) : 12
+    }
     /// Which file the Import menu asked for. There is exactly ONE
     /// `.fileImporter` in this view because stacking several on one view
     /// silently leaves only the LAST one live — the STL and DXF entries did
@@ -1753,6 +1764,9 @@ struct FloeCADEditorView: View {
                     }
                     }
                 }
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                    bottomControlsFrame = $0
+                }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 12)
                 .measuringBottomBarHeight()
@@ -1789,12 +1803,11 @@ struct FloeCADEditorView: View {
                     .padding(settings.paletteOnRight ? .trailing : .leading,
                              (settings.paletteOnRight ? showItemsPanel : viewModel.showHistoryPanel)
                              ? 318 : 14)
-                    // Keep the (scrollable) palette clear of the top bar and
-                    // the bottom info/input bars, which span the full width:
-                    // without the inset the last tools (Delete) can sit under
-                    // the numeric bar and become untappable in portrait.
+                    // Use the full side height beside centred panels. Wide
+                    // input bars still reserve their measured overlap so the
+                    // last tools remain tappable in compact layouts.
                     .padding(.top, 8)
-                    .padding(.bottom, bottomBarInset)
+                    .padding(.bottom, paletteBottomInset)
             }
             .overlay(alignment: .bottomLeading) {
                 // Variables panel (Phase D, Task B3). Anchored bottom-leading so

@@ -42,7 +42,7 @@ struct SubscriptionProviderTests {
         #expect(ProviderFormSpecResolver.eligiblePresets(for: .image).contains(.alibabaTokenPlan))
         #expect(ProviderFormSpecResolver.eligiblePresets(for: .image).contains(.volcengineAgentPlan))
         #expect(ProviderFormSpecResolver.eligiblePresets(for: .video).contains(.alibabaTokenPlan))
-        #expect(!ProviderFormSpecResolver.eligiblePresets(for: .video).contains(.volcengineAgentPlan))
+        #expect(ProviderFormSpecResolver.eligiblePresets(for: .video).contains(.volcengineAgentPlan))
     }
 
     @Test("Agent Plan image candidates come from its own declared offer only")

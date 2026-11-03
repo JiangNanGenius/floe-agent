@@ -1,0 +1,11 @@
+# Advanced materials and rigging acceptance — 2026-11-03
+
+The original X11 and X26 criteria are accepted from the following actual App evidence. These are Simulator and independent file-readback results; no physical-device performance claim is made.
+
+- App/native310 source `9444a20b2aec7482a6ddc9c99c5667ca49f4c9d1`: all five `CADRiggingTests` passed, including inverse bind/morph-before-skin, normalized weights, timeline undo/save/reopen, invalid references and cancellation, actual rendered pixels/MP4, and GLB artifacts.
+- App/native310: four of six `CADMaterialNodeTests` passed. The two original failures were retained; App/native312 source `d4fc5a5b6f45263007d6a1c310fa3192f17ebe4c` passed those same two assertions after correcting the canonical BodyID test argument and comparing the rendered object to an actual same-camera empty render. No geometry/pixel thresholds were lowered. The 14-case scoped native312 run passed without skips.
+- Actual canonical iPad UI313 source `d4fc5a5b6f45263007d6a1c310fa3192f17ebe4c`: the compact advanced-material/native-node-page workflow and the original rig binding/joint/weight/captured-key controls workflow passed. UI313 overall was 3 passed/2 failed; unrelated sculpt and texture-paint test-operation failures remain recorded.
+- Independent pinned three.js 0.176.0 GLTFLoader/AnimationMixer/SkinnedMesh parsed the actual native310 GLB and compared 108 evaluated world-space vertex records with the native analytical expectations: maximum error `5.213536171142441e-10` metres (original bound `2e-7`). No Floe evaluator or installed package was substituted.
+- Independent GLTFLoader instantiated the advanced exported material and checked clearcoat, anisotropy, specular, sheen and emissive fields plus NORMAL/TANGENT data. The embedded baked PNG bytes matched the actual expected SHA-256.
+
+The actual native service tests exercise the same material command handlers and persisted snapshots available to CAD tools. This does not claim an additional live-LLM qualification; that remains M30. Other original criteria and failures remain separate. Source hashes, original xcresults, file digests, screenshots and videos are retained privately. Public evidence contains no user credentials or task content.

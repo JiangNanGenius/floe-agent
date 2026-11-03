@@ -144,9 +144,6 @@ struct AgentPlanCatalogTests {
         // Lite is a PAYG-only id: it must not be a plan candidate or a verified
         // plan model. Its PAYG descriptor remains covered by OfficialMediaModelCatalog.
         #expect(!offer.models.contains("doubao-seedream-5.0-lite"))
-        // The official table also lists Seedance video; this round explicitly
-        // keeps Agent Plan video closed and preserves the PAYG route.
-        #expect(entry.serviceOffers?.contains { $0.role == .video } != true)
         #expect(Set(entry.models).isDisjoint(with: offer.models))
 
         let preset = ProviderPreset.volcengineAgentPlan
@@ -184,5 +181,65 @@ struct AgentPlanCatalogTests {
             #expect(facts.input?.contains("image") == true)
             #expect(facts.output == ["image"])
         }
+    }
+
+    @Test("Plan video candidates stay configurable without discovery or account entitlement checks")
+    func videoRoleBoundary() throws {
+        let entry = try agentPlan(in: try bundledCatalog())
+        let offer = try #require(entry.serviceOffers?.first { $0.role == .video })
+        #expect(offer.models == [
+            "doubao-seedance-2.5", "doubao-seedance-2.0",
+            "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini"
+        ])
+        let preset = ProviderPreset.volcengineAgentPlan
+        let spec = ProviderFormSpecResolver.resolve(
+            role: .video, preset: preset, baseURL: preset.defaultBaseURL, catalogEntry: entry)
+        #expect(spec.roleAdapterAvailable)
+        #expect(spec.seedModelIDs == offer.models)
+        #expect(spec.mediaProbe == .contractOnly)
+        #expect(!spec.showsModelListingRefresh)
+        #expect(Set(entry.models).isDisjoint(with: offer.models))
+        let provider = ProviderProfile(
+            kind: .custom, wireProtocol: .openAIChatCompletions,
+            baseURL: preset.defaultBaseURL)
+        #expect(VideoProviderAdapterFactory().adapter(for: provider) is VolcengineVideoAdapter)
+        for remoteID in offer.models {
+            let model = ModelProfile(
+                providerID: provider.id, remoteModelID: remoteID, displayName: remoteID,
+                limits: .init(contextTokens: 0, maxOutputTokens: 0),
+                capabilities: [.videoGeneration], useSurfaces: .videoGeneration)
+            let route = try #require(VideoModelRegistry.routes(
+                models: [model], providers: [provider], preferredModelID: model.id).first)
+            #expect(route.remoteModelID == remoteID)
+            #expect(route.contract.maximumDurationSeconds == (remoteID == "doubao-seedance-2.5" ? 30 : 15))
+            #expect(route.contract.supportsAudio)
+            #expect(route.contract.maximumReferenceAssets == 1)
+            #expect(VideoReferenceImagePolicy.supportsReferenceImages(
+                providerKind: provider.kind, modelRemoteID: remoteID, baseURL: provider.baseURL))
+            #expect(entry.modelMetadata?[remoteID]?.output == ["video"])
+        }
+        // Manual/legacy Ark profiles keep their plan route rather than becoming PAYG.
+        var legacy = provider
+        legacy.kind = .volcengineArk
+        #expect(VideoProviderAdapterFactory().adapter(for: legacy) is VolcengineVideoAdapter)
+        #expect(legacy.baseURL.path == "/api/plan/v3")
+    }
+
+    @Test("Plan Seedance 2.5 uses the same native first-frame and duration contract as PAYG")
+    func planVideoRequestOptions() throws {
+        let request = RemoteVideoRequest(
+            prompt: "sample", modelRemoteID: "doubao-seedance-2.5",
+            options: .init(aspectRatio: "16:9", resolution: "1080p", durationSeconds: 30),
+            referenceAssetURLs: [URL(string: "https://example.com/first-frame.png")!])
+        let body = try VolcengineVideoAdapter.requestBody(request)
+        #expect(body["model"] as? String == request.modelRemoteID)
+        #expect(body["ratio"] as? String == "adaptive")
+        #expect(body["duration"] as? Int == 30)
+        var invalid = request
+        invalid.options.durationSeconds = 31
+        #expect(throws: RemoteVideoError.self) { try VolcengineVideoAdapter.requestBody(invalid) }
+        invalid = request
+        invalid.options.seed = 1
+        #expect(throws: RemoteVideoError.self) { try VolcengineVideoAdapter.requestBody(invalid) }
     }
 }

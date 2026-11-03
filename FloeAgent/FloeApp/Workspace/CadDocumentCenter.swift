@@ -30,7 +30,7 @@ func registerCadDocumentTools(center: CadDocumentCenter, registry: ToolRunnerReg
     registry.register(CadDocumentTool(host: center))
 }
 
-actor CadDocumentCenter: CadDocumentHost {
+actor CadDocumentCenter: CadDocumentHost, CadBasicMachiningHosting {
 
     /// Delivers one structured proposal decision to the originating
     /// conversation through the durable runtime-input ingress
@@ -53,14 +53,18 @@ actor CadDocumentCenter: CadDocumentHost {
     /// so central wiring should pass the origin-aware parameter instead.
     typealias LegacyNativeDecisionDeliverer = @Sendable (UUID, UUID, String, Int64?, String?) async throws -> Void
 
+    typealias BasicMachiningHandler = @Sendable (URL,CadBasicMachiningRequest,ToolContext) async throws -> CadBasicMachiningReply
+    private let basicMachiningHandler: BasicMachiningHandler?
     private let nativeProposals: NativeCADProposalStore
     private let decisionDeliverer: NativeDecisionDeliverer?
 
     init(nativeProposalStoreFileURL: URL? = nil,
+         basicMachiningHandler: BasicMachiningHandler? = nil,
          decisionDeliverer: NativeDecisionDeliverer? = nil) {
         self.nativeProposals = NativeCADProposalStore(
             fileURL: nativeProposalStoreFileURL ?? NativeCADProposalStore.defaultFileURL()
                 ?? URL(fileURLWithPath: "/dev/null"))
+        self.basicMachiningHandler = basicMachiningHandler
         self.decisionDeliverer = decisionDeliverer
     }
 
@@ -4041,6 +4045,16 @@ actor CadDocumentCenter: CadDocumentHost {
             }
         }
         return result
+    }
+
+    func basicMachining(documentID:String,request:CadBasicMachiningRequest,context:ToolContext) async throws -> CadBasicMachiningReply {
+        guard !context.temporaryReadOnly,context.canvasStagedDocument==nil else{throw FloeError.unauthorized}
+        let access=CadDocumentTool.access(for:context)
+        try await authorizeAccess(access:access)
+        let resolved=try await resolveNativeAware(documentID:documentID,access:access)
+        let url=try resolved.service.guardResolver.resolve(resolved.id)
+        guard let basicMachiningHandler else{throw FloeError.validationFailed("Basic machining is not configured in this host")}
+        return try await basicMachiningHandler(url,request,context)
     }
 
     /// Resolve native actions through a verified canvas binding when the

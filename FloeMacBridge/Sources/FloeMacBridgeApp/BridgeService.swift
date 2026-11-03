@@ -7,20 +7,26 @@ import FloeMacBridgeProtocol
 
 actor BridgeService {
     struct Pair: Codable, Sendable { let key: Data; let name: String; let acceptedAt: Date; let verification: String?; let nonce: String? }
-    struct Transfer: Sendable { let root: URL; let relativePath: String; let stage: URL; let expected: String?; let clientID: String; var updatedAt: Date }
+    struct Delivery: Sendable { let data: Data; let lease: BridgeUpdateActivity.Lease }
+    struct Transfer: Sendable { let root: URL; let relativePath: String; let stage: URL; let expected: String?; let clientID: String; var updatedAt: Date; let updateLease: BridgeUpdateActivity.Lease }
     let paths: BridgePaths
+    nonisolated let updateActivity: BridgeUpdateActivity
     let jobs: BridgeJobs
     let signingKey: Curve25519.Signing.PrivateKey
     private var pairs: [String: Pair]
     private var accepted: [String: Int64] = [:]
     private var transfers: [String: Transfer] = [:]
-    private var pending: [String: (name: String, key: Data, nonce: String, verification: String)] = [:]
+    private var pending: [String: (name: String, key: Data, nonce: String, verification: String, updateLease: BridgeUpdateActivity.Lease)] = [:]
     private var rejected = Set<String>()
     var skillPins: [String: Set<String>] = [:]
     var consent: (@MainActor @Sendable (String, String, String) -> Void)?
-    init(paths: BridgePaths) throws {
-        self.paths = paths; self.jobs = BridgeJobs(paths: paths)
-        signingKey = try BridgeKeychain.signingKey(service: "org.floeagent.bridge.server")
+    // A caller-supplied key permits isolated synthetic contract fixtures without
+    // accessing the user's Keychain. The application uses the existing default.
+    init(paths: BridgePaths, updateActivity: BridgeUpdateActivity = BridgeUpdateActivity(),
+         signingKey: Curve25519.Signing.PrivateKey? = nil) throws {
+        self.paths = paths; self.updateActivity = updateActivity
+        self.jobs = BridgeJobs(paths: paths, updateActivity: updateActivity)
+        self.signingKey = try signingKey ?? BridgeKeychain.signingKey(service: "org.floeagent.bridge.server")
         let pairURL = paths.root.appendingPathComponent("State/paired-clients.json")
         pairs = (try? BridgeWire.decode([String: Pair].self, from: Data(contentsOf: pairURL))) ?? [:]
         skillPins = (try? BridgeWire.decode([String: Set<String>].self, from: Data(contentsOf: paths.root.appendingPathComponent("State/skill-pins.json")))) ?? [:]
@@ -28,7 +34,10 @@ actor BridgeService {
     }
     func setConsent(_ callback: @escaping @MainActor @Sendable (String, String, String) -> Void) { consent = callback }
     func approve(_ clientID: String, allow: Bool) throws {
+        let operation = try updateActivity.begin(.maintenance)
+        defer { updateActivity.finish(operation) }
         guard let proposal = pending.removeValue(forKey: clientID) else { return }
+        defer { updateActivity.finish(proposal.updateLease) }
         if allow {
             pairs[clientID] = Pair(key: proposal.key, name: proposal.name, acceptedAt: Date(), verification: proposal.verification, nonce: proposal.nonce)
             try savePairs()
@@ -36,16 +45,31 @@ actor BridgeService {
     }
     func pairedClients() -> [(String, String)] { pairs.map { ($0.key, $0.value.name + ($0.value.verification.map { " · " + $0 } ?? "")) } }
     func revoke(_ clientID: String) async throws {
+        let operation = try updateActivity.begin(.maintenance)
+        defer { updateActivity.finish(operation) }
         pairs.removeValue(forKey: clientID); try savePairs()
         for (id, transfer) in transfers where transfer.clientID == clientID {
             try? FileManager.default.removeItem(at: transfer.stage); transfers.removeValue(forKey: id)
+            updateActivity.finish(transfer.updateLease)
         }
         await jobs.cancelAll(clientID: clientID)
     }
     private func savePairs() throws {
         try BridgeWire.encode(pairs).write(to: paths.root.appendingPathComponent("State/paired-clients.json"), options: .atomic)
     }
+    /// HTTP owns this lease until the full signed reply finishes sending.
+    func respondForDelivery(_ request: BridgeRequest) async throws -> Delivery {
+        let lease = try updateActivity.begin(.request)
+        do { return Delivery(data: try await respond(request), lease: lease) }
+        catch { updateActivity.finish(lease); throw error }
+    }
+    nonisolated func finishDelivery(_ lease: BridgeUpdateActivity.Lease) { updateActivity.finish(lease) }
+    nonisolated func reserveUpdateInstallationIfIdle() -> BridgeUpdateActivity.Installation? {
+        updateActivity.reserveInstallationIfIdle()
+    }
     func respond(_ request: BridgeRequest) async throws -> Data {
+        let operation = try updateActivity.begin(.request)
+        defer { updateActivity.finish(operation) }
         try request.verify()
         // Native approval can complete while the consent callback is suspended.
         // One shared result keeps both admission paths identical.
@@ -66,7 +90,7 @@ actor BridgeService {
                     if pending[clientID] == nil {
                         let name = String(String.UnicodeScalarView((body.payload["name"]?.string ?? "Floe").unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })).prefix(80).description
                         let verification = BridgeWire.pairingVerification(clientKey: body.clientKey, serverKey: signingKey.publicKey.rawRepresentation, nonce: nonce)
-                        pending[clientID] = (name, body.clientKey, nonce, verification)
+                        pending[clientID] = (name, body.clientKey, nonce, verification, try updateActivity.begin(.consent))
                         if let consent { await consent(clientID, name, verification) }
                     }
                     // Re-read admission after the consent await: native approval
@@ -104,6 +128,7 @@ actor BridgeService {
     func transfersAreIdle() -> Bool {
         for (id, transfer) in transfers where Date().timeIntervalSince(transfer.updatedAt) > 900 {
             try? FileManager.default.removeItem(at: transfer.stage); transfers.removeValue(forKey: id)
+            updateActivity.finish(transfer.updateLease)
         }
         return transfers.isEmpty
     }
@@ -207,8 +232,12 @@ actor BridgeService {
             try verifyExisting(destination, expected: expected)
             let id = UUID().uuidString
             let stage = paths.caches.appendingPathComponent("upload-" + id)
-            guard FileManager.default.createFile(atPath: stage.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { throw BridgeFailure.remote("Cannot prepare file transfer.") }
-            transfers[id] = Transfer(root: transferRoot, relativePath: relativePath, stage: stage, expected: expected, clientID: clientID, updatedAt: Date())
+            let transferLease = try updateActivity.begin(.transfer)
+            guard FileManager.default.createFile(atPath: stage.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+                updateActivity.finish(transferLease)
+                throw BridgeFailure.remote("Cannot prepare file transfer.")
+            }
+            transfers[id] = Transfer(root: transferRoot, relativePath: relativePath, stage: stage, expected: expected, clientID: clientID, updatedAt: Date(), updateLease: transferLease)
             return ["transferID": .string(id)]
         case "file.chunk":
             let id = try required(p, "transferID")
@@ -221,20 +250,24 @@ actor BridgeService {
         case "file.abort":
             let id = try required(p, "transferID")
             guard let transfer = transfers[id], transfer.clientID == clientID else { return [:] }
-            try? FileManager.default.removeItem(at: transfer.stage); transfers.removeValue(forKey: id); return [:]
+            try? FileManager.default.removeItem(at: transfer.stage); transfers.removeValue(forKey: id)
+            updateActivity.finish(transfer.updateLease); return [:]
         case "file.commit":
             let id = try required(p, "transferID")
             guard let transfer = transfers[id], transfer.clientID == clientID else { throw BridgeFailure.remote("Unknown transfer.") }
-            defer { transfers.removeValue(forKey: id); try? FileManager.default.removeItem(at: transfer.stage) }
+            defer {
+                transfers.removeValue(forKey: id); try? FileManager.default.removeItem(at: transfer.stage)
+                updateActivity.finish(transfer.updateLease)
+            }
             guard try digest(transfer.stage) == required(p, "sha256") else { throw BridgeFailure.remote("The transferred file did not match.") }
             try BridgeSafeFileSystem.commit(staged: transfer.stage, relativePath: transfer.relativePath,
                 under: transfer.root, expectedSHA256: transfer.expected)
             return [:]
         case "revoke": try await revoke(clientID); return [:]
-        case "permissions": return await permissions(request: nil)
+        case "permissions": return try await permissions(request: nil)
         case "permissions.request":
             guard let capability = p["capability"]?.string, ["screenCapture", "accessibility"].contains(capability) else { throw BridgeFailure.remote("Choose the permission to request.") }
-            return await permissions(request: capability)
+            return try await permissions(request: capability)
         case "screen.capture": return try await captureScreen()
         case "accessibility.inspect": return try await inspectAccessibility()
         case "storage": return try await storage()

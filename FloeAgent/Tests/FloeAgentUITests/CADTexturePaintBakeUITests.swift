@@ -21,7 +21,10 @@ import XCTest
                 visible=CGRect(x:visible.minX,y:top,width:visible.width,height:max(0,visible.maxY-top))
             }
             if element.exists && element.isHittable && visible.contains(element.frame) { return element }
-            let above=element.exists && element.frame.minY<visible.minY
+            // Form virtualizes offscreen rows. The first canvas disappears
+            // from AX after opening Details below it; its absence must scroll
+            // back up, rather than repeatedly scroll farther down.
+            let above=element.exists ? element.frame.minY<visible.minY : id=="CADTexturePaintCanvas"
             // The centre is the real painting canvas; scroll in the native
             // Form margin and only towards the currently missing row.
             form.coordinate(withNormalizedOffset:CGVector(dx:0.985,dy:above ? 0.6 : 0.9))

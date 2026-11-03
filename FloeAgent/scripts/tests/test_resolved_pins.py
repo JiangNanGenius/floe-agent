@@ -377,6 +377,9 @@ class FirstPartySiblingPackageTests(unittest.TestCase):
         self.package = self.repo / "FloeMacBridge"
         self.package.mkdir()
         shutil.copy2(REVIEWED_MANIFEST, self.package / "Package.swift")
+        reviewed_lock = REVIEWED_MANIFEST.with_name("Package.resolved")
+        shutil.copy2(reviewed_lock, self.package / "Package.resolved")
+        shutil.copy2(reviewed_lock, self.root / "Package.resolved")
         (self.package / "Sources").mkdir()
         (self.package / "Sources" / "Bridge.swift").write_text(
             "public struct Bridge {}\n", encoding="utf-8")
@@ -516,6 +519,16 @@ class FirstPartySiblingPackageTests(unittest.TestCase):
         self.git("add", "FloeMacBridge/Sources/Linked")
         self.git("commit", "-qm", "directory symlink")
         with self.assertRaisesRegex(ValueError, "must not contain symlinks"):
+            application_local_pins(self.project(), self.root)
+
+    def test_companion_pin_requires_exact_host_revision(self):
+        path = self.root / "Package.resolved"
+        document = json.loads(path.read_text())
+        document["pins"][0]["state"]["revision"] = "0" * 40
+        path.write_text(json.dumps(document))
+        self.git("add", ".")
+        self.git("commit", "-qm", "wrong host pin")
+        with self.assertRaisesRegex(ValueError, "differs from the committed host lock"):
             application_local_pins(self.project(), self.root)
 
     def test_package_root_caches_are_not_source(self):

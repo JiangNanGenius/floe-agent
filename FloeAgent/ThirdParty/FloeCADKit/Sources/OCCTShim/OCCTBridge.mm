@@ -31,6 +31,13 @@
 #include <BRepBndLib.hxx>
 #include <cstdint>
 #include <sstream>
+#include <iomanip>
+#include <BOPAlgo_Alerts.hxx>
+#include <BOPAlgo_PaveFiller.hxx>
+#include <BOPTools_AlgoTools.hxx>
+#include <IntTools_Context.hxx>
+#include <Message_Report.hxx>
+#include <TopoDS_Iterator.hxx>
 #include <string>
 
 #include <BRepTools.hxx>
@@ -5145,6 +5152,110 @@ static OCCTShape *OS3DPlanarSupportShell(const TopoDS_Shape &source,
                 throw Standard_Failure("bounded planar support prism is not a valid oriented solid");
             return solid;
         };
+        // Diagnostic only: preserve the original refusal. OCCT 7.8.1 stores
+        // the exact (split, original) pair in UnableToOrientTheShape. Recheck
+        // that pair with its existing filler context, not a guessed face or
+        // a second Boolean, so one original failing test identifies the cause.
+        auto orientationDiagnostic = [&](BRepAlgoAPI_BooleanOperation &maker,
+                                          const TopoDS_Shape &tool,
+                                          const Support &support) -> std::string {
+            std::ostringstream out; out << std::setprecision(17);
+            out << " support_diag_v1{inset=0;origin=" << support.origin.X() << ','
+                << support.origin.Y() << ',' << support.origin.Z() << ";outward="
+                << support.outward.X() << ',' << support.outward.Y() << ',' << support.outward.Z()
+                << ";sourceBox=" << xmin << ',' << ymin << ',' << zmin << ','
+                << xmax << ',' << ymax << ',' << zmax << ";margin=" << margin
+                << ";inputTolerance=" << inputTolerance << ";allowedTolerance=" << allowedTolerance;
+            double minSide=std::numeric_limits<double>::infinity(), maxSide=-minSide;
+            for (int x=0;x<2;++x) for (int y=0;y<2;++y) for (int z=0;z<2;++z) {
+                const double side=gp_Vec(support.origin,gp_Pnt(x?xmax:xmin,y?ymax:ymin,z?zmax:zmin)).Dot(gp_Vec(support.outward));
+                minSide=std::min(minSide,side); maxSide=std::max(maxSide,side);
+            }
+            out << ";sourceBoxOutwardInterval=" << minSide << ',' << maxSide;
+            // At most two native rechecks, 128 edges per alert pair, 4096
+            // ancestry comparisons total. No sampling, healing, reorientation,
+            // additional Common/Cut or output acceptance is performed here.
+            size_t visits = 0;
+            auto owner = [&](const TopoDS_Shape &shape) {
+                out << "[source="; bool found = false;
+                for (Standard_Integer i=1; i<=sourceFaces.Extent(); ++i) {
+                    if (visits >= 4096 || deadline->Fired()) break;
+                    const TopoDS_Shape face=copy.ModifiedShape(sourceFaces(i));
+                    bool same=!face.IsNull() && face.IsSame(shape); ++visits;
+                    if (!same && !face.IsNull() && shape.ShapeType() > TopAbs_FACE) {
+                        for (TopExp_Explorer ex(face,shape.ShapeType()); ex.More(); ex.Next()) {
+                            if (++visits > 4096 || deadline->Fired()) break;
+                            if (ex.Current().IsSame(shape)) { same=true; break; }
+                        }
+                    }
+                    if (same) { out << (found ? "," : "") << i << (openings.count(i) ? "(opening)" : "(wall)"); found=true; }
+                }
+                if (!found) out << "unmatched";
+                out << ";tool="; bool fromTool=tool.IsSame(shape);
+                if (!fromTool) for (TopExp_Explorer ex(tool,shape.ShapeType()); ex.More(); ex.Next()) {
+                    if (++visits > 4096 || deadline->Fired()) break;
+                    if (ex.Current().IsSame(shape)) { fromTool=true; break; }
+                }
+                out << fromTool << ";ownerBudgetExhausted=" << (visits>=4096) << ']';
+            };
+            auto describe = [&](const TopoDS_Shape &shape, const char *label) {
+                out << ';' << label << "(type=" << (int)shape.ShapeType()
+                    << ",orientation=" << (int)shape.Orientation();
+                if (shape.ShapeType()==TopAbs_FACE) {
+                    const TopoDS_Face face=TopoDS::Face(shape); BRepAdaptor_Surface surface(face);
+                    out << ",surface=" << (int)surface.GetType() << ",tolerance=" << BRep_Tool::Tolerance(face);
+                    if (surface.GetType()==GeomAbs_Plane) {
+                        const gp_Pln plane=surface.Plane();
+                        out << ",supportPlaneDistance=" << plane.Distance(support.origin)
+                            << ",supportNormalDot=" << plane.Axis().Direction().Dot(support.outward);
+                    }
+                } else if (shape.ShapeType()==TopAbs_EDGE) {
+                    const TopoDS_Edge edge=TopoDS::Edge(shape); Standard_Real first,last;
+                    BRep_Tool::Range(edge,first,last);
+                    out << ",degenerate=" << BRep_Tool::Degenerated(edge)
+                        << ",range=" << first << ',' << last << ",tolerance=" << BRep_Tool::Tolerance(edge)
+                        << ",sameRange=" << BRep_Tool::SameRange(edge)
+                        << ",sameParameter=" << BRep_Tool::SameParameter(edge);
+                }
+                out << ')'; owner(shape);
+            };
+            OS3DSignalScope signalScope;
+            try {
+                OCC_CATCH_SIGNALS
+                if (deadline->Fired() || maker.GetReport().IsNull()) { out << ";skipped=deadline-or-report"; }
+                else {
+                    Handle(IntTools_Context) context;
+                    if (maker.DSFiller()!=nullptr) context=maker.DSFiller()->Context();
+                    const Message_ListOfAlert &alerts=maker.GetReport()->GetAlerts(Message_Warning);
+                    size_t pairs=0;
+                    for (Message_ListOfAlert::Iterator it(alerts); it.More() && pairs<2; it.Next()) {
+                        const Handle(BOPAlgo_AlertUnableToOrientTheShape) alert=
+                            Handle(BOPAlgo_AlertUnableToOrientTheShape)::DownCast(it.Value());
+                        if (alert.IsNull()) continue;
+                        if (deadline->Fired()) { out << ";skipped=deadline"; break; }
+                        std::vector<TopoDS_Shape> pair;
+                        for (TopoDS_Iterator part(alert->GetShape()); part.More() && pair.size()<3; part.Next()) pair.push_back(part.Value());
+                        out << ";pair=" << ++pairs << ",members=" << pair.size();
+                        if (pair.size()!=2 || pair[0].IsNull() || pair[1].IsNull()) continue;
+                        describe(pair[0],"split"); describe(pair[1],"original");
+                        size_t edgeCount=0;
+                        for (const auto &shape:pair) for (TopExp_Explorer edge(shape,TopAbs_EDGE); edge.More() && edgeCount<=128; edge.Next()) ++edgeCount;
+                        if (context.IsNull() || edgeCount>128 || visits>4096 || deadline->Fired()) {
+                            out << ";recheckSkipped=context-or-edge-or-owner-budget-or-deadline"; continue;
+                        }
+                        Standard_Integer error=0;
+                        const Standard_Boolean reverse=BOPTools_AlgoTools::IsSplitToReverse(pair[0],pair[1],context,&error);
+                        out << ";orientationError=" << error << ";wouldReverse=" << reverse
+                            << ";deadlineAfterRecheck=" << deadline->Fired();
+                    }
+                }
+            } catch (Standard_Failure &failure) {
+                out << ";diagnosticException=" << (failure.GetMessageString() ? failure.GetMessageString() : "OCCT");
+            } catch (...) { out << ";diagnosticException=unknown"; }
+            out << '}'; std::string result=out.str();
+            if (result.size()>8192) result=result.substr(0,8192)+"[diagnostic truncated]";
+            return result;
+        };
         std::vector<TopoDS_Solid> inwardTools;
         // PROVE each orientation with real Common AND empty source-minus-halfspace.
         // A plane merely passing through a face does not prove convex support.
@@ -5156,7 +5267,8 @@ static OCCTShape *OS3DPlanarSupportShell(const TopoDS_Shape &source,
             OS3D_GUARDED(status, "planar support common proof", proof.Build(progress->Start()));
             if (deadline->Fired() || !proof.IsDone() || proof.HasErrors() || proof.HasWarnings()) {
                 std::ostringstream report; proof.DumpErrors(report); proof.DumpWarnings(report);
-                const std::string reason = "planar support common proof failed: " + report.str();
+                const std::string reason = "planar support common proof failed: " + report.str()
+                    + orientationDiagnostic(proof, originalHalf, support);
                 OS3DSetStatus(status,OCCTOpCodeKernelRefused,[NSString stringWithFormat:@"support %d common done=%d errors=%d warnings=%d deadline=%d report=%s",support.sourceFace,(int)proof.IsDone(),(int)proof.HasErrors(),(int)proof.HasWarnings(),(int)deadline->Fired(),reason.c_str()]);
                 return nil;
             }

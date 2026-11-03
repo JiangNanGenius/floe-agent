@@ -2,6 +2,15 @@
   "object": {
     "pins": [
       {
+        "package": "argmax-oss-swift",
+        "repositoryURL": "https://github.com/argmaxinc/WhisperKit.git",
+        "state": {
+          "branch": null,
+          "revision": "1e2a163736dfa5a198e637ae44c114e1c6d5cc2d",
+          "version": null
+        }
+      },
+      {
         "package": "BigInt",
         "repositoryURL": "https://github.com/attaswift/BigInt.git",
         "state": {
@@ -65,6 +74,15 @@
         }
       },
       {
+        "package": "Jinja",
+        "repositoryURL": "https://github.com/huggingface/swift-jinja.git",
+        "state": {
+          "branch": null,
+          "revision": "7d0b8880ef8e567dd4e0089f8b99fb354129017c",
+          "version": "2.4.2"
+        }
+      },
+      {
         "package": "libgit2",
         "repositoryURL": "https://github.com/ibrahimcetin/libgit2.git",
         "state": {
@@ -89,6 +107,15 @@
           "branch": null,
           "revision": "78ecf6cb8055c4f6d9e6af6022091e06c927004e",
           "version": "0.2.1"
+        }
+      },
+      {
+        "package": "Sparkle",
+        "repositoryURL": "https://github.com/sparkle-project/Sparkle",
+        "state": {
+          "branch": null,
+          "revision": "ab7d71291238df6e0492143b120c9b696a35f603",
+          "version": "2.10.1"
         }
       },
       {
@@ -152,15 +179,6 @@
           "branch": null,
           "revision": "b721959445b617d0bf03910b2b4aced345fd93bf",
           "version": "0.9.0"
-        }
-      },
-      {
-        "package": "Jinja",
-        "repositoryURL": "https://github.com/huggingface/swift-jinja.git",
-        "state": {
-          "branch": null,
-          "revision": "7d0b8880ef8e567dd4e0089f8b99fb354129017c",
-          "version": "2.4.2"
         }
       },
       {
@@ -260,15 +278,6 @@
           "branch": null,
           "revision": "ca6f80ef534248d2f65c1b640656e3c9a270bfeb",
           "version": "1.10.0"
-        }
-      },
-      {
-        "package": "argmax-oss-swift",
-        "repositoryURL": "https://github.com/argmaxinc/WhisperKit.git",
-        "state": {
-          "branch": null,
-          "revision": "1e2a163736dfa5a198e637ae44c114e1c6d5cc2d",
-          "version": null
         }
       },
       {

@@ -1,6 +1,132 @@
 --- a/src/GeomFill/GeomFill_LocationGuide.cxx
 +++ b/src/GeomFill/GeomFill_LocationGuide.cxx
-@@ -384,24 +384,40 @@
+@@ -52,6 +52,104 @@
+ #include <TColgp_HArray1OfPnt.hxx>
+ #include <TColStd_HArray1OfInteger.hxx>
+ #include <TColStd_HArray1OfReal.hxx>
++#include <atomic>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <limits>
++
++
++// Opt-in qualification probe. No geometry, root or tolerance is changed.
++// Disabled unless the test host explicitly sets this environment variable.
++static bool OS3DContactProbeEnabled()
++{
++  static const bool enabled = [] {
++    const char* value = std::getenv("FLOE_OCCT_CONTACT_DIAGNOSTICS");
++    return value != nullptr && value[0] == '1' && value[1] == '\0';
++  }();
++  return enabled;
++}
++
++static bool OS3DContactProbeSlot(std::atomic<unsigned>& counter, unsigned cap)
++{
++  if (!OS3DContactProbeEnabled()) return false;
++  const unsigned index = counter.fetch_add(1, std::memory_order_relaxed);
++  if (index == cap)
++    std::fprintf(stderr, "OS3DContactProbe v=1 stage=cap cap=%u\n", cap);
++  return index < cap;
++}
++
++static Standard_Real OS3DContactEquationResidual(GeomFill_FunctionGuide& function,
++                                                const math_Vector& root)
++{
++  try {
++    math_Vector error(1, 3);
++    if (function.Value(root, error)) return error.Norm();
++  } catch (...) {
++    // Diagnostics must not replace the operation's actual outcome.
++  }
++  return std::numeric_limits<Standard_Real>::quiet_NaN();
++}
++
++static void OS3DContactProbeTable(const void* law, int index,
++                                Standard_Real parameter, Standard_Real spineZ, Standard_Real sectionParameter,
++                                Standard_Real guideParameter, Standard_Real angle,
++                                Standard_Real sectionV, Standard_Real previousAngle,
++                                Standard_Real residual, bool rescue)
++{
++  static std::atomic<unsigned> rows{0};
++  if (!OS3DContactProbeSlot(rows, 512)) return;
++  std::fprintf(stderr,
++    "OS3DContactProbe v=1 stage=table law=%p index=%d t=%.17g spine_z=%.17g section_u=%.17g "
++    "guide_w=%.17g angle=%.17g section_v=%.17g previous_angle=%.17g residual_mm=%.17g rescue=%d\n",
++    const_cast<void*>(law), index, parameter, spineZ, sectionParameter, guideParameter,
++    angle, sectionV, previousAngle, residual, rescue ? 1 : 0);
++}
++
++static void OS3DContactProbeRoot(const void* law, const char* overload,
++                               Standard_Real parameter, Standard_Real spineZ, Standard_Real sectionParameter,
++                               Standard_Real seedW, Standard_Real seedAngle, Standard_Real seedV,
++                               GeomFill_FunctionGuide& function, const math_Vector& root,
++                               const Handle(TColgp_HArray2OfPnt2d)& table)
++{
++  static std::atomic<unsigned> rows{0};
++  if (!OS3DContactProbeSlot(rows, 2048)) return;
++  math_Vector seed(1, 3);
++  seed(1) = seedW; seed(2) = seedAngle; seed(3) = seedV;
++  const Standard_Real seedResidual = OS3DContactEquationResidual(function, seed);
++  const Standard_Real rootResidual = OS3DContactEquationResidual(function, root);
++  Standard_Real tableAngle = std::numeric_limits<Standard_Real>::quiet_NaN();
++  Standard_Real tableV = tableAngle, lowT = tableAngle, highT = tableAngle;
++  if (!table.IsNull() && table->RowLength() >= 2) {
++    const int count = table->RowLength();
++    int high = count;
++    for (int i = 2; i <= count; ++i) {
++      if (parameter <= table->Value(1, i).X()) { high = i; break; }
++    }
++    const int low = high - 1;
++    lowT = table->Value(1, low).X(); highT = table->Value(1, high).X();
++    const Standard_Real span = highT - lowT;
++    const Standard_Real weight = span > 1.e-7 ? (parameter - lowT) / span : 0.5;
++    tableAngle = (1 - weight) * table->Value(2, low).X() + weight * table->Value(2, high).X();
++    tableV = (1 - weight) * table->Value(2, low).Y() + weight * table->Value(2, high).Y();
++  }
++  const Standard_Real branchDelta = std::remainder(root(2) - tableAngle, 2 * M_PI);
++  std::fprintf(stderr,
++    "OS3DContactProbe v=1 stage=root law=%p overload=%s t=%.17g spine_z=%.17g section_u=%.17g "
++    "table_lo=%.17g table_hi=%.17g table_angle=%.17g table_v=%.17g "
++    "seed_w=%.17g seed_angle=%.17g seed_v=%.17g root_w=%.17g root_angle=%.17g root_v=%.17g "
++    "branch_delta=%.17g seed_residual_mm=%.17g root_residual_mm=%.17g\n",
++    const_cast<void*>(law), overload, parameter, spineZ, sectionParameter, lowT, highT, tableAngle, tableV,
++    seedW, seedAngle, seedV, root(1), root(2), root(3), branchDelta, seedResidual, rootResidual);
++}
++
++static void OS3DContactProbeUnavailable(const void* law, const char* stage, Standard_Real parameter)
++{
++  static std::atomic<unsigned> rows{0};
++  if (!OS3DContactProbeSlot(rows, 64)) return;
++  std::fprintf(stderr, "OS3DContactProbe v=1 stage=%s law=%p t=%.17g\n",
++               stage, const_cast<void*>(law), parameter);
++}
+ 
+ IMPLEMENT_STANDARD_RTTIEXT(GeomFill_LocationGuide,GeomFill_LocationLaw)
+ 
+@@ -339,6 +437,8 @@
+     Extrema_POnCurv Pc;
+     Extrema_POnSurf Ps;
+     Standard_Real theU = 0., theV = 0.;
++    Standard_Real probeResidual = std::numeric_limits<Standard_Real>::quiet_NaN();
++    bool probeRescue = false;
+     
+     if (!DistMini.IsDone() || DistMini.NbExt() == 0) {
+ #ifdef OCCT_DEBUG
+@@ -366,6 +466,11 @@
+             SOS = Standard_True;
+             math_Vector RR(1,3);
+             Result.Root(RR);
++            // The rescue root also supplies the guide parameter. Pc is
++            // otherwise indefinite in this branch, but feeds the seed table.
++            Pc.SetValues(RR(1), myGuide->Value(RR(1)));
++            probeRescue = true;
++            if (OS3DContactProbeEnabled()) probeResidual = OS3DContactEquationResidual(E, RR);
+             PInt.SetValues(P, RR(2), RR(3), RR(1), IntCurveSurface_Out);
+             theU = PInt.U();
+             theV = PInt.V();
+@@ -384,24 +489,41 @@
      else { // on prend le point d'intersection 
        // d'angle le plus proche de P
        
@@ -40,6 +166,7 @@
 +      }
        DistMini.Points(jref, Pc, Ps);
 -      
++      if (OS3DContactProbeEnabled()) probeResidual = std::sqrt(DistMini.SquareDistance(jref));
        Ps.Parameter(theU, theV);
 -      a1 = theU;
 -      
@@ -50,3 +177,88 @@
      }//else
      
      // Controle de w 
+@@ -456,6 +578,7 @@
+ #endif
+     }
+     
++    OS3DContactProbeTable(this, ii, t, P.Z(), U, w, Angle, v, CurAngle, probeResidual, probeRescue);
+     p1.SetCoord(t, w); // on stocke les parametres
+     p2.SetCoord(Angle , v);
+     CurAngle = Angle;
+@@ -602,6 +725,7 @@
+     // initialisations germe
+     InitX(Param); 
+     
++    const Standard_Real probeW = X(1), probeAngle = X(2), probeV = X(3);
+     Standard_Integer Iter = 100;
+     gp_XYZ t,b,n;
+     t = M.Column(3);
+@@ -618,7 +742,10 @@
+ 
+     if (Result.IsDone()) {
+       // solution
+-      Result.Root(R); 
++      Result.Root(R /* observed without mutation */);
++      OS3DContactProbeRoot(this, "D0", Param, P.Z(),
++        myFirstS + (Param - myCurve->FirstParameter()) * ratio,
++        probeW, probeAngle, probeV, E, R, myPoles2d); 
+       
+       // rotation 
+       gp_Mat Rot;
+@@ -629,6 +756,7 @@
+       M.SetCols(n, b, t);
+     }
+     else {
++      OS3DContactProbeUnavailable(this, "D0_root_failed", Param);
+ #ifdef OCCT_DEBUG
+       std::cout << "LocationGuide::D0 : No Result !"<<std::endl;
+       TraceRevol(Param, U, myLaw, mySec, myCurve, Trans);
+@@ -671,6 +799,7 @@
+   if (rotation) {
+     //initialisation du germe
+     InitX(Param);    
++    const Standard_Real probeW = X(1), probeAngle = X(2), probeV = X(3);
+     Standard_Integer Iter = 100;
+     gp_XYZ b, n, t;
+     t = M.Column(3);
+@@ -688,7 +817,10 @@
+ 
+     if (Result.IsDone()) {
+       // solution 
+-      Result.Root(R);   
++      Result.Root(R /* observed without mutation */);
++      OS3DContactProbeRoot(this, "D0Poles", Param, P.Z(),
++        myFirstS + (Param - myCurve->FirstParameter()) * ratio,
++        probeW, probeAngle, probeV, E, R, myPoles2d);   
+       
+       // rotation 
+       gp_Mat Rot;
+@@ -701,6 +833,7 @@
+       M.SetCols(n, b, t);
+     }
+     else {
++      OS3DContactProbeUnavailable(this, "D0Poles_root_failed", Param);
+ #ifdef OCCT_DEBUG
+       Standard_Real U = myFirstS + ratio*(Param-myCurve->FirstParameter());
+       std::cout << "LocationGuide::D0 : No Result !"<<std::endl;
+@@ -750,7 +883,8 @@
+     DM *= Trans;
+   }
+ 
+-  if (rotation) {  
++  if (rotation) {
++    OS3DContactProbeUnavailable(this, "D1_unavailable", Param);
+     return Standard_False;
+  /*   
+ #ifdef OCCT_DEBUG
+@@ -917,8 +1051,9 @@
+     D2M *= Trans;
+   }
+ 
+-  if (rotation) 
++  if (rotation)
+     {
++      OS3DContactProbeUnavailable(this, "D2_unavailable", Param);
+       return Standard_False;
+ /*
+     Standard_Real U = myFirstS + 

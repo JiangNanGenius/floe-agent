@@ -254,7 +254,9 @@ public enum VideoModelRegistry {
                     : nil
             )
         }
-        return familyContract(modelRemoteID: model.remoteModelID, providerKind: provider.kind)
+        let kind: ProviderKind = ProviderBillingEndpoint.resolve(provider.baseURL) == .volcengineAgentPlan
+            ? .volcengineArk : provider.kind
+        return familyContract(modelRemoteID: model.remoteModelID, providerKind: kind)
     }
 
     /// Documented reference-image mode for one family. Veo takes asset
@@ -315,7 +317,7 @@ public enum VideoModelRegistry {
                 supportsAudio: true, maximumReferenceAssets: 3, referenceMode: "reference_image"
             )
         case .volcengineArk:
-            if normalized.contains("seedance-2-5") {
+            if normalizedIdentifier(modelRemoteID).contains("seedance25") {
                 return VideoParameterContract(
                     aspectRatios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
                     resolutions: ["480p", "720p", "1080p"],

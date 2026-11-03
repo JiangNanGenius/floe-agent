@@ -37,6 +37,8 @@ extension BridgeService {
     }
 
     func cleanupItems() async throws -> [BridgeCleanupItem] {
+        let updateLease = try updateActivity.begin(.maintenance)
+        defer { updateActivity.finish(updateLease) }
         let active = await jobs.activeTaskIDs()
         var result: [BridgeCleanupItem] = []
         let tasks = paths.root.appendingPathComponent("Tasks")
@@ -65,7 +67,9 @@ extension BridgeService {
     }
 
     @MainActor
-    func permissions(request: String?) -> [String: BridgeValue] {
+    func permissions(request: String?) throws -> [String: BridgeValue] {
+        let updateLease = try updateActivity.begin(.maintenance)
+        defer { updateActivity.finish(updateLease) }
         if request == "screenCapture", !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
         if request == "accessibility" {
             _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
@@ -103,6 +107,8 @@ extension BridgeService {
         return result
     }
     func storage() async throws -> [String: BridgeValue] {
+        let updateLease = try updateActivity.begin(.maintenance)
+        defer { updateActivity.finish(updateLease) }
         var values: [String: BridgeValue] = [:]
         for category in ["State", "Workspaces", "Tasks", "Skills", "Environments"] {
             let root = paths.root.appendingPathComponent(category)
@@ -122,6 +128,8 @@ extension BridgeService {
         return bytes
     }
     func cleanup(_ p: [String: BridgeValue]) async throws -> [String: BridgeValue] {
+        let updateLease = try updateActivity.begin(.maintenance)
+        defer { updateActivity.finish(updateLease) }
         let category = p["category"]?.string ?? ""
         let root: URL
         if category == "Caches" {

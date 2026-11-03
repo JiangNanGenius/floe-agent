@@ -481,7 +481,10 @@ final class AppEnvironment: ObservableObject {
         // chat surface projects the receipt onto the tool step), a human
         // CAD-UI confirmation records `user`. Without the origin-aware wiring
         // both paths would fall back to the historical `user` default.
-        let center = CadDocumentCenter { [weak self] conversationID, proposalID, decision, revision, sha256, origin in
+        let center = CadDocumentCenter(basicMachiningHandler: { [weak self] url,request,context in
+            guard let self else { throw FloeError.invalidConfiguration("App services are unavailable") }
+            return try await self.basicMachiningCenter.handleAI(documentURL:url,request:request,context:context)
+        }) { [weak self] conversationID, proposalID, decision, revision, sha256, origin in
             guard let self else { return }
             switch origin {
             case .toolAutomatic:
@@ -1497,6 +1500,8 @@ final class AppEnvironment: ObservableObject {
         let isStandaloneService = events.contains {
             NativeServiceRunMetadata.matches($0, runID: job.runID,
                 conversationID: job.conversationID, targetTool: job.targetTool)
+                || CADBasicMachiningNativeRunMetadata.matches($0,runID:job.runID,
+                    conversationID:job.conversationID,targetTool:job.targetTool)
         }
         let content = "[Floe background job \(job.id.uuidString)] \(job.targetTool) finished with state=\(job.state.rawValue). "
             + "Evidence excerpt: \(String(evidence.prefix(1_000))). "

@@ -6425,6 +6425,42 @@
             "text"
           ]
         },
+        "doubao-seedance-2.0": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        },
+        "doubao-seedance-2.0-fast": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        },
+        "doubao-seedance-2.0-mini": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        },
+        "doubao-seedance-2.5": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        },
         "doubao-seedream-5-0-pro": {
           "input": [
             "image",
@@ -6511,6 +6547,15 @@
             "doubao-seedream-5.0-flash"
           ],
           "role": "image"
+        },
+        {
+          "models": [
+            "doubao-seedance-2.5",
+            "doubao-seedance-2.0",
+            "doubao-seedance-2.0-fast",
+            "doubao-seedance-2.0-mini"
+          ],
+          "role": "video"
         }
       ],
       "toolNameCompatibility": false,

@@ -4,7 +4,7 @@
   "displayName": "OCCT closed-profile contact branch continuation",
   "status": "required",
   "approach": "single-object-surgical-reconstruction",
-  "purpose": "Select only true-contact extrema within existing Precision::Confusion and continue the nearest preceding unwrapped rotation angle; preserve Standard_Type repair and every non-target archive member.",
+  "purpose": "Select only true-contact extrema within existing Precision::Confusion and continue the nearest preceding unwrapped rotation angle; preserve Standard_Type repair and every non-target archive member. Repair the undefined SOS guide parameter and collect bounded contact residuals only when an explicit diagnostic environment flag is set.",
   "occt": {
     "name": "Open CASCADE Technology",
     "version": "7.8.1",
@@ -18,13 +18,13 @@
     },
     "overlaySource": {
       "path": "relink/derivations/guided-contact/overlay/src/GeomFill/GeomFill_LocationGuide.cxx",
-      "size": 42461,
-      "sha256": "0bc5e2eee03340fad555a92a63b978e47b12331f1e0e231a24f0025a6ff2480e"
+      "size": 48559,
+      "sha256": "89fd29cfc0f66ce6e2b8ad35998b3e2bd469ee88e0b87d4b1b2db27aea6fddfd"
     },
     "patch": {
       "path": "relink/derivations/guided-contact/minimal.patch",
-      "size": 1892,
-      "sha256": "f9e79074a1efe9fd5c0b1ecb1f51dc0fc9d15db8db4e8ca2aa8d0ed7c6a9c45c"
+      "size": 10306,
+      "sha256": "75ee15f7bd7b0e0b390dbc49d2ef4588576511bcd0bf3f9f7e0079d9d5fcb6da"
     }
   },
   "member": {
@@ -155,7 +155,7 @@
   "limitations": [
     "One additional object is rebuilt after the existing Standard_Type lifetime derivation, not a full OCCT rebuild.",
     "The manifest retains original upstream archive pins; nested input receipt plus parent expectedResult anchors this second-stage base.",
-    "Root compiled both stage-two objects on Xcode27.1 and preserved every other member. Original native guided workflow still needs actual geometry validation; no tolerance/fixture is changed."
+    "Both actual Xcode27.1 one-object artifacts preserve all other members; SOS seed repair and default-off diagnostics are under original guided workflow qualification. No tolerance/fixture is changed."
   ],
   "inputDerivation": {
     "id": "occt-standard-type-lifetime-v1",

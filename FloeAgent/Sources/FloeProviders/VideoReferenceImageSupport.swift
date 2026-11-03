@@ -81,6 +81,9 @@ public enum VideoReferenceImagePolicy {
             // HappyHorse 1.1 image-to-video documents one first-frame image.
             return AlibabaVideoWireRoute.resolve(modelRemoteID: modelRemoteID) == .happyHorseImage
         case .custom:
+            if let baseURL, ProviderBillingEndpoint.resolve(baseURL) == .volcengineAgentPlan {
+                return true
+            }
             // A hand-entered PAYG/Token Plan Model Studio URL keeps the
             // documented first-frame contracts.
             guard let baseURL,

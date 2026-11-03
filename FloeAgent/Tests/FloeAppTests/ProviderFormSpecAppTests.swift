@@ -36,7 +36,7 @@ struct ProviderFormSpecAppTests {
         )
         #expect(
             ProviderEditorViewModel.presets(for: .video).map(\.id)
-                == [.volcengineArk, .alibabaStudio, .alibabaTokenPlan, .googleGemini]
+                == [.volcengineArk, .volcengineAgentPlan, .alibabaStudio, .alibabaTokenPlan, .googleGemini]
         )
         // The video list can no longer contain a generic custom endpoint and
         // the image list no longer offers the dead generic custom route.

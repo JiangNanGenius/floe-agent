@@ -95,14 +95,12 @@ public protocol VideoProviderAdapter: Sendable {
 public struct VideoProviderAdapterFactory: Sendable {
     public init() {}
     public func adapter(for provider: ProviderProfile) -> (any VideoProviderAdapter)? {
-        // Token Plan video runs on the documented native DashScope task API.
-        // Agent Plan video is intentionally not enabled in this round, even
-        // for a legacy profile that stored the plan endpoint under another
-        // kind: no plan video entry is offered.
+        // Subscription media stays on its own endpoint and credential.
+        // Account/tier entitlement is a server decision, not an adapter gate.
         if let billing = ProviderBillingEndpoint.resolve(provider.baseURL) {
             switch billing {
             case .volcengineAgentPlan:
-                return nil
+                return VolcengineVideoAdapter()
             case .alibabaTokenPlan:
                 return AlibabaVideoAdapter()
             }
@@ -489,7 +487,7 @@ public struct VolcengineVideoAdapter: VideoProviderAdapter {
         return .init(providerTaskID: id, estimatedCompletionAt: Date().addingTimeInterval(180), resultRetentionExpiresAt: nil)
     }
     static func requestBody(_ request: RemoteVideoRequest) throws -> [String: Any] {
-        let latest = request.modelRemoteID.contains("seedance-2-5")
+        let latest = VideoModelRegistry.normalizedIdentifier(request.modelRemoteID).contains("seedance25")
         guard VideoReferenceImagePolicy.supportsReferenceImages(
             providerKind: .volcengineArk, modelRemoteID: request.modelRemoteID
         ) else {

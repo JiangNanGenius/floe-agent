@@ -18,6 +18,7 @@ final class BridgeJob: @unchecked Sendable {
     private var finished: Int32?
     private var written: Int64 = 0
     private var inputBytes: Int64 = 0
+    private let onFinished: @Sendable () -> Void
     init(
         id: String,
         clientID: String,
@@ -25,17 +26,24 @@ final class BridgeJob: @unchecked Sendable {
         output: URL,
         pid: pid_t,
         master: Int32,
-        redactor: BridgeSensitiveRedactor?
+        redactor: BridgeSensitiveRedactor?,
+        onFinished: @escaping @Sendable () -> Void = {}
     ) {
         self.id = id; self.clientID = clientID; self.workspaceID = workspaceID
         self.output = output; self.pid = pid; self.master = master
         self.redactor = redactor
+        self.onFinished = onFinished
     }
     func status() -> (code: Int32?, bytes: Int64, input: Int64) { lock.withLock { (finished, written, inputBytes) } }
     func drain() {
         DispatchQueue.global(qos: .utility).async { [self] in
-            guard let writer = try? FileHandle(forWritingTo: output) else { signal(SIGTERM); return }
-            defer { try? writer.close(); lock.withLock { _ = Darwin.close(master) } }
+            let writer = try? FileHandle(forWritingTo: output)
+            defer {
+                try? writer?.close()
+                lock.withLock { _ = Darwin.close(master) }
+                onFinished()
+            }
+            if let writer {
             var streamRedactor = redactor
             var buffer = [UInt8](repeating: 0, count: 16 * 1_024)
             while true {
@@ -63,14 +71,19 @@ final class BridgeJob: @unchecked Sendable {
                     }
                 }
             }
+            } else {
+                // Preserve the existing writer-failure signal, but still reap
+                // the real process before releasing update admission.
+                signal(SIGTERM)
+            }
             var status: Int32 = 0
             while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
             let code: Int32 = (status & 0x7f) == 0 ? (status >> 8) & 0xff : 128 + (status & 0x7f)
-            lock.withLock { finished = code }
             // Persist outcome separately from the unbounded user output.
             if let data = try? BridgeWire.encode(["exitCode": code]) {
                 try? data.write(to: output.deletingLastPathComponent().appendingPathComponent("result.json"), options: .atomic)
             }
+            lock.withLock { finished = code }
         }
     }
     func write(_ data: Data) throws {
@@ -101,10 +114,16 @@ final class BridgeJob: @unchecked Sendable {
 actor BridgeJobs {
     let paths: BridgePaths
     private var jobs: [String: BridgeJob] = [:]
-    init(paths: BridgePaths) { self.paths = paths }
+    let updateActivity: BridgeUpdateActivity
+    init(paths: BridgePaths, updateActivity: BridgeUpdateActivity = BridgeUpdateActivity()) {
+        self.paths = paths; self.updateActivity = updateActivity
+    }
     func start(id: String, clientID: String, workspaceID: String, command: String, commandFile: URL? = nil, cwd: URL,
                environment: [String: String], sensitiveEnvironmentNames: [String] = [],
                columns: Int, rows: Int) throws -> [String: BridgeValue] {
+        let updateLease = try updateActivity.begin(.job)
+        var ownsLease = true
+        defer { if ownsLease { updateActivity.finish(updateLease) } }
         guard UUID(uuidString: id) != nil, jobs[id] == nil else { throw BridgeFailure.remote("This job already exists; inspect its result.") }
         // Validate the marked names and collect their exact values before
         // creating any job state: a malformed request must not leave a task
@@ -162,9 +181,10 @@ actor BridgeJobs {
             output: output,
             pid: pid,
             master: master,
-            redactor: redactor
+            redactor: redactor,
+            onFinished: { [activity = updateActivity] in activity.finish(updateLease) }
         )
-        jobs[id] = job; job.drain()
+        jobs[id] = job; ownsLease = false; job.drain()
         return ["jobID": .string(id), "alive": .bool(true)]
     }
     func owned(_ id: String, clientID: String) throws -> BridgeJob {

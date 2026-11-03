@@ -66,18 +66,25 @@ final class BridgeHTTPServer: @unchecked Sendable {
             Task {
                 do {
                     let request = try BridgeWire.decode(BridgeRequest.self, from: requestBytes)
-                    let result = try await service.respond(request)
-                    guard result.count <= BridgeWire.maximumFrameBytes else { reject(connection); return }
-                    send(connection, code: "200 OK", body: result)
+                    let result = try await service.respondForDelivery(request)
+                    guard result.data.count <= BridgeWire.maximumFrameBytes else {
+                        service.finishDelivery(result.lease); reject(connection); return
+                    }
+                    send(connection, code: "200 OK", body: result.data) { [service] in
+                        service.finishDelivery(result.lease)
+                    }
                 } catch { reject(connection) }
             }
         }
     }
     private func reject(_ connection: NWConnection) { send(connection, code: "400 Bad Request", body: Data()) }
-    private func send(_ connection: NWConnection, code: String, body: Data) {
+    private func send(_ connection: NWConnection, code: String, body: Data,
+                      completion: @escaping @Sendable () -> Void = {}) {
         var data = Data("HTTP/1.1 \(code)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".utf8)
         data.append(body)
-        connection.send(content: data, completion: .contentProcessed { _ in connection.cancel() })
+        connection.send(content: data, completion: .contentProcessed { _ in
+            connection.cancel(); completion()
+        })
     }
 }
 #endif

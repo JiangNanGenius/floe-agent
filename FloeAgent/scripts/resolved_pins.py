@@ -101,13 +101,14 @@ def application_pins(project):
 # (including a new dependency, target or resource) requires updating this policy
 # and its test, and new package dependencies must be promoted to the host lock
 # and the license inventory rather than silently resolved by Xcode. The package
-# stays lock-free.
+# carries only its explicitly reviewed companion lock, checked against the host.
 FIRST_PARTY_SIBLING_PACKAGES = {
     "FloeMacBridge": {
         "path": "../FloeMacBridge",
-        # Reviewed change: add the existing-app/PTY test target only. The
-        # shipping targets and external dependency graph are unchanged.
-        "manifestSHA256": "1414211cbc93cc641db58b302c89d2933e85dfeb6bd4d6b6c9f7e642d7983db9",
+        # Sparkle 2.10.1 is macOS-only. Its exact companion lock must also
+        # occur in the committed host closure; arbitrary sibling locks fail.
+        "manifestSHA256": "c7f593b2e8ee27e01a89d7a53f2e6c4945ef892991eee30ba897c47da376c7dc",
+        "resolvedSHA256": "1ad9a7512c0851f74e084a70f38c2d1d2e6d97aff133f37625cbf21fceb53ec5",
     },
 }
 
@@ -147,7 +148,7 @@ def _first_party_package_dir(root, name, raw_path):
     read must be tracked: the package-root .build/.swiftpm caches are pruned,
     every other untracked, ignored or symlinked entry fails. The manifest bytes
     must equal the reviewed digest in the policy. The package must not carry
-    its own Package.resolved. This binds the linked source and its dependency
+    an unreviewed Package.resolved. This binds the linked source and its dependency
     surface to the frozen Git revision instead of trusting a local path.
     """
     policy = FIRST_PARTY_SIBLING_PACKAGES[name]
@@ -245,11 +246,20 @@ def _first_party_package_dir(root, name, raw_path):
             f"({manifest_digest})"
         )
     lock_path = resolved / "Package.resolved"
-    if lock_path.is_symlink() or lock_path.exists():
+    if (lock_path.is_symlink() or not lock_path.is_file()
+            or hashlib.sha256(lock_path.read_bytes()).hexdigest() != policy["resolvedSHA256"]):
         raise ValueError(
             "First-party Xcode package must not add an independent Package.resolved; "
-            f"declare its dependencies in the host lock: {name}"
+            f"only the reviewed companion lock is allowed: {name}"
         )
+    try:
+        host = {pin["identity"]: pin for pin in resolved_pins(
+            json.loads((root / "Package.resolved").read_text(encoding="utf-8")))}
+        for pin in resolved_pins(json.loads(lock_path.read_text(encoding="utf-8"))):
+            if not same_pin(host.get(pin["identity"]), pin):
+                raise ValueError(f"Companion dependency differs from the committed host lock: {pin['identity']}")
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Companion dependencies need a valid committed host lock: {name}") from error
     return resolved
 
 
@@ -267,8 +277,8 @@ def application_local_pins(project, project_dir):
     ``FloeMacBridge`` at ``../FloeMacBridge``. It is accepted only as a real,
     tracked and clean directory of the same Git checkout whose manifest matches
     the reviewed digest, with every non-cache file tracked and no symlinks, and
-    must not carry its own ``Package.resolved``. It therefore contributes no
-    pins; a changed manifest, a new file or a dependency needs an explicit
+    carries only the reviewed ``Package.resolved`` also pinned in the host.
+    It contributes no unreviewed pins; a changed manifest, file or dependency needs an explicit
     policy/test review before it can build. Every other path outside
     ``project_dir`` still fails.
     """

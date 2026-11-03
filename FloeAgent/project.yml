@@ -99,6 +99,9 @@ targets:
       - path: FloeApp/Resources/Capabilities
         type: folder
         buildPhase: resources
+      - path: FloeApp/Resources/BasicMachining
+        type: folder
+        buildPhase: resources
       # Seamlessly looped PiP ambient tracks (CC0; attribution in
       # Resources/Licenses/PiPAmbientMeditation-CC0.txt and
       # Resources/Licenses/PiPAmbientExpansion-CC0.txt). Declared explicitly

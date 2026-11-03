@@ -30,11 +30,11 @@ struct ProviderFormSpecModuleTests {
         )
     }
 
-    @Test("Video role offers only the three suppliers with a native video adapter")
+    @Test("Video role offers suppliers with a native video adapter")
     func eligibleVideoPresets() {
         #expect(
             ProviderFormSpecResolver.eligiblePresets(for: .video).map(\.id)
-                == [.volcengineArk, .alibabaStudio, .alibabaTokenPlan, .googleGemini]
+                == [.volcengineArk, .volcengineAgentPlan, .alibabaStudio, .alibabaTokenPlan, .googleGemini]
         )
     }
 

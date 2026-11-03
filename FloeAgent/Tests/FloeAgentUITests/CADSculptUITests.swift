@@ -36,13 +36,17 @@ import XCTest
         }
         XCTAssertTrue(start.isHittable);XCTAssertTrue(start.isEnabled);start.tap()
         XCTAssertTrue(app.otherElements["CADSculptHUD"].waitForExistence(timeout:15))
+        let screenshot=XCTAttachment(screenshot:app.screenshot())
+        screenshot.name="Palette height beside native sculpt panel";screenshot.lifetime = .keepAlways;add(screenshot)
     }
     private func stroke(_ mode:String) {
         app.segmentedControls["CADSculptBrush"].buttons[mode].tap()
         let ack=app.staticTexts["CADSculptApplied"].firstMatch,before=ack.exists ? ack.label:""
         let viewport=app.descendants(matching:.any).matching(identifier:"CADEditorViewport").firstMatch
         XCTAssertTrue(viewport.exists)
-        let a=viewport.coordinate(withNormalizedOffset:CGVector(dx:0.43,dy:0.34)),b=viewport.coordinate(withNormalizedOffset:CGVector(dx:0.60,dy:0.34))
+        // The original 0.34 row is above the projected grid in the real
+        // iPad isometric camera. Use its visible middle, above the tool HUD.
+        let a=viewport.coordinate(withNormalizedOffset:CGVector(dx:0.43,dy:0.50)),b=viewport.coordinate(withNormalizedOffset:CGVector(dx:0.60,dy:0.50))
         a.press(forDuration:0.08,thenDragTo:b,withVelocity:.slow,thenHoldForDuration:0.1)
         let applied=NSPredicate { _,_ in ack.exists && ack.label != before }
         XCTAssertEqual(XCTWaiter.wait(for:[XCTNSPredicateExpectation(predicate:applied,object:nil)],timeout:20),.completed,"A real new stroke must reach the ordinary service commit, not merely keep an old success label")

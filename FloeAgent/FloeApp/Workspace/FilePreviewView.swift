@@ -100,6 +100,7 @@ struct FilePreviewView: View {
     /// File entry without a conversation: presents the conversational start
     /// bound to this file (a genuine ordinary task, no old form).
     @State private var fileDesignTarget: DesignTarget?
+    @State private var basicMachiningSelection: CADSelectionContext?
 
     var body: some View {
         Group {
@@ -129,10 +130,14 @@ struct FilePreviewView: View {
                 FloeCADWorkbenchView(
                     document: floecadDocument,
                     canvasActions: CADCanvasActionBridge.actions(
-                        assetStore: environment.creativeAssetStore))
+                        assetStore: environment.creativeAssetStore),
+                    onSelectionContextChange: {basicMachiningSelection=$0})
                     .modifier(FloeCADHostChrome(document: floecadDocument,
                                                 canvasActions: CADCanvasActionBridge.actions(
-                                                    assetStore: environment.creativeAssetStore)))
+                                                    assetStore: environment.creativeAssetStore),
+                                                onSelectionContextChange: {basicMachiningSelection=$0}))
+                    .modifier(CADBasicMachiningEntry(document:floecadDocument,selection:basicMachiningSelection,
+                        workspace:center,root:center.fileService?.guardResolver.rootURL,workspaceID:center.currentWorkspace?.id,conversationID:engineeringConversationID))
                     .safeAreaInset(edge: .top) {
                         VStack(spacing: 0) {
                             recoveredCopyBanner

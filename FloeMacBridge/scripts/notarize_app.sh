@@ -6,8 +6,8 @@ app="$1"; identity="$2"; notary_profile="$3"
 output="$(dirname "$app")"
 dmg="$output/Floe-Bridge.dmg"
 [[ ! -e "$dmg" ]] || { echo 'Refusing to overwrite an existing distribution.' >&2; exit 2; }
-codesign --force --timestamp --options runtime --sign "$identity" "$app"
-codesign --verify --strict --verbose=2 "$app"
+bridge_root="$(cd "$(dirname "$0")/.." && pwd)"
+bash "$bridge_root/scripts/sign_app.sh" "$app" "$identity"
 app_zip="$output/Floe-Bridge-notary.zip"
 [[ ! -e "$app_zip" ]] || { echo 'Refusing to overwrite an existing notary transport.' >&2; exit 2; }
 ditto -c -k --keepParent "$app" "$app_zip"

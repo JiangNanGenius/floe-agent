@@ -7637,8 +7637,14 @@
         "acceptance_pending": "新增每类材质参数均完成UI/LLM、预览、保存和目标格式保真或降级说明。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "6671e8da",
+          "d4fc5a5b"
+        ],
+        "evidence": "docs/qualification/cad-material-rigging-20261103/README.md",
+        "physical_device_claim": false,
+        "live_LLM_claim": false
       },
       "verification_plan": {
         "priority": "P2",
@@ -8847,8 +8853,14 @@
         "acceptance_pending": "引入骨骼/权重/形变文档模型后验证绑定编辑、求值和目标格式动画输出。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "6671e8da",
+          "d4fc5a5b"
+        ],
+        "evidence": "docs/qualification/cad-material-rigging-20261103/README.md",
+        "physical_device_claim": false,
+        "live_LLM_claim": false
       },
       "verification_plan": {
         "priority": "P2",
