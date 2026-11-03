@@ -62,6 +62,13 @@ class FloeApplication : Application() {
      * PDF or Office processes. */
     internal var runOutputPdf: com.floe.android.host.output.RunOutputPdfPreviewController? = null
         private set
+    /** Owned text/markdown + generated media OPEN lane: App-owned full-screen
+     * viewer over verified staged run-output bytes (read-only text space;
+     * bounded image/audio/video playback). Main-process only, like
+     * [runOutputPdf]; it owns no credential/runtime state and never runs in
+     * the isolated PDF or Office processes. */
+    internal var runOutputViewer: com.floe.android.host.output.RunOutputViewerPreviewController? = null
+        private set
     lateinit var linuxSetup: com.floe.android.host.linux.LocalRuntimeSetupHost
         private set
     private lateinit var linuxShell: com.floe.android.host.linux.LinuxShellPump
@@ -434,6 +441,10 @@ class FloeApplication : Application() {
         // singleton, no first-document fallback: every launch re-enters the
         // exact conversation/run/output receipt through the stager).
         runOutputPdf = com.floe.android.host.output.RunOutputPdfPreviewController(this, hostScope)
+        // Same composition rule as the PDF lane: owned launches re-enter the
+        // exact conversation/run/output receipt through the stager — no
+        // global singleton, no first-document fallback.
+        runOutputViewer = com.floe.android.host.output.RunOutputViewerPreviewController(this, hostScope)
         linuxSetup = com.floe.android.host.linux.LocalRuntimeSetupHost(this, hostScope)
         linuxShell = com.floe.android.host.linux.LinuxShellPump(this, hostScope)
         // C01 environment lifecycle: the owner reports the REAL setup phase

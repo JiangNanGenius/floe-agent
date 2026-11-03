@@ -210,12 +210,18 @@ fun HomeLaunchpadPage(
         selected
     }
     val selectedProject = projectRows.firstOrNull { it.id == selectedProjectId }
-    androidx.compose.runtime.LaunchedEffect(projectRows, selectedProjectId, projectState?.loading, runtimeHost) {
-        if (runtimeHost != null && projectState?.loading == false &&
-            selectedProjectId != null && selectedProject == null) {
+    // The explicit choice is dropped ONLY after a genuinely successful list
+    // load that no longer contains it (stale-id protection). A failed or
+    // in-flight list keeps the explicit ownership: the picker surfaces the
+    // failure with a retry instead of silently resetting the choice.
+    androidx.compose.runtime.LaunchedEffect(projectRows, selectedProjectId, projectState?.loading, projectState?.errorCode, runtimeHost) {
+        if (runtimeHost != null &&
+            runtimeHost.home.shouldClearMissingProjectSelection(projectState)) {
             runtimeHost.home.selectProject(null)
         }
     }
+    val projectListFailed = runtimeHost != null &&
+        projectState?.loading == false && projectState.errorCode != null
     val defaultProjectName = stringResource(R.string.project_default_name)
     val modeLabel = when (agentModeKey) {
         "chat" -> stringResource(R.string.mode_chat)
@@ -507,10 +513,30 @@ fun HomeLaunchpadPage(
                 }
                 FloeComposerChip(
                     icon = FloeIcons.Folder,
-                    text = selectedProject?.name ?: stringResource(R.string.project_none),
+                    text = when {
+                        selectedProject != null -> selectedProject.name
+                        // The list failed: say so on the chip instead of
+                        // asserting "no project" while an explicit choice
+                        // may still be retained for the assignment.
+                        projectListFailed -> stringResource(R.string.project_list_load_failed)
+                        else -> stringResource(R.string.project_none)
+                    },
                     onClick = { projectMenuOpen = true },
                 )
                 FloeChipMenu(expanded = projectMenuOpen, onDismiss = { projectMenuOpen = false }) {
+                    // A failed list load is stated honestly with a retry —
+                    // never rendered as an empty library (which would hide
+                    // the error and read as "no projects exist").
+                    if (projectListFailed) {
+                        CupertinoMenuEntry(
+                            title = stringResource(R.string.project_list_load_failed),
+                            selected = false,
+                            onClick = {
+                                projectMenuOpen = false
+                                runtimeHost?.projects?.refresh()
+                            },
+                        )
+                    }
                     CupertinoMenuEntry(
                         title = stringResource(R.string.project_none),
                         selected = selectedProjectId == null,

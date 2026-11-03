@@ -368,6 +368,7 @@
     <string name="run_output_unavailable">File service unavailable</string>
     <string name="run_output_truncated">Some outputs may not be listed</string>
     <string name="run_output_refresh">Check again</string>
+    <string name="run_output_preview_unsupported">No in-App preview for this file. Save a copy to open it elsewhere.</string>
     <!-- G07.3A current-thread visible search (⇄ ThreadSearchBar/ThreadSearchModel) -->
     <string name="thread_search_placeholder">Find in chat</string>
     <string name="thread_search_done">Done</string>

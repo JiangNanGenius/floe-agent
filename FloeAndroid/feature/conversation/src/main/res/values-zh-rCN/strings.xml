@@ -366,6 +366,7 @@
     <string name="run_output_unavailable">文件服务不可用</string>
     <string name="run_output_truncated">部分输出可能未列出</string>
     <string name="run_output_refresh">重新检查</string>
+    <string name="run_output_preview_unsupported">此文件不支持应用内预览，可保存副本后用其他应用打开。</string>
     <!-- G07.3A 当前对话可见内容查找（⇄ ThreadSearchBar/ThreadSearchModel） -->
     <string name="thread_search_placeholder">在对话中查找</string>
     <string name="thread_search_done">完成</string>

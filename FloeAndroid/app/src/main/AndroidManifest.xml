@@ -341,6 +341,22 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|locale|layoutDirection"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
+        <!--
+          Owned run-output viewer: App-owned full-screen preview of ONE
+          verified durable text/Markdown or generated image/audio/video
+          output. Non-exported and default-process: launchable only from this
+          app's own RunOutputViewerPreviewController with an opaque live-launch
+          token (the Intent carries no path, digest or model text; the bytes
+          are re-proven at staging by the owned egress, and text renders as
+          read-only selectable text — no WebView, no network). Media plays
+          from the App-owned immutable snapshot through the platform player.
+          No new permission.
+        -->
+        <activity
+            android:name=".host.output.RunOutputViewerPreviewActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|locale|layoutDirection"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
         <!-- G07.3A user-question notification reply. Exported=false: reached
              only by the explicit PendingIntent the question notification
              creates. The receiver carries identifiers/revisions only (never

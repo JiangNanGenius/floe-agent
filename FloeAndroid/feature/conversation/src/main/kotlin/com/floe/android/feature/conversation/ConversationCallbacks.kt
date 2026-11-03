@@ -695,9 +695,12 @@ interface ConversationUiCallbacks {
         session: ConversationSessionToken, runId: String, outputId: String,
     ): Boolean = false
 
-    /** Open one owned Office or PDF run output through its in-app preview.
-     * Office uses a separately owned editable copy; PDF stays immutable.
-     * True = the host admitted the open. No external-intent fallback. */
+    /** Open one owned run output through a REAL in-app preview: Office
+     * (separately owned editable copy), PDF (immutable isolated renderer),
+     * or the App-owned viewer lane for text/Markdown + generated image/
+     * audio/video under the closed sealed MIME/extension agreement. Types
+     * without a proven route are never offered (Save Copy stays). True =
+     * the host admitted the open. No external-intent fallback. */
     fun openRunOutputFile(
         session: ConversationSessionToken, runId: String, outputId: String,
     ): Boolean = false

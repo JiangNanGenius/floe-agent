@@ -67,7 +67,10 @@ class RunOutputCardPresentationTest {
         assertFalse(RunOutputCardPresentation.supportsOpen("application/pdf", "notes.txt"))
         assertFalse(RunOutputCardPresentation.supportsOpen("text/plain", "a.pdf"))
         assertFalse(RunOutputCardPresentation.supportsOpen("application/octet-stream", "a.pdf"))
-        assertFalse(RunOutputCardPresentation.supportsOpen("text/plain", "notes.txt"))
+        // The owned viewer now supplies a real text route; an unknown MIME
+        // still cannot gain that route from a text extension alone.
+        assertTrue(RunOutputCardPresentation.supportsOpen("text/plain", "notes.txt"))
+        assertFalse(RunOutputCardPresentation.supportsOpen("application/octet-stream", "notes.txt"))
         // The dedicated PDF predicate matches the host router rule exactly.
         assertTrue(RunOutputCardPresentation.supportsPdfOpen("application/pdf", "x.pdf"))
         assertFalse(RunOutputCardPresentation.supportsPdfOpen("application/pdf", "x.docx"))
@@ -75,6 +78,44 @@ class RunOutputCardPresentationTest {
         // Extension fallback agrees with the host OfficePreviewController gate.
         assertTrue(RunOutputCardPresentation.supportsOpen("application/octet-stream", "deck.pptx"))
         assertFalse(RunOutputCardPresentation.supportsOpen("application/octet-stream", "deck.PDF"))
+    }
+
+    @Test
+    fun openSupportsOwnedViewerAgreementKinds() {
+        // Text/markdown + generated media open through the App-owned viewer
+        // lane ONLY under the SAME closed MIME/extension agreement the host
+        // router re-checks before staging (a mismatch keeps Save but never
+        // gets a preview affordance — no dead Open).
+        assertTrue(RunOutputCardPresentation.supportsOpen("text/markdown", "qa_report.md"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("text/plain", "notes.txt"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("image/png", "chart.png"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("image/jpeg", "photo.jpg"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("audio/wav", "voice.wav"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("audio/mpeg", "song.mp3"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("video/mp4", "render.mp4"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("video/webm", "render.webm"))
+        // Agreement violations and unknown types: no preview promise.
+        assertFalse(RunOutputCardPresentation.supportsOpen("text/plain", "notes.md"))
+        assertFalse(RunOutputCardPresentation.supportsOpen("image/png", "chart.webp"))
+        assertFalse(RunOutputCardPresentation.supportsOpen("audio/wav", "voice.mp3"))
+        assertFalse(RunOutputCardPresentation.supportsOpen("application/octet-stream", "render.mp4"))
+        assertFalse(RunOutputCardPresentation.supportsOpen("application/octet-stream", "archive.zip"))
+        assertFalse(RunOutputCardPresentation.supportsOpen("application/zip", "archive.zip"))
+        assertFalse(RunOutputCardPresentation.supportsOpen("image/heic", "photo.heic"))
+        // The limitation note appears exactly for actionable unsupported cards.
+        assertEquals(R.string.run_output_preview_unsupported,
+            RunOutputCardPresentation.previewUnsupportedLabelRes(
+                true, "application/zip", "archive.zip"))
+        assertEquals(R.string.run_output_preview_unsupported,
+            RunOutputCardPresentation.previewUnsupportedLabelRes(
+                true, "application/octet-stream", "archive.zip"))
+        // Supported previews and non-actionable cards carry no such note.
+        assertNull(RunOutputCardPresentation.previewUnsupportedLabelRes(
+            true, "text/markdown", "qa_report.md"))
+        assertNull(RunOutputCardPresentation.previewUnsupportedLabelRes(
+            true, "application/pdf", "a.pdf"))
+        assertNull(RunOutputCardPresentation.previewUnsupportedLabelRes(
+            false, "application/zip", "archive.zip"))
     }
 
     @Test
