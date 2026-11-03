@@ -7246,6 +7246,91 @@
         }
       }
     },
+    "voice.cloud.profile.streaming": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Streaming recognition"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "流式识别"
+          }
+        }
+      }
+    },
+    "voice.cloud.profile.after_recording": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recognize after recording"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "录音后识别"
+          }
+        }
+      }
+    },
+    "voice.cloud.profile.streaming.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show words while you speak. When off, recognize after each utterance."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "边说边显示文字。关闭后，在每句话结束后识别。"
+          }
+        }
+      }
+    },
+    "voice.cloud.profile.model": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Speech model"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "语音模型"
+          }
+        }
+      }
+    },
+    "voice.cloud.model.volcengine_seed_asr2": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Doubao Speech Recognition 2.0"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "豆包语音识别 2.0"
+          }
+        }
+      }
+    },
     "voice.cloud.profile.live_model": {
       "extractionState": "manual",
       "localizations": {

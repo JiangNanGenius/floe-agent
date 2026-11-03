@@ -6,6 +6,34 @@ import FloeSecurity
 @testable import FloeApp
 
 final class CloudASRPreloadIntegrationTests: XCTestCase {
+    func testLiveHypothesisRevisionsReplaceOnlyTheCurrentPartial() {
+        let box = CloudLiveEventBox()
+        let turn = UUID()
+        box.apply(.partial(turnID: turn, itemID: "utterance", delta: "This is.", sequence: 1))
+        XCTAssertEqual(box.snapshot().partial, "This is.")
+        box.apply(.partialReplacement(turnID: turn, itemID: "utterance",
+                                      transcript: "This is a streaming.", sequence: 2))
+        XCTAssertEqual(box.snapshot().partial, "This is a streaming.")
+        box.apply(.partialReplacement(turnID: turn, itemID: "utterance",
+                                      transcript: "This is a streaming test", sequence: 3))
+        box.apply(.partial(turnID: turn, itemID: "utterance", delta: ".", sequence: 4))
+        XCTAssertEqual(box.snapshot().partial, "This is a streaming test.")
+        box.apply(.final(turnID: turn, itemID: "utterance",
+                         transcript: "This is a streaming test.", sequence: 5))
+        XCTAssertEqual(box.snapshot().final, "This is a streaming test.")
+    }
+
+    @MainActor
+    func testVolcenginePresetsSelectTheLiveAdapterWithoutChangingBillingRoute() throws {
+        for preset in [CloudASRSettingsStore.ProviderPreset.volcengineAgentPlan, .volcenginePayAsYouGo] {
+            let profile = preset.makeProfile()
+            XCTAssertEqual(profile.billingRoute, preset.route)
+            XCTAssertEqual(profile.liveModelID, "bigmodel")
+            XCTAssertNotNil(try ASRAdapterFactory.liveAdapter(for: profile))
+            XCTAssertEqual(profile.resolvedLiveEndpoint?.contains("/plan/"), preset.route == .agentPlan)
+        }
+    }
+
     @MainActor
     func testExplicitFileServicePriorityDoesNotFollowOrChangeDictationSelection() async throws {
         let suite = "floe.asr.file-priority." + UUID().uuidString

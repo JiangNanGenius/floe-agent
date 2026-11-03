@@ -81,7 +81,7 @@ private final class CloudTranscriptBox: @unchecked Sendable {
     var isCancelled: Bool { lock.withLock { cancelled } }
 }
 
-private final class CloudLiveEventBox: @unchecked Sendable {
+final class CloudLiveEventBox: @unchecked Sendable {
     private let lock = NSLock()
     private var partial = ""
     private var finalText: String?
@@ -92,9 +92,11 @@ private final class CloudLiveEventBox: @unchecked Sendable {
         lock.withLock {
             switch event.kind {
             case .partial:
-                // The core contract sends deltas; concatenation reconstructs
-                // the current utterance.
-                partial.append(event.text)
+                if event.replacesPartial {
+                    partial = event.text
+                } else {
+                    partial.append(event.text)
+                }
             case .final:
                 finalText = event.text
             case .failed:

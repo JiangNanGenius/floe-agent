@@ -129,7 +129,10 @@ struct CloudASRProfilesView: View {
         case .agentPlan: route = FloeL10n.l("voice.cloud.route.agent")
         case .tokenPlan: route = FloeL10n.l("voice.cloud.route.token")
         }
-        return "\(route) · \(profile.fileModelID)"
+        let mode = profile.liveCapabilities?.supportsLiveTranscription == true
+            ? FloeL10n.l("voice.cloud.profile.streaming")
+            : FloeL10n.l("voice.cloud.profile.after_recording")
+        return "\(route) · \(mode)"
     }
 
 }
@@ -144,6 +147,7 @@ private struct CloudASRProfileEditor: View {
     @State private var name: String
     @State private var fileModel: String
     @State private var liveModel: String
+    @State private var streamingEnabled: Bool
     @State private var fileEndpoint: String
     @State private var liveEndpoint: String
     @State private var resourceID: String
@@ -168,6 +172,7 @@ private struct CloudASRProfileEditor: View {
         _name = State(initialValue: original.name)
         _fileModel = State(initialValue: original.fileModelID)
         _liveModel = State(initialValue: original.liveModelID ?? "")
+        _streamingEnabled = State(initialValue: original.liveModelID != nil)
         _fileEndpoint = State(initialValue: original.resolvedFileEndpoint
             ?? (original.provider == .openaiCompatible ? ASRProviderRouting.openAIFileBase : ""))
         _liveEndpoint = State(initialValue: original.liveEndpoint ?? "")
@@ -183,6 +188,22 @@ private struct CloudASRProfileEditor: View {
                 LabeledContent("voice.cloud.profile.route", value: routeTitle)
             }
             Section {
+                if offersStreaming {
+                    Toggle("voice.cloud.profile.streaming", isOn: $streamingEnabled)
+                        .accessibilityIdentifier("voice.cloud.profile.streaming")
+                        .onChange(of: streamingEnabled) { _, enabled in
+                            if enabled, normalized(liveModel) == nil {
+                                liveModel = ASRProviderRouting.defaultLiveModel(
+                                    provider: original.provider, route: original.billingRoute) ?? ""
+                            }
+                        }
+                }
+                if original.provider == .volcengine,
+                   ["bigmodel", "doubao-seed-asr-2.0", "seed-asr-2.0"].contains(
+                    fileModel.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) {
+                    LabeledContent("voice.cloud.profile.model",
+                                   value: FloeL10n.l("voice.cloud.model.volcengine_seed_asr2"))
+                }
                 TextField("voice.cloud.profile.file_endpoint", text: $fileEndpoint)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -190,11 +211,10 @@ private struct CloudASRProfileEditor: View {
                 TextField("voice.cloud.profile.file_model", text: $fileModel)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                TextField("voice.cloud.profile.live_model", text: $liveModel)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
             } footer: {
-                Text("voice.cloud.profile.live_model.footer")
+                if offersStreaming {
+                    Text("voice.cloud.profile.streaming.footer")
+                }
             }
             Section {
                 SecureField("voice.cloud.profile.key", text: $key)
@@ -209,6 +229,11 @@ private struct CloudASRProfileEditor: View {
                 Text("voice.cloud.profile.key.footer")
             }
             DisclosureGroup("voice.cloud.profile.advanced", isExpanded: $advanced) {
+                if streamingEnabled {
+                    TextField("voice.cloud.profile.live_model", text: $liveModel)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
                 TextField("voice.cloud.profile.live_endpoint", text: $liveEndpoint)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -258,6 +283,11 @@ private struct CloudASRProfileEditor: View {
         }
     }
 
+    private var offersStreaming: Bool {
+        original.liveModelID != nil || ASRProviderRouting.defaultLiveModel(
+            provider: original.provider, route: original.billingRoute) != nil
+    }
+
     private var routeTitle: String {
         switch original.billingRoute {
         case .payAsYouGo: return FloeL10n.l("voice.cloud.route.payg")
@@ -271,7 +301,7 @@ private struct CloudASRProfileEditor: View {
         var next = original
         next.name = name
         next.fileModelID = fileModel
-        next.liveModelID = normalized(liveModel)
+        next.liveModelID = streamingEnabled ? normalized(liveModel) : nil
         next.fileEndpoint = normalized(fileEndpoint)
         next.liveEndpoint = normalized(liveEndpoint)
         next.resourceID = normalized(resourceID)

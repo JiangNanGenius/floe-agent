@@ -6,6 +6,43 @@ import Testing
 import FloeCore
 @testable import FloeProviders
 
+@Test func volcengineLiveRevisionsArriveBeforeUtteranceFinal() async throws {
+    let connection = FakeWebSocketConnection()
+    let adapter = VolcengineASRAdapter(
+        webSocketTransport: FakeWebSocketTransport(connection: connection))
+    let request = ASRLiveSessionRequest(profile: .volcengine(billingRoute: .agentPlan),
+                                        inputSampleRate: 16_000)
+    let session = try await adapter.startLiveSession(request, credential: "synthetic-plan-key")
+    for (index, text) in ["This is.", "This is a.", "This is a streaming."].enumerated() {
+        connection.inbox.push(.data(try volcServerFrame(
+            ["result": ["text": text]], isFinal: false, sequence: index + 1)))
+    }
+    let partials = try await collectEvents(session, count: 3)
+    #expect(partials.map(\.text) == ["This is.", "This is a.", "This is a streaming."])
+    #expect(partials.map(\.replacesPartial) == [false, true, true])
+    #expect(partials.allSatisfy { $0.kind == .partial && $0.turnID == request.turnID })
+    // The final audio packet has not been sent: all three updates above are
+    // genuine live hypotheses, including punctuation revisions.
+    try await session.endUtterance()
+    connection.inbox.push(.data(try volcServerFrame(
+        ["result": ["text": "This is a streaming test."]], isFinal: true, sequence: -4)))
+    let finals = try await collectEvents(session, count: 2)
+    #expect(finals.filter { $0.kind == .final }.count == 1)
+    #expect(finals.last?.text == "This is a streaming test.")
+    try await session.finish()
+}
+
+@Test func volcengineProductNamesUseTheSAUCModelSelector() throws {
+    let audio = ASRVendorAudioInput(data: Data(), format: .pcm, sampleRate: 16_000,
+                                   channelCount: 1, durationSeconds: nil, mimeType: "audio/L16")
+    for name in ["doubao-seed-asr-2.0", "Doubao-Seed-ASR-2.0", "seed-asr-2.0", "bigmodel"] {
+        let data = try VolcengineASRAdapter.configuration(modelID: name, input: audio, live: true)
+        let root = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let request = try #require(root["request"] as? [String: Any])
+        #expect(request["model_name"] as? String == "bigmodel")
+    }
+}
+
 @Test func volcengineClientFramesUseDocumentedV3HeaderAndGzip() throws {
     let config = try jsonData([
         "audio": ["format": "pcm", "rate": 16_000, "bits": 16, "channel": 1],

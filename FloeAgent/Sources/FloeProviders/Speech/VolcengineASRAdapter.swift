@@ -311,7 +311,10 @@ public struct VolcengineASRAdapter: ASRTranscribing, ASRLiveTranscribing {
         ]
         if let codec { audio["codec"] = codec }
         let request: [String: Any] = [
-            "model_name": modelID,
+            // The catalogue's product name is not the SAUC protocol's model
+            // selector. Both official 2.0 names use `bigmodel` with the 2.0
+            // resource header; preserve explicitly configured custom names.
+            "model_name": Self.wireModelName(modelID),
             "show_utterances": true,
             "enable_itn": true,
             "enable_punc": true,
@@ -329,6 +332,16 @@ public struct VolcengineASRAdapter: ASRTranscribing, ASRLiveTranscribing {
                 "could not encode the Volcengine request")
         }
         return data
+    }
+
+    static func wireModelName(_ modelID: String) -> String {
+        let normalized = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch normalized.lowercased() {
+        case "doubao-seed-asr-2.0", "seed-asr-2.0", "bigmodel":
+            return "bigmodel"
+        default:
+            return normalized
+        }
     }
 
     static func parseObject(_ data: Data) throws -> [String: Any] {
@@ -891,8 +904,15 @@ actor VolcengineLiveSession: ASRLiveSession {
                             if !delta.isEmpty {
                                 try await sendPartial(delta)
                             }
-                        } else if partialText.isEmpty {
-                            try await sendPartial(newText)
+                        } else {
+                            // SAUC sends cumulative hypotheses and may revise
+                            // punctuation or earlier words on every packet.
+                            // Dropping non-prefix updates freezes the visible
+                            // transcript until the utterance ends.
+                            sequence += 1
+                            try await events.send(.partialReplacement(
+                                turnID: turnID, itemID: requestID,
+                                transcript: newText, sequence: sequence))
                         }
                         partialText = newText
                         guard partialText.count <= VolcengineASRAdapter

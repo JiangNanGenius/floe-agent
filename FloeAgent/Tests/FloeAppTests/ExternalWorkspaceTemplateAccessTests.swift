@@ -180,6 +180,7 @@ struct ExternalWorkspaceTemplateAccessTests {
         let lease = try await WorkspaceCenter.acquireExternalWorkspaceAccess(
             forCanonicalPath: picked.path,
             store: store,
+            appOwnedRoots: [],
             startScope: { _ in starts.increment(); return true },
             stopScope: { _ in stops.increment() }
         )
@@ -207,6 +208,7 @@ struct ExternalWorkspaceTemplateAccessTests {
             _ = try await WorkspaceCenter.acquireExternalWorkspaceAccess(
                 forCanonicalPath: picked.path,
                 store: store,
+                appOwnedRoots: [],
                 startScope: { _ in false },
                 stopScope: { _ in stops.increment() }
             )
@@ -231,6 +233,49 @@ struct ExternalWorkspaceTemplateAccessTests {
             stopScope: { _ in }
         )
         #expect(lease == nil)
+    }
+
+    @Test("A project bookmark for an app-owned task never requires external authorization")
+    func rememberedAppOwnedTaskNeedsNoLease() async throws {
+        let sandbox = try makeSandbox()
+        defer { try? FileManager.default.removeItem(at: sandbox) }
+        let picked = try makeFolder("PrivateTasks", in: sandbox)
+        let store = try await makeStore(at: sandbox)
+        let record = try await WorkspaceCenter.ensureWorkspaceRecord(
+            forDirectory: picked, name: nil, store: store)
+        #expect(record.kind == .project)
+        #expect(WorkspaceCenter.isAppOwnedWorkspacePath(picked.path))
+        let starts = ScopeCallCounter()
+        let stops = ScopeCallCounter()
+        let lease = try await WorkspaceCenter.acquireExternalWorkspaceAccess(
+            forCanonicalPath: picked.path, store: store,
+            startScope: { _ in starts.increment(); return false },
+            stopScope: { _ in stops.increment() })
+        #expect(lease == nil)
+        #expect(starts.count == 0)
+        #expect(stops.count == 0)
+        #expect(try await store.workspace(id: record.id)?.rootBookmark == record.rootBookmark)
+    }
+
+    @Test("A symlink escaping the app-owned root still requires the external grant")
+    func symlinkOutsideOwnedRootDoesNotBypassScope() async throws {
+        let sandbox = try makeSandbox()
+        defer { try? FileManager.default.removeItem(at: sandbox) }
+        let owned = try makeFolder("Owned", in: sandbox)
+        let external = try makeFolder("External", in: sandbox)
+        let alias = owned.appendingPathComponent("alias", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: external)
+        #expect(!WorkspaceCenter.isAppOwnedWorkspacePath(alias.path, roots: [owned]))
+        let store = try await makeStore(at: sandbox)
+        _ = try await WorkspaceCenter.ensureWorkspaceRecord(
+            forDirectory: external, name: nil, store: store)
+        let starts = ScopeCallCounter()
+        await #expect(throws: ExternalWorkspaceAccessError.self) {
+            _ = try await WorkspaceCenter.acquireExternalWorkspaceAccess(
+                forCanonicalPath: alias.path, store: store, appOwnedRoots: [owned],
+                startScope: { _ in starts.increment(); return false })
+        }
+        #expect(starts.count == 1)
     }
 }
 #endif

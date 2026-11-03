@@ -819,7 +819,8 @@ public extension ASRTranscribing {
 }
 
 /// Typed live-transcription update keyed by the caller turn and the provider
-/// item. Deltas carry the newly available text; finals carry the full text.
+/// item. Deltas append text; an explicitly marked partial revision replaces
+/// the current utterance's partial only. Finals carry the full text.
 public struct ASRLiveEvent: Sendable, Hashable {
     public enum Kind: String, Codable, Sendable, Hashable {
         case partial
@@ -831,6 +832,7 @@ public struct ASRLiveEvent: Sendable, Hashable {
     public let turnID: UUID
     public let itemID: String?
     public let text: String
+    public let replacesPartial: Bool
     public let failure: ASRTranscriptionError?
     public let sequence: Int
 
@@ -839,6 +841,7 @@ public struct ASRLiveEvent: Sendable, Hashable {
         turnID: UUID,
         itemID: String?,
         text: String,
+        replacesPartial: Bool = false,
         failure: ASRTranscriptionError? = nil,
         sequence: Int
     ) {
@@ -846,6 +849,7 @@ public struct ASRLiveEvent: Sendable, Hashable {
         self.turnID = turnID
         self.itemID = itemID
         self.text = text
+        self.replacesPartial = replacesPartial
         self.failure = failure
         self.sequence = sequence
     }
@@ -870,6 +874,16 @@ public struct ASRLiveEvent: Sendable, Hashable {
         ASRLiveEvent(
             kind: .final, turnID: turnID, itemID: itemID,
             text: transcript, sequence: sequence)
+    }
+
+    public static func partialReplacement(
+        turnID: UUID,
+        itemID: String?,
+        transcript: String,
+        sequence: Int
+    ) -> ASRLiveEvent {
+        ASRLiveEvent(kind: .partial, turnID: turnID, itemID: itemID,
+                     text: transcript, replacesPartial: true, sequence: sequence)
     }
 
     public static func failed(

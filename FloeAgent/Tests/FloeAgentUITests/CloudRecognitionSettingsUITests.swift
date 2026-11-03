@@ -42,7 +42,16 @@ final class CloudRecognitionSettingsUITests: XCTestCase {
                 XCTAssertEqual(app.textFields["File transcription URL"].value as? String,
                                "https://api.openai.com/v1")
             }
-            if index == 0 || index == 4 { capture("Cloud recognition form " + title, app: app) }
+            if index == 1 || index == 2 {
+                let streaming = app.switches["voice.cloud.profile.streaming"].firstMatch
+                XCTAssertTrue(streaming.exists, "Volcengine streaming must be directly configurable")
+                XCTAssertEqual(streaming.value as? String, "1")
+                streaming.tap()
+                XCTAssertEqual(streaming.value as? String, "0")
+                streaming.tap()
+                XCTAssertEqual(streaming.value as? String, "1")
+            }
+            if index == 0 || index == 2 || index == 4 { capture("Cloud recognition form " + title, app: app) }
             let cancel = app.buttons["Cancel"].firstMatch
             XCTAssertTrue(cancel.exists)
             cancel.tap()

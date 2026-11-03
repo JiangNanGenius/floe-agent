@@ -1401,10 +1401,17 @@ final class WorkspaceCenter: ObservableObject {
     nonisolated static func acquireExternalWorkspaceAccess(
         forCanonicalPath path: String,
         store: any WorkspaceStore,
+        appOwnedRoots: [URL]? = nil,
         startScope: (URL) -> Bool = { $0.startAccessingSecurityScopedResource() },
         stopScope: @escaping @Sendable (URL) -> Void = { $0.stopAccessingSecurityScopedResource() }
     ) async throws -> LinuxGuestShareAccessLease? {
         let canonical = canonicalWorkspacePath(URL(fileURLWithPath: path))
+        // A project record can refer to an app-owned task folder (for
+        // example after choosing that folder for a template environment).
+        // Such bookmarks do not grant external security scope: a false
+        // startAccessing result is normal, not a revoked Files permission.
+        // Classify the resolved path before considering project bookmarks.
+        if isAppOwnedWorkspacePath(canonical, roots: appOwnedRoots) { return nil }
         for existing in (try? await store.workspaces()) ?? [] {
             guard existing.kind == .project else { continue }
             var isStale = false
@@ -1435,29 +1442,25 @@ final class WorkspaceCenter: ObservableObject {
                 stopScope(resolved)
             }
         }
-        // No project record covers the path. An app-owned root (private task
-        // or scratch directory inside the sandbox) is always reachable and
-        // needs no grant. Anything else is an external Files folder without a
-        // durable grant — it must fail closed, because a scope-free 9P export
-        // of an unreadable folder would only surface as silent guest I/O
-        // errors.
-        if isAppOwnedWorkspacePath(canonical) { return nil }
+        // An external folder without a durable grant must fail closed.
         throw ExternalWorkspaceAccessError(path: canonical)
     }
 
     /// True when the root lives inside an app-owned container (the sandbox
     /// home or the shared app group): those paths need no security-scoped
     /// lease. An external Files folder never lives here.
-    nonisolated static func isAppOwnedWorkspacePath(_ path: String) -> Bool {
+    nonisolated static func isAppOwnedWorkspacePath(_ path: String, roots suppliedRoots: [URL]? = nil) -> Bool {
         let canonical = canonicalWorkspacePath(URL(fileURLWithPath: path))
-        var roots = [NSHomeDirectory()]
-        if let group = FileManager.default.containerURL(
+        // Explicit roots are a focused-test seam; production always uses its
+        // actual container identities, never a caller/model-supplied label.
+        var roots = suppliedRoots ?? [URL(fileURLWithPath: NSHomeDirectory())]
+        if suppliedRoots == nil, let group = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: appGroupIdentifier
         ) {
-            roots.append(group.path)
+            roots.append(group)
         }
         return roots.contains { root in
-            let canonicalRoot = canonicalWorkspacePath(URL(fileURLWithPath: root))
+            let canonicalRoot = canonicalWorkspacePath(root)
             return canonical == canonicalRoot || canonical.hasPrefix(canonicalRoot + "/")
         }
     }
