@@ -961,6 +961,22 @@ public enum StreamingTransport {
         return try await sink.waitForCollect()
     }
 
+    /// File upload through the same policy delegate and bounded response sink.
+    public static func collectUpload(_ request: URLRequest,
+                                     file: URL,
+                                     via session: URLSession,
+                                     maxBytes: Int) async throws -> (Data, URLResponse) {
+        guard let router = RouterTable.router(for: session) else {
+            throw IncrementalTransportError.sessionNotStreamable(
+                reason: "session has no incremental transport delegate")
+        }
+        let sink = TransportSink(mode: .collect(maxBytes: maxBytes))
+        let task = session.uploadTask(with: request, fromFile: file)
+        router.attach(sink, to: task)
+        task.resume()
+        return try await sink.waitForCollect()
+    }
+
     /// Start an incremental byte stream. Chunks publish through the bounded
     /// relay without blocking the delegate callback; saturation cancels the
     /// owned task and surfaces `pendingBufferSaturated` AFTER committed

@@ -34,6 +34,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -147,6 +149,14 @@ fun ProviderEditorPage(
     // Save is possible only with an authoritative host projection and the
     // shared-core save path actually available.
     val saveEnabled = projected != null && networkAvailable && !inFlight
+    val formScroll = rememberScrollState()
+    var titleHeightPx by remember { mutableStateOf(0) }
+    val titleCollapsed by remember(formScroll) {
+        derivedStateOf { titleHeightPx > 0 && formScroll.value >= titleHeightPx }
+    }
+    val editorTitle = stringResource(
+        if (projected?.isEditingExisting == true) R.string.editor_edit_title else R.string.editor_add_title,
+    )
 
     Column(
         modifier = modifier
@@ -157,6 +167,7 @@ fun ProviderEditorPage(
             .navigationBarsPadding(),
     ) {
         ProviderEditorToolbar(
+            title = editorTitle.takeIf { titleCollapsed },
             saveLabel = stringResource(R.string.action_save),
             cancelLabel = stringResource(R.string.action_cancel),
             inFlight = inFlight,
@@ -170,15 +181,15 @@ fun ProviderEditorPage(
                 .fillMaxWidth()
                 .weight(1f)
                 .testTag("provider.editorForm")
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(formScroll),
         ) {
             FloeText(
-                text = stringResource(
-                    if (projected?.isEditingExisting == true) R.string.editor_edit_title else R.string.editor_add_title,
-                ),
+                text = editorTitle,
                 style = Floe.typography.navLargeTitle,
                 color = Floe.colors.label,
-                modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 18.dp),
+                modifier = Modifier
+                    .onSizeChanged { titleHeightPx = it.height }
+                    .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 18.dp),
             )
 
             if (projected == null) {
@@ -344,7 +355,9 @@ fun ProviderEditorPage(
                         revealOffLabel = stringResource(R.string.providers_hide_api_key),
                         isError = projected.hasIssue(ProviderFieldUi.CREDENTIAL),
                     )
-                    if (projected?.credentialState == ProviderCredentialStateUi.AWAITING_CONFIGURATION) {
+                    if (projected?.isEditingExisting == true &&
+                        projected.credentialState == ProviderCredentialStateUi.AWAITING_CONFIGURATION
+                    ) {
                         ProviderHintRow(
                             icon = FloeIcons.Key,
                             text = stringResource(R.string.providers_waiting_key_hint),

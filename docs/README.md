@@ -77,7 +77,7 @@
 
 ## 发布档案（只追加、不回改）
 
-逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。最近已核验交付为 [1.7.60（301）](releases/testflight/BUILD_301_DELIVERY.md)：内部 Floe QA 可用，publictest1 等待审核，稳定 latest 无签名 Release 与同次 Feather 已独立核验。424 项相关测试通过，真机与在用远端验证单列；清理和单独发现的 Python 状态查询兼容性项见交付记录。[298 记录](releases/repairs/FLOE_VOICE_INTERACTION_SEARCH_BUILD298_20261025.md)与[历史版本导览](releases/HISTORY.md)保留此前状态。Latest verified delivery: 301; internal and unsigned/Feather available, external review pending.
+逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。最近收录的已核验交付为 [1.7.65（306）](releases/builds/FLOE_1.7.65_BUILD306_DELIVERY.md)：该日期的内部 Floe QA、公开 TestFlight、稳定无签名 Release 与 Feather 渠道状态分别见交付记录，当前安装入口见 CURRENT_STATUS。原生 3D 连续编辑与装配／图纸／简单动画随 306 交付（[发布说明](releases/notes/RELEASE_NOTES_1.7.65_BUILD_306.md)）；3D 材质、Present 与 PNG／GLB 导出由 [305（1.7.64）](releases/builds/FLOE_1.7.64_BUILD305_DELIVERY.md)交付。Latest verified delivery: 306 with native 3D continuous editing, assemblies, drawings and simple animation; 305 delivered 3D materials, Present and PNG/GLB export. See the dated delivery record and [current status](CURRENT_STATUS.md) for each installation channel.
 
 ## 历史研究（结论以现行代码为准）
 

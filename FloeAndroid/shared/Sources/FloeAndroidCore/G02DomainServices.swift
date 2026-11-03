@@ -936,6 +936,14 @@ public final class G02InstalledComposition: @unchecked Sendable {
         G09R2MediaToolRegistration.install(
             service: BridgeV5.service,
             registry: runComponents.registry)
+        // G09-R2 agent generation (job-6b686caa5ffe4761): the six original
+        // model-facing generation tools (image.models / image.generate /
+        // video.models / video.generate / video.status / video.cancel) over
+        // the SAME shared generation worker table, durable job store and
+        // root-stop lifecycle. Registration is unconditional for this
+        // generation; discovery self-gates on the live bound creative
+        // cluster and executions fail honestly when no route is configured.
+        G09R2AgentGenerationRegistration.register(registry: runComponents.registry)
         // G07.3A user questions: install the durable/RAM coordinator for this
         // exact epoch and register the main-run-only `user.ask` runner. The
         // runner's availability closure reads this installation, so a

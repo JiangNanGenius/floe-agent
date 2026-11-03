@@ -11,3 +11,7 @@ shared/.build/
 *.jks
 *.keystore
 __pycache__/
+# Generated Full root-capture staging; sources and license pins live in licenses/root-capture.
+app/src/full/jniLibs/
+app/src/full/assets/root-capture/
+app/src/full/assets/legal/root-capture/

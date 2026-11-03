@@ -24,6 +24,8 @@ import com.floe.android.feature.workbench.MediaMutationReceipt
 import com.floe.android.feature.workbench.MediaProjectEnvelope
 import com.floe.android.feature.workbench.MediaProjectReceipt
 import com.floe.android.feature.workbench.MediaProjectSummary
+import com.floe.android.feature.workbench.WorkbenchEnhancementConfigurationHostApi
+import com.floe.android.feature.workbench.WorkbenchEnhancementHostApi
 import com.floe.android.feature.workbench.WorkbenchGenerationHostApi
 import com.floe.android.feature.workbench.WorkbenchLargeImportPort
 import com.floe.android.feature.workbench.MediaRenderTicketTransport
@@ -69,6 +71,29 @@ class CreativeHostService(
      */
     val generationHost: WorkbenchGenerationHostApi by lazy {
         CreativeR2GenerationHost(
+            transport = transport, epochProvider = epochProvider,
+            ioDispatcher = ioDispatcher)
+    }
+
+    /**
+     * G09-R2 media enhancement (real task-Linux interpolation + configured
+     * cloud super-resolution). Lazy: no native/disk work at construction.
+     */
+    val enhancementHost: WorkbenchEnhancementHostApi by lazy {
+        CreativeR2EnhancementHost(
+            transport = transport, epochProvider = epochProvider,
+            ioDispatcher = ioDispatcher)
+    }
+
+    /**
+     * G09-R2 super-resolution backend configuration through the original
+     * settings/credential services (secret-free wire; the key is written to
+     * the device credential store by this host). Lazy: no native/disk work
+     * at construction.
+     */
+    val enhancementConfigurationHost: WorkbenchEnhancementConfigurationHostApi by lazy {
+        CreativeR2EnhancementConfigurationHost(
+            context = context,
             transport = transport, epochProvider = epochProvider,
             ioDispatcher = ioDispatcher)
     }
@@ -512,6 +537,14 @@ class CreativeHostController(
 
     /** G09-R2 configured-provider generation and candidate adoption. */
     val generationHost: WorkbenchGenerationHostApi get() = adapter.generationHost
+
+    /** G09-R2 media enhancement over the frozen enhancement port. */
+    val mediaEnhancementHost: WorkbenchEnhancementHostApi get() = adapter.enhancementHost
+
+    /** G09-R2 super-resolution backend configuration over the original
+     *  settings/credential services (secret-free wire). */
+    val mediaEnhancementConfigurationHost: WorkbenchEnhancementConfigurationHostApi
+        get() = adapter.enhancementConfigurationHost
 
     /** G09-R2 real Canvas/workspace/chat/creative design workflow. */
     val designHost: DesignHostApi get() = adapter.designHost

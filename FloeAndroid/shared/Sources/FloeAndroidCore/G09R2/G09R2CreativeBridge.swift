@@ -171,6 +171,27 @@ public enum BridgeV6Handler {
                 "canvasGenericMaxBytes": G09R2CreativeLimits.canvasGenericAssetBytes,
             ],
             "modelTools": false,
+            "enhancement": [
+                "available": true,
+                "actions": ["media.enhancement.capability",
+                            "media.enhancement.submit",
+                            "media.enhancement.status",
+                            "media.enhancement.cancel",
+                            "media.enhancement.configuration.get",
+                            "media.enhancement.configuration.save",
+                            "media.enhancement.configuration.clear",
+                            "media.enhancement.configuration.reference",
+                            "media.enhancement.import"],
+                "interpolationEngine": "ffmpeg-minterpolate",
+                "limits": [
+                    "maximumSourceDimension": 4096,
+                    "maximumOutputDimension": 8192,
+                    "maximumDurationSeconds": 3600,
+                    "maximumFrames": 200000,
+                    "maximumTargetFPS": 240,
+                    "scaleFactor": [2, 3, 4],
+                ],
+            ],
             "design": designCapabilityDictionary(),
         ]
     }
@@ -224,10 +245,22 @@ public enum BridgeV6Handler {
                 renderReplyMaxBytes: G09R2CreativeLimits.renderReplyBytes,
                 maxLiveRenderTickets: G09R2CreativeLimits.maxLiveRenderTickets,
                 modelTools: false,
-                generationAvailable: true,
-                generationActions: generationActions)
+                 generationAvailable: true,
+                 generationActions: generationActions)
             var object = try successObject(dto)
             object["design"] = try await designStatusObject(service)
+            object["enhancement"] = [
+                "available": true,
+                "actions": ["media.enhancement.capability",
+                            "media.enhancement.submit",
+                            "media.enhancement.status",
+                            "media.enhancement.cancel",
+                            "media.enhancement.configuration.get",
+                            "media.enhancement.configuration.save",
+                            "media.enhancement.configuration.clear",
+                            "media.enhancement.configuration.reference",
+                            "media.enhancement.import"],
+            ]
             return object
         }
         return decode(result)
@@ -280,10 +313,22 @@ public enum BridgeV6Handler {
                 renderReplyMaxBytes: G09R2CreativeLimits.renderReplyBytes,
                 maxLiveRenderTickets: G09R2CreativeLimits.maxLiveRenderTickets,
                 modelTools: false,
-                generationAvailable: true,
-                generationActions: generationActions)
+                 generationAvailable: true,
+                 generationActions: generationActions)
             var object = try successObject(dto)
             object["design"] = try await designStatusObject(service)
+            object["enhancement"] = [
+                "available": true,
+                "actions": ["media.enhancement.capability",
+                            "media.enhancement.submit",
+                            "media.enhancement.status",
+                            "media.enhancement.cancel",
+                            "media.enhancement.configuration.get",
+                            "media.enhancement.configuration.save",
+                            "media.enhancement.configuration.clear",
+                            "media.enhancement.configuration.reference",
+                            "media.enhancement.import"],
+            ]
             return object
         }
         return decode(result)
@@ -329,6 +374,80 @@ public enum BridgeV6Handler {
             let handle = try await G09R2LargeImportService.shared.cancel(
                 request, service: service, epoch: epoch)
             return try successObject(handle)
+        case "media.enhancement.capability":
+            let request: G09R2EnhancementCapabilityRequest = try G09CreativeWire.decode(
+                G09R2EnhancementCapabilityRequest.self, payload: payload)
+            let capability = try await G09R2MediaEnhancementService.shared.capability(
+                service: service, epoch: epoch, context: request.context)
+            return try successObject(capability)
+        case "media.enhancement.submit":
+            let request: G09R2EnhancementSubmitRequest = try G09CreativeWire.decode(
+                G09R2EnhancementSubmitRequest.self, payload: payload)
+            let handle = try await G09R2MediaEnhancementService.shared.submit(
+                service: service, epoch: epoch, context: request.context,
+                request: request.enhancement)
+            return try successObject(G09R2EnhancementHandleDTO(
+                jobID: handle.jobID, state: handle.state.rawValue,
+                idempotent: handle.idempotent))
+        case "media.enhancement.status":
+            let request: G09R2EnhancementJobQuery = try G09CreativeWire.decode(
+                G09R2EnhancementJobQuery.self, payload: payload)
+            let status = try await G09R2MediaEnhancementService.shared.status(
+                service: service, epoch: epoch, context: request.context,
+                jobID: request.jobID)
+            return try successObject(status)
+        case "media.enhancement.cancel":
+            let request: G09R2EnhancementJobQuery = try G09CreativeWire.decode(
+                G09R2EnhancementJobQuery.self, payload: payload)
+            let status = try await G09R2MediaEnhancementService.shared.cancel(
+                service: service, epoch: epoch, context: request.context,
+                jobID: request.jobID)
+            return try successObject(status)
+        case "media.enhancement.configuration.get":
+            let dto = try await G09R2MediaEnhancementService.shared.configuration(
+                service: service, epoch: epoch)
+            return try successObject(dto)
+        case "media.enhancement.configuration.save":
+            let request: G09R2EnhancerConfigurationSaveRequest = try G09CreativeWire.decode(
+                G09R2EnhancerConfigurationSaveRequest.self, payload: payload)
+            let dto = try await G09R2MediaEnhancementService.shared.saveConfiguration(
+                service: service, epoch: epoch, request: request)
+            return try successObject(dto)
+        case "media.enhancement.configuration.clear":
+            let dto = try await G09R2MediaEnhancementService.shared.clearConfiguration(
+                service: service, epoch: epoch)
+            return try successObject(dto)
+        case "media.enhancement.configuration.reference":
+            let referenceRequest: G09R2EnhancerCredentialReferenceRequest =
+                try G09CreativeWire.decode(
+                    G09R2EnhancerCredentialReferenceRequest.self, payload: payload)
+            guard let account = referenceRequest.credentialAccount else {
+                // The nil-account staging mint is REMOVED with the two-call
+                // staging flow (job-e5e786c723244725): a key Set now travels
+                // ONLY through the ONE sealed secure ingress (the App host
+                // submits the closed `enhancerSave` intent core + key bytes
+                // to the existing one-shot vault slot and the save consumes
+                // that lease). This action remains ONLY as the explicit
+                // secret-free derivation compatibility/read helper.
+                throw G09CreativeError.invalidPayload(
+                    "enhancerReferenceAccountRequired")
+            }
+            // Explicit account: pure derivation (secret-free), unchanged
+            // from the predecessor contract. This derives an opaque
+            // reference shape only — it grants NO ownership and performs no
+            // effect; every read/send/mutation path still proves the record
+            // from this root's ORIGINAL metadata authority first.
+            return try successObject(G09R2EnhancerCredentialReferenceDTO(
+                credentialAccount: account,
+                opaqueReference: G09R2EnhancerBackendConfigurationStore
+                    .opaqueReference(for: account)))
+        case "media.enhancement.import":
+            let request: G09R2EnhancementJobQuery = try G09CreativeWire.decode(
+                G09R2EnhancementJobQuery.self, payload: payload)
+            let status = try await G09R2MediaEnhancementService.shared.importOutput(
+                service: service, epoch: epoch, context: request.context,
+                jobID: request.jobID)
+            return try successObject(status)
         case "generation.models":
             let catalog = try await G09R2GenerationService.shared.models(
                 service: service, epoch: epoch)

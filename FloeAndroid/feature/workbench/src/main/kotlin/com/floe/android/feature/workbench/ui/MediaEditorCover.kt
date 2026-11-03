@@ -67,6 +67,7 @@ import com.floe.android.feature.workbench.ui.api.MediaAgentAskAiSheet
 import com.floe.android.feature.workbench.ui.api.MediaPickedSource
 import com.floe.android.feature.workbench.ui.presentation.MediaFailureKind
 import com.floe.android.feature.workbench.ui.r2.MediaExportSheet
+import com.floe.android.feature.workbench.ui.r2.MediaEnhancementSheet
 import com.floe.android.feature.workbench.ui.r2.MediaGenerationSheet
 import com.floe.android.feature.workbench.ui.r2.MediaVideoAssetsPanel
 import com.floe.android.feature.workbench.ui.r2.MediaVideoAssetsSheet
@@ -113,6 +114,7 @@ internal fun MediaEditorCover(
     var showAi by remember(editor) { mutableStateOf(false) }
     var showAskAi by remember(editor) { mutableStateOf(false) }
     var showExport by remember(editor) { mutableStateOf(false) }
+    var showEnhance by remember(editor) { mutableStateOf(false) }
     var showLayerOperations by remember(editor) { mutableStateOf(false) }
     val drawingLayerName = stringResource(R.string.media_layer_freehand)
     val importVideo: (() -> Unit)? = mediaPicker?.let { picker ->
@@ -222,6 +224,11 @@ internal fun MediaEditorCover(
                                     icon = FloeIcons.Share,
                                     contentDescription = stringResource(R.string.media_r2_export),
                                     onClick = { showExport = true },
+                                )
+                                FloeToolbarIconButton(
+                                    icon = FloeIcons.Gauge,
+                                    contentDescription = stringResource(R.string.media_enhancement_title),
+                                    onClick = { showEnhance = true },
                                 )
                             }
                             FloeToolbarIconButton(
@@ -397,6 +404,12 @@ internal fun MediaEditorCover(
                                     onClick = { showExport = true },
                                     modifier = Modifier.weight(1f),
                                 )
+                                MediaCompactButton(
+                                    icon = FloeIcons.Gauge,
+                                    label = stringResource(R.string.media_enhancement_title),
+                                    onClick = { showEnhance = true },
+                                    modifier = Modifier.weight(1f),
+                                )
                             }
                         }
                     }
@@ -465,6 +478,12 @@ internal fun MediaEditorCover(
         MediaExportSheet(
             controller = editor,
             onDismiss = { showExport = false },
+        )
+    }
+    if (showEnhance) {
+        MediaEnhancementSheet(
+            controller = editor,
+            onDismiss = { showEnhance = false },
         )
     }
     if (showLayerOperations) {

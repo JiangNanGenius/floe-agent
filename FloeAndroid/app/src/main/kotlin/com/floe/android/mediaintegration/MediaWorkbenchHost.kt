@@ -9,6 +9,10 @@ import com.floe.android.feature.workbench.ui.api.MediaAgentBindingPort
 import com.floe.android.feature.workbench.CandidateMutationReceipt
 import com.floe.android.feature.workbench.CreativeProjectContext
 import com.floe.android.feature.workbench.DeliveredCandidate
+import com.floe.android.feature.workbench.EnhancementCapability
+import com.floe.android.feature.workbench.EnhancementRequest
+import com.floe.android.feature.workbench.EnhancementBackendConfiguration
+import com.floe.android.feature.workbench.EnhancementStatus
 import com.floe.android.feature.workbench.GenerationModelCatalog
 import com.floe.android.feature.workbench.ImageGenerationRequest
 import com.floe.android.feature.workbench.ImageRequestHandle
@@ -20,6 +24,8 @@ import com.floe.android.feature.workbench.VideoEditCommand
 import com.floe.android.feature.workbench.VideoGenerationRequest
 import com.floe.android.feature.workbench.VideoJobHandle
 import com.floe.android.feature.workbench.VideoProjectEnvelope
+import com.floe.android.feature.workbench.WorkbenchEnhancementConfigurationHostApi
+import com.floe.android.feature.workbench.WorkbenchEnhancementHostApi
 import com.floe.android.feature.workbench.WorkbenchGenerationHostApi
 import com.floe.android.feature.workbench.WorkbenchMediaPlatform
 import com.floe.android.feature.workbench.WorkbenchVideoHostApi
@@ -203,8 +209,67 @@ internal class MediaWorkbenchHost(
                 }
             },
             exportDelivery = exportDelivery,
+            enhancement = LiveWorkbenchEnhancement(hostProvider),
+            enhancementConfiguration = LiveWorkbenchEnhancementConfiguration(hostProvider),
         )
     }
+}
+
+/** Re-resolves the current controller's real configuration host on every call. */
+private class LiveWorkbenchEnhancementConfiguration(
+    private val hostProvider: () -> CreativeHostController,
+) : WorkbenchEnhancementConfigurationHostApi {
+    override suspend fun getConfiguration(): EnhancementBackendConfiguration =
+        hostProvider().mediaEnhancementConfigurationHost.getConfiguration()
+
+    override suspend fun credentialReference(credentialAccount: String): String =
+        hostProvider().mediaEnhancementConfigurationHost
+            .credentialReference(credentialAccount)
+
+    override suspend fun saveConfiguration(
+        displayName: String?,
+        endpointID: String,
+        credentialAccount: String,
+        apiKey: String?,
+    ): EnhancementBackendConfiguration = hostProvider()
+        .mediaEnhancementConfigurationHost
+        .saveConfiguration(displayName, endpointID, credentialAccount, apiKey)
+
+    override suspend fun clearConfiguration(): EnhancementBackendConfiguration =
+        hostProvider().mediaEnhancementConfigurationHost.clearConfiguration()
+}
+
+/** Re-resolves the current controller's real enhancement host on every call. */
+private class LiveWorkbenchEnhancement(
+    private val hostProvider: () -> CreativeHostController,
+) : WorkbenchEnhancementHostApi {
+    override suspend fun enhancementCapability(
+        context: CreativeProjectContext,
+    ): EnhancementCapability = hostProvider().mediaEnhancementHost
+        .enhancementCapability(context)
+
+    override suspend fun submitEnhancement(
+        context: CreativeProjectContext,
+        request: EnhancementRequest,
+    ): String = hostProvider().mediaEnhancementHost.submitEnhancement(context, request)
+
+    override suspend fun enhancementStatus(
+        context: CreativeProjectContext,
+        jobID: String,
+    ): EnhancementStatus = hostProvider().mediaEnhancementHost
+        .enhancementStatus(context, jobID)
+
+    override suspend fun importEnhancementOutput(
+        context: CreativeProjectContext,
+        jobID: String,
+    ): EnhancementStatus = hostProvider().mediaEnhancementHost
+        .importEnhancementOutput(context, jobID)
+
+    override suspend fun cancelEnhancement(
+        context: CreativeProjectContext,
+        jobID: String,
+    ): EnhancementStatus = hostProvider().mediaEnhancementHost
+        .cancelEnhancement(context, jobID)
 }
 
 /** Re-resolves the current controller's real video host on every call. */

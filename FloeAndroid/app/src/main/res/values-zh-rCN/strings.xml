@@ -505,4 +505,9 @@
     <string name="workspace_terminal_empty_title">暂无终端标签页</string>
     <string name="workspace_terminal_empty_hint">新建标签页以在此任务中启动终端。</string>
     <string name="terminal_open_runtime_setup">设置本地运行环境</string>
+    <string name="media_enhancement_settings_title">媒体增强</string>
+    <string name="media_enhancement_settings_configure">配置</string>
+    <string name="media_enhancement_settings_configured">超分辨率后端已配置。</string>
+    <string name="media_enhancement_settings_unconfigured">配置 fal.ai 超分辨率后端以进行视频增强。</string>
+    <string name="media_enhancement_settings_pending">运行环境启动后可用。</string>
 </resources>

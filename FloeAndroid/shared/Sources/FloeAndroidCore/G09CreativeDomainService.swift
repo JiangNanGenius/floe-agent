@@ -54,12 +54,20 @@ public actor G09CreativeDomainService {
         let registeredAt: Date
     }
 
-    private var bound: Bound?
+    nonisolated public let generationAvailability = G09R2GenerationAvailability()
+    private var bound: Bound? {
+        didSet { refreshGenerationAvailability() }
+    }
+    private func refreshGenerationAvailability() {
+        generationAvailability.setAvailable(bound != nil && r2StoppingEpoch != bound?.epoch)
+    }
     private var sessions: [String: Session] = [:]
     private var sessionOrder: [String] = []
     /// Exact generation whose Root stop was requested. New mutations and a
     /// same-epoch rebind are refused until a fully drained close unbinds.
-    private var r2StoppingEpoch: UInt64?
+    private var r2StoppingEpoch: UInt64? {
+        didSet { refreshGenerationAvailability() }
+    }
 
     public init() {}
 
@@ -172,6 +180,7 @@ public actor G09CreativeDomainService {
         _ = G09R2MediaRenderHostMailbox.shared.prepareRootStop(epoch: epoch)
         _ = G09R2LargeImportService.shared.requestRootStop(epoch: epoch)
         _ = G09R2GenerationService.shared.requestRootStop(epoch: epoch)
+        _ = G09R2MediaEnhancementService.shared.requestRootStop(epoch: epoch)
         return await r2Drained(epoch: epoch)
     }
 
@@ -189,6 +198,7 @@ public actor G09CreativeDomainService {
         let mailbox = G09R2MediaRenderHostMailbox.shared.prepareRootStop(epoch: epoch)
         let imports = G09R2LargeImportService.shared.requestRootStop(epoch: epoch)
         let generation = G09R2GenerationService.shared.requestRootStop(epoch: epoch)
+        let enhancement = G09R2MediaEnhancementService.shared.requestRootStop(epoch: epoch)
         let pins = G09R2SnapshotLeases.shared.pinnedCount(epoch: epoch)
         let designService = bound?.design
         let designDrained: Bool
@@ -197,7 +207,8 @@ public actor G09CreativeDomainService {
         } else {
             designDrained = true
         }
-        return mailbox && imports && generation && pins == 0 && designDrained
+        return mailbox && imports && generation && enhancement
+            && pins == 0 && designDrained
     }
 
     public func status() -> G09CreativeStatusDTO {
@@ -859,4 +870,12 @@ extension G09CreativeDomainService {
     public func r2CanvasRepository() -> G09CanvasProjectRepository? {
         bound?.canvas
     }
+}
+
+/// Synchronous discovery projection updated only by the real creative binding lifecycle.
+public final class G09R2GenerationAvailability: @unchecked Sendable {
+    private let lock = NSLock()
+    private var available = false
+    public var isAvailable: Bool { lock.withLock { available } }
+    fileprivate func setAvailable(_ value: Bool) { lock.withLock { available = value } }
 }

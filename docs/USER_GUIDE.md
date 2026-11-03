@@ -1,4 +1,4 @@
-<!-- docs-updated: 2026-10-31 -->
+<!-- docs-updated: 2026-11-04 -->
 
 > This guide primarily describes iOS/iPadOS. Android Alpha21/build 23 adds offline PCAP/PCAPNG analysis, saved Wi-Fi coverage points and scheduled Agent tasks. Open **More → Network → Captures & coverage** to import a capture, or choose Wi-Fi coverage to create a session, add an optional floorplan and sample named points. System access is requested when needed; after granting it, start the check again. Open **Task Center → Scheduled tasks** to choose an instruction, model, workspace, approval policy and schedule. Each run starts a separate conversation; scheduling does not grant extra tool access. Exact timing waits for the required system access; flexible timing is an explicit choice. First use of Linux in a new workspace may prepare the environment; later entries reuse it. GitHub updates are in **Settings → Diagnostics & About** and require Android installation confirmation. Android uses your cloud provider and has no local-model inference. See the [Android release notes](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.21) for actual verification and limits.
 
@@ -53,7 +53,7 @@ This guide follows the source. Check Settings for your installed version and [re
 
 *The iPad home screen: choose a task in the sidebar or start from the central composer.* Check the model and workspace before sending your first request.
 
-1. Prefer TestFlight when you have access to a test group. Check its build number, expiration and What to Test.
+1. After public release, use the App Store link provided by the [official website](https://www.floe-agent.com/) and check availability in your region. Submission for review does not mean the app is available. For a beta, use a TestFlight group you already have access to and check its build, expiry and testing notes.
 2. For GitHub or Feather/AltStore delivery, follow the installation instructions on the release page. The GitHub developer IPA is unsigned and requires your own signing method; it is not a TestFlight package.
 3. Complete onboarding. Use the sidebar on iPhone and multiple columns on iPad; editors can open full screen.
 4. Core Notes, file organization and Canvas do not require an AI provider. Connect your provider before requesting AI work.
@@ -85,6 +85,23 @@ Go back, continue or leave a section for later. Connecting a main model does not
 Downloads show actual sizes, progress and speed. Reaching 100% may be followed by checking or installation; a resource becomes usable only after those finish. A failed, paused or space-limited download affects only that resource and can be retried later. Closing its page or leaving the guide does not cancel it. Background processing and work after the App exits depend on system limits; reopening checks the real state and resumes or offers a Continue action.
 
 A downloaded voice does not replace another voice you selected while waiting. Installing an environment does not start it. Apple Intelligence is off by default for new users and can be enabled on a supported device. Existing choices are preserved, and other models remain available on devices without Apple Intelligence.
+
+[↑ Back to contents](#contents)
+
+<!-- doc-anchor: mac-bridge -->
+### Mac Bridge quickstart
+
+Floe Bridge is Floe Agent's optional Mac menu-bar companion. It runs on the same Mac as Floe and gives that task terminal, file and MCP capabilities over a local-only authenticated connection, without a Linux image. It is not a remote bridge from iPad to Mac, and it does not expose a LAN address or use a remote relay.
+
+Check the chosen release for supported Macs, macOS and compatible Floe versions. Both apps run on the same Mac. This is separate from [Floe iOS Bridge](https://www.floe-agent.com/en/ios-bridge), the iPhone/iPad control companion.
+
+1. Open the [Mac Bridge release history](https://www.floe-agent.com/en/releases?platform=bridge), choose a version, then download its DMG from the linked GitHub release. Use that release’s installation requirements and any supplied checksum.
+2. Open the DMG, drag Floe Bridge into Applications, then launch it. Its icon appears in the macOS menu bar.
+3. In Floe on the same Mac, choose this Mac to start a connection. Floe and Floe Bridge each show a native confirmation; compare the matching code and allow it on both sides. A refusal on either side leaves the connection closed.
+4. Grant only the permissions a task actually needs. Folder access may be requested when a terminal task touches a protected folder; Screen Recording and Accessibility are requested only for features that need them. You can review or revoke them later in macOS System Settings.
+5. Use the connection from the task. Terminal, file and MCP capabilities end when you disconnect.
+
+If the menu-bar icon does not appear, launch Floe Bridge from Applications again. If macOS asks for confirmation at first launch, follow the system prompt and do not bypass a security warning. If a connection is refused, confirm both apps are on the same Mac, the versions meet the selected release’s requirements, and both sides allowed the same code. To disconnect, use Floe Bridge menu → Connections and Storage… → Disconnect; this revokes the pairing and ends its terminal jobs. Quit Floe Bridge to stop the local listener and end remaining terminal jobs.
 
 [↑ Back to contents](#contents)
 
@@ -433,6 +450,8 @@ never squeezed into a strip.
 - Availability is host-specific and is reported separately: VideoToolbox frame processing runs on macOS qualification hosts and is expected on physical devices, but Apple's frame-processing headers do not support the Simulator. Core ML inference is verified on macOS and still pending physical-iPad acceptance. Do not read a macOS result as a physical-device result.
 
 ### 3D models: one unified workbench
+
+The native 3D editor is available on iOS and iPadOS. Modeling, editing, rendering and saving run on-device; assistant actions use your selected local model or cloud provider. CAD/3D preview has not reached the public Android alpha.
 
 Within a canvas, Floe has one 3D creation entry: open the bottom insertion menu (**+ ▸ 3D Model (unified workbench)**). It creates a native `.floecad` node owned by the canvas and opens the same full-screen workbench used by File Preview. **3D Panorama** stays a separate viewer node for panoramic images.
 

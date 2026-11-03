@@ -103,6 +103,13 @@ an unknown submission is never automatically re-issued. 编辑绑定工程改变
 
 ## 3. `cad.document` — 2D DWG/DXF / 二维图纸
 
+> **2026-11-03:** the native `.floecad` 3D workbench noted below has since
+> shipped on iOS/iPadOS: 1.7.64 (305) added materials, Present and PNG/GLB export, and
+> 1.7.65 (306) expanded local editing, assemblies, drawings and simple animation
+> with continued assistant edits and real viewport results. The 2D table below
+> still describes the shipped 2D `cad.document` surface. 原生 `.floecad`
+> 三维工作台已随 305／306 发布；下表仍为已发布的二维 `cad.document` 能力。
+>
 > **2026-10-09:** a native `.floecad` 3D workbench (parametric history,
 > exact B-rep, AI propose/apply) exists unreleased on
 > `codex/content-upgrade-20261009`; its honest state and open items are in

@@ -55,7 +55,8 @@ fun ProviderIssueLine(text: String, modifier: Modifier = Modifier) {
 
 /**
  * Editor sheet toolbar: Cancel leading, Save trailing (large title follows in
- * the scrolling header). In-flight Save shows the spinner and can never
+ * the scrolling header, then collapses into the centered title). Save shows
+ * the spinner in flight and can never
  * dispatch a duplicate (the caller also gates through the holder).
  */
 @Composable
@@ -67,36 +68,51 @@ fun ProviderEditorToolbar(
     onCancel: () -> Unit,
     onSave: () -> Unit,
     modifier: Modifier = Modifier,
+    title: String? = null,
 ) {
-    Row(
+    Box(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        FloeCapsuleAction(
-            label = cancelLabel,
-            onClick = onCancel,
-            tint = Floe.colors.label,
-            modifier = Modifier.testTag("provider.cancelAction"),
-        )
-        if (inFlight) {
-            Row(
-                modifier = Modifier.heightIn(min = FloeLayout.MinimumTarget),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                FloeActivityIndicator(description = saveLabel)
-                FloeText(saveLabel, style = Floe.typography.bodyEmphasized, color = Floe.colors.secondaryLabel)
-            }
-        } else {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
             FloeCapsuleAction(
-                label = saveLabel,
-                onClick = onSave,
-                enabled = saveEnabled,
+                label = cancelLabel,
+                onClick = onCancel,
                 tint = Floe.colors.label,
-                modifier = Modifier.testTag("provider.saveAction"),
+                modifier = Modifier.testTag("provider.cancelAction"),
+            )
+            if (inFlight) {
+                Row(
+                    modifier = Modifier.heightIn(min = FloeLayout.MinimumTarget),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FloeActivityIndicator(description = saveLabel)
+                    FloeText(saveLabel, style = Floe.typography.bodyEmphasized, color = Floe.colors.secondaryLabel)
+                }
+            } else {
+                FloeCapsuleAction(
+                    label = saveLabel,
+                    onClick = onSave,
+                    enabled = saveEnabled,
+                    tint = Floe.colors.label,
+                    modifier = Modifier.testTag("provider.saveAction"),
+                )
+            }
+        }
+        if (!title.isNullOrEmpty()) {
+            FloeText(
+                title,
+                style = Floe.typography.toolbarTitle,
+                color = Floe.colors.label,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.align(Alignment.Center).padding(horizontal = 88.dp),
             )
         }
     }

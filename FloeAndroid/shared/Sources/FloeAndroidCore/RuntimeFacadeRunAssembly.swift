@@ -682,6 +682,20 @@ extension FacadeRunDomain {
             // would also add its descriptor to the isolated registry.
             await tools.registerDelegate(runner: runner, for: runID)
         }
+        // G09-R2 agent generation relaunch resume (job-6b686caa5ffe4761):
+        // launching a real conversation run is the conversation-scoped pump
+        // that re-attaches the task to the runtime. Restart bounded poll
+        // workers for THIS conversation's retained durable video jobs and
+        // classify single-shot image jobs that lost their process unknown —
+        // through the SAME shared generation worker table/root-stop fence,
+        // never a second engine. Non-blocking: the launch proceeds while the
+        // bounded workers settle; a root stop cancels and drains them.
+        if !temporary && !isNotes {
+            Task { [epoch] in
+                await G09R2AgentGenerationService.shared.resumeStaleJobs(
+                    epoch: epoch, conversationID: conversationID)
+            }
+        }
         return service
     }
 }

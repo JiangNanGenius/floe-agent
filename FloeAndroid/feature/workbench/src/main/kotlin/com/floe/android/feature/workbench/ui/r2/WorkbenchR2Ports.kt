@@ -5,6 +5,8 @@ import com.floe.android.feature.workbench.CreativeProjectContext
 import com.floe.android.feature.workbench.MediaExportBinding
 import com.floe.android.feature.workbench.MediaExportReceipt
 import com.floe.android.feature.workbench.MediaExportStatus
+import com.floe.android.feature.workbench.WorkbenchEnhancementConfigurationHostApi
+import com.floe.android.feature.workbench.WorkbenchEnhancementHostApi
 import com.floe.android.feature.workbench.WorkbenchGenerationHostApi
 import com.floe.android.feature.workbench.WorkbenchMediaPlatform
 import com.floe.android.feature.workbench.WorkbenchVideoHostApi
@@ -107,4 +109,6 @@ class WorkbenchR2Ports(
     val renderBindings: WorkbenchRenderBindingPreparer,
     val releaseRenderBinding: WorkbenchRenderBindingReleaser,
     val exportDelivery: WorkbenchExportDelivery,
+    val enhancement: WorkbenchEnhancementHostApi,
+    val enhancementConfiguration: WorkbenchEnhancementConfigurationHostApi,
 )

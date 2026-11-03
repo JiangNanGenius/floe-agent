@@ -56,6 +56,23 @@ class MediaR2Editor internal constructor(
         onProjectMutated = onProjectMutated,
     )
 
+    val enhancement = WorkbenchEnhancementController(
+        api = ports.enhancement,
+        context = context,
+        scope = scope,
+        isRetired = { retiredProvider() },
+    )
+
+    /**
+     * Shared super-resolution backend configuration state for this editor.
+     * The SAME flow backs the settings entry; the native side owns the one
+     * typed configuration row and the credential in the original stores.
+     */
+    val enhancementConfiguration = WorkbenchEnhancementConfigurationController(
+        api = ports.enhancementConfiguration,
+        scope = scope,
+    )
+
     val playback = WorkbenchPlaybackController(
         platform = ports.platform,
         prepareBinding = ports.renderBindings,
