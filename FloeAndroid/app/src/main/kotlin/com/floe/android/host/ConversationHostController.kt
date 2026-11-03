@@ -40,6 +40,8 @@ import com.floe.android.feature.conversation.RunningInputModeUi
 import com.floe.android.feature.conversation.RunningInputRequest
 import com.floe.android.feature.conversation.RunLaunchRequest
 import com.floe.android.feature.conversation.RunOutputCardUi
+import com.floe.android.feature.conversation.RunOutputViewerKind
+import com.floe.android.feature.conversation.RunOutputViewerSupport
 import com.floe.android.feature.conversation.StagedAttachmentUi
 import com.floe.android.feature.conversation.TaskBulkOperationUi
 import com.floe.android.feature.conversation.TemporaryEndTargetUi
@@ -6114,6 +6116,17 @@ class ConversationHostController internal constructor(
                 ownerCurrent,
             )
         }
+        // Owned text/markdown + generated media lane: verified staged bytes
+        // open in the App-owned full-screen viewer under the SAME owner
+        // fence; the viewer re-derives the kind from the native-sealed
+        // staged facts and refuses drift closed. Everything still outside
+        // every proven route falls through to the honest no-affordance.
+        if (openRunOutputViewer(
+                entry, card, conversationId, runId, outputId, epoch, generation,
+                ownerCurrent,
+            )) {
+            return true
+        }
         // EXISTING in-app Office path (DOCX/XLSX/PPTX). No external intent
         // fallback, no local preview invention.
         if (!OfficePreviewController.supports(card.displayName)) return false
@@ -6142,6 +6155,44 @@ class ConversationHostController internal constructor(
             ownerCurrent,
         )
         return true
+    }
+
+    /* Owned text/markdown + generated media lane: the SAME verified staging
+     * and owner-fence discipline as the PDF/Office routes above, opening in
+     * the App-owned full-screen viewer (read-only text space; bounded
+     * image/audio/video playback). Only the closed sealed MIME/extension
+     * agreement reaches here — unknown types keep Save Copy with an honest
+     * limitation note and never a dead Open. */
+    private fun openRunOutputViewer(
+        entry: ConversationFlowHolderEntry,
+        card: RunOutputCardUi,
+        conversationId: String,
+        runId: String,
+        outputId: String,
+        epoch: Long,
+        generation: Long,
+        ownerCurrent: () -> Boolean,
+    ): Boolean {
+        val kind = RunOutputViewerSupport.classify(card.mimeType, card.displayName)
+        if (kind == RunOutputViewerKind.UNSUPPORTED) return false
+        val viewer = (host.appContext as? FloeApplication)?.runOutputViewer ?: return false
+        if (viewer.hasActiveLaunch()) {
+            // Same honest busy refusal as the Office slot: the single viewer
+            // admission is owned by another operation; the note is advisory
+            // and the card stays re-tappable once that viewer closes.
+            entry.builder.setRunOutputActionState(runId, outputId, "open-blocked")
+            entry.holder.applyHostSnapshot(entry.builder.build())
+            return false
+        }
+        if (entry.builder.cachedRunOutputCard(runId, outputId)?.actionStateRaw == "open-blocked") {
+            entry.builder.setRunOutputActionState(runId, outputId, null)
+            entry.holder.applyHostSnapshot(entry.builder.build())
+        }
+        return viewer.openRunOutputViewer(
+            RunOutputOfficeSnapshotStager.Owner(conversationId, runId, outputId, epoch, generation),
+            kind,
+            ownerCurrent,
+        )
     }
 
     override fun cancelRunOutputSave(

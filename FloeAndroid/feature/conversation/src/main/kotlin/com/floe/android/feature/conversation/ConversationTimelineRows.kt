@@ -945,6 +945,11 @@ private fun StepGroupRow(group: TimelineRowUi.StepGroup, holder: ConversationFlo
         if (reasoningCount > 0) append(pluralThinkingSegments(reasoningCount))
     }
     val stateKey = StepGroupPairing.groupStateKey(failed.size, active.size, pendingCount, group.isLatest && state.isRunning)
+    val stateTitle = when (stateKey) {
+        "group_items_need_review" -> stringResource(R.string.group_items_need_review, failed.size)
+        "group_items_running" -> stringResource(R.string.group_items_running, active.size)
+        else -> stringResource(groupStateStringKey(stateKey))
+    }
     val stateColor = floeStatusColor(StepGroupPairing.groupStateColorRole(failed.size, active.size, pendingCount))
     val expanded = holder.isGroupExpanded(group.groupId)
 
@@ -967,7 +972,7 @@ private fun StepGroupRow(group: TimelineRowUi.StepGroup, holder: ConversationFlo
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                FloeText(stringResource(groupStateStringKey(stateKey)), style = Floe.typography.metadata, color = stateColor)
+                FloeText(stateTitle, style = Floe.typography.metadata, color = stateColor)
             }
             FloeText(
                 stringResource(if (expanded) R.string.action_hide else R.string.action_expand),

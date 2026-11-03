@@ -33,6 +33,21 @@ import org.json.JSONObject
  *  so a stop that arrived while this pump thread was still draining no
  *  longer leaves a stale kernel fence refusing the next admission. The
  *  default keeps every other constructor call site byte-compatible. */
+internal fun putWorkspaceExportFrame(
+    result: JSONObject,
+    released: Boolean,
+    workspaceResult: JSONObject?,
+    workspaceOwner: Boolean,
+) {
+    if (!released) return
+    val files = workspaceResult ?: return
+    result.put("workspaceStatus", files.optString("workspaceStatus", "unknown"))
+    if (files.has("workspaceKey")) result.put("workspaceKey", files.getString("workspaceKey"))
+    result.put("workspaceOwner", workspaceOwner)
+    if (files.has("workspaceRecoveryRef")) result.put("workspaceRecoveryRef", files.getString("workspaceRecoveryRef"))
+    if (files.has("workspaceRecovery")) result.put("workspaceRecovery", files.getJSONObject("workspaceRecovery"))
+}
+
 internal class LinuxRuntimeOperations(
     private val context: Context,
     private val onOwnedWorkReleased: () -> Unit = {},
@@ -1136,6 +1151,15 @@ internal class LinuxRuntimeOperations(
         require(stdoutCursor >= 0 && stderrCursor >= 0 && max in 1..16_384)
         val pages = pipe.pages(stdoutCursor, stderrCursor, max)
         val terminal = owned.terminal.get()
+        // ONE immutable release snapshot for the WHOLE frame: finish() assigns
+        // workspaceResult BEFORE owned.finished becomes true, so a poll that
+        // re-reads finished separately from the workspace metadata could mix
+        // leaseReleased=false with workspaceStatus="deferred" — the exact
+        // combination the trusted Swift poll decoder correctly refuses as
+        // malformed. Publish export/workspace metadata ONLY from the same true
+        // snapshot (the decoder contract: a deferred status only ever rides a
+        // released terminal).
+        val released = owned.finished.get()
         return JSONObject().put("sessionID", owned.lease.id)
             .put("state", if (owned.nativeReleaseFailed) "lease_retained"
                 else owned.job.stateNow.name.lowercase())
@@ -1151,7 +1175,7 @@ internal class LinuxRuntimeOperations(
             .put("stderrMore", pages.stderr.truncatedMore)
             .put("stderrDroppedBytes", pages.stderr.totalDroppedBytes)
             .put("stderrEof", pages.stderrEof)
-            .put("leaseReleased", owned.finished.get())
+            .put("leaseReleased", released)
             .put("cancelled", terminal is WorkloadTerminal.Cancelled)
             .put("cleanupDeferred", owned.cleanupDeferred)
             .also { result ->
@@ -1171,19 +1195,7 @@ internal class LinuxRuntimeOperations(
                     result.put("waitErrno", it.exit.waitErrno)
                 }
             }
-            .also { result ->
-                owned.workspaceResult?.let { files ->
-                    result.put("workspaceStatus", files.optString("workspaceStatus", "unknown"))
-                    if (files.has("workspaceKey")) result.put("workspaceKey", files.getString("workspaceKey"))
-                    result.put("workspaceOwner", owned.workspaceOwner)
-                    if (files.has("workspaceRecoveryRef")) {
-                        result.put("workspaceRecoveryRef", files.getString("workspaceRecoveryRef"))
-                    }
-                    if (files.has("workspaceRecovery")) {
-                        result.put("workspaceRecovery", files.getJSONObject("workspaceRecovery"))
-                    }
-                }
-            }
+            .also { result -> putWorkspaceExportFrame(result, released, owned.workspaceResult, owned.workspaceOwner) }
             .also { result ->
                 val stdin = pipe.stdinStatus()
                 result.put("stdin", JSONObject().put("delivery", "pipe")
@@ -1680,13 +1692,22 @@ internal class LinuxRuntimeOperations(
         val max = payload.optInt("maxBytes", 16_384)
         require(cursor >= 0 && max in 1..16_384)
         val page = owned.job.output(cursor, max)
+        // ONE immutable release snapshot for the WHOLE frame. finish() assigns
+        // workspaceResult BEFORE owned.finished becomes true, so re-reading
+        // finished separately from the workspace metadata could mix
+        // leaseReleased=false with workspaceStatus="deferred" — the exact
+        // combination the trusted Swift poll decoder correctly refuses as
+        // malformed. Publish export/workspace metadata ONLY from the same true
+        // snapshot (the decoder contract: a deferred status only ever rides a
+        // released terminal).
+        val released = owned.finished.get()
         return JSONObject().put("sessionID", owned.lease.id)
             .put("state", if (owned.nativeReleaseFailed) "lease_retained" else owned.job.stateNow.name.lowercase())
             .put("outputBase64", Base64.encodeToString(page.bytes, Base64.NO_WRAP))
             .put("cursor", page.nextCursor).put("gapBytes", page.gapBytes).put("more", page.truncatedMore)
-            .put("droppedBytes", page.totalDroppedBytes).put("leaseReleased", owned.finished.get())
+            .put("droppedBytes", page.totalDroppedBytes).put("leaseReleased", released)
             .also { value ->
-                if (owned.finished.get()) owned.transactionReceipt?.let { receipt ->
+                if (released) owned.transactionReceipt?.let { receipt ->
                     value.put("environmentTransaction", JSONObject().put("id", receipt.id)
                         .put("outcome", if (receipt.outcome == LinuxEnvironmentTransaction.Outcome.COMMITTED) "committed" else "rolledBack")
                         .put("snapshotBytes", receipt.snapshotBytes))
@@ -1694,13 +1715,7 @@ internal class LinuxRuntimeOperations(
             }
             .put("cancelled", owned.terminal.get() is WorkloadTerminal.Cancelled)
             .put("cleanupDeferred", owned.cleanupDeferred)
-            .also { result -> owned.workspaceResult?.let { files ->
-                result.put("workspaceStatus", files.optString("workspaceStatus", "unknown"))
-                if (files.has("workspaceKey")) result.put("workspaceKey", files.getString("workspaceKey"))
-                result.put("workspaceOwner", owned.workspaceOwner)
-                if (files.has("workspaceRecoveryRef")) result.put("workspaceRecoveryRef", files.getString("workspaceRecoveryRef"))
-                if (files.has("workspaceRecovery")) result.put("workspaceRecovery", files.getJSONObject("workspaceRecovery"))
-            } }
+            .also { result -> putWorkspaceExportFrame(result, released, owned.workspaceResult, owned.workspaceOwner) }
             .also { result -> (owned.terminal.get() as? WorkloadTerminal.Cancelled)?.let { result.put("stopReason", it.reason) } }
             .also { result -> owned.job.exitResult?.let { result.put("exitCode", it.exitCode).put("termSig", it.termSig).put("waitErrno", it.waitErrno) } }
             // Additive honest stdin facts for one-shot pipe sessions only

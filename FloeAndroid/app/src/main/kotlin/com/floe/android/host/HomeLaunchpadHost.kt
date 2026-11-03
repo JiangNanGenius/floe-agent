@@ -135,6 +135,21 @@ class HomeLaunchpadHost internal constructor(
         selectedProjectIdState.value = projectId?.takeIf { it.isNotBlank() }
     }
 
+    /**
+     * The explicit-picker selection may be dropped ONLY once the durable
+     * list has genuinely loaded without the chosen project. While a refresh
+     * is in flight, or the last list command FAILED (typed errorCode), the
+     * user's explicit choice is retained: the pre-first-run assignment
+     * revalidates the id through `project.get` + the native `project.assign`
+     * writer CAS, so a stale/foreign id still fails closed there instead of
+     * silently demoting an explicitly project-owned new task to "no
+     * project". A successful list that omits the project keeps the existing
+     * stale-id protection and clears the selection.
+     */
+    internal fun shouldClearMissingProjectSelection(
+        projectState: ProjectUiState?,
+    ): Boolean = shouldClearMissingProjectSelection(projectState, selectedProjectIdState.value)
+
     /** The real composer model options (usable rows from the F1 projection). */
     private val modelOptionsState = MutableStateFlow<List<ModelOptionUi>>(emptyList())
     val modelOptions: StateFlow<List<ModelOptionUi>> = modelOptionsState
@@ -1079,8 +1094,26 @@ class HomeLaunchpadHost internal constructor(
         }
     }
 
-    private companion object {
+    companion object {
         /** Bounded wait for the real model projection (5 s ceiling). */
-        const val MODEL_PROOF_TIMEOUT_NANOS = 5_000_000_000L
+        private const val MODEL_PROOF_TIMEOUT_NANOS = 5_000_000_000L
+
+        /**
+         * Pure retention policy for the project picker selection (the exact
+         * predicate the Home page applies). Clearing requires a SETTLED,
+         * SUCCESSFUL durable list that genuinely omits the chosen project;
+         * a failed (`errorCode != null`) or in-flight (`loading`) list keeps
+         * the explicit ownership so a transient list failure can never
+         * reset an explicitly project-owned new task to "no project".
+         */
+        internal fun shouldClearMissingProjectSelection(
+            projectState: ProjectUiState?,
+            selectedProjectId: String?,
+        ): Boolean {
+            val state = projectState ?: return false
+            val selected = selectedProjectId?.takeIf { it.isNotBlank() } ?: return false
+            return !state.loading && state.errorCode == null &&
+                state.projects.none { it.id == selected }
+        }
     }
 }

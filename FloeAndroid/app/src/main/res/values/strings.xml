@@ -35,6 +35,7 @@
     <string name="project_default_name">New Project</string>
     <string name="project_loading">Loading project…</string>
     <string name="project_unavailable">This project is unavailable. Refresh the project list and try again.</string>
+    <string name="project_list_load_failed">Couldn\'t load projects. Tap to retry.</string>
     <string name="project_action_failed">The project change didn\'t complete. Nothing was changed unless the project list shows it.</string>
     <string name="project_root_missing">This project\'s folder is missing. It will not be recreated automatically.</string>
     <string name="project_root_unsafe">This project\'s folder can\'t be used safely. Check its location and permissions.</string>
@@ -486,6 +487,21 @@
     <string name="run_pdf_print_opened">Print dialog opened. Choose a printer there.</string>
     <string name="run_pdf_print_unavailable">This device can\'t print right now.</string>
     <string name="run_pdf_print_gone">The file became unavailable before printing.</string>
+    <!-- Owned run-output viewer (text/Markdown + generated image/audio/video). -->
+    <string name="run_viewer_back_cd">Back</string>
+    <string name="run_viewer_opening">Preparing preview…</string>
+    <string name="run_viewer_failed_title">Can\'t open this file</string>
+    <string name="run_viewer_expired_info">This preview expired. Reopen the file from the conversation.</string>
+    <string name="run_viewer_gone_info">The file is no longer available.</string>
+    <string name="run_viewer_toolarge_info">This file is too large to preview here.</string>
+    <string name="run_viewer_invalid_info">This file isn\'t in a supported format for in-App preview.</string>
+    <string name="run_viewer_render_info">This file couldn\'t be displayed or played. Try opening it again.</string>
+    <string name="run_viewer_text_truncated">Showing the beginning of the file.</string>
+    <string name="run_viewer_image_cd">Image preview</string>
+    <string name="run_viewer_audio_cd">Audio</string>
+    <string name="run_viewer_play">Play</string>
+    <string name="run_viewer_pause">Pause</string>
+    <string name="run_viewer_time_indicator">%1$s / %2$s</string>
     <string name="office_return_title">Back to %1$s</string>
     <string name="office_return_action">Open</string>
     <string name="notes_pdf_unlock_title">Unlock PDF</string>

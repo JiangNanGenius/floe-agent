@@ -84,11 +84,28 @@ internal object RunOutputCardPresentation {
         availabilityRaw == AVAILABLE
 
     /** Existing in-app Office open supports exactly DOCX/XLSX/PPTX by the
-     * verified sealed MIME (extension agreement is re-checked host-side). */
+     * verified sealed MIME (extension agreement is re-checked host-side);
+     * the App-owned viewer lane adds the closed text/markdown + image/audio/
+     * video agreement table ([RunOutputViewerSupport]). Anything outside
+     * every proven route keeps Save but never gets a fake Open. */
     fun supportsOpen(mimeType: String, displayName: String): Boolean =
         mimeType in OFFICE_MIMES ||
             displayName.substringAfterLast('.', "").lowercase() in OFFICE_EXTENSIONS ||
-            supportsPdfOpen(mimeType, displayName)
+            supportsPdfOpen(mimeType, displayName) ||
+            RunOutputViewerSupport.supportsPreview(mimeType, displayName)
+
+    /** Explicit limitation note for an available card whose sealed type has
+     * NO in-App preview route: the honest caption paired with the real Save
+     * Copy action (never a dead Open button). */
+    fun previewUnsupportedLabelRes(
+        actionable: Boolean,
+        mimeType: String,
+        displayName: String,
+    ): Int? = if (actionable && !supportsOpen(mimeType, displayName)) {
+        R.string.run_output_preview_unsupported
+    } else {
+        null
+    }
 
     /** Lane 17: a durable PDF run output opens IN-APP (verified staged bytes
      * → the SAME isolated renderer + system Print). The affordance appears
@@ -210,6 +227,9 @@ private fun RunOutputCardRow(card: RunOutputCardUi, holder: ConversationFlowHold
             )
             val availabilityLabel = RunOutputCardPresentation.availabilityLabelRes(card.availabilityRaw)
             val stateLabel = RunOutputCardPresentation.actionStateLabelRes(card.actionStateRaw)
+            val unsupportedLabel = RunOutputCardPresentation.previewUnsupportedLabelRes(
+                actionable = actionable, mimeType = card.mimeType, displayName = card.displayName,
+            )
             when {
                 busy -> Row(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -226,6 +246,10 @@ private fun RunOutputCardRow(card: RunOutputCardUi, holder: ConversationFlowHold
                 )
                 availabilityLabel != null -> FloeText(
                     stringResource(availabilityLabel), style = Floe.typography.evidence,
+                    color = colors.pending,
+                )
+                unsupportedLabel != null -> FloeText(
+                    stringResource(unsupportedLabel), style = Floe.typography.evidence,
                     color = colors.pending,
                 )
                 else -> FloeText(
