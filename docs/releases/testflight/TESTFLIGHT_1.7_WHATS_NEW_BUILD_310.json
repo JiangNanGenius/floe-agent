@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "修复部分任务文件夹可读但运行环境无法启动的问题。改进火山引擎流式语音识别，及时显示修正后的文字和标点，并增加流式识别开关。",
+  "en-US": "Fixed execution access to some readable task folders. Improved live Volcengine speech recognition so revised text and punctuation update while speaking, and added a streaming recognition switch."
+}
