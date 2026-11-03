@@ -27,10 +27,13 @@ import XCTest
         XCTAssertTrue(row.waitForExistence(timeout: 30), app.debugDescription)
         for _ in 0..<4 where !row.isHittable { app.descendants(matching: .any)["HistoryPanel"].swipeUp() }
         XCTAssertTrue(row.isHittable, app.debugDescription)
-        let name = identifier.replacingOccurrences(of: target == "datum" ? "HistoryPlane-" : "HistoryRow-", with: "")
-        let nameLabel = row.staticTexts[name].firstMatch
-        XCTAssertTrue(nameLabel.isHittable, "Tap the real History name, not an inline parameter editor")
-        nameLabel.tap() // Sole selection producer; no setSelection/proxy.
+        if target == "datum" {
+            row.tap() // The actual native datum row is a Button.
+        } else {
+            let select = row.buttons["HistorySelect-" + targetID]
+            XCTAssertTrue(select.isHittable, "Use the real History selection button, preserving inline rename/parameter fields")
+            select.tap()
+        } // Sole selection producer; no setSelection/proxy.
         let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == 'selected'"), object: app.staticTexts["M30SelectionState"])
         XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 20), .completed)
         XCTAssertTrue(row.isSelected, "Actual native History row must expose selected trait")

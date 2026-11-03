@@ -259,10 +259,16 @@ private struct HistoryRowView: View {
         reorderGrip
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.system(size: 15))
-                    .frame(width: 24)
-                    .foregroundStyle(dimmed ? Color.barLabelDim : Color.barLabel)
+                Button(action: onSelect) {
+                    Image(systemName: icon)
+                        .font(.system(size: 15))
+                        .frame(width: 24)
+                        .foregroundStyle(dimmed ? Color.barLabelDim : Color.barLabel)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(row.name)
+                .accessibilityIdentifier("HistorySelect-\(row.id.raw.uuidString)")
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
                 VStack(alignment: .leading, spacing: 1) {
                     TextField(FloeCADStrings.text("cad.ui.common.name", "Name"), text: $draft)
                         .textFieldStyle(.plain)
@@ -622,6 +628,7 @@ private struct HistoryRowView: View {
         .padding(.horizontal, 8)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("HistoryRow-\(row.name)")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .onAppear {
             draft = row.name
             seedScalarText()
