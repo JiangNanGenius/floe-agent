@@ -114,7 +114,7 @@ nonisolated enum CADPresentationMaterialResolver {
             emissive: clean.emissive.map { SIMD3(Float($0.x), Float($0.y), Float($0.z)) } ?? .zero,
             emissiveStrength: Float(clean.emissiveStrength ?? 0),
             textures: textures,
-            uvMapping: mapping)
+            uvMapping: mapping, advanced:clean.advanced)
         return CADPresentationResolvedMaterial(material: material, images: images, issues: issues)
     }
 }

@@ -47,16 +47,8 @@ import XCTest
         XCTAssertTrue(item.waitForExistence(timeout:5),app.debugDescription);item.tap()
     }
     private func number(_ app: XCUIApplication,_ id: String,_ value: String) {
-        let field=visible(app,id)
-        // Native LabeledContent exposes the whole row as the field. Focus
-        // its trailing editable box and delete from the known end, as in the
-        // already-qualified hole form helper.
-        let previous=field.value as? String ?? ""
-        field.coordinate(withNormalizedOffset:CGVector(dx:1,dy:0.5)).withOffset(CGVector(dx:-4,dy:0)).tap()
-        field.typeText(String(repeating:XCUIKeyboardKey.delete.rawValue,count:previous.count))
-        field.typeText(value)
-        field.typeText(XCUIKeyboardKey.return.rawValue)
-        XCTAssertEqual(field.value as? String,value,"The real numeric field must contain the requested value before Apply")
+        _ = visible(app,id)
+        CADHoleFormUI.replaceNumber(app, identifier: id, with: value)
     }
     private func apply(_ app: XCUIApplication) {
         let button=app.buttons["CADSurfaceApply"]

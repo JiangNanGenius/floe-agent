@@ -1726,6 +1726,9 @@ struct FloeCADEditorView: View {
             }
             .overlay(alignment: .bottom) {
                 VStack(spacing: 10) {
+                    if viewModel.sculptEditingBody != nil {
+                        CADSculptHUD(viewModel:viewModel)
+                    } else {
                     // Selection info strip sits above the numeric bar when
                     // both are visible (spec §16.3).
                     SelectionInfoBar(viewModel: viewModel)
@@ -1747,6 +1750,7 @@ struct FloeCADEditorView: View {
                         sketchOffsetBar(viewModel)
                     } else {
                         NumericInputBar(viewModel: viewModel)
+                    }
                     }
                 }
                 .padding(.horizontal, 20)

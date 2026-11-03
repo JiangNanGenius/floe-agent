@@ -40,7 +40,11 @@ import XCTest
         XCTAssertTrue(any("CADTexturePaintCanvas").waitForExistence(timeout:30))
     }
     private func digest(_ expected:String?=nil)->String {
-        if !any("CADTexturePaintStoredDigest").exists { reveal("CADTexturePaintDetails").tap() }
+        if !any("CADTexturePaintStoredDigest").exists {
+            reveal("CADTexturePaintDetails").tap()
+            let expanded=XCTAttachment(string:app.debugDescription)
+            expanded.name="Texture stored-detail disclosure expanded";expanded.lifetime = .keepAlways;add(expanded)
+        }
         let field=reveal("CADTexturePaintStoredDigest")
         if let expected {
             let result=XCTWaiter.wait(for:[XCTNSPredicateExpectation(predicate:NSPredicate(format:"value == %@",expected),object:field)],timeout:30)
@@ -49,7 +53,11 @@ import XCTest
         return field.value as? String ?? field.label
     }
     private func awaitNewDigest(_ old:String)->String {
-        if !any("CADTexturePaintStoredDigest").exists { reveal("CADTexturePaintDetails").tap() }
+        if !any("CADTexturePaintStoredDigest").exists {
+            reveal("CADTexturePaintDetails").tap()
+            let expanded=XCTAttachment(string:app.debugDescription)
+            expanded.name="Texture stored-detail disclosure expanded";expanded.lifetime = .keepAlways;add(expanded)
+        }
         let field=reveal("CADTexturePaintStoredDigest")
         let result=XCTWaiter.wait(for:[XCTNSPredicateExpectation(predicate:NSPredicate(format:"value != %@ AND value != %@",old,"none"),object:field)],timeout:60)
         XCTAssertEqual(result,.completed,app.debugDescription)

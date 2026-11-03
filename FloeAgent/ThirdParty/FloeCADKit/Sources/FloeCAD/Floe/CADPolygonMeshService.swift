@@ -6,10 +6,14 @@ import simd
 /// checkpoint, undo and save authority as existing document geometry.
 @MainActor
 final class CADPolygonMeshService {
-    nonisolated static let actions = ["topology.create","topology.capture","topology.inspect","topology.extrude","topology.loopCut","topology.inset","topology.weld","modifier.add","modifier.update","modifier.move","modifier.remove"]
-    nonisolated static let mutatingActions = Set(actions.filter { $0 != "topology.inspect" })
+    nonisolated static let actions = ["topology.create","topology.capture","topology.inspect","topology.extrude","topology.loopCut","topology.inset","topology.weld","modifier.add","modifier.update","modifier.move","modifier.remove","sculpt.begin","sculpt.stroke","sculpt.subdivide","sculpt.level","sculpt.mask.clear","sculpt.inspect"]
+    nonisolated static let mutatingActions = Set(actions.filter { $0 != "topology.inspect" && $0 != "sculpt.inspect" })
     private static var active: [ObjectIdentifier: CADMeshCancellation] = [:]
     private static var activeActions: [ObjectIdentifier: String] = [:]
+    #if DEBUG
+    static var testBeforeSculptCompute:(@Sendable ()->Void)?
+    static var testAfterSculptCompute:(@MainActor ()->Void)?
+    #endif
     static func activeOperationStatus(for document: FloeCADDocument) -> [String: Any]? {
         let key = ObjectIdentifier(document)
         guard let token = active[key] else { return nil }
@@ -38,6 +42,7 @@ final class CADPolygonMeshService {
     init(document: FloeCADDocument) { self.document = document }
     private nonisolated enum Edit: Sendable {
         case unchanged
+        case sculpt(CADSculptEdit)
         case extrude(UUID,Double), inset(UUID,Double), loopCut(UUID,Double), weld([UUID],Double)
     }
     private nonisolated struct Plan: Sendable {
@@ -51,7 +56,8 @@ final class CADPolygonMeshService {
     }
     func handle(action: String, args: [String: Any]) -> [String: Any] {
         do {
-            if action == "topology.inspect" { return try inspect(args) }
+            if action == "topology.inspect" || action == "sculpt.inspect" { return try inspect(args) }
+            guard !action.hasPrefix("sculpt.") else { throw CADPolygonFailure.unsupported("Sculpt edits require the existing asynchronous mesh route.") }
             let plan = try prepare(action,args)
             let token = CADMeshCancellation()
             if Task.isCancelled { token.cancel() }
@@ -61,19 +67,28 @@ final class CADPolygonMeshService {
     }
     func handleAsync(action: String, args: [String: Any]) async -> [String: Any] {
         do {
-            if action == "topology.inspect" { return try inspect(args) }
+            if action == "topology.inspect" || action == "sculpt.inspect" { return try inspect(args) }
             let plan = try prepare(action,args), cancellation = CADMeshCancellation()
             let owner = ObjectIdentifier(document)
             _ = CADMeshService.cancelActiveOperation(for: document)
             Self.active[owner] = cancellation; Self.activeActions[owner] = action
             defer { if Self.active[owner] === cancellation { Self.active.removeValue(forKey: owner); Self.activeActions.removeValue(forKey: owner) } }
+            #if DEBUG
+            let probe=action.hasPrefix("sculpt.") ? Self.testBeforeSculptCompute:nil
+            #else
+            let probe:(@Sendable ()->Void)?=nil
+            #endif
             let result: Result<CADPolygonMeshDefinition,CADPolygonFailure> = await withTaskCancellationHandler {
                 await Task.detached(priority: .userInitiated) {
+                    probe?()
                     do { return .success(try Self.compute(plan,cancellation: cancellation)) }
                     catch let failure as CADPolygonFailure { return .failure(failure) }
                     catch { return .failure(.invalid(error.localizedDescription)) }
                 }.value
             } onCancel: { cancellation.cancel() }
+            #if DEBUG
+            if action.hasPrefix("sculpt.") { Self.testAfterSculptCompute?() }
+            #endif
             return try commit(plan,definition: result.get(),cancellation: cancellation)
         } catch { return Self.fail(error) }
     }
@@ -81,6 +96,9 @@ final class CADPolygonMeshService {
         guard !document.isClosed else { throw CADPolygonFailure.invalid("The document is closed.") }
         if let block = document.session.writeBlock { throw CADPolygonFailure.invalid(block.message) }
         let session = document.session
+        if action.hasPrefix("sculpt."),let raw=args["expectedChangeCount"] {
+            guard let n=raw as? NSNumber,CFGetTypeID(n) != CFBooleanGetTypeID(),Int(exactly:n.doubleValue)==session.changeCount else { throw CADPolygonFailure.invalid("The sculpt generation changed. Refresh the mesh before editing.") }
+        }
         let bodyID: BodyID, node: FeatureNode, creating: Bool, placement: Transform3D
         var definition: CADPolygonMeshDefinition
         if action == "topology.create" {
@@ -109,8 +127,22 @@ final class CADPolygonMeshService {
             node = owner; definition = value; placement = transform; creating = false
             guard args["cageDigest"] as? String == definition.digest else { throw CADPolygonFailure.invalid("The cage changed. Refresh its selection before editing.") }
         }
+        if definition.sculpt != nil,!action.hasPrefix("sculpt.") {
+            throw CADPolygonFailure.unsupported("This mesh has sculpt levels. Edit those levels instead of overwriting its original control cage or modifiers.")
+        }
         let edit: Edit
         switch action {
+        case "sculpt.begin":edit = .sculpt(.begin)
+        case "sculpt.subdivide":edit = .sculpt(.subdivide)
+        case "sculpt.level":
+            let level=try Self.number(args,"level");guard let index=Int(exactly:level) else { throw CADPolygonFailure.invalid("Choose an integer sculpt level.") };edit = .sculpt(.level(index))
+        case "sculpt.mask.clear":edit = .sculpt(.clearMask)
+        case "sculpt.stroke":
+            guard let raw=args["stroke"] as? [String:Any],JSONSerialization.isValidJSONObject(raw),Set(raw.keys).isSubset(of:["brush","samples"]),
+                  let brush=raw["brush"] as? [String:Any],Set(brush.keys).isSubset(of:["mode","radius","strength","inverted"]),
+                  let samples=raw["samples"] as? [[String:Any]],(1...256).contains(samples.count),
+                  samples.allSatisfy({ Set($0.keys).isSubset(of:["triangle","barycentric","pressure"]) }) else { throw CADPolygonFailure.invalid("Provide a typed sculpt stroke; unknown brush/sample fields are refused.") }
+            let stroke=try JSONDecoder().decode(CADSculptStroke.self,from:JSONSerialization.data(withJSONObject:raw));try stroke.validate();edit = .sculpt(.stroke(stroke))
         case "topology.create","topology.capture": edit = .unchanged
         case "topology.extrude": edit = .extrude(try Self.uuid(args,"faceID"),try Self.number(args,"distance"))
         case "topology.inset": edit = .inset(try Self.uuid(args,"faceID"),try Self.number(args,"distance"))
@@ -151,6 +183,7 @@ final class CADPolygonMeshService {
         var result = plan.definition
         switch plan.edit {
         case .unchanged: break
+        case let .sculpt(edit):result=try CADSculptKernel.apply(edit,to:result,cancelled:cancelled)
         case let .extrude(id,distance): result.cage = try CADPolygonMeshKernel.extrude(result.cage,face: id,distance: distance,cancelled: cancelled)
         case let .inset(id,distance): result.cage = try CADPolygonMeshKernel.inset(result.cage,face: id,distance: distance)
         case let .loopCut(id,fraction): result.cage = try CADPolygonMeshKernel.loopCut(result.cage,edge: id,fraction: fraction)
@@ -168,6 +201,11 @@ final class CADPolygonMeshService {
               document.session.changeCount == plan.changeCount, document.session.writeBlock == nil else { throw CADPolygonFailure.invalid("The document changed or the operation was cancelled. The model was kept.") }
         let session = document.session
         if !plan.creating, case let .polygonCage(original, _) = plan.node.kind, definition == original {
+            if case .sculpt = plan.edit {
+                var reply=try Self.payload(definition)
+                reply.merge(["ok":true,"mutated":false,"unchanged":true,"undoSteps":0,"bodyID":plan.body.raw.uuidString,"featureID":plan.node.id.raw.uuidString,"changeCount":session.changeCount]) { _,new in new }
+                return reply
+            }
             throw CADPolygonFailure.invalid("Nothing changed.")
         }
         let kind = FeatureKind.polygonCage(definition: definition,placement: plan.placement)
@@ -182,6 +220,7 @@ final class CADPolygonMeshService {
         }
         session.save()
         var response = try Self.payload(definition)
+        response["changeCount"]=session.changeCount
         response.merge(["ok":true,"mutated":true,"undoSteps":1,"bodyID":plan.body.raw.uuidString,"featureID":plan.node.id.raw.uuidString,"exactness":"mesh"]) { _,new in new }
         return response
     }
@@ -190,13 +229,23 @@ final class CADPolygonMeshService {
         let id = BodyID(raw: try Self.uuid(args,"bodyID"))
         guard let current = Self.currentCage(in: document.session, bodyID: id) else { throw CADPolygonFailure.unsupported("Select the latest editable polygon cage.") }
         let node = current.node, definition = current.definition
-        var value = try Self.payload(definition); value.merge(["ok":true,"mutated":false,"bodyID":id.raw.uuidString,"featureID":node.id.raw.uuidString]) { _,new in new }; return value
+        var value = try Self.payload(definition);value["changeCount"]=document.session.changeCount; value.merge(["ok":true,"mutated":false,"bodyID":id.raw.uuidString,"featureID":node.id.raw.uuidString]) { _,new in new }; return value
     }
     private static func payload(_ definition: CADPolygonMeshDefinition) throws -> [String: Any] {
         let result = try CADPolygonMeshKernel.evaluate(definition)
         let value = try JSONSerialization.jsonObject(with: JSONEncoder().encode(definition))
-        return ["cageDigest":definition.digest,"definition":value,"controlTriangles":result.controlRender.triangleCount,
-                "finalTriangles":result.render.triangleCount,"signedVolume":result.mesh.signedVolume,"watertight":result.mesh.isWatertight]
+        var payload:[String:Any] = ["cageDigest":definition.digest,"definition":value,"controlTriangles":result.controlRender.triangleCount,
+                "finalTriangles":result.render.triangleCount,"signedVolume":result.mesh.signedVolume,"watertight":result.mesh.isWatertight,"exactness":"mesh"]
+        if let sculpt=definition.sculpt {
+            let active=try CADSculptKernel.resolve(sculpt)
+            payload["sculpt"]=["version":sculpt.version,"activeLevel":sculpt.activeLevel,"levelCount":sculpt.levels.count,
+                "vertices":active.cage.vertices.count,"faces":active.cage.faces.count,"maskedVertices":active.mask.values.filter { $0>0 }.count,
+                "maskMaximum":active.mask.values.max() ?? 0,"brushModes":CADSculptBrush.Mode.allCases.map(\.rawValue),
+                "sampleSchema":"{triangle:zero_based_current_render_triangle,barycentric:[w0,w1,w2],pressure:0...1}",
+                "detailSpace":"local vector offsets over refined edited parents","maskInheritance":"maximum parent weights, with explicit per-level overrides",
+                "limits":["levels":4,"faces":32768,"vertices":32768,"strokeSamples":256]] as [String:Any]
+        }
+        return payload
     }
     private static func operation(_ args: [String: Any]) throws -> CADPolygonMeshDefinition.Modifier.Operation {
         switch args["kind"] as? String {

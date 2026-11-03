@@ -32,6 +32,17 @@ nonisolated enum CADPolygonMeshKernel {
         let key = definition.digest
         if let result = cache.get(key) { return result }
         try definition.validate()
+        if let sculpt=definition.sculpt {
+            let resolved=try CADSculptKernel.resolve(sculpt,cancelled:cancelled)
+            let final=try render(resolved.cage,smooth:true)
+            guard final.render.triangleCount<=65_536,!final.mesh.isEmpty else { throw CADPolygonFailure.invalid("The sculpt mesh exceeds its display limit.") }
+            if sculpt.base.isClosed,(!final.mesh.isWatertight || !final.mesh.signedVolume.isFinite || final.mesh.signedVolume<=1e-8) { throw CADPolygonFailure.invalid("The sculpt mesh is no longer a valid closed mesh.") }
+            let points=resolved.cage.points
+            let lines=resolved.cage.edges.flatMap { [SIMD3<Float>(points[$0.a]!),SIMD3<Float>(points[$0.b]!)] }
+            let result=Evaluation(mesh:final.mesh,render:final.render,edges:FeatureEdgeExtractor.edges(from:final.render),
+                controlRender:final.render,controlFaceIDs:final.channel,controlEdges:.init(segments:lines))
+            cache.put(key,result);return result
+        }
         let control = try render(definition.cage, smooth: false)
         var cage = definition.cage, smooth = false, enabledCount = 0
         for modifier in definition.modifiers where modifier.enabled {
@@ -59,7 +70,7 @@ nonisolated enum CADPolygonMeshKernel {
             controlRender: control.render, controlFaceIDs: control.channel, controlEdges: .init(segments: lines))
         cache.put(key,result); return result
     }
-    private static func render(_ cage: CADPolygonCage, smooth: Bool) throws -> (mesh: Euclid.Mesh, render: RenderMesh, channel: [UUID]) {
+    static func render(_ cage: CADPolygonCage, smooth: Bool) throws -> (mesh: Euclid.Mesh, render: RenderMesh, channel: [UUID]) {
         let points = cage.points
         var sums: [UUID: SIMD3<Double>] = [:]
         if smooth { for face in cage.faces { let n = try cage.normal(face,using: points); for id in face.vertices { sums[id, default: .zero] += n } } }
@@ -188,7 +199,7 @@ nonisolated enum CADPolygonMeshKernel {
         for face in result.faces where simd_dot(try result.normal(face),normals[face.id]!) <= 0 { throw CADPolygonFailure.invalid("This weld would reverse a face.") }
         if source.isClosed, !result.isClosed { throw CADPolygonFailure.invalid("This weld would open the cage.") }; return result
     }
-    private static func subdivide(_ source: CADPolygonCage, namespace: UUID, cancelled: @escaping @Sendable () -> Bool) throws -> CADPolygonCage {
+    static func subdivide(_ source: CADPolygonCage, namespace: UUID, cancelled: @escaping @Sendable () -> Bool) throws -> CADPolygonCage {
         guard source.faces.reduce(0,{ $0 + $1.vertices.count }) <= finalFaceLimit else { throw CADPolygonFailure.unsupported("Subdivision exceeds the final mesh limit.") }
         try source.validate(limit: finalFaceLimit,planarConvex: false)
         let points = source.points, incidence = source.incidence

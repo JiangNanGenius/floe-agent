@@ -287,6 +287,7 @@ public enum CadNativeEditActions {
         "uv.read", "uv.seams", "uv.unwrap", "uv.pack", "uv.transform", "uv.createSet",
         "uv.activateSet", "uv.removeSet", "uv.status", "uv.cancel",
         "paint.read", "paint.stroke", "paint.bakeAO", "paint.status", "paint.cancel",
+        "graph.get", "graph.bake", "graph.clear", "graph.status", "graph.cancel",
     ]
     /// Same parameters route; the engine validates geometry and transaction
     /// ownership. Documentation and examples use the existing complete/paged
@@ -294,6 +295,12 @@ public enum CadNativeEditActions {
     public static let loftSurface: Set<String> = [
         "loft.describe","loft.create","loft.update","surface.catalog",
         "surface.create","surface.update","surface.inspect",
+    ]
+    public static let sculptExamples:[String] = [
+        #"{"op":"mesh.sculpt.begin","args":{"bodyID":"00000000-0000-4000-8000-000000000001","cageDigest":"0000000000000000000000000000000000000000000000000000000000000000"}}"#,
+        #"{"op":"mesh.sculpt.stroke","args":{"bodyID":"00000000-0000-4000-8000-000000000001","cageDigest":"0000000000000000000000000000000000000000000000000000000000000000","stroke":{"brush":{"mode":"inflate","radius":2,"strength":0.5,"inverted":false},"samples":[{"triangle":0,"barycentric":[0.2,0.3,0.5],"pressure":0.7}]}}}"#,
+        #"{"op":"mesh.sculpt.subdivide","args":{"bodyID":"00000000-0000-4000-8000-000000000001","cageDigest":"0000000000000000000000000000000000000000000000000000000000000000"}}"#,
+        #"{"op":"mesh.sculpt.level","args":{"bodyID":"00000000-0000-4000-8000-000000000001","cageDigest":"0000000000000000000000000000000000000000000000000000000000000000","level":0}}"#,
     ]
     public static let loftSurfaceExamples: [String] = [
         #"{"action":"loft.update","feature_id":"00000000-0000-4000-8000-000000000001","changes":{"definition":{"version":1,"ruled":false,"guides":[],"start":{"tangent":{"point":[0,0,1]},"curvature":{"point":[0.01,0,0]},"angularTolerance":0.00001,"curvatureTolerance":0.000001},"end":{"tangent":{"point":[0,0,1]},"curvature":{"point":[0,0,0]},"angularTolerance":0.00001,"curvatureTolerance":0.000001}}}}"#,
@@ -342,7 +349,7 @@ public enum CadNativeEditActions {
     ]
     /// X22 persisted section / measurement overlay. `get` is read-only; every
     /// other action is one existing sceneSettings undoable edit.
-    public static let sceneReads: Set<String> = ["get", "objects", "object.resources", "physics.get", "physics.status", "physics.cancel"]
+    public static let sceneReads: Set<String> = ["get", "objects", "object.resources", "physics.get", "physics.status", "physics.cancel", "rig.get"]
     public static let sceneMutations: Set<String> = [
         "setSection", "setSectionEnabled", "flipSection", "removeSection",
         "setMeasurementsVisible", "addMeasurement", "removeMeasurement",
@@ -350,7 +357,8 @@ public enum CadNativeEditActions {
         "object.createGroup", "object.reparent", "object.transform", "object.rename", "object.remove",
         "physics.configure", "physics.run", "physics.clear",
     ]
-    public static let scene: Set<String> = sceneReads.union(sceneMutations)
+    public static let rigMutations: Set<String> = ["rig.bind","rig.joint.add","rig.joint.bind","rig.joint.remove","rig.pose","rig.weight","rig.morph","rig.morph.weight","rig.key","rig.keys.clear","rig.clip","rig.remove"]
+    public static let scene: Set<String> = sceneReads.union(sceneMutations).union(rigMutations)
 
     public static let animationMedia: Set<String> = ["capture", "export"]
     public static let animation: Set<String> =
@@ -1545,21 +1553,21 @@ public enum CadServiceOperationCatalog: Sendable {
         Operation(kind: "mesh", action: "modifier.remove", mutating: true,
                   summary: "Remove one modifier without changing the control cage.",
                   arguments: [arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("modifierID", "uuid", required: true)], examples: []),
+        Operation(kind:"mesh",action:"sculpt.begin",mutating:true,
+                  summary:"Create persistent bounded sculpt levels on this same mesh feature; original cage/modifiers remain stored.",arguments:[arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("expectedChangeCount", "integer")],examples:[]),
+        Operation(kind:"mesh",action:"sculpt.stroke",mutating:true,
+                  summary:"Apply one pressure-weighted geodesic inflate, Jacobi smooth, mask or unmask stroke as one undo.",arguments:[arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("expectedChangeCount", "integer"), arg("stroke", "{brush:{mode:inflate|smooth|mask|unmask,radius:mm,strength:0...1,inverted:bool},samples:[{triangle:integer,barycentric:[w0,w1,w2],pressure:0...1}]}", required: true)],examples:[]),
+        Operation(kind:"mesh",action:"sculpt.subdivide",mutating:true,
+                  summary:"Add one Catmull-Clark level from the highest level; retain local vector detail across level changes.",arguments:[arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("expectedChangeCount", "integer")],examples:[]),
+        Operation(kind:"mesh",action:"sculpt.level",mutating:true,
+                  summary:"Switch to an existing stored sculpt level, retaining higher detail.",arguments:[arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("expectedChangeCount", "integer"), arg("level", "integer", required: true)],examples:[]),
+        Operation(kind:"mesh",action:"sculpt.mask.clear",mutating:true,
+                  summary:"Clear the active level mask with explicit zero weights; preserve geometry and other levels.",arguments:[arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("expectedChangeCount", "integer")],examples:[]),
+        Operation(kind:"mesh",action:"sculpt.inspect",mutating:false,
+                  summary:"Read current sculpt levels, mask weights, mesh quality and generation without mutation.",arguments:[arg("bodyID", "uuid", required: true)],examples:[]),
     ]
 
     private static let meshOperations: [Operation] = [
-        Operation(kind: "mesh", action: "voxel.catalog", mutating: false,
-                  summary: "Bounded scan reconstruction scope, grid/time/query budgets and representation grade.", arguments: [], examples: []),
-        Operation(kind: "mesh", action: "voxel.remesh", mutating: true,
-                  summary: "Rebuild one enclosed scan mesh with conservative voxelization and exterior flood fill; original body and immutable scan snapshot retained. New closed manifold cubical mesh, never BRep. Reports actual world voxel size, independent bidirectional sampled deviation and complete conservative upper bound. Rejects thin/open scans, non-manifold voxel contacts and grid/deviation budgets. No UV transfer or feature-preserving quad flow. One undo, saved feature/body identities.",
-                  arguments: [arg("bodyID", "uuid", required: true), arg("voxelSize", "mm", note: "0.001…10000; default 1; <=96 cells/axis, <=262144 cells"), arg("maxDeviation", "mm", note: "1…20 voxels, default 4 voxels; full certificate required")],
-                  examples: [#"{"bodyID":"<scan uuid>","voxelSize":1,"maxDeviation":4}"#]),
-        Operation(kind: "mesh", action: "voxel.inspect", mutating: false,
-                  summary: "Inspect the latest unchanged reconstruction; returns definitionDigest, actual resolution, mesh health and measured distance certificate. Direct downstream mesh edits refuse authored measurements.",
-                  arguments: [arg("bodyID", "uuid", required: true)], examples: []),
-        Operation(kind: "mesh", action: "voxel.update", mutating: true,
-                  summary: "Rebuild from the stored immutable scan with changed voxelSize/maxDeviation. Requires current definitionDigest from voxel.inspect, keeps feature/body ID and commits one undo; cancelled/stale/failing work preserves original model and redo.",
-                  arguments: [arg("bodyID", "uuid", required: true), arg("definitionDigest", "sha256", required: true), arg("voxelSize", "mm"), arg("maxDeviation", "mm")], examples: []),
         Operation(kind: "mesh", action: "combine", mutating: true,
                   summary: "Combine bodies into one new body.",
                   arguments: [arg("bodyIDs", "[uuid]", required: true, note: "alias bodyID; <= 32 bodies"),
@@ -1608,7 +1616,23 @@ public enum CadServiceOperationCatalog: Sendable {
                   summary: "Boundary/closure report for one or more bodies.",
                   arguments: [arg("bodyIDs", "[uuid]", note: "alias bodyID")],
                   examples: [#"{"bodyID":"<body uuid>"}"#]),
-    ] + polygonMeshOperations
+
+    ] + polygonMeshOperations + voxelMeshOperations
+
+    private static let voxelMeshOperations: [Operation] = [
+        Operation(kind: "mesh", action: "voxel.catalog", mutating: false,
+                  summary: "Bounded scan reconstruction scope, grid/time/query budgets and representation grade.", arguments: [], examples: []),
+        Operation(kind: "mesh", action: "voxel.remesh", mutating: true,
+                  summary: "Rebuild one enclosed scan mesh with conservative voxelization and exterior flood fill; original body and immutable scan snapshot retained. New closed manifold cubical mesh, never BRep. Reports actual world voxel size, independent bidirectional sampled deviation and complete conservative upper bound. Rejects thin/open scans, non-manifold voxel contacts and grid/deviation budgets. No UV transfer or feature-preserving quad flow. One undo, saved feature/body identities.",
+                  arguments: [arg("bodyID", "uuid", required: true), arg("voxelSize", "mm", note: "0.001…10000; default 1; <=96 cells/axis, <=262144 cells"), arg("maxDeviation", "mm", note: "1…20 voxels, default 4 voxels; full certificate required")],
+                  examples: [#"{"bodyID":"<scan uuid>","voxelSize":1,"maxDeviation":4}"#]),
+        Operation(kind: "mesh", action: "voxel.update", mutating: true,
+                  summary: "Rebuild from the stored immutable scan with changed voxelSize/maxDeviation. Requires current definitionDigest from voxel.inspect, keeps feature/body ID and commits one undo; cancelled/stale/failing work preserves original model and redo.",
+                  arguments: [arg("bodyID", "uuid", required: true), arg("definitionDigest", "sha256", required: true), arg("voxelSize", "mm"), arg("maxDeviation", "mm")], examples: []),
+        Operation(kind: "mesh", action: "voxel.inspect", mutating: false,
+                  summary: "Inspect the latest unchanged reconstruction; returns definitionDigest, actual resolution, mesh health and measured distance certificate. Direct downstream mesh edits refuse authored measurements.",
+                  arguments: [arg("bodyID", "uuid", required: true)], examples: []),
+    ]
 
     /// Every known workbench operation, grouped by kind in declaration order.
     public static let operations: [Operation] =

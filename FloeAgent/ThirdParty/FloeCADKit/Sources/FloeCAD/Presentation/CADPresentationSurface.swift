@@ -199,6 +199,8 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     private var cameraRestored = false
     private var currentScene: CADPresentationScene?
     private var bodyEntities: [UUID: CADPresentationBodyNodes] = [:]
+    private var rigAnimationRevision: UInt64 = 0
+    private var rigRestoreModels: [ObjectIdentifier: (entity: ModelEntity, model: ModelComponent)] = [:]
     private var pickTargets: [ObjectIdentifier: CADPresentationPick] = [:]
     private weak var selectionDocument: FloeCADDocument?
     private var selectionDecorations: [Entity] = []
@@ -1544,12 +1546,57 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         return true
     }
 
+    /// Prepare all resources before committing any entity. The existing render
+    /// generation, export lease and document fence reject late mesh installs.
+    /// No second scene or persistent mesh is created.
+    func applyRigDeformation(_ value: CADRigDeformation?, expectedGeneration: UInt64,
+                             lease: UUID?, isCurrent: @MainActor () -> Bool) async -> Bool {
+        guard let scene = currentScene, renderGeneration == expectedGeneration,
+              animationLease == nil || animationLease == lease, isCurrent(), !Task.isCancelled else { return false }
+        rigAnimationRevision &+= 1; let revision = rigAnimationRevision
+        guard let value else { restoreRigModels(); return true }
+        var prepared: [(ModelEntity, MeshResource)] = []
+        do {
+            for body in scene.bodies where body.id == value.bodyID || body.sourceBodyID == value.bodyID {
+                guard let nodes = bodyEntities[body.id], body.faceGroups.isEmpty,
+                      value.positions.count == body.mesh.positions.count, value.normals.count == value.positions.count else { return false }
+                var mesh = body.mesh; mesh.positions = value.positions.map(CADPresentationAxes.point); mesh.normals = value.normals
+                guard let resource = try await CADPresentationEntityBuilder.makeMesh(mesh, indices: mesh.indices, uvs: mesh.uvs) else { return false }
+                for entity in nodes.entities { prepared.append((entity,resource)) }
+            }
+            guard !prepared.isEmpty, rigAnimationRevision == revision, renderGeneration == expectedGeneration,
+                  animationLease == nil || animationLease == lease, isCurrent(), !Task.isCancelled else { return false }
+            guard prepared.allSatisfy({ $0.0.model != nil }) else { return false }
+            for (entity,resource) in prepared {
+                var model = entity.model!
+                let id = ObjectIdentifier(entity)
+                if rigRestoreModels[id] == nil { rigRestoreModels[id] = (entity,model) }
+                model.mesh = resource; entity.model = model
+            }
+            var deformedScene = scene
+            let positions = value.positions.map(CADPresentationAxes.point)
+            var lo = SIMD3<Float>(repeating:.infinity), hi = SIMD3<Float>(repeating:-.infinity)
+            for p in positions { lo = simd_min(lo,p); hi = simd_max(hi,p) }
+            for index in deformedScene.bodies.indices where deformedScene.bodies[index].id == value.bodyID || deformedScene.bodies[index].sourceBodyID == value.bodyID {
+                deformedScene.bodies[index].mesh.boundsMin = lo; deformedScene.bodies[index].mesh.boundsMax = hi
+            }
+            floorBounds = CADPresentationFloorPlacement.bounds(for:deformedScene)
+            if let stage { CADPresentationEntityBuilder.updateFloor(in:stage,bounds:floorBounds) }
+            return true
+        } catch { return false }
+    }
+    private func restoreRigModels() {
+        for value in rigRestoreModels.values { value.entity.model = value.model }
+        rigRestoreModels = [:]
+    }
+
     /// Restore every body to its document baseline and the camera to the pose
     /// captured before playback. Called on stop, mode exit and export finish.
     func clearAnimation() {
         // An export owns the stage for the whole clip; it restores when its
         // lease ends rather than letting a UI stop clear a frame mid-write.
         if animationLease != nil { return }
+        rigAnimationRevision &+= 1; restoreRigModels()
         if let scene = currentScene {
             for body in scene.bodies {
                 bodyEntities[body.id]?.parent.transform = Transform(matrix: body.transform)

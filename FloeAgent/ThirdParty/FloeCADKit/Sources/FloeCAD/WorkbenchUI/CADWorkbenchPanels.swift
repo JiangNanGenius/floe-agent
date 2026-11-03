@@ -361,6 +361,11 @@ struct CADWorkbenchToolsPanel: View {
                             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     }
                     .accessibilityIdentifier("CADSpherePhysicsOpen")
+                    NavigationLink {
+                        ScrollView { CADRiggingPanel(document:document).padding(16) }
+                            .navigationTitle(FloeCADStrings.text("cad.rig.title","Rig and shape keys"))
+                    } label: { Label(FloeCADStrings.text("cad.rig.title","Rig and shape keys"),systemImage:"figure.stand").frame(maxWidth:.infinity,minHeight:44,alignment:.leading) }
+                    .accessibilityIdentifier("CADRigOpen")
                     Picker("", selection: $mode) {
                         Text(FloeCADStrings.label("cad.workbench.panel.assembly", "Assembly")).tag(0)
                         Text(FloeCADStrings.label("cad.workbench.panel.drawing", "Drawings")).tag(1)

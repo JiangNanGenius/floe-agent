@@ -219,6 +219,7 @@ public final class FloeCADDocument {
         CADMeshService.cancelActiveOperation(for: self)
         CADUVService.cancel(for: self)
         CADTexturePaintService.cancel(for:self)
+        CADMaterialGraphService.cancel(for:self)
         CADSpherePhysicsService.cancel(for: self)
         #if canImport(AVFoundation) && canImport(RealityKit) && canImport(UIKit)
         // A service-owned animation export keeps the document alive; closing
@@ -227,6 +228,7 @@ public final class FloeCADDocument {
         CADAnimationExportCenter.shared.cancelAll(
             documentKey: url.standardizedFileURL.path)
         #endif
+        cachedViewModel?.endSculptEditing()
         session.cancelSketchPreviewForClose()
         session.flushPendingAutosave()
         session.discardOwnedCommandReceipts()
@@ -658,6 +660,18 @@ public final class FloeCADDocument {
         // itself has no closed flag; bind the real one before any async import
         // can reach its MainActor commit.
         model.documentClosedCheck = { [weak self] in self?.isClosed ?? true }
+        model.sculptActionHandler = { [weak self] action,args in
+            guard let self,!self.isClosed else { return ["ok":false,"mutated":false,"error":"closed"] }
+            var reply=await CADMeshService(document:self).handleAsync(action:action,args:args)
+            if reply["mutated"] as? Bool == true {
+                let saved=await self.save();reply["saved"]=saved.succeeded
+            }
+            return reply
+        }
+        model.sculptCancelHandler = { [weak self] in
+            guard let self,let action=CADPolygonMeshService.activeOperationStatus(for:self)?["action"] as? String,action.hasPrefix("sculpt.") else { return }
+            _ = CADMeshService.cancelActiveOperation(for:self)
+        }
         model.variableActionHandler = { [weak self] action, args in
             guard let self, !self.isClosed else {
                 return ["ok": false, "error": "closed"]

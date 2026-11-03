@@ -6596,6 +6596,10 @@
         "implementationAndEvidenceSeparate": true,
         "originalAcceptanceUnchanged": true,
         "upgradeIf": null
+      },
+      "release_scope": {
+        "included": false,
+        "reason": "User deferred professional manufacturing analysis; independent source and prototype research continues for later integration. Original criterion remains unaccepted."
       }
     },
     {
@@ -6904,7 +6908,7 @@
       "package": "experience",
       "implementation": {
         "stage": "F",
-        "status": "planned",
+        "status": "accepted_original_criterion_App_native",
         "source_changes": [],
         "verification": [],
         "limitations": []
@@ -6932,8 +6936,64 @@
         "acceptance_pending": "用含坏边/非均匀密度扫描网格验证重建、法线、偏差、撤销及重开。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "e9cc9d17",
+          "54517c9f"
+        ],
+        "actual_checks": [
+          {
+            "node": "CADVoxelRemeshTests/testCancellationInsideVoxelDistanceLoopDoesNotPublishPartialGeometry()",
+            "result": "Passed",
+            "seconds": 0.40615999698638916
+          },
+          {
+            "node": "CADVoxelRemeshTests/testCancelledServiceWorkerKeepsUndoRedoAndStalePreviewRefuses()",
+            "result": "Passed",
+            "seconds": 0.7785309553146362
+          },
+          {
+            "node": "CADVoxelRemeshTests/testDamagedUnevenScanRebuildsActualManifoldQuadsOutwardNormalsVolumeAndBoxDeviation()",
+            "result": "Passed",
+            "seconds": 0.37330901622772217
+          },
+          {
+            "node": "CADVoxelRemeshTests/testOffMainWorkerLateResultCannotOverwriteNewDocumentEpochOrClose()",
+            "result": "Passed",
+            "seconds": 0.7723679542541504
+          },
+          {
+            "node": "CADVoxelRemeshTests/testOpenScanPrecisionBudgetsAndDeviationRefuseWithoutReplacingOriginalOrRedo()",
+            "result": "Passed",
+            "seconds": 0.8576449155807495
+          },
+          {
+            "node": "CADVoxelRemeshTests/testOriginalSnapshotSurvivesSourceEditAndDirectOutputEditCannotClaimReconstruction()",
+            "result": "Passed",
+            "seconds": 1.9085140228271484
+          },
+          {
+            "node": "CADVoxelRemeshTests/testPreviewOneUndoSourcePreservedStableIDsColdReopenAndContinueResolutionEdit()",
+            "result": "Passed",
+            "seconds": 3.0973010063171387
+          },
+          {
+            "node": "CADVoxelRemeshTests/testVersionAlgorithmAndUnknownFieldsStayOpaqueAtActualWriterFloor()",
+            "result": "Passed",
+            "seconds": 0.05237698554992676
+          },
+          {
+            "node": "CADVoxelRemeshTests/testWorldResolutionIsMeasuredAfterUniformPlacementScale()",
+            "result": "Passed",
+            "seconds": 0.32600700855255127
+          }
+        ],
+        "source": "54517c9fefce80ce1d9d3f8ad33b35c495c37aed",
+        "evidence": "docs/qualification/cad-voxel-physics-20261103/x03-check.json",
+        "limitations": [
+          "Bounded cubical scan reconstruction; not feature-preserving arbitrary quad flow or exact BRep.",
+          "Actual iPad Simulator App tests, not physical-device performance."
+        ]
       },
       "verification_plan": {
         "priority": "P2",
@@ -8790,7 +8850,7 @@
       "package": "experience",
       "implementation": {
         "stage": "G",
-        "status": "planned",
+        "status": "accepted_original_criterion_App_native",
         "source_changes": [],
         "verification": [],
         "limitations": []
@@ -8821,8 +8881,49 @@
         "acceptance_pending": "选择仿真范围后保存物理参数/缓存，确定性回放、取消和离线导出。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "e9cc9d17",
+          "54517c9f"
+        ],
+        "actual_checks": [
+          {
+            "node": "CADSpherePhysicsTests/testActualPresentFramesAndExistingMP4ExportUseSolvedCache()",
+            "result": "Passed",
+            "seconds": 2.5920380353927612
+          },
+          {
+            "node": "CADSpherePhysicsTests/testFixedStepFreeFallMatchesClosedFormAndRepeatsExactly()",
+            "result": "Passed",
+            "seconds": 0.005456089973449707
+          },
+          {
+            "node": "CADSpherePhysicsTests/testGroundRestitutionAndNoTunnellingMatchIndependentImpact()",
+            "result": "Passed",
+            "seconds": 0.004664063453674316
+          },
+          {
+            "node": "CADSpherePhysicsTests/testOffMainStaleCancelAndClosedOwnerNeverCommitLateCache()",
+            "result": "Passed",
+            "seconds": 1.079110026359558
+          },
+          {
+            "node": "CADSpherePhysicsTests/testRealDocumentCacheTimelineUndoSaveReopenAndSourceInvalidation()",
+            "result": "Passed",
+            "seconds": 0.8033809661865234
+          },
+          {
+            "node": "CADSpherePhysicsTests/testUnequalMassElasticCollisionConservesMomentumAndEnergy()",
+            "result": "Passed",
+            "seconds": 0.0055359601974487305
+          }
+        ],
+        "source": "54517c9fefce80ce1d9d3f8ad33b35c495c37aed",
+        "evidence": "docs/qualification/cad-voxel-physics-20261103/x27-check.json",
+        "limitations": [
+          "Selected sphere-proxy plus static-plane scope; not cloth, particle, soft-body or fluid simulation.",
+          "Actual solved cache and PNG/MP4 readback; iPad Simulator, not physical-device performance."
+        ]
       },
       "verification_plan": {
         "priority": "P2",

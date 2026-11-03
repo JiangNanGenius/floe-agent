@@ -45,6 +45,7 @@ public nonisolated enum CADMaterialLibraryJSONMerge {
             throw MergeError(code: "shared_library_too_large",
                              message: "The incoming personal material library exceeds the size bound.")
         }
+        guard CADMaterialAppearanceIntent.readableLibrary(incoming), existing.map({CADMaterialAppearanceIntent.readableLibrary($0)}) ?? true else { throw MergeError(code:"shared_library_opaque",message:"Unsupported material library content was left untouched.") }
         guard let existing else { return incoming }
         guard existing.count <= maximumBytes else {
             throw MergeError(
@@ -79,6 +80,7 @@ public nonisolated enum CADMaterialLibraryJSONMerge {
         }
         var object = incomingObject
         object["entries"] = mergedEntries
+        object["schemaVersion"] = max(existingObject["schemaVersion"] as? Int ?? 1,incomingObject["schemaVersion"] as? Int ?? 1)
         guard JSONSerialization.isValidJSONObject(object),
               let data = try? JSONSerialization.data(withJSONObject: object,
                                                      options: [.sortedKeys]) else {
@@ -140,6 +142,7 @@ nonisolated enum CADMaterialLibraryFileStore {
     static func read(at url: URL) -> CADMaterialLibrary? {
         guard let data = try? Data(contentsOf: url),
               data.count <= CADMaterialLimits.maximumLibraryBytes else { return nil }
+        guard CADMaterialAppearanceIntent.readableLibrary(data) else { return nil }
         return try? JSONDecoder().decode(CADMaterialLibrary.self, from: data)
     }
 
@@ -159,7 +162,7 @@ nonisolated enum CADMaterialLibraryFileStore {
                     message: "The existing personal material library is oversized and was left untouched.")
             }
             guard let existing = try? Data(contentsOf: url),
-                  (try? JSONDecoder().decode(CADMaterialLibrary.self, from: existing)) != nil else {
+                  CADMaterialAppearanceIntent.readableLibrary(existing), (try? JSONDecoder().decode(CADMaterialLibrary.self, from: existing)) != nil else {
                 throw CADDocumentError(
                     code: "shared_library_corrupt",
                     message: "The existing personal material library is unreadable and was left untouched.")

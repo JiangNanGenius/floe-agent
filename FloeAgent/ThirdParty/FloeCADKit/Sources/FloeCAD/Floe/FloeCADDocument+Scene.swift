@@ -231,13 +231,17 @@ extension FloeCADDocument {
             }
         }
 
+        let rigPose = rigPlayback().flatMap { try? $0.evaluate(at:nil) }
         for body in session.document.bodies {
             let m = body.transform.matrix
             let transform = [m.columns.0.x, m.columns.0.y, m.columns.0.z, m.columns.0.w,
                              m.columns.1.x, m.columns.1.y, m.columns.1.z, m.columns.1.w,
                              m.columns.2.x, m.columns.2.y, m.columns.2.z, m.columns.2.w,
                              m.columns.3.x, m.columns.3.y, m.columns.3.z, m.columns.3.w]
-            let aabb = body.render.localAABB
+            var displayRender = body.render
+            let rigged = rigPose?.bodyID == body.id.raw
+            if rigged, let rigPose { displayRender.positions = rigPose.positions; displayRender.normals = rigPose.normals }
+            let aabb = displayRender.localAABB
             let faceTable = session.faceRangeTable(for: body)
             let resolved = CADFaceMaterialResolver.resolve(body.materialFaceBindings, in: body, table: faceTable)
             let assessment = CADFaceMaterialResolver.assessGroups(in: body, table: faceTable,
@@ -298,13 +302,13 @@ extension FloeCADDocument {
             }
             addImages(from: body.material)
             let mesh = CADSceneMeshResource(
-                positions: body.render.positions,
-                normals: body.render.normals,
+                positions: displayRender.positions,
+                normals: displayRender.normals,
                 indices: body.render.indices,
                 texcoords: body.render.texcoords,
                 renderTexcoords: MaterialUVProjector.renderUVs(for: body,
                                                                material: body.material),
-                meshRevision: body.meshRevision,
+                meshRevision: rigged ? (rigPose?.contentRevision ?? body.meshRevision) : body.meshRevision,
                 boundsMin: aabb.min,
                 boundsMax: aabb.max)
             bodies.append(CADSceneBodyResource(

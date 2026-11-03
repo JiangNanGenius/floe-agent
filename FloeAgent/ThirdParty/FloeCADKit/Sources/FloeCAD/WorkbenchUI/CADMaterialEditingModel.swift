@@ -660,6 +660,13 @@ final class CADMaterialDraftModel {
     func update(_ mutate: (inout CADMaterialDefinition) -> Void) {
         var copy = draft
         mutate(&copy)
+        if let graph = copy.nodeGraph {
+            let changed = graph.outputs.keys.contains { raw in
+                guard let slot = MaterialTextureSlot(rawValue:raw) else { return true }
+                return draft.texture(for:slot) != copy.texture(for:slot)
+            }
+            if changed { copy.nodeGraph = nil } // explicit output editing detaches the recipe
+        }
         draft = copy.sanitized
         statusMessage = nil
         schedulePreview()

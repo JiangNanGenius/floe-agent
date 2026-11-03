@@ -73,6 +73,7 @@ struct CADMaterialInspectorView: View {
     @State private var disclosure: Set<String> = []
     @State private var uvTarget: UVTarget?
     @State private var paintTarget:UVTarget?
+    @State private var graphTarget:UVTarget?
 
     private struct UVTarget: Identifiable { let bodyID: BodyID; var id: UUID { bodyID.raw } }
 
@@ -120,11 +121,18 @@ struct CADMaterialInspectorView: View {
                             .frame(minHeight:44).accessibilityIdentifier("CADMaterialOpenTexturePaint")
                             if model.hasUnsavedChanges { Text(FloeCADStrings.text("cad.paint.applyFirst","Apply material changes before painting.")) .font(.footnote).foregroundStyle(.secondary) }
                         }
+                        if !model.target.isFaceTarget {
+                            Button(FloeCADStrings.text("cad.nodes.title","Material nodes"),systemImage:"point.3.connected.trianglepath.dotted") {
+                                model.endPreviewOnly();graphTarget=UVTarget(bodyID:BodyID(raw:id))
+                            }.disabled(model.hasUnsavedChanges || model.document.session.isReadOnly)
+                            .frame(minHeight:44).accessibilityIdentifier("CADMaterialOpenNodes")
+                        }
                         Text(FloeCADStrings.text("cad.uv.savedMaterial", "The UV editor uses the body’s current material."))
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
                 surfaceSection
+                CADAdvancedMaterialControls(model:model)
                 texturesSection
                 mappingSection
                 librarySection
@@ -159,6 +167,9 @@ struct CADMaterialInspectorView: View {
                 model.refreshStaleBindings()
             }) { target in
                 CADUVEditorView(document: model.document, bodyID: target.bodyID)
+            }
+            .sheet(item:$graphTarget,onDismiss:{ model.refreshAfterTexturePainting() }) { target in
+                CADMaterialGraphPanel(document:model.document,bodyID:target.bodyID).presentationDetents([.large])
             }
             .sheet(item:$paintTarget,onDismiss:{ model.refreshAfterTexturePainting() }) { target in
                 CADTexturePaintView(document:model.document,bodyID:target.bodyID)

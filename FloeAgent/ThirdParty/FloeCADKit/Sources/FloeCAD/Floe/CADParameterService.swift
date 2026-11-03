@@ -4999,13 +4999,20 @@ public final class CADParameterService {
             add("voxel_size", "mm", definition.voxelSizeMM, editable: false, note: "Use mesh voxel.update with the current definitionDigest.")
             add("max_deviation", "mm", definition.maxDeviationMM, editable: false)
             add("definition_digest", "unitless", definition.digest, editable: false)
-        case let .polygonCage(definition, _):
+        case let .polygonCage(definition, placement):
             kindName = "polygonCage"
             add("control_vertex_count", "unitless", definition.cage.vertices.count, editable: false)
             add("control_edge_count", "unitless", definition.cage.edges.count, editable: false)
             add("control_face_count", "unitless", definition.cage.faces.count, editable: false)
             add("modifier_count", "unitless", definition.modifiers.count, editable: false)
             add("cage_digest", "unitless", definition.digest, editable: false)
+            add("sculpt_actions","unitless",["mesh.sculpt.begin","mesh.sculpt.stroke","mesh.sculpt.subdivide","mesh.sculpt.level","mesh.sculpt.mask.clear"],editable:false)
+            if let sculpt=definition.sculpt {
+                add("sculpt_level","unitless",sculpt.activeLevel,editable:false)
+                add("sculpt_level_count","unitless",sculpt.levels.count,editable:false)
+                add("sculpt_pick_samples","unitless",CADSculptKernel.pickSamples(definition,placement:placement),editable:false,
+                    note:"Bounded deterministic actual render-triangle centroids, pinned to cage_digest; use triangle + barycentric in a typed stroke. Up to 32 samples, not a complete triangle listing.")
+            }
         case let .baseSolid(source):
             kindName = "importedSolid"
             add("source_sha256", "unitless", source.sha256, editable: false)

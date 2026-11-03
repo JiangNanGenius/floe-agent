@@ -94,6 +94,7 @@ nonisolated struct CADPresentationMaterial: Equatable, Sendable {
     var emissiveStrength: Float
     var textures: [CADPresentationTexture]
     var uvMapping: CADMaterialUVMapping
+    var advanced: CADAdvancedMaterial? = nil
 
     static let neutral = CADPresentationMaterial(
         name: nil,
@@ -412,6 +413,7 @@ nonisolated extension CADPresentationMaterial {
         hasher.combine(baseColor)
         hasher.combine(metallic)
         hasher.combine(roughness)
+        hasher.combine(advanced)
         hasher.combine(opacity)
         hasher.combine(emissive)
         hasher.combine(emissiveStrength)

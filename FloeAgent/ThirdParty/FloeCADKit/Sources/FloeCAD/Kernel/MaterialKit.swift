@@ -252,6 +252,8 @@ nonisolated struct CADMaterialDefinition: Codable, Equatable, Sendable, Identifi
     var revision: Int
     var createdAt: Date
     var updatedAt: Date
+    var advanced: CADAdvancedMaterial? = nil
+    var nodeGraph: CADMaterialNodeGraph? = nil
 
     init(id: MaterialID = MaterialID(),
          name: String,
@@ -342,7 +344,8 @@ nonisolated struct CADMaterialDefinition: Codable, Equatable, Sendable, Identifi
             emissiveTexture: bytes(.emissive),
             opacityTexture: bytes(.opacity),
             uvMapping: clean.uvMapping,
-            textureMetadata: clean.textures.map(\.metadata)
+            textureMetadata: clean.textures.map(\.metadata),
+            advanced: clean.advanced, nodeGraph: clean.nodeGraph
         ).clamped
     }
 
@@ -359,8 +362,12 @@ nonisolated struct CADMaterialDefinition: Codable, Equatable, Sendable, Identifi
             // bottom-up normal map to topLeft the next time the library entry
             // was applied.
             let metadata = clean.verifiedTextureMetadata(for: slot)
+            let sha = CADMaterialTexture.digest(data)
+            let identitySHA = CADMaterialTexture.digest(Data((sha+"/"+slot.rawValue).utf8))
+            let hex = String(identitySHA.prefix(32)); let parts = [0..<8,8..<12,12..<16,16..<20,20..<32].map { range in String(Array(hex)[range]) }
+            let assetID = metadata?.assetID ?? UUID(uuidString:parts.joined(separator:"-"))!
             textures.append(CADMaterialTexture(
-                slot: slot,
+                id:MaterialTextureID(raw:assetID),slot: slot,
                 colorSpace: metadata?.colorSpace,
                 orientation: metadata?.orientation ?? .topLeft,
                 bytes: data))
@@ -382,6 +389,7 @@ nonisolated struct CADMaterialDefinition: Codable, Equatable, Sendable, Identifi
                   emissiveStrength: clean.emissiveStrength ?? 0,
                   textures: textures,
                   uvMapping: clean.uvMapping ?? .mesh)
+        self.advanced = clean.advanced; self.nodeGraph = clean.nodeGraph
     }
 
     /// JSON-facing metadata (never includes image bytes).
@@ -398,7 +406,7 @@ nonisolated struct CADMaterialDefinition: Codable, Equatable, Sendable, Identifi
                 "byte_count": texture.bytes.count,
             ]
         }
-        return [
+        var object: [String:Any] = [
             "id": id.raw.uuidString,
             "name": name,
             "base_color": [baseColor.x, baseColor.y, baseColor.z, baseColor.w],
@@ -411,6 +419,9 @@ nonisolated struct CADMaterialDefinition: Codable, Equatable, Sendable, Identifi
             "textures": textures.map(textureJSON),
             "revision": revision,
         ]
+        if let advanced { object["advanced"] = advanced.json }
+        if let nodeGraph { object["graph_id"] = nodeGraph.id.uuidString; object["graph_recipe_sha256"] = nodeGraph.recipeSHA256 }
+        return object
     }
 }
 
@@ -427,6 +438,8 @@ nonisolated extension BodyMaterialSpec {
             "emissive": emissive.map { [$0.x, $0.y, $0.z] } ?? [0, 0, 0],
             "emissive_strength": emissiveStrength ?? 0,
         ]
+        if let advanced { object["advanced"] = advanced.json }
+        if let nodeGraph { object["graph_id"] = nodeGraph.id.uuidString }
         if let materialID { object["material_id"] = materialID }
         if let materialName { object["name"] = materialName }
         if let uvMapping { object["uv_mapping"] = uvMapping.jsonObject }
@@ -455,13 +468,13 @@ nonisolated extension BodyMaterialSpec {
 // MARK: - Library
 
 nonisolated struct CADMaterialLibrary: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     var schemaVersion: Int
     var entries: [CADMaterialDefinition]
     var updatedAt: Date
 
-    init(schemaVersion: Int = CADMaterialLibrary.currentSchemaVersion,
+    init(schemaVersion: Int = 1,
          entries: [CADMaterialDefinition] = [],
          updatedAt: Date = Date()) {
         self.schemaVersion = schemaVersion
@@ -504,7 +517,7 @@ nonisolated struct CADMaterialLibrary: Codable, Equatable, Sendable {
             kept.append(clean)
             if kept.count >= CADMaterialLimits.maximumLibraryEntries { break }
         }
-        return CADMaterialLibrary(schemaVersion: Self.currentSchemaVersion,
+        return CADMaterialLibrary(schemaVersion:max(schemaVersion,kept.contains(where:{$0.advanced != nil || $0.nodeGraph != nil}) ? 2:1),
                                   entries: kept,
                                   updatedAt: updatedAt)
     }
@@ -591,7 +604,7 @@ nonisolated enum CADMaterialLibraryCodec {
         guard let data, !data.isEmpty, data.count <= CADMaterialLimits.maximumLibraryBytes else {
             return .empty
         }
-        guard let library = try? JSONDecoder().decode(CADMaterialLibrary.self, from: data) else {
+        guard CADMaterialAppearanceIntent.readableLibrary(data),let library = try? JSONDecoder().decode(CADMaterialLibrary.self, from: data) else {
             return .empty
         }
         return library.sanitized
@@ -599,7 +612,7 @@ nonisolated enum CADMaterialLibraryCodec {
 
     static func encode(_ library: CADMaterialLibrary) -> Data? {
         guard let data = try? JSONEncoder().encode(library.sanitized),
-              data.count <= CADMaterialLimits.maximumLibraryBytes else { return nil }
+              data.count <= CADMaterialLimits.maximumLibraryBytes, CADMaterialAppearanceIntent.readableLibrary(data) else { return nil }
         return data
     }
 }

@@ -41,13 +41,15 @@ nonisolated enum CADDocumentFormat {
     /// shared number and keep each feature's own intent check; never lower a
     /// floor or bump ordinary documents just because this build can write 7.
     static let drawingManufacturingVersion = 7
-    static let supportedVersion = 7
+    static let supportedVersion = 8
+    static let advancedMaterialVersion = 8
     static let loftSurfaceVersion = 7
     /// Root-coordinated unreleased floor; only actual normal-offset links raise it.
     static let sketchCurveEditVersion = 7
     static let sceneLightingVersion = 7
     static let sceneObjectHierarchyVersion = 7
     static let spherePhysicsVersion = 7
+    static let riggingVersion = 7
     static let standardThreadVersion = 7
     /// Shared unreleased format-7 floor. A pre-contract writer ignores an
     /// edge's qualifier and would reinterpret it as an ordinal. Raise only
@@ -184,9 +186,15 @@ nonisolated enum CADDocumentFormat {
         if document.features.nodes.contains(where: { if case .mechanical = $0.kind { return true }; return false }) {
             required = max(required, specialistMechanicalVersion)
         }
+        let materialIntents = document.bodies.flatMap { body in
+            [CADMaterialAppearanceIntent.inspect(try? JSONEncoder().encode(body.material)),
+             CADMaterialAppearanceIntent.inspect(try? JSONEncoder().encode(body.materialFaceBindings))]
+        } + [CADMaterialAppearanceIntent.inspect(document.materialLibraryData)]
+        if materialIntents.contains(where:{$0.present || $0.opaque}) { required = max(required, advancedMaterialVersion) }
         required = max(required, max(sceneLightingIntent(document.sceneSettingsData).version,
                        sceneObjectHierarchyIntent(document.sceneSettingsData).version))
         required = max(required, spherePhysicsIntent(document.sceneSettingsData).version)
+        required = max(required, riggingIntent(document.sceneSettingsData).version)
         if document.features.nodes.contains(where: {
             if case let .pattern(_, spec) = $0.kind { return spec.kind == .curve || spec.featureSeed != nil }; return false
         }) { required = max(required, advancedPatternVersion) }
@@ -741,6 +749,10 @@ nonisolated enum CADDocumentFormat {
                     throw CADDocumentFormatError.malformedAssociation("specialist-output-identities")
                 }
                 _ = try encoder.encode(node.kind)
+            case let .polygonCage(definition,placement):
+                try definition.validate();try CADPolygonMeshDefinition.validatePlacement(placement)
+                guard node.outputBodyIDs.count==1 else { throw CADDocumentFormatError.malformedAssociation("sculpt-output-identities") }
+                _ = try encoder.encode(node.kind)
             case let .loft(sections,_,definition):
                 try definition?.requireSupported(sectionCount:sections.count)
                 _ = try encoder.encode(node.kind)
@@ -873,15 +885,21 @@ nonisolated enum CADDocumentFormat {
                        assembly: Data? = nil,
                        drawings: Data? = nil,
                        animation: Data? = nil,
-                       sceneSettings: Data? = nil) throws -> Assessment {
+                       sceneSettings: Data? = nil, materials:Data? = nil) throws -> Assessment {
         var result = Assessment()
+        let appearanceInputs = bodies.flatMap { [CADMaterialAppearanceIntent.inspect($0.material), CADMaterialAppearanceIntent.inspect($0.faceMaterials)] }
+            + [CADMaterialAppearanceIntent.inspect(materials)]
+        if appearanceInputs.contains(where:{$0.present || $0.opaque}) { result.requiredVersion = max(result.requiredVersion,advancedMaterialVersion) }
+        if appearanceInputs.contains(where:{$0.opaque}) || materials.map({!CADMaterialAppearanceIntent.readableLibrary($0)}) == true { result.opaqueBodyAppearance = true }
         let lighting = sceneLightingIntent(sceneSettings)
         result.requiredVersion = max(result.requiredVersion, lighting.version)
         let physics = spherePhysicsIntent(sceneSettings)
         result.requiredVersion = max(result.requiredVersion, physics.version)
         let hierarchy = sceneObjectHierarchyIntent(sceneSettings)
         result.requiredVersion = max(result.requiredVersion, hierarchy.version)
-        result.opaqueSceneAppearance = lighting.opaque || hierarchy.opaque || physics.opaque
+        let rig = riggingIntent(sceneSettings)
+        result.requiredVersion = max(result.requiredVersion, rig.version)
+        result.opaqueSceneAppearance = lighting.opaque || hierarchy.opaque || physics.opaque || rig.opaque
         if assemblyRequiresNestedFormat(assembly) {
             result.requiredVersion = max(result.requiredVersion, nestedAssemblyVersion)
         }
@@ -901,7 +919,7 @@ nonisolated enum CADDocumentFormat {
         let animationIntent = CADAnimationFormat.intent(animation)
         result.requiredVersion = max(result.requiredVersion,
                                      animationIntent.requiredVersion)
-        if animationIntent.isFutureSchema || (animationIntent.containsPhysicsCache && animationIntent.isMalformed) { result.opaqueAnimation = true }
+        if animationIntent.isFutureSchema || (animationIntent.isMalformed && (animationIntent.containsPhysicsCache || animationIntent.containsRig)) { result.opaqueAnimation = true }
         for body in bodies {
             if let uv = body.uv {
                 result.requiredVersion = max(result.requiredVersion, uvAuthoringVersion)
@@ -1232,10 +1250,29 @@ nonisolated enum CADDocumentFormat {
                 }
                 let modifiers = definition["modifiers"] as? [[String: Any]]
                 let knownOperations: Set<String> = ["subdivision","mirror","bevel"]
-                let future = version > CADPolygonMeshDefinition.supportedVersion
+                var futureSculpt=false
+                if let raw=definition["sculpt"],!(raw is NSNull) {
+                    guard let sculpt=raw as? [String:Any],let v=jsonIntegerValue(sculpt["version"]),v>0 else { throw CADDocumentFormatError.malformedAssociation("sculpt-hierarchy") }
+                    futureSculpt=v>CADSculptDefinition.supportedVersion || !Set(sculpt.keys).isSubset(of:["version","sourceDigest","base","levels","activeLevel"])
+                    if let base=sculpt["base"] as? [String:Any] {
+                        futureSculpt = futureSculpt || !Set(base.keys).isSubset(of:["vertices","edges","faces"])
+                        for (key,allowed) in [("vertices",Set(["id","point"])),("edges",Set(["id","a","b"])),("faces",Set(["id","vertices"]))] {
+                            if let rows=base[key] as? [[String:Any]],rows.contains(where:{ !Set($0.keys).isSubset(of:allowed) }) { futureSculpt=true }
+                        }
+                    }
+                    if let levels=sculpt["levels"] as? [[String:Any]] {
+                        for level in levels {
+                            if !Set(level.keys).isSubset(of:["id","offsets","mask"]) { futureSculpt=true }
+                            for (key,allowed) in [("offsets",Set(["vertex","vector"])),("mask",Set(["vertex","value"]))] {
+                                if let values=level[key] as? [[String:Any]],values.contains(where:{ !Set($0.keys).isSubset(of:allowed) }) { futureSculpt=true }
+                            }
+                        }
+                    }
+                }
+                let future = futureSculpt || version > CADPolygonMeshDefinition.supportedVersion
                     || !Set(mesh.keys).isSubset(of: ["definition","placement"])
                     || (mesh["placement"] as? [String: Any]).map { !Set($0.keys).isSubset(of: ["translation","rotation","scale"]) } == true
-                    || !Set(definition.keys).isSubset(of: ["version","cage","modifiers"])
+                    || !Set(definition.keys).isSubset(of: ["version","cage","modifiers","sculpt"])
                     || (definition["cage"] as? [String: Any]).map { cage in
                         if !Set(cage.keys).isSubset(of: ["vertices","edges","faces"]) { return true }
                         for (key,allowed) in [("vertices",Set(["id","point"])),("edges",Set(["id","a","b"])),("faces",Set(["id","vertices"]))] {
@@ -1498,7 +1535,7 @@ nonisolated enum CADDocumentFormat {
                    axes: record.axes, datumPoints: record.datumPoints ?? [],
                    features: record.features, bodies: record.bodies, assembly: record.assembly,
                    drawings: record.drawings, animation: record.animation,
-                   sceneSettings: record.sceneSettings)
+                   sceneSettings: record.sceneSettings, materials:record.materials)
     }
 
     /// Older scene-settings writers would silently drop hierarchy references.
@@ -1510,6 +1547,11 @@ nonisolated enum CADDocumentFormat {
         return (spherePhysicsVersion, (try? CADSpherePhysicsCodec.record(data)) == nil)
     }
 
+    static func riggingIntent(_ data: Data?) -> (version:Int,opaque:Bool) {
+        guard let data, let root=try? JSONSerialization.jsonObject(with:data) as? [String:Any],
+              let raw=root["rigging"], !(raw is NSNull) else { return (legacyVersion,false) }
+        return (riggingVersion,(try? CADRigCodec.read(data)) == nil)
+    }
     static func sceneObjectHierarchyIntent(_ data: Data?) -> (version: Int, opaque: Bool) {
         guard let data, let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let graph = root["sceneObjects"], !(graph is NSNull) else { return (legacyVersion, false) }

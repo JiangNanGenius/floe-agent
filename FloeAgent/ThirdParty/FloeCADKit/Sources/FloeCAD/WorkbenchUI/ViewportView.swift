@@ -388,6 +388,7 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
             cameraAnimator?.animate(to: pose, duration: 0.4)
             return
         }
+        if viewModel.sculptEditingBody != nil { return }
         if viewModel.isPickingSymmetryAxis, let ray = ray(at: point) {
             viewModel.handle(.tap(ray: ray))
             sceneDidChange()
@@ -527,6 +528,7 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     }
 
     func gestureDoubleTapped(at point: CGPoint) {
+        guard viewModel.sculptEditingBody==nil else { return }
         guard let ray = ray(at: point) else { return }
         viewModel.handle(.doubleTap(ray: ray))
     }
@@ -582,6 +584,15 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
         return Double(dx * ux + dy * uy) * worldPerPoint
     }
 
+    private var sculptPressure:Double=1
+    private var sculptDragID:UUID?
+    func gestureDragBegan(at point:CGPoint,isPencil:Bool,pressure:Double,gestureID:UUID) -> Bool {
+        sculptPressure=pressure
+        return gestureDragBegan(at:point,isPencil:isPencil,gestureID:gestureID)
+    }
+    func gestureDragPressureChanged(_ pressure:Double,gestureID:UUID) {
+        guard viewportDragID==gestureID else { return };sculptPressure=pressure
+    }
     func gestureDragBegan(at point: CGPoint, isPencil: Bool, gestureID: UUID) -> Bool {
         let claimed = gestureDragBegan(at: point, isPencil: isPencil)
         viewportDragID = claimed ? gestureID : nil
@@ -602,6 +613,11 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
         gestureDragCancelled(at: point)
     }
     func gestureDragCancelled(at point: CGPoint) {
+        if let id=sculptDragID {
+            sculptDragID=nil
+            if viewModel.sculptDraft?.id==id { viewModel.cancelSculptStroke();viewModel.refreshSculptDisplay();sceneDidChange() }
+            return
+        }
         if let id = sketchDragGestureID, viewModel.cancelSketchDragGesture(id) {
             sketchDragGestureID = nil
             sceneDidChange()
@@ -612,6 +628,7 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     }
 
     func gestureDragBegan(at point: CGPoint, isPencil: Bool) -> Bool {
+        sculptDragID=nil
         sketchDragGestureID = nil
         dragStartPoint = point
         pullActive = false
@@ -636,6 +653,12 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
         }
 
         guard let ray = ray(at: point) else { return false }
+        if viewModel.sculptEditingBody != nil {
+            if !isPencil && viewModel.sawApplePencil { return false }
+            let claimed=viewModel.beginSculptStroke(ray:ray,pressure:sculptPressure)
+            sculptDragID=claimed ? viewModel.sculptDraft?.id:nil
+            return claimed
+        }
 
         // Armed pivot ("move the gizmo" mode): ANY one-finger drag moves the
         // gizmo, not the model or the camera. Starting on the crosshair
@@ -843,6 +866,11 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     }
 
     func gestureDragChanged(at point: CGPoint) {
+        if let id=sculptDragID {
+            guard viewModel.sculptDraft?.id==id else { return }
+            if let ray=ray(at:point) { viewModel.updateSculptStroke(ray:ray,pressure:sculptPressure) }
+            sceneDidChange();return
+        }
         if numericEditorBlockedCubeDrag { return }
         if pivotDragActive {
             if pivotDragOnSurface {
@@ -943,6 +971,11 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     }
 
     func gestureDragEnded(at point: CGPoint) {
+        if let id=sculptDragID {
+            sculptDragID=nil
+            if viewModel.sculptDraft?.id==id { viewModel.finishSculptStroke();sceneDidChange() }
+            return
+        }
         if numericEditorBlockedCubeDrag {
             numericEditorBlockedCubeDrag = false
             return
@@ -1019,15 +1052,18 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
 
     /// Long-press → Select Through popup (plan §B13, spec §8.3).
     func gestureLongPressed(at point: CGPoint) {
+        guard viewModel.sculptEditingBody==nil else { return }
         guard let ray = ray(at: point) else { return }
         viewModel.presentSelectThrough(ray: ray)
     }
 
     /// Apple Pencil double-tap → undo the last action (a Shapr3D-style shortcut).
     func gesturePencilDoubleTapped() {
+        if viewModel.sculptEditingBody != nil { viewModel.cancelSculptStroke() }
         viewModel.sawApplePencil = true
         if viewModel.session.undoStack.canUndo || viewModel.hasPendingRectangle {
             viewModel.undo()
+            if viewModel.sculptEditingBody != nil { viewModel.refreshSculptDisplay() }
             sceneDidChange()
         }
     }

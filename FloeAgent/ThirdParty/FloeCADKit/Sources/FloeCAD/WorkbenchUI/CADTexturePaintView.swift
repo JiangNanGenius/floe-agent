@@ -101,10 +101,16 @@ struct CADTexturePaintView:View {
                         Slider(value:$model.radius,in:1...64,step:1) { Text(text("radius","Brush radius (pixels)")) }.accessibilityIdentifier("CADTexturePaintRadius")
                         Slider(value:$model.opacity,in:0.05...1) { Text(text("opacity","Brush opacity")) }
                     }.disabled(model.busy || !model.canEdit)
-                    DisclosureGroup(FloeCADStrings.text("cad.ui.common.details","Details")) {
+                    DisclosureGroup {
                         LabeledContent(text("storedTexture","Stored texture"),value:state.storedTextureSHA256 ?? text("noTexture","None"))
-                            .accessibilityIdentifier("CADTexturePaintStoredDigest").accessibilityValue(state.storedTextureSHA256 ?? "none")
-                    }.accessibilityIdentifier("CADTexturePaintDetails")
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel(text("storedTexture","Stored texture"))
+                            .accessibilityValue(state.storedTextureSHA256 ?? "none")
+                            .accessibilityIdentifier("CADTexturePaintStoredDigest")
+                    } label: {
+                        Text(FloeCADStrings.text("cad.ui.common.details","Details"))
+                            .accessibilityIdentifier("CADTexturePaintDetails")
+                    }
                     Section(text("texture","Base color texture")) {
                         Image(uiImage:image).resizable().interpolation(.none).scaledToFit().frame(maxHeight:250)
                             .accessibilityIdentifier("CADTexturePaintImage")

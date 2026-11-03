@@ -2203,11 +2203,11 @@ final class DocumentSession {
             },
             bodies: project.bodies.map {
                 CADBodyRecord(bodyID: $0.bodyID, name: $0.name, transform: $0.transformData,
-                              isHidden: $0.isHidden, faceMaterials: $0.faceMaterialsData, uv: $0.uvData)
+                              isHidden: $0.isHidden, material:$0.materialData, faceMaterials: $0.faceMaterialsData, uv: $0.uvData)
             },
             drawings: project.drawingsData,
             animation: project.animationData,
-            sceneSettings: project.sceneSettingsData)
+            sceneSettings: project.sceneSettingsData, materials:project.materialsData)
         project.hasOpaqueAssociations = project.hasOpaqueAssociations || associationAssessment?.isOpaqueReadOnly == true
         storeIsNewerThanApp = project.formatVersion > Project.currentFormatVersion || project.hasOpaqueAssociations
         #if DEBUG

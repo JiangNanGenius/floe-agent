@@ -28,6 +28,8 @@ protocol ViewportGestureDelegate: AnyObject {
     func gestureDragEnded(at point: CGPoint)
     func gestureDragCancelled(at point: CGPoint)
     func gestureDragBegan(at point: CGPoint, isPencil: Bool, gestureID: UUID) -> Bool
+    func gestureDragBegan(at point:CGPoint,isPencil:Bool,pressure:Double,gestureID:UUID) -> Bool
+    func gestureDragPressureChanged(_ pressure:Double,gestureID:UUID)
     func gestureDragChanged(at point: CGPoint, gestureID: UUID)
     func gestureDragEnded(at point: CGPoint, gestureID: UUID)
     func gestureDragCancelled(at point: CGPoint, gestureID: UUID)
@@ -42,6 +44,8 @@ protocol ViewportGestureDelegate: AnyObject {
 }
 
 extension ViewportGestureDelegate {
+    func gestureDragBegan(at point:CGPoint,isPencil:Bool,pressure:Double,gestureID:UUID) -> Bool { gestureDragBegan(at:point,isPencil:isPencil,gestureID:gestureID) }
+    func gestureDragPressureChanged(_ pressure:Double,gestureID:UUID) {}
     func gestureDragCancelled(at point: CGPoint) { gestureDragEnded(at: point) }
     func gestureDragBegan(at point: CGPoint, isPencil: Bool, gestureID: UUID) -> Bool {
         gestureDragBegan(at: point, isPencil: isPencil)
@@ -49,6 +53,19 @@ extension ViewportGestureDelegate {
     func gestureDragChanged(at point: CGPoint, gestureID: UUID) { gestureDragChanged(at: point) }
     func gestureDragEnded(at point: CGPoint, gestureID: UUID) { gestureDragEnded(at: point) }
     func gestureDragCancelled(at point: CGPoint, gestureID: UUID) { gestureDragCancelled(at: point) }
+}
+
+/// Records actual Pencil force before UIPan dispatches its action. Ordinary
+/// finger drags use unit pressure; no synthetic Pencil pressure is inferred.
+private final class ViewportPressurePan:UIPanGestureRecognizer {
+    private(set) var normalizedPressure:Double=1
+    private func record(_ touches:Set<UITouch>) {
+        guard let touch=touches.first else { return }
+        normalizedPressure=touch.type == .pencil && touch.maximumPossibleForce>0
+            ? min(1,max(0,Double(touch.force/touch.maximumPossibleForce))):1
+    }
+    override func touchesBegan(_ touches:Set<UITouch>,with event:UIEvent) { record(touches);super.touchesBegan(touches,with:event) }
+    override func touchesMoved(_ touches:Set<UITouch>,with event:UIEvent) { record(touches);super.touchesMoved(touches,with:event) }
 }
 
 final class ViewportGestureController: NSObject {
@@ -67,6 +84,7 @@ final class ViewportGestureController: NSObject {
     /// Where the one-finger touch actually LANDED, captured in shouldReceive
     /// before the pan recognizer has moved its threshold. See `handleOrbit`.
     private var orbitTouchDown: CGPoint?
+    private var orbitTouchDownPressure:Double?
     private var ownedRecognizers: [UIGestureRecognizer] = []
     private var pencilInteraction: UIPencilInteraction?
 
@@ -80,13 +98,14 @@ final class ViewportGestureController: NSObject {
         }
         interactiveDepth = 0
         orbitTouchDown = nil
+        orbitTouchDownPressure=nil
         orbitTouchIsPencil = false
         ownedRecognizers.removeAll()
         pencilInteraction = nil
         self.view = view
         self.renderer = renderer
 
-        let orbit = UIPanGestureRecognizer(target: self, action: #selector(handleOrbit(_:)))
+        let orbit = ViewportPressurePan(target: self, action: #selector(handleOrbit(_:)))
         orbit.minimumNumberOfTouches = 1
         orbit.maximumNumberOfTouches = 1
         orbit.allowedTouchTypes = [
@@ -173,15 +192,15 @@ final class ViewportGestureController: NSObject {
     /// The actual recognizer and component input tests share this delivery
     /// path. Every delivery carries the identity acquired at touch begin.
     @discardableResult
-    func claimDrag(at point: CGPoint, isPencil: Bool) -> Bool {
+    func claimDrag(at point: CGPoint, isPencil: Bool,pressure:Double=1) -> Bool {
         if claimedDragID != nil { finishClaimedDrag(at: point, cancelled: true) }
         let id = UUID()
-        guard delegate?.gestureDragBegan(at: point, isPencil: isPencil, gestureID: id) == true else { return false }
+        guard delegate?.gestureDragBegan(at: point, isPencil: isPencil,pressure:pressure, gestureID: id) == true else { return false }
         claimedDragID = id
         return true
     }
-    func changeClaimedDrag(at point: CGPoint) {
-        if let id = claimedDragID { delegate?.gestureDragChanged(at: point, gestureID: id) }
+    func changeClaimedDrag(at point: CGPoint,pressure:Double=1) {
+        if let id = claimedDragID { delegate?.gestureDragPressureChanged(pressure,gestureID:id);delegate?.gestureDragChanged(at: point, gestureID: id) }
     }
     func finishClaimedDrag(at point: CGPoint, cancelled: Bool) {
         guard let id = claimedDragID else { return }
@@ -213,16 +232,17 @@ final class ViewportGestureController: NSObject {
             let translation = gesture.translation(in: view)
             let start = orbitTouchDown
                 ?? CGPoint(x: location.x - translation.x, y: location.y - translation.y)
-            orbitTouchDown = nil
+            let startPressure=orbitTouchDownPressure ?? (gesture as? ViewportPressurePan)?.normalizedPressure ?? 1
+            orbitTouchDown = nil;orbitTouchDownPressure=nil
             lastPanLocation = start
-            claimDrag(at: start, isPencil: orbitTouchIsPencil)
+            claimDrag(at: start, isPencil: orbitTouchIsPencil,pressure:startPressure)
             if dragClaimed, start != location {
-                changeClaimedDrag(at: location)
+                changeClaimedDrag(at: location,pressure:(gesture as? ViewportPressurePan)?.normalizedPressure ?? 1)
                 redraw()
             }
         case .changed:
             if dragClaimed {
-                changeClaimedDrag(at: location)
+                changeClaimedDrag(at: location,pressure:(gesture as? ViewportPressurePan)?.normalizedPressure ?? 1)
                 redraw()
             } else if orbitTouchIsPencil {
                 // Pencil never orbits (spec §7.1) — unclaimed pencil drags
@@ -333,6 +353,8 @@ extension ViewportGestureController: UIGestureRecognizerDelegate {
     ) -> Bool {
         if gestureRecognizer === orbitRecognizer {
             orbitTouchIsPencil = touch.type == .pencil
+            orbitTouchDownPressure=touch.type == .pencil && touch.maximumPossibleForce>0
+                ? min(1,max(0,Double(touch.force/touch.maximumPossibleForce))):1
             if let view { orbitTouchDown = touch.location(in: view) }
         }
         return true

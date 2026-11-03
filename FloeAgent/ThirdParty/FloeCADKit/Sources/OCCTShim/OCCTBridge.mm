@@ -5109,14 +5109,41 @@ static OCCTShape *OS3DPlanarSupportShell(const TopoDS_Shape &source,
             maker.SetNonDestructive(Standard_True); maker.SetRunParallel(Standard_False);
             maker.SetFuzzyValue(0.0); maker.SetToFillHistory(Standard_True);
         };
+        // Bound each supporting halfspace outside the entire source box.
+        // OCCT 7.8.1 cannot orient some Boolean pieces of an infinite tool
+        // (BOPAlgo_AlertUnableToOrientTheShape). A finite closed prism has
+        // the identical supporting plane over every source point; its other
+        // five faces are proven outside the conservative source bounds.
+        Bnd_Box sourceBox; BRepBndLib::Add(owned, sourceBox);
+        Standard_Real xmin,ymin,zmin,xmax,ymax,zmax;
+        sourceBox.Get(xmin,ymin,zmin,xmax,ymax,zmax);
+        const double diagonal=gp_Pnt(xmin,ymin,zmin).Distance(gp_Pnt(xmax,ymax,zmax));
+        if (!std::isfinite(diagonal) || diagonal <= allowedTolerance) return nil;
+        const double margin=std::max({1.0,diagonal,thickness*2});
         auto halfspace = [&](const Support &support, double inset) -> TopoDS_Solid {
             const gp_Vec inward = gp_Vec(support.outward).Multiplied(-1);
             const gp_Pnt origin = support.origin.Translated(inward.Multiplied(inset));
-            BRepBuilderAPI_MakeFace face(gp_Pln(origin, support.outward));
-            if (!face.IsDone()) throw Standard_Failure("planar support face construction failed");
-            BRepPrimAPI_MakeHalfSpace half(face.Face(), origin.Translated(inward.Multiplied(std::max(1.0, thickness))));
-            if (!half.IsDone() || half.Solid().IsNull()) throw Standard_Failure("planar support halfspace construction failed");
-            return half.Solid();
+            const gp_Pln plane(origin, support.outward);
+            const gp_Ax3 frame=plane.Position();
+            double umin=std::numeric_limits<double>::infinity(),vmin=umin;
+            double umax=-umin,vmax=-umin,deepest=0;
+            for (int x=0;x<2;++x) for (int y=0;y<2;++y) for (int z=0;z<2;++z) {
+                const gp_Vec delta(origin,gp_Pnt(x?xmax:xmin,y?ymax:ymin,z?zmax:zmin));
+                const double u=delta.Dot(gp_Vec(frame.XDirection()));
+                const double v=delta.Dot(gp_Vec(frame.YDirection()));
+                umin=std::min(umin,u);umax=std::max(umax,u);
+                vmin=std::min(vmin,v);vmax=std::max(vmax,v);
+                deepest=std::max(deepest,delta.Dot(inward));
+            }
+            BRepBuilderAPI_MakeFace face(plane,umin-margin,umax+margin,vmin-margin,vmax+margin);
+            if (!face.IsDone()) throw Standard_Failure("bounded planar support face construction failed");
+            BRepPrimAPI_MakePrism prism(face.Face(),inward.Multiplied(deepest+margin),Standard_True);
+            if (!prism.IsDone() || prism.Shape().IsNull() || prism.Shape().ShapeType()!=TopAbs_SOLID)
+                throw Standard_Failure("bounded planar support prism construction failed");
+            TopoDS_Solid solid=TopoDS::Solid(prism.Shape());
+            if (!BRepLib::OrientClosedSolid(solid) || !BRepCheck_Analyzer(solid).IsValid())
+                throw Standard_Failure("bounded planar support prism is not a valid oriented solid");
+            return solid;
         };
         std::vector<TopoDS_Solid> inwardTools;
         // PROVE each orientation with real Common AND empty source-minus-halfspace.

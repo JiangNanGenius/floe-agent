@@ -25,7 +25,7 @@ public final class CADMaterialService {
         "list", "read", "create", "update", "remove", "apply", "applyFaces",
         "reassignFaces", "mapping", "textures", "unresolved", "libraryExport",
         "libraryImport", "libraryList", "environment.read", "environment.update", "environment.import", "undo", "redo",
-    ] + CADUVService.actions + CADTexturePaintService.actions
+    ] + CADUVService.actions + CADTexturePaintService.actions + CADMaterialGraphService.actions
 
     /// Applied appearances are complete copies, not live library links. This
     /// is reported explicitly so an Agent/user can tell a copy from a linked
@@ -47,7 +47,8 @@ public final class CADMaterialService {
 
     /// Production UI/AI path. UV computation owns a joined off-main worker;
     /// all existing material operations keep their current command path.
-    public func handleAsync(action: String, args: [String: Any]) async -> [String: Any] {
+    public func handleAsync(action: String, args: [String: Any], cancellation:(any MeshImportCancellationChecking)? = nil) async -> [String: Any] {
+        if action.hasPrefix("graph.") { return await CADMaterialGraphService(document:document).handle(action,args,external:cancellation) }
         if action.hasPrefix("uv.") { return await CADUVService(document: document).handle(action: action, args: args) }
         if action.hasPrefix("paint.") { return await CADTexturePaintService(document:document).handle(action:action,args:args) }
         if action == "environment.import" { return await importEnvironment(args) }
@@ -55,6 +56,10 @@ public final class CADMaterialService {
     }
 
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
+        if action.hasPrefix("graph.") {
+            if CADMaterialGraphService.mutations.contains(action) { return Self.fail("async_required","Use the asynchronous material service for graph baking.") }
+            return CADMaterialGraphService(document:document).control(action,args)
+        }
         if action.hasPrefix("paint.") {
             if let refusal=CADServiceOperations.readOnlyRefusal(document:document,kind:"material",action:action) { return refusal }
             if action=="paint.status" || action=="paint.cancel" { return CADTexturePaintService(document:document).control(action:action) }
@@ -1027,7 +1032,7 @@ public final class CADMaterialService {
         let hasInline = args["color"] != nil || args["base_color"] != nil
             || args["textures"] != nil || args["uv_mapping"] != nil
             || args["opacity"] != nil || args["metallic"] != nil
-            || args["roughness"] != nil || args["emissive"] != nil
+            || args["roughness"] != nil || args["emissive"] != nil || args["advanced"] != nil
         guard hasInline else { return .success(nil) }
         let name = Self.string(args["name"]) ?? "Material"
         var definition = CADMaterialDefinition(name: name)
@@ -1041,6 +1046,13 @@ public final class CADMaterialService {
     /// dictionary on a malformed field.
     private func applyFields(_ args: [String: Any],
                              to definition: inout CADMaterialDefinition) -> [String: Any]? {
+        if let raw = args["advanced"] {
+            if raw is NSNull { definition.advanced = nil } else {
+                do { definition.advanced = try JSONDecoder().decode(CADAdvancedMaterial.self,from:JSONSerialization.data(withJSONObject:raw)) }
+                catch { return Self.fail("bad_advanced", "Advanced material values or version are unsupported.") }
+            }
+        }
+        if args["nodeGraph"] != nil || args["node_graph"] != nil { return Self.fail("graph_bake_required","Use graph.bake to validate and bake a node graph.") }
         if let raw = args["name"] ?? args["material_name"], let name = Self.string(raw) {
             let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
@@ -1100,6 +1112,7 @@ public final class CADMaterialService {
                     return Self.fail("bad_slot", "Every texture needs slot = "
                         + MaterialTextureSlot.allCases.map(\.rawValue).joined(separator: "|") + ".")
                 }
+                if definition.nodeGraph?.outputs[slot.rawValue] != nil { definition.nodeGraph=nil }
                 if Self.bool(row["remove"]) == true {
                     definition.textures.removeAll { $0.slot == slot }
                     continue

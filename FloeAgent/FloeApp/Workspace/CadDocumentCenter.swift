@@ -166,7 +166,7 @@ actor CadDocumentCenter: CadDocumentHost {
                 // path uses and never reaches the kernel as a path.
                 let normalized = try materialRequest(request, resolved: resolved)
                 return try await FloeCAD3DBridge.shared.handle(
-                    url: url, requestJSON: Self.encodeNativeJSON(normalized))
+                    url: url, requestJSON: Self.encodeNativeJSON(normalized), cancellation:cancellation)
             case "versions":
                 var normalized = request
                 var payload = request["payload"] as? [String: Any] ?? [:]

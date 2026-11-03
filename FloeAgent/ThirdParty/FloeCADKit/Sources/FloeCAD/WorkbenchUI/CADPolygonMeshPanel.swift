@@ -43,6 +43,11 @@ struct CADPolygonMeshPanel: View {
                 ForEach(options,id: \.id) { option in Text(option.name).tag(Optional(option.id.raw)) }
             }.disabled(busy)
             if let active = viewModel.activePolygonCage {
+                if active.definition.sculpt != nil {
+                    Text(FloeCADStrings.text("cad.sculpt.hasLevels","This mesh has sculpt levels. Use Sculpt to keep its detail."))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button(t("finish","Finish editing")) { viewModel.endPolygonCageEditing() }
+                } else {
                 Toggle(t("showCage","Show control cage"),isOn: $viewModel.polygonCageShowControl)
                     .accessibilityIdentifier("PolygonShowControlCage")
                 Picker(t("selection","Selection"),selection: $viewModel.polygonPickMode) {
@@ -99,6 +104,7 @@ struct CADPolygonMeshPanel: View {
                     }.disabled(busy)
                 }
                 Button(t("finish","Finish editing")) { viewModel.endPolygonCageEditing() }.disabled(busy)
+                }
             }
             if viewModel.polygonCageEditingBody != nil, viewModel.activePolygonCage == nil {
                 Text(t("captureRequired","Capture this body again after its mesh has changed.")).font(.caption).foregroundStyle(.secondary)

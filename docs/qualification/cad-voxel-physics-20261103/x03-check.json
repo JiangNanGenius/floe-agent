@@ -1,0 +1,65 @@
+{
+  "criterion": "X03",
+  "originalAcceptance": "用含坏边/非均匀密度扫描网格验证重建、法线、偏差、撤销及重开。",
+  "originalAcceptanceSHA256": "58da56784abf7a20f2b6835cedec24c617584876a223c990f66467db646ebfbc",
+  "acceptedOriginalCriterion": true,
+  "source": "54517c9fefce80ce1d9d3f8ad33b35c495c37aed",
+  "run": "native305-voxel-physics-shell-guided",
+  "actualChecks": [
+    {
+      "node": "CADVoxelRemeshTests/testCancellationInsideVoxelDistanceLoopDoesNotPublishPartialGeometry()",
+      "result": "Passed",
+      "seconds": 0.40615999698638916
+    },
+    {
+      "node": "CADVoxelRemeshTests/testCancelledServiceWorkerKeepsUndoRedoAndStalePreviewRefuses()",
+      "result": "Passed",
+      "seconds": 0.7785309553146362
+    },
+    {
+      "node": "CADVoxelRemeshTests/testDamagedUnevenScanRebuildsActualManifoldQuadsOutwardNormalsVolumeAndBoxDeviation()",
+      "result": "Passed",
+      "seconds": 0.37330901622772217
+    },
+    {
+      "node": "CADVoxelRemeshTests/testOffMainWorkerLateResultCannotOverwriteNewDocumentEpochOrClose()",
+      "result": "Passed",
+      "seconds": 0.7723679542541504
+    },
+    {
+      "node": "CADVoxelRemeshTests/testOpenScanPrecisionBudgetsAndDeviationRefuseWithoutReplacingOriginalOrRedo()",
+      "result": "Passed",
+      "seconds": 0.8576449155807495
+    },
+    {
+      "node": "CADVoxelRemeshTests/testOriginalSnapshotSurvivesSourceEditAndDirectOutputEditCannotClaimReconstruction()",
+      "result": "Passed",
+      "seconds": 1.9085140228271484
+    },
+    {
+      "node": "CADVoxelRemeshTests/testPreviewOneUndoSourcePreservedStableIDsColdReopenAndContinueResolutionEdit()",
+      "result": "Passed",
+      "seconds": 3.0973010063171387
+    },
+    {
+      "node": "CADVoxelRemeshTests/testVersionAlgorithmAndUnknownFieldsStayOpaqueAtActualWriterFloor()",
+      "result": "Passed",
+      "seconds": 0.05237698554992676
+    },
+    {
+      "node": "CADVoxelRemeshTests/testWorldResolutionIsMeasuredAfterUniformPlacementScale()",
+      "result": "Passed",
+      "seconds": 0.32600700855255127
+    }
+  ],
+  "limitations": [
+    "Bounded cubical scan reconstruction; not feature-preserving arbitrary quad flow or exact BRep.",
+    "Actual iPad Simulator App tests, not physical-device performance."
+  ],
+  "sameBatchFailuresPreserved": [
+    "M16 guided loft",
+    "M22 spherical shell",
+    "capability catalog order"
+  ],
+  "published": false
+}

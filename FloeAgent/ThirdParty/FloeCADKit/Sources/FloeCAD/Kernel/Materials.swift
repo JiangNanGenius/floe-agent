@@ -56,6 +56,8 @@ nonisolated struct BodyMaterialSpec: Codable, Equatable, Sendable {
     /// Semantics/colour space/orientation for every supplied image map. The
     /// bytes above remain authoritative; this is the typed description.
     var textureMetadata: [CADMaterialTextureMetadata]? = nil
+    var advanced: CADAdvancedMaterial? = nil
+    var nodeGraph: CADMaterialNodeGraph? = nil
 
     /// The document default — identical to the pre-material body color and
     /// shading, so assigning it changes nothing visually.

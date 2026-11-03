@@ -25,6 +25,7 @@ public final class CADViewOverlayService {
         "removeMeasurement", "clearMeasurements", "undo", "redo",
     ] + CADSceneObjectService.reads.sorted() + CADSceneObjectService.mutations.sorted()
         + CADSpherePhysicsService.reads.sorted() + CADSpherePhysicsService.mutations.sorted()
+        + CADRiggingService.reads.sorted() + CADRiggingService.mutations.sorted()
 
     /// Actions that write the document. `get` and the no-op success paths are
     /// read-only. Kept here so the host/tool can pre-classify without parsing
@@ -33,7 +34,7 @@ public final class CADViewOverlayService {
         "setSection", "setSectionEnabled", "flipSection", "removeSection",
         "setMeasurementsVisible", "addMeasurement", "removeMeasurement",
         "clearMeasurements", "undo", "redo",
-    ]).union(CADSceneObjectService.mutations).union(CADSpherePhysicsService.mutations)
+    ]).union(CADSceneObjectService.mutations).union(CADSpherePhysicsService.mutations).union(CADRiggingService.mutations)
 
     private let document: FloeCADDocument
 
@@ -57,6 +58,7 @@ public final class CADViewOverlayService {
         if CADSpherePhysicsService.reads.contains(action) || CADSpherePhysicsService.mutations.contains(action) {
             return CADSpherePhysicsService(document: document).handleSync(action: action, args: args)
         }
+        if CADRiggingService.reads.contains(action) || CADRiggingService.mutations.contains(action) { return CADRiggingService(document:document).handle(action:action,args:args) }
         if CADSceneObjectService.reads.contains(action) || CADSceneObjectService.mutations.contains(action) {
             return CADSceneObjectService(document: document).handle(action: action, args: args)
         }

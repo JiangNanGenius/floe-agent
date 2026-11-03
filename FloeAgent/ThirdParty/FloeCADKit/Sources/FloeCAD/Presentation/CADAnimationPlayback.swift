@@ -103,11 +103,12 @@ final class CADAnimationPlaybackModel {
     @ObservationIgnored private var bodiesByID: [UUID: Body] = [:]
     @ObservationIgnored private var loadIssues: [CADAnimationIssue] = []
     @ObservationIgnored private var ticker: Task<Void, Never>?
+    @ObservationIgnored private var rigFrameTask: Task<Void,Never>?
     @ObservationIgnored private var startChangeCount = 0
     @ObservationIgnored private var startGeneration: UInt64 = 0
     @ObservationIgnored private var lastTick = Date()
 
-    deinit { ticker?.cancel() }
+    deinit { ticker?.cancel(); rigFrameTask?.cancel() }
 
     var hasClip: Bool { clipID != nil }
 
@@ -212,6 +213,8 @@ final class CADAnimationPlaybackModel {
                 let delta = min(max(now.timeIntervalSince(self.lastTick), 0), 0.25)
                 self.lastTick = now
                 self.advance(by: delta * self.speed)
+                let frameTask = self.rigFrameTask
+                await frameTask?.value // one joined frame at a time; scrub can replace it
             }
         }
     }
@@ -226,6 +229,7 @@ final class CADAnimationPlaybackModel {
     /// action that releases a scrubbed frame.
     func stop() {
         pause()
+        rigFrameTask?.cancel(); rigFrameTask = nil
         time = 0
         issues = loadIssues
         handle?.controller?.clearAnimation()
@@ -305,6 +309,18 @@ final class CADAnimationPlaybackModel {
         if !applied, controller.renderGeneration != startGeneration {
             stop()
             return
+        }
+        guard applied else { return }
+        // The ordinary rigid transform path is unchanged. This owned frame
+        // task uses the same stage and is cancelled/replaced on scrub/stop.
+        rigFrameTask?.cancel()
+        let expectedCount = startChangeCount, generation = startGeneration
+        rigFrameTask = Task { @MainActor [weak self] in
+            let installed = await controller.applyRigDeformation(evaluation.rigDeformation,
+                expectedGeneration:generation,lease:nil,
+                isCurrent:{ !document.isClosed && document.liveChangeCount == expectedCount })
+            if !installed, !Task.isCancelled, let self { self.issues = self.loadIssues + [CADAnimationIssue(
+                id:"rig-frame",kind:.sourceBindingChanged,clipID:clip.id,detail:"The rig frame changed or could not be rendered.")] }
         }
         issues = loadIssues + evaluation.issues
     }

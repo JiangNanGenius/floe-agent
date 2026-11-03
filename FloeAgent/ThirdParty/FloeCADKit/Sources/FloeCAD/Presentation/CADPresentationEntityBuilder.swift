@@ -752,6 +752,10 @@ final class CADPresentationEntityBuilder {
         material.roughness = PhysicallyBasedMaterial.Roughness(scale: descriptor.roughness)
         material.emissiveColor = PhysicallyBasedMaterial.EmissiveColor(color: .black)
         material.emissiveIntensity = 0
+        CADAdvancedMaterialAdapter.apply(descriptor.advanced,to:&material,hasUVs:hasUVs)
+        if (descriptor.advanced?.anisotropyLevel ?? 0) > 0, !hasUVs {
+            issues.append(CADPresentationIssue(id:"advanced-uv-"+bodyID.uuidString,kind:.missingMeshUV,bodyID:bodyID,bodyName:bodyName,detail:FloeCADStrings.text("cad.advanced.uvIssue","Anisotropy needs UVs or a projected mapping; this preview keeps isotropic shading.")))
+        }
         if descriptor.emissiveStrength > 0 {
             let color = UIColor(
                 red: CGFloat(min(max(descriptor.emissive.x, 0), 1)),

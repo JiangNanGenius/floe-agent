@@ -226,6 +226,7 @@ nonisolated enum CADTexturePaintKernel {
         try budget.check()
         guard let png=CADExportImage.encodePNG(image),png.count<=CADMaterialLimits.maximumTextureBytes else { throw fail("paint_encode_failed","The texture could not be encoded; nothing changed.") }
         var material=source.material
+        if material.nodeGraph?.outputs["baseColor"] != nil { material.nodeGraph=nil }
         material.baseColorTexture=png;material.baseColor.x=1;material.baseColor.y=1;material.baseColor.z=1
         material.materialID=nil // an edited body snapshot does not rewrite its library source
         let texture=CADMaterialTexture(slot:.baseColor,name:"Painted base color",mimeType:"image/png",colorSpace:.srgb,orientation:.topLeft,bytes:png)

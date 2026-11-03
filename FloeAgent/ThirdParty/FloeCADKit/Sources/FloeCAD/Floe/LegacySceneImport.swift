@@ -289,6 +289,8 @@ public nonisolated struct CADSceneSettings: Codable, Equatable, Sendable {
     public var sceneObjects: CADSceneObjectHierarchy?
     /// X27 parameters and one bounded deterministic sphere-proxy cache.
     public var spherePhysics: CADSpherePhysicsRecord?
+    /// Authored polygon rig/weights/shape keys; source geometry stays in the cage.
+    public var rigging: CADRigRecord?
     /// Additive offline still-export preferences; absent in older documents.
     public var stillRender: CADStillRenderSettings?
 

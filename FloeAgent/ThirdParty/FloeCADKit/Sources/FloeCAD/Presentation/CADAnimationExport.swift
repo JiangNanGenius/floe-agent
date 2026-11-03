@@ -539,6 +539,7 @@ public extension FloeCADDocument {
             ?? state.animation.activeClip
         guard let clip else { throw CADAnimationExportError.noClip }
         try validatePhysicsAnimationClip(clip)
+        try validateRigClip(clip)
         // X22: the section cut is built into each body mesh in its own local
         // space, so a part track would carry the cut with the moving part
         // instead of leaving the plane fixed in world space. Refuse the
@@ -675,6 +676,7 @@ public extension FloeCADDocument {
             ?? state.animation.activeClip
         guard let clip else { throw CADAnimationExportError.noClip }
         try validatePhysicsAnimationClip(clip)
+        try validateRigClip(clip)
         let time = Self.animationFrameTime(
             frame: frame, fps: fps, duration: clip.duration)
         return try await captureAnimationFramePNG(
@@ -720,6 +722,7 @@ public extension FloeCADDocument {
             ?? state.animation.activeClip
         guard let clip else { throw CADAnimationExportError.noClip }
         try validatePhysicsAnimationClip(clip)
+        try validateRigClip(clip)
         // X22: the section cut is built into each body mesh in its own local
         // space, so a part track would carry the cut with the moving part
         // instead of leaving the plane fixed in world space. Refuse the
@@ -782,7 +785,10 @@ public extension FloeCADDocument {
             token: String(format: "capture|%@|%.6f", clip.id.uuidString, clamped),
             expectedGeneration: generation,
             lease: lease, physicsFloorYMM: frame.evaluation.physicsFloorYMM)
-        guard applied else {
+        let rigApplied = applied ? await controller.applyRigDeformation(frame.evaluation.rigDeformation,
+            expectedGeneration:generation,lease:lease,
+            isCurrent:{ !self.isClosed && self.liveChangeCount == documentChangeCount }) : false
+        guard applied && rigApplied && (clip.rigID == nil || frame.evaluation.issues.isEmpty) else {
             Self.logAnimationExportStale(
                 "capture-apply-rejected",
                 leaseHeld: controller.holdsAnimationLease(lease),
@@ -1305,6 +1311,12 @@ public extension FloeCADDocument {
                         generation: controller.renderGeneration,
                         expectedGeneration: generation,
                         isClosed: isClosed)
+                    throw CADAnimationExportError.stale
+                }
+                guard (clip.rigID == nil || frame.evaluation.issues.isEmpty),
+                      await controller.applyRigDeformation(frame.evaluation.rigDeformation,
+                        expectedGeneration:generation,lease:exportLease,
+                        isCurrent:{ !self.isClosed && self.liveChangeCount == documentChangeCount }) else {
                     throw CADAnimationExportError.stale
                 }
                 // Raw pixels when the saved frame must be cropped; the

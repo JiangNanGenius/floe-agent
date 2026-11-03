@@ -214,6 +214,10 @@ enum CADQualificationFixture {
         }
     }
 
+    @MainActor static func openSculpt(reset:Bool)async throws->FloeCADDocument {
+        try await CADSculptUIFixture.open(at:fixtureURL("sculpt.floecad"),reset:reset)
+    }
+
     @MainActor static func openTexturePaint(reset:Bool)async throws->FloeCADDocument {
         try await CADTexturePaintUIFixture.open(at:fixtureURL("texture-paint-bake.floecad"),reset:reset)
     }
@@ -839,7 +843,9 @@ struct CADWorkbenchFixtureHarness: View {
             Self.installMeshPanelFlowProbeIfRequested()
             do {
                 let arguments = ProcessInfo.processInfo.arguments
-                if arguments.contains("--ui-test-cad-texture-paint") {
+                if arguments.contains("--ui-test-cad-sculpt") {
+                    document=try await CADQualificationFixture.openSculpt(reset:arguments.contains("--ui-test-cad-sculpt-reset"))
+                } else if arguments.contains("--ui-test-cad-texture-paint") {
                     document=try await CADQualificationFixture.openTexturePaint(reset:arguments.contains("--ui-test-cad-texture-paint-reset"))
                 } else if arguments.contains(CADTextureImportUIFixture.argument) {
                     document = try await CADTextureImportUIFixture.open(

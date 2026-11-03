@@ -30,6 +30,17 @@ public nonisolated enum CADAnimationEvaluator {
             return CADAnimationEvaluation(clipID: clip.id, time: clamped, duration: duration,
                 instances: physics.values(at: clamped), physicsFloorYMM: physics.definition.floorY)
         }
+        if let id = clip.rigID {
+            guard let rig = context.rig, rig.record.id == id, rig.record.clipID == clip.id,
+                  rig.record.duration == clip.duration, clip.tracks.isEmpty,
+                  let deformation = try? rig.evaluate(at: clamped) else {
+                return CADAnimationEvaluation(clipID:clip.id,time:clamped,duration:duration,
+                    issues:[CADAnimationIssue(id:"rig-invalid",kind:.sourceBindingChanged,clipID:clip.id,
+                        detail:"The authored rig is stale or this pose is degenerate. No deformation was applied.")])
+            }
+            var value = CADAnimationEvaluation(clipID:clip.id,time:clamped,duration:duration)
+            value.rigDeformation = deformation; return value
+        }
         var issues: [CADAnimationIssue] = []
         var camera: CADAnimationCameraValue?
         var instances: [UUID: CADAnimationInstanceValue] = [:]

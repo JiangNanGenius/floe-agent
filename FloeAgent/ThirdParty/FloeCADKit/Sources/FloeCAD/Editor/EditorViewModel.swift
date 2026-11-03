@@ -55,6 +55,22 @@ protocol ViewportCameraControl: AnyObject {
 @MainActor
 @Observable
 final class EditorViewModel {
+    var sculptEditingBody:BodyID?
+    var sculptBrush=CADSculptBrush()
+    var sculptBusy=false
+    var sculptMessage:String?
+    var sculptAppliedGeneration:Int?
+    var sculptStrokeCount=0
+    var sculptDraft:SculptDraft?
+    var sculptDisplay:CADSculptPreview?
+    var sculptDisplayBody:BodyID?
+    var sculptDisplayGeneration=0
+    var sculptPreviewEpoch:UInt64=0
+    var sculptCommitID:UUID?
+    @ObservationIgnored var sculptPreviewTask:Task<Void,Never>?
+    @ObservationIgnored var sculptCommitTask:Task<Void,Never>?
+    @ObservationIgnored var sculptActionHandler:(@MainActor (String,[String:Any]) async -> [String:Any])?
+    @ObservationIgnored var sculptCancelHandler:(@MainActor ()->Void)?
     var polygonCageEditingBody: BodyID?
     var polygonCageShowControl = true
     nonisolated enum PolygonPickMode: String, CaseIterable { case face, edge, vertex }
@@ -130,6 +146,7 @@ final class EditorViewModel {
     var mode: EditorMode = .idle {
         didSet {
             if mode != oldValue { cancelActiveAssociatedSketchDrag() }
+            if let id=sculptEditingBody,mode != .selected(id) { endSculptEditing() }
             if !mode.isSketching || mode.sketchTool != nil { sketchTransformActive = false }
             // An Items plane selection lives only while idle.
             if mode != .idle { selectedPlaneID = nil }
@@ -1978,7 +1995,7 @@ final class EditorViewModel {
             if case .faceSelected(let faceBodyID) = mode, faceBodyID == body.id {
                 selectionState = SelectionStateNone.rawValue
             }
-            let displayed = includeSectionPlaneChrome ? (polygonCagePreview(for: body) ?? body) : body
+            let displayed = includeSectionPlaneChrome ? (sculptPreviewBody(body) ?? polygonCagePreview(for: body) ?? body) : body
             drawables.append(BodyDrawable(
                 id: body.id,
                 renderMesh: displayed.render,
@@ -1992,6 +2009,7 @@ final class EditorViewModel {
             ))
         }
         var scene = ViewportScene(bodies: drawables)
+        if includeSectionPlaneChrome { appendSculptMask(to:&scene) }
         if includeSectionPlaneChrome, polygonCageShowControl, let id = polygonFaceSelection,
            let active = activePolygonCage, let result = try? CADPolygonMeshKernel.evaluate(active.definition) {
             var triangles: [SIMD3<Float>] = []
@@ -2813,6 +2831,7 @@ final class EditorViewModel {
     /// selections only — face selections use the pull arrow instead. A
     /// selected inserted image (plan §B10) attaches the gizmo at its center.
     var gizmoOrigin: SIMD3<Float>? {
+        guard sculptEditingBody==nil else { return nil }
         guard let base = gizmoBaseOrigin else { return nil }
         return base + activeGizmoPivotOffset
     }

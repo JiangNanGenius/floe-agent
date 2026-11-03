@@ -156,5 +156,34 @@ struct NativeCADCapabilityDiscoveryTests {
         #expect(hits.count==1);#expect(hits[0].triangle==0);#expect(hits[0].barycentric.x==0.25)
     }
 
+    @Test func sculptTypedOperationsAndFullPagedHelpReachActualDecoders() throws {
+        let actions=Set(CADMeshService.advertisedActions)
+        for action in ["sculpt.begin","sculpt.stroke","sculpt.subdivide","sculpt.level","sculpt.mask.clear","sculpt.inspect"] {
+            #expect(actions.contains(action));#expect(CadServiceOperationCatalog.actionNames(forKind:"mesh").contains(action))
+        }
+        let full=try #require(CadDocumentHelp.fullText(for:"sculpt"))
+        #expect(full.contains("mesh.sculpt.stroke"));#expect(full.contains("not an exact BRep") || full.contains("No sculpt result is an exact BRep"))
+        #expect(full.contains("source revision/CAS"));#expect(full.contains("sculpt_pick_samples"))
+        var page=0,text=""
+        while true {
+            let row=try #require(CadDocumentHelp.page(.init(topic:"sculpt",page:page,pageSize:1000)))
+            text+=row.text;guard let next=row.nextPage else { break };page=next
+        }
+        #expect(text==full);#expect(page>0)
+        for example in CadNativeEditActions.sculptExamples {
+            let payload=try #require(JSONSerialization.jsonObject(with:Data(example.utf8)) as? [String:Any])
+            let op=try #require(payload["op"] as? String),args=try #require(payload["args"] as? [String:Any])
+            #expect(op.hasPrefix("mesh.sculpt."));#expect(args["bodyID"] is String);#expect((args["cageDigest"] as? String)?.count==64)
+            #expect(args["expectedChangeCount"]==nil,"Live UI epochs must not be reused inside a proposal clone")
+            let outer=try JSONSerialization.data(withJSONObject:["action":"propose","path":"example.floecad","op":op,"args":String(data:try JSONSerialization.data(withJSONObject:args),encoding:.utf8)!])
+            let request=try JSONDecoder().decode(CadDocumentArguments.self,from:outer)
+            #expect(request.action == .propose);#expect(request.op==op)
+            if let raw=args["stroke"] {
+                let stroke=try JSONDecoder().decode(CADSculptStroke.self,from:JSONSerialization.data(withJSONObject:raw));try stroke.validate()
+                #expect(stroke.samples.count==1);#expect(stroke.samples[0].pressure==0.7)
+            }
+        }
+    }
+
 }
 #endif

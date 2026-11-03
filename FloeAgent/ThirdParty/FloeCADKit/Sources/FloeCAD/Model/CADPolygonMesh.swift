@@ -186,7 +186,8 @@ nonisolated struct CADPolygonMeshDefinition: Codable, Equatable, Sendable {
     var version: Int = supportedVersion
     var cage: CADPolygonCage
     var modifiers: [Modifier] = []
-    private enum CodingKeys: String, CodingKey { case version, cage, modifiers }
+    var sculpt:CADSculptDefinition?
+    private enum CodingKeys: String, CodingKey { case version, cage, modifiers, sculpt }
     init(cage: CADPolygonCage, modifiers: [Modifier] = []) { self.cage = cage; self.modifiers = modifiers }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -194,12 +195,18 @@ nonisolated struct CADPolygonMeshDefinition: Codable, Equatable, Sendable {
         guard version == Self.supportedVersion else { throw CADPolygonFailure.unsupported("Unsupported polygon cage definition version \(version).") }
         cage = try c.decode(CADPolygonCage.self, forKey: .cage)
         modifiers = try c.decode([Modifier].self, forKey: .modifiers)
+        sculpt = try c.decodeIfPresent(CADSculptDefinition.self,forKey:.sculpt)
         try validate()
     }
     func validate() throws {
         guard version == Self.supportedVersion, modifiers.count <= 8,
               Set(modifiers.map(\.id)).count == modifiers.count else { throw CADPolygonFailure.invalid("Invalid modifier stack.") }
         try cage.validate()
+        if let sculpt {
+            try sculpt.validate()
+            var original=self;original.sculpt=nil
+            guard sculpt.sourceDigest==original.digest else { throw CADPolygonFailure.invalid("The sculpt source cage or modifier stack changed. Keep the sculpt hierarchy before changing its source.") }
+        }
         for modifier in modifiers {
             switch modifier.operation {
             case .subdivision(let levels): guard (1...2).contains(levels) else { throw CADPolygonFailure.unsupported("Subdivision supports one or two levels per modifier.") }

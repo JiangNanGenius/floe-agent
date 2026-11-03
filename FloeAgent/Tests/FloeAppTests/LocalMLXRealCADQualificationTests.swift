@@ -17,7 +17,7 @@
 // slices, so a macOS executable cannot link the real CAD kernel. The App-hosted
 // test is the only route that runs real MLX and real OCCT in one process.
 //
-// What actually runs (no fixture, no echo provider, no hand-written package):
+// Original creation selector (no fixture, no echo provider, no hand-written package):
 //   1. production `LocalModelStore` / `LocalModelRuntime` / `LocalProviderAdapter`
 //      load the exact pinned snapshot and emit the tool protocol the product
 //      uses (Qwen JSON envelope; no provider-specific stripped CAD subset);
@@ -47,7 +47,7 @@ import FloeAgentRuntime
 import FloeLocalModelCatalog
 @testable import FloeLocalModels
 @testable import FloeApp
-import FloeCAD
+@testable import FloeCAD
 
 @MainActor
 final class LocalMLXRealCADQualificationTests: XCTestCase {
@@ -339,6 +339,393 @@ final class LocalMLXRealCADQualificationTests: XCTestCase {
         await cleanup(deleteConversation: succeeded)
     }
 
+    // MARK: - X34 reachability, distinct from the original creation workflow
+
+    // These selectors supply a TEST-CREATED native fixture. They prove tool
+    // reachability, not model-generated geometry or visual understanding.
+    func testActualPinnedMLXCanQueryEditUndoSaveAndColdReopenSuppliedNativeCADFixture() async throws {
+        let optIn = try readReachabilityOptIn(provider: "mlx", modelID: Self.modelID)
+        environment = try await appQualificationEnvironment()
+        provider = LocalProviderAdapter.providerProfile
+        try await selectConfiguredReachabilityModel(Self.modelID)
+        guard await environment.localModelStore.isInstalled(id: Self.modelID) else {
+            throw reachabilityFailure("The pinned MLX snapshot is not installed.")
+        }
+        let storeRoot = await environment.localModelStore.root
+        try assertPinnedManifest(in: storeRoot.appendingPathComponent(Self.modelID, isDirectory: true))
+        // Production admission/preflight errors remain real failures, never a
+        // skip, reduced safety threshold, substitute model or cloud fallback.
+        do {
+            try await environment.localModelRuntime.preload(modelID: Self.modelID)
+            try await runSuppliedDocumentReachability(label: "mlx", maxSeconds: optIn.maxSecondsPerTurn ?? 240)
+        } catch {
+            attach("x34-reachability-mlx-error.txt", String(describing: error))
+            await cleanup(deleteConversation: false)
+            throw error
+        }
+    }
+
+    func testFoundationAvailabilityAndAdvertisedCapabilitiesAreTruthful() async throws {
+        environment = try await appQualificationEnvironment()
+        provider = LocalProviderAdapter.providerProfile
+        _ = try await assertFoundationAvailabilityAndCapabilities()
+    }
+
+    func testActualFoundationCanQueryEditUndoSaveAndColdReopenSuppliedNativeCADFixture() async throws {
+        environment = try await appQualificationEnvironment()
+        provider = LocalProviderAdapter.providerProfile
+        _ = try await assertFoundationAvailabilityAndCapabilities()
+        let optIn = try readReachabilityOptIn(
+            provider: "foundation", modelID: AppleFoundationModelIdentity.remoteModelID)
+        try await selectConfiguredReachabilityModel(AppleFoundationModelIdentity.remoteModelID)
+        do {
+            try await runSuppliedDocumentReachability(
+                label: "foundation", maxSeconds: optIn.maxSecondsPerTurn ?? 240)
+        } catch {
+            attach("x34-reachability-foundation-error.txt", String(describing: error))
+            await cleanup(deleteConversation: false)
+            throw error
+        }
+    }
+
+    private func selectConfiguredReachabilityModel(_ remoteID: String) async throws {
+        let configured = try await environment.configurationStore.models(providerID: provider.id)
+        guard let selected = configured.first(where: { $0.remoteModelID == remoteID }) else {
+            throw reachabilityFailure("The actual on-device model row is not configured: \(remoteID).")
+        }
+        model = selected
+        let facts = "providerID=\(provider.id) modelID=\(selected.id) remoteID=\(remoteID) "
+            + "enabled=\(selected.isEnabled) text=\(selected.capabilities.contains(.text)) "
+            + "tools=\(selected.capabilities.contains(.tools)) vision=\(selected.capabilities.contains(.vision)) "
+            + "qualificationInput=text-only visualInferenceTested=false cloudFallback=false"
+        attach("x34-reachability-selected-model.txt", facts)
+        guard provider.id == ProviderProfile.onDeviceProviderID,
+              selected.providerID == provider.id, selected.isEnabled,
+              selected.capabilities.contains(.text), selected.capabilities.contains(.tools) else {
+            throw reachabilityFailure("Selected on-device model is disabled or lacks tools. \(facts)")
+        }
+        // Neither this selector nor the availability check writes model settings.
+        // Explicit user capability overrides are recorded, never silently reset.
+        if remoteID == Self.modelID {
+            XCTAssertFalse(selected.capabilities.contains(.vision), "The pinned MLX snapshot is text-only.")
+        }
+    }
+
+    @discardableResult
+    private func assertFoundationAvailabilityAndCapabilities() async throws -> AppleFoundationModelAvailability {
+        let availability = await AppleFoundationModelRuntime.shared.availability()
+        let adapter = LocalProviderAdapter(runtime: environment.localModelRuntime, store: environment.localModelStore)
+        let advertised = try await adapter.listModels(provider: provider, credentials: ProviderCredentials())
+        let row = try XCTUnwrap(advertised.first { $0.id == AppleFoundationModelIdentity.profileID },
+                               "The system-model row must remain visible even when unavailable.")
+        let configured = try await environment.configurationStore.models(providerID: provider.id)
+            .first { $0.remoteModelID == AppleFoundationModelIdentity.remoteModelID }
+        let reason = AppleFoundationModelRuntime.unavailableMessage(for: availability)
+        attach("x34-foundation-availability-capabilities.txt",
+               "sdkIntegrationCompiled=\(AppleFoundationModelRuntime.sdkIntegrationCompiled) "
+                + "availability=\(String(describing: availability)) reason=\(reason) "
+                + "displayName=\(row.displayName) text=\(row.capabilities.contains(.text)) "
+                + "tools=\(row.capabilities.contains(.tools)) directVision=\(row.capabilities.contains(.vision)) "
+                + "configuredEnabled=\(configured?.isEnabled.description ?? "absent") "
+                + "configuredTools=\(configured?.capabilities.contains(.tools).description ?? "absent") "
+                + "configuredVision=\(configured?.capabilities.contains(.vision).description ?? "absent") "
+                + "qualificationInput=text-only visualInferenceTested=false cloudFallback=false")
+        XCTAssertEqual(row.providerID, ProviderProfile.onDeviceProviderID)
+        XCTAssertEqual(row.remoteModelID, AppleFoundationModelIdentity.remoteModelID)
+        XCTAssertTrue(row.capabilities.contains(.text))
+        XCTAssertFalse(row.capabilities.contains(.vision), "Production UI must not promise unqualified direct vision.")
+        if case .available(let tokens, _, let tools, _) = availability {
+            XCTAssertEqual(row.limits.contextTokens, tokens)
+            XCTAssertEqual(row.capabilities.contains(.tools), tools)
+            guard tools else { throw reachabilityFailure("Foundation is available but tool calling is unavailable.") }
+        } else {
+            XCTAssertFalse(row.capabilities.contains(.tools))
+            XCTAssertTrue(row.displayName.contains(reason), "The visible row must include the actual unavailable reason.")
+            throw reachabilityFailure("Foundation is not ready: \(reason); \(availability). No system setting changed.")
+        }
+        return availability
+    }
+
+    private struct ReachabilityState {
+        var bodyID: String
+        var featureIDs: [String]
+        var sketchIDs: [String]
+        var circle: HoleCircle
+        var volume: Double
+        var undoDepth: Int
+        var redoDepth: Int
+        var modelSHA256: String
+        var revision: Int
+    }
+
+    private func reachabilityState(_ document: FloeCADDocument) throws -> ReachabilityState {
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty, "\(document.session.lastEvalErrors)")
+        let bodies = try rows(document, scope: "bodies")
+        XCTAssertEqual(bodies.count, 1)
+        let bodyRow = try XCTUnwrap(bodies.first)
+        XCTAssertEqual(bodyRow["analyticBRep"] as? Bool, true)
+        let bodyID = try XCTUnwrap(bodyRow["id"] as? String)
+        let body = try XCTUnwrap(document.session.document.bodies.first {
+            $0.id.raw.uuidString.caseInsensitiveCompare(bodyID) == .orderedSame
+        })
+        // Independent OCCT BRep measurement, not the model/tool's volume text.
+        let shape = try XCTUnwrap(body.brep, "The supplied document must contain a real native BRep.")
+        let volume = abs(OCCTKernel.volume(shape))
+        XCTAssertTrue(volume.isFinite)
+        let sketches = try rows(document, scope: "sketches")
+        var circles: [HoleCircle] = []
+        for sketch in sketches {
+            for entity in sketch["entityRows"] as? [[String: Any]] ?? [] {
+                if entity["kind"] as? String == "circle", entity["construction"] as? Bool != true {
+                    circles.append(HoleCircle(sketchID: try XCTUnwrap(sketch["id"] as? String),
+                                              entityID: try XCTUnwrap(entity["id"] as? String),
+                                              radius: try XCTUnwrap(number(entity["radius"]))))
+                }
+            }
+        }
+        XCTAssertEqual(circles.count, 1)
+        return ReachabilityState(
+            bodyID: bodyID, featureIDs: try rows(document, scope: "features").compactMap { $0["id"] as? String },
+            sketchIDs: sketches.compactMap { $0["id"] as? String }, circle: try XCTUnwrap(circles.first),
+            volume: volume, undoDepth: document.session.undoStack.undoCommands.count,
+            redoDepth: document.session.undoStack.redoCommands.count,
+            modelSHA256: document.modelSHA256, revision: document.revision)
+    }
+
+    private func assertReachabilityState(_ state: ReachabilityState, sameIDs baseline: ReachabilityState,
+                                        radius: Double, volume: Double, undo: Int) {
+        XCTAssertEqual(state.bodyID, baseline.bodyID)
+        XCTAssertEqual(state.featureIDs, baseline.featureIDs, "The edit must reuse every existing FeatureID.")
+        XCTAssertEqual(state.sketchIDs, baseline.sketchIDs)
+        XCTAssertEqual(state.circle.sketchID, baseline.circle.sketchID)
+        XCTAssertEqual(state.circle.entityID, baseline.circle.entityID)
+        XCTAssertEqual(state.circle.radius, radius, accuracy: 1e-8)
+        XCTAssertEqual(state.volume, volume, accuracy: Self.volumeTolerance)
+        XCTAssertEqual(state.undoDepth, undo, "Only the requested native transaction may enter undo history.")
+    }
+
+    private func makeSuppliedNativeFixture(at url: URL) async throws -> ReachabilityState {
+        let document = try await FloeCADDocument.create(at: url, name: "TEST FIXTURE — not model generated")
+        defer { document.close() }
+        func command(_ object: [String: Any]) throws -> [String: Any] {
+            let result = document.executeJSON(try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
+            guard result.isOK else {
+                throw reachabilityFailure("Native fixture command failed: \(result.errorCode ?? "") \(result.message ?? "")")
+            }
+            return try XCTUnwrap(jsonObject(result.payload))
+        }
+        let plateSketch = try XCTUnwrap(command(["op": "sketch.create", "args": ["name": "Fixture plate"]])["sketchID"] as? String)
+        _ = try command(["op": "sketch.addEntities", "args": ["sketchID": plateSketch,
+            "entities": [["kind": "rect", "min": [0, 0], "max": [80, 50]]]]])
+        let plate = try command(["op": "feature.extrude", "args": ["sketchID": plateSketch,
+            "seedPoint": [40, 25], "distance": 10]])
+        let bodyID = try XCTUnwrap((plate["producedBodyIDs"] as? [String])?.first
+            ?? (plate["changedBodyIDs"] as? [String])?.first)
+        let holeSketch = try XCTUnwrap(command(["op": "sketch.create", "args": ["name": "Fixture hole"]])["sketchID"] as? String)
+        _ = try command(["op": "sketch.addEntities", "args": ["sketchID": holeSketch,
+            "entities": [["kind": "circle", "center": [40, 25], "radius": 3]]]])
+        _ = try command(["op": "feature.extrude", "args": ["sketchID": holeSketch,
+            "seedPoint": [40, 25], "distance": 40, "symmetric": true,
+            "boolean": "subtract", "booleanTargets": [bodyID]]])
+        let saved = await document.save()
+        guard saved.succeeded else { throw reachabilityFailure("Fixture save failed: \(saved.error ?? "")") }
+        let state = try reachabilityState(document)
+        XCTAssertEqual(state.volume, Self.expectedVolumeDiameter6, accuracy: Self.volumeTolerance)
+        XCTAssertEqual(state.circle.radius, 3, accuracy: 1e-8)
+        XCTAssertFalse(state.featureIDs.isEmpty)
+        XCTAssertFalse(state.modelSHA256.isEmpty)
+        guard state.volume.isFinite, abs(state.volume - Self.expectedVolumeDiameter6) <= Self.volumeTolerance,
+              abs(state.circle.radius - 3) <= 1e-8, !state.featureIDs.isEmpty, !state.modelSHA256.isEmpty else {
+            throw reachabilityFailure("Native fixture geometry/identity is invalid; no model turn was started.")
+        }
+        return state
+    }
+
+    private func runSuppliedDocumentReachability(label: String, maxSeconds: Double) async throws {
+        documentName = "x34-supplied-\(label)-\(UUID().uuidString.prefix(8)).floecad"
+        let staging = FileManager.default.temporaryDirectory.appendingPathComponent("X34SuppliedFixture-\(UUID())")
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        let sourceURL = staging.appendingPathComponent(documentName)
+        attach("x34-\(label)-owned-fixture-path.txt", "Test-owned staging retained on failure: \(sourceURL.path)")
+        var succeeded = false
+        defer { if succeeded { try? FileManager.default.removeItem(at: staging) } }
+        let source = try await makeSuppliedNativeFixture(at: sourceURL)
+        attach("x34-\(label)-fixture-origin.txt",
+               "TEST-CREATED fixture, NOT model-generated. Saved by real typed native commands before inference. "
+                + "staging=\(sourceURL.path) body=\(source.bodyID) sketch=\(source.circle.sketchID) "
+                + "entity=\(source.circle.entityID) features=\(source.featureIDs) volumeMM3=\(source.volume) "
+                + "modelSHA256=\(source.modelSHA256) model=\(model.remoteModelID) no image input.")
+        let path = documentName
+        let editPayload = try wireJSON(["action": "updateSketchEntity", "sketch_id": source.circle.sketchID,
+            "entity_id": source.circle.entityID, "radius": 4, "expected_radius": 3])
+        let undoPayload = try wireJSON(["action": "undo"])
+        let calls: [[[String: Any]]] = [
+            [["action": "query", "path": path, "kind": "sketches"]],
+            [["action": "parameters", "path": path, "payload": editPayload],
+             ["action": "measure", "path": path, "kind": "body", "handles": ["body:\(source.bodyID)"]]],
+            [["action": "parameters", "path": path, "payload": undoPayload]],
+            [["action": "save", "path": path]],
+        ]
+        let instructions = ["Query the supplied sketch. Do not edit anything.",
+                            "Change the SAME circle radius 3 to 4, then measure the SAME body.",
+                            "Undo exactly the last radius edit through the real native undo tool.",
+                            "Save the undo-restored native document. Do not edit anything."]
+        var baseline: ReachabilityState?
+        var previousInstance: ObjectIdentifier?
+        for turn in 0..<4 {
+            let examples = try calls[turn].map { try wireJSON($0) }.joined(separator: "\n")
+            let goal = """
+            Text-only tool reachability check. This is an existing TEST-CREATED fixture, NOT geometry you generated. Use only cad.document in the current task workspace. No images or visual inference.
+            Source path=\(path), bodyID=\(source.bodyID), hole sketchID=\(source.circle.sketchID), circle entityID=\(source.circle.entityID), FeatureIDs=\(source.featureIDs.joined(separator: ",")).
+            Round \(turn + 1)/4: \(instructions[turn])
+            Make exactly these real tool calls, in order, then stop. Report only returned results:
+            \(examples)
+            Wire contract: args and payload are JSON STRING fields, never nested objects. Example of STRING encoding ONLY, not an extra call: \(try wireJSON(["payload": undoPayload])). Omit args and payload when absent from the exact calls above. Do not create, propose, apply, import or replace geometry. Do not claim execution without a real tool result.
+            """
+            attach("x34-\(label)-round-\(turn + 1)-goal.txt", goal)
+            try assertCanonicalSchemaIsAdmitted(for: goal)
+            let events = try await runTurn(goal: goal, firstTurn: turn == 0, maxSeconds: maxSeconds,
+                                           stagedFixture: turn == 0 ? sourceURL : nil)
+            try await assertReachabilityTurn(events, expected: calls[turn], label: "\(label)-\(turn + 1)")
+            let url = try XCTUnwrap(documentURL)
+            let document = try await FloeCAD3DBridge.shared.openDocument(at: url)
+            let state = try reachabilityState(document)
+            if turn == 0 {
+                baseline = state
+                previousInstance = ObjectIdentifier(document)
+                assertReachabilityState(state, sameIDs: source, radius: 3,
+                                        volume: Self.expectedVolumeDiameter6, undo: 0)
+                XCTAssertEqual(state.modelSHA256, source.modelSHA256)
+            } else {
+                let initial = try XCTUnwrap(baseline)
+                XCTAssertEqual(ObjectIdentifier(document), previousInstance,
+                               "All four turns must use the same live owner and undo history.")
+                assertReachabilityState(state, sameIDs: initial, radius: turn == 1 ? 4 : 3,
+                                        volume: turn == 1 ? Self.expectedVolumeDiameter8 : Self.expectedVolumeDiameter6,
+                                        undo: initial.undoDepth + (turn == 1 ? 1 : 0))
+                if turn == 1 {
+                    XCTAssertGreaterThan(state.revision, initial.revision)
+                    XCTAssertNotEqual(state.modelSHA256, initial.modelSHA256)
+                } else {
+                    XCTAssertEqual(state.modelSHA256, initial.modelSHA256,
+                                   "Real undo must restore the exact canonical pre-edit model.")
+                    XCTAssertEqual(state.redoDepth, 1)
+                }
+            }
+            attach("x34-\(label)-round-\(turn + 1)-native.txt",
+                   "volumeMM3=\(state.volume) radius=\(state.circle.radius) undo=\(state.undoDepth) "
+                    + "redo=\(state.redoDepth) revision=\(state.revision) modelSHA256=\(state.modelSHA256)")
+        }
+        let url = try XCTUnwrap(documentURL)
+        let initial = try XCTUnwrap(baseline)
+        let ownerBeforeClose = try await FloeCAD3DBridge.shared.openDocument(at: url)
+        XCTAssertEqual(ObjectIdentifier(ownerBeforeClose), previousInstance)
+        await FloeCAD3DBridge.shared.releaseDocument(at: url)
+        // The model's save is the last write; the test only closes/reopens and
+        // inspects. A fresh instance must reconstruct the saved native shape.
+        let reopened = try await FloeCAD3DBridge.shared.openDocument(at: url)
+        // Retain the old object through this assertion; allocator address reuse
+        // after deallocation is not evidence that owner close/reopen failed.
+        XCTAssertNotEqual(ObjectIdentifier(reopened), ObjectIdentifier(ownerBeforeClose))
+        XCTAssertFalse(reopened.isReadOnly)
+        let cold = try reachabilityState(reopened)
+        assertReachabilityState(cold, sameIDs: initial, radius: 3,
+                                volume: Self.expectedVolumeDiameter6, undo: 0)
+        XCTAssertEqual(cold.modelSHA256, initial.modelSHA256)
+        let disk = try await inspectDocument(at: url)
+        XCTAssertEqual(disk.modelSHA256, initial.modelSHA256)
+        XCTAssertEqual(disk.bodyID, initial.bodyID)
+        XCTAssertTrue(disk.bodyIsAnalytic)
+        XCTAssertEqual(disk.volume, cold.volume, accuracy: 1e-6)
+        attach("x34-\(label)-cold-reopen.txt", disk.description)
+        succeeded = testRun.map { $0.totalFailureCount == 0 } ?? false
+        await cleanup(deleteConversation: succeeded)
+    }
+
+    private func assertReachabilityTurn(_ events: [RunEventRecord], expected: [[String: Any]],
+                                        label: String) async throws {
+        attach("x34-\(label)-owned-events.txt", events.map { "\($0.kind): \($0.payloadJSON)" }.joined(separator: "\n"))
+        _ = try assertCADTurn(events, label: label)
+        let service = try XCTUnwrap(services.last)
+        let snapshot = await service.snapshot()
+        let runOptional = try await environment.runStore.run(id: snapshot.runID)
+        let run = try XCTUnwrap(runOptional)
+        XCTAssertEqual(run.providerID, ProviderProfile.onDeviceProviderID)
+        XCTAssertEqual(run.providerID, provider.id)
+        XCTAssertEqual(run.modelID, model.id)
+        attach("x34-\(label)-provider.txt",
+               "providerID=\(provider.id) modelID=\(model.id) remoteModelID=\(model.remoteModelID) "
+                + "runID=\(snapshot.runID) state=\(snapshot.stateName) "
+                + "providerActivity=\(snapshot.hasProviderActivity) "
+                + "attempt=\(String(describing: snapshot.providerAttempt)) allowedTool=cad.document cloudFallback=false")
+        guard snapshot.isTerminal, snapshot.stateName == "completed", snapshot.pendingApproval == nil,
+              snapshot.hasProviderActivity else {
+            await service.cancel()
+            throw reachabilityFailure("\(label): no completed actual-provider turn: \(snapshot.stateName).")
+        }
+        var requests: [(String, [String: Any])] = []
+        var results: [String: String] = [:]
+        for event in events {
+            guard let payload = jsonObject(event.payloadJSON), payload["tool"] as? String == CadDocumentTool.name else { continue }
+            let id = payload["id"] as? String ?? ""
+            if event.kind == .toolRequest {
+                let request = try XCTUnwrap((payload["input"] as? String).flatMap(jsonObject))
+                for field in ["args", "payload"] where request[field] != nil {
+                    guard request[field] is String else {
+                        throw reachabilityFailure("\(label): \(field) must be a JSON STRING; actual=\(type(of: request[field]!)).")
+                    }
+                }
+                requests.append((id, request))
+            } else if event.kind == .toolResult {
+                results[id] = payload["status"] as? String ?? "missing"
+            }
+        }
+        guard requests.count == expected.count else {
+            throw reachabilityFailure("\(label): expected \(expected.count) exact CAD calls, got \(requests.count). See owned events.")
+        }
+        for (index, request) in requests.enumerated() {
+            guard !request.0.isEmpty, results[request.0] == "ok" else {
+                throw reachabilityFailure("\(label): CAD call \(index) has no matching successful real result.")
+            }
+            guard request.1["grant_id"] == nil else {
+                throw reachabilityFailure("\(label): model-authored grant_id is not permitted.")
+            }
+            for (key, value) in expected[index] {
+                let actual = try XCTUnwrap(request.1[key], "Missing expected wire field \(key)")
+                let matches: Bool
+                if key == "payload", let lhs = actual as? String, let rhs = value as? String {
+                    matches = try wireJSON(try XCTUnwrap(jsonObject(lhs))) == wireJSON(try XCTUnwrap(jsonObject(rhs)))
+                } else {
+                    matches = try JSONSerialization.data(withJSONObject: actual, options: [.fragmentsAllowed, .sortedKeys])
+                        == JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .sortedKeys])
+                }
+                guard matches else { throw reachabilityFailure("\(label): unexpected \(key) in call \(index).") }
+            }
+        }
+    }
+
+    private func wireJSON(_ object: [String: Any]) throws -> String {
+        String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), as: UTF8.self)
+    }
+
+    private func reachabilityFailure(_ message: String) -> NSError {
+        XCTFail(message)
+        return NSError(domain: "X34Reachability", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+
+    private func readReachabilityOptIn(provider name: String, modelID: String) throws -> OptIn {
+        let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("FloeLocalCADReachability/opt-in-\(name).json")
+        guard let data = try? Data(contentsOf: url) else {
+            throw reachabilityFailure("Missing explicit live opt-in at \(url.path). Expected {\"modelID\":\"\(modelID)\",\"maxSecondsPerTurn\":240}.")
+        }
+        let value = try JSONDecoder().decode(OptIn.self, from: data)
+        guard value.modelID == modelID, (30...900).contains(value.maxSecondsPerTurn ?? 240) else {
+            throw reachabilityFailure("Opt-in must name \(modelID) and a finite 30...900 second turn limit.")
+        }
+        return value
+    }
+
     // MARK: - Turn execution (production App run service)
 
     private struct TurnReceipt {
@@ -347,7 +734,8 @@ final class LocalMLXRealCADQualificationTests: XCTestCase {
         var requestCount: Int
     }
 
-    private func runTurn(goal: String, firstTurn: Bool, maxSeconds: Double) async throws -> [RunEventRecord] {
+    private func runTurn(goal: String, firstTurn: Bool, maxSeconds: Double,
+                         stagedFixture: URL? = nil) async throws -> [RunEventRecord] {
         let runID = UUID()
         let conversation = firstTurn ? (conversationID ?? UUID()) : conversationID!
         let prepared = try await environment.runLaunchStore.prepare(RunLaunchRequest(
@@ -370,6 +758,18 @@ final class LocalMLXRealCADQualificationTests: XCTestCase {
             conversationID = conversation
             workspaceRecordID = prepared.workspace.id
             workspaceURL = try workspaceRoot(for: prepared.workspace, conversationID: conversation)
+            if let stagedFixture {
+                let root = try XCTUnwrap(workspaceURL)
+                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                let destination = root.appendingPathComponent(documentName)
+                guard !FileManager.default.fileExists(atPath: destination.path) else {
+                    throw reachabilityFailure("The owned fixture destination already exists.")
+                }
+                // Staging an already saved TEST fixture is not model execution.
+                // No tool result, CAD edit, save or undo is synthesized here.
+                try FileManager.default.copyItem(at: stagedFixture, to: destination)
+                documentURL = destination
+            }
         }
         try await saveOwnedPolicy(conversationID: conversation)
         let history = try await ConversationHistoryAssembler(store: environment.conversationStore)
@@ -509,7 +909,7 @@ final class LocalMLXRealCADQualificationTests: XCTestCase {
             allToolNames: [descriptor.name]
         ))
         let admitted = build.selectedTools.contains { $0.name == CadDocumentTool.name }
-        let note = "model=\(Self.modelID) contextTokens=\(model.limits.contextTokens) "
+        let note = "model=\(model.remoteModelID) contextTokens=\(model.limits.contextTokens) "
             + "maxOutputTokens=\(model.limits.maxOutputTokens) "
             + "windowPromptTokens=\(build.windowPromptTokenBudget) "
             + "estimatedPromptTokens=\(build.estimatedPromptTokens) "
@@ -779,7 +1179,9 @@ final class LocalMLXRealCADQualificationTests: XCTestCase {
                 XCTFail("The owned task workspace still exists after conversation deletion: \(ownedWorkspace.path)")
             }
         }
-        await environment.localModelRuntime.unload(modelID: Self.modelID)
+        if model?.remoteModelID == Self.modelID {
+            await environment.localModelRuntime.unload(modelID: Self.modelID)
+        }
     }
 
     // MARK: - Small helpers

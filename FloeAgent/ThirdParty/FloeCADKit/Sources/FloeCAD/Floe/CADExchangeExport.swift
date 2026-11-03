@@ -402,6 +402,12 @@ public extension FloeCADDocument {
                 }
 
             case "glb":
+                if let rig = try CADRigCodec.read(session.document.sceneSettingsData),
+                   plan.glbBodies.contains(where: { $0.id.raw == rig.bodyID }) {
+                    guard plan.coverage.scope == .part, plan.glbBodies.count == 1 else { throw CADRigError.unsupported }
+                    let data = try riggedGLB()
+                    return .success(data:data,note:"glTF skin + morph targets + authored joint/morph animation; explicit polygon rig",coverage:plan.coverage)
+                }
                 if plan.coverage.scope == .assembly,
                    (plan.sceneGraph?.isEmpty ?? true) {
                     return .failure(CADDocumentError(

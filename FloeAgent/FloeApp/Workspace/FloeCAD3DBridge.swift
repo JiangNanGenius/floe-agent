@@ -377,7 +377,7 @@ final class FloeCAD3DBridge {
             // undo while the document is still at that post-edit generation.
             let changeBefore = document.liveChangeCount
             let checkpoint = document.captureEditCheckpoint()
-            var reply = await CADMaterialService(document: document).handleAsync(action: action, args: payload)
+            var reply = await CADMaterialService(document: document).handleAsync(action: action, args: payload, cancellation:cancellation)
             if Self.bool(reply["mutated"]) == true {
                 let changeAfter = document.liveChangeCount
                 if changeAfter == changeBefore {

@@ -37,7 +37,8 @@ public nonisolated struct CADAnimationDocument: Codable, Sendable, Equatable {
     public static let legacySchemaVersion = 1
     public static let timingCurveSchemaVersion = 2
     public static let physicsSchemaVersion = 3
-    public static let currentSchemaVersion = physicsSchemaVersion
+    public static let rigSchemaVersion = 4
+    public static let currentSchemaVersion = rigSchemaVersion
     public static let defaultDurationSeconds: Double = 5
     public static let minimumDurationSeconds: Double = 0.1
     public static let maximumDurationSeconds: Double = 600
@@ -87,6 +88,7 @@ public nonisolated struct CADAnimationDocument: Codable, Sendable, Equatable {
     /// presence requires schema 2 even if a bad/older writer left the header
     /// at 1.
     public var requiredSchemaVersion: Int {
+        if clips.contains(where: { $0.rigID != nil }) { return Self.rigSchemaVersion }
         if clips.contains(where: { $0.physicsCacheID != nil }) { return Self.physicsSchemaVersion }
         return clips.contains { clip in
             clip.tracks.contains { track in
@@ -149,6 +151,7 @@ public nonisolated struct CADAnimationClip: Codable, Sendable, Equatable, Identi
     public var tracks: [CADAnimationTrack]
     /// References the sole sceneSettings cache; no preset/baked key duplication.
     public var physicsCacheID: UUID? = nil
+    public var rigID: UUID? = nil
 
     public init(id: UUID = UUID(),
                 name: String,
@@ -790,6 +793,7 @@ public nonisolated struct CADAnimationSceneContext: Sendable, Equatable {
     public var boundsMinMM: SIMD3<Double>?
     public var boundsMaxMM: SIMD3<Double>?
     public var spherePhysics: CADSpherePhysicsPlayback? = nil
+    public var rig: CADRigPlayback? = nil
 
     public init(instances: [UUID: Instance] = [:],
                 bodyRevisions: [UUID: UInt64] = [:],
@@ -814,6 +818,7 @@ public nonisolated struct CADAnimationEvaluation: Sendable, Equatable {
     public var instances: [UUID: CADAnimationInstanceValue]
     public var issues: [CADAnimationIssue]
     public var physicsFloorYMM: Double? = nil
+    public var rigDeformation: CADRigDeformation? = nil
 
     public init(clipID: UUID,
                 time: Double,
@@ -830,7 +835,7 @@ public nonisolated struct CADAnimationEvaluation: Sendable, Equatable {
         self.physicsFloorYMM = physicsFloorYMM
     }
 
-    public var hasOverrides: Bool { camera != nil || !instances.isEmpty }
+    public var hasOverrides: Bool { camera != nil || !instances.isEmpty || rigDeformation != nil }
 }
 
 // MARK: - Preset
@@ -931,6 +936,7 @@ public nonisolated struct CADAnimationFormatIntent: Sendable, Equatable {
     public var declaredSchemaVersion: Int?
     public var containsTimingCurve = false
     public var containsPhysicsCache = false
+    public var containsRig = false
     /// A curve member this build cannot verify. The original bytes must be
     /// preserved; no reader/writer may replace it with linear/ease.
     public var isMalformed = false
@@ -991,6 +997,11 @@ public nonisolated enum CADAnimationFormat {
                 result.containsPhysicsCache = true
                 result.requiredVersion = max(result.requiredVersion, 7)
                 if schema < CADAnimationDocument.physicsSchemaVersion || (raw as? String).flatMap(UUID.init(uuidString:)) == nil { result.isMalformed = true }
+            }
+            if let raw = clip["rigID"], !(raw is NSNull) {
+                result.containsRig = true; result.requiredVersion = max(result.requiredVersion, 7)
+                if let physics = clip["physicsCacheID"], !(physics is NSNull) { result.isMalformed = true }
+                if schema < CADAnimationDocument.rigSchemaVersion || (raw as? String).flatMap(UUID.init(uuidString:)) == nil { result.isMalformed = true }
             }
             guard let rawTracks = clip["tracks"],
                   let tracks = rawTracks as? [[String: Any]] else {

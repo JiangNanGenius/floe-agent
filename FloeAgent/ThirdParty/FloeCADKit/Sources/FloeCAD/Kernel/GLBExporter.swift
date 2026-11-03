@@ -92,11 +92,17 @@ nonisolated enum GLBExporter {
         var emissive: [Double]
         var emissiveStrength: Double
         var textures: [String]
+        var advanced: CADAdvancedMaterial?
+        var degradation: [String]
+        var graphID: UUID?
+        var graphSHA256: String?
     }
 
     private struct ExportMaterial {
         var key: MaterialKey
         var spec: BodyMaterialSpec
+        var advancedSource: CADAdvancedMaterial?
+        var degradation: [String]
     }
 
     private struct TextureRecord {
@@ -160,8 +166,14 @@ nonisolated enum GLBExporter {
             return info
         }
 
-        func materialIndex(for rawSpec: BodyMaterialSpec) -> Int {
-            let spec = rawSpec.clamped
+        func materialIndex(for rawSpec: BodyMaterialSpec,tangentSpace:Bool = true) -> Int {
+            var spec = rawSpec.clamped
+            var degradation = spec.advanced?.exportNotes ?? []
+            if var advanced = spec.advanced, advanced.anisotropyLevel > 0, !tangentSpace {
+                advanced.anisotropyLevel = 0; spec.advanced = advanced
+                degradation.append("anisotropy_missing_tangent_space")
+            }
+            if let advanced = spec.advanced, advanced.sheen != .zero { degradation.append("sheen_platform_lobe_exported_with_fixed_roughness_1") }
             var textureKeys: [String] = []
             for slot in MaterialTextureSlot.allCases {
                 if let data = spec.textureData(for: slot) {
@@ -181,10 +193,10 @@ nonisolated enum GLBExporter {
                                   opacity: opacity,
                                   emissive: emission?.factor ?? [0, 0, 0],
                                   emissiveStrength: emission?.strength ?? 0,
-                                  textures: textureKeys.sorted())
+                                  textures: textureKeys.sorted(),advanced:spec.advanced,degradation:degradation,graphID:spec.nodeGraph?.id,graphSHA256:spec.nodeGraph?.recipeSHA256)
             if let existing = materialIndices[key] { return existing }
             let index = exportMaterials.count
-            exportMaterials.append(ExportMaterial(key: key, spec: spec))
+            exportMaterials.append(ExportMaterial(key:key,spec:spec,advancedSource:rawSpec.advanced,degradation:degradation))
             materialIndices[key] = index
             return index
         }
@@ -321,7 +333,7 @@ nonisolated enum GLBExporter {
                     // consumer then uses B = cross(N, T) * W on the same basis
                     // Present and the engineering viewport use, independent of
                     // sampling orientation.
-                    if material.normalTexture != nil {
+                    if material.normalTexture != nil || (material.advanced?.anisotropyLevel ?? 0) > 0 {
                         let tangents = Self.vertexTangents(
                             positions: positions, normals: normals,
                             uvs: uv.uvs, indices: indices)
@@ -343,7 +355,7 @@ nonisolated enum GLBExporter {
                 return [
                     "attributes": attributes,
                     "indices": indexAccessor,
-                    "material": materialIndex(for: material),
+                    "material": materialIndex(for: material,tangentSpace:attributes["TANGENT"] != nil),
                     "mode": 4,  // TRIANGLES
                 ]
             }
@@ -522,6 +534,21 @@ nonisolated enum GLBExporter {
                 "name": entry.key.name,
                 "pbrMetallicRoughness": pbr,
             ]
+            if let advanced = spec.advanced {
+                let extensions:[String:Any] = [
+                    "KHR_materials_clearcoat":["clearcoatFactor":advanced.clearcoat,"clearcoatRoughnessFactor":advanced.coatRoughness],
+                    "KHR_materials_anisotropy":["anisotropyStrength":advanced.anisotropyLevel,"anisotropyRotation":0.0],
+                    "KHR_materials_specular":["specularFactor":advanced.specular],
+                    "KHR_materials_sheen":["sheenColorFactor":[advanced.sheen.x,advanced.sheen.y,advanced.sheen.z],"sheenRoughnessFactor":1.0]]
+                material["extensions"] = extensions
+                for name in extensions.keys { extensionsUsed.insert(name) }
+                material["extras"] = ["floe_advanced_source":entry.advancedSource?.json ?? advanced.json,"floe_degradation":entry.degradation]
+            }
+            if let graph = spec.nodeGraph {
+                var extras = material["extras"] as? [String:Any] ?? [:]
+                extras["floe_node_graph"] = ["id":graph.id.uuidString,"recipe_sha256":graph.recipeSHA256 ?? "","baked_sha256":graph.bakedSHA256 ?? [:],"exchange":"baked_textures_only"]
+                material["extras"] = extras
+            }
             if let data = spec.normalTexture, let record = textureRecord(for: data) {
                 let orientation = Self.textureMetadata(slot: .normal, in: spec)?
                     .orientation ?? .topLeft
@@ -546,11 +573,9 @@ nonisolated enum GLBExporter {
                 }
                 if emission.strength > 1 {
                     extensionsUsed.insert("KHR_materials_emissive_strength")
-                    material["extensions"] = [
-                        "KHR_materials_emissive_strength": [
-                            "emissiveStrength": emission.strength,
-                        ],
-                    ]
+                    var extensions = material["extensions"] as? [String:Any] ?? [:]
+                    extensions["KHR_materials_emissive_strength"] = ["emissiveStrength":emission.strength]
+                    material["extensions"] = extensions
                 }
             }
             if entry.key.opacity < 0.999 || spec.opacityTexture != nil {

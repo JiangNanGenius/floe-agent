@@ -86,9 +86,9 @@ struct SurfaceOptionsSheet: View {
                 }
                 if operation == .thicken {
                     LabeledContent(text("thickness","Thickness (mm)")) {
-                        TextField(text("thickness","Thickness (mm)"),value:$thickness,format:.number)
-                            .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
-                            .accessibilityIdentifier("CADSurfaceThickness")
+                        ExpressionValueField(placeholder: text("thickness","Thickness (mm)"),
+                            value: $thickness, kind: .plain, width: 90,
+                            identifier: "CADSurfaceThickness")
                     }
                     Toggle(text("reverse","Reverse side"),isOn:$reverse).accessibilityIdentifier("CADSurfaceReverse")
                 }
@@ -223,8 +223,10 @@ struct SurfaceOptionsSheet: View {
         }
     }
     private func percent(_ label: String,_ value: Binding<Double>,_ identifier: String) -> some View {
-        LabeledContent(label) { TextField(label,value:value,format:.number.precision(.fractionLength(0...6)))
-            .keyboardType(.decimalPad).multilineTextAlignment(.trailing).accessibilityIdentifier(identifier) }
+        LabeledContent(label) {
+            ExpressionValueField(placeholder: label, value: value, kind: .plain,
+                                 width: 90, identifier: identifier)
+        }
     }
     private var inspection: some View {
         Section(text("check","Check surface")) {

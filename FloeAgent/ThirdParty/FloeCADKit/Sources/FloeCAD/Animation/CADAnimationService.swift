@@ -116,6 +116,11 @@ public extension FloeCADDocument {
                     detail: "The saved simulation reference is unreadable. Its original data is preserved and cannot be edited.")],
                 hasStoredData: true, storedDataSHA256: digest)
         }
+        if intent.isMalformed, intent.containsRig {
+            return CADAnimationLoadState(animation:CADAnimationDocument(),issues:[CADAnimationIssue(
+                id:"rig-reference",kind:.corruptData,detail:"The saved rig reference is unreadable. Its bytes are preserved.")],
+                hasStoredData:true,storedDataSHA256:digest)
+        }
         if intent.isMalformed, intent.containsTimingCurve {
             return CADAnimationLoadState(
                 animation: CADAnimationDocument(),
@@ -184,6 +189,7 @@ public extension FloeCADDocument {
                 bodiesByID.map { ($0.key, $0.value.meshRevision) }),
             boundsMinMM: bounds?.min, boundsMaxMM: bounds?.max)
         result.spherePhysics = spherePhysicsPlayback()
+        result.rig = rigPlayback()
         return result
     }
 
@@ -235,6 +241,7 @@ public extension FloeCADDocument {
                     : "No animation clip has that id.")
         }
         try validatePhysicsAnimationClip(clip)
+        try validateRigClip(clip)
         let evaluation = CADAnimationEvaluator.evaluate(
             clip: clip, at: time, context: animationSceneContext())
         var issues = state.issues
@@ -1241,6 +1248,11 @@ public extension FloeCADDocument {
                     throw CADDocumentError(code: "physics_clip_read_only", message: FloeCADStrings.text("cad.physics.clipReadOnly", "Reconfigure and simulate the proxies to change this clip's motion."))
                 }
             }
+        }
+        for clip in candidate.clips where clip.rigID != nil {
+            guard let old = storedAnimation.clips.first(where: { $0.id == clip.id && $0.rigID == clip.rigID }) else { throw CADRigError.invalid }
+            var comparison = clip; comparison.name = old.name; comparison.speed = old.speed; comparison.isLooping = old.isLooping
+            guard comparison == old else { throw CADRigError.invalid }
         }
         let clean = candidate.sanitized()
         guard !clean.hasInvalidTimingCurve else {
