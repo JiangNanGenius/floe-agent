@@ -1,0 +1,27 @@
+{
+  "criterion": "X19",
+  "originalAcceptance": "场景对象稳定ID/父子变换/资源引用及UI、AI命令共用同一保存权威。",
+  "originalAcceptanceSHA256": "9518c3a7a1af6ff8a2f67670b12f1324f138fc3df90b57404187e7fe263181c1",
+  "acceptedOriginalCriterion": true,
+  "actualChecks": [
+    {
+      "run": "native303-loft-gear-shell-scene",
+      "source": "0111c4c79511a11c3ebfaa12ddf6e67f934fee97",
+      "node": "CADSceneObjectHierarchyTests",
+      "result": "Passed",
+      "scope": "actual canonical iPad Simulator App"
+    },
+    {
+      "run": "ui302-surface-paint-scene-still",
+      "source": "d2c6cbc331eeaca3018bb5533711892b52623fc1",
+      "node": "testSceneObjectNativeGroupPersistsAfterReopen()",
+      "result": "Passed",
+      "scope": "actual canonical iPad Simulator App"
+    }
+  ],
+  "limitations": [
+    "Simulator functional evidence; no physical-device performance claim.",
+    "Other failures in the same original batches remain preserved and open under their own criteria."
+  ],
+  "published": false
+}

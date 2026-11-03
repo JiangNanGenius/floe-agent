@@ -1,0 +1,41 @@
+{
+  "criterion": "X18",
+  "originalAcceptance": "选定质量级别后，确定曝光色彩/采样、取消和输出保真；另行测设备资源。",
+  "originalAcceptanceSHA256": "5fdaca1cd7baaf4349a50783e8a8d829b1bdea05ac3ed1eb118b90a90d6b1f9f",
+  "acceptedOriginalCriterion": true,
+  "actualChecks": [
+    {
+      "run": "native301-paint-scene-still-shell",
+      "source": "d2c6cbc331eeaca3018bb5533711892b52623fc1",
+      "node": "CADStillRenderTests",
+      "result": "Passed",
+      "scope": "actual canonical iPad Simulator App"
+    },
+    {
+      "run": "ui304-surface-paint-still-recovery",
+      "source": "0111c4c79511a11c3ebfaa12ddf6e67f934fee97",
+      "node": "testOfflineStillUsesNativeOptionsAndRendersPreview()",
+      "result": "Passed",
+      "scope": "actual canonical iPad Simulator App"
+    }
+  ],
+  "limitations": [
+    "Simulator functional evidence; no physical-device performance claim.",
+    "Other failures in the same original batches remain preserved and open under their own criteria."
+  ],
+  "published": false,
+  "actualHostMetrics": {
+    "sourcePixels": [
+      1024,
+      768
+    ],
+    "outputPixels": [
+      512,
+      384
+    ],
+    "seconds": 1.2257009744644165,
+    "footprintBeforeBytes": 144494552,
+    "footprintAfterBytes": 156848112,
+    "scope": "actual test-host samples, not peak or physical-device"
+  }
+}

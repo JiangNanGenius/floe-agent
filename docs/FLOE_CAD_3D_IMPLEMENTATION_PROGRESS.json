@@ -8050,7 +8050,7 @@
       "package": "experience",
       "implementation": {
         "stage": "H",
-        "status": "planned",
+        "status": "accepted_original_criterion_App_native_and_UI",
         "source_changes": [],
         "verification": [],
         "limitations": []
@@ -8078,8 +8078,34 @@
         "acceptance_pending": "选定质量级别后，确定曝光色彩/采样、取消和输出保真；另行测设备资源。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "6a4b5563",
+          "d2c6cbc3",
+          "3ab775b2",
+          "0111c4c7"
+        ],
+        "actual_checks": [
+          {
+            "run": "native301-paint-scene-still-shell",
+            "source": "d2c6cbc331eeaca3018bb5533711892b52623fc1",
+            "node": "CADStillRenderTests",
+            "result": "Passed",
+            "scope": "actual canonical iPad Simulator App"
+          },
+          {
+            "run": "ui304-surface-paint-still-recovery",
+            "source": "0111c4c79511a11c3ebfaa12ddf6e67f934fee97",
+            "node": "testOfflineStillUsesNativeOptionsAndRendersPreview()",
+            "result": "Passed",
+            "scope": "actual canonical iPad Simulator App"
+          }
+        ],
+        "evidence": "docs/qualification/cad-scene-still-20261103/x18-check.json",
+        "limitations": [
+          "Simulator functional evidence; no physical-device performance claim.",
+          "Other failures in the same original batches remain preserved and open under their own criteria."
+        ]
       },
       "verification_plan": {
         "priority": "P2",
@@ -8122,7 +8148,7 @@
       "package": "experience",
       "implementation": {
         "stage": "F",
-        "status": "planned",
+        "status": "accepted_original_criterion_App_native_and_UI",
         "source_changes": [],
         "verification": [],
         "limitations": []
@@ -8150,8 +8176,34 @@
         "acceptance_pending": "场景对象稳定ID/父子变换/资源引用及UI、AI命令共用同一保存权威。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "6a4b5563",
+          "d2c6cbc3",
+          "3ab775b2",
+          "0111c4c7"
+        ],
+        "actual_checks": [
+          {
+            "run": "native303-loft-gear-shell-scene",
+            "source": "0111c4c79511a11c3ebfaa12ddf6e67f934fee97",
+            "node": "CADSceneObjectHierarchyTests",
+            "result": "Passed",
+            "scope": "actual canonical iPad Simulator App"
+          },
+          {
+            "run": "ui302-surface-paint-scene-still",
+            "source": "d2c6cbc331eeaca3018bb5533711892b52623fc1",
+            "node": "testSceneObjectNativeGroupPersistsAfterReopen()",
+            "result": "Passed",
+            "scope": "actual canonical iPad Simulator App"
+          }
+        ],
+        "evidence": "docs/qualification/cad-scene-still-20261103/x19-check.json",
+        "limitations": [
+          "Simulator functional evidence; no physical-device performance claim.",
+          "Other failures in the same original batches remain preserved and open under their own criteria."
+        ]
       },
       "verification_plan": {
         "priority": "P1",
@@ -10029,8 +10081,8 @@
       "actual_OBJ": "真实OBJ/MTL/PNG显示、缺失贴图及仅资源变化后的旧帧拒绝通过。",
       "scope": "本地实际渲染与资源来源；不冒充原生可编辑BRep，也不代替真实LLM视觉连续编辑。"
     },
-    "accepted_original_criteria": 83,
-    "pending_original_criteria": 23,
+    "accepted_original_criteria": 92,
+    "pending_original_criteria": 14,
     "device_acceptance": "iPad通过的功能复用验收，iPhone仅确认界面；不使用用户手机。",
     "latest_native_batch": {
       "source": "582810ed58f8d3d63e23967909b74898af502c60",
