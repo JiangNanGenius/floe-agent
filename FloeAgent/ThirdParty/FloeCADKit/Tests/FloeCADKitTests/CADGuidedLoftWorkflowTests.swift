@@ -140,12 +140,15 @@ import simd
         let entered=XCTestExpectation(description:"Serial native worker entered"),release=DispatchSemaphore(value:0)
         CADLoftSurfaceService.testBeforeGuidedPrepare={ entered.fulfill();_ = release.wait(timeout:.now()+30) }
         let args:[String:Any]=["feature_id":node.id.raw.uuidString,"changes":["definition":try json(LoftDefinition(guides:[input.bow]))]]
-        let task=Task { @MainActor in await CADParameterService(document:input.doc).handleAsync(action:"loft.update",args:args) }
+        let task=Task { @MainActor () -> String? in
+            let response=await CADParameterService(document:input.doc).handleAsync(action:"loft.update",args:args)
+            return response["error"] as? String
+        }
         await fulfillment(of:[entered],timeout:10)
         task.cancel();release.signal()
         let reply=await task.value
         CADLoftSurfaceService.testBeforeGuidedPrepare=nil
-        XCTAssertEqual(reply["error"] as? String,"guided_loft_cancelled")
+        XCTAssertEqual(reply,"guided_loft_cancelled")
         XCTAssertEqual(input.doc.session.undoStack.undoCommands.count,depth)
         XCTAssertEqual(try XCTUnwrap(OCCTKernel.serialize(body(input,node))),before)
     }

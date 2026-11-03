@@ -189,10 +189,13 @@ import simd
         CADLoftSurfaceService.testBeforeGuidedPrepare={ entered.fulfill();_ = release.wait(timeout:.now()+30) }
         let definition=LoftDefinition(start:boundary(SIMD3(0,0,1),SIMD3(0.015,0,0)))
         let service=CADParameterService(document:input.doc),args:[String:Any]=["feature_id":node.id.raw.uuidString,"changes":["definition":try json(definition)]]
-        let task=Task { @MainActor in await service.handleAsync(action:"loft.update",args:args) }
+        let task=Task { @MainActor () -> String? in
+            let response=await service.handleAsync(action:"loft.update",args:args)
+            return response["error"] as? String
+        }
         await fulfillment(of:[entered],timeout:10);task.cancel();release.signal();let reply=await task.value
         CADLoftSurfaceService.testBeforeGuidedPrepare=nil
-        XCTAssertEqual(reply["error"] as? String,"guided_loft_cancelled");XCTAssertEqual(input.doc.session.undoStack.undoCommands.count,depth)
+        XCTAssertEqual(reply,"guided_loft_cancelled");XCTAssertEqual(input.doc.session.undoStack.undoCommands.count,depth)
         XCTAssertEqual(OCCTKernel.serialize(try native(input,node)),before)
     }
     func testUserChangeDuringEndpointPreparationKeepsThatUserChange() async throws {
