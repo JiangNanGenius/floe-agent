@@ -22,15 +22,16 @@ struct HistoryPanelView: View {
                     sectionHeader(FloeCADStrings.text("cad.ui.items.planes", "Planes"))
                     ForEach(viewModel.historyConstructionPlanes, id: \.id) { plane in
                         let selected = viewModel.selectedPlane?.id == plane.id
+                        let planeName = CADSelectionContext.constructionPlaneName(plane.id, in: viewModel.session.document.planes)
                         Button { viewModel.selectHistoryPlane(plane.id) } label: {
-                            Label(plane.name, systemImage: "square.3.layers.3d")
+                            Label(planeName, systemImage: "square.3.layers.3d")
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(8)
                                 .background(selected ? Color.accentColor.opacity(0.16) : .clear,
                                             in: RoundedRectangle(cornerRadius: 6))
                         }
                         .buttonStyle(.plain)
-                        .accessibilityIdentifier("HistoryPlane-" + plane.name)
+                        .accessibilityIdentifier("HistoryPlane-" + planeName)
                         .accessibilityAddTraits(selected ? .isSelected : [])
                     }
                 }

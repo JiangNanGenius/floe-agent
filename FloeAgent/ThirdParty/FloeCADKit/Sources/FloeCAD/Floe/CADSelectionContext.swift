@@ -19,6 +19,14 @@ import simd
 /// A bounded snapshot of the live workbench selection.
 public struct CADSelectionContext: Sendable, Equatable {
 
+    /// Same document-order label used by the native Items list. Construction
+    /// planes have stable typed IDs, but do not persist an editable name.
+    static func constructionPlaneName(_ id: ConstructionPlaneID, in planes: [ConstructionPlane]) -> String {
+        let label = FloeCADStrings.text("cad.ui.items.planeName", "Plane")
+        guard let index = planes.firstIndex(where: { $0.id == id }) else { return label }
+        return "\(label) \(index + 1)"
+    }
+
     public struct Body: Sendable, Equatable {
         public var id: String
         public var name: String
@@ -477,7 +485,7 @@ public struct CADSelectionContext: Sendable, Equatable {
         if liveFeatures.count > 16 { result.truncated = true }
         result.datumPlane = planeID.flatMap { id in
             design.planes.first { $0.id == id }.map { plane in
-                DatumPlane(id: id.raw.uuidString, name: plane.name,
+                DatumPlane(id: id.raw.uuidString, name: constructionPlaneName(id, in: design.planes),
                     kind: plane.definition?.kind.rawValue ?? "static",
                     origin: [plane.plane.origin.x, plane.plane.origin.y, plane.plane.origin.z],
                     normal: [plane.plane.normal.x, plane.plane.normal.y, plane.plane.normal.z])

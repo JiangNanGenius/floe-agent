@@ -142,7 +142,7 @@ public struct CADM30TargetDescriptor: Codable, Sendable {
                 targetID = try id(result, "plane_id"); targetKind = "datum_plane"
                 let planeID = ConstructionPlaneID(raw: UUID(uuidString: targetID)!)
                 guard let plane = doc.session.document.planes.first(where: { $0.id == planeID }) else { throw fail("Missing datum") }
-                name = plane.name
+                name = CADSelectionContext.constructionPlaneName(plane.id, in: doc.session.document.planes)
                 let sketch = Sketch(name: "M30 datum child", plane: .ground,
                     entities: [.rect(id: UUID(), min: SIMD2(-2, -1), max: SIMD2(2, 1))],
                     support: PlaneRef(source: .construction(planeID)))

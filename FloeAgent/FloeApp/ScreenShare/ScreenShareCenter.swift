@@ -188,7 +188,7 @@ import FloeCore
             // isCaptured=false is usable only while this app is active. A
             // finishInvoked ack alone never claims ReplayKit actually ended.
             let invoked=ack.map{$0.matches(command) && $0.phase == .finishInvoked} == true
-            let systemStopped=(invoked || !state.hasFreshHeartbeat())
+            let systemStopped=invoked
                 && UIApplication.shared.applicationState == .active && !UIScreen.main.isCaptured
             if finished || (!state.isActive && state.effectivePhase == .stopped) || systemStopped {
                 completeStop(sessionID:command.sessionID);return
