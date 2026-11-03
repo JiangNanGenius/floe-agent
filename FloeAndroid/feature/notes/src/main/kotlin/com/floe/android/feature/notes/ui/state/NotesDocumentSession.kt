@@ -33,11 +33,18 @@ import com.floe.android.feature.notes.ui.api.NotesPdfHandle
 import com.floe.android.feature.notes.ui.api.NotesPdfOpenOutcome
 import com.floe.android.feature.notes.ui.api.NotesPdfOpenRequest
 import com.floe.android.feature.notes.ui.api.NotesNormalizedRect
+import com.floe.android.feature.notes.ui.api.NotesPdfPageTextOutcome
 import com.floe.android.feature.notes.ui.api.NotesPdfSearchOutcome
+import com.floe.android.feature.notes.ui.api.NotesPdfTextUnavailableReason
 import com.floe.android.feature.notes.ui.presentation.MindMapLayoutDirection
 import com.floe.android.feature.notes.ui.presentation.NotesEditConflict
 import com.floe.android.feature.notes.ui.presentation.NotesFailure
 import com.floe.android.feature.notes.ui.presentation.NotesLoadStatus
+import com.floe.android.feature.notes.ui.presentation.NotesPdfTextIdentity
+import com.floe.android.feature.notes.ui.presentation.NotesPdfTextNotice
+import com.floe.android.feature.notes.ui.presentation.NotesPdfTextPage
+import com.floe.android.feature.notes.ui.presentation.NotesPdfTextSelection
+import com.floe.android.feature.notes.ui.presentation.NotesPdfTextSelectionRules
 import com.floe.android.feature.notes.ui.presentation.NotesPendingRecovery
 import com.floe.android.feature.notes.ui.presentation.NotesRequestBudget
 import com.floe.android.feature.notes.ui.presentation.NotesSaveStatus
@@ -52,6 +59,8 @@ import com.floe.android.feature.notes.ui.presentation.planTextInsertion
 import com.floe.android.feature.notes.ui.presentation.resolveElementText
 import com.floe.android.feature.notes.ui.presentation.toNotesFailure
 import java.util.UUID
+import kotlin.math.abs
+import kotlin.math.max
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -129,6 +138,8 @@ internal class NotesDocumentSession(
         private set
     var pageScrollFraction by mutableStateOf(preferences.scrollFraction.coerceIn(0f, 1f))
         private set
+    var readingMode by mutableStateOf(false)
+        private set
     var editorTool by mutableStateOf(NotesEditorTool.fromKey(preferences.tool))
         private set
     var inkTool by mutableStateOf(NotesInkToolKind.PEN)
@@ -165,6 +176,20 @@ internal class NotesDocumentSession(
         private set
     var pdfSearchRects by mutableStateOf<List<NotesNormalizedRect>>(emptyList())
         private set
+
+    /** Dedicated PDF text-selection mode: never active while inking/drawing. */
+    var pdfTextMode by mutableStateOf(false)
+        private set
+    var pdfTextLoading by mutableStateOf(false)
+        private set
+    var pdfTextPage by mutableStateOf<NotesPdfTextPage?>(null)
+        private set
+    var pdfTextSelection by mutableStateOf<NotesPdfTextSelection?>(null)
+        private set
+    var pdfTextNotice by mutableStateOf<NotesPdfTextNotice?>(null)
+        private set
+    private var pdfTextToken = 0
+    private var pdfTextGeneration = 0L
 
     var pendingEditCount by mutableStateOf(0)
         private set
@@ -263,9 +288,17 @@ internal class NotesDocumentSession(
         val current = document
         if (loaded.id != documentID) return
         if (!allowOlder && current != null && loaded.revision < current.revision) return
+        val previousRevision = current?.revision
+        val previousPageID = activePageID
         document = loaded
+        // A revision/page change invalidates any text selection read from the
+        // previous document state, even when the PDF bytes are unchanged.
+        if (previousRevision != null && previousRevision != loaded.revision) {
+            exitPdfTextMode()
+        }
         if (activePageID == null || loaded.pages.none { it.id == activePageID }) {
             activePageID = loaded.pages.firstOrNull()?.id
+            if (previousPageID != null) exitPdfTextMode()
         }
         if (saveStatus == NotesSaveStatus.SAVED && pendingEdits.isEmpty()) {
             saveFailure = null
@@ -288,7 +321,10 @@ internal class NotesDocumentSession(
 
     fun setActivePage(pageID: String) {
         if (document?.pages?.none { it.id == pageID } != false) return
-        if (activePageID != pageID) pageScrollFraction = 0f
+        if (activePageID != pageID) {
+            pageScrollFraction = 0f
+            exitPdfTextMode()
+        }
         activePageID = pageID
         selectedElementIDs = emptySet()
         artifacts = null
@@ -309,12 +345,25 @@ internal class NotesDocumentSession(
         persistPreferences()
     }
 
+    fun toggleReadingMode() {
+        readingMode = !readingMode
+        if (readingMode) {
+            clearSelection()
+            if (pdfTextMode) exitPdfTextMode()
+        }
+    }
+
     fun selectEditorTool(value: NotesEditorTool) {
+        // Text selection is a distinct gesture mode. Choosing any drawing/text
+        // tool leaves it explicitly instead of presenting a pen that cannot
+        // draw because the selection layer is still intercepting input.
+        if (pdfTextMode) exitPdfTextMode()
         editorTool = value
         persistPreferences()
     }
 
     fun selectInkTool(value: NotesInkToolKind) {
+        if (pdfTextMode) exitPdfTextMode()
         inkTool = value
         assistant.inkTool = value
     }
@@ -385,6 +434,9 @@ internal class NotesDocumentSession(
      */
     fun requestEdits(edits: List<NotesEdit>, title: String): Boolean {
         if (edits.isEmpty()) return true
+        // Any user mutation moves the document away from the snapshot the
+        // selection was read against; do not leave a copyable stale range.
+        if (pdfTextMode) exitPdfTextMode()
         if (isReadOnly || (fenced() && !stoppingFlush)) {
             saveStatus = NotesSaveStatus.BLOCKED
             saveFailure = NotesFailure("invalidOperation", if (isReadOnly) "readOnly" else "rootStopping")
@@ -611,6 +663,7 @@ internal class NotesDocumentSession(
 
     suspend fun reloadDiscardingPending(): Boolean {
         editGeneration += 1
+        exitPdfTextMode()
         pendingEdits = emptyList()
         pendingRequestID = null
         pendingEditCount = 0
@@ -649,6 +702,9 @@ internal class NotesDocumentSession(
     fun markExternalRevision(revision: Int) {
         val current = document?.revision ?: return
         if (revision <= current) return
+        // The document moved on: any text read for the previous revision is
+        // stale, including the text sheet if it is open.
+        exitPdfTextMode()
         if (pendingEdits.isEmpty()) {
             externalRevision = revision
         } else {
@@ -1281,6 +1337,384 @@ internal class NotesDocumentSession(
         }
     }
 
+    /* --------------------------- PDF text selection ----------------------- */
+
+    /**
+     * Reads the actual page text for the current PDF page. This is only the
+     * source read; selection and copying are separate explicit actions.
+     */
+    suspend fun beginPdfTextSelection() {
+        if (disposed) return
+        val doc = document ?: return
+        val page = currentPage ?: return
+        val pdfPageIndex = page.pdfPageIndex ?: return
+        val resourceID = page.backgroundResourceID ?: return
+        if (fenced()) {
+            exitPdfTextMode()
+            return
+        }
+        val token = ++pdfTextToken
+        pdfTextMode = true
+        pdfTextLoading = true
+        pdfTextPage = null
+        pdfTextSelection = null
+        pdfTextNotice = null
+        selectedElementIDs = emptySet()
+        val startGeneration = generation()
+        val handle = try {
+            ensurePdf(resourceID)
+        } catch (cancelled: CancellationException) {
+            if (token == pdfTextToken) exitPdfTextMode()
+            throw cancelled
+        } catch (_: Throwable) {
+            null
+        }
+        if (handle == null) {
+            if (token != pdfTextToken || disposed) return
+            if (fenced() || generation() != startGeneration) {
+                exitPdfTextMode()
+                return
+            }
+            pdfTextLoading = false
+            pdfTextNotice = failureNotice(pdfFailures[resourceID])
+            return
+        }
+        val record = try {
+            service.resourceMetadata(resourceID)
+        } catch (cancelled: CancellationException) {
+            if (token == pdfTextToken) exitPdfTextMode()
+            throw cancelled
+        } catch (_: Throwable) {
+            null
+        }
+        if (token != pdfTextToken || disposed) return
+        if (fenced() || generation() != startGeneration) {
+            if (token == pdfTextToken) exitPdfTextMode()
+            return
+        }
+        if (record == null || handle.sourceSha256 != record.hash ||
+            handle.sourceByteCount != record.byteCount
+        ) {
+            if (token == pdfTextToken) {
+                pdfTextLoading = false
+                pdfTextNotice = if (record == null) {
+                    NotesPdfTextNotice.BACKEND_FAILED
+                } else {
+                    NotesPdfTextNotice.SOURCE_CHANGED
+                }
+            }
+            return
+        }
+        val identity = NotesPdfTextIdentity(
+            documentID = doc.id,
+            documentRevision = doc.revision,
+            pageID = page.id,
+            resourceID = resourceID,
+            sourceSha256 = handle.sourceSha256,
+            sourceByteCount = handle.sourceByteCount,
+            pageIndex = pdfPageIndex,
+            pageCount = handle.pageCount,
+        )
+        if (!identity.isValid) {
+            if (token != pdfTextToken || disposed) return
+            if (fenced() || generation() != startGeneration) {
+                exitPdfTextMode()
+                return
+            }
+            pdfTextLoading = false
+            pdfTextNotice = NotesPdfTextNotice.BACKEND_FAILED
+            return
+        }
+        val outcome = try {
+            handle.pageText(pdfPageIndex)
+        } catch (cancelled: CancellationException) {
+            if (token == pdfTextToken) exitPdfTextMode()
+            throw cancelled
+        } catch (_: Throwable) {
+            NotesPdfPageTextOutcome.Unavailable(NotesPdfTextUnavailableReason.BACKEND_FAILED)
+        }
+        if (token != pdfTextToken || disposed) {
+            if (token == pdfTextToken) pdfTextLoading = false
+            return
+        }
+        if (fenced() || generation() != startGeneration) {
+            if (token == pdfTextToken) exitPdfTextMode()
+            return
+        }
+        val current = currentPdfTextIdentity()
+        if (current != identity) {
+            exitPdfTextMode()
+            return
+        }
+        pdfTextLoading = false
+        when (outcome) {
+            is NotesPdfPageTextOutcome.Ready -> {
+                val text = outcome.page
+                if (text.pageIndex != pdfPageIndex ||
+                    text.pageCount != handle.pageCount ||
+                    text.sourceSha256 != handle.sourceSha256 ||
+                    text.sourceByteCount != handle.sourceByteCount
+                ) {
+                    pdfTextNotice = NotesPdfTextNotice.SOURCE_CHANGED
+                    return
+                }
+                if (text.text.isBlank()) {
+                    pdfTextNotice = NotesPdfTextNotice.NO_TEXT
+                    return
+                }
+                val geometryMatches = text.geometryMatches && pageTextMatchesNotePage(page, text)
+                val bounded = NotesPdfTextSelectionRules.page(
+                    identity = identity,
+                    pageWidthPt = text.pageWidthPt,
+                    pageHeightPt = text.pageHeightPt,
+                    text = text.text,
+                    regions = text.regions,
+                    truncated = text.truncated,
+                    geometryMatchesPage = geometryMatches,
+                )
+                if (bounded == null) {
+                    pdfTextNotice = NotesPdfTextNotice.BACKEND_FAILED
+                    return
+                }
+                pdfTextPage = bounded
+                pdfTextGeneration = startGeneration
+                pdfTextNotice = if (geometryMatches) {
+                    null
+                } else {
+                    NotesPdfTextNotice.GEOMETRY_MISMATCH
+                }
+            }
+            is NotesPdfPageTextOutcome.NoText -> {
+                if (outcome.pageIndex != pdfPageIndex || outcome.pageCount != handle.pageCount) {
+                    pdfTextNotice = NotesPdfTextNotice.SOURCE_CHANGED
+                } else {
+                    pdfTextNotice = NotesPdfTextNotice.NO_TEXT
+                }
+            }
+            is NotesPdfPageTextOutcome.Unavailable ->
+                pdfTextNotice = noticeFor(outcome.reason)
+            NotesPdfPageTextOutcome.StaleSource ->
+                pdfTextNotice = NotesPdfTextNotice.SOURCE_CHANGED
+        }
+    }
+
+    fun selectPdfTextRegions(firstRegion: Int, lastRegion: Int) {
+        val pageText = pdfTextPage ?: return
+        val current = currentPdfTextIdentity() ?: run {
+            exitPdfTextMode()
+            return
+        }
+        if (!pdfTextIsUsable(pageText, current)) return
+        if (!pageText.geometryMatchesPage) {
+            pdfTextNotice = NotesPdfTextNotice.GEOMETRY_MISMATCH
+            return
+        }
+        pdfTextSelection = NotesPdfTextSelectionRules.regionSpan(
+            page = pageText,
+            identity = current,
+            firstRegion = firstRegion,
+            lastRegion = lastRegion,
+        )
+    }
+
+    fun selectAllPdfText() {
+        val pageText = pdfTextPage ?: return
+        val current = currentPdfTextIdentity() ?: run {
+            exitPdfTextMode()
+            return
+        }
+        if (!pdfTextIsUsable(pageText, current)) return
+        if (!pageText.geometryMatchesPage) {
+            pdfTextNotice = NotesPdfTextNotice.GEOMETRY_MISMATCH
+            return
+        }
+        pdfTextSelection = NotesPdfTextSelectionRules.selectAll(pageText, current)
+    }
+
+    fun pdfTextRegionAt(
+        normalizedX: Float,
+        normalizedY: Float,
+        tolerance: Float = NotesPdfTextSelectionRules.DEFAULT_HIT_TOLERANCE,
+    ): Int? {
+        val pageText = pdfTextPage ?: return null
+        val current = currentPdfTextIdentity() ?: run {
+            exitPdfTextMode()
+            return null
+        }
+        if (!pdfTextIsUsable(pageText, current)) return null
+        if (!pageText.geometryMatchesPage) return null
+        return NotesPdfTextSelectionRules.regionAt(pageText, normalizedX, normalizedY, tolerance)
+    }
+
+    fun clearPdfTextSelection() {
+        pdfTextSelection = null
+    }
+
+    /**
+     * Revalidates the visible text/selection against the live document, root
+     * generation and source identity. The text sheet uses a native selectable
+     * view, so the visible state itself must be removed promptly when the
+     * document is fenced; this is called by the selection bar's visible timer,
+     * not by any background work.
+     */
+    fun fencePdfTextIfStale() {
+        if (!pdfTextMode || disposed) return
+        if (fenced()) {
+            exitPdfTextMode()
+            return
+        }
+        val pageText = pdfTextPage
+        val selection = pdfTextSelection
+        if (pageText == null && selection == null) return
+        if (generation() != pdfTextGeneration) {
+            exitPdfTextMode()
+            return
+        }
+        val current = currentPdfTextIdentity() ?: run {
+            exitPdfTextMode()
+            return
+        }
+        if (pageText != null && !NotesPdfTextSelectionRules.pageIsCurrent(pageText, current)) {
+            exitPdfTextMode()
+            return
+        }
+        if (selection != null && !NotesPdfTextSelectionRules.selectionIsCurrent(selection, current)) {
+            exitPdfTextMode()
+        }
+    }
+
+    fun exitPdfTextMode() {
+        pdfTextToken += 1
+        pdfTextMode = false
+        pdfTextLoading = false
+        pdfTextPage = null
+        pdfTextSelection = null
+        pdfTextNotice = null
+        pdfTextGeneration = 0L
+    }
+
+    /**
+     * The exact selected text for an explicit user Copy action, or null when
+     * the document/page/source/revision changed since the selection was made.
+     */
+    fun copyablePdfText(): String? {
+        if (fenced()) {
+            exitPdfTextMode()
+            return null
+        }
+        val selection = pdfTextSelection ?: return null
+        val current = currentPdfTextIdentity() ?: return null
+        if (generation() != pdfTextGeneration) {
+            exitPdfTextMode()
+            return null
+        }
+        if (!NotesPdfTextSelectionRules.selectionIsCurrent(selection, current)) {
+            exitPdfTextMode()
+            return null
+        }
+        return NotesPdfTextSelectionRules.copyText(selection, current)
+    }
+
+    /** Whole extracted page text for the explicit full-text sheet Copy action. */
+    fun copyablePdfPageText(): String? {
+        if (fenced()) {
+            exitPdfTextMode()
+            return null
+        }
+        val pageText = pdfTextPage ?: return null
+        val current = currentPdfTextIdentity() ?: return null
+        if (generation() != pdfTextGeneration ||
+            !NotesPdfTextSelectionRules.pageIsCurrent(pageText, current)
+        ) {
+            exitPdfTextMode()
+            return null
+        }
+        return pageText.text.takeIf { it.isNotBlank() }
+    }
+
+    fun currentPdfTextIdentity(): NotesPdfTextIdentity? {
+        if (disposed || fenced()) return null
+        val doc = document ?: return null
+        val page = currentPage ?: return null
+        val pdfPageIndex = page.pdfPageIndex ?: return null
+        val resourceID = page.backgroundResourceID ?: return null
+        val handle = pdfHandles[resourceID] ?: return null
+        if (handle.pageCount <= 0) return null
+        return NotesPdfTextIdentity(
+            documentID = doc.id,
+            documentRevision = doc.revision,
+            pageID = page.id,
+            resourceID = resourceID,
+            sourceSha256 = handle.sourceSha256,
+            sourceByteCount = handle.sourceByteCount,
+            pageIndex = pdfPageIndex,
+            pageCount = handle.pageCount,
+        ).takeIf { it.isValid }
+    }
+
+    private fun pdfTextIsUsable(
+        pageText: NotesPdfTextPage,
+        current: NotesPdfTextIdentity,
+    ): Boolean {
+        if (generation() != pdfTextGeneration) {
+            exitPdfTextMode()
+            return false
+        }
+        if (!NotesPdfTextSelectionRules.pageIsCurrent(pageText, current)) {
+            exitPdfTextMode()
+            return false
+        }
+        return true
+    }
+
+    private fun pageTextMatchesNotePage(
+        page: NotePage,
+        text: com.floe.android.feature.notes.ui.api.NotesPdfPageText,
+    ): Boolean {
+        val expectedWidth = page.width.toFloat()
+        val expectedHeight = page.height.toFloat()
+        if (!expectedWidth.isFinite() || !expectedHeight.isFinite() ||
+            expectedWidth <= 0f || expectedHeight <= 0f
+        ) {
+            return false
+        }
+        val toleranceX = max(1.5f, expectedWidth * 0.005f)
+        val toleranceY = max(1.5f, expectedHeight * 0.005f)
+        return abs(text.pageWidthPt - expectedWidth) <= toleranceX &&
+            abs(text.pageHeightPt - expectedHeight) <= toleranceY
+    }
+
+    private fun noticeFor(reason: NotesPdfTextUnavailableReason): NotesPdfTextNotice = when (reason) {
+        NotesPdfTextUnavailableReason.NATIVE_TEXT_UNSUPPORTED ->
+            NotesPdfTextNotice.NATIVE_TEXT_UNSUPPORTED
+        NotesPdfTextUnavailableReason.ENCRYPTED,
+        NotesPdfTextUnavailableReason.PASSWORD_REJECTED,
+        NotesPdfTextUnavailableReason.PASSWORD_UNSUPPORTED
+        -> NotesPdfTextNotice.PROTECTED
+        NotesPdfTextUnavailableReason.SOURCE_CHANGED ->
+            NotesPdfTextNotice.SOURCE_CHANGED
+        NotesPdfTextUnavailableReason.PAGE_OUT_OF_RANGE ->
+            NotesPdfTextNotice.PAGE_OUT_OF_RANGE
+        NotesPdfTextUnavailableReason.GEOMETRY_MISMATCH ->
+            NotesPdfTextNotice.GEOMETRY_MISMATCH
+        NotesPdfTextUnavailableReason.CANCELLED,
+        NotesPdfTextUnavailableReason.SESSION_CLOSED
+        -> NotesPdfTextNotice.CANCELLED
+        NotesPdfTextUnavailableReason.BACKEND_FAILED ->
+            NotesPdfTextNotice.BACKEND_FAILED
+    }
+
+    private fun failureNotice(failure: NotesFailure?): NotesPdfTextNotice {
+        val code = failure?.code.orEmpty()
+        val detail = failure?.detail.orEmpty()
+        return when {
+            code == "passwordRequired" || detail.startsWith("password") ->
+                NotesPdfTextNotice.PROTECTED
+            code == NotesFailure.CANCELLED -> NotesPdfTextNotice.CANCELLED
+            else -> NotesPdfTextNotice.BACKEND_FAILED
+        }
+    }
+
     /* ------------------------------ indexing ------------------------------ */
 
     suspend fun indexingStatus(): NotesIndexingStatus? = ports.indexing?.status()
@@ -1586,6 +2020,7 @@ internal class NotesDocumentSession(
 
     fun dispose() {
         disposed = true
+        exitPdfTextMode()
         editGeneration += 1
         autosaveJob?.cancel()
         inkSaveJob?.cancel()
@@ -1659,6 +2094,34 @@ internal class NotesDocumentSession(
             ?.filter { it.id in selectedElementIDs }
             ?.mapNotNull { it.resourceID }
             .orEmpty()
+
+    /**
+     * User-selectable attachments for the explicit "Use in Task" action.
+     * Candidates come from the current document's REAL resource references
+     * (page drawings are editor-internal and excluded). The exact digest,
+     * size and display name are read through the existing Notes service; a
+     * missing/unavailable resource is omitted rather than fabricated.
+     */
+    suspend fun taskLaunchResources(): List<com.floe.android.feature.notes.ui.api.NotesTaskLaunchResource> {
+        val doc = document ?: return emptyList()
+        val candidates =
+            com.floe.android.feature.notes.ui.presentation.NotesTaskLaunchSelection
+                .candidates(doc)
+        if (candidates.isEmpty()) return emptyList()
+        val metadata = LinkedHashMap<String, com.floe.android.feature.notes.NoteResourceRecord>()
+        for (candidate in candidates) {
+            try {
+                metadata[candidate.resourceID] = service.resourceMetadata(candidate.resourceID)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                // A resource whose bytes are unavailable is not offered; the
+                // caller sees the remaining real choices. Never a fake row.
+            }
+        }
+        return com.floe.android.feature.notes.ui.presentation.NotesTaskLaunchSelection
+            .resources(candidates, metadata)
+    }
 
     fun setMindMapSelectionNode(node: MindMapNode?) {
         // Reserved for the canvas selection; node identity itself lives in UI state.

@@ -152,4 +152,217 @@
     <string name="canvas_node_type_card">Card</string>
     <string name="canvas_node_type_shape">Shape</string>
     <string name="canvas_node_type_image">Image</string>
+
+    <!-- G09-R2 design workflow (feature-owned sheet; App supplies the ports) -->
+    <string name="design_workflow_close">Done</string>
+    <string name="design_workflow_loading">Loading design…</string>
+    <string name="design_workflow_empty">No design state is available.</string>
+    <string name="design_workflow_read_only">This target is read-only. Existing content is preserved.</string>
+    <string name="design_workflow_revision">Revision %1$d</string>
+    <string name="design_workflow_retry">Retry</string>
+    <string name="design_workflow_reload">Reload</string>
+    <string name="design_workflow_dismiss">Dismiss</string>
+    <string name="design_workflow_details">Details</string>
+
+    <string name="design_target_section">Target</string>
+    <string name="design_target_kind">Kind</string>
+    <string name="design_target_owner_revision">Owner revision</string>
+    <string name="design_target_content">Content</string>
+    <string name="design_target_frozen_mode">Frozen mode</string>
+    <string name="design_target_frozen_format">Frozen format</string>
+    <string name="design_kind_canvas">Canvas node</string>
+    <string name="design_kind_file">Document</string>
+    <string name="design_kind_chat">Chat attachment</string>
+    <string name="design_kind_creative">Creative request</string>
+    <string name="design_content_webpage">Webpage</string>
+    <string name="design_content_prototype">Prototype</string>
+    <string name="design_content_presentation">Presentation</string>
+    <string name="design_content_image">Image</string>
+    <string name="design_content_video">Video</string>
+    <string name="design_content_office">Office document</string>
+    <string name="design_content_notes">Notes</string>
+    <string name="design_content_pdf">PDF</string>
+    <string name="design_content_cad">CAD</string>
+    <string name="design_content_composition">Composition</string>
+    <string name="design_content_unknown">Design</string>
+
+    <string name="design_brief_section">Brief</string>
+    <string name="design_brief_goal">Goal</string>
+    <string name="design_brief_audience">Audience</string>
+    <string name="design_brief_constraints">Constraints (one per line)</string>
+    <string name="design_brief_save">Save brief</string>
+
+    <string name="design_spec_section">Design spec</string>
+    <string name="design_spec_palette">Palette (one per line)</string>
+    <string name="design_spec_typography">Typography</string>
+    <string name="design_spec_layout">Layout</string>
+    <string name="design_spec_spacing">Spacing</string>
+    <string name="design_spec_brand_assets">Brand assets (one per line)</string>
+    <string name="design_spec_voice">Voice</string>
+    <string name="design_spec_prohibitions">Prohibitions (one per line)</string>
+    <string name="design_spec_raw_markdown">DESIGN.md (unknown sections preserved)</string>
+    <string name="design_spec_save">Save spec</string>
+
+    <string name="design_freeze_section">Freeze source</string>
+    <string name="design_freeze_body">Freeze the current target content into an immutable design revision.</string>
+    <string name="design_work_mode">Work mode</string>
+    <string name="design_work_create">Create</string>
+    <string name="design_work_modify">Modify</string>
+    <string name="design_work_restructure">Restructure</string>
+    <string name="design_output_format">Output format</string>
+    <string name="design_output_format_hint">Leave empty to use the source format.</string>
+    <string name="design_freeze_action">Freeze revision</string>
+
+    <string name="design_preservation_section">Preservation requirements</string>
+    <string name="design_preservation_body">Restructure needs explicit constraints and a trusted confirmation.</string>
+    <string name="design_preservation_content">Content</string>
+    <string name="design_preservation_data">Data</string>
+    <string name="design_preservation_behavior">Behavior</string>
+    <string name="design_preservation_format">Format limits</string>
+
+    <string name="design_proposal_section">Proposal</string>
+    <string name="design_proposal_need_freeze">Freeze a revision before adding a candidate.</string>
+    <string name="design_proposal_choose_file">Choose file</string>
+    <string name="design_proposal_write_text">Write text</string>
+    <string name="design_proposal_text">Proposal text</string>
+    <string name="design_proposal_text_format">Text format</string>
+    <string name="design_proposal_stage">Stage text</string>
+    <string name="design_proposal_staged">%1$s · %2$d bytes</string>
+    <string name="design_proposal_discard">Discard</string>
+    <string name="design_proposal_summary">Summary</string>
+    <string name="design_proposal_diff">Diff notes (one per line)</string>
+    <string name="design_proposal_action">Add candidate</string>
+
+    <string name="design_candidates_section">Candidates</string>
+    <string name="design_candidates_empty">No candidates yet.</string>
+    <string name="design_candidate_untitled">Candidate</string>
+    <string name="design_candidate_revisions">Base %1$s · proposed %2$s</string>
+    <string name="design_candidate_feedback">Feedback</string>
+    <string name="design_candidate_preview">Preview</string>
+    <string name="design_candidate_compare">Compare</string>
+    <string name="design_candidate_adopt_original">Adopt to original</string>
+    <string name="design_candidate_adopt_variant">Save as variant</string>
+    <string name="design_candidate_reject">Reject</string>
+    <string name="design_candidate_status_pending">Pending</string>
+    <string name="design_candidate_status_adopted">Adopted</string>
+    <string name="design_candidate_status_rejected">Rejected</string>
+    <string name="design_candidate_status_superseded">Superseded</string>
+
+    <string name="design_compare_section">Comparison</string>
+    <string name="design_compare_changed">Changed</string>
+    <string name="design_compare_yes">Yes</string>
+    <string name="design_compare_no">No</string>
+    <string name="design_compare_base">Base digest</string>
+    <string name="design_compare_proposed">Proposed digest</string>
+    <string name="design_compare_truncated">The diff is bounded and incomplete.</string>
+
+    <string name="design_decision_delivery">Delivery</string>
+    <string name="design_decision_publication">Publication</string>
+    <string name="design_decision_revision">Committed revision</string>
+    <string name="design_delivery_not_required">Not required</string>
+    <string name="design_delivery_delivered">Delivered</string>
+    <string name="design_delivery_pending">Pending</string>
+    <string name="design_publication_not_required">Not required</string>
+    <string name="design_publication_published">Published</string>
+    <string name="design_publication_pending">Pending</string>
+
+    <string name="design_revisions_section">Revisions</string>
+    <string name="design_revision_row">#%1$d · %2$s</string>
+    <string name="design_revision_current">Current</string>
+    <string name="design_revision_preview">Preview</string>
+    <string name="design_revision_export">Export</string>
+    <string name="design_revision_restore">Restore</string>
+
+    <string name="design_preview_section">Preview</string>
+    <string name="design_preview_current">Preview current</string>
+    <string name="design_preview_close">Close preview</string>
+    <string name="design_preview_none">No preview loaded.</string>
+    <string name="design_preview_image">Design preview</string>
+    <string name="design_preview_text_truncated">Preview is truncated.</string>
+    <string name="design_preview_pdf_pages">%1$d pages · showing %2$d</string>
+    <string name="design_preview_pdf_page">Page %1$d</string>
+    <string name="design_preview_unsupported">No in-app preview for %1$s.</string>
+    <string name="design_preview_canvas_snapshot">Canvas snapshot</string>
+    <string name="design_preview_canvas_id">Canvas</string>
+    <string name="design_preview_canvas_revision">Canvas revision</string>
+    <string name="design_preview_canvas_node">Node</string>
+    <string name="design_preview_canvas_kind">Content</string>
+    <string name="design_preview_canvas_unavailable">The Canvas scene is unavailable. Reopen the preview.</string>
+    <string name="design_preview_canvas_assets_truncated">Some linked files are not shown.</string>
+    <string name="design_preview_canvas_assets_unverified">Some linked images could not be verified and are shown as placeholders.</string>
+    <string name="canvas_readonly_description">Canvas preview</string>
+    <string name="canvas_readonly_empty">This canvas page has nothing to show.</string>
+    <string name="design_export_action">Export %1$s</string>
+    <string name="design_export_delivered">Saved · %1$d bytes</string>
+    <string name="design_export_cancelled">Export cancelled.</string>
+    <string name="design_export_refused">%1$s</string>
+    <string name="design_canvas_refresh_pending">The design was adopted, but the Canvas could not reload. Reload the Canvas to see the committed result.</string>
+    <string name="design_canvas_reload">Reload Canvas</string>
+
+    <string name="design_restructure_confirm_title">Confirm restructure</string>
+    <string name="design_restructure_review">Review the exact target and preservation data, then confirm.</string>
+    <string name="design_restructure_target">Target</string>
+    <string name="design_restructure_operation">Operation</string>
+    <string name="design_restructure_original_task">Original task</string>
+    <string name="design_restructure_base">Base revision</string>
+    <string name="design_restructure_digest">Preservation digest</string>
+    <string name="design_restructure_expires">Expires</string>
+    <string name="design_restructure_cancel">Cancel</string>
+    <string name="design_restructure_confirm_action">Confirm</string>
+
+    <string name="design_notice_saved">Saved.</string>
+    <string name="design_notice_frozen">Revision frozen.</string>
+    <string name="design_notice_proposed">Candidate added.</string>
+    <string name="design_notice_adopted">Candidate adopted.</string>
+    <string name="design_notice_rejected">Candidate rejected.</string>
+    <string name="design_notice_restored">Revision restored.</string>
+    <string name="design_notice_exported">Export saved.</string>
+
+    <string name="design_error_title">Design action failed</string>
+    <string name="design_error_conflict_title">Design changed</string>
+    <string name="design_error_unknown_title">Result unknown</string>
+    <string name="design_error_pending_title">Delivery pending</string>
+    <string name="design_error_target_title">Design unavailable here</string>
+    <string name="design_error_authority_title">Confirmation unavailable</string>
+    <string name="design_error_expired_title">Confirmation expired</string>
+    <string name="design_error_mismatch_title">Confirmation mismatch</string>
+    <string name="design_error_too_large_title">File too large</string>
+    <string name="design_error_unavailable_body">Design is not available for this target.</string>
+    <string name="design_error_conflict_body">The design changed. Reload before saving again.</string>
+    <string name="design_error_unknown_body">The result is unknown. Reload before retrying.</string>
+    <string name="design_error_pending_body">The decision was saved, but delivery to the task is still pending.</string>
+    <string name="design_error_target_body">This target cannot use the design workflow.</string>
+    <string name="design_error_authority_body">Restructure confirmation is unavailable in this build.</string>
+    <string name="design_error_expired_body">The confirmation expired. Prepare it again.</string>
+    <string name="design_error_mismatch_body">The confirmation does not match this target.</string>
+    <string name="design_error_preservation_body">Enter at least one preservation requirement.</string>
+    <string name="design_error_payload_body">There is no design payload yet. Freeze the current source first.</string>
+    <string name="design_error_source_body">Choose a file or write text before adding a candidate.</string>
+    <string name="design_error_freeze_body">Freeze a revision before adding a candidate.</string>
+    <string name="design_error_preview_size_body">The preview exceeds the size limit.</string>
+    <string name="design_error_payload_size_body">The proposal exceeds the size limit.</string>
+    <string name="design_error_format_body">This format cannot be exported without conversion.</string>
+    <string name="design_error_generic_body">Try again, or reload the design state.</string>
+
+    <string name="design_entry_action">Design</string>
+    <string name="design_entry_unavailable">Design is unavailable for this item. Reopen it and try again.</string>
+
+    <string name="design_revision_number">Revision #%1$d</string>
+    <string name="design_restructure_binding">Binding</string>
+    <string name="design_restructure_confirmation_id">Operation ID</string>
+    <string name="design_restructure_base_id">Base revision ID</string>
+
+    <string name="design_proposal_variant">Design branch</string>
+
+    <string name="design_revision_unknown">Not recorded</string>
+
+    <string name="design_error_confirmation_pending_body">Confirm or cancel the current restructure confirmation first.</string>
+
+    <string name="design_compare_latest">Latest revision</string>
+
+    <string name="design_error_session_body">The design session or owner changed. Reopen it and try again.</string>
+
+    <string name="design_export_refused_verify">The exported copy could not be verified.</string>
+    <string name="design_export_refused_session">The design session changed. Reopen it and export again.</string>
+    <string name="design_export_refused_generic">The export was not completed.</string>
 </resources>

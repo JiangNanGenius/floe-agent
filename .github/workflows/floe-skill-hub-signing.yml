@@ -20,8 +20,10 @@ name: floe-skill-hub-signing
 # Mode semantics: the reviews mode signs stage-honest review-record
 # envelopes for content that is packaged+reviewed on a staging branch (this
 # is BEFORE catalog qualification flags and promotes nothing); catalog
-# publication signing enforces the exact qualified sets, all four complete/
-# legacy views and unchanged per-item execution/engine/history gates. The signing key value never appears in logs or in
+# publication signing refuses unless the launch gate is genuinely satisfied
+# (>=40 unique qualified iOS offers, all nine pinned mandatory deep
+# adaptations present in both feeds with guest-qualified script bindings,
+# exact Android coverage). The signing key value never appears in logs or in
 # the canonical receipt (only the key ID).
 #
 # Integration boundary: this file lives in the ORIGINAL App repository
@@ -56,7 +58,7 @@ env:
   # NON-DISPATCHABLE until the root substitutes the exact reviewed 40-hex
   # tooling commit HERE (after the bridge code lands on the Hub default
   # branch and the root has verified that commit):
-  TOOLING_COMMIT: 849ff3288d746d477d18f190d7b11d2958450e00
+  TOOLING_COMMIT: e225a6f52885cc5fb87b98b61cd72ba785d0fe8e
 
 jobs:
   sign:
@@ -128,6 +130,7 @@ jobs:
           esac
           test -z "$(git -C tooling -c core.fsmonitor=false status --porcelain --untracked-files=all)"
       - name: Resolve the independent current publication baseline
+        if: inputs.mode == 'catalog'
         env:
           GIT_CONFIG_GLOBAL: /dev/null
           GIT_CONFIG_SYSTEM: /dev/null
@@ -150,12 +153,17 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
+          baseline_args=()
+          if [[ "$MODE" == "catalog" ]]; then
+            [[ "$PUBLISHED_Y" =~ ^[0-9a-f]{40}$ ]]
+            baseline_args=(--published-y "$PUBLISHED_Y")
+          fi
           python3 -I "$GITHUB_WORKSPACE/tooling/scripts/sign_publication.py" \
             --mode "$MODE" \
             --source-commit "$SOURCE_COMMIT" \
             --data "$GITHUB_WORKSPACE/data" \
             --tooling "$GITHUB_WORKSPACE/tooling" \
-            --published-y "$PUBLISHED_Y" \
+            "${baseline_args[@]}" \
             --out "$RUNNER_TEMP/bridge-out"
       - name: Upload the signed artifact bundle (no repository push, no release)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

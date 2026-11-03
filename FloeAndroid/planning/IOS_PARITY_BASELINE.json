@@ -1,0 +1,1339 @@
+{
+  "schemaVersion": 1,
+  "androidSource": "907cb7c503d7fd0a13e710b6914fb5af19e60843",
+  "previousIosDonor": "a59b4d4005f616c611df67fab7620e9853c525b9",
+  "iosReference": "36f63bf400dfaa3a127259eac006b38d72516390",
+  "iosReferencePolicy": "fixed active-development Git object; public-main absence of changes does not mean parity",
+  "changedFiles": [
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/App/AppEnvironment.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/App/FloeAgentApp.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Chat/AppUserQuestionIntegration.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Chat/MultiImageArtifactUITestFixture.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Chat/Render/RunOutputFileView.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Chat/ThreadDetailViewModel.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Chat/ThreadEventView.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Chat/ThreadTimeline.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Chat/ToolCallCardView.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Design/ComposerReturnField.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Execution/LinuxGuestBackend.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Execution/TaskExecutionEnvironmentCenter.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Execution/TaskExecutionEnvironmentView.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Execution/TaskExecutionTargetServices.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Files/FilesCenter.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Files/FilesView.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Files/RemoteImageCreationView.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Files/RemoteImageTools.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Hosts/RemoteHostConfigurationCenter.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/MacBridge/MacBridgeConnectionView.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/MacBridge/MacBridgeRoutingPreferences.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Media/AssistantAudioService.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Media/AudioTranscribeTool.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Media/CloudASRFiles.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Media/FloeVideoTranscriptionProvider.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Media/MediaEditorView.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Platform/BackgroundRunCoordinator.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Remote/ConversationCenter.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Remote/RemoteSessionCenter.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/CAD_SOURCES.json"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/DECODER_BOM.json"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/THIRD_PARTY_NOTICES.txt"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/asset-hashes.json"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/basis_transcoder.js"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/basis_transcoder.wasm"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/cad-commands.js"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/cad-editor.js"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/cad-host.js"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/draco_decoder.js"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/draco_decoder.wasm"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/draco_wasm_wrapper.js"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/floe_cad_engine_bg.wasm"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/index.html"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/license.basis-transcoder.txt"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/license.draco.txt"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/license.ktx-parse.txt"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/license.meshopt.txt"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/license.three.txt"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/license.zstddec.txt"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/scene.js"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/scene.js.LEGAL.txt"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/static-scene.js"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/EngineeringViewers/viewer.js"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/Info.plist"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/Licenses/OCCT-Native-SOURCE-OFFER.txt"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/Licenses/iCTRL-Apache-2.0.txt"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/Licenses/iCTRL-NOTICE.md"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/Licenses/third-party-inventory.json"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/Licenses/xatlas-NOTICES.txt"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/Localizable.xcstrings"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Resources/ProviderCatalog.json"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Settings/EnvironmentManagerView.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Settings/LocalModelsSettingsView.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Skills/CredentialManageTool.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Skills/IOSBridgeConnectionCenter.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Skills/IOSBridgeIntegration.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Skills/IOSBridgePairingStoreAdapter.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Skills/IOSBridgeTools.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Skills/MCPServiceCreationAppBackend.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Skills/SkillConfigurationAppIntegration.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Skills/SkillConfigurationCenter.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Skills/SkillConfigurationTool.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Skills/SkillConfigurationView.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Skills/SkillDependencyPreparationCenter.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Skills/SkillNativeConnectionDestination.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Skills/SkillRuntimeComponentCenter.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Skills/SkillWorkspaceResourceStager.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Skills/SkillsCenter.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Skills/SkillsView.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/TTS/AssistantAudioSettingsView.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/TTS/CloudASRProfilesView.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/TTS/SpeechInputSettingsView.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Voice/CloudASRPreloadCoordinator.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Voice/CloudASRRoutePolicy.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Voice/CloudASRSettings.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Voice/CloudSpeechTranscriber.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Voice/ConversationVoiceInterfaces.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Voice/FileSpeechTranscriber.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Voice/SpeechRecognitionRuntime.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Voice/VoiceConversationCoordinator.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Voice/VoiceConversationLive.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Voice/VoiceInput.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Voice/VoiceInputController.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Voice/VoiceInputLive.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Voice/VoiceRecognitionPreloadPolicy.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Voice/WhisperStreamingTranscriber.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Workbench/WorkbenchVideoPanels.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/CADIGESSurfaceUIFixture.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/CADImportLimitsUIFixture.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/CADRecoveryPreviewSheet.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/CADWorkbenchFixtureHarness.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/CadDocumentCenter.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/CadWebEngineSession.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/CanvasCADEntryFixtureHarness.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/CanvasNativeCADEditor.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/DesignAdapters.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/EngineeringFilePreview.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/EngineeringObservationService.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/EngineeringPreviewEntryFixtureHarness.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/FilePreviewView.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/FileTreeView.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/FloeCAD3DBridge.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/NativeCADTaskRegistry.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/OfficeExplicitSaveBridge.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/FloeApp/Workspace/WorkspaceCanvasView.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeAgentRuntime/AgentCheckpoint.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeAgentRuntime/AgentRuntime.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeAgentRuntime/ContextEngine.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeAgentRuntime/ContextManagementPolicy.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeAgentRuntime/ConversationRunService.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeAgentRuntime/HarnessExecutionLedger.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeAgentRuntime/ToolDiscovery.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeAgentRuntime/ToolResultCaptureStore.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeAgentRuntime/ToolResultPagingTool.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeAgentRuntime/UserQuestionCoordinator.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeAgentRuntime/UserQuestionTool.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeCore/ASRConfiguration.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeCore/LocalBridgePlatform.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeCore/OfficialMediaModelCatalog.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeCore/SpeechConfiguration.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeCore/StorageOperationBudget.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/BackgroundJobService.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/ExecutionToolRegistration.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestCommandChannel.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestRegistry.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestRunnerUpgradePolicy.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestService.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestShellBackend.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Linux/RuntimeV2/RuntimeV2GuestIntegrator.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Linux/RuntimeV2/RuntimeV2ImageStore.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Linux/RuntimeV2/RuntimeV2Store.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Linux/RuntimeV2/RuntimeV2TemplateStore.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Linux/TinyEMUGuestRuntime.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/MacBridge/MacBridgeClient.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/MacBridge/MacBridgeShellBackend.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Shell/LocalShellBackend.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Shell/LocalShellService.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Shell/ShellSessionCenter.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Shell/ShellToolRegistration.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Shell/SkillProcessConfiguration.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Tools/LocalShellTool.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Tools/SSHHostConfigurationTools.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Tools/SSHHostProfileTools.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeExecution/Tools/ShellSessionTools.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSAutomationActionCatalog.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSAutomationActionParameters.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSAutomationContext.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSAutomationReceipt.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSBridgeClient+Actions.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSBridgeClient+Pairing.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSBridgeClient+Perform.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSBridgeClient+RPC.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSBridgeClient+Status.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSBridgeClient.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSBridgeCredentialStore.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSBridgeCredentialWriter.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSBridgeEnvelope.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSBridgeError.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSBridgeJSON.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSBridgeProtocol.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSBridgeSnapshots.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeIOSAutomation/IOSBridgeURLSessionTransport.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeLocalModels/AppleFoundationModelRuntime.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeLocalModels/LocalProviderAdapter.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeModels/UserQuestion.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloePersistence/DatabaseManager.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloePersistence/Migrations/V59SkillConfiguration.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloePersistence/SkillConfigurationStore.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloePersistence/SkillStore.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeProviders/ImageGenerationBatch.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeProviders/ImageGenerationPresetResolver.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeProviders/ImageProviderAdapter.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeProviders/LocalModelToolPolicy.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeProviders/ProviderAdapter.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeProviders/Seedream5ImageFamily.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeProviders/Speech/ASRAdapterFactory.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeProviders/Speech/ASRTransport.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeProviders/Speech/ASRVendorSupport.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeProviders/Speech/AlibabaASRAdapter.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeProviders/Speech/OpenAIRealtimeTranscriptionAdapter.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeProviders/Speech/OpenAITranscriptionAdapter.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeProviders/Speech/VolcengineASRAdapter.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeProviders/Speech/VolcengineASRFrame.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeSecurity/DeterministicLocalApprovalPolicy.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeSecurity/KeychainStore.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeSecurity/ModelUserInputProjection.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeSecurity/OrdinaryDocumentActionProfile.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeSkills/CuratedSkillHub.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeSkills/CuratedSkillHubModels.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeSkills/SkillConfigurationModels.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeSkills/SkillHubTransportBudget.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeSkills/SkillManagement.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeSkills/SkillModels.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeSkills/SkillPackageValidator.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeSkills/SkillUpgrade.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeSync/CredentialArgumentNormalizer.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeSync/CredentialCaptureReference.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeSync/CredentialCardService.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeSync/CredentialVaultService.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeSync/SkillConfigurationService.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeTools/TypedMutationTargets.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeTools/VerifiedToolImageArtifact.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeVNC/VNCTools.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeWorkbench/CadDocumentSupport.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeWorkbench/CadDocumentTool.swift"
+      ]
+    },
+    {
+      "change": "A",
+      "paths": [
+        "FloeAgent/Sources/FloeWorkbench/CadModelObservation.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeWorkspace/EngineeringPreviewPackage.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeWorkspace/WorkspacePathGuard.swift"
+      ]
+    },
+    {
+      "change": "M",
+      "paths": [
+        "FloeAgent/Sources/FloeWorkspace/WorkspaceTextPolicy.swift"
+      ]
+    }
+  ],
+  "changedFileCount": 219,
+  "operationLedger": "planning/ALL_CODE_OPERATION_CLOSURE.json",
+  "operationCount": 183,
+  "newIndependentIosFeatures": "record next-round delta; preserve approved Android scope",
+  "verification": "source, compile, device and publication separate",
+  "incrementalChecks": [
+    {
+      "reference": "36f63bf400dfaa3a127259eac006b38d72516390",
+      "observedActiveIos": "5af731b2d46c6416c0991529bda5f06995b3d1b1",
+      "changedFiles": [
+        "FloeAgent/FloeApp/Resources/Localizable.xcstrings"
+      ],
+      "classification": "CAD modeling/editor labels only; Android approved read-only preview unchanged; no new current-round requirement",
+      "androidCodeCheckpoint": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a"
+    }
+  ]
+}

@@ -868,6 +868,15 @@ public struct OfficeDocumentEditTool: AgentTool {
         if let value = semantic.cellHasFormula { payload["cellHasFormula"] = value }
         if let value = semantic.cellPersistedValue { payload["cellPersistedValue"] = value }
         if let value = semantic.cellTypeMatchesIntent { payload["cellTypeMatchesIntent"] = value }
+        if let value = semantic.cellFormulaResultVerified {
+            payload["cellFormulaResultVerified"] = value
+        }
+        if let value = semantic.cellFormulaResultOutcome {
+            payload["cellFormulaResultOutcome"] = value
+        }
+        if let value = semantic.cellFormulaResultDetail {
+            payload["cellFormulaResultDetail"] = value
+        }
         if let value = semantic.changedFromOriginal { payload["changedFromOriginal"] = value }
         if !semantic.limitations.isEmpty { payload["limitations"] = semantic.limitations }
         return payload

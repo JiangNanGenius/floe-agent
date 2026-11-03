@@ -2,11 +2,32 @@
 package com.floe.android.host
 
 import com.floe.android.RuntimeBootstrapCapability
+import com.floe.android.host.voice.C03VoiceHost
 import com.floe.android.SecretGatewayCapability
 import com.floe.android.host.officeai.AppOfficeAiDocumentPorts
 import com.floe.android.host.officeai.NativeOfficeAiTransport
 import com.floe.android.host.officeai.OfficeAiHostPump
 import com.floe.android.host.officeai.OfficeAiOoxmlVerifier
+import com.floe.android.host.cad.C04CadViewerController
+import com.floe.android.host.mail.C06BrokerMailLanGate
+import com.floe.android.host.mail.C06MailHostController
+import com.floe.android.host.calendar.C06CalendarHostController
+import com.floe.android.host.systemservices.C06SystemServicesHostController
+import com.floe.android.host.dataexchange.C07DataExchangeHostController
+import com.floe.android.host.executiontarget.ExecutionTargetHostController
+import com.floe.android.host.toolresults.ToolResultHostController
+import com.floe.android.host.taskcontinuity.TaskContinuityHostController
+import com.floe.android.host.remote.C05BrokerLocalNetworkGate
+import com.floe.android.host.devicecommunication.C05BrokerDeviceLanGate
+import com.floe.android.host.devicecommunication.C05DevicesHostController
+import com.floe.android.host.remote.C05VNCClient
+import com.floe.android.host.remote.C05RemoteFailure
+import com.floe.android.host.remote.C05RemoteHostController
+import com.floe.android.host.sftp.C05SFTPHostController
+import com.floe.android.host.rdp.C05RDPClient
+import com.floe.android.host.rdp.C05RDPException
+import com.floe.android.host.rdp.C05RDPHostController
+import com.floe.android.host.desktopassist.C05DesktopAssistSettingsController
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +38,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 
 /**
@@ -41,7 +63,9 @@ import kotlinx.serialization.json.JsonElement
  *  * [IntegrationsHostController] — Skills/MCP/backend tool discovery;
  *  * [SettingsHostController] — defaults/memory/personalization/usage/privacy;
  *  * [WebSearchHostController] — web-search provider metadata + secure editor;
- *  * [AttachmentImportController] — picker/SAF/staging handoff ownership.
+ *  * [AttachmentImportController] — picker/SAF/staging handoff ownership;
+ *  * [ProjectHostController] — the real user project library CRUD +
+ *    pre-first-run assignment projections.
  *
  * Nothing in this package executes business logic natively in Kotlin: the
  * Swift runtime remains the single structural authority; the host only
@@ -67,6 +91,28 @@ class RuntimeHost internal constructor(
     val webSearch = WebSearchHostController(this)
     val attachments = AttachmentImportController(this)
     val home = HomeLaunchpadHost(this)
+    /** Real managed user-project library. Source-only until Main wires the
+     * native C01 library/bridge; commands stay fail-closed until then. */
+    val projects = ProjectHostController(this)
+    /**
+     * C02 App-owned per-task execution target. Swift owns pinning, migration,
+     * CAS and the drain gate; this controller only correlates trusted-host
+     * replies. It never starts an SSH session or a target on construction.
+     */
+    val executionTargets = ExecutionTargetHostController(this)
+    /**
+     * C02 retained tool-result reader for the existing tool card. It pages
+     * only this task's already-redacted bytes through `floe.results/20`; it
+     * never re-runs a tool and never opens a workspace file.
+     */
+    internal val toolResults = ToolResultHostController()
+    /**
+     * C02 App-owned durable task continuity. The Swift coordinator owns the
+     * pause marker, storage probe and explicit resume validation; this
+     * controller only correlates trusted-host replies and never resumes,
+     * answers or retries automatically.
+     */
+    val taskContinuity = TaskContinuityHostController(this)
     /** Ordinary-task editor projections outlive Activity/inspector views. */
     internal val workspaceEditors = G04WorkspaceEditorController(this)
     internal val browser = BrowserHostController(this)
@@ -96,6 +142,201 @@ class RuntimeHost internal constructor(
     }
     internal val workspaceDocumentPreview: WorkspaceDocumentPreviewController
         get() = workspaceDocumentPreviewDelegate.value
+    /**
+     * C04A Application-owned read-only CAD/3D viewer. The native snapshots,
+     * local-only WebView session and capture artifacts outlive Activity /
+     * composition so rotation does not re-stage the source. Created lazily on
+     * the first explicit CAD open; the root-stop drain below is the real gate.
+     */
+    private val cadViewerDelegate = lazy {
+        C04CadViewerController(
+            context = appContext,
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+            currentHostGeneration = { commandClient.generation() },
+            isTemporaryTask = { id -> conversations.entryFor(id)?.isTemporary == true },
+        )
+    }
+    internal val cadViewer: C04CadViewerController
+        get() = cadViewerDelegate.value
+    /**
+     * WSF-SAFE-EXTRACT Application-owned archive document controller. It
+     * owns only the trusted `floe.archive/25` bridge calls, the
+     * long-running extract job, its real cancellation/progress and the
+     * typed state the full-window browser renders; every byte and effect
+     * stays behind the bridge on the ORIGINAL G04 workspace lease. Created
+     * lazily on the first explicit archive open; the root-stop gate below
+     * drains it before the epoch retires.
+     */
+    private val workspaceArchiveDelegate = lazy {
+        WorkspaceArchiveHostController(
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+            currentHostGeneration = { commandClient.generation() },
+            isTemporaryTask = { id -> conversations.entryFor(id)?.isTemporary == true },
+        )
+    }
+    internal val workspaceArchive: WorkspaceArchiveHostController
+        get() = workspaceArchiveDelegate.value
+    /**
+     * C05 Application-owned SSH remote-host controller. Created lazily on
+     * the first Remote screen use; it owns only the trusted-host bridge
+     * calls, PTY polling and bounded input lanes. The root-stop gate below
+     * closes every live SSH channel and loopback listener.
+     */
+    private val c05RemoteDelegate = lazy {
+        C05RemoteHostController(
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+            localNetwork = C05BrokerLocalNetworkGate(integrations.localNetwork),
+        )
+    }
+    internal val c05Remote: C05RemoteHostController
+        get() = c05RemoteDelegate.value
+
+    /**
+     * C05 Application-owned SFTP controller. It is created lazily on the
+     * first remote-file use; all host trust, credentials and destination
+     * commits stay in the Swift `floe.sftp/18` domain. The root-stop gate
+     * below drains every lane and staging file before the epoch retires.
+     */
+    private val c05SFTPDelegate = lazy {
+        C05SFTPHostController(
+            context = appContext,
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+        )
+    }
+    internal val c05Sftp: C05SFTPHostController
+        get() = c05SFTPDelegate.value
+
+    /**
+     * C05 Application-owned RDP controller. The real FreeRDP session, frame
+     * lease, explicit certificate decision and bounded input lane live in
+     * FloeAndroidCore/FloeRDP; this controller only owns the trusted
+     * `floe.rdp/17` client and the App-scoped pump. It is created lazily on
+     * the first RDP screen use and drained before Root retirement.
+     */
+    private val c05RdpDelegate = lazy {
+        C05RDPHostController(
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+        )
+    }
+    internal val c05Rdp: C05RDPHostController
+        get() = c05RdpDelegate.value
+
+    /**
+     * C05 Desktop Assist settings controller (secure credential cards and
+     * text-recognition readiness). App-scoped: a card save/delete is drained
+     * before Root retirement and never belongs to a Settings view lifetime.
+     */
+    private val c05DesktopAssistDelegate = lazy {
+        C05DesktopAssistSettingsController(
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+        )
+    }
+    internal val desktopAssist: C05DesktopAssistSettingsController
+        get() = c05DesktopAssistDelegate.value
+
+    /**
+     * C05 Application-owned real-device controller: TCP/Telnet sockets, BLE
+     * GATT sessions, USB serial sessions, USB permission receiver and the
+     * trusted device model-tool pump. It follows the live native epoch and
+     * is drained before Root retirement. Created on the accepted store
+     * generation so configured model tools work without opening the screen.
+     */
+    private val c05DevicesDelegate = lazy {
+        C05DevicesHostController(
+            context = appContext,
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+            lanGate = C05BrokerDeviceLanGate(integrations.localNetwork),
+        )
+    }
+    internal val c05Devices: C05DevicesHostController
+        get() = c05DevicesDelegate.value
+
+    /**
+     * C06 Application-owned mail controller. The controller owns the trusted
+     * host bridge, the platform TLS lane, the compose draft and bounded SAF
+     * attachment transfer. It is app-scoped so a send/download never belongs
+     * to a view; the root-stop gate below closes the lane before retirement.
+     */
+    private val c06MailDelegate = lazy {
+        C06MailHostController(
+            scope = scope,
+            contentResolver = appContext.contentResolver,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+            lanGate = C06BrokerMailLanGate { integrations.localNetwork },
+        )
+    }
+    internal val c06Mail: C06MailHostController
+        get() = c06MailDelegate.value
+
+    /**
+     * C06 Application-owned calendar/todo controller. It owns the trusted
+     * bridge token, the real CalendarContract backend, the reverse provider
+     * lane and the local reminder transport. App-scoped so a provider write
+     * or reminder rearm never belongs to a view; the root-stop gate closes
+     * the lane before retirement.
+     */
+    private val c06CalendarDelegate = lazy {
+        C06CalendarHostController(
+            context = appContext,
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+        )
+    }
+    internal val c06Calendar: C06CalendarHostController
+        get() = c06CalendarDelegate.value
+
+    /**
+     * C06 Application-owned system-services controller. It owns the trusted
+     * bridge token, the real location/contacts/NFC/Health Connect platform
+     * clients, permission/ActivityResult routing, the foreground/NFC lifecycle
+     * and the reverse mailbox lane. App-scoped so a permission result or tag
+     * scan never belongs to a view; the root-stop gate closes it before
+     * retirement.
+     */
+    private val c06SystemServicesDelegate = lazy {
+        C06SystemServicesHostController(
+            context = appContext,
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+        )
+    }
+    internal val c06SystemServices: C06SystemServicesHostController
+        get() = c06SystemServicesDelegate.value
+
+    /**
+     * C07 Application-owned manual data exchange. It owns no archive bytes:
+     * SAF source/destination, bounded chunk streaming and the read-back
+     * receipt live here; staging, manifest validation, hashing and the
+     * restore journal live in the trusted Swift domain. App-scoped so a
+     * download/restore does not belong to a dismissed view.
+     */
+    private val c07DataExchangeDelegate = lazy {
+        C07DataExchangeHostController(
+            context = appContext,
+            scope = scope,
+            currentNativeEpoch = ::nativeRootEpoch,
+            ioDispatcher = ioDispatcher,
+        )
+    }
+    internal val c07DataExchange: C07DataExchangeHostController
+        get() = c07DataExchangeDelegate.value
     internal var workspaceGitTrust: G04GitTrustController? = null
     internal var workspaceTerminal: G04TerminalHostController? = null
 
@@ -113,6 +354,11 @@ class RuntimeHost internal constructor(
 
     /** G09-R1 creative Canvas/media lane; bound by the Application owner. */
     internal var creativeHost: com.floe.android.host.creative.CreativeHostController? = null
+    /**
+     * C03 App-owned voice coordinator. Created by [create] after the context is
+     * attached; pure controller fixtures never touch it.
+     */
+    internal lateinit var voice: C03VoiceHost
     /** Typed accessor for the later Canvas/media UI routes (same instance). */
     internal fun creativeServices(): com.floe.android.feature.workbench.CreativeHostApi? =
         creativeHost?.services
@@ -143,6 +389,31 @@ class RuntimeHost internal constructor(
     /** Root draining must not create an unused artifact controller. */
     internal fun networkArtifactIfCreated(): com.floe.android.host.networkartifact.NetworkArtifactHostController? =
         if (networkArtifactDelegate.isInitialized()) networkArtifactDelegate.value else null
+
+    /**
+     * C06 Application-owned live capture. Created only by an explicit capture
+     * panel entry; the service owns the TUN fd/forwarders while this host owns
+     * the launch ticket, state machine, raw artifact and analysis publication.
+     * RootStop never constructs an unused controller.
+     */
+    private val captureDelegate = lazy {
+        com.floe.android.host.capture.CaptureHostController(
+            context = appContext,
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+            onPcapPublished = {
+                networkArtifactIfCreated()?.refreshForExternalCapture()
+            },
+        ).also { com.floe.android.host.capture.CaptureServiceRuntime.install(it) }
+    }
+    internal val capture: com.floe.android.host.capture.CaptureHostController
+        get() = captureDelegate.value
+    internal val isCaptureInitialized: Boolean
+        get() = captureDelegate.isInitialized()
+
+    internal fun captureIfCreated(): com.floe.android.host.capture.CaptureHostController? =
+        if (captureDelegate.isInitialized()) captureDelegate.value else null
     internal data class NetworkPermissionNotice(
         val request: com.floe.android.host.network.NetworkPermissionRequest,
         val generation: Long,
@@ -303,7 +574,10 @@ class RuntimeHost internal constructor(
         val artifacts = networkArtifactIfCreated()
         val artifactsReady = artifacts == null ||
             artifacts.stopAndJoin(artifacts.boundEpoch(), 5_000)
-        return monitorReady && diagnosticsReady && artifactsReady
+        val capture = captureIfCreated()
+        val captureReady = capture == null ||
+            capture.prepareForRootStop(nativeRootEpoch() ?: 0L, 5_000L)
+        return monitorReady && diagnosticsReady && artifactsReady && captureReady
     }
 
     /**
@@ -320,6 +594,190 @@ class RuntimeHost internal constructor(
         } else {
             true
         }
+
+    /**
+     * Root-stop gate for the C04A viewer: cancel a still-staging read, destroy
+     * the local WebView surface, delete only this session's immutable
+     * snapshots and release the Swift session before the native root retires.
+     * An unproven drain keeps the old generation pending.
+     */
+    internal suspend fun prepareCadViewerForRootStop(): Boolean =
+        if (cadViewerDelegate.isInitialized()) {
+            cadViewer.prepareForRootStop(CAD_VIEWER_STOP_WAIT_MS)
+        } else {
+            true
+        }
+
+    /**
+     * Root-stop gate for the archive document surface: cancel a still-
+     * running extraction (the engine abandons its staging), discard hidden
+     * preview staging and join the owned jobs before the native root
+     * retires. An unproven drain keeps the old generation pending.
+     */
+    internal suspend fun prepareWorkspaceArchiveForRootStop(): Boolean =
+        if (workspaceArchiveDelegate.isInitialized()) {
+            workspaceArchive.prepareForRootStop(ARCHIVE_STOP_WAIT_MS)
+        } else {
+            true
+        }
+
+    /**
+     * Root-stop gate for C05 SSH: close every live session, PTY, exec
+     * channel and loopback listener and await their owned shutdown before
+     * the native root retires. An unproven drain keeps the old generation
+     * pending; no remote session survives into a new epoch.
+     */
+    internal suspend fun prepareC05RemoteForRootStop(): Boolean {
+        if (c05RemoteDelegate.isInitialized()) {
+            return c05Remote.prepareForRootStop(C05_REMOTE_STOP_WAIT_MS)
+        }
+        // Ordinary VNC model tools can open a Swift-owned VNC session without
+        // ever showing the Remote screen. Drain the VNC domain directly so
+        // such a session cannot outlive the native Root epoch merely because
+        // the UI controller was never constructed.
+        val epoch = nativeRootEpoch()?.takeIf { it > 0 } ?: return true
+        return try {
+            val result = withContext(ioDispatcher) { C05VNCClient().rootStop(epoch) }
+            result.drained
+        } catch (failure: C05RemoteFailure) {
+            failure.code == "needsCoreUpdate" || failure.code == "coreUnavailable" ||
+                failure.code == "runtimeNotInstalled"
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * Root-stop gate for C05 Desktop Assist: drain any in-flight card
+     * save/delete before the native Root epoch retires. A controller that
+     * was never constructed is already drained.
+     */
+    internal suspend fun prepareC05DesktopAssistForRootStop(): Boolean {
+        if (!c05DesktopAssistDelegate.isInitialized()) return true
+        desktopAssist.stop()
+        return true
+    }
+
+    /**
+     * Root-stop gate for C05 RDP: close every live FreeRDP session, release
+     * pressed input and await the App/tool frame/input pump before the native
+     * root retires. An unproven drain keeps the generation pending; no RDP
+     * session survives into a new epoch.
+     */
+    internal suspend fun prepareC05RDPForRootStop(): Boolean {
+        if (c05RdpDelegate.isInitialized()) {
+            return c05Rdp.prepareForRootStop(C05_RDP_STOP_WAIT_MS)
+        }
+        // Model tools can open a Swift-owned RDP session without ever showing
+        // the RDP screen. Drain that domain directly so a tool session cannot
+        // outlive the native Root epoch just because the UI controller was
+        // never constructed.
+        val epoch = nativeRootEpoch()?.takeIf { it > 0 } ?: return true
+        return try {
+            withContext(ioDispatcher) { C05RDPClient().rootStop(epoch) }
+            true
+        } catch (failure: C05RDPException) {
+            failure.code == "needsCoreUpdate" || failure.code == "coreUnavailable" ||
+                failure.code == "runtimeNotInstalled"
+        } catch (failure: com.floe.android.host.remote.C05RemoteFailure) {
+            failure.code == "needsCoreUpdate" || failure.code == "coreUnavailable" ||
+                failure.code == "runtimeNotInstalled"
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * Root-stop gate for C05 SFTP: cancel every staged transfer, remove only
+     * this lane's staging files, close the SFTP channel/SSH transport and
+     * await the native typed drain before the root epoch retires.
+     */
+    internal suspend fun prepareC05SFTPForRootStop(): Boolean =
+        if (c05SFTPDelegate.isInitialized()) {
+            c05Sftp.prepareForRootStop(C05_SFTP_STOP_WAIT_MS)
+        } else {
+            true
+        }
+
+    /**
+     * Root-stop gate for C02: cancel a pending target/migration reply and
+     * drop the controller's projection before the native root retires. The
+     * Swift domain owns any durable migration row; a cancelled bridge reply
+     * cannot commit it.
+     */
+    internal suspend fun prepareC02ExecutionTargetsForRootStop(): Boolean {
+        executionTargets.release()
+        taskContinuity.release()
+        return true
+    }
+
+    /**
+     * Root-stop gate for C05 devices: stop the trusted tool mailbox, close
+     * every App/tool TCP/Telnet/BLE/USB session and await the engine's real
+     * close/join before the native root retires. An unproven drain keeps the
+     * generation pending; no device handle survives into a new epoch.
+     */
+    internal suspend fun prepareC05DevicesForRootStop(): Boolean =
+        if (c05DevicesDelegate.isInitialized()) {
+            c05Devices.prepareForRootStop(C05_DEVICES_STOP_WAIT_MS)
+        } else {
+            true
+        }
+
+    /**
+     * Root-stop gate for C06 mail: close every platform TLS socket, join the
+     * lane and acknowledge `laneClosed` before the old native mailbox is
+     * retired. An unproven drain keeps the old generation pending; an
+     * in-flight send is never reported as a success by this gate.
+     */
+    internal suspend fun prepareC06MailForRootStop(): Boolean =
+        if (c06MailDelegate.isInitialized()) {
+            c06Mail.prepareForRootStop(C06_MAIL_STOP_WAIT_MS.toInt())
+        } else {
+            true
+        }
+
+    /**
+     * Root-stop gate for C06 calendar/todo: stop admitting provider tickets,
+     * join the App lane and acknowledge `laneClosed` before the old Swift
+     * mailbox retires. An unproven drain keeps the generation pending; a
+     * calendar write is never reported as a success by this gate.
+     */
+    internal suspend fun prepareC06CalendarForRootStop(): Boolean =
+        if (c06CalendarDelegate.isInitialized()) {
+            c06Calendar.prepareForRootStop(C06_CALENDAR_STOP_WAIT_MS.toInt())
+        } else {
+            true
+        }
+
+    /**
+     * Root-stop gate for C06 system services: cancel permission/refresh work,
+     * unregister capability receivers, disable NFC reader mode and drain the
+     * platform mailbox before the old Swift generation retires. An unproven
+     * drain keeps the old generation pending; an in-flight read is never
+     * reported as a success by this gate.
+     */
+    internal suspend fun prepareC06SystemServicesForRootStop(): Boolean =
+        if (c06SystemServicesDelegate.isInitialized()) {
+            c06SystemServices.prepareForRootStop(C06_SYSTEM_SERVICES_STOP_WAIT_MS.toInt())
+        } else {
+            true
+        }
+
+    /**
+     * Root-stop gate for C07: cancel an in-flight SAF read/write and the
+     * native job. Staged files are app-private; the durable restore journal
+     * remains for the next generation's explicit recovery action.
+     */
+    internal suspend fun prepareC07DataExchangeForRootStop(): Boolean =
+        if (c07DataExchangeDelegate.isInitialized()) c07DataExchange.prepareForRootStop() else true
+
+    internal suspend fun prepareFontsForRootStop(): Boolean = fontTools.stopAndJoin()
+
+    internal fun resumeFontsAfterRefusedStop() {
+        if (nativeRootEpoch()?.let { it > 0L } == true) fontTools.resumeAfterRefusedStop()
+    }
+
 
     internal var workspaceSourceHost: WorkspaceSourceHostController? = null
     /** D04 owned run-output lane (list / verified Save Copy / Office egress
@@ -423,10 +881,13 @@ class RuntimeHost internal constructor(
     ): String? = privacyConfirmationIssuer?.invoke(
         expectedNativeEpoch, operation, previewDigest, invocationID, action)
 
+    private val fontTools = com.floe.android.host.fonts.FontToolHostPump(appContext, scope, ::nativeRootEpoch)
+
     /** Called once by the Application owner, off-main. */
     fun start() {
         if (!started.compareAndSet(false, true)) return
         platformExtension?.onHostStarted(this)
+        fontTools.start()
         observationJob = scope.launch(ioDispatcher) { observeCapabilities() }
         providers.start()
         conversations.start()
@@ -436,6 +897,8 @@ class RuntimeHost internal constructor(
         settings.start()
         webSearch.start()
         home.start()
+        projects.start()
+        if (::voice.isInitialized) voice.start()
     }
 
     /**
@@ -444,10 +907,18 @@ class RuntimeHost internal constructor(
      * RB-1 owner stop. The host never cancels another owner's work.
      */
     suspend fun stop() {
+        if (!prepareC07DataExchangeForRootStop()) return
+        if (!prepareFontsForRootStop()) return
+        // C03 voice owns real microphone/TTS/cloud operations; fence and join
+        // them before the native root retires.
+        if (::voice.isInitialized && !voice.prepareForRootStop()) return
         // A real preview reader still holding a native-root snapshot must
         // close before the root retires; a refused drain keeps the old
         // generation rather than pretending the document work is gone.
         if (!prepareWorkspaceDocumentPreviewForRootStop()) return
+        // An in-flight archive extract/preview staging is real workspace
+        // work owned by this host; drain it with the same contract.
+        if (!prepareWorkspaceArchiveForRootStop()) return
         if (!prepareNetworkForRootStop()) return
         commandClient.bumpGeneration()
         providers.stop()
@@ -457,7 +928,9 @@ class RuntimeHost internal constructor(
         attachments.stop()
         settings.stop()
         webSearch.stop()
+        if (c05DesktopAssistDelegate.isInitialized()) desktopAssist.stop()
         home.stop()
+        projects.stop()
         observationJob?.cancel()
         // The Office AI pump drains through its OWN contract first: an
         // unproven drain keeps the old generation owned/pending honestly
@@ -470,7 +943,31 @@ class RuntimeHost internal constructor(
                 officeAi = null
             }
         }
+        if (::voice.isInitialized) voice.shutdown()
         platformExtension?.close()
+    }
+
+    /** Null in pure controller fixtures, never a fabricated adapter. */
+    internal fun voiceOrNull(): C03VoiceHost? =
+        if (::voice.isInitialized) voice else null
+
+    internal fun onVoiceForeground(active: Boolean) {
+        voiceOrNull()?.onAppForegroundChanged(active)
+    }
+
+    internal fun onVoicePermissionResult(granted: Boolean) {
+        voiceOrNull()?.onMicrophonePermissionResult(granted)
+    }
+
+    internal fun voicePermissionRequests(): kotlinx.coroutines.flow.Flow<Unit>? =
+        voiceOrNull()?.permissionRequests
+
+    internal suspend fun prepareVoiceForRootStop(): Boolean =
+        voiceOrNull()?.prepareForRootStop() ?: true
+
+    /** Re-read canonical voice settings after a root-generation replacement. */
+    internal fun onVoiceRootChanged() {
+        voiceOrNull()?.onRootChanged()
     }
 
     /**
@@ -596,11 +1093,52 @@ class RuntimeHost internal constructor(
                 if (workspaceDocumentPreviewDelegate.isInitialized()) {
                     workspaceDocumentPreview.onOwnedStoreReady()
                 }
+                if (cadViewerDelegate.isInitialized()) {
+                    cadViewer.onOwnedStoreReady()
+                }
+                if (c05RemoteDelegate.isInitialized()) {
+                    c05Remote.onOwnedStoreReady()
+                }
+                if (c05RdpDelegate.isInitialized()) {
+                    c05Rdp.onOwnedStoreReady()
+                }
+                if (appContextOrNull != null) {
+                    // C05 devices: the engine/tool-pump lane follows the ACTUAL
+                    // accepted epoch and must be available to configured model
+                    // tools even if the Devices screen was never opened.
+                    c05Devices.onOwnedStoreReady()
+                    // C06: the mail lane is App-owned, so it starts on the real
+                    // accepted store generation even when the Mail screen has not
+                    // been opened (configured model mail tools need it). It does
+                    // not open a socket until an operation is requested.
+                    c06Mail.onOwnedStoreReady()
+                    // C06: the calendar/todo controller owns the real provider
+                    // lane and the local reminder transport. It starts on the
+                    // accepted store generation even when the Calendar screen has
+                    // not been opened (configured model calendar tools need it);
+                    // it performs no provider query until work is requested.
+                    c06Calendar.onOwnedStoreReady()
+                    // C06: system services follow the ACTUAL accepted epoch so
+                    // configured model tools work even when the screen was never
+                    // opened. No permission prompt or platform read happens until
+                    // an explicit tool or UI action; the capability push is the
+                    // only startup work.
+                    c06SystemServices.onOwnedStoreReady()
+                }
+                // C07 only reacts if the settings surface already created
+                // the controller; no backup/restore work starts implicitly.
+                fontTools.start()
+                if (c07DataExchangeDelegate.isInitialized()) {
+                    c07DataExchange.onOwnedStoreReady()
+                }
                 // Office AI host lane follows the ACTUAL accepted root epoch
                 // with bounded attempts (same doctrine as the browser lane).
                 startOfficeAiLane()
                 startNetworkDiagnosticsLane()
                 startNetworkArtifactLane()
+                // C01: the project list becomes readable with the accepted
+                // store; refresh once on the real readiness transition.
+                projects.refresh()
                 // G08 Full-only platform extension follows the SAME accepted
                 // generation. A null/foreign epoch is never fabricated.
                 nativeRootEpoch()?.takeIf { it > 0 }?.let { epoch ->
@@ -617,6 +1155,17 @@ class RuntimeHost internal constructor(
                     )
                 }
                 g02ReadinessAdapter.reset()
+                if (cadViewerDelegate.isInitialized()) cadViewer.onRootStopped()
+                executionTargets.release()
+                taskContinuity.release()
+                if (c05RemoteDelegate.isInitialized()) c05Remote.onRootStopped()
+                if (c05SFTPDelegate.isInitialized()) c05Sftp.onRootStopped()
+                if (c05RdpDelegate.isInitialized()) c05Rdp.onRootStopped()
+                if (c05DevicesDelegate.isInitialized()) c05Devices.onRootStopped()
+                if (c06MailDelegate.isInitialized()) c06Mail.onRootStopped()
+                if (c06CalendarDelegate.isInitialized()) c06Calendar.onRootStopped()
+                if (c06SystemServicesDelegate.isInitialized()) c06SystemServices.onRootStopped()
+                if (c07DataExchangeDelegate.isInitialized()) c07DataExchange.onRootStopped()
                 stopOfficeAiLane()
                 // Fence the flavour extension on the real retirement. The
                 // main pre-stop drain already ran prepareForRootStop(); this
@@ -933,6 +1482,31 @@ class RuntimeHost internal constructor(
          * drain, matching the other lane stop waits. */
         internal const val WORKSPACE_PREVIEW_STOP_WAIT_MS = 8_000L
 
+        /** Bounded join for the C04A viewer WebView/snapshot drain. */
+        internal const val CAD_VIEWER_STOP_WAIT_MS = 8_000L
+
+        /** Bounded join for the archive extract/preview-staging drain. */
+        internal const val ARCHIVE_STOP_WAIT_MS = 8_000L
+
+        /** Bounded join for the C05 SSH session/PTY/tunnel drain. */
+        internal const val C05_REMOTE_STOP_WAIT_MS = 8_000L
+        internal const val C05_SFTP_STOP_WAIT_MS = 8_000L
+
+        /** Bounded join for the C05 RDP session/frame/input drain. */
+        internal const val C05_RDP_STOP_WAIT_MS = 8_000L
+
+        /** Bounded join for the C05 device sessions/tool mailbox drain. */
+        internal const val C05_DEVICES_STOP_WAIT_MS = 6_000L
+
+        /** Bounded join for the C06 platform TLS lane / mail transport drain. */
+        internal const val C06_MAIL_STOP_WAIT_MS = 8_000L
+
+        /** Bounded join for the C06 CalendarContract/reminder lane drain. */
+        internal const val C06_CALENDAR_STOP_WAIT_MS = 8_000L
+
+        /** Bounded join for the C06 system-services platform mailbox drain. */
+        internal const val C06_SYSTEM_SERVICES_STOP_WAIT_MS = 6_000L
+
         /** Bounded join for the exact active monitoring session on root stop. */
         internal const val NETWORK_MONITOR_STOP_WAIT_MS = 5_000L
 
@@ -958,6 +1532,12 @@ class RuntimeHost internal constructor(
             bootstrapCapability = bootstrapCapability,
         ).also {
             it.appContext = context.applicationContext ?: context
+            it.voice = C03VoiceHost(
+                context = it.appContext,
+                scope = it.scope,
+                ioDispatcher = it.ioDispatcher,
+                currentEpoch = { it.nativeRootEpoch() },
+            )
             // Flavour seam: FULL returns the real phone/ADB/Root extension,
             // PLAY an inert one. Construction is data-only; no backend,
             // native, disk or device work happens here.

@@ -30,10 +30,8 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
@@ -96,6 +94,7 @@ fun FloePageSheet(
     // fractional legacy call is centered. New G02 callers pass it explicitly.
     val resolvedPlacement = placement
         ?: if (floating) FloeSheetPlacement.CENTER else FloeSheetPlacement.BOTTOM
+    val material = LocalFloeOverlayMaterial.current ?: LocalFloeMaterial.current
     AnimatedVisibility(
         visible = visible,
         enter = fadeIn(tween(220, easing = LinearOutSlowInEasing)) +
@@ -115,7 +114,7 @@ fun FloePageSheet(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.28f))
+                    .background(Floe.colors.scrim)
                     // safeDrawing includes the IME. Size the sheet inside
                     // that space so editable dialogs keep actions reachable.
                     .safeDrawingPadding(),
@@ -126,12 +125,17 @@ fun FloePageSheet(
             ) {
                 when (resolvedPlacement) {
                     FloeSheetPlacement.CENTER -> {
+                        val shape = RoundedCornerShape(FloeLayout.SettingsSheetCorner)
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth(widthFraction.coerceIn(0.3f, 1f))
                                 .fillMaxHeight(heightFraction.coerceIn(0.3f, 1f))
-                                .clip(RoundedCornerShape(FloeLayout.SettingsSheetCorner))
-                                .background(Floe.colors.readingSurface),
+                                .floeMaterialSurface(
+                                    level = FloeMaterialLevel.SHEET,
+                                    shape = shape,
+                                    controller = material,
+                                    fallbackColor = Floe.colors.readingSurface,
+                                ),
                             content = content,
                         )
                     }
@@ -142,6 +146,10 @@ fun FloePageSheet(
                         // historical 1f/1f case is byte-for-byte the old
                         // full-window surface (topInset + top corners).
                         val fullHeight = heightFraction >= 1f
+                        val shape = RoundedCornerShape(
+                            topStart = FloeLayout.SettingsSheetCorner,
+                            topEnd = FloeLayout.SettingsSheetCorner,
+                        )
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -153,13 +161,12 @@ fun FloePageSheet(
                                     }
                                 )
                                 .padding(top = topInset)
-                                .clip(
-                                    RoundedCornerShape(
-                                        topStart = FloeLayout.SettingsSheetCorner,
-                                        topEnd = FloeLayout.SettingsSheetCorner,
-                                    )
-                                )
-                                .background(Floe.colors.readingSurface),
+                                .floeMaterialSurface(
+                                    level = FloeMaterialLevel.SHEET,
+                                    shape = shape,
+                                    controller = material,
+                                    fallbackColor = Floe.colors.readingSurface,
+                                ),
                             content = content,
                         )
                     }
@@ -199,6 +206,7 @@ fun FloeActionSheet(
     maxCardHeightFraction: Float = 0.86f,
     content: @Composable BoxScope.() -> Unit,
 ) {
+    val material = LocalFloeOverlayMaterial.current ?: LocalFloeMaterial.current
     AnimatedVisibility(
         visible = visible,
         enter = fadeIn(tween(220, easing = LinearOutSlowInEasing)) +
@@ -218,7 +226,7 @@ fun FloeActionSheet(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.28f))
+                    .background(Floe.colors.scrim)
                     // safeDrawing includes the IME; the card is sized inside
                     // that space exactly like FloePageSheet.
                     .safeDrawingPadding(),
@@ -244,8 +252,12 @@ fun FloeActionSheet(
                             .align(if (wide) Alignment.Center else Alignment.BottomCenter)
                             .widthIn(max = cardMaxWidth)
                             .heightIn(max = cardMaxHeight)
-                            .clip(shape)
-                            .background(Floe.colors.readingSurface),
+                            .floeMaterialSurface(
+                                level = FloeMaterialLevel.SHEET,
+                                shape = shape,
+                                controller = material,
+                                fallbackColor = Floe.colors.readingSurface,
+                            ),
                         content = content,
                     )
                 }
@@ -271,6 +283,7 @@ fun FloePopoverCard(
     content: @Composable BoxScope.() -> Unit,
 ) {
     if (!visible) return
+    val material = LocalFloeOverlayMaterial.current ?: LocalFloeMaterial.current
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -279,15 +292,20 @@ fun FloePopoverCard(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.24f)),
+                .background(Floe.colors.scrim),
             contentAlignment = Alignment.Center,
         ) {
+            val shape = RoundedCornerShape(FloeLayout.SettingsSheetCorner)
             Box(
                 modifier = modifier
                     .width(widthDp)
                     .height(heightDp)
-                    .clip(RoundedCornerShape(FloeLayout.SettingsSheetCorner))
-                    .background(Floe.colors.groupedSurface),
+                    .floeMaterialSurface(
+                        level = FloeMaterialLevel.POPOVER,
+                        shape = shape,
+                        controller = material,
+                        fallbackColor = Floe.colors.groupedSurface,
+                    ),
                 content = content,
             )
         }
@@ -429,6 +447,9 @@ fun FloeAnchoredPopoverCard(
     if (!visible) return
     val density = LocalDensity.current
     val windowInfo = LocalWindowInfo.current
+    // Resolve the material controller in the caller's window; the Popup is a
+    // separate window and must carry the same Haze state explicitly.
+    val material = LocalFloeOverlayMaterial.current ?: LocalFloeMaterial.current
     val windowSize = windowInfo.containerSize
     // Fallback keeps the popover usable during the first measurement pass on
     // unusual hosts where the window container size is not published yet.
@@ -488,6 +509,7 @@ fun FloeAnchoredPopoverCard(
                     width = cardWidth,
                     height = cardHeight,
                     shape = shape,
+                    material = material,
                     modifier = modifier,
                     content = content,
                 )
@@ -508,6 +530,7 @@ fun FloeAnchoredPopoverCard(
                     width = cardWidth,
                     height = cardHeight,
                     shape = shape,
+                    material = material,
                     modifier = modifier,
                     content = content,
                 )
@@ -521,6 +544,7 @@ private fun PopoverSurfaceCard(
     width: Dp,
     height: Dp,
     shape: androidx.compose.ui.graphics.Shape,
+    material: FloeMaterialController?,
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit,
 ) {
@@ -529,8 +553,12 @@ private fun PopoverSurfaceCard(
             .width(width)
             .height(height)
             .shadow(elevation = 20.dp, shape = shape, clip = false)
-            .clip(shape)
-            .background(Floe.colors.groupedSurface),
+            .floeMaterialSurface(
+                level = FloeMaterialLevel.POPOVER,
+                shape = shape,
+                controller = material,
+                fallbackColor = Floe.colors.groupedSurface,
+            ),
         content = content,
     )
 }

@@ -1,0 +1,11 @@
+{
+  "purpose": "Browser remote page icon, embedded as a data: PNG by build_remote_page.py",
+  "source": "FloeIOSBridge/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png",
+  "sourceSHA256": "2bcc9fd6267b96ff25dbc0fd113911fa9b534dbe387ae4eca616905bf069d55f",
+  "sourceDimensions": [1024, 1024],
+  "derived": "FloeIOSBridge/Tests/RemoteClient/fixtures/floe-bridge-180.png",
+  "derivedSHA256": "4c82ac9f478e2d4a4daae932b6d7f857b30d9f65e765d0f42c07d9fe8662b65d",
+  "derivedDimensions": [180, 180],
+  "command": "sips -z 180 180 FloeIOSBridge/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png --out FloeIOSBridge/Tests/RemoteClient/fixtures/floe-bridge-180.png",
+  "note": "Mechanical downscale only; no new artwork, no rebranding. The exact source icon and its provenance remain the authority."
+}

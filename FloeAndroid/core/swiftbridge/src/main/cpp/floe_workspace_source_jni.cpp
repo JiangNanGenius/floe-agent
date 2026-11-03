@@ -26,6 +26,11 @@ int32_t floe_g04_source_host_stage_finish(int64_t, char *, int32_t);
 int32_t floe_g04_source_host_stage_abort(int64_t);
 int64_t floe_g04_source_host_egress_open(uint64_t, const char *, const char *, const char *,
                                          const char *, const char *);
+// G09-R2 closed media-purpose egress open (image 128 MiB / audio 1 GiB /
+// video 8 GiB). Additive C ABI next to the generic save/export entry above;
+// the Kotlin object's media open is the only caller.
+int64_t floe_g04_source_host_egress_open_media(uint64_t, const char *, const char *,
+                                               const char *, const char *);
 int32_t floe_g04_source_host_egress_info(int64_t, char *, int32_t);
 int32_t floe_g04_source_host_egress_read(int64_t, int64_t, uint8_t *, int32_t);
 int32_t floe_g04_source_host_egress_verify(int64_t, int64_t, char *, int32_t);
@@ -44,6 +49,9 @@ int32_t floe_g04_source_host_reconcile_run(uint64_t, const char *, char *, int32
 int32_t floe_g04_source_host_reconcile_staged(uint64_t, const char *, const char *, const char *,
                                               int64_t, char *, int32_t);
 int32_t floe_g04_source_host_stats(char *, int32_t);
+int32_t floe_g04_source_host_save_original(uint64_t, const char *, const char *, const char *,
+                                           const char *, const char *, int64_t, const char *,
+                                           char *, int32_t);
 }
 namespace {
 constexpr int32_t document_limit = 4 * 1024 * 1024;
@@ -280,6 +288,26 @@ Java_com_floe_android_bridge_WorkspaceSourceNative_egressOpen(
                                             task_value.c_str(), workspace_value.c_str(),
                                             path_value.c_str(), source_value.c_str());
 }
+// G09-R2 closed media-purpose egress open. The kind token is covered by the
+// SAME ASCII/identity validation as mode/purpose; the logical path uses the
+// strict UTF-16 -> UTF-8 converter (no truncation, no CESU-8). Native
+// revalidates the exact task/workspace/epoch + extension and applies the
+// closed media ceiling; nothing here can widen the generic 1 GiB entry.
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_floe_android_bridge_WorkspaceSourceNative_egressOpenMedia(
+    JNIEnv *env, jobject, jlong epoch, jstring kind, jstring task, jstring workspace,
+    jstring logical_path) {
+    if (epoch <= 0) return -501;
+    std::string kind_value, task_value, workspace_value;
+    if (!host_ascii_arg(env, kind, 16, &kind_value) ||
+        !host_ascii_arg(env, task, 64, &task_value) ||
+        !host_ascii_arg(env, workspace, 64, &workspace_value)) return -105;
+    std::string path_value;
+    if (!host_utf8_arg(env, logical_path, 4096, &path_value)) return -105;
+    return floe_g04_source_host_egress_open_media(static_cast<uint64_t>(epoch),
+                                                  kind_value.c_str(), task_value.c_str(),
+                                                  workspace_value.c_str(), path_value.c_str());
+}
 extern "C" JNIEXPORT jint JNICALL
 Java_com_floe_android_bridge_WorkspaceSourceNative_egressInfo(
     JNIEnv *env, jobject, jlong ticket, jbyteArray reply) {
@@ -438,5 +466,36 @@ extern "C" JNIEXPORT jint JNICALL
 Java_com_floe_android_bridge_WorkspaceSourceNative_hostStats(JNIEnv *env, jobject, jbyteArray reply) {
     return host_reply_call(env, reply, [](char *buffer, int32_t capacity) {
         return floe_g04_source_host_stats(buffer, capacity);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Manual workspace original save (OFC-SAVE-REOPEN; additive). Same discipline
+// as the reviewed ladder adapters: strict ASCII identity tokens, strict
+// UTF-8 path conversion, typed negatives unchanged, reply copied into the
+// caller array, never a fresh unbounded allocation.
+// ---------------------------------------------------------------------------
+extern "C" JNIEXPORT jint JNICALL
+Java_com_floe_android_bridge_WorkspaceSourceNative_saveOriginal(
+    JNIEnv *env, jobject, jlong epoch, jstring task, jstring workspace, jstring logical_path,
+    jstring expected_original, jstring expected_source, jlong expected_source_bytes,
+    jstring source_path, jbyteArray reply) {
+    if (epoch <= 0) return -501;
+    std::string task_value, workspace_value, path_value, original_value, source_value, source_path_value;
+    if (!host_ascii_arg(env, task, 64, &task_value) ||
+        !host_ascii_arg(env, workspace, 64, &workspace_value) ||
+        !host_utf8_arg(env, logical_path, 4096, &path_value) ||
+        !host_ascii_arg(env, expected_original, 64, &original_value) ||
+        !host_ascii_arg(env, expected_source, 64, &source_value) ||
+        !host_utf8_arg(env, source_path, 4096, &source_path_value)) return -105;
+    if (expected_source_bytes < 1 || expected_source_bytes > 256LL * 1024 * 1024) return -105;
+    return host_reply_call(env, reply, [epoch, task_value, workspace_value, path_value,
+                                        original_value, source_value, expected_source_bytes,
+                                        source_path_value](char *buffer, int32_t capacity) {
+        return floe_g04_source_host_save_original(static_cast<uint64_t>(epoch), task_value.c_str(),
+                                                  workspace_value.c_str(), path_value.c_str(),
+                                                  original_value.c_str(), source_value.c_str(),
+                                                  expected_source_bytes,
+                                                  source_path_value.c_str(), buffer, capacity);
     });
 }

@@ -214,7 +214,8 @@ class LinuxRootfsMaterializer(
         return Properties().apply { Files.newInputStream(path, NOFOLLOW_LINKS).use { load(it) } }
     }
 
-    private inner class CopyBudget {
+    private inner class CopyBudget(val preserveMetadata: Boolean = false) {
+        val hardLinks = mutableMapOf<Any, Path>()
         var bytes = 0L
         var entries = 0
         val directoryModes = mutableMapOf<Path, Int>()
@@ -256,6 +257,15 @@ class LinuxRootfsMaterializer(
                 when {
                     attrs.isSymbolicLink -> Files.createSymbolicLink(out, Files.readSymbolicLink(file))
                     attrs.isRegularFile -> {
+                        // A transaction snapshot preserves hard links INSIDE
+                        // its own independent copy, never links to writable
+                        // source data. Initial layer merging stays unchanged.
+                        val key = if (budget.preserveMetadata) attrs.fileKey() else null
+                        val earlier = key?.let { budget.hardLinks[it] }
+                        if (earlier != null) {
+                            Files.createLink(out, earlier)
+                            return FileVisitResult.CONTINUE
+                        }
                         check(attrs.size() <= maxBytes - budget.bytes) { "Rootfs byte budget exceeded" }
                         FileChannel.open(file, READ, NOFOLLOW_LINKS).use { input ->
                             FileChannel.open(out, CREATE_NEW, WRITE).use { output ->
@@ -276,8 +286,15 @@ class LinuxRootfsMaterializer(
                             }
                         }
                         Files.setAttribute(out, "unix:mode", mode(file), NOFOLLOW_LINKS)
+                        if (key != null) budget.hardLinks[key] = out
                     }
                     else -> error("Unsupported filesystem entry in environment layer")
+                }
+                // Preserve regular-file timestamps. A symlink is always a
+                // literal target, never a followed metadata write; portable
+                // Java cannot promise symlink timestamps (including Bsd NIO).
+                if (budget.preserveMetadata && !attrs.isSymbolicLink) {
+                    Files.setAttribute(out, "basic:lastModifiedTime", attrs.lastModifiedTime(), NOFOLLOW_LINKS)
                 }
                 // Bounded progress: every 1024 entries, never per file/log byte.
                 if (budget.entries % 1024L == 0L) onCopyProgress()
@@ -294,6 +311,52 @@ class LinuxRootfsMaterializer(
             }
         })
     }
+
+    /** Service-owned package snapshots reuse the established bounded copier.
+     * The destination must be a newly-created empty sibling. Publication and
+     * rollback belong to LinuxEnvironmentTransaction, after real UID drain. */
+    internal fun copyTransactionSnapshot(sourceFile: File, destination: Path,
+        cancelled: () -> Boolean): Long {
+        val source = trustedRoot(sourceFile)
+        require(destination.parent == source.parent && destination != source)
+        require(Files.isDirectory(destination, NOFOLLOW_LINKS) && !Files.isSymbolicLink(destination))
+        Files.newDirectoryStream(destination).use { require(!it.iterator().hasNext()) }
+        val originalMarker = source.resolve(marker)
+        require(readMarker(source) != null)
+        val budget = CopyBudget(preserveMetadata = true)
+        copyLayer(source, destination, budget, cancelled) {}
+        // copyLayer omits the materialization marker. A transaction instead
+        // restores that original identity verbatim, without inventing a base.
+        FileChannel.open(originalMarker, READ, NOFOLLOW_LINKS).use { input ->
+            require(input.size() in 1..2048)
+            FileChannel.open(destination.resolve(marker), CREATE_NEW, WRITE, NOFOLLOW_LINKS).use { output ->
+                val buffer = ByteBuffer.allocate(2048)
+                while (true) {
+                    buffer.clear()
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    buffer.flip()
+                    while (buffer.hasRemaining()) output.write(buffer)
+                }
+                output.force(true)
+            }
+        }
+        Files.setAttribute(destination.resolve(marker), "unix:mode", mode(originalMarker), NOFOLLOW_LINKS)
+        Files.setAttribute(destination.resolve(marker), "basic:lastModifiedTime",
+            Files.getLastModifiedTime(originalMarker, NOFOLLOW_LINKS), NOFOLLOW_LINKS)
+        for ((directory, permissions) in budget.directoryModes.entries.sortedByDescending { it.key.nameCount }) {
+            check(realDirectoryWithin(destination, directory))
+            Files.setAttribute(directory, "unix:mode", permissions, NOFOLLOW_LINKS)
+            Files.setAttribute(directory, "basic:lastModifiedTime",
+                Files.getLastModifiedTime(source.resolve(destination.relativize(directory)), NOFOLLOW_LINKS), NOFOLLOW_LINKS)
+        }
+        if (cancelled()) throw InterruptedException("Environment snapshot cancelled")
+        durabilityBarrier?.invoke(destination)
+        forceDirectory(destination)
+        return budget.bytes
+    }
+
+    internal fun removeTransactionTree(path: Path) { removeTree(path) }
 
     private fun recover(root: Path, journal: Path, plan: Plan) {
         if (!Files.exists(journal, NOFOLLOW_LINKS)) return

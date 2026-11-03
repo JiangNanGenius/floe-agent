@@ -17,11 +17,22 @@ import com.floe.android.feature.integrations.McpSaveRequest
 import com.floe.android.feature.integrations.McpServerRevisionUi
 import com.floe.android.feature.integrations.McpServerRowUi
 import com.floe.android.feature.integrations.McpServersUiState
+import com.floe.android.feature.integrations.McpStdioBindingStateUi
+import com.floe.android.feature.integrations.McpStdioBindingUi
+import com.floe.android.feature.integrations.McpStdioChoicesUi
+import com.floe.android.feature.integrations.McpStdioChoiceUi
+import com.floe.android.host.mcpsetup.McpSetupClient
 import com.floe.android.feature.integrations.McpToolRowUi
+import com.floe.android.feature.integrations.McpTransportKindUi
 import com.floe.android.feature.integrations.McpTransportUi
 import com.floe.android.feature.integrations.SkillAvailabilityUi
 import com.floe.android.feature.integrations.SkillCatalogCardUi
 import com.floe.android.feature.integrations.SkillCreatorDraftUi
+import com.floe.android.feature.integrations.SkillDetailDependenciesUi
+import com.floe.android.feature.integrations.SkillDetailDependencyProfileUi
+import com.floe.android.feature.integrations.SkillDetailDependencyRequirementUi
+import com.floe.android.feature.integrations.SkillDetailRuntimeComponentUi
+import com.floe.android.feature.integrations.SkillDetailUi
 import com.floe.android.feature.integrations.SkillInstalledRowUi
 import com.floe.android.feature.integrations.SkillInstallReviewUi
 import com.floe.android.feature.integrations.SkillInstallStageUi
@@ -31,6 +42,7 @@ import com.floe.android.feature.integrations.SkillRunActivityUi
 import com.floe.android.feature.integrations.SkillRunScopeUi
 import com.floe.android.feature.integrations.SkillSourceKindUi
 import com.floe.android.feature.integrations.SkillUpgradeUi
+import com.floe.android.feature.integrations.SkillsCatalogPaging
 import com.floe.android.feature.integrations.SkillsFormOutcomeUi
 import com.floe.android.feature.integrations.SkillsHubUiState
 import com.floe.android.feature.integrations.StagedPackageRefUi
@@ -42,6 +54,11 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
+import com.floe.android.feature.integrations.McpSetupStartRequestUi
+import com.floe.android.host.mcpsetup.McpSetupHostController
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -74,6 +91,21 @@ class IntegrationsHostController internal constructor(
 ) : IntegrationUiCallbacks {
 
     val flowHolder = IntegrationsFlowHolder(this)
+
+    private var mcpSetupHostStorage: McpSetupHostController? = null
+    private val mcpSetupHost: McpSetupHostController
+        get() = mcpSetupHostStorage ?: McpSetupHostController(
+            scope = host.scope,
+            assetOpen = { path -> host.appContext.assets.open(path).readBytes() },
+            onCommitted = { refreshMcpServers() },
+        ).also { created ->
+            mcpSetupHostStorage = created
+            host.scope.launch {
+                created.state.collect { value ->
+                    updateDestination { it.copy(mcpSetup = value) }
+                }
+            }
+        }
 
     /**
      * The RB7 Skills folder-staging owner (S11). A SEPARATELY owned SAF
@@ -165,6 +197,7 @@ class IntegrationsHostController internal constructor(
             installReview = null,
             upgrade = null,
             editor = null,
+            skillDetail = null,
         ),
     )
     val destination: StateFlow<IntegrationsDestinationState> = destinationState
@@ -253,11 +286,18 @@ class IntegrationsHostController internal constructor(
     }
 
     internal fun stop() {
+        flowHolder.closeAll()
+        updateDestination { it.copy(skills = it.skills.copy(
+            isLoading = true, installed = emptyList(), catalogCards = emptyList(),
+            catalogHasMore = false, catalogPagingBusy = false)) }
         pendingReviews.clear()
         stagedUpgrades.clear()
         skillsSettingsRevision = null
         folderStaging.invalidate()
         localNetwork.invalidate()
+        mcpSetupHostStorage?.close()
+        mcpSetupHostStorage = null
+        updateDestination { it.copy(mcpSetup = null) }
         synchronized(mcpPermissionMessageLock) { mcpPermissionDenial = null }
     }
 
@@ -333,8 +373,20 @@ class IntegrationsHostController internal constructor(
      * a late page from an older chain never mutates the projection (the
      * same stale-callback rule the editor epoch uses).
      */
-    private val snapshotChain = java.util.concurrent.atomic.AtomicLong(0)
+    private val snapshotFence = com.floe.android.feature.integrations.CatalogPageChainFence()
+    private data class CatalogContinuation(val chain: Long, val token: String, val query: String)
+    private var catalogContinuation: CatalogContinuation? = null
+    @Volatile private var requestedCatalogQuery = ""
+    private val catalogSearchHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
+    private var pendingCatalogSearch: Runnable? = null
+
+    private fun currentCatalogChain(chain: Long): Boolean =
+        admitted() && snapshotFence.accepts(chain, host.nativeRootEpoch())
     private val mcpListChain = java.util.concurrent.atomic.AtomicLong(0)
+
+    /** Detail-sheet request identity. Root loss, a newer open or a dismiss
+     *  makes every older `curated.detail` callback stale. */
+    private val detailGate = com.floe.android.feature.integrations.SkillDetailRequestGate()
 
     /** Tokens this host already confirmed/discarded; never re-mirrored from
      *  a snapshot into the review surface. */
@@ -342,8 +394,135 @@ class IntegrationsHostController internal constructor(
 
     internal fun refreshSkills() {
         if (!admitted()) return
-        val chain = snapshotChain.incrementAndGet()
-        requestSkillsPage(chain = chain, cursor = null, pagesRead = 0)
+        if (requestedCatalogQuery.toByteArray(Charsets.UTF_8).size > 512) {
+            updateDestination { it.copy(skills = it.skills.copy(
+                catalogPagingBusy = false, catalogHasMore = false,
+                curatedError = actionString(com.floe.android.feature.integrations.R.string
+                    .skills_catalog_query_too_long))) }
+            return
+        }
+        val rootEpoch = host.nativeRootEpoch() ?: return
+        val chain = snapshotFence.begin(rootEpoch)
+        catalogContinuation = null
+        updateDestination { it.copy(skills = it.skills.copy(
+            catalogHasMore = false, catalogPagingBusy = true)) }
+        requestSkillsPage(chain = chain, cursor = null, pagesRead = 0,
+            catalogQuery = requestedCatalogQuery)
+    }
+
+    override fun searchCatalog(query: String) {
+        pendingCatalogSearch?.let { catalogSearchHandler.removeCallbacks(it) }
+        pendingCatalogSearch = null
+        requestedCatalogQuery = query
+        val epoch = host.nativeRootEpoch() ?: return
+        val generation = snapshotFence.begin(epoch)
+        catalogContinuation = null
+        curatedCardAccumulated = emptyList()
+        updateDestination { it.copy(skills = it.skills.copy(
+            catalogCards = emptyList(), catalogHasMore = false,
+            catalogPagingBusy = query.toByteArray(Charsets.UTF_8).size <= 512,
+            curatedError = if (query.toByteArray(Charsets.UTF_8).size > 512) {
+                actionString(com.floe.android.feature.integrations.R.string.skills_catalog_query_too_long)
+            } else null)) }
+        if (query.toByteArray(Charsets.UTF_8).size > 512) return
+        val request = Runnable {
+            pendingCatalogSearch = null
+            if (currentCatalogChain(generation)) refreshSkills()
+        }
+        pendingCatalogSearch = request
+        catalogSearchHandler.postDelayed(request, 250L)
+    }
+
+    override fun loadMoreCatalog(): Boolean {
+        val continuation = catalogContinuation ?: return false
+        if (!currentCatalogChain(continuation.chain)) {
+            catalogContinuation = null
+            updateDestination { it.copy(skills = it.skills.copy(
+                catalogHasMore = false, catalogPagingBusy = false,
+                curatedError = actionString(com.floe.android.feature.integrations.R.string
+                    .skills_catalog_unavailable))) }
+            return false
+        }
+        if (destinationState.value.skills.catalogPagingBusy) return false
+        catalogContinuation = null
+        updateDestination { it.copy(skills = it.skills.copy(
+            catalogHasMore = false, catalogPagingBusy = true)) }
+        requestCuratedCardsPage(continuation.chain, continuation.token, 0, continuation.query)
+        return true
+    }
+
+    // ------------------------------------------------------- detail sheet
+
+    /**
+     * One verified full-catalog entry read for the detail sheet. The gate is
+     * incremented before dispatch, so a late response for a previous open or
+     * a dismissed sheet can never mutate the current projection. The actual
+     * install/update/rollback affordances still dispatch through the existing
+     * review/upgrade routes; this read is presentation-only.
+     */
+    override fun loadSkillDetail(skillId: String): Boolean {
+        if (!admitted() || skillId.isBlank()) return false
+        val generation = detailGate.open(skillId, host.nativeRootEpoch() ?: return false)
+        updateDestination {
+            it.copy(skillDetail = SkillDetailUi.loading(skillId))
+        }
+        host.trackOperation(
+            HostCommandRequest(
+                command = "skills.list",
+                scope = HostScope.ApplicationConfiguration("skills"),
+                stateful = false,
+                correlationID = client().correlationID("sdetail"),
+                payload = JsonObject(
+                    buildMap {
+                        put("operation", JsonPrimitive("curated.detail"))
+                        put("skillId", JsonPrimitive(skillId))
+                    },
+                ),
+            ),
+        ) { outcome ->
+            if (!admitted() || !detailGate.accepts(generation, skillId, host.nativeRootEpoch())) return@trackOperation
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    val detail = outcome.value?.let {
+                        IntegrationsWire.decodeSkillDetail(it)
+                    }
+                    if (detail == null || detail.skillId != skillId) {
+                        updateDestination {
+                            it.copy(skillDetail = SkillDetailUi.failed(
+                                skillId,
+                                actionString(com.floe.android.feature.integrations.R.string
+                                    .skills_detail_unavailable),
+                            ))
+                        }
+                    } else {
+                        updateDestination { it.copy(skillDetail = detail) }
+                    }
+                }
+                is HostOperationOutcome.Rejected, is HostOperationOutcome.Failed -> {
+                    updateDestination {
+                        it.copy(skillDetail = SkillDetailUi.failed(
+                            skillId,
+                            actionString(com.floe.android.feature.integrations.R.string
+                                .skills_detail_unavailable),
+                        ))
+                    }
+                }
+                else -> Unit
+            }
+        }
+        return true
+    }
+
+    override fun dismissSkillDetail(skillId: String) {
+        if (detailGate.close(skillId)) {
+            updateDestination { state ->
+                if (state.skillDetail?.skillId == skillId) {
+                    state.copy(skillDetail = null)
+                } else {
+                    state
+                }
+            }
+        }
     }
 
     /** One snapshot page; `nextCursor` (decimal index; the frozen payload
@@ -351,7 +530,7 @@ class IntegrationsHostController internal constructor(
      *  rows ACCUMULATE across pages; catalog, settings and pendingReviews
      *  repeat identically on every page, so the page's copies simply
      *  replace the accumulated fields. */
-    private fun requestSkillsPage(chain: Long, cursor: String?, pagesRead: Int) {
+    private fun requestSkillsPage(chain: Long, cursor: String?, pagesRead: Int, catalogQuery: String) {
         host.trackOperation(
             HostCommandRequest(
                 command = "skills.list",
@@ -367,33 +546,143 @@ class IntegrationsHostController internal constructor(
             ),
         ) { outcome ->
             // A stale chain's callback must never touch a newer root/editor.
-            if (snapshotChain.get() != chain) return@trackOperation
+            if (!currentCatalogChain(chain)) return@trackOperation
             when (outcome) {
                 is HostOperationOutcome.Completed -> {
                     val page = outcome.value?.let { IntegrationsWire.decodeSkillsSnapshot(it) }
                     if (page == null) {
                         updateDestination {
                             it.copy(skills = it.skills.copy(
-                                isLoading = false, errorMessage = "decode_failed"))
+                                isLoading = false, catalogPagingBusy = false, errorMessage = "decode_failed"))
                         }
                     } else {
                         applySkillsPage(page, firstPage = cursor == null)
                         val next = page.nextCursor
                         if (page.hasMore && next != null && pagesRead + 1 < snapshotMaxPages) {
-                            requestSkillsPage(chain, next, pagesRead + 1)
-                        } else if (page.hasMore) {
-                            // Bound reached: honest typed marker, never a
-                            // silent "complete" claim.
-                            publishSkillsMessage(
-                                actionString(R.string.integrations_paging_truncated))
+                            requestSkillsPage(chain, next, pagesRead + 1, catalogQuery)
+                        } else {
+                            if (page.hasMore) {
+                                // Bound reached: honest typed marker, never a
+                                // silent "complete" claim.
+                                publishSkillsMessage(
+                                    actionString(R.string.integrations_paging_truncated))
+                            }
+                            // Rows are complete (or honestly truncated). The
+                            // full schemaVersion-3 card list is a SEPARATE
+                            // bounded page chain so the snapshot reply and a
+                            // card page can never be composed into one
+                            // oversized event frame.
+                            requestCuratedCardsPage(chain, pageToken = null, pagesRead = 0, query = catalogQuery)
                         }
                     }
                 }
                 is HostOperationOutcome.Rejected -> updateDestination {
-                    it.copy(skills = it.skills.copy(isLoading = false, errorMessage = outcome.code))
+                    it.copy(skills = it.skills.copy(isLoading = false, catalogPagingBusy = false, errorMessage = outcome.code))
                 }
                 is HostOperationOutcome.Failed -> updateDestination {
-                    it.copy(skills = it.skills.copy(isLoading = false, errorMessage = outcome.code))
+                    it.copy(skills = it.skills.copy(isLoading = false, catalogPagingBusy = false, errorMessage = outcome.code))
+                }
+                else -> Unit
+            }
+        }
+    }
+
+    /** One bounded full-catalog card page. The opaque token is bound by the
+     *  native service to the verified catalog SHA-256 and the normalized
+     *  query; a changed catalog refuses an old token. The chain id fences a
+     *  late page from a previous refresh. */
+    private fun requestCuratedCardsPage(
+        chain: Long,
+        pageToken: String?,
+        pagesRead: Int,
+        query: String,
+    ) {
+        if (!currentCatalogChain(chain)) return
+        val state = snapshotCuratedState
+        if (state == "unavailable" || state == "failed") {
+            val cards = buildCatalogCards(snapshotAccumulated)
+            updateDestination {
+                it.copy(skills = it.skills.copy(
+                    catalogCards = cards,
+                    catalogPagingBusy = false, catalogHasMore = false,
+                    curatedError = curatedErrorCopy(),
+                ))
+            }
+            return
+        }
+        host.trackOperation(
+            HostCommandRequest(
+                command = "skills.list",
+                scope = HostScope.ApplicationConfiguration("skills"),
+                stateful = false,
+                correlationID = client().correlationID("scards"),
+                payload = JsonObject(
+                    buildMap {
+                        put("operation", JsonPrimitive(if (query.isBlank()) "curated.cards" else "curated.search"))
+                        if (query.isNotBlank()) put("query", JsonPrimitive(query))
+                        pageToken?.let { put("pageToken", JsonPrimitive(it)) }
+                    },
+                ),
+            ),
+        ) { outcome ->
+            if (!currentCatalogChain(chain)) return@trackOperation
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    val page = outcome.value?.let {
+                        IntegrationsWire.decodeCuratedCardsPage(it)
+                    }
+                    if (page == null) {
+                        val cards = buildCatalogCards(snapshotAccumulated)
+                        updateDestination {
+                            it.copy(skills = it.skills.copy(
+                                catalogCards = cards,
+                                catalogPagingBusy = false, catalogHasMore = false,
+                                curatedError = actionString(
+                                    com.floe.android.feature.integrations.R.string
+                                        .skills_catalog_unavailable),
+                            ))
+                        }
+                        return@trackOperation
+                    }
+                    curatedCardAccumulated = mergeCuratedCards(
+                        curatedCardAccumulated, page.cards)
+                    val installed = withUpdateVersions(snapshotAccumulated)
+                    snapshotAccumulated = installed
+                    val cards = buildCatalogCards(installed)
+                    updateDestination {
+                        it.copy(skills = it.skills.copy(
+                            installed = installed,
+                            catalogCards = cards,
+                            curatedError = null,
+                        ))
+                    }
+                    if (SkillsCatalogPaging.shouldContinue(
+                            page.hasMore, page.nextPageToken, pagesRead)) {
+                        requestCuratedCardsPage(
+                            chain, page.nextPageToken, pagesRead + 1, query)
+                    } else {
+                        val next = page.nextPageToken?.takeIf { it.isNotBlank() }
+                        catalogContinuation = if (page.hasMore && next != null) {
+                            CatalogContinuation(chain, next, query)
+                        } else null
+                        updateDestination { it.copy(skills = it.skills.copy(
+                            catalogHasMore = catalogContinuation != null, catalogPagingBusy = false)) }
+                        if (page.hasMore && next == null) {
+                            publishSkillsMessage(actionString(R.string.integrations_paging_truncated))
+                        }
+                    }
+                }
+                is HostOperationOutcome.Rejected, is HostOperationOutcome.Failed -> {
+                    val cards = buildCatalogCards(snapshotAccumulated)
+                    updateDestination {
+                        it.copy(skills = it.skills.copy(
+                            catalogCards = cards,
+                            catalogPagingBusy = false, catalogHasMore = false,
+                            curatedError = actionString(
+                                com.floe.android.feature.integrations.R.string
+                                    .skills_catalog_unavailable),
+                        ))
+                    }
                 }
                 else -> Unit
             }
@@ -403,54 +692,40 @@ class IntegrationsHostController internal constructor(
     /** RAM accumulator for the CURRENT snapshot chain (never persisted). */
     private var snapshotAccumulated: List<SkillInstalledRowUi> = emptyList()
 
+    /** Repeated snapshot metadata from the latest page of the SAME chain. */
+    private var snapshotCatalogEntries: List<IntegrationsWire.CatalogEntry> = emptyList()
+    private var snapshotCuratedState: String? = null
+    private var snapshotCuratedFailure: String? = null
+
+    /** Full-catalog cards accumulated from the separately bounded
+     *  `curated.cards` page chain (RAM only, deduped by skill id). */
+    private var curatedCardAccumulated: List<IntegrationsWire.CuratedCard> = emptyList()
+
     private fun applySkillsPage(
         page: IntegrationsWire.SkillsSnapshotPage,
         firstPage: Boolean,
     ) {
-        if (firstPage) snapshotAccumulated = emptyList()
+        if (firstPage) {
+            snapshotAccumulated = emptyList()
+            snapshotCatalogEntries = emptyList()
+            snapshotCuratedState = null
+            snapshotCuratedFailure = null
+            curatedCardAccumulated = emptyList()
+        }
         val seen = HashSet<String>()
         val merged = (snapshotAccumulated + page.installed).filter { seen.add(it.skillId) }
         snapshotAccumulated = merged
+        snapshotCatalogEntries = page.catalogEntries
+        snapshotCuratedState = page.curatedState
+        snapshotCuratedFailure = page.curatedLastFailure
+        if (page.curatedCards.isNotEmpty()) {
+            curatedCardAccumulated = mergeCuratedCards(curatedCardAccumulated, page.curatedCards)
+        }
 
         skillsSettingsRevision = page.settingsRevision ?: skillsSettingsRevision
 
-        val catalogVersionById: Map<String, String> =
-            page.catalogEntries.associate { it.id to it.version }
-        val installedWithUpdates = merged.map { row ->
-            val entry = catalogVersionById[row.skillId]
-            val newer = entry != null && IntegrationsWire.isNewerVersion(entry, row.version)
-            row.copy(updateAvailableVersion = if (newer) entry else null)
-        }
-        // Discover cards from the signed catalog projection, cross-referenced
-        // against the accumulated installed rows (the original Discover
-        // segment semantics; the old hardcoded emptyList is gone). Display
-        // name/summary: the catalog packages rows carry id/version/
-        // releaseNotes ONLY — the closed projection emits no display name,
-        // so the id is the honest label and the localized release note is
-        // the honest summary (never an invented description).
-        val installedById = merged.associateBy { it.skillId }
-        val cards = page.catalogEntries.map { entry ->
-            val row = installedById[entry.id]
-            val newer = row != null &&
-                IntegrationsWire.isNewerVersion(entry.version, row.version)
-            val state: com.floe.android.feature.integrations.CatalogCardStateUi = when {
-                row == null -> com.floe.android.feature.integrations
-                    .CatalogCardStateUi.NotInstalled
-                newer -> com.floe.android.feature.integrations
-                    .CatalogCardStateUi.UpdateTo(entry.version)
-                !row.enabled -> com.floe.android.feature.integrations
-                    .CatalogCardStateUi.InstalledNeedsEnable
-                else -> com.floe.android.feature.integrations
-                    .CatalogCardStateUi.InstalledReady
-            }
-            SkillCatalogCardUi(
-                skillId = entry.id,
-                name = entry.id,
-                version = entry.version,
-                summary = localizedReleaseNote(entry.releaseNotes) ?: "",
-                state = state,
-            )
-        }
+        val installedWithUpdates = withUpdateVersions(merged)
+        snapshotAccumulated = installedWithUpdates
 
         // Reconcile the staged-review map: every live native review has a
         // snapshot row with the REAL echoed revision; reviews that vanished
@@ -511,11 +786,7 @@ class IntegrationsHostController internal constructor(
             }
         }
 
-        val catalogError = when {
-            page.catalogLastFailure != null -> page.catalogLastFailure
-            page.catalogState == "unavailable" -> null // not refreshed yet
-            else -> null
-        }
+        val cards = buildCatalogCards(installedWithUpdates)
         updateDestination { state ->
             state.copy(
                 skills = state.skills.copy(
@@ -525,7 +796,9 @@ class IntegrationsHostController internal constructor(
                     autoScriptedUpdates = page.autoScriptedUpdates,
                     rewriteModels = rewriteModelChoices(),
                     defaultRewriteModelId = null,
-                    catalogError = catalogError ?: state.skills.catalogError,
+                    catalogError = page.catalogLastFailure
+                        ?: state.skills.catalogError,
+                    curatedError = curatedErrorCopy(),
                     errorMessage = state.skills.errorMessage.takeIf {
                         !firstPage && (
                             it == actionString(R.string.integrations_paging_truncated) ||
@@ -537,12 +810,123 @@ class IntegrationsHostController internal constructor(
         }
     }
 
+    /** Cross-reference installed rows against every catalog version now
+     *  available (legacy + accumulated curated pages). */
+    private fun withUpdateVersions(
+        rows: List<SkillInstalledRowUi>,
+    ): List<SkillInstalledRowUi> {
+        val catalogVersionById: Map<String, String> =
+            snapshotCatalogEntries.associate { it.id to it.version } +
+                curatedCardAccumulated.associate { it.id to it.version }
+        return rows.map { row ->
+            val entry = catalogVersionById[row.skillId]
+            val newer = entry != null && IntegrationsWire.isNewerVersion(entry, row.version)
+            row.copy(updateAvailableVersion = if (newer) entry else null)
+        }
+    }
+
+    private fun mergeCuratedCards(
+        existing: List<IntegrationsWire.CuratedCard>,
+        page: List<IntegrationsWire.CuratedCard>,
+    ): List<IntegrationsWire.CuratedCard> {
+        if (page.isEmpty()) return existing
+        val order = LinkedHashSet<String>()
+        val byId = LinkedHashMap<String, IntegrationsWire.CuratedCard>()
+        for (card in existing) {
+            if (order.add(card.id)) byId[card.id] = card
+        }
+        for (card in page) {
+            order.add(card.id)
+            byId[card.id] = card
+        }
+        return order.mapNotNull { byId[it] }
+    }
+
+    /** Legacy + verified curated cards, cross-referenced against the actual
+     *  installed rows. Legacy ids win once (the full channel is additive). */
+    private fun buildCatalogCards(
+        installed: List<SkillInstalledRowUi>,
+    ): List<SkillCatalogCardUi> {
+        val installedById = installed.associateBy { it.skillId }
+        val legacyCards = snapshotCatalogEntries.map { entry ->
+            val row = installedById[entry.id]
+            val newer = row != null &&
+                IntegrationsWire.isNewerVersion(entry.version, row.version)
+            val state: com.floe.android.feature.integrations.CatalogCardStateUi = when {
+                row == null -> com.floe.android.feature.integrations
+                    .CatalogCardStateUi.NotInstalled
+                newer -> com.floe.android.feature.integrations
+                    .CatalogCardStateUi.UpdateTo(entry.version)
+                !row.enabled -> com.floe.android.feature.integrations
+                    .CatalogCardStateUi.InstalledNeedsEnable
+                else -> com.floe.android.feature.integrations
+                    .CatalogCardStateUi.InstalledReady
+            }
+            SkillCatalogCardUi(
+                skillId = entry.id,
+                name = entry.id,
+                version = entry.version,
+                summary = localizedReleaseNote(entry.releaseNotes) ?: "",
+                state = state,
+            )
+        }
+        val legacyIds = snapshotCatalogEntries.map { it.id }.toMutableSet()
+        val curatedCards = curatedCardAccumulated.mapNotNull { card ->
+            if (!legacyIds.add(card.id)) return@mapNotNull null
+            val row = installedById[card.id]
+            val newer = row != null &&
+                IntegrationsWire.isNewerVersion(card.version, row.version)
+            val state: com.floe.android.feature.integrations.CatalogCardStateUi = when {
+                card.offer == "incompatible" -> com.floe.android.feature.integrations
+                    .CatalogCardStateUi.Unavailable(
+                        actionString(com.floe.android.feature.integrations.R.string.plugins_requires_newer_app))
+                card.offer != "installable" -> com.floe.android.feature.integrations
+                    .CatalogCardStateUi.Unavailable(
+                        actionString(com.floe.android.feature.integrations.R.string.plugins_catalog_unavailable))
+                row == null -> com.floe.android.feature.integrations
+                    .CatalogCardStateUi.NotInstalled
+                newer -> com.floe.android.feature.integrations
+                    .CatalogCardStateUi.UpdateTo(card.version)
+                !row.enabled -> com.floe.android.feature.integrations
+                    .CatalogCardStateUi.InstalledNeedsEnable
+                else -> com.floe.android.feature.integrations
+                    .CatalogCardStateUi.InstalledReady
+            }
+            SkillCatalogCardUi(
+                skillId = card.id,
+                name = localizedText(card.name),
+                version = card.version,
+                summary = localizedText(card.description),
+                state = state,
+                detailAvailable = true,
+            )
+        }
+        return legacyCards + curatedCards
+    }
+
+    private fun curatedErrorCopy(): String? = when {
+        snapshotCuratedState == "unavailable" || snapshotCuratedState == "failed" ->
+            actionString(com.floe.android.feature.integrations.R.string.skills_catalog_unavailable)
+        snapshotCuratedFailure != null ->
+            actionString(com.floe.android.feature.integrations.R.string.skills_catalog_unavailable)
+        else -> null
+    }
+
     private fun localizedReleaseNote(notes: Map<String, String>): String? {
         if (notes.isEmpty()) return null
         val locale = runCatching { java.util.Locale.getDefault().language }
             .getOrDefault("en")
         return notes.entries.firstOrNull { it.key.startsWith(locale) }?.value
             ?: notes.entries.firstOrNull()?.value
+    }
+
+    private fun localizedText(texts: Map<String, String>): String {
+        if (texts.isEmpty()) return ""
+        val locale = runCatching { java.util.Locale.getDefault().language }
+            .getOrDefault("en")
+        return texts.entries.firstOrNull { it.key.startsWith(locale) }?.value
+            ?: texts["en"]
+            ?: texts.values.firstOrNull().orEmpty()
     }
 
     /** Rewrite-model choices from the ACTUAL configured-and-usable model
@@ -627,11 +1011,64 @@ class IntegrationsHostController internal constructor(
         refreshToolSources()
     }
 
+    override fun loadMcpSetup(projectId: String?): Boolean {
+        if (!admitted()) return false
+        mcpSetupHost.load(projectId)
+        return true
+    }
+
+    override fun loadMcpSetupEnvironments(projectId: String): Boolean {
+        if (!admitted()) return false
+        mcpSetupHost.loadEnvironments(projectId)
+        return true
+    }
+
+    override fun startMcpSetup(request: McpSetupStartRequestUi): Boolean {
+        if (!admitted()) return false
+        return mcpSetupHost.start(request)
+    }
+
+    override fun cancelMcpSetup(recordId: String, revision: Long): Boolean {
+        if (!admitted()) return false
+        mcpSetupHost.cancel(recordId, revision)
+        return true
+    }
+
+    override fun discardMcpSetup(recordId: String, revision: Long): Boolean {
+        if (!admitted()) return false
+        mcpSetupHost.discard(recordId, revision)
+        return true
+    }
+
+    override fun clearMcpSetupError() = mcpSetupHost.clearError()
+
+    override fun retryMcpSetupCommit(recordId: String, revision: Long): Boolean {
+        if (!admitted()) return false
+        mcpSetupHost.retryCommit(recordId, revision)
+        return true
+    }
+
+    override fun closeMcpSetup() {
+        mcpSetupHostStorage?.close()
+    }
+
     override fun closeAll() {
         // Holder-owned UI retirement; projections stay for the next open.
         // An un-presented picker request is dropped (nothing was launched);
         // in-flight staging continues host-owned exactly like installs.
         folderStaging.abandonUnlaunched()
+        // Fence in-flight page/detail callbacks; the host projections remain
+        // so reopening the surface shows the last verified state.
+        snapshotFence.invalidate()
+        pendingCatalogSearch?.let { catalogSearchHandler.removeCallbacks(it) }
+        pendingCatalogSearch = null
+        requestedCatalogQuery = ""
+        catalogContinuation = null
+        updateDestination { it.copy(skills = it.skills.copy(
+            catalogHasMore = false, catalogPagingBusy = false)) }
+        detailGate.invalidate()
+        updateDestination { it.copy(skillDetail = null) }
+        mcpSetupHostStorage?.close()
     }
 
     /**
@@ -1704,8 +2141,8 @@ class IntegrationsHostController internal constructor(
         }
         // S9 "all original saved config fields": every editable field seeds
         // from the REAL decoded row (header name, timeout, insecure-HTTP
-        // flag), never from an invented default that a later save would
-        // silently write over the saved configuration.
+        // flag, transport/stdin command), never from an invented default that
+        // a later save would silently write over the saved configuration.
         return McpEditorSeedUi(
             serverId = serverId,
             displayName = row?.displayName ?: "",
@@ -1718,12 +2155,79 @@ class IntegrationsHostController internal constructor(
                 ?.takeIf { it.isNotEmpty() } ?: "Authorization",
             credentialStored = row?.credentialStored ?: false,
             timeoutSeconds = row?.timeoutSeconds ?: 30,
-            transport = McpTransportUi.StreamableHttp,
+            transport = mcpTransportUi(row),
+            transportKind = row?.transportKind ?: McpTransportKindUi.STREAMABLE_HTTP,
+            stdioCommand = row?.stdioCommand ?: "",
+            stdioArguments = row?.stdioArguments ?: emptyList(),
+            stdioWorkingDirectory = row?.stdioWorkingDirectory ?: "",
+            stdioBinding = mcpStdioBindingUi(row),
             tools = row?.tools ?: emptyList(),
             savedRevision = row?.revision,
             networkActionsAvailable = admitted(),
             networkActionsUnavailableReason = if (admitted()) null else "unavailable",
         )
+    }
+
+    /**
+     * The editor's transport projection. A saved stdio definition remains a
+     * real `Stdio` transport even when the C01 pipe/binding is absent; the
+     * binding state carries the honest remediation and never invents IDs.
+     */
+    private fun mcpTransportUi(row: McpServerRowUi?): McpTransportUi =
+        if (row?.transportKind == McpTransportKindUi.STDIO) {
+            McpTransportUi.Stdio(
+                mcpStdioBindingUi(row) ?: McpStdioBindingUi(
+                    state = McpStdioBindingStateUi.UNBOUND,
+                    remediation = "bindingRequired",
+                ),
+            )
+        } else {
+            McpTransportUi.StreamableHttp
+        }
+
+    private fun mcpStdioBindingUi(row: McpServerRowUi?): McpStdioBindingUi? {
+        if (row?.transportKind != McpTransportKindUi.STDIO) return null
+        val bound = row.stdioBound == true
+        return McpStdioBindingUi(
+            state = if (bound) McpStdioBindingStateUi.BOUND
+            else McpStdioBindingStateUi.UNBOUND,
+            remediation = if (bound) null else "bindingRequired",
+        )
+    }
+
+    private val stdioChoiceRequests = mutableMapOf<String, Long>()
+
+    override fun requestMcpStdioChoices(identity: McpEditorIdentity, projectId: String?): Boolean {
+        val editor = destinationState.value.editor ?: return false
+        if (!editor.identity.isCurrentFor(identity)) return false
+        val token = editorRouteTokens[identity.editorId] ?: return false
+        val epoch = host.nativeRootEpoch() ?: return false
+        val generation = (stdioChoiceRequests[identity.editorId] ?: 0L) + 1L
+        stdioChoiceRequests[identity.editorId] = generation
+        publishEditor(identity) { current -> current.copy(stdioChoices = current.stdioChoices.copy(
+            projectId = projectId, rootIdentity = null, environments = emptyList(), tasks = emptyList(),
+            loading = true, failed = false,
+        )) }
+        host.scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { McpSetupClient().stdioChoices(projectId) }
+            }
+            if (stdioChoiceRequests[identity.editorId] != generation ||
+                editorRouteTokens[identity.editorId] != token || host.nativeRootEpoch() != epoch) return@launch
+            result.fold(onSuccess = { choices ->
+                publishEditor(identity) { current -> current.copy(stdioChoices = McpStdioChoicesUi(
+                    projects = choices.projects.map { McpStdioChoiceUi(it.id, it.name) },
+                    projectId = choices.projectId, rootIdentity = choices.rootIdentity,
+                    environments = choices.environments.map { McpStdioChoiceUi(it.id, it.label) },
+                    tasks = choices.tasks.map { McpStdioChoiceUi(it.id, it.title) },
+                )) }
+            }, onFailure = {
+                publishEditor(identity) { current -> current.copy(stdioChoices = current.stdioChoices.copy(
+                    loading = false, failed = true,
+                )) }
+            })
+        }
+        return true
     }
 
     override fun mcpEditorOpened(identity: McpEditorIdentity) {
@@ -1756,6 +2260,7 @@ class IntegrationsHostController internal constructor(
     }
 
     override fun mcpEditorClosed(identity: McpEditorIdentity, discarded: Boolean) {
+        stdioChoiceRequests.remove(identity.editorId)
         // Draft/secret disposal is slot-owned (RAM only); a save already
         // admitted may still commit, but its late result is fenced by the
         // identity epoch and cannot touch this closed editor.
@@ -1808,7 +2313,13 @@ class IntegrationsHostController internal constructor(
                     ?.takeIf { it.isNotEmpty() } ?: "Authorization",
                 credentialStored = row?.credentialStored ?: false,
                 timeoutSeconds = row?.timeoutSeconds ?: 30,
-                transport = McpTransportUi.StreamableHttp,
+                transport = mcpTransportUi(row),
+                transportKind = row?.transportKind
+                    ?: McpTransportKindUi.STREAMABLE_HTTP,
+                stdioCommand = row?.stdioCommand ?: "",
+                stdioArguments = row?.stdioArguments ?: emptyList(),
+                stdioWorkingDirectory = row?.stdioWorkingDirectory ?: "",
+                stdioBinding = mcpStdioBindingUi(row),
                 tools = row?.tools ?: emptyList(),
                 savedRevision = row?.revision,
                 networkActionsAvailable = admitted,
@@ -2760,11 +3271,75 @@ internal object IntegrationsWire {
         val releaseNotes: Map<String, String>,
     )
 
+    /** One verified schemaVersion-3 full-catalog card from `curated.cards`.
+     *  Display text is the feed's bilingual name/description; offer state is
+     *  the host's compatibility verdict, never derived in the UI. */
+    class CuratedCard(
+        val id: String,
+        val version: String,
+        val name: Map<String, String>,
+        val description: Map<String, String>,
+        val offer: String,
+        val offerReason: String?,
+        val updateAvailable: Boolean,
+    )
+
+    /** One bounded full-catalog card page (`skills.list curated.cards`). */
+    class CuratedCardsPage(
+        val cards: List<CuratedCard>,
+        val count: Int,
+        val hasMore: Boolean,
+        val nextPageToken: String?,
+        val catalogSHA256: String?,
+    )
+
+    fun decodeCuratedCardsPage(value: JsonElement): CuratedCardsPage? {
+        val root = value as? JsonObject ?: return null
+        val raw = root["cards"] as? JsonArray ?: return null
+        val cards = raw.map { element ->
+            decodeCuratedCard(element) ?: return null
+        }
+        val next = (root["nextPageToken"] as? JsonPrimitive)
+            ?.takeIf { it.isString }?.contentOrNull
+        return CuratedCardsPage(
+            cards = cards,
+            count = (root["count"] as? JsonPrimitive)?.longOrNull?.toInt() ?: cards.size,
+            hasMore = root.bool("hasMore") ?: false,
+            nextPageToken = next,
+            catalogSHA256 = root.string("catalogSHA256"),
+        )
+    }
+
+    private fun decodeCuratedCard(element: JsonElement): CuratedCard? {
+        val obj = element as? JsonObject ?: return null
+        val id = obj.string("id") ?: return null
+        val name = (obj["name"] as? JsonObject)?.let {
+            mapOf("en" to (it.string("en") ?: id),
+                  "zh-Hans" to (it.string("zh-Hans") ?: ""))
+        } ?: mapOf("en" to id)
+        val description = (obj["description"] as? JsonObject)?.let {
+            mapOf("en" to (it.string("en") ?: ""),
+                  "zh-Hans" to (it.string("zh-Hans") ?: ""))
+        } ?: emptyMap()
+        return CuratedCard(
+            id = id,
+            version = obj.string("version") ?: return null,
+            name = name,
+            description = description,
+            offer = obj.string("offer") ?: "unavailable",
+            offerReason = obj.string("offerReason"),
+            updateAvailable = obj.bool("updateAvailable") ?: false,
+        )
+    }
+
     class SkillsSnapshotPage(
         val installed: List<SkillInstalledRowUi>,
         val catalogEntries: List<CatalogEntry>,
         val catalogState: String,
         val catalogLastFailure: String?,
+        val curatedCards: List<CuratedCard>,
+        val curatedState: String?,
+        val curatedLastFailure: String?,
         val pendingReviewRows: List<PendingReviewRow>,
         val autoScriptedUpdates: Boolean,
         val settingsRevision: String?,
@@ -2849,11 +3424,38 @@ internal object IntegrationsWire {
             ?.string("version")?.takeIf { it.isNotEmpty() }
         val nextCursor = (root["nextCursor"] as? JsonPrimitive)
             ?.takeIf { it.isString }?.contentOrNull
+        val curated = root["curated"] as? JsonObject
+        val curatedCards = (curated?.get("cards") as? JsonArray)?.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val id = obj.string("id") ?: return@mapNotNull null
+            val name = (obj["name"] as? JsonObject)?.let {
+                mapOf("en" to (it.string("en") ?: id),
+                      "zh-Hans" to (it.string("zh-Hans") ?: ""))
+            } ?: mapOf("en" to id)
+            val description = (obj["description"] as? JsonObject)?.let {
+                mapOf("en" to (it.string("en") ?: ""),
+                      "zh-Hans" to (it.string("zh-Hans") ?: ""))
+            } ?: emptyMap()
+            CuratedCard(
+                id = id,
+                version = obj.string("version") ?: "",
+                name = name,
+                description = description,
+                offer = obj.string("offer") ?: "unavailable",
+                offerReason = (obj["offerReason"] as? JsonPrimitive)
+                    ?.takeIf { it.isString }?.contentOrNull,
+                updateAvailable = obj.bool("updateAvailable") ?: false,
+            )
+        } ?: emptyList()
         return SkillsSnapshotPage(
             installed = installed,
             catalogEntries = entries,
             catalogState = catalogState,
             catalogLastFailure = (catalog?.get("lastFailure") as? JsonPrimitive)
+                ?.takeIf { it.isString }?.contentOrNull,
+            curatedCards = curatedCards,
+            curatedState = curated?.string("state"),
+            curatedLastFailure = (curated?.get("lastFailure") as? JsonPrimitive)
                 ?.takeIf { it.isString }?.contentOrNull,
             pendingReviewRows = pending,
             autoScriptedUpdates = settings?.bool("autoScriptedUpdates") ?: false,
@@ -2861,6 +3463,130 @@ internal object IntegrationsWire {
             hasMore = root.bool("hasMore") ?: false,
             nextCursor = nextCursor,
         )
+    }
+
+    /** `skills.list operation=curated.detail` → the dedicated detail sheet.
+     *  Only feed-verified metadata + the actual installed row are read. The
+     *  dependency section is a declaration/readiness projection; it never
+     *  claims a resource is ready. */
+    fun decodeSkillDetail(value: JsonElement): SkillDetailUi? {
+        val root = value as? JsonObject ?: return null
+        val entry = root["entry"] as? JsonObject ?: return null
+        val id = entry.string("id") ?: return null
+        val nameMap = (entry["name"] as? JsonObject)?.let {
+            mapOf("en" to (it.string("en") ?: id),
+                  "zh-Hans" to (it.string("zh-Hans") ?: ""))
+        } ?: mapOf("en" to id)
+        val descriptionMap = (entry["description"] as? JsonObject)?.let {
+            mapOf("en" to (it.string("en") ?: ""),
+                  "zh-Hans" to (it.string("zh-Hans") ?: ""))
+        } ?: emptyMap()
+        val notesMap = (entry["notes"] as? JsonObject)?.let {
+            mapOf("en" to (it.string("en") ?: ""),
+                  "zh-Hans" to (it.string("zh-Hans") ?: ""))
+        } ?: emptyMap()
+        val runtime = entry["runtime"] as? JsonObject
+        val execution = runtime?.get("execution") as? JsonObject
+        val packageInfo = entry["package"] as? JsonObject
+        val dependencies = decodeSkillDetailDependencies(root["dependencies"] as? JsonObject)
+            ?: return null
+        return SkillDetailUi(
+            skillId = id,
+            name = localizedText(nameMap),
+            description = localizedText(descriptionMap),
+            notes = localizedText(notesMap).takeIf { it.isNotBlank() },
+            version = entry.string("version") ?: "",
+            category = entry.string("category") ?: "",
+            tags = (entry["tags"] as? JsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList(),
+            installPlatforms = (runtime?.get("installPlatforms") as? JsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList(),
+            scriptRuntime = runtime?.string("scriptRuntime") ?: "",
+            executionOS = execution?.string("os"),
+            executionArch = execution?.string("arch"),
+            executionEvidence = execution?.string("evidence"),
+            containsScripts = packageInfo?.bool("containsScripts") ?: false,
+            packageSize = (packageInfo?.get("size") as? JsonPrimitive)?.longOrNull,
+            packageSHA256 = packageInfo?.string("sha256"),
+            minAppVersion = entry.string("minimumAppVersion"),
+            offer = root.string("offer") ?: entry.string("installOffer") ?: "unavailable",
+            offerReason = root.string("offerReason"),
+            installed = root.bool("installed") ?: false,
+            installedVersion = root.string("installedVersion"),
+            installedRevision = root.string("installedRevision"),
+            installedEnabled = root.bool("installedEnabled") ?: false,
+            updateAvailable = root.bool("updateAvailable") ?: false,
+            rollbackAvailable = root.bool("rollbackAvailable") ?: false,
+            dependencies = dependencies,
+            isLoading = false,
+            errorMessage = null,
+        )
+    }
+
+    private fun decodeSkillDetailDependencies(
+        obj: JsonObject?,
+    ): SkillDetailDependenciesUi? {
+        if (obj == null) return SkillDetailDependenciesUi.NOT_DECLARED
+        val state = obj.string("state") ?: "notDeclared"
+        if (state != "declared") {
+            return SkillDetailDependenciesUi(
+                state = state, schemaVersion = null, declarationSHA256 = null,
+                readinessState = null, readinessReason = null,
+                profiles = emptyList(), runtimeComponents = emptyList())
+        }
+        val profiles = (obj["profiles"] as? JsonArray)?.map { element ->
+            val profile = element as? JsonObject ?: return null
+            val requirements = (profile["requirements"] as? JsonArray)?.map { raw ->
+                val requirement = raw as? JsonObject ?: return null
+                SkillDetailDependencyRequirementUi(
+                    kind = requirement.string("kind") ?: return null,
+                    name = requirement.string("name") ?: return null,
+                    version = requirement.string("version"),
+                    required = requirement.bool("required") ?: false,
+                    purpose = requirement.string("purpose") ?: "",
+                )
+            } ?: emptyList()
+            SkillDetailDependencyProfileUi(
+                id = profile.string("id") ?: "",
+                os = profile.string("os") ?: "",
+                architectures = (profile["architectures"] as? JsonArray)
+                    ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList(),
+                requirements = requirements,
+            )
+        } ?: emptyList()
+        val components = (obj["runtimeComponents"] as? JsonArray)?.map { raw ->
+            val component = raw as? JsonObject ?: return null
+            SkillDetailRuntimeComponentUi(
+                componentID = component.string("componentID") ?: return null,
+                componentVersion = component.string("componentVersion") ?: "",
+                minimumAppVersion = component.string("minimumAppVersion"),
+                targetOS = component.string("targetOS"),
+                targetArch = component.string("targetArch"),
+                targetTriple = component.string("targetTriple"),
+                classification = component.string("classification"),
+                androidSupply = component.string("androidSupply"),
+                reason = component.string("reason"),
+            )
+        } ?: emptyList()
+        val readiness = obj["readiness"] as? JsonObject
+        return SkillDetailDependenciesUi(
+            state = "declared",
+            schemaVersion = (obj["schemaVersion"] as? JsonPrimitive)?.longOrNull?.toInt(),
+            declarationSHA256 = obj.string("declarationSHA256"),
+            readinessState = readiness?.string("state"),
+            readinessReason = readiness?.string("reason"),
+            profiles = profiles,
+            runtimeComponents = components,
+        )
+    }
+
+    private fun localizedText(texts: Map<String, String>): String {
+        if (texts.isEmpty()) return ""
+        val locale = runCatching { java.util.Locale.getDefault().language }
+            .getOrDefault("en")
+        return texts.entries.firstOrNull { it.key.startsWith(locale) }?.value
+            ?: texts["en"]
+            ?: texts.values.firstOrNull().orEmpty()
     }
 
     /** ⇄ SkillsReviewProjection.jsonObject(): the CLOSED real keys
@@ -2961,10 +3687,25 @@ internal object IntegrationsWire {
                     destructiveHint = toolObj.bool("destructiveHint") ?: false,
                 )
             }
+            val transportKind = when (obj.string("transport")) {
+                "stdio" -> McpTransportKindUi.STDIO
+                else -> McpTransportKindUi.STREAMABLE_HTTP
+            }
+            val stdioDefinition = obj["stdioDefinition"] as? JsonObject
+            val stdioCommand = stdioDefinition?.string("command")
+            val stdioArguments = (stdioDefinition?.get("arguments") as? JsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList()
+            val stdioWorkingDirectory = stdioDefinition?.string("workingDirectory")
+            val stdioBound = when (obj.string("stdioBindingState")) {
+                "bound" -> true
+                "unbound" -> false
+                else -> null
+            }
             McpServerRowUi(
                 serverId = id,
                 displayName = obj.string("displayName") ?: id,
-                endpointDisplay = obj.string("endpoint") ?: "",
+                endpointDisplay = obj.string("endpoint")
+                    ?: if (stdioCommand.isNullOrBlank()) "" else "stdio · $stdioCommand",
                 enabled = obj.bool("enabled") ?: true,
                 allowInCanvas = obj.bool("allowInCanvas") ?: false,
                 allowInsecureHttp = obj.bool("allowInsecureHTTP") ?: false,
@@ -2978,6 +3719,11 @@ internal object IntegrationsWire {
                 revision = McpServerRevisionUi(resourceID, version),
                 disabledRemoteToolNames = (obj["disabledRemoteToolNames"] as? JsonArray)
                     ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList(),
+                transportKind = transportKind,
+                stdioCommand = stdioCommand,
+                stdioArguments = stdioArguments,
+                stdioWorkingDirectory = stdioWorkingDirectory,
+                stdioBound = stdioBound,
             )
         } ?: return null
         val nextCursor = (root["nextCursor"] as? JsonPrimitive)
@@ -3077,27 +3823,62 @@ internal object IntegrationsWire {
             buildMap {
                 put("id", JsonPrimitive(serverID))
                 put("displayName", JsonPrimitive(draft.displayName))
-                put("endpoint", JsonPrimitive(draft.endpointText))
                 put("enabled", JsonPrimitive(draft.enabled))
                 put("allowInCanvas", JsonPrimitive(draft.allowInCanvas))
-                put("allowInsecureHTTP", JsonPrimitive(draft.allowInsecureHttp))
-                put(
-                    "authentication",
-                    JsonPrimitive(
-                        when (draft.authentication) {
-                            McpAuthenticationUi.NONE -> "none"
-                            McpAuthenticationUi.BEARER_TOKEN -> "bearerToken"
-                            McpAuthenticationUi.CUSTOM_HEADER -> "customHeader"
-                        },
-                    ),
-                )
-                put("credentialHeaderName", JsonPrimitive(draft.credentialHeaderName))
                 put("timeoutSeconds", JsonPrimitive(draft.timeoutSeconds))
                 put("createIntent", JsonPrimitive(create))
                 put(
                     "disabledRemoteToolNames",
                     JsonArray(draft.disabledRemoteToolNames.sorted().map { JsonPrimitive(it) }),
                 )
+                if (draft.transportKind == McpTransportKindUi.STDIO) {
+                    put("transport", JsonPrimitive("stdio"))
+                    // Rootless saved definition: no project/environment/root/
+                    // task identity is invented here. The native domain keeps
+                    // any existing binding only when the command is unchanged.
+                    put(
+                        "stdio",
+                        JsonObject(
+                            mapOf(
+                                "command" to JsonPrimitive(draft.stdioCommand.trim()),
+                                "arguments" to JsonArray(
+                                    draft.stdioArgumentsText.split("\n")
+                                        .map { it.trimEnd('\r') }
+                                        .filter { it.isNotEmpty() }
+                                        .map { JsonPrimitive(it) },
+                                ),
+                                "workingDirectory" to JsonPrimitive(
+                                    draft.stdioWorkingDirectory.trim(),
+                                ),
+                            ) + (draft.stdioSelection?.takeIf {
+                                !it.rootIdentity.isNullOrBlank() && !it.environmentId.isNullOrBlank() && !it.taskId.isNullOrBlank()
+                            }?.let { selected -> mapOf(
+                                "projectID" to JsonPrimitive(selected.projectId),
+                                "rootIdentity" to JsonPrimitive(selected.rootIdentity),
+                                "environmentID" to JsonPrimitive(selected.environmentId),
+                                "taskID" to JsonPrimitive(selected.taskId),
+                                "revision" to JsonPrimitive(1),
+                            ) } ?: emptyMap()),
+                        ),
+                    )
+                    put("authentication", JsonPrimitive("none"))
+                    put("allowInsecureHTTP", JsonPrimitive(false))
+                } else {
+                    put("transport", JsonPrimitive("streamableHTTP"))
+                    put("endpoint", JsonPrimitive(draft.endpointText))
+                    put("allowInsecureHTTP", JsonPrimitive(draft.allowInsecureHttp))
+                    put(
+                        "authentication",
+                        JsonPrimitive(
+                            when (draft.authentication) {
+                                McpAuthenticationUi.NONE -> "none"
+                                McpAuthenticationUi.BEARER_TOKEN -> "bearerToken"
+                                McpAuthenticationUi.CUSTOM_HEADER -> "customHeader"
+                            },
+                        ),
+                    )
+                    put("credentialHeaderName", JsonPrimitive(draft.credentialHeaderName))
+                }
             },
         )
     }

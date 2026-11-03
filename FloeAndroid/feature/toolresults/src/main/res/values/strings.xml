@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="toolresult_open">Show full result</string>
+    <string name="toolresult_title">Tool result</string>
+    <string name="toolresult_close">Close</string>
+    <string name="toolresult_loading">Loading the retained output…</string>
+    <string name="toolresult_meta">%1$d–%2$d of %3$d bytes</string>
+    <string name="toolresult_capture_state">Capture: %1$s</string>
+    <string name="toolresult_capture_complete">complete output captured</string>
+    <string name="toolresult_capture_retention">only the leading bytes were retained</string>
+    <string name="toolresult_capture_upstream">output was truncated before this copy was kept</string>
+    <string name="toolresult_capture_both">output was truncated before retention and the retained copy is also partial</string>
+    <string name="toolresult_storage_state">Storage: %1$s</string>
+    <string name="toolresult_storage_saved">saved for this task</string>
+    <string name="toolresult_storage_memory">not saved; this session only</string>
+    <string name="toolresult_evicted">%1$d older capture(s) were removed to keep this task within its storage bound.</string>
+    <string name="toolresult_restored">Restored from this task’s durable record.</string>
+    <string name="toolresult_previous">Previous page</string>
+    <string name="toolresult_next">Next page</string>
+    <string name="toolresult_retry">Retry</string>
+    <string name="toolresult_legacy">Only the saved summary is available. The complete output was not retained for this task.</string>
+    <string name="toolresult_temporary">Temporary chats do not keep tool results.</string>
+    <string name="toolresult_error">Could not read the retained result.</string>
+</resources>

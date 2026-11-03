@@ -40,7 +40,7 @@ public final class NotesDomainService: @unchecked Sendable {
         "proposal.preview", "proposal.create", "proposal.get", "proposal.list",
         "proposal.issueGrant", "proposal.apply", "proposal.resolve",
         "proposal.outbox", "proposal.outboxAck",
-    ] + NotesAssistantActions.all + NotesOCRActions.all
+    ] + NotesAssistantActions.all + NotesOCRActions.all + C08NotesTaskLaunchActions.all.sorted()
 
     private struct Bound {
         let epoch: UInt64
@@ -115,6 +115,10 @@ public final class NotesDomainService: @unchecked Sendable {
             guard AndroidRuntimeBootstrap.notesBinding(epoch: epoch, ownerToken: nil) != nil else {
                 throw NotesDomainError.staleGeneration
             }
+        }
+        if C08NotesTaskLaunchActions.handles(action) {
+            guard hasBoundEpoch(epoch) else { throw NotesDomainError.staleGeneration }
+            return try await C08NotesTaskLaunch.handle(epoch: epoch, action: action, payload: payload)
         }
         if NotesAssistantActions.handles(action) {
             // Validate the existing lazy Notes binding without opening its store

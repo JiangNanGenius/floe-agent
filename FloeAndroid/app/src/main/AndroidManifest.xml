@@ -7,17 +7,43 @@
         <package android:name="com.floe.agent.runtime.dev" />
         <package android:name="com.floe.agent.runtime.full" />
         <package android:name="com.floe.agent.runtime.full.dev" />
+        <!-- Android 11+ package visibility for the system recognizer and TTS
+             engine services used by C03. No app package is named here. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
     </queries>
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- C03 short interactive dictation only; long files use a cloud/Linux
+         transcription route and never this microphone permission. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- User-started, bounded network monitoring; never a background keepalive. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- C06 user-started packet-capture VPN/root foreground owner. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- G09-R2 bounded mediaProcessing export; the module service calls
+         stopSelf when idle and the App does not use it as a keepalive. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- C03 gallery save: API 28 only. API 29+ inserts its OWN image/video
+         rows through MediaStore and does not request broad READ permission. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
     <!-- G07.3B: user-created Agent schedules; wake-up receivers reconcile the
          durable schedule ledger instead of starting a foreground service at boot.
          Exact timing requires the user's Alarms & reminders special access. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- C06 system calendar: read shows the user's real CalendarContract
+         events; write is requested only for an explicit create/edit after the
+         user chose a writable calendar. The App never invents an account. -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
     <!-- G07: normal state permissions and explicit foreground Wi-Fi analysis.
          Location/Nearby permission requests happen only after the user's action. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -31,9 +57,54 @@
          Runtime-requested only on API>=37 at an explicit user action;
          G07 Wi-Fi scan/location permissions are independently scoped below. -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+    <!-- C05 real BLE GATT serial and Android USB host serial. Bluetooth
+         runtime grants are requested only after the user's explicit action;
+         legacy API 28-30 scan uses the already-declared fine location. No
+         all-files/USB storage permission is added (USB storage stays SAF). -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+    <!-- C06 system services: contacts read, NFC tag read and granular Health
+         Connect read permissions. Location permissions are already declared
+         for G07 and are reused (one-shot foreground only; no background
+         location permission is added). Health Connect permissions are read
+         only: no write, background-read, history or medical-data access. -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.NFC" />
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
+    <uses-permission android:name="android.permission.health.READ_ACTIVE_CALORIES_BURNED" />
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.READ_RESTING_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.READ_SLEEP" />
+    <uses-permission android:name="android.permission.health.READ_EXERCISE" />
+    <uses-permission android:name="android.permission.health.READ_WEIGHT" />
+    <uses-permission android:name="android.permission.health.READ_OXYGEN_SATURATION" />
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE_VARIABILITY" />
+    <uses-feature android:name="android.hardware.nfc" android:required="false" />
     <application android:name=".FloeApplication" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/Theme.Floe" android:allowBackup="false" android:supportsRtl="true"
         android:usesCleartextTraffic="false" android:enableOnBackInvokedCallback="true">
+        <provider android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.taskexports"
+            android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/task_export_paths" />
+        </provider>
+        <activity android:name="com.floe.android.notesplatform.NotesEngineeringPreviewActivity"
+            android:exported="false" />
+        <!-- Android 14+ Health Connect permission-rationale target. It only
+             explains the granular read-only use; every permission request
+             still goes through the system Health Connect contract. -->
+        <activity
+            android:name=".host.systemservices.HealthConnectRationaleActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Floe">
+            <intent-filter>
+                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+            </intent-filter>
+        </activity>
         <!-- G07.3B: OS wake transport. The receiver only enqueues bounded
              WorkManager jobs; it never launches a foreground service or an
              Agent run at boot. -->
@@ -49,15 +120,209 @@
                 <action android:name="com.floe.android.schedule.REARM" />
             </intent-filter>
         </receiver>
+        <!-- C06 local todo reminder delivery. The alarm carries only an
+             opaque todo id + occurrence; the worker re-reads the live original
+             store and never starts an Agent run or model inference. -->
+        <receiver
+            android:name="com.floe.android.host.calendar.TodoReminderReceiver"
+            android:exported="false" />
+        <!-- C06 bounded re-arm after boot, package replacement, clock or
+             timezone changes and an exact-alarm grant change. It stores no
+             todo body/title in unprotected boot storage. -->
+        <receiver
+            android:name="com.floe.android.host.calendar.TodoReminderWakeReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+                <action android:name="com.floe.android.calendar.REARM_TODO_REMINDERS" />
+            </intent-filter>
+        </receiver>
         <service
             android:name=".host.networkmonitor.NetworkMonitorService"
             android:exported="false"
             android:foregroundServiceType="dataSync"
             android:stopWithTask="true" />
-        <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
+        <!-- C06 no-root VpnService. The App is the only starter; the system
+             binds through BIND_VPN_SERVICE after the user's explicit consent.
+             specialUse is the declared FGS type for a user-started VPN that
+             forwards normal traffic, not an idle keepalive. -->
+        <service
+            android:name=".host.capture.VpnPacketCaptureService"
+            android:exported="false"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="true">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="user-initiated local packet capture VPN that forwards ordinary traffic" />
+        </service>
+        <!-- G09-R2 bounded cloud-generation dataSync owner. Non-exported,
+             App-owned, started only for an already persisted native job with
+             an opaque in-process claim token; stopWithTask prevents swipe-away
+             resurrection and the service stops when no claim remains. -->
+        <service
+            android:name="com.floe.android.host.creative.GenerationForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="true" />
+        <!-- Notification Cancel only; same-app PendingIntent, no command
+             extras beyond the opaque live claim handled by the owner. -->
+        <receiver
+            android:name="com.floe.android.host.creative.GenerationForegroundCancelReceiver"
+            android:exported="false" />
+        <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop" android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- C07 app entry: SEND/SEND_MULTIPLE and content VIEW are admitted
+                 by MainActivity as DATA only. The App-owned entry host applies
+                 the MIME/magic/size/count policy, asks for one destination and
+                 never starts a run, grants tool permission or overwrites a
+                 file. No new activity, permission or process is added. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="text/*" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="application/json" />
+                <data android:mimeType="application/xml" />
+                <data android:mimeType="application/javascript" />
+                <data android:mimeType="image/png" />
+                <data android:mimeType="image/jpeg" />
+                <data android:mimeType="image/webp" />
+                <data android:mimeType="image/gif" />
+                <data android:mimeType="image/heic" />
+                <data android:mimeType="image/heif" />
+                <data android:mimeType="image/avif" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="audio/*" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/x-zip-compressed" />
+                <data android:mimeType="application/dxf" />
+                <data android:mimeType="application/acad" />
+                <data android:mimeType="application/step" />
+                <data android:mimeType="model/iges" />
+                <data android:mimeType="model/gltf-binary" />
+                <data android:mimeType="model/gltf+json" />
+                <data android:mimeType="model/stl" />
+                <data android:mimeType="model/3mf" />
+                <data android:mimeType="application/x-floenote" />
+                <data android:mimeType="application/vnd.floe.note" />
+                <data android:mimeType="application/x-flocanvas" />
+                <data android:mimeType="application/vnd.floe.canvas" />
+                <data android:mimeType="application/x-floebackup" />
+                <data android:mimeType="application/vnd.floe.backup" />
+                <data android:mimeType="application/x-floecad" />
+                <data android:mimeType="application/vnd.floe.cad.package" />
+                <data android:mimeType="application/octet-stream" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="text/*" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="application/json" />
+                <data android:mimeType="application/xml" />
+                <data android:mimeType="application/javascript" />
+                <data android:mimeType="image/png" />
+                <data android:mimeType="image/jpeg" />
+                <data android:mimeType="image/webp" />
+                <data android:mimeType="image/gif" />
+                <data android:mimeType="image/heic" />
+                <data android:mimeType="image/heif" />
+                <data android:mimeType="image/avif" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="audio/*" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/x-zip-compressed" />
+                <data android:mimeType="application/dxf" />
+                <data android:mimeType="application/acad" />
+                <data android:mimeType="application/step" />
+                <data android:mimeType="model/iges" />
+                <data android:mimeType="model/gltf-binary" />
+                <data android:mimeType="model/gltf+json" />
+                <data android:mimeType="model/stl" />
+                <data android:mimeType="model/3mf" />
+                <data android:mimeType="application/x-floenote" />
+                <data android:mimeType="application/vnd.floe.note" />
+                <data android:mimeType="application/x-flocanvas" />
+                <data android:mimeType="application/vnd.floe.canvas" />
+                <data android:mimeType="application/x-floebackup" />
+                <data android:mimeType="application/vnd.floe.backup" />
+                <data android:mimeType="application/x-floecad" />
+                <data android:mimeType="application/vnd.floe.cad.package" />
+                <data android:mimeType="application/octet-stream" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:mimeType="text/plain" />
+                <data android:scheme="content" android:mimeType="text/*" />
+                <data android:scheme="content" android:mimeType="application/pdf" />
+                <data android:scheme="content" android:mimeType="application/json" />
+                <data android:scheme="content" android:mimeType="application/xml" />
+                <data android:scheme="content" android:mimeType="application/javascript" />
+                <data android:scheme="content" android:mimeType="image/png" />
+                <data android:scheme="content" android:mimeType="image/jpeg" />
+                <data android:scheme="content" android:mimeType="image/webp" />
+                <data android:scheme="content" android:mimeType="image/gif" />
+                <data android:scheme="content" android:mimeType="image/heic" />
+                <data android:scheme="content" android:mimeType="image/heif" />
+                <data android:scheme="content" android:mimeType="image/avif" />
+                <data android:scheme="content" android:mimeType="image/*" />
+                <data android:scheme="content" android:mimeType="audio/*" />
+                <data android:scheme="content" android:mimeType="video/*" />
+                <data android:scheme="content" android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                <data android:scheme="content" android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+                <data android:scheme="content" android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
+                <data android:scheme="content" android:mimeType="application/zip" />
+                <data android:scheme="content" android:mimeType="application/x-zip-compressed" />
+                <data android:scheme="content" android:mimeType="application/dxf" />
+                <data android:scheme="content" android:mimeType="application/acad" />
+                <data android:scheme="content" android:mimeType="application/step" />
+                <data android:scheme="content" android:mimeType="model/iges" />
+                <data android:scheme="content" android:mimeType="model/gltf-binary" />
+                <data android:scheme="content" android:mimeType="model/gltf+json" />
+                <data android:scheme="content" android:mimeType="model/stl" />
+                <data android:scheme="content" android:mimeType="model/3mf" />
+                <data android:scheme="content" android:mimeType="application/x-floenote" />
+                <data android:scheme="content" android:mimeType="application/vnd.floe.note" />
+                <data android:scheme="content" android:mimeType="application/x-flocanvas" />
+                <data android:scheme="content" android:mimeType="application/vnd.floe.canvas" />
+                <data android:scheme="content" android:mimeType="application/x-floebackup" />
+                <data android:scheme="content" android:mimeType="application/vnd.floe.backup" />
+                <data android:scheme="content" android:mimeType="application/x-floecad" />
+                <data android:scheme="content" android:mimeType="application/vnd.floe.cad.package" />
+                <data android:scheme="content" android:mimeType="application/octet-stream" />
+            </intent-filter>
+            <!-- Custom deep links only. No file path, prompt, model text,
+                 approval or permission parameter is accepted by the parser. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="floe" android:host="new" />
+                <data android:scheme="floe" android:host="task" android:pathPrefix="/" />
+                <data android:scheme="floe" android:host="schedule" android:pathPrefix="/" />
+                <data android:scheme="floe" android:host="share" />
             </intent-filter>
         </activity>
         <!--

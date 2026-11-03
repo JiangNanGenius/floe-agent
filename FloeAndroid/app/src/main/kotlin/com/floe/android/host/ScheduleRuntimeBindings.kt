@@ -79,7 +79,9 @@ internal class RuntimeScheduleEnvironmentProvider(
                     val proof = client.currentPeerProof()
                     val ownUid = android.os.Process.myUid()
                     val status = result(client.exchange("status"))
-                    val install = result(client.exchange("install.status"))
+                    val install = RuntimeMetadataRead.read("install.status") { operation, payload, requestID ->
+                        client.exchange(operation, payload, requestID)
+                    }
                     val refusal = ScheduleEnvironmentAdmission.refusal(
                         componentRefusal = null,
                         protocol = status.optInt("protocol", -1),
@@ -97,7 +99,9 @@ internal class RuntimeScheduleEnvironmentProvider(
                     if (refusal != null) {
                         return@use TaskScheduleEnvironmentResult.Unavailable(refusal)
                     }
-                    val list = result(client.exchange("environment.list"))
+                    val list = RuntimeMetadataRead.read("environment.list") { operation, payload, requestID ->
+                        client.exchange(operation, payload, requestID)
+                    }
                     // New-scope epoch fence: never publish a snapshot read
                     // for a root generation that was retired mid-read.
                     if (currentNativeEpoch() != epoch) {

@@ -474,7 +474,16 @@ public actor LocalGitService {
     }
 
     public func push(at root: URL, token: String?) throws {
-        try authenticatedRemoteOperation(at: root, token: token, operation: "push") { remote, callbacks in
+        // Receipt closure (GIT-PUSH-CONFLICT): the transport return value
+        // alone cannot report a server-side ref rejection — libgit2 delivers
+        // per-ref outcomes only through the push_update_reference callback
+        // (vendored remote.c returns the git_push_finish transport code even
+        // when every ref is rejected). A fresh recorder per push call keeps
+        // per-operation payload isolation; it is evaluated only after the
+        // transport returns, so a rejected — or unreported — push can never
+        // fall through to the success path below.
+        let recorder = GitPushUpdateRecorder()
+        try authenticatedRemoteOperation(at: root, token: token, operation: "push", pushRecorder: recorder) { remote, callbacks in
             let repository = git_remote_owner(remote)
             guard let repository else { throw FloeError.internalError("Git remote has no repository") }
             var head: OpaquePointer?
@@ -491,13 +500,32 @@ public actor LocalGitService {
             // trust seam: never let repository config widen redirect scope.
             GitRemoteOperationPolicy.applyPinnedRedirects(to: &options)
             options.callbacks = callbacks
+            options.callbacks.push_update_reference = Self.pushUpdateReferenceCallback
             try refspec.withCString { rawRefspec in
                 var mutable: UnsafeMutablePointer<CChar>? = UnsafeMutablePointer(mutating: rawRefspec)
                 try withUnsafeMutablePointer(to: &mutable) { strings in
                     var values = git_strarray(strings: strings, count: 1)
-                    try Self.check(git_remote_push(remote, &values, &options), operation: "push")
+                    let result = git_remote_push(remote, &values, &options)
+                    if result == GIT_ENONFASTFORWARD.rawValue {
+                        // Local pre-flight truth (vendored push.c): the
+                        // remote advertises commits the local branch does
+                        // not contain, so libgit2 aborts before any object
+                        // transfer. Record it as the same bounded refusal
+                        // the server would have reported.
+                        recorder.record(rejected: name, reason: .nonFastForward)
+                    } else {
+                        try Self.check(result, operation: "push")
+                    }
                 }
             }
+            // Transport finished: a completed push against the pinned
+            // backend always carries a per-ref server report (report-status
+            // is negotiated for every push command, including no-op
+            // up-to-date updates, so "nothing to push" still reports one
+            // accepted ref). Decide strictly from the recorded receipt:
+            // any rejection throws GitPushRefusedError; an empty report
+            // throws GitPushUnreportedError instead of fabricating success.
+            _ = try GitPushOutcomeEvaluator.evaluate(updates: recorder.snapshot, pushedRefs: [name])
         }
         postRepositoryDidChange(at: root)
     }
@@ -883,6 +911,7 @@ public actor LocalGitService {
         at root: URL,
         token: String?,
         operation: String,
+        pushRecorder: GitPushUpdateRecorder? = nil,
         body: (OpaquePointer, git_remote_callbacks) throws -> Void
     ) throws {
         try withRemoteRuntime {
@@ -898,7 +927,11 @@ public actor LocalGitService {
                 if let rawURL = git_remote_url(remote), let url = URL(string: String(cString: rawURL)) {
                     try Self.validateRemote(url)
                 }
-                let payload = CredentialPayload(token: token)
+                // Per-operation payload: the recorder lives only on this
+                // call's payload and is never shared across remote
+                // operations (which are additionally serialized by the
+                // remote epoch gate).
+                let payload = CredentialPayload(token: token, pushUpdates: pushRecorder)
                 try Self.withPayload(payload) { pointer in
                     var callbacks = git_remote_callbacks()
                     try Self.check(
@@ -1055,9 +1088,46 @@ public actor LocalGitService {
         }
     }
 
-    private final class CredentialPayload: @unchecked Sendable {
+    /// Internal (not private) so the FloeGitTests seam can drive the real
+    /// callback trampoline with per-operation payloads; never public API.
+    final class CredentialPayload: @unchecked Sendable {
         let token: String?
-        init(token: String?) { self.token = token }
+        /// Push-update recorder installed for the duration of one push
+        /// operation; nil for every other remote operation.
+        let pushUpdates: GitPushUpdateRecorder?
+        init(token: String?, pushUpdates: GitPushUpdateRecorder? = nil) {
+            self.token = token
+            self.pushUpdates = pushUpdates
+        }
+
+        /// Called from libgit2's `push_update_reference` callback while the
+        /// transport is still running. A NULL status means the server
+        /// accepted the ref; a non-NULL status means the server rejected it.
+        /// The raw status text is classified and discarded here — it never
+        /// enters the recorder, the receipt, logs or UI.
+        func recordPushUpdate(refname: String?, status: String?) {
+            guard let recorder = pushUpdates else { return }
+            let name = refname ?? "unknown-ref"
+            if let status {
+                recorder.record(rejected: name, reason: GitPushRejectionClassifier.classify(refname: name, status: status))
+            } else {
+                recorder.record(accepted: name)
+            }
+        }
+    }
+
+    /// Internal so tests exercise the exact trampoline libgit2 invokes.
+    static let pushUpdateReferenceCallback: git_push_update_reference_cb = { refname, status, rawPayload in
+        guard let rawPayload else { return GIT_EUSER.rawValue }
+        // Always let the full server report arrive; the receipt is
+        // evaluated after the transport returns, never from inside the
+        // callback (no abort-on-first-rejection, no auto replay).
+        Unmanaged<CredentialPayload>.fromOpaque(rawPayload).takeUnretainedValue()
+            .recordPushUpdate(
+                refname: refname.map { String(cString: $0) },
+                status: status.map { String(cString: $0) }
+            )
+        return 0
     }
 
     private static func withPayload<T>(_ payload: CredentialPayload, _ body: (UnsafeMutableRawPointer) throws -> T) throws -> T {

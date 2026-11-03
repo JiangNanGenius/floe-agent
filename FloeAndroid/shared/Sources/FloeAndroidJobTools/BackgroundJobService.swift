@@ -337,11 +337,13 @@ public actor BackgroundJobService {
         // observe the job as pending, so a crash between submit and launch
         // leaves a reconcilable edge instead of a lost wait.
         if waitForCompletion, let registerDependency {
+            let isManagedService = persisted.targetTool == "exec.localService"
+                || C01ManagedServiceDeclaration.isServicePayload(persisted.payloadJSON)
             await registerDependency(
                 persisted.id,
                 persisted.runID,
                 persisted.conversationID,
-                persisted.targetTool == "exec.localService" ? "service" : "job"
+                isManagedService ? "service" : "job"
             )
         }
         if persisted.kind == .download, let downloadHandler {
@@ -537,10 +539,12 @@ public actor BackgroundJobService {
         if job.kind == .download { await downloadCancelHandler?(id) }
         if let operation = preparedOperations[id] { await operation.requestCancellation() }
         if let recorder = progressRecorders[id] { await recorder.markCancellationRequested() }
+        let managedService = job.targetTool == "exec.localService"
+            || C01ManagedServiceDeclaration.isServicePayload(job.payloadJSON)
         try await store.requestCancellation(
             id: id,
-            reason: job.targetTool == "exec.localService"
-                ? "Stop requested; waiting for the native service to exit"
+            reason: managedService
+                ? "Stop requested; waiting for the managed service to exit"
                 : "Cancellation requested; waiting for the processor to stop and clean up")
         if job.state == .queued {
             // Nothing has started executing yet; queued work may cancel
@@ -719,7 +723,13 @@ public actor BackgroundJobService {
     /// terminal state does not overwrite it.
     public func resolveServiceReady(id: UUID, note: String) async {
         guard let resolveDependency else { return }
-        guard let job = try? await store.job(id: id), job.targetTool == "exec.localService" else { return }
+        guard let job = try? await store.job(id: id) else { return }
+        // C01 typed managed services keep target `exec.shell`; the durable
+        // payload is the only honest discriminator. The legacy local-service
+        // target remains accepted for macOS/donor compatibility.
+        let typedService = C01ManagedServiceDeclaration.isServicePayload(job.payloadJSON)
+        guard job.targetTool == "exec.localService"
+            || (job.targetTool == "exec.shell" && typedService) else { return }
         await resolveDependency(id, .resolved, note)
     }
 

@@ -9,6 +9,9 @@
 // replayed journal entry is a recorded no-op, never a double increment or a
 // premature decrement.
 import Foundation
+#if canImport(Android)
+import Android
+#endif
 import FloeCore
 #if canImport(Darwin)
 import Darwin

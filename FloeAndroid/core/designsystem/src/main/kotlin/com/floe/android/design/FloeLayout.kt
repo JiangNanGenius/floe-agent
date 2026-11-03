@@ -104,6 +104,11 @@ object FloeLayout {
     // Toolbar / chrome
     val ToolbarHeight = 52.dp
     val ToolbarButtonSize = 44.dp // visual circle; clickable box reaches MinimumTarget
+    /** Compact navigation-bar affordance: SF-Symbol-scale glyph inside the
+     *  still-48dp Android target. Used by document/media/settings chrome so a
+     *  group of six actions reads as iOS toolbar controls, not six pills. */
+    val ToolbarCompactVisualSize = 34.dp
+    val ToolbarCompactIconSize = 17.dp
     val SidebarRowHeight = 48.dp
     val SidebarRowIconSize = 24.dp
     val SettingsSheetCorner = 24.dp

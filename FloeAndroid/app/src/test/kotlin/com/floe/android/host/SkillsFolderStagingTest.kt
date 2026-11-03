@@ -295,8 +295,9 @@ class SkillsFolderStagingTest {
         assertTrue(channel.calls.any { it.name == "treeAbort" })
         assertTrue(channel.calls.any { it.name == "fileAbort" })
         assertTrue(channel.calls.any { it.name == "routeClose" })
-        // Failed staging KEEPS the retry-useful grant (no release).
-        assertEquals(0, reader.releaseCalls.get())
+        // An over-limit source cannot be retried unchanged. Its temporary
+        // import grant is released after the owned tree and route drain.
+        assertEquals(1, reader.releaseCalls.get())
     }
 
     @Test

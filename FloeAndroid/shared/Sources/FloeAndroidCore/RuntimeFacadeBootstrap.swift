@@ -749,6 +749,7 @@ public enum AndroidRuntimeBootstrap {
         await G02RuntimeComposition.shared.beginRetirement(epoch: gen.epoch)
         await gen.owner.close()
         _ = await RuntimeFacadeJobBindings.shared.retire(epoch: gen.epoch)
+        _ = C01LinuxEnvironmentDomain.shared.retire(epoch: gen.epoch)
         BackgroundJobOutputSpoolRoot.unbind(epoch: gen.epoch)
         gen.content.retireAll()
         RuntimeOwnedWorkRegistry.shared.finishGeneration(epoch: gen.epoch)
@@ -956,6 +957,7 @@ public enum AndroidRuntimeBootstrap {
         // The real database close happens BEFORE this job's single terminal.
         await gen.owner.close()
         _ = await RuntimeFacadeJobBindings.shared.retire(epoch: gen.epoch)
+        _ = C01LinuxEnvironmentDomain.shared.retire(epoch: gen.epoch)
         BackgroundJobOutputSpoolRoot.unbind(epoch: gen.epoch)
         gen.content.retireAll()
         RuntimeOwnedWorkRegistry.shared.finishGeneration(epoch: epoch)
@@ -1055,6 +1057,7 @@ public enum AndroidRuntimeBootstrap {
         await G02RuntimeComposition.shared.beginRetirement(epoch: gen.epoch)
         await gen.owner.close()
         _ = await RuntimeFacadeJobBindings.shared.retire(epoch: gen.epoch)
+        _ = C01LinuxEnvironmentDomain.shared.retire(epoch: gen.epoch)
         BackgroundJobOutputSpoolRoot.unbind(epoch: gen.epoch)
         gen.content.retireAll()
         RuntimeOwnedWorkRegistry.shared.finishGeneration(epoch: gen.epoch)
@@ -1469,6 +1472,12 @@ public final class RuntimeOwnedWorkRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return entries.values.filter { $0.epoch == epoch }.count
+    }
+
+    /// Component drain is a negative gate only; it never detaches or grants
+    /// authority. Actual retirement still checks every exact owned token.
+    public func count(for epoch: UInt64, ownerPrefix: String) -> Int {
+        lock.withLock { entries.values.filter { $0.epoch == epoch && $0.ownerID.hasPrefix(ownerPrefix) }.count }
     }
 
     public func countsByKind(for epoch: UInt64) -> [String: Int] {

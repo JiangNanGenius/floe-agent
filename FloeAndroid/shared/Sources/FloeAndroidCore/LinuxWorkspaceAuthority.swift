@@ -102,7 +102,7 @@
 //    runs the ORIGINAL registerIntoCurrentGeneration +
 //    publishToolsIfQualified gates exactly (refusal codes
 //    epochNotBound / readinessNotIngressed). Exact sequence + semantics:
-//    Local/Private/android-g03-20261022/r3/core-closure/FROZEN_HOST_CONTRACT.json.
+// Source qualification evidence is retained in the private coordinator record.
 // 6. G03-R3 target-scoped purge (job-3d39b56695c44bd2): after the ORIGINAL
 //    deletion lifecycle has drained the target's owned work and committed,
 //    `ConversationPrivateWorkspaceCleanup` calls
@@ -402,39 +402,47 @@ public enum LinuxWorkspaceAuthority {
         let record: WorkspaceRecord?
         do { record = try await store.workspace(id: workspaceID) } catch { return nil }
         guard let record else { return nil }
-        // Android G02 binds ONLY the ORIGINAL persisted private-task shape.
-        // A project workspace with a security-scoped bookmark is NOT an
-        // Android ingress authority (the same rule that refuses bookmark refs
-        // in RuntimeFacadeRuns.reserveStagedHandles) — fail closed instead of
-        // inventing a location.
-        guard record.kind == .privateTask,
-              let internalRelativePath = record.internalRelativePath else { return nil }
-        let expected = "PrivateTasks/\(conversationID.uuidString)"
-        guard internalRelativePath == expected else { return nil }
-        guard let storagePath = currentStorageRootPath() else { return nil }
-        let rootURL = URL(fileURLWithPath: storagePath)
-            .appendingPathComponent("Workspace", isDirectory: true)
-            .appendingPathComponent(internalRelativePath, isDirectory: true)
-            .standardizedFileURL
-        guard rootURL.path.hasPrefix(storagePath + "/Workspace/") else { return nil }
-        // Materialize with the ORIGINAL non-following containment discipline
-        // (G02WorkspaceCleaning): managed components must be real
-        // directories; ENOENT only at the FINAL owned component may create.
+        // Android binds exactly TWO persisted managed shapes:
+        //   * the ORIGINAL private-task shape `PrivateTasks/<conversationID>`
+        //     (fresh-task materialization keeps the original G02 rules);
+        //   * the managed project shape `Projects/<projectUUID>` created by
+        //     C01ProjectLibrary. An external/bookmark project is NOT an
+        //     Android ingress authority and fails closed instead of
+        //     inventing a location. A project leaf that is later missing is
+        //     NEVER recreated here: the typed root-state/lookup fails closed.
+        guard let internalRelativePath = record.internalRelativePath,
+              let storagePath = currentStorageRootPath() else { return nil }
         let workspaceRoot = storagePath + "/Workspace"
-        let privateTasksRoot = workspaceRoot + "/PrivateTasks"
-        let target = rootURL.path
-        // Fresh-task materialization (Main review 2026-10-22): the resolver
-        // creates ONLY the three explicitly managed components of the ONE
-        // ORIGINAL owned shape under the ACCEPTED root — `<root>/Workspace`,
-        // `<root>/Workspace/PrivateTasks`, then the canonical leaf. Any
-        // existing entry that is not a real directory (symlink/file/special/
-        // unreadable) refuses and is touched NOTHING, exactly like the
-        // original G02WorkspaceCleaning containment rules. Nothing here ever
-        // guesses a different workspace, bookmark or external location.
-        guard ensureManagedDirectory(workspaceRoot, allowCreate: true),
-              ensureManagedDirectory(privateTasksRoot, allowCreate: true),
-              ensureManagedDirectory(target, allowCreate: true) else {
-            return nil
+        let target: String
+        switch record.kind {
+        case .privateTask:
+            guard internalRelativePath == "PrivateTasks/\(conversationID.uuidString)"
+            else { return nil }
+            let privateTasksRoot = workspaceRoot + "/PrivateTasks"
+            target = workspaceRoot + "/" + internalRelativePath
+            guard target.hasPrefix(storagePath + "/Workspace/") else { return nil }
+            // Materialize with the ORIGINAL non-following containment
+            // discipline (G02WorkspaceCleaning): managed components must be
+            // real directories; ENOENT only at the FINAL owned component may
+            // create. Nothing here guesses a different workspace/bookmark.
+            guard ensureManagedDirectory(workspaceRoot, allowCreate: true),
+                  ensureManagedDirectory(privateTasksRoot, allowCreate: true),
+                  ensureManagedDirectory(target, allowCreate: true) else {
+                return nil
+            }
+        case .project:
+            guard record.id == workspaceID,
+                  internalRelativePath
+                    == C01ProjectRootLayout.internalRelativePath(projectID: workspaceID),
+                  C01ProjectRootLayout.isManagedProject(record),
+                  C01ProjectRootLayout.inspectProjectDirectory(
+                    rootPath: storagePath, projectID: workspaceID) == .available
+            else { return nil }
+            target = C01ProjectRootLayout.projectDirectory(
+                rootPath: storagePath, projectID: workspaceID)
+            guard target.hasPrefix(storagePath + "/Workspace/Projects/") else {
+                return nil
+            }
         }
         return (workspaceID, conversationID, URL(fileURLWithPath: target, isDirectory: true))
     }

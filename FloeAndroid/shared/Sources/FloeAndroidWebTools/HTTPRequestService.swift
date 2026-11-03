@@ -265,6 +265,44 @@ public struct HTTPRequestService: Sendable {
     /// underlying URLSession task is cancelled and `FloeError.cancelled` is
     /// thrown, so a shell command that owns this download can stop promptly
     /// instead of holding the engine's run gate until the network timeout.
+    /// Small binary resources use the qualified incremental collector: both
+    /// declared length and actual body bytes cancel the owned request at the
+    /// cap. Unlike download(for:), oversized bodies never fill a temp file.
+    /// Uses this service's existing ephemeral public redirect policy.
+    public static func boundedPublicData(url: URL, timeout: TimeInterval = 60,
+                                  maxBytes: Int,
+                                  cancellation: CancellationToken) async throws -> Data {
+        guard maxBytes > 0, maxBytes <= 32 * 1024 * 1024 else {
+            throw HTTPRequestError.invalidURL("publicBinaryResourceRequired")
+        }
+        try cancellation.throwIfCancelled()
+        try PublicNetworkTargetPolicy.validate(url)
+        let ownedService = HTTPRequestService()
+        let session = ownedService.session
+        defer { session.invalidateAndCancel() }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = max(1, min(timeout, 120))
+        let owned = Task {
+            try await StreamingTransport.collect(request, via: session, maxBytes: maxBytes)
+        }
+        let watch = Task {
+            while !Task.isCancelled {
+                if cancellation.isCancelled { owned.cancel(); return }
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            }
+        }
+        defer { watch.cancel() }
+        let (bytes, response) = try await owned.value
+        try cancellation.throwIfCancelled()
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+              let finalURL = response.url else {
+            throw HTTPRequestError.requestFailed("fontResourceResponse")
+        }
+        try PublicNetworkTargetPolicy.validate(finalURL)
+        return bytes
+    }
+
     public func download(
         url: URL,
         timeout: TimeInterval,

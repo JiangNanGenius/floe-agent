@@ -22,10 +22,10 @@ public actor DatabaseManager {
     private var migrator = DatabaseMigrator()
 
     /// Schema version tracked in `user_version`-aligned migrations. Must
-    /// match the highest registered migration (v49); every historical bump
+    /// match the highest registered migration (v52); every historical bump
     /// paired this constant with the new migration so that
     /// `user_version == currentSchemaVersion` after `migrate()`.
-    public static let currentSchemaVersion = 49
+    public static let currentSchemaVersion = 52
 
     public init(path: URL) throws {
         self.pool = try DatabasePool(path: path.path, configuration: Self.configuration())
@@ -91,6 +91,9 @@ public actor DatabaseManager {
         V47AndroidWorkspaceSources.register(into: &migrator)
         V48TaskPolicyConvergence.register(into: &migrator)
         V49UserQuestions.register(into: &migrator)
+        V50ConversationPinning.register(into: &migrator)
+        V51MailAccounts.register(into: &migrator)
+        V52AndroidCodeClosure.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {
@@ -160,5 +163,31 @@ public actor DatabaseManager {
     public func close() async throws {
         if let pool { try await pool.close() }
         if let queue { try queue.close() }
+    }
+}
+
+// MARK: - V50 conversation pinning (Android schema position 50)
+
+/// Durable, optional sidebar pin for ordinary Android conversations.
+///
+/// The iOS reference registers the same row column as `V55ConversationPinning`
+/// (Git object a59b4d40); the Android overlay's highest migration was v49, so
+/// the additive `ALTER TABLE` is registered HERE as the ONE next-unused
+/// position, v50. `pinned_at` stores the instant a row moved into the pinned
+/// group; NULL means "not pinned", which is exactly the value every pre-v50
+/// row already has, so historical data decodes unchanged with no backfill.
+/// Pinned rows sort first within their existing group; the rest keep the
+/// established `updated_at` recency order. Only the conversation row gains a
+/// column: no table, constraint, trigger or index is renamed or removed, and
+/// no parallel per-device pin store is introduced. Rename, archive, restore,
+/// workspace moves and temporary-chat promotion write other columns/tables
+/// and therefore leave the pin intact; a newly promoted ordinary chat starts
+/// unpinned because its INSERT omits the column.
+enum V50ConversationPinning {
+    static func register(into migrator: inout DatabaseMigrator) {
+        migrator.registerMigration("v50_conversation_pinning") { db in
+            try db.execute(sql: "ALTER TABLE conversations ADD COLUMN pinned_at TEXT")
+            try db.execute(sql: "PRAGMA user_version = 50")
+        }
     }
 }

@@ -1,0 +1,312 @@
+{
+ "schema": 1,
+ "package": "Citadel",
+ "upstreamURL": "https://github.com/orlandos-nl/Citadel.git",
+ "upstreamCommit": "ae8562f895de06ccb86fdb1cbb65fd99c8976e12",
+ "upstreamLicense": "MIT (LICENSE retained verbatim)",
+ "slice": "Sources/Citadel, Sources/CCitadelBcrypt, LICENSE, Package.swift, FLOE_PATCHES.md",
+ "counts": {
+  "added": 2,
+  "identical": 45,
+  "modified": 1
+ },
+ "files": [
+  {
+   "path": "FLOE_PATCHES.md",
+   "sha256": "feb88552d9233792efbd8d285282808346a1ede340921c08e626f75b8606198c",
+   "bytes": 2666,
+   "status": "added"
+  },
+  {
+   "path": "LICENSE",
+   "sha256": "580a39b7c09cba3cd18a5b1e0d4376e9d1ac200d241bda87e95ed74917bc3b31",
+   "bytes": 1065,
+   "status": "identical"
+  },
+  {
+   "path": "Package.swift",
+   "sha256": "093cf788fcca805bf4cf149bbc4de45b7a6ac2ab9eda6526bfe10dde7ab1c466",
+   "bytes": 1859,
+   "status": "modified"
+  },
+  {
+   "path": "Sources/CCitadelBcrypt/bcrypt-kdf.c",
+   "sha256": "6f061b0e552c6e1a801baa8e8beb96b63350ea46744dc058e0051112f6d53daa",
+   "bytes": 5545,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/CCitadelBcrypt/bcrypt-kdf.h",
+   "sha256": "38812b1edb8ba8abda14a920bb327ea2607191ec66c0591f45f177cf0249a7b6",
+   "bytes": 506,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/CCitadelBcrypt/bcrypt.c",
+   "sha256": "6ff669e3486d13e426d3e223b299d6506d8734fce790c93adce0d709f5e62dbb",
+   "bytes": 7737,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/CCitadelBcrypt/bcrypt.h",
+   "sha256": "a2293e2b7928fcff868ab41e6eb0a81a7c94026fb7c223c893efef1685a007e7",
+   "bytes": 1114,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/CCitadelBcrypt/blf.c",
+   "sha256": "9793f6e45a4eff070194ad3e1a20ed79b00fc5e9bd89bc30367837cc65d5a4dd",
+   "bytes": 26302,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/CCitadelBcrypt/blf.h",
+   "sha256": "e3b1bdf7276f3f14af41a00d86b9f8d7e6dab43f1a07a8d4dd7530149c77e38b",
+   "bytes": 3585,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/CCitadelBcrypt/include/module.modulemap",
+   "sha256": "131e821edb7ee0c112cb0b20b4c33dfe3cb16756de262b8f7a289a7604b0ffac",
+   "bytes": 81,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/Algorithms/AES.swift",
+   "sha256": "2975e92c2e185d872a29b7f1a9518209b0253d119ce3f13c57dfdc7c2da8e357",
+   "bytes": 15817,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/Algorithms/DH-Helpers.swift",
+   "sha256": "dd43bffe0a0c29b02b2ccf3e4ccd5363a4484469d8c0f593ea48b736c7bc96ed",
+   "bytes": 12640,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/Algorithms/DiffieHellmanGroup14Sha1.swift",
+   "sha256": "ae30c129191445997dd300bec27cfcfdc76317b324e953d6f12d69cfcb0a3820",
+   "bytes": 11636,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/Algorithms/DiffieHellmanGroup14Sha256.swift",
+   "sha256": "387b81196d7229cbbd51e8f406537df9c4536759a4c8da1ce96f7a8757e56e54",
+   "bytes": 11653,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/Algorithms/RSA.swift",
+   "sha256": "86761dbb89799195cc9ba0b237852be82718f04583d0692c3d5d315eb0676884",
+   "bytes": 17960,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/BCrypt.swift",
+   "sha256": "d1829a3aa5be32364985f70d3c35249fab13285cd8953338270c63e441460095",
+   "bytes": 466,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/ByteBufferHelpers.swift",
+   "sha256": "ba3ebe856cb28eb9bbdaf03240c8b540ede42fe92f78d3b276232b52b4b4684b",
+   "bytes": 4419,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/ChannelUnwrapper.swift",
+   "sha256": "43b484bd513376f6079e4f1d5494cf58513770d6ba99d47a4df9b1d90a09ba4f",
+   "bytes": 2205,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/Client.swift",
+   "sha256": "e208c8486d8ee66da23d8a06899ed4567db16df8d29fecffb8a921a3b6d3b730",
+   "bytes": 14453,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/ClientSession.swift",
+   "sha256": "0f531ced1d23822a1f9ac463d1485cedb08d41ce0ee3e95d5ad9e513d25e37b7",
+   "bytes": 13508,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/DirectTCPIP/Client/DirectTCPIP+Client.swift",
+   "sha256": "2536cc8c9323af93fa7b0109d1dd6fce9a516b22656a14878b92c08d6fa268a3",
+   "bytes": 2444,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/DirectTCPIP/Server/DirectTCPIP+Server.swift",
+   "sha256": "ebf2db6c67dea53facb669dfcbb16877d765615014c55ad5e633961bb79e08d6",
+   "bytes": 2311,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/Errors.swift",
+   "sha256": "4039b8c97d95904ead92e34101ced81a08f984594dfd355e821819779a0b6b25",
+   "bytes": 1193,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/Exec/Client/ExecClient.swift",
+   "sha256": "097d4e48f95d4f4970ff6abc1f251ddb95a0e2a968e7b97652ff87ac6e4aecbc",
+   "bytes": 5631,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/Exec/Server/ExecDelegate.swift",
+   "sha256": "ed9aae830b83aeedee8db82b0a9b6bfc0f4f058ba30060134ea443a238b10f32",
+   "bytes": 1302,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/Exec/Server/ExecHandler.swift",
+   "sha256": "da466b51c207b2a66f7067bb4a9e53e1644da712fdf2760fd29508576aaaddb1",
+   "bytes": 6945,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/NIOGlueHandler.swift",
+   "sha256": "714573c860b2866fe77aaee70d5c375adefe4408e71fc56c97bef8ad86a41f5a",
+   "bytes": 3368,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/OpenSSHKey.swift",
+   "sha256": "e33d2ccc3b85ea796b06bc96e7efbd6004422ced8c682c4343e9c678a0922682",
+   "bytes": 15515,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/RemotePortForward/Client/RemotePortForward+Client.swift",
+   "sha256": "718344bf84c9cb592b9b28257d53e19289ef8c24ef4e6942e79a0835181bb734",
+   "bytes": 12859,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/RemotePortForward/Server/RemotePortForward+Server.swift",
+   "sha256": "aa88252bfb9f66759497cd62c33e67ea8f8099a163d17b9f9826a05ead260cc7",
+   "bytes": 9959,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/SFTP/Client/SFTPClient.swift",
+   "sha256": "ad6c49e2bdfe935651dfe1c032883e5ba8455165b50be473a414fe28c0956bf3",
+   "bytes": 22604,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/SFTP/Client/SFTPClientInboundHandler.swift",
+   "sha256": "8ea1f9585f564300f4fd25808b276ce7040a5396edf17ff4f5573a3014a95444",
+   "bytes": 2127,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/SFTP/Client/SFTPFile.swift",
+   "sha256": "eec22a7fa8fa0023e5ae18b941b858b0d1c0279515fa0b933cd6e4e0dc2a446d",
+   "bytes": 12404,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/SFTP/Client/SFTPSubsystemChannel.swift",
+   "sha256": "d4ac664615e95693b8b9d1d2dd1061b0eb7707db0263fd1fd7c2ffef15138520",
+   "bytes": 5561,
+   "status": "added"
+  },
+  {
+   "path": "Sources/Citadel/SFTP/SFTPBasicEnums.swift",
+   "sha256": "60fa85de3148028b136c94665b747392255d7b0e7873a6b31ee3c249db5df6fc",
+   "bytes": 5190,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/SFTP/SFTPFileFlags.swift",
+   "sha256": "e235c9b6af438c5f6f38b504fa62a213c30c84ba7d0c51b700042d42fe9e8f42",
+   "bytes": 4926,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/SFTP/SFTPMessage.swift",
+   "sha256": "f218da50ad54fc55b235a58bbe31bcb104583c0a17c495798bdf9ff90c12d63e",
+   "bytes": 26888,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/SFTP/SFTPMessageParser.swift",
+   "sha256": "8a793a2bcd5f1f2c1165288fc65193a87c3c89f6e666d52c353206a1a06f5f66",
+   "bytes": 14261,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/SFTP/SFTPSerializer.swift",
+   "sha256": "7322b30fadb8f14d9243d94987b2b4f8a7e4a6ed4127ad03a8cd1ab4674bb8ad",
+   "bytes": 6255,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/SFTP/Server/SFTPServer.swift",
+   "sha256": "54b79a330aab0f19c3fa08c63ea549e1e5918ae3957fce9ad9352d09462618f4",
+   "bytes": 5397,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/SFTP/Server/SFTPServerInboundHandler.swift",
+   "sha256": "f60cbc5b9e97010f47d12788b9a9eb4565bc8ad4c282a32fe71cee5ac057f81b",
+   "bytes": 23529,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/SSHAuthenticationMethod.swift",
+   "sha256": "9464628198578e219104cd1db8d209d4441d368c65490944af17ad1c3fda4b50",
+   "bytes": 5309,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/SSHCert.swift",
+   "sha256": "dc867fbf844722933ec017aa958dc1bbff9731c1e82826a86a707cddd53bfadb",
+   "bytes": 5796,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/SSHConnectionPoolSettings.swift",
+   "sha256": "d62953019369aa5dc5dfdd67f053a8b86e695be39033c455bd763a2d13f4f386",
+   "bytes": 1145,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/SSHKeyTypeDetection.swift",
+   "sha256": "97d07b22b9fb4daa4a12e982ac7e33e64875f8b906f238230129e2e8aeecde07",
+   "bytes": 11038,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/Server.swift",
+   "sha256": "06ccf403f0afdafa951aee2b41ec187ca2023d99e435fc86e09f5f06aafb73bf",
+   "bytes": 14289,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/Shell/Server/ShellDelegate.swift",
+   "sha256": "7423bad85d3aa00bbfd53283351846bf8835ca96e9a5a61f96b8ec567aedd15f",
+   "bytes": 4256,
+   "status": "identical"
+  },
+  {
+   "path": "Sources/Citadel/TTY/Client/TTY.swift",
+   "sha256": "61b358ba713286d3f69ba78714b17e0d0b00c2cc9a8398e4fb2a3d116dffacd0",
+   "bytes": 20888,
+   "status": "identical"
+  }
+ ],
+ "materialize": [
+  "cp -R citadel-overlay \"$FLOEANDROID/shared/Vendor/SSH/Citadel\"",
+  "verify every file against this manifest before changing shared/Package.swift"
+ ],
+ "packageIntegration": {
+  "packageSwift": "replace .package(url: \"https://github.com/orlandos-nl/Citadel.git\", revision: \"ae8562f895de06ccb86fdb1cbb65fd99c8976e12\") with .package(name: \"Citadel\", path: \"Vendor/SSH/Citadel\")",
+  "packageResolved": "remove only the citadel remoteSourceControl entry; keep every other pin byte-for-byte",
+  "note": "Main owns Package.swift/Package.resolved and the serialized native build"
+ }
+}

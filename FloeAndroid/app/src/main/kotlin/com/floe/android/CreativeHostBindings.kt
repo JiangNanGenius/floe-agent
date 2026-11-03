@@ -4,7 +4,6 @@ package com.floe.android
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
-import android.webkit.MimeTypeMap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
@@ -14,21 +13,34 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import com.floe.android.feature.canvas.CreativeException
+import com.floe.android.feature.canvas.CreativeOriginContext
+import com.floe.android.feature.canvas.CreativeStorageLayer
 import com.floe.android.feature.canvas.ui.api.CanvasAssetImport
 import com.floe.android.feature.canvas.ui.api.CanvasEditorPorts
 import com.floe.android.feature.canvas.ui.api.CanvasPickedSource
 import com.floe.android.feature.canvas.ui.api.CanvasSourceCreate
+import com.floe.android.feature.canvas.ui.design.DesignSessionProvider
 import com.floe.android.feature.canvas.ui.state.CanvasWorkspaceSession
+import com.floe.android.feature.workbench.ui.api.MediaAgentOwnerContext
 import com.floe.android.feature.workbench.ui.api.MediaAssetImport
 import com.floe.android.feature.workbench.ui.api.MediaEditorPorts
+import com.floe.android.feature.workbench.ui.api.MediaGallerySavePort
+import com.floe.android.feature.workbench.ui.api.MediaLayerRasterPort
 import com.floe.android.feature.workbench.ui.api.MediaPickedSource
 import com.floe.android.feature.workbench.ui.api.MediaSourceCreate
+import com.floe.android.feature.workbench.ui.api.MediaTranscriptionPort
+import com.floe.android.feature.workbench.ui.api.MediaTranscriptionReceipt
+import com.floe.android.host.gallery.MediaGallerySaveController
+import com.floe.android.host.gallery.MediaLayerRasterController
+import com.floe.android.host.voice.C03VoiceFailure
+import com.floe.android.feature.workbench.ui.r2.WorkbenchR2Ports
 import com.floe.android.feature.workbench.ui.state.MediaWorkspaceSession
+import com.floe.android.mediaintegration.MediaWorkbenchImportPolicy
+import com.floe.android.mediaintegration.MediaWorkspaceOwner
 import com.floe.android.host.Owner
 import com.floe.android.host.RuntimeHost
-import com.floe.android.host.WorkspaceOfficeSnapshotStager
 import java.io.File
-import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -68,6 +80,30 @@ internal object CreativeUiHost {
         scope to CreativeHostControllerBundle(app)
     }
 
+    /**
+     * The App-owned design session provider for the Canvas Design entry. The
+     * retained map and Root drain stay in [FloeApplication.designUi]; this
+     * accessor is only the existing creative host binding point.
+     */
+    fun designSessions(app: FloeApplication): DesignSessionProvider = app.designUi
+
+    /**
+     * Trusted, read-only Materials base path of the LIVE captured Canvas
+     * editor for exactly this canvas id, or null.
+     *
+     * Used only by the design-snapshot reader to resolve the captured
+     * document's asset relative references; the path itself is native-issued
+     * from the same accepted root and is re-proved before any read. This
+     * accessor never creates/opens a session, never registers a token and
+     * never returns a path declared by JSON.
+     */
+    fun canvasAssetsBasePath(app: FloeApplication, canvasID: String): String? =
+        synchronized(lock) {
+            val editor = canvas?.editor ?: return@synchronized null
+            if (editor.canvasID != canvasID) return@synchronized null
+            editor.assetsBasePath
+        }
+
     fun canvasSession(app: FloeApplication): CanvasWorkspaceSession = synchronized(lock) {
         val (scope, bundle) = ensure(app)
         canvas ?: CanvasWorkspaceSession(
@@ -83,10 +119,17 @@ internal object CreativeUiHost {
             host = bundle.app.creativeHost.services,
             ports = MediaPorts(bundle),
             scope = scope,
+            r2Ports = bundle.workbenchR2Ports,
+            agentBinding = bundle.app.mediaWorkbench.agentBinding,
         ).also { mediaLibrary = it }
     }
 
-    fun mediaRouteSession(app: FloeApplication, key: String): MediaWorkspaceSession {
+    fun mediaRouteSession(
+        app: FloeApplication,
+        key: String,
+        agentTaskID: String? = null,
+        agentWorkspaceID: String? = null,
+    ): MediaWorkspaceSession {
         mediaRoutes[key]?.let { return it }
         synchronized(lock) {
             mediaRoutes[key]?.let { return it }
@@ -95,6 +138,11 @@ internal object CreativeUiHost {
                 host = bundle.app.creativeHost.services,
                 ports = MediaPorts(bundle),
                 scope = scope,
+                r2Ports = bundle.workbenchR2Ports,
+                agentBinding = bundle.app.mediaWorkbench.agentBinding,
+                agentOwner = agentTaskID?.let {
+                    MediaAgentOwnerContext(it, agentWorkspaceID)
+                },
             )
             mediaRoutes[key] = created
             return created
@@ -110,13 +158,47 @@ internal object CreativeUiHost {
             // No app scope means no session was ever opened; retain nothing.
         }
     }
+
+    /**
+     * Actual Root/epoch retirement: drop every retained library/route session
+     * BEFORE the media platform is drained, so no editor/player/observer keeps
+     * submitting against a root that is about to be replaced. The process
+     * platform session itself is retired by [MediaWorkbenchHost].
+     */
+    suspend fun retireMediaSessions() {
+        val sessions = synchronized(lock) {
+            buildList {
+                mediaLibrary?.let { add(it) }
+                addAll(mediaRoutes.values)
+                mediaLibrary = null
+                mediaRoutes.clear()
+            }
+        }
+        sessions.forEach { session -> runCatching { session.shutdown() } }
+    }
 }
 
 /**
  * Thin holder so the ports read the CURRENT CreativeHostController rather
  * than capturing a stale service instance across an epoch replacement.
+ *
+ * The required R2 port bundle is lazy and its members resolve the CURRENT
+ * App host/platform session on every call; the bundle itself is never an
+ * authority and never captures a project root.
  */
-internal class CreativeHostControllerBundle(val app: FloeApplication)
+internal class CreativeHostControllerBundle(val app: FloeApplication) {
+    val workbenchR2Ports: WorkbenchR2Ports by lazy { app.mediaWorkbench.r2Ports }
+
+    /** One shared App-owned layer raster bridge for the current controller. */
+    val mediaLayerRaster: MediaLayerRasterPort by lazy {
+        MediaLayerRasterController { app.creativeHost }
+    }
+
+    /** One shared App-owned gallery save bridge; no per-editor duplicate store. */
+    val gallerySave: MediaGallerySavePort by lazy {
+        MediaGallerySaveController(app, { app.creativeHost })
+    }
+}
 
 private class CanvasPorts(private val bundle: CreativeHostControllerBundle) : CanvasEditorPorts {
     private val host get() = bundle.app.creativeHost
@@ -148,6 +230,20 @@ private class MediaPorts(private val bundle: CreativeHostControllerBundle) : Med
     override val sourceCreate = MediaSourceCreate {
             source, name, kind, storage, origin, sessionToken, opID ->
         try {
+            if (origin != null &&
+                MediaWorkbenchImportPolicy.shouldUseLargeRoute(kind, source.byteCount) &&
+                MediaWorkbenchImportPolicy.newProjectKind(kind) != null
+            ) {
+                return@MediaSourceCreate bundle.app.mediaWorkbench.largeImport.createProject(
+                    source = source,
+                    name = name,
+                    kind = kind,
+                    storage = storage,
+                    origin = origin,
+                    sessionToken = sessionToken,
+                    opID = opID,
+                )
+            }
             host.createMediaFromUri(
                 uri = source.uri,
                 name = name,
@@ -158,12 +254,72 @@ private class MediaPorts(private val bundle: CreativeHostControllerBundle) : Med
                 opID = opID,
             )
         } finally {
-            CreativeDocumentSourceStaging.consume(source.uri)
+            // Deletes only the App-owned pre-stage snapshot after the real
+            // import call returned. The native staged token is owned by the
+            // large-import host after an accepted submit and is never deleted
+            // from this App finally.
+            bundle.app.mediaWorkbench.workspacePrestage.consume(source.uri)
+        }
+    }
+
+    override val layerRaster: MediaLayerRasterPort
+        get() = bundle.mediaLayerRaster
+
+    override val gallerySave: MediaGallerySavePort
+        get() = bundle.gallerySave
+
+    override val transcription = MediaTranscriptionPort { context, assetID, expectedRevision ->
+        val voice = bundle.app.runtimeHost?.voiceOrNull()
+            ?: throw CreativeException(
+                "runtimeUnavailable", "voiceHostUnavailable", retryable = true)
+        val storageKind = when (context.storage) {
+            CreativeStorageLayer.AppOwned -> "appOwned"
+            is CreativeStorageLayer.Workspace -> "workspace"
+        }
+        val workspaceID = (context.storage as? CreativeStorageLayer.Workspace)?.workspaceID
+        val origin = context.origin
+        try {
+            val receipt = voice.transcribeAndWrite(
+                projectID = context.projectID,
+                sessionToken = context.sessionToken,
+                storageKind = storageKind,
+                workspaceID = workspaceID,
+                originKind = origin?.kind,
+                originOwnerID = origin?.ownerID,
+                originEnvironmentID = origin?.environmentID,
+                expectedRevision = expectedRevision,
+                assetID = assetID,
+            )
+            MediaTranscriptionReceipt(
+                projectID = receipt.projectID,
+                revision = receipt.revision,
+                operationID = receipt.operationID,
+                idempotent = receipt.idempotent,
+            )
+        } catch (failure: C03VoiceFailure) {
+            throw CreativeException(
+                failure.code.wire,
+                failure.reason,
+                retryable = failure.retryable,
+            )
         }
     }
 
     override val assetImport = MediaAssetImport {
             source, projectID, expectedRevision, storage, origin, sessionToken, opID ->
+        if (storage != null &&
+            MediaWorkbenchImportPolicy.shouldUseLargeRouteForAsset(source)
+        ) {
+            return@MediaAssetImport bundle.app.mediaWorkbench.largeImport.importAsset(
+                source = source,
+                projectID = projectID,
+                expectedRevision = expectedRevision,
+                storage = storage,
+                origin = origin,
+                sessionToken = sessionToken,
+                opID = opID,
+            )
+        }
         host.importMediaAsset(
             source = source.uri,
             fileName = source.displayName,
@@ -186,16 +342,12 @@ internal object CreativeDocumentSourceStaging {
         directories[uri.toString()] = directory
     }
 
-    fun consume(uri: Uri) {
-        val directory = directories.remove(uri.toString()) ?: return
+    /** Removes and deletes exactly this owned snapshot; returns its directory. */
+    fun consume(uri: Uri): File? {
+        val directory = directories.remove(uri.toString()) ?: return null
         runCatching { directory.deleteRecursively() }
+        return directory
     }
-}
-
-internal fun mediaSourceFormats(kind: String): Set<String> = when (kind) {
-    // ISO-BMFF only: the host measures MP4/MOV/M4V and refuses the rest.
-    "video" -> setOf("mov", "mp4", "m4v")
-    else -> setOf("png", "jpg", "jpeg", "webp", "gif", "bmp", "heic", "heif")
 }
 
 internal suspend fun stageWorkspaceMediaSource(
@@ -204,34 +356,26 @@ internal suspend fun stageWorkspaceMediaSource(
     owner: Owner,
     relativePath: String,
     kind: String,
-): MediaPickedSource = withContext(Dispatchers.IO) {
-    val stager = WorkspaceOfficeSnapshotStager(
-        File(context.applicationContext.applicationInfo.dataDir, "files/CreativeDocumentSource"),
-    )
-    val snapshot = stager.stage(
-        owner = WorkspaceOfficeSnapshotStager.Owner(
+): MediaPickedSource {
+    val application = context.applicationContext as? FloeApplication
+        ?: throw CreativeException(
+            "unavailable", "applicationUnavailable", retryable = true)
+    // The Application owns the real staging worker; this composable call only
+    // awaits the exact committed result. Rotation therefore cannot kill the
+    // native egress ticket half-way.
+    return application.mediaWorkbench.workspacePrestage.stage(
+        owner = MediaWorkspaceOwner(
             taskID = owner.taskID,
             workspaceID = owner.workspaceID,
             nativeEpoch = owner.nativeEpoch,
             hostGeneration = owner.hostGeneration,
         ),
         relativePath = relativePath,
-        formats = mediaSourceFormats(kind),
-        maxBytes = 64L * 1024 * 1024,
+        kind = kind,
         isCurrent = {
             host.nativeRootEpoch() == owner.nativeEpoch &&
                 host.commandClient.generation() == owner.hostGeneration
         },
-    )
-    val uri = Uri.fromFile(snapshot.file)
-    CreativeDocumentSourceStaging.register(uri, snapshot.file.parentFile ?: snapshot.file)
-    val extension = relativePath.substringAfterLast('.', "").lowercase(Locale.ROOT)
-    val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
-    MediaPickedSource(
-        uri = uri,
-        displayName = relativePath.substringAfterLast('/'),
-        mimeType = mime,
-        byteCount = snapshot.bytes,
     )
 }
 

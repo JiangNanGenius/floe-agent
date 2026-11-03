@@ -7,6 +7,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -62,6 +63,7 @@ import com.floe.android.design.FloeInlineSwitch
 import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloePlainFormField
 import com.floe.android.design.FloeSegmented
+import com.floe.android.design.FloeSelectionSlot
 import com.floe.android.design.FloeText
 import com.floe.android.design.IconGlyph
 import com.floe.android.feature.notes.NoteDocument
@@ -74,12 +76,15 @@ import com.floe.android.feature.notes.ui.NotesIcons
 import com.floe.android.feature.notes.ui.R
 import com.floe.android.feature.notes.ui.api.NotesIndexingAvailability
 import com.floe.android.feature.notes.ui.api.NotesIndexingStatus
+import com.floe.android.feature.notes.ui.api.NotesOpenAttachmentOutcome
 import com.floe.android.feature.notes.ui.api.NotesPdfSearchOutcome
 import com.floe.android.feature.notes.ui.api.NotesPrintOutcome
 import com.floe.android.feature.notes.ui.api.NotesSettingsTarget
 import com.floe.android.feature.notes.ui.presentation.NotesFailure
 import com.floe.android.feature.notes.ui.presentation.NotesElementGeometry
+import com.floe.android.feature.notes.ui.presentation.NotesExportSelection
 import com.floe.android.feature.notes.ui.presentation.NotesMarkdownBlock
+import com.floe.android.feature.notes.ui.presentation.NotesMarkdownLabels
 import com.floe.android.feature.notes.ui.presentation.NoteTextMatch
 import com.floe.android.feature.notes.ui.presentation.findTextMatches
 import com.floe.android.feature.notes.ui.presentation.parseMarkdownBlocks
@@ -89,6 +94,7 @@ import com.floe.android.feature.notes.ui.presentation.resolveElementText
 import com.floe.android.feature.notes.ui.presentation.toNotesFailure
 import com.floe.android.feature.notes.ui.state.NotesDocumentSession
 import com.floe.android.feature.notes.ui.state.NotesWorkspaceController
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -863,8 +869,39 @@ internal fun NotesExportSheet(
     val scope = rememberCoroutineScope()
     var state by remember(visible) { mutableStateOf(NotesExportState.IDLE) }
     var printed by remember(visible) { mutableStateOf(false) }
+    var pickerOpen by remember(visible, document.id) { mutableStateOf(false) }
+    var selectedPageIDs by remember(visible, document.id) { mutableStateOf<List<String>>(emptyList()) }
+    var restrictToSelection by remember(visible, document.id) { mutableStateOf(false) }
+    val pageSelection = if (restrictToSelection && selectedPageIDs.isNotEmpty()) selectedPageIDs else null
+    val selectedCount = selectedPageIDs.size
+    val pageImageID = when {
+        pageSelection == null -> null
+        pageSelection.size == 1 -> pageSelection.single()
+        else -> null
+    }
+    val pageImageEnabled = pageSelection == null || pageSelection.size == 1
+    val docxLabels = com.floe.android.feature.notes.ui.api.NotesDocxLabels(
+        pageHeadingFormat = stringResource(R.string.notes_markdown_page_heading),
+        emptyPage = stringResource(R.string.notes_docx_empty_page),
+        imageAltText = stringResource(R.string.notes_docx_image_alt),
+        pageVisualAltText = stringResource(R.string.notes_docx_page_visual_alt),
+        conversionNote = stringResource(R.string.notes_docx_conversion_note),
+    )
+    val markdownLabels = NotesMarkdownLabels(
+        pageHeadingFormat = stringResource(R.string.notes_markdown_page_heading),
+        emptyPage = stringResource(R.string.notes_markdown_empty_page),
+        imageOmitted = stringResource(R.string.notes_markdown_image_omitted),
+        shapeOmitted = stringResource(R.string.notes_markdown_shape_omitted),
+        inkOmitted = stringResource(R.string.notes_markdown_ink_omitted),
+        backgroundImageOmitted = stringResource(R.string.notes_markdown_background_omitted),
+        pdfPageOmitted = stringResource(R.string.notes_markdown_pdf_omitted),
+        pdfVisualOmitted = stringResource(R.string.notes_markdown_pdf_visual_omitted),
+        extractedTextHeading = stringResource(R.string.notes_markdown_extracted_text),
+        recognizedTextHeading = stringResource(R.string.notes_markdown_recognized_text),
+    )
     fun run(block: suspend () -> Boolean) {
         if (state == NotesExportState.WORKING) return
+        printed = false
         scope.launch {
             state = NotesExportState.WORKING
             val ok = runCatching { block() }.getOrDefault(false)
@@ -876,76 +913,280 @@ internal fun NotesExportSheet(
         }
     }
     FloeActionSheet(visible = true, onDismiss = { if (state != NotesExportState.WORKING) onDismiss() }, maxCardWidth = 560.dp) {
-        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            FloeText(stringResource(R.string.notes_export), style = Floe.typography.title)
-            ExportRow(stringResource(R.string.notes_export_archive), !session.isReadOnly) {
-                run { controller.exportArchive(session) }
-            }
-            if (document.pages.isNotEmpty()) {
-                ExportRow(stringResource(R.string.notes_export_pdf), true) {
-                    run { controller.exportPdf(session) }
+        if (pickerOpen) {
+            NotesExportPagePicker(
+                document = document,
+                selectedPageIDs = selectedPageIDs,
+                onToggle = { pageID ->
+                    selectedPageIDs = if (pageID in selectedPageIDs) {
+                        selectedPageIDs - pageID
+                    } else if (selectedPageIDs.size >= NotesExportSelection.MAX_PAGES) {
+                        selectedPageIDs
+                    } else {
+                        selectedPageIDs + pageID
+                    }
+                },
+                onSelectAll = {
+                    selectedPageIDs = document.pages.take(NotesExportSelection.MAX_PAGES).map { it.id }
+                    restrictToSelection = true
+                },
+                onClear = {
+                    selectedPageIDs = emptyList()
+                    restrictToSelection = false
+                },
+                onUseAll = {
+                    selectedPageIDs = emptyList()
+                    restrictToSelection = false
+                    pickerOpen = false
+                },
+                onDone = {
+                    restrictToSelection = selectedPageIDs.isNotEmpty()
+                    pickerOpen = false
+                },
+            )
+        } else {
+            Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                FloeText(stringResource(R.string.notes_export), style = Floe.typography.title)
+                ExportRow(stringResource(R.string.notes_export_archive), !session.isReadOnly) {
+                    run { controller.exportArchive(session) }
                 }
-                ExportRow(stringResource(R.string.notes_export_page_image), true) {
-                    run { controller.exportCurrentPageImage(session) }
-                }
-                ExportRow(stringResource(R.string.notes_print), true) {
-                    scope.launch {
-                        state = NotesExportState.WORKING
-                        val outcome = runCatching { controller.printActiveDocument(session) }.getOrNull()
-                        state = when (outcome) {
-                            NotesPrintOutcome.Launched -> {
-                                printed = true
-                                NotesExportState.READY
+                if (document.pages.isNotEmpty()) {
+                    ExportRow(stringResource(R.string.notes_export_pdf), state != NotesExportState.WORKING) {
+                        run { controller.exportPdf(session, pageSelection) }
+                    }
+                    ExportRow(
+                        label = stringResource(R.string.notes_pages),
+                        enabled = state != NotesExportState.WORKING,
+                        value = if (pageSelection == null) {
+                            stringResource(R.string.notes_export_pages_all)
+                        } else {
+                            stringResource(R.string.notes_export_pages_selected, selectedCount)
+                        },
+                    ) {
+                        pickerOpen = true
+                    }
+                    ExportRow(
+                        label = stringResource(R.string.notes_export_page_image),
+                        enabled = state != NotesExportState.WORKING && pageImageEnabled,
+                    ) {
+                        run { controller.exportCurrentPageImage(session, pageImageID) }
+                    }
+                    if (!pageImageEnabled) {
+                        FloeText(
+                            stringResource(R.string.notes_export_page_image_needs_one),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                    }
+                    ExportRow(stringResource(R.string.notes_print), state != NotesExportState.WORKING) {
+                        printed = false
+                        scope.launch {
+                            state = NotesExportState.WORKING
+                            val outcome = runCatching { controller.printActiveDocument(session, pageSelection) }.getOrNull()
+                            state = when (outcome) {
+                                NotesPrintOutcome.Launched -> {
+                                    printed = true
+                                    NotesExportState.READY
+                                }
+                                is NotesPrintOutcome.Unavailable -> NotesExportState.UNSUPPORTED
+                                is NotesPrintOutcome.Failed, null -> NotesExportState.FAILED
                             }
-                            is NotesPrintOutcome.Unavailable -> NotesExportState.UNSUPPORTED
-                            is NotesPrintOutcome.Failed, null -> NotesExportState.FAILED
                         }
                     }
                 }
-            }
-            if (document.kind == NoteDocumentKind.MIND_MAP) {
-                ExportRow(stringResource(R.string.notes_export_markdown), true) {
-                    run { controller.exportOutline(session) }
+                if (document.kind == NoteDocumentKind.MIND_MAP) {
+                    ExportRow(stringResource(R.string.notes_export_markdown), state != NotesExportState.WORKING) {
+                        run { controller.exportOutline(session) }
+                    }
+                } else {
+                    if (document.kind == NoteDocumentKind.NOTEBOOK) {
+                        ExportRow(
+                            stringResource(R.string.notes_export_docx),
+                            state != NotesExportState.WORKING,
+                        ) {
+                            run { controller.exportDocx(session, pageSelection, docxLabels) }
+                        }
+                        ExportRow(
+                            stringResource(R.string.notes_export_markdown_document),
+                            state != NotesExportState.WORKING,
+                        ) {
+                            run { controller.exportNotebookMarkdown(session, pageSelection, markdownLabels) }
+                        }
+                    }
+                    ExportRow(stringResource(R.string.notes_export_text), state != NotesExportState.WORKING) {
+                        run { controller.exportPlainText(session) }
+                    }
                 }
-            } else {
-                ExportRow(stringResource(R.string.notes_export_text), true) {
-                    run { controller.exportPlainText(session) }
+                val receipt = controller.lastExportReceipt
+                val canOpenDocx = receipt != null &&
+                    receipt.mediaType == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" &&
+                    receipt.contentUri != null
+                if (canOpenDocx) {
+                    ExportRow(
+                        stringResource(R.string.notes_export_open_docx),
+                        state != NotesExportState.WORKING,
+                    ) {
+                        scope.launch {
+                            state = NotesExportState.WORKING
+                            val outcome = try {
+                                controller.openExportedDocument()
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (_: Throwable) {
+                                null
+                            }
+                            state = when (outcome) {
+                                NotesOpenAttachmentOutcome.Opened -> NotesExportState.READY
+                                is NotesOpenAttachmentOutcome.Unavailable -> NotesExportState.UNSUPPORTED
+                                is NotesOpenAttachmentOutcome.Failed, null -> NotesExportState.FAILED
+                            }
+                        }
+                    }
                 }
-            }
-            if (state == NotesExportState.WORKING) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FloeActivityIndicator()
-                    FloeText(stringResource(R.string.notes_export_preparing), style = Floe.typography.metadata)
+                if (state == NotesExportState.WORKING) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FloeActivityIndicator()
+                        FloeText(stringResource(R.string.notes_export_preparing), style = Floe.typography.metadata)
+                    }
                 }
-            }
-            if (state != NotesExportState.IDLE && state != NotesExportState.WORKING) {
-                FloeText(
-                    stringResource(
-                        when (state) {
-                            NotesExportState.READY -> if (printed) R.string.notes_print_launched else R.string.notes_export_ready
-                            NotesExportState.CANCELLED -> R.string.notes_export_cancelled
-                            NotesExportState.FAILED -> R.string.notes_export_failed
-                            NotesExportState.UNSUPPORTED -> R.string.notes_export_unsupported
-                            else -> R.string.notes_export_failed
-                        },
-                    ),
-                    style = Floe.typography.metadata,
-                    color = if (state == NotesExportState.READY) Floe.colors.success else Floe.colors.secondaryLabel,
-                )
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                FloeCapsuleAction(
-                    stringResource(R.string.notes_done),
-                    onClick = onDismiss,
-                    enabled = state != NotesExportState.WORKING,
-                )
+                if (state != NotesExportState.IDLE && state != NotesExportState.WORKING) {
+                    val failure = controller.lastFailure
+                    val message = when (state) {
+                        NotesExportState.READY -> if (printed) R.string.notes_print_launched else R.string.notes_export_ready
+                        NotesExportState.CANCELLED -> R.string.notes_export_cancelled
+                        NotesExportState.FAILED -> if (failure?.code == "conflict" || failure?.code == "notFound") {
+                            R.string.notes_export_pages_changed
+                        } else {
+                            R.string.notes_export_failed
+                        }
+                        NotesExportState.UNSUPPORTED -> R.string.notes_export_unsupported
+                        else -> R.string.notes_export_failed
+                    }
+                    FloeText(
+                        stringResource(message),
+                        style = Floe.typography.metadata,
+                        color = if (state == NotesExportState.READY) Floe.colors.success else Floe.colors.secondaryLabel,
+                    )
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    FloeCapsuleAction(
+                        stringResource(R.string.notes_done),
+                        onClick = onDismiss,
+                        enabled = state != NotesExportState.WORKING,
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun ExportRow(label: String, enabled: Boolean, onClick: () -> Unit) {
+private fun NotesExportPagePicker(
+    document: NoteDocument,
+    selectedPageIDs: List<String>,
+    onToggle: (String) -> Unit,
+    onSelectAll: () -> Unit,
+    onClear: () -> Unit,
+    onUseAll: () -> Unit,
+    onDone: () -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FloeText(stringResource(R.string.notes_export_page_selection_title), style = Floe.typography.title)
+            Spacer(Modifier.weight(1f))
+            FloeCapsuleAction(stringResource(R.string.notes_done), onClick = onDone)
+        }
+        FloeText(
+            stringResource(R.string.notes_export_pages_hint),
+            style = Floe.typography.metadata,
+            color = Floe.colors.secondaryLabel,
+            modifier = Modifier.padding(horizontal = 20.dp),
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FloeCapsuleAction(stringResource(R.string.notes_export_use_all_pages), onClick = onUseAll)
+            FloeCapsuleAction(stringResource(R.string.notes_export_select_all), onClick = onSelectAll)
+            FloeCapsuleAction(stringResource(R.string.notes_export_clear_selection), onClick = onClear)
+        }
+        if (document.pages.size > NotesExportSelection.MAX_PAGES) {
+            FloeText(
+                stringResource(R.string.notes_export_pages_limit, NotesExportSelection.MAX_PAGES),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+                modifier = Modifier.padding(horizontal = 20.dp),
+            )
+        }
+        FloeDivider()
+        LazyColumn(Modifier.weight(1f)) {
+            itemsIndexed(document.pages, key = { _, page -> page.id }) { index, page ->
+                val order = selectedPageIDs.indexOf(page.id)
+                val checked = order >= 0
+                Row(
+                    modifier = Modifier.fillMaxWidth().heightIn(min = FloeLayout.MinimumTarget),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FloeSelectionSlot(
+                        checked = checked,
+                        onCheckedChange = { onToggle(page.id) },
+                        description = stringResource(R.string.notes_page, index + 1),
+                    )
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .clickable(role = Role.Checkbox) { onToggle(page.id) }
+                            .padding(vertical = 10.dp),
+                    ) {
+                        FloeText(
+                            stringResource(R.string.notes_page, index + 1),
+                            style = Floe.typography.bodyEmphasized,
+                        )
+                        if (page.pdfPageIndex != null) {
+                            FloeText(
+                                stringResource(R.string.notes_pdf_page),
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.secondaryLabel,
+                            )
+                        }
+                    }
+                    if (checked) {
+                        NotesPill("${order + 1}", Floe.colors.accent)
+                    }
+                    Spacer(Modifier.width(16.dp))
+                }
+                FloeDivider(Modifier.padding(start = 64.dp))
+            }
+        }
+        FloeDivider()
+        val selectionSummary = if (selectedPageIDs.isEmpty()) {
+            stringResource(R.string.notes_export_pages_all)
+        } else {
+            stringResource(R.string.notes_export_pages_selected, selectedPageIDs.size)
+        }
+        FloeText(
+            selectionSummary,
+            style = Floe.typography.metadata,
+            color = Floe.colors.secondaryLabel,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+        )
+    }
+}
+
+@Composable
+private fun ExportRow(
+    label: String,
+    enabled: Boolean,
+    value: String? = null,
+    onClick: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -962,6 +1203,13 @@ private fun ExportRow(label: String, enabled: Boolean, onClick: () -> Unit) {
             color = if (enabled) Floe.colors.label else Floe.colors.tertiaryLabel,
             modifier = Modifier.weight(1f),
         )
+        if (value != null) {
+            FloeText(
+                value,
+                style = Floe.typography.metadata,
+                color = if (enabled) Floe.colors.secondaryLabel else Floe.colors.tertiaryLabel,
+            )
+        }
     }
 }
 

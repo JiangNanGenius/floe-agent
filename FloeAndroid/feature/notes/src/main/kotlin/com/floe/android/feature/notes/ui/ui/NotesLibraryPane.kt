@@ -529,7 +529,7 @@ private fun NotesLibraryCard(
     onMenu: () -> Unit,
 ) {
     val cover = library.coverFor(summary)
-    LaunchedEffect(summary.id, summary.coverRevision, summary.coverResourceID) {
+    LaunchedEffect(summary.id, summary.revision, summary.coverRevision, summary.coverResourceID) {
         library.ensureCover(summary)
     }
     val shape = RoundedCornerShape(12.dp)
@@ -661,7 +661,7 @@ private fun CoverBox(
     modifier: Modifier,
 ) {
     val shape = RoundedCornerShape(8.dp)
-    if (summary.coverResourceID == null) {
+    if (summary.coverResourceID == null && coverBytes == null) {
         NotesAutomaticCover(summary, modifier)
         return
     }

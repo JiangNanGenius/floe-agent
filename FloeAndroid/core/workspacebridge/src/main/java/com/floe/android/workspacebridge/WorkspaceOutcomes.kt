@@ -90,6 +90,8 @@ data class WorkspaceImportReceipt(
     val preservedCopies: List<WorkspacePreservedCopy> = emptyList(),
     /** True when MORE verified preserved copies existed than the bound shows. */
     val preservedCopiesTruncated: Boolean = false,
+    /** Live-input mode intentionally retained these existing entries in place. */
+    val retainedExistingCount: Int = 0,
 )
 
 data class WorkspaceConflictRecord(val path: String, val kind: String, val hasArtifact: Boolean)

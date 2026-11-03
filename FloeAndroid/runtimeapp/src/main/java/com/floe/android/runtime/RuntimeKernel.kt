@@ -5,6 +5,8 @@ import android.content.Context
 import android.os.IBinder
 import com.floe.android.runtimeipc.RuntimeExecutionTrace
 import com.floe.android.runtimeipc.RuntimeExecutionTrace.Stage
+import com.floe.android.runtimeipc.RuntimeAdmissionRefusal
+import com.floe.android.runtimeipc.RuntimeOperationRefused
 import com.floe.android.runtimeipc.RuntimeWire
 import org.json.JSONObject
 import java.util.concurrent.ArrayBlockingQueue
@@ -58,6 +60,17 @@ class RuntimeKernel(context: Context) {
     // the read-only `status` metadata path merely READS the fence.
     private val fence = RuntimeStoppingFence { hasOwnedWork() }
     private val pendingInstallID = AtomicReference<String?>()
+    // Reserved under receipts before IO starts; new executable admissions
+    // stay fenced until actual cleanup settles. Inventory never starts a guest.
+    private val storageMaintenanceID = AtomicReference<String?>()
+    // Negative admission fence only. Positive work/permit ownership stays in
+    // the original queued request, held lease and Running maps.
+    private val environmentTransactionFence = RuntimeEnvironmentTransactionFence()
+    private fun refreshEnvironmentTransactionFence() {
+        environmentTransactionFence.settleIfUnowned { id ->
+            id in pendingShellIDs || operations?.ownedRequestIDs()?.contains(id) == true
+        }
+    }
     // G07.3A: concurrent starts each have their own pending wire id; a
     // session-less stop may address any ONE of them by exact id.
     private val pendingShellIDs: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
@@ -86,7 +99,7 @@ class RuntimeKernel(context: Context) {
     fun isExecuting(): Boolean = operations?.isExecuting() == true
 
     fun exchange(request: RuntimeWire.Request, workspaceGrant: IBinder?, foregroundAllowed: () -> Boolean): JSONObject {
-        val traceStart = request.operation == "shell.start"
+        val traceStart = request.operation == "shell.start" || request.operation == "stdio.start"
         if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_START_ENTER)
         if (request.operation == "status") {
             val reply = JSONObject()
@@ -106,6 +119,12 @@ class RuntimeKernel(context: Context) {
                 // exclusive-start admission below. It is the engine's own real
                 // attestation; an idle check belongs to the host ingest.
                 .put("workloadContractVersion", MULTI_WORKLOAD_CONTRACT)
+                // C01 separated-stdio contract: advertised ONLY because this
+                // kernel build really implements the pipe process operations
+                // below (stdio.start/write/poll/stdinEof) over three distinct
+                // OS pipes. The Swift stdio provider requires this exact
+                // handshake value; an older helper returns it absent.
+                .put("stdioContractVersion", STDIO_CONTRACT)
             // G07.1 terminal04 (ADDITIVE, diagnostics only): this engine
             // process's OWN settled phase composition for its most recent
             // workload. Absent until a first terminal; stage names and
@@ -139,28 +158,50 @@ class RuntimeKernel(context: Context) {
             requestStop(request)
             return JSONObject().put("state", "stop_requested")
         }
-        val metadataOnly = request.operation == "install.status" || request.operation == "environment.list"
+        val storageControl = request.operation == RuntimeWire.STORAGE_INVENTORY ||
+            request.operation == RuntimeWire.STORAGE_CLEANUP
+        val metadataOnly = request.operation == "install.status" || request.operation == "environment.list" || storageControl
         // G03-R3 cleanup lane: data-deletion obligations must stay serviceable
         // while shell/model admission is fenced (the caller carries NO
         // foreground permit for them). This exemption is ONLY for the typed
         // scoped wipe; stopping still refuses, no grant is accepted/required,
         // and the receiver performs its own busy/quiescence deferral first.
         val cleanupLane = request.operation == RuntimeWire.CLEANUP
-        if (request.operation == "shell.start" || request.operation == RuntimeWire.PREFLIGHT)
-            check(workspaceGrant != null) { "Owned workspace grant is required" }
+        if (request.operation == "shell.start" || request.operation == "stdio.start" ||
+            request.operation == RuntimeWire.PREFLIGHT
+        ) check(workspaceGrant != null) { "Owned workspace grant is required" }
         check(metadataOnly || cleanupLane || foregroundAllowed()) { "Foreground work ownership is required" }
         check(!fence.isStopping) { "Runtime is stopping" }
         synchronized(receipts) {
+            refreshEnvironmentTransactionFence()
             receipts[request.id]?.let { return JSONObject(it.toString()) }
+            val transactional = request.operation == "shell.start" && request.payload.opt("environmentTransaction") == true
+            if (request.payload.has("environmentTransaction")) require(request.payload.opt("environmentTransaction") is Boolean)
+            if (environmentTransactionFence.active && !metadataOnly && !cleanupLane) {
+                throw RuntimeOperationRefused(RuntimeAdmissionRefusal.ENVIRONMENT_TRANSACTION_BUSY)
+            }
+            if (transactional) {
+                check(request.payload.optString("leaseRole", "agent") == "agent") { "environmentTransactionRequiresOneShot" }
+                if (hasOwnedWork()) throw RuntimeOperationRefused(RuntimeAdmissionRefusal.ENVIRONMENT_TRANSACTION_REQUIRES_IDLE)
+            }
+            if (request.operation == RuntimeWire.STORAGE_CLEANUP && hasOwnedWork()) {
+                return JSONObject().put("state", "completed").put("result",
+                    JSONObject().put("status", "deferred").put("reason", "activeWork")
+                        .put("reclaimedBytes", JSONObject.NULL))
+            }
+            check(storageMaintenanceID.get() == null || metadataOnly || cleanupLane) {
+                "Storage maintenance is in progress"
+            }
             if (request.operation == "install.start" || request.operation == RuntimeWire.PREFLIGHT) {
                 // Install / first-use preflight stay EXCLUSIVE: they rewrite or
                 // mirror shared state and must never race a live workload.
                 if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_ADMISSION_CHECK)
                 check(!hasOwnedWork()) { "Runtime already owns work" }
-            } else if (request.operation == "shell.start") {
+            } else if (request.operation == "shell.start" || request.operation == "stdio.start") {
                 // G07.3A: concurrent workloads are admitted by ROLE/CAPACITY in
-                // LinuxRuntimeOperations (2 interactive + ONE shared Agent/run), but
-                // never while an install or first-use preflight owns the UID.
+                // LinuxRuntimeOperations (2 interactive + ONE shared Agent/run +
+                // TWO managed services), but never while an install or
+                // first-use preflight owns the UID.
                 if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_ADMISSION_CHECK)
                 check(operations?.hasExclusiveWork() != true) { "Runtime is preparing an exclusive lane" }
             }
@@ -170,9 +211,15 @@ class RuntimeKernel(context: Context) {
                 receipts.remove(evict.key)
             }
             receipts[request.id] = JSONObject().put("requestID", request.id).put("state", "queued")
+            if (request.operation == RuntimeWire.STORAGE_CLEANUP) storageMaintenanceID.set(request.id)
             count.incrementAndGet() // reserve admission before another Binder call
             if (request.operation == "install.start") pendingInstallID.set(request.id)
-            if (request.operation == "shell.start") pendingShellIDs.add(request.id)
+            if (request.operation == "shell.start" || request.operation == "stdio.start") {
+                pendingShellIDs.add(request.id)
+            }
+            // Publish original positive ownership FIRST. A late completion
+            // callback may refresh this fence without holding receipts.
+            if (transactional) environmentTransactionFence.reserve(request.id)
             if (request.operation == RuntimeWire.PREFLIGHT) pendingPreflightID.set(request.id)
         }
         if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_QUEUED)
@@ -193,16 +240,26 @@ class RuntimeKernel(context: Context) {
                     // that arrived while the pump thread was still draining
                     // converges at the actual completion instead of leaking a
                     // stale fence into the next admission.
-                    val runtime = operations ?: LinuxRuntimeOperations(
-                        context, onOwnedWorkReleased = { fence.settleAfterOwnedWorkReleased() },
-                    ).also { operations = it }
-                    if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_OPERATIONS_READY)
-                    check(!fence.isStopping && request.id !in targetStoppedIDs &&
-                        (metadataOnly || cleanupLane || foregroundAllowed()))
-                    if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_EXECUTE_ENTER)
-                    val result = runtime.execute(request, workspaceGrant) {
-                        fence.isStopping || request.id in targetStoppedIDs ||
-                            (!metadataOnly && !foregroundAllowed())
+                    val result = if (storageControl) {
+                        RuntimeStorageOperations(context).execute(request,
+                            idle = { operations?.hasOwnedWork() != true &&
+                                operations?.ownedRequestIDs().orEmpty().isEmpty() },
+                            cancelled = { fence.isStopping || request.id in targetStoppedIDs })
+                    } else {
+                        val runtime = operations ?: LinuxRuntimeOperations(
+                            context, onOwnedWorkReleased = {
+                                refreshEnvironmentTransactionFence()
+                                fence.settleAfterOwnedWorkReleased()
+                            },
+                        ).also { operations = it }
+                        if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_OPERATIONS_READY)
+                        check(!fence.isStopping && request.id !in targetStoppedIDs &&
+                            (metadataOnly || cleanupLane || foregroundAllowed()))
+                        if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_EXECUTE_ENTER)
+                        runtime.execute(request, workspaceGrant) {
+                            fence.isStopping || request.id in targetStoppedIDs ||
+                                (!metadataOnly && !foregroundAllowed())
+                        }
                     }
                     if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_RESULT_READY)
                     RuntimeWire.bounded(result.toString())
@@ -233,8 +290,10 @@ class RuntimeKernel(context: Context) {
                         }
                     update(request.id, failed)
                 } finally {
+                    storageMaintenanceID.compareAndSet(request.id, null)
                     pendingInstallID.compareAndSet(request.id, null)
                     pendingShellIDs.remove(request.id)
+                    refreshEnvironmentTransactionFence()
                     pendingPreflightID.compareAndSet(request.id, null)
                     // Only this request's own target note retires here; a
                     // sibling's target remains queued/idempotent.
@@ -246,8 +305,10 @@ class RuntimeKernel(context: Context) {
                 }
             }
         } catch (_: RejectedExecutionException) {
+            storageMaintenanceID.compareAndSet(request.id, null)
             pendingInstallID.compareAndSet(request.id, null)
             pendingShellIDs.remove(request.id)
+            refreshEnvironmentTransactionFence()
             pendingPreflightID.compareAndSet(request.id, null)
             targetStoppedIDs.remove(request.id)
             count.decrementAndGet()
@@ -360,8 +421,21 @@ class RuntimeKernel(context: Context) {
          *  the exclusive-start admission above). Ingested as a FACT only
          *  while the engine additionally reports itself idle. */
         const val WORKLOAD_CONTRACT = "floe-single-workload-v1"
-        /** G07.3A real concurrent contract (2 interactive + 1 shared execution). */
-        const val MULTI_WORKLOAD_CONTRACT = "floe-multi-workload-v2"
+        /**
+         * C01 v3 real concurrent contract: 2 interactive + 1 shared Agent/run
+         * execution + 2 managed-service roles. The v2 string is still accepted
+         * by the host for ordinary exec compatibility; the service domain
+         * requires v3 before it will start a managed service.
+         */
+        const val MULTI_WORKLOAD_CONTRACT = "floe-multi-workload-v3"
+
+        /**
+         * C01 separated-stdio engine contract. This kernel really implements
+         * `stdio.start` / `stdio.write` / `stdio.poll` / `stdio.stdinEof` over
+         * three distinct pipes in [LinuxRuntimeOperations]; the value is the
+         * live peer handshake the Swift provider checks, never a UI flag.
+         */
+        const val STDIO_CONTRACT = "floe-service-stdio-v1"
 
         /**
          * G03-R3 failed-start receipt handoff (job-150dee8e1ed14ba1): the

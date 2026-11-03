@@ -116,6 +116,13 @@ struct G04NetworkAdapterFactory: Sendable {
                                                    session: session.session)
         case .smb:
             return try SMBWorkspaceMountAdapter(mount: mount, credentialResolver: resolver)
+        case .sftp:
+            // C05 SFTP is the same trusted SSH/Citadel transport and
+            // known-host/credential chain used by the Remote screen. The
+            // adapter keeps the existing file-workbench import/export
+            // transaction ladder; no second local copy path exists.
+            return try C05SFTPWorkspaceMountAdapter(
+                mount: mount, credentialResolver: resolver)
         }
     })
 }
@@ -487,6 +494,15 @@ public actor G04NetworkWorkspace {
             guard url.scheme?.lowercased() == "smb", url.host != nil,
                   url.user == nil, url.password == nil,
                   !(url.path.split(separator: "/").first.map(String.init) ?? "").isEmpty else {
+                throw G04NetworkWorkspaceError.configurationRefused("endpoint")
+            }
+        case .sftp:
+            // sftp://host[:port]; credentials only through the mount lease,
+            // never URL userinfo. The C05 adapter enforces the SSH user and
+            // known-host chain again at connect time.
+            guard url.scheme?.lowercased() == "sftp", url.host != nil,
+                  url.user == nil, url.password == nil,
+                  (1...65535).contains(url.port ?? 22) else {
                 throw G04NetworkWorkspaceError.configurationRefused("endpoint")
             }
         }

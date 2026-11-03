@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -32,6 +33,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.floe.android.core.networkcapture.CaptureMode
+import com.floe.android.core.networkcapture.CapturePhase
+import com.floe.android.core.networkcapture.CaptureState
+import com.floe.android.core.networkcapture.RootCaptureAvailability
 import com.floe.android.core.networkmonitor.CoverageLimits
 import com.floe.android.design.*
 import kotlinx.coroutines.Dispatchers
@@ -56,6 +61,12 @@ class NetworkArtifactCallbacks(
     val onSetCoverageAgentReadable: (String, Boolean) -> Unit,
     val onPermission: (List<String>) -> Unit,
     val onCancelActive: () -> Unit,
+    val onCaptureStart: (String, Boolean, Int) -> Unit,
+    val onCaptureStop: (String) -> Unit,
+    val onOpenCaptureAnalysis: (String) -> Unit,
+    val onRefreshRawCaptures: () -> Unit,
+    val onExportRawCapture: (String) -> Unit,
+    val onCancelRawExport: () -> Unit,
 )
 
 private enum class ArtifactTab { CAPTURES, COVERAGE }
@@ -71,6 +82,9 @@ fun NetworkArtifactWorkbench(
     state: NetworkArtifactState,
     compact: Boolean,
     callbacks: NetworkArtifactCallbacks,
+    captureState: CaptureState = CaptureState(),
+    captureAvailability: RootCaptureAvailability = RootCaptureAvailability.playBuild(),
+    rawCaptureState: RawCaptureLibraryUiState = RawCaptureLibraryUiState(),
     modifier: Modifier = Modifier,
 ) {
     var tab by rememberSaveable { mutableStateOf(ArtifactTab.CAPTURES.name) }
@@ -128,10 +142,15 @@ fun NetworkArtifactWorkbench(
             ArtifactTab.CAPTURES -> {
                 if (compact) {
                     if (pcapDetail) PcapDetail(state.pcap, callbacks)
-                    else PcapList(state.pcap, callbacks)
+                    else PcapList(
+                        state.pcap, callbacks, captureState, captureAvailability, rawCaptureState,
+                    )
                 } else {
                     Row(Modifier.weight(1f)) {
-                        PcapList(state.pcap, callbacks, Modifier.width(280.dp).fillMaxHeight())
+                        PcapList(
+                            state.pcap, callbacks, captureState, captureAvailability,
+                            rawCaptureState, Modifier.width(280.dp).fillMaxHeight(),
+                        )
                         FloeVerticalDivider()
                         if (pcapDetail) PcapDetail(state.pcap, callbacks, Modifier.weight(1f))
                         else ArtifactEmpty(stringResource(R.string.network_artifact_capture_select))
@@ -166,6 +185,9 @@ private fun ArtifactEmpty(text: String) {
 private fun PcapList(
     state: PcapArtifactState,
     callbacks: NetworkArtifactCallbacks,
+    captureState: CaptureState,
+    captureAvailability: RootCaptureAvailability,
+    rawCaptureState: RawCaptureLibraryUiState,
     modifier: Modifier = Modifier,
 ) {
     var detailed by rememberSaveable { mutableStateOf(false) }
@@ -173,6 +195,14 @@ private fun PcapList(
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                LiveCaptureCard(
+                    state = captureState,
+                    availability = captureAvailability,
+                    onStart = callbacks.onCaptureStart,
+                    onStop = callbacks.onCaptureStop,
+                    onOpenAnalysis = callbacks.onOpenCaptureAnalysis,
+                )
+                RawCaptureSection(rawCaptureState, callbacks)
                 FloeText(stringResource(R.string.network_artifact_capture_intro), style = Floe.typography.body)
                 FloeCheckboxRow(
                     label = stringResource(R.string.network_artifact_capture_detailed),
@@ -221,6 +251,176 @@ private fun PcapList(
 }
 
 @Composable
+private fun LiveCaptureCard(
+    state: CaptureState,
+    availability: RootCaptureAvailability,
+    onStart: (String, Boolean, Int) -> Unit,
+    onStop: (String) -> Unit,
+    onOpenAnalysis: (String) -> Unit,
+) {
+    var mode by rememberSaveable { mutableStateOf(CaptureMode.VPN.wire) }
+    var detailed by rememberSaveable { mutableStateOf(false) }
+    var minutes by rememberSaveable { mutableStateOf(5) }
+    val rootAvailable = availability.available
+    val active = state.isActive
+    val busy = active || state.phase == CapturePhase.CONSENT_REQUIRED ||
+        state.phase == CapturePhase.FINALIZING
+    Column(
+        Modifier.fillMaxWidth()
+            .background(Floe.colors.fillTertiary)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            IconGlyph(FloeIcons.Antenna, Floe.colors.accent)
+            FloeText(stringResource(R.string.network_capture_title), style = Floe.typography.bodyEmphasized)
+        }
+        FloeText(stringResource(R.string.network_capture_intro), style = Floe.typography.metadata,
+            color = Floe.colors.secondaryLabel)
+        FloeSegmented(
+            options = listOf(
+                stringResource(R.string.network_capture_mode_vpn),
+                stringResource(R.string.network_capture_mode_root),
+            ),
+            selectedIndex = if (CaptureMode.entries.firstOrNull { it.wire == mode } == CaptureMode.ROOT) 1 else 0,
+            onSelect = { index ->
+                if (!busy) mode = if (index == 1) CaptureMode.ROOT.wire else CaptureMode.VPN.wire
+            },
+        )
+        if (CaptureMode.entries.firstOrNull { it.wire == mode } == CaptureMode.ROOT && !rootAvailable) {
+            FloeText(
+                rootAvailabilityText(availability),
+                style = Floe.typography.metadata,
+                color = Floe.colors.destructive,
+            )
+        }
+        FloeCheckboxRow(
+            label = stringResource(R.string.network_capture_detailed),
+            checked = detailed,
+            onCheckedChange = { if (!busy) detailed = it },
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FloeCapsuleButton(
+                stringResource(R.string.network_capture_duration, minutes),
+                onClick = { if (!busy) minutes = when (minutes) { 1 -> 5; 5 -> 15; else -> 1 } },
+                enabled = !busy,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.weight(1f))
+            if (active) {
+                state.sessionId?.let {
+                    FloeCapsuleButton(
+                        stringResource(R.string.network_capture_stop),
+                        onClick = { onStop(it) },
+                        prominent = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            } else {
+                FloeCapsuleButton(
+                    stringResource(R.string.network_capture_start),
+                    onClick = { onStart(mode, detailed, minutes) },
+                    prominent = true,
+                    enabled = !busy && (
+                        CaptureMode.entries.firstOrNull { it.wire == mode } != CaptureMode.ROOT ||
+                            rootAvailable
+                        ),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+        when (state.phase) {
+            CapturePhase.RUNNING, CapturePhase.STOPPING -> {
+                val text = if (state.phase == CapturePhase.STOPPING) {
+                    stringResource(R.string.network_capture_stopping)
+                } else {
+                    stringResource(
+                        R.string.network_capture_running,
+                        state.stats.capturedPackets,
+                        NetworkMeasureFormat.bytes(state.stats.capturedBytes),
+                    )
+                }
+                FloeStatusLine(FloeIcons.Clock, text, Floe.colors.secondaryLabel)
+                if (state.stats.droppedPackets > 0) {
+                    FloeText(
+                        stringResource(R.string.network_capture_dropped, state.stats.droppedPackets),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
+            }
+            CapturePhase.FINALIZING -> FloeStatusLine(
+                FloeIcons.Clock,
+                stringResource(R.string.network_capture_finalizing),
+                Floe.colors.secondaryLabel,
+            )
+            CapturePhase.COMPLETED -> FloeText(
+                stringResource(
+                    R.string.network_capture_complete,
+                    state.stats.capturedPackets,
+                    NetworkMeasureFormat.bytes(state.stats.capturedBytes),
+                ),
+                style = Floe.typography.metadata,
+            )
+            CapturePhase.FAILED, CapturePhase.UNSUPPORTED -> FloeText(
+                captureFailureText(state),
+                style = Floe.typography.metadata,
+                color = Floe.colors.destructive,
+            )
+            CapturePhase.CANCELLED -> FloeText(
+                stringResource(R.string.network_capture_cancelled),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+            else -> Unit
+        }
+        if (state.phase == CapturePhase.CONSENT_REQUIRED) {
+            FloeText(stringResource(R.string.network_capture_consent),
+                style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+        }
+        state.analysisId?.let { analysisID ->
+            FloeCapsuleButton(
+                stringResource(R.string.network_capture_open_analysis),
+                onClick = { onOpenAnalysis(analysisID) },
+            )
+        }
+        FloeText(stringResource(R.string.network_capture_ipv6), style = Floe.typography.metadata,
+            color = Floe.colors.secondaryLabel)
+        if (CaptureMode.entries.firstOrNull { it.wire == mode } != CaptureMode.ROOT) {
+            FloeText(stringResource(R.string.network_capture_icmp), style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel)
+        }
+        FloeText(stringResource(R.string.network_capture_owner), style = Floe.typography.metadata,
+            color = Floe.colors.secondaryLabel)
+    }
+}
+
+@Composable
+private fun rootAvailabilityText(availability: RootCaptureAvailability): String = when (availability.code) {
+    "playBuild" -> stringResource(R.string.network_capture_root_play)
+    "rootOff", "rootNotEnabled", "grantNotFound" -> stringResource(R.string.network_capture_root_off)
+    "helperUnavailable", "helperMissing" -> stringResource(R.string.network_capture_root_helper)
+    else -> stringResource(R.string.network_capture_root_unavailable)
+}
+
+@Composable
+private fun captureFailureText(state: CaptureState): String {
+    return when (state.failure?.code) {
+        "consentDenied" -> stringResource(R.string.network_capture_failure_consent)
+        "notificationsDisabled" -> stringResource(R.string.network_capture_failure_notifications)
+        "vpnRevoked" -> stringResource(R.string.network_capture_failure_vpn)
+        "stopNotProven", "stopTimeout" -> stringResource(R.string.network_capture_failure_stop)
+        "analysisFailed", "analysisStoreFailed", "artifactFinalizeFailed" ->
+            stringResource(R.string.network_capture_failure_analysis)
+        "playBuild", "rootUnavailable", "helperUnavailable", "rootServiceNotAlive",
+        "rootNotEnabled", "rootOff", "grantNotFound" -> rootAvailabilityText(
+            RootCaptureAvailability.unavailable(state.failure?.code ?: "rootUnavailable"),
+        )
+        else -> stringResource(R.string.network_capture_failed)
+    }
+}
+
+@Composable
 private fun PcapRow(item: PcapAnalysisItemUi, selected: Boolean, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth()
@@ -260,6 +460,126 @@ private fun PcapStatusPill(status: String) {
         else -> stringResource(R.string.network_artifact_status_failed) to FloeBadgeTone.DESTRUCTIVE
     }
     FloeBadgePill(text, tone)
+}
+
+@Composable
+private fun RawCaptureSection(
+    state: RawCaptureLibraryUiState,
+    callbacks: NetworkArtifactCallbacks,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FloeText(
+                stringResource(R.string.network_capture_raw_title),
+                style = Floe.typography.bodyEmphasized,
+                modifier = Modifier.weight(1f),
+            )
+            if (state.exporting) {
+                FloeActivityIndicator(
+                    description = stringResource(R.string.network_capture_raw_exporting),
+                )
+            }
+        }
+        FloeText(
+            stringResource(R.string.network_capture_raw_intro),
+            style = Floe.typography.metadata,
+            color = Floe.colors.secondaryLabel,
+        )
+        if (state.invalid > 0) {
+            FloeStatusLine(
+                FloeIcons.WarningTriangle,
+                stringResource(R.string.network_capture_raw_invalid),
+                Floe.colors.secondaryLabel,
+            )
+        }
+        if (state.captures.isEmpty()) {
+            FloeText(
+                stringResource(R.string.network_capture_raw_empty),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+        } else {
+            state.captures.forEach { item ->
+                val busy = state.exportingSessionId == item.sessionId
+                Column(
+                    Modifier.fillMaxWidth()
+                        .background(Floe.colors.fillTertiary, RoundedCornerShape(12.dp))
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        IconGlyph(FloeIcons.Folder, Floe.colors.accent)
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            FloeText(
+                                stringResource(
+                                    R.string.network_capture_raw_item,
+                                    if (item.mode == CaptureMode.ROOT.wire) {
+                                        stringResource(R.string.network_capture_mode_root)
+                                    } else {
+                                        stringResource(R.string.network_capture_mode_vpn)
+                                    },
+                                    NetworkArtifactFormat.timestamp(item.createdAtMillis),
+                                    NetworkMeasureFormat.bytes(item.bytes),
+                                ),
+                                style = Floe.typography.bodyEmphasized,
+                            )
+                            FloeText(
+                                stringResource(
+                                    R.string.network_capture_raw_digest,
+                                    item.sha256.take(16),
+                                ),
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.secondaryLabel,
+                            )
+                        }
+                        FloeBadgePill(
+                            stringResource(
+                                if (item.partial) R.string.network_capture_raw_partial
+                                else R.string.network_capture_raw_complete,
+                            ),
+                            if (item.partial) FloeBadgeTone.PENDING else FloeBadgeTone.SUCCESS,
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FloeCapsuleButton(
+                            stringResource(
+                                if (busy) R.string.network_capture_raw_exporting
+                                else R.string.network_capture_raw_export,
+                            ),
+                            onClick = { callbacks.onExportRawCapture(item.sessionId) },
+                            enabled = !state.exporting,
+                            prominent = busy,
+                        )
+                        if (busy) {
+                            FloeCapsuleButton(
+                                stringResource(R.string.network_capture_raw_cancel),
+                                onClick = callbacks.onCancelRawExport,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        state.exported?.let { receipt ->
+            FloeStatusLine(
+                FloeIcons.Clock,
+                stringResource(
+                    if (receipt.partial) R.string.network_capture_raw_exported_partial
+                    else R.string.network_capture_raw_exported,
+                    NetworkMeasureFormat.bytes(receipt.bytes),
+                    receipt.sha256,
+                ),
+                Floe.colors.secondaryLabel,
+            )
+            FloeText(
+                stringResource(R.string.network_capture_raw_agent_note),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+        }
+        state.failure?.let { ArtifactFailureLine(it) }
+    }
 }
 
 @Composable

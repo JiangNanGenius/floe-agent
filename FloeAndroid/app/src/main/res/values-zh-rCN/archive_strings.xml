@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="archive_reading">正在读取压缩包…</string>
+    <string name="archive_empty">压缩包是空的。</string>
+    <string name="archive_entry_count">%1$d 个条目</string>
+    <string name="archive_listing_truncated">条目过多，仅显示前一部分。</string>
+    <string name="archive_action_extract">解压</string>
+    <string name="archive_action_decompress">解压文件</string>
+    <string name="archive_cancel">取消</string>
+    <string name="archive_retry">重试</string>
+    <string name="archive_confirm_extract_title">解压到新目录？</string>
+    <string name="archive_confirm_extract_body">将创建“%1$s”，已存在的目录不会被覆盖。</string>
+    <string name="archive_confirm_decompress_title">解压到新文件？</string>
+    <string name="archive_confirm_decompress_body">将创建“%1$s”，已存在的文件不会被覆盖。</string>
+    <string name="archive_extracted_to">已解压到“%1$s”。</string>
+    <string name="archive_decompressed_to">已解压到“%1$s”。</string>
+    <string name="archive_open_folder">打开目录</string>
+    <string name="archive_open_parent_folder">在目录中显示</string>
+    <string name="archive_progress_bytes">%1$s / %2$s</string>
+    <string name="archive_progress_bytes_unknown">已写入 %1$s</string>
+    <string name="archive_preview_select_title">选择一个文件</string>
+    <string name="archive_preview_select_message">文件内容在有界解压后按需读取，不会修改压缩包。</string>
+    <string name="archive_preview_loading">正在准备预览…</string>
+    <string name="archive_preview_truncated">内容过长，仅显示开头部分。</string>
+    <string name="archive_preview_unavailable_title">无法预览</string>
+    <string name="archive_preview_unavailable_message">该条目无法在此预览。解压压缩包后可打开。</string>
+    <string name="archive_preview_not_utf8">这不是 UTF-8 文本文件，无法内联预览。</string>
+    <string name="archive_preview_failed_title">预览失败</string>
+    <string name="archive_close_preview">关闭预览</string>
+    <string name="archive_read_failed_title">无法读取压缩包</string>
+    <string name="archive_failed_owner">此文档已不可用。</string>
+    <string name="archive_failed_unsupported">此压缩包格式暂不支持。</string>
+    <string name="archive_failed_not_found">工作区中未找到该压缩包。</string>
+    <string name="archive_failed_too_large">压缩包过大，无法处理。</string>
+    <string name="archive_failed_conflict">“%1$s”已存在，未覆盖任何内容。</string>
+    <string name="archive_failed_cancelled">已取消解压，未写入任何内容。</string>
+    <string name="archive_failed_source">无法从当前工作区读取压缩包。</string>
+    <string name="archive_failed_transport">压缩包服务暂不可用，请重试。</string>
+    <string name="archive_failed_core_update">压缩包查看器需要更新核心。</string>
+    <string name="archive_failed_generic">操作失败：%1$s</string>
+</resources>

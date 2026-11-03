@@ -1,0 +1,28 @@
+--- a/tcpdump.c
++++ b/tcpdump.c
+@@ -106,6 +106,7 @@
+ #define HAVE_REMOTE
+ #endif
+ #include <pcap.h>
++#include "floe_capture_guard.h"
+ #include <signal.h>
+ #include <stdio.h>
+ #include <stdarg.h>
+@@ -2295,6 +2296,17 @@
+ 	(void)setsignal(SIGTERM, cleanup);
+ #endif /* _WIN32 */
+ 	(void)setsignal(SIGINT, cleanup);
++#ifndef _WIN32
++	/*
++	 * Floe: the independently running guard owns the helper lifetime.
++	 * It reads its bounded configuration from stdin, then enforces parent
++	 * liveness, the monotonic deadline and the output byte budget even if
++	 * the root server is SIGKILLed. A missing/invalid configuration aborts
++	 * before capture starts; tcpdump is never run unguarded.
++	 */
++	if (floe_capture_guard_install(WFileName) != 0)
++		error("Floe capture guard is unavailable");
++#endif
+ #if defined(HAVE_FORK) || defined(HAVE_VFORK)
+ 	(void)setsignal(SIGCHLD, child_cleanup);
+ #endif

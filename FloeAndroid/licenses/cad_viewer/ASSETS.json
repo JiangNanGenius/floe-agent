@@ -1,0 +1,318 @@
+{
+  "sourceCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+  "sourceRoot": "FloeAgent/FloeApp/Resources/EngineeringViewers",
+  "files": [
+    {
+      "name": "dxf.js",
+      "role": "Pinned DXF renderer bundle (dxf-viewer 1.0.48)",
+      "bytes": 1232640,
+      "sha256": "7aad4c4119eb487d6100d023f418b9fc524e3665df6737ec2d45233270d6386e",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/dxf.js",
+      "gitBlob": "895d32f1a6f43f44144f2f0740413cdc530ab9b8"
+    },
+    {
+      "name": "dxf-worker.js",
+      "role": "Pinned DXF worker bootstrap",
+      "bytes": 97,
+      "sha256": "eafd29924ac974ff307ae47ef95e827521b90c25d80d6e10f6cd276e59e7bbce",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/dxf-worker.js",
+      "gitBlob": "654b7a0c0084a28a91ec9c5bc030ddef4cdd59e0"
+    },
+    {
+      "name": "dxf.js.LEGAL.txt",
+      "role": "dxf.js bundled license notice",
+      "bytes": 255,
+      "sha256": "c45cd04eba4a946eda2325041fe74d9dad5249835d308f2e7b58768bd36e52f9",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/dxf.js.LEGAL.txt",
+      "gitBlob": "81fd856b88e8354b6f05e9211c5e5d5144f2e31d"
+    },
+    {
+      "name": "mesh.js",
+      "role": "Pinned general mesh renderer bundle (online-3d-viewer 0.18.0)",
+      "bytes": 1056535,
+      "sha256": "fe07c0a7c84d394a6c38ec688aea58ac3b0640d0e758a06519f5d759a89ba8f9",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/mesh.js",
+      "gitBlob": "b231d2e386b6ec96cfe8272f5a8128047d0d842c"
+    },
+    {
+      "name": "mesh.js.LEGAL.txt",
+      "role": "mesh.js bundled license notice",
+      "bytes": 508,
+      "sha256": "46932ad3a815be80035378068fafa8e515ab6cd6d184e405ff22383f0e6bab93",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/mesh.js.LEGAL.txt",
+      "gitBlob": "9eb0e82aa4b46c824a96685ae246b3e49c682043"
+    },
+    {
+      "name": "occt-import-js.js",
+      "role": "Pinned OCCT WASM binding loader 0.0.23",
+      "bytes": 96871,
+      "sha256": "3fb44ce11d00611f9b3f3c5775d520ebab48930c1f08279b7b1316f05f0d3379",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/occt-import-js.js",
+      "gitBlob": "b12d5ac983fd5f0b9dab7fdb915400170d54faab"
+    },
+    {
+      "name": "occt-import-js.wasm",
+      "role": "Pinned OCCT WASM (384 MiB memory cap)",
+      "bytes": 7604030,
+      "sha256": "ebf53ff1364f1ad0c82c6efc745fbb94677dd88ecd5588622c37ac3a9ba711da",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/occt-import-js.wasm",
+      "gitBlob": "6403211c6fe17fba61595a098eba0967b0d2eacf"
+    },
+    {
+      "name": "occt-worker.js",
+      "role": "C04A read-only STEP/IGES/BREP worker (derived from donor occt-worker.js; local-only imports)",
+      "bytes": 3327,
+      "sha256": "33a584eb71bbdc601b8908773a738215a237a911543ef14d60531a676cfaf7bb",
+      "source": "C04A authored/derived"
+    },
+    {
+      "name": "floe_cad_engine.js",
+      "role": "Floe/acadrust 0.5.5 WASM binding glue",
+      "bytes": 14178,
+      "sha256": "313d9879c0a46abda1edf70f5ec27b9298f4dbd092d2a9f2f5860a13cd51701a",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/floe_cad_engine.js",
+      "gitBlob": "81eb1b18b392ef57e7262b4fd57d517a85005f72",
+      "modified": false,
+      "androidDerivation": "ANDROID_DERIVATION.json",
+      "androidSourceRoot": "FloeAgent/ThirdParty/CADEngine"
+    },
+    {
+      "name": "floe_cad_engine_bg.wasm",
+      "role": "Floe/acadrust 0.5.5 DXF/DWG engine",
+      "bytes": 6395115,
+      "sha256": "06c58d31057654887821f015ada1cdfc53fdaf9a5251beabea502d6e161d54d9",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/floe_cad_engine_bg.wasm",
+      "gitBlob": "bc29cf563a4d99174109e1545b98676a72906dbe",
+      "modified": true,
+      "androidDerivation": "ANDROID_DERIVATION.json",
+      "androidSourceRoot": "FloeAgent/ThirdParty/CADEngine"
+    },
+    {
+      "name": "MiSans-Regular.ttf",
+      "role": "Pinned DXF text font",
+      "bytes": 7924400,
+      "sha256": "7172aa1b5c703780ee12df3fe4c50481dde01f3b125a045a398000a88d032ae5",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/MiSans-Regular.ttf",
+      "gitBlob": "9cbfff50be680a0baaf8b08a66f0da132c57df42"
+    },
+    {
+      "name": "CAD_SOURCES.json",
+      "role": "Rust crate source pin set",
+      "bytes": 13884,
+      "sha256": "d364248f45624f1b2500851b85ffbf1251fc22182745e0933f73dcd88959e659",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/CAD_SOURCES.json",
+      "gitBlob": "ac296d235112b4b1f45fa0bb143e4e69e71d2c3f"
+    },
+    {
+      "name": "CAD_NOTICES.txt",
+      "role": "Rust crate license notices (includes MPL-2.0)",
+      "bytes": 553969,
+      "sha256": "38414e9de5245c8753aadd81a4de803c884146f6381df864e4f9c1082d91dbff",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/CAD_NOTICES.txt",
+      "gitBlob": "22739b79db5678a77c0f50d980f7f136512a6867"
+    },
+    {
+      "name": "OCCT_SOURCES.json",
+      "role": "OCCT/occt-import-js source pins",
+      "bytes": 815,
+      "sha256": "64f01d0a00483d030b82ad89d3854ec0d9b372d383566bda999dc8ad6728b238",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/OCCT_SOURCES.json",
+      "gitBlob": "6254975f7174b4a941208fde0e6c7ad5b6f0b429"
+    },
+    {
+      "name": "OCCT_LGPL_EXCEPTION.txt",
+      "role": "OCCT LGPL exception",
+      "bytes": 663,
+      "sha256": "04580a884ea6cea294402649ff7b5cbb167d47462d1340a4ed33e550db10a81b",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/OCCT_LGPL_EXCEPTION.txt",
+      "gitBlob": "263d14ef75d9172e59213d880605729eed3041fc"
+    },
+    {
+      "name": "license.occt-import-js.txt",
+      "role": "occt-import-js LGPL-2.1 text",
+      "bytes": 27030,
+      "sha256": "7ffe1954587c77dfba1cf8eb9b2ea743671fa6e63f9e7a2f258119d42e14eefe",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/license.occt-import-js.txt",
+      "gitBlob": "bc0390e98c98f2ad3ab7decdb82b4d57d7f850d4"
+    },
+    {
+      "name": "license.occt.txt",
+      "role": "OpenCASCADE LGPL-2.1 text",
+      "bytes": 26936,
+      "sha256": "090f8eb6ba63e72887c1f89b009fb1656cfda02d83b6e9805b20468520a5d77f",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/license.occt.txt",
+      "gitBlob": "6280c04d63f0e066d9faef40b1efb5b90bade073"
+    },
+    {
+      "name": "THIRD_PARTY_NOTICES.txt",
+      "role": "JS bundle third-party notices",
+      "bytes": 54592,
+      "sha256": "354d4591562ee7d854507cd4a79a9a9e37b83c1179213201a0c30f294af9f4cc",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/THIRD_PARTY_NOTICES.txt",
+      "gitBlob": "043770541ecec191af8ed8574dedd48f34f3bfb4"
+    },
+    {
+      "name": "asset-hashes.json",
+      "role": "Donor viewer asset SHA-256 map",
+      "bytes": 2969,
+      "sha256": "136bf51908f61ad30fa6871f5586e196b4fdadfc49bcd639c2dc17b43eaf5a99",
+      "source": "FloeAgent/FloeApp/Resources/EngineeringViewers/asset-hashes.json",
+      "gitBlob": "a61847a78dff74c01e5b8f45b6dbce1c3328fbea"
+    },
+    {
+      "name": "index.html",
+      "role": "C04A local-only viewer shell",
+      "bytes": 944,
+      "sha256": "6e3c014545a52d091a99ac019ec74d4636926dd21934c6b8755d43a76178af60",
+      "source": "Floe Android authored loader for C04 package preview",
+      "previousAndroidSha256": "e6dc5b9c2b9433eb969bff57ff9700c2ab73afcd5642eeb1e128f45717ccb225",
+      "revision": "C04C"
+    },
+    {
+      "name": "viewer.css",
+      "role": "C04A viewer surface styles",
+      "bytes": 1596,
+      "sha256": "9266a9de401aea9e441ad40bb827001f29928c43cb04c1222ebf5f90687ac667",
+      "source": "C04A authored/derived"
+    },
+    {
+      "name": "viewer.js",
+      "role": "C04A read-only viewer (derived from donor viewer.js; read-only paths only)",
+      "bytes": 18883,
+      "sha256": "45caed5425b189e1115119c49688da52e02611fd2d92aa89805434a9ec1f722c",
+      "source": "C04A authored/derived"
+    },
+    {
+      "name": "cad-worker.js",
+      "role": "C04A read-only DWG -> DXF projection worker",
+      "bytes": 1091,
+      "sha256": "057abcac07c0460313b1536274653b0c12f76764c311c7497c6c5dbafca8f214",
+      "source": "C04A authored/derived"
+    },
+    {
+      "name": "loader.js",
+      "role": "Floe-owned native package preview adapter",
+      "revision": "C04C",
+      "bytes": 610,
+      "sha256": "e0b21903626cc75a4e5c940e71268f96462f4100c063c721607faf0c29022f10",
+      "source": "Floe Android authored native package adapter"
+    },
+    {
+      "name": "floecad.js",
+      "role": "Floe-owned native package preview adapter",
+      "revision": "C04C",
+      "bytes": 14377,
+      "sha256": "3e56f427ff2a8345597b6e2f8b5c87fa7fe142945d6dae8a1081bb8e89bf114c",
+      "source": "Floe Android authored native package adapter"
+    }
+  ],
+  "licenseInventory": [
+    {
+      "name": "CAD_NOTICES.txt",
+      "bytes": 553969,
+      "sha256": "38414e9de5245c8753aadd81a4de803c884146f6381df864e4f9c1082d91dbff"
+    },
+    {
+      "name": "CAD_SOURCES.json",
+      "bytes": 13884,
+      "sha256": "d364248f45624f1b2500851b85ffbf1251fc22182745e0933f73dcd88959e659"
+    },
+    {
+      "name": "MiSans-LICENSE.html",
+      "bytes": 2274,
+      "sha256": "95be1a5b21c8be9ffda5dfea3212ad81ba431f3b43110950756f333fb7bc958b"
+    },
+    {
+      "name": "MiSans-PROVENANCE.json",
+      "bytes": 927,
+      "sha256": "ebcc83c9cbc68dab09eabda4b98f64c7d762782c006c7de41fbc8b3a23c18415"
+    },
+    {
+      "name": "OCCT_LGPL_EXCEPTION.txt",
+      "bytes": 663,
+      "sha256": "04580a884ea6cea294402649ff7b5cbb167d47462d1340a4ed33e550db10a81b"
+    },
+    {
+      "name": "OCCT_SOURCES.json",
+      "bytes": 815,
+      "sha256": "64f01d0a00483d030b82ad89d3854ec0d9b372d383566bda999dc8ad6728b238"
+    },
+    {
+      "name": "PROVENANCE.md",
+      "bytes": 3236,
+      "sha256": "df84e27df1906d3345a510a10a022e0ecd0ddf4e45c87f10943b68089a191ad7"
+    },
+    {
+      "name": "THIRD_PARTY_NOTICES.txt",
+      "bytes": 54592,
+      "sha256": "354d4591562ee7d854507cd4a79a9a9e37b83c1179213201a0c30f294af9f4cc"
+    },
+    {
+      "name": "asset-hashes.json",
+      "bytes": 2969,
+      "sha256": "136bf51908f61ad30fa6871f5586e196b4fdadfc49bcd639c2dc17b43eaf5a99"
+    },
+    {
+      "name": "dxf.js.LEGAL.txt",
+      "bytes": 255,
+      "sha256": "c45cd04eba4a946eda2325041fe74d9dad5249835d308f2e7b58768bd36e52f9"
+    },
+    {
+      "name": "license.occt-import-js.txt",
+      "bytes": 27030,
+      "sha256": "7ffe1954587c77dfba1cf8eb9b2ea743671fa6e63f9e7a2f258119d42e14eefe"
+    },
+    {
+      "name": "license.occt.txt",
+      "bytes": 26936,
+      "sha256": "090f8eb6ba63e72887c1f89b009fb1656cfda02d83b6e9805b20468520a5d77f"
+    },
+    {
+      "name": "mesh.js.LEGAL.txt",
+      "bytes": 508,
+      "sha256": "46932ad3a815be80035378068fafa8e515ab6cd6d184e405ff22383f0e6bab93"
+    }
+  ],
+  "routingEvidence": {
+    "dxf": {
+      "reader": "dxf.js DxfViewer (dxf-viewer 1.0.48)",
+      "source": "dxf.js export + dxf-worker.js DxfViewer.SetupWorker()"
+    },
+    "dwg": {
+      "reader": "floe_cad_engine.js CadSession(bytes,\"dwg\")",
+      "source": "ThirdParty/CADEngine/src/lib.rs read() match \"dwg\"; display_dxf() projects to DXF"
+    },
+    "step": {
+      "reader": "occt-import-js 0.0.23 ReadStepFile",
+      "source": "occt-worker.js method map step/stp; bundledWASMSHA256 ebf53ff1364f1ad0c82c6efc745fbb94677dd88ecd5588622c37ac3a9ba711da"
+    },
+    "iges": {
+      "reader": "occt-import-js 0.0.23 ReadIgesFile",
+      "source": "occt-worker.js method map iges/igs"
+    },
+    "brep": {
+      "reader": "occt-import-js 0.0.23 ReadBrepFile",
+      "source": "occt-worker.js method map brep"
+    },
+    "glb_gltf_obj_stl_3mf": {
+      "reader": "mesh.js EmbeddedViewer (online-3d-viewer 0.18.0)",
+      "source": "mesh.js CanImportExtension accepts exactly stl, obj, gltf, glb, 3mf for the required set; its CDN OCCT/FBX/Draco loaders are not used"
+    }
+  },
+  "limits": {
+    "dxfMaxBytes": 67108864,
+    "dwgMaxBytes": 10485760,
+    "surfaceMaxBytes": 10485760,
+    "meshMaxBytes": 67108864,
+    "resourceMaxBytes": 67108864,
+    "totalResourceMaxBytes": 268435456,
+    "captureMaxBytes": 25165824,
+    "captureMaxEdge": 8192,
+    "sessionTTLSeconds": 900
+  },
+  "notes": [
+    "No CDN/network URL is used by the accepted format routes. The local interceptor returns 403 for every non-local request.",
+    "occt-import-js.wasm is the donor memory-capped build (OCCT_SOURCES.json bundledWASMSHA256); the JS binding is byte-identical to the donor.",
+    "MiSans is retained with the existing Floe font provenance; see MiSans-PROVENANCE.json and MiSans-LICENSE.html."
+  ]
+}

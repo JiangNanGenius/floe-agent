@@ -81,6 +81,12 @@ internal fun WorkspaceGitPane(host: RuntimeHost?, taskID: String?) {
                 "dirtyDocument", "workspaceBusy" -> R.string.workspace_conflict_error
                 "gitNeedsAccount", "gitCredentialUnavailable" -> R.string.git_workspace_account_required
                 "gitTrustUnavailable" -> R.string.git_workspace_trust_unavailable
+                // GIT-PUSH-CONFLICT: the server refused the push (for
+                // example the remote has newer commits) — pull first.
+                // An unconfirmed result asks for a refresh, never a blind
+                // retry-as-success.
+                "gitPushRejected" -> R.string.git_workspace_push_rejected
+                "gitPushUnreported" -> R.string.git_workspace_push_unreported
                 "notAdmitted", "escapesRoot", "secretFile" -> R.string.workspace_access_error
                 "retired", "ownerChanged", "ownerUnavailable", "ownerStopping" -> R.string.workspace_owner_error
                 else -> R.string.git_workspace_failed

@@ -376,15 +376,16 @@ public final class UserQuestionHostAPI: @unchecked Sendable {
                 conversationID: conversationID, includeSettled: false)
             var yes: [UserQuestionWaitingSnapshot] = []
             // A pending row with NO parked execution is a process-death
-            // leftover. It is not answerable; after a short grace window
-            // (protects the register→park handoff) cancel it honestly so the
-            // UI never presents a false live wait.
-            let staleBefore = Date().addingTimeInterval(-5)
+            // leftover. It is not answerable in this process, but it is NOT
+            // lost: the durable row survives so the ORIGINAL run resume can
+            // park on it again. C02 continuity surfaces it as
+            // resume-required; terminal run paths already fence their own
+            // pending questions. This read path never destroys a recoverable
+            // question (a plain cold-open refresh used to cancel it).
             for snapshot in pending {
-                if await coordinator.isActivelyWaiting(requestID: snapshot.requestID) {
+                if await coordinator.isActivelyWaiting(
+                    requestID: snapshot.requestID) {
                     yes.append(snapshot)
-                } else if snapshot.createdAt < staleBefore {
-                    try? await coordinator.cancelRequest(requestID: snapshot.requestID)
                 }
             }
             snapshots = yes

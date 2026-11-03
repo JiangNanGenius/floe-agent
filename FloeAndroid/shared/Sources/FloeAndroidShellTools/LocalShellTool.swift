@@ -27,6 +27,9 @@
 //      to "--- stderr (backend metadata) ---" (the latter only ever carries
 //      backend-generated metadata such as a stdin-write note). Exit codes,
 //      truncation flags and all other render semantics are byte-equal.
+//   T5: opt-in environmentTransaction uses the same exec.shell/job path and
+//      resolved local guest. Its flag requests recovery behavior, never a
+//      target, role, permission or native host interpreter.
 // The validation limits, policy pre-check, background detection
 // (`jobs.` call ids), rendering contract (exit=126/124/130/75/125) and the
 // service authority are byte-equal.
@@ -47,6 +50,7 @@ public struct LocalShellTool: AgentTool {
         public var stdin: String?
         public var timeout: Double?
         public var maxOutputBytes: Int?
+        public var environmentTransaction: Bool?
         /// Legacy managed dependency input; prefer python3 -m pip in the command.
         public var packages: [String]?
         public var packagePurpose: String?
@@ -60,6 +64,7 @@ public struct LocalShellTool: AgentTool {
             stdin: String? = nil,
             timeout: Double? = nil,
             maxOutputBytes: Int? = nil,
+            environmentTransaction: Bool? = nil,
             packages: [String]? = nil,
             packagePurpose: String? = nil,
             packageCapabilities: [String]? = nil
@@ -71,6 +76,7 @@ public struct LocalShellTool: AgentTool {
             self.stdin = stdin
             self.timeout = timeout
             self.maxOutputBytes = maxOutputBytes
+            self.environmentTransaction = environmentTransaction
             self.packages = packages
             self.packagePurpose = packagePurpose
             self.packageCapabilities = packageCapabilities
@@ -88,7 +94,7 @@ public struct LocalShellTool: AgentTool {
     // UID, one serialized workload, merged PTY output). No VM-shape or
     // lifecycle-core-selection claims exist on this platform.
     public static let toolDescription =
-        "Execute commands or a POSIX shell script in the task's resolved Linux engine (a PRoot Debian userland running in the dedicated runtime UID), never the Android host. The shipped minimal userland provides the base shell, coreutils and apt; python3, node and git are available only after they are actually installed there. Pipelines, redirections and loops are supported. Inspect command -v and versions before relying on tools; use python3 -m pip, npm/pnpm or the engine's apt for dependencies when available. Git may be used if actually installed; git.* tools provide structured repository operations. cwd is workspace-relative and workspace file visibility requires the runtime setup and file mapping to be qualified. Use jobs.submit targeting exec.shell for long commands or shell.open/shell.exchange for persistent input. Effective timeout is reported (foreground max 120 seconds; jobs max 600); output is bounded and PTY output is merged (stdout/stderr are not split). Inspect exit status and saved outputs before continuing a timed-out/interrupted operation, rather than repeating side effects. A busy engine reports status=notStarted (nothing ran) instead of a fake timeout. A missing or unqualified Linux engine fails with preparation/selection guidance and never falls back to a host interpreter. Package installs happen through the Linux userland itself (python3 -m pip / npm / apt inside the command); the legacy packages input is refused."
+        "Execute commands or a POSIX shell script in the task's resolved Linux engine (a PRoot Debian userland running in the dedicated runtime UID), never the Android host. The shipped minimal userland provides the base shell, coreutils and apt; python3, node and git are available only after they are actually installed there. Pipelines, redirections and loops are supported. Inspect command -v and versions before relying on tools; use python3 -m pip, npm/pnpm or the engine's apt for dependencies when available. Git may be used if actually installed; git.* tools provide structured repository operations. cwd is workspace-relative and workspace file visibility requires the runtime setup and file mapping to be qualified. Use jobs.submit targeting exec.shell for long commands or shell.open/shell.exchange for persistent input. Effective timeout is reported (foreground max 120 seconds; jobs max 600); output is bounded and PTY output is merged (stdout/stderr are not split). Inspect exit status and saved outputs before continuing a timed-out/interrupted operation, rather than repeating side effects. A busy engine reports status=notStarted (nothing ran) instead of a fake timeout. A missing or unqualified Linux engine fails with preparation/selection guidance and never falls back to a host interpreter. Package installs happen through the Linux userland itself (python3 -m pip / npm / apt inside the command); the legacy packages input is refused. For system package changes, environmentTransaction=true snapshots the resolved local Linux environment and restores it on command failure/cancellation after real process settlement. It requires other sessions/services to be idle and enough recovery storage; it does not roll back workspace files, network effects or SSH machines. Long transactions can use the same option through jobs.submit. Never retry an uncertain transaction automatically."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
       "command":{"type":"string","description":"Shell command line (max 16 KiB). Pipelines and redirections supported."},
@@ -97,7 +103,8 @@ public struct LocalShellTool: AgentTool {
       "env":{"type":"object","additionalProperties":{"type":"string"},"description":"Extra environment variables for this run only"},
       "stdin":{"type":"string","description":"Optional stdin content (max 256 KiB)"},
       "timeout":{"type":"number","description":"Wall-clock timeout seconds (default 10, max 120; 600 for jobs.submit background jobs)"},
-      "maxOutputBytes":{"type":"integer","description":"Combined output cap (default 65536, max 262144)"}},
+      "maxOutputBytes":{"type":"integer","description":"Combined output cap (default 65536, max 262144)"},
+      "environmentTransaction":{"type":"boolean","description":"Opt-in local guest filesystem transaction for package changes. Requires idle sessions and recovery space. Failure/cancellation restores guest files after real process settlement; workspace/external/SSH effects are excluded. Not available for managed services."}},
      "additionalProperties":false}
     """#
     public static let riskLabels: Set<RiskLabel> = [
@@ -171,6 +178,7 @@ public struct LocalShellTool: AgentTool {
             timeout: args.timeout,
             maxOutputBytes: args.maxOutputBytes,
             isBackground: isBackground,
+            environmentTransaction: args.environmentTransaction ?? false,
             context: context
         )
         switch result {

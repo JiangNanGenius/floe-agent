@@ -72,7 +72,7 @@ class RuntimeWorkSupervisorTest {
         val sweepsWhileRunning = h.reader.listCount
         val second = h.supervisor.start(launchSpec("task-3"), LeaseToken("lease-c", "holder-main")) {}
         assertTrue(second is StartOutcome.Refused)
-        assertTrue((second as StartOutcome.Refused).reason.contains("one workload at a time"))
+        assertTrue((second as StartOutcome.Refused).reason.contains("workload capacity reached (1/1)"))
         assertEquals(h.reader.listCount, sweepsWhileRunning)
         assertTrue("the winner's child was never signalled", h.signals.kills.isEmpty())
         assertTrue(h.reader.entries.containsKey(8001))
@@ -93,7 +93,7 @@ class RuntimeWorkSupervisorTest {
         val recovery = h.supervisor.recoverBeforeAdmission("operator-mistake")
         assertTrue("recovery must not sweep an admitted workload: $recovery",
             recovery is RecoveryOutcome.Refused)
-        assertTrue((recovery as RecoveryOutcome.Refused).reason.contains("one workload at a time"))
+        assertTrue((recovery as RecoveryOutcome.Refused).reason.contains("workload capacity reached (1/1)"))
         assertEquals("no sweep happened", sweeps, h.reader.listCount)
         assertTrue("the live workload was not signalled", h.signals.kills.isEmpty())
         assertTrue(h.reader.entries.containsKey(8100))

@@ -21,6 +21,7 @@ internal interface NetworkSession : Closeable {
     suspend fun http(target: HttpTarget, timeoutMs: Int, maxRedirects: Int): ProbeResult
     suspend fun lanDiscover(request: LanDiscoveryRequest): ProbeResult
     suspend fun speedTest(request: SpeedTestRequest): ProbeResult
+    suspend fun traceroute(request: TracerouteRequest): ProbeResult
 
     /**
      * Last bounded observation published by an operation that supports

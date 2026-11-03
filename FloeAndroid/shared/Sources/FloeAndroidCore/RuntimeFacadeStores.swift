@@ -467,6 +467,15 @@ public actor AndroidRuntimeStoreOwner {
         // resumed durable job owners join the same acquire/release seam.
         // Counts ride the honest recovery summary; failures keep requests.
         if let identity = self.identity, let database, identity.epoch == token {
+            // C08 B0: the ORIGINAL model workspace-file tools are registered
+            // with their REAL handlers for this live generation. Availability
+            // is the registry's own `isAvailable` gate (a live accepted native
+            // epoch); the per-call root still comes only from the trusted
+            // `ToolContext.workspaceRootURL`, never a UI-global or
+            // first-project fallback. Registration is idempotent (the
+            // registry replaces by name) and independent of the run-output
+            // artifact binding below.
+            C08WorkspaceFileTools.install()
             if RuntimeFacadeRunOutput.shared.install(
                 artifactRootPath: identity.root.artifactStoreURL.path,
                 epoch: identity.epoch

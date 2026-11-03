@@ -2,11 +2,21 @@
 agp = "9.4.0"
 kotlin = "2.2.10"
 coroutines = "1.9.0"
+# G09-R2 exact Media3 pin verified against Google Maven metadata 2026-10-26
+# and GitHub tag 1.11.1. No dynamic version and no FFmpeg/local model.
+media3 = "1.11.1"
+# C03 real HEIF/HEIC still-image encoder. Exact stable release (AndroidX
+# release page reviewed 2026-11-02); no dynamic version or Bitmap.compress fake.
+heifwriter = "1.1.0"
 compose-bom = "2026.09.00"
-activity = "1.11.0"
+# Haze 1.7.3 requires Activity 1.12.2; keep the shared direct pin aligned.
+activity = "1.12.2"
 core = "1.17.0"
 workmanager = "2.12.0"
 cupertino = "3.3.1"
+# Fixed Haze 1.7.3 tag/commit 671eda90f5b8e6e72ebc4fce7455353f581c77d9.
+# Real Haze source/effect material; no dynamic version and no global toolchain bump.
+haze = "1.7.3"
 # Official fixed Sora pin; no dynamic version or Apple-restricted assets.
 sora = "0.24.4"
 # UI rendering infrastructure (Main-accepted Option A, verified 2026-10-19):
@@ -17,6 +27,10 @@ sora = "0.24.4"
 # core artifact declares no Android/other runtime dependencies.
 commonmark = "0.30.1"
 junit = "4.13.2"
+# C05 exact Android USB serial pin. Tag 3.11.0 commit
+# 8e694372dee4531d140766df7af3189d3d9531c5, MIT; exact AAR/POM SHA-256 and
+# licence text are recorded in FloeAndroid/licenses/devicecommunication/.
+usb-serial = "3.11.0"
 androidx-test = "1.3.0"
 runner = "1.7.0"
 # Explicit test-infra pin: Compose ui-test-junit4 resolves Espresso 3.5.0
@@ -36,8 +50,15 @@ compose-material = { module = "androidx.compose.material3:material3" }
 # the cupertino-adaptive module (Material fallback) and cupertino-icons-extended
 # (SF Symbols copyright risk) are deliberately NOT consumable coordinates here.
 cupertino = { module = "io.github.robinpcrd:cupertino", version.ref = "cupertino" }
+haze = { module = "dev.chrisbanes.haze:haze", version.ref = "haze" }
 junit = { module = "junit:junit", version.ref = "junit" }
+usb-serial = { module = "com.github.mik3y:usb-serial-for-android", version.ref = "usb-serial" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+media3-common = { module = "androidx.media3:media3-common", version.ref = "media3" }
+media3-exoplayer = { module = "androidx.media3:media3-exoplayer", version.ref = "media3" }
+media3-transformer = { module = "androidx.media3:media3-transformer", version.ref = "media3" }
+media3-effect = { module = "androidx.media3:media3-effect", version.ref = "media3" }
+androidx-heifwriter = { module = "androidx.heifwriter:heifwriter", version.ref = "heifwriter" }
 sora-editor = { module = "io.github.rosemoe:editor", version.ref = "sora" }
 commonmark = { module = "org.commonmark:commonmark", version.ref = "commonmark" }
 commonmark-ext-gfm-tables = { module = "org.commonmark:commonmark-ext-gfm-tables", version.ref = "commonmark" }

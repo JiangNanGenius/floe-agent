@@ -71,6 +71,9 @@ public enum BridgeV3 {
         "settings.defaults", "memory", "personalization", "usage", "privacy",
         // G07.3B: host-owned schedule configuration; not execution authority.
         "schedule",
+        // C01: host-owned user-project library configuration. The label does
+        // not grant any run/permission role; the closed matrix is authority.
+        "projects",
     ]
 
     public enum Operation: String, Sendable {
@@ -385,6 +388,26 @@ public enum BridgeV3 {
                     configurationScope: "schedule", revisionRequired: false),
         CommandRule(command: "schedule.dispatchPending", scope: .applicationConfiguration,
                     configurationScope: "schedule", revisionRequired: false),
+
+        // C01 user project library (2026-11-02): APPEND-ONLY six tuples under
+        // the new host-owned `projects` label. The outer revision for every
+        // mutation is `project.<uuid>` with the exact persisted
+        // `workspaces.updated_at`; no payload may carry a root/path/URI/run/
+        // environment/permission. `project.create` alone carries create
+        // intent and therefore no fabricated revision.
+        CommandRule(command: "project.list", scope: .applicationConfiguration,
+                    configurationScope: "projects", revisionRequired: false),
+        CommandRule(command: "project.get", scope: .applicationConfiguration,
+                    configurationScope: "projects", revisionRequired: false),
+        CommandRule(command: "project.create", scope: .applicationConfiguration,
+                    configurationScope: "projects", revisionRequired: true,
+                    allowsCreateIntent: true),
+        CommandRule(command: "project.rename", scope: .applicationConfiguration,
+                    configurationScope: "projects", revisionRequired: true),
+        CommandRule(command: "project.assign", scope: .applicationConfiguration,
+                    configurationScope: "projects", revisionRequired: true),
+        CommandRule(command: "project.delete", scope: .applicationConfiguration,
+                    configurationScope: "projects", revisionRequired: true),
     ]
 
     public enum BinderChannel: String, Sendable {

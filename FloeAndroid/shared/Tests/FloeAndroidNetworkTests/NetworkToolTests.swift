@@ -38,6 +38,40 @@ final class NetworkToolTests: XCTestCase {
         XCTAssertEqual(arguments["host"] as? String, "example.com")
     }
 
+    func testTracerouteClampsHopsProbesAndTimeouts() throws {
+        let request = try NetworkToolRequest.traceroute(
+            host: "example.com", maxHops: 99, probesPerHop: 0,
+            probeTimeoutMs: 1, timeoutMs: 999_999, operationID: operationID)
+        let arguments = try argumentsObject(request)
+        XCTAssertEqual(arguments["host"] as? String, "example.com")
+        XCTAssertEqual(arguments["maxHops"] as? Int, 30)
+        XCTAssertEqual(arguments["probesPerHop"] as? Int, 1)
+        XCTAssertEqual(arguments["probeTimeoutMs"] as? Int, 500)
+        XCTAssertEqual(arguments["timeoutMs"] as? Int, 30_000)
+
+        let defaulted = try NetworkToolRequest.traceroute(
+            host: "192.0.2.44", maxHops: nil, probesPerHop: nil,
+            probeTimeoutMs: nil, timeoutMs: nil, operationID: operationID)
+        let defaultArguments = try argumentsObject(defaulted)
+        XCTAssertEqual(defaultArguments["maxHops"] as? Int, 20)
+        XCTAssertEqual(defaultArguments["probesPerHop"] as? Int, 2)
+        XCTAssertEqual(defaultArguments["probeTimeoutMs"] as? Int, 2_000)
+        XCTAssertEqual(defaultArguments["timeoutMs"] as? Int, 15_000)
+    }
+
+    func testTracerouteDeniesSchemePathAndMetadataTargets() {
+        XCTAssertThrowsError(try NetworkToolRequest.traceroute(
+            host: "https://example.com", maxHops: nil, probesPerHop: nil,
+            probeTimeoutMs: nil, timeoutMs: nil, operationID: operationID))
+        XCTAssertThrowsError(try NetworkToolRequest.traceroute(
+            host: "169.254.169.254", maxHops: nil, probesPerHop: nil,
+            probeTimeoutMs: nil, timeoutMs: nil, operationID: operationID))
+        let tool = NetworkTracerouteTool(executor: UnavailableSpeedExecutor())
+        XCTAssertThrowsError(try tool.validate(.init(
+            host: "example.com/path", maxHops: nil, probesPerHop: nil,
+            probeTimeoutMs: nil, timeoutMs: nil)))
+    }
+
     func testDNSDefaultsAndRecordType() throws {
         let request = try NetworkToolRequest.dnsLookup(
             host: "example.com", recordType: "aaaa", timeoutMs: nil, operationID: operationID)
@@ -509,6 +543,56 @@ final class NetworkToolTests: XCTestCase {
 
     // MARK: - G07.2 observation decode / summary
 
+    func testTracerouteObservationDecodesTypedHopsAndFlagsMalformedRows() throws {
+        let data = try tracerouteFixture()
+        let request = try NetworkToolRequest.traceroute(
+            host: "example.com", maxHops: nil, probesPerHop: nil,
+            probeTimeoutMs: nil, timeoutMs: nil, operationID: operationID)
+        let observation = try NetworkObservationV1.decode(data, expecting: request)
+        XCTAssertEqual(observation.method, .traceroute)
+        XCTAssertEqual(observation.status, .partial)
+        let trace = try XCTUnwrap(observation.observations.traceroute)
+        XCTAssertEqual(trace.resolvedAddress, "203.0.113.44")
+        XCTAssertEqual(trace.family, "IPv4")
+        XCTAssertEqual(trace.hops.count, 3)
+        XCTAssertTrue(trace.hopsWellFormed)
+        XCTAssertFalse(trace.reached)
+        XCTAssertEqual(trace.hops[0].status, "timeExceeded")
+        XCTAssertEqual(trace.hops[0].address, "198.51.100.1")
+        XCTAssertEqual(trace.hops[2].status, "timeout")
+        XCTAssertNil(trace.hops[2].address)
+
+        var malformed = try tracerouteFixture()
+        malformed = Data(String(data: malformed, encoding: .utf8)!
+            .replacingOccurrences(
+                of: #"{"ttl":3,"status":"timeout"}"#,
+                with: #"{"ttl":3,"status":"timeout","address":"198.51.100.3"}"#)
+            .utf8)
+        let bad = try NetworkObservationV1.decode(malformed, expecting: request)
+        XCTAssertFalse(try XCTUnwrap(bad.observations.traceroute).hopsWellFormed)
+    }
+
+    func testTracerouteSummaryKeepsIdentityAndTruncatesLongRoutesHonestly() throws {
+        let data = try tracerouteFixture(hopCount: 40)
+        let request = try NetworkToolRequest.traceroute(
+            host: "example.com", maxHops: nil, probesPerHop: nil,
+            probeTimeoutMs: nil, timeoutMs: nil, operationID: operationID)
+        let observation = try NetworkObservationV1.decode(data, expecting: request)
+        let summary = NetworkObservationSummary.render(observation)
+        XCTAssertLessThanOrEqual(summary.count,
+                                 NetworkObservationSummary.maximumCharacters)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(summary.utf8)) as? [String: Any])
+        XCTAssertEqual(object["method"] as? String, "network.traceroute")
+        XCTAssertEqual(object["source"] as? String, "phone")
+        XCTAssertEqual(object["status"] as? String, "partial")
+        let observations = try XCTUnwrap(object["observations"] as? [String: Any])
+        XCTAssertEqual(observations["hopCount"] as? Int, 40)
+        XCTAssertEqual((observations["hops"] as? [Any])?.count, 30)
+        XCTAssertEqual(observations["hopsOmitted"] as? Int, 10)
+        XCTAssertTrue(observations["hopsTruncated"] as? Bool == true)
+    }
+
     func testLANObservationDecodesMDNSAndTCPInventory() throws {
         let request = try NetworkToolRequest.lanDiscover(
             serviceTypes: ["_http._tcp"], subnetCidr: "192.168.1.0/24",
@@ -650,9 +734,14 @@ final class NetworkToolTests: XCTestCase {
     }
 
     func testNewNetworkMethodsArePartOfTheClosedNameSet() {
-        XCTAssertEqual(NetworkToolNames.all.count, 8)
+        XCTAssertEqual(NetworkToolNames.all.count, 9)
+        XCTAssertTrue(NetworkToolNames.all.contains("network.traceroute"))
         XCTAssertTrue(NetworkToolNames.all.contains("network.lanDiscover"))
         XCTAssertTrue(NetworkToolNames.all.contains("network.speedTest"))
+        XCTAssertTrue(NetworkTracerouteTool.parametersJSON
+            .contains("maxHops"))
+        XCTAssertTrue(NetworkTracerouteTool.parametersJSON
+            .contains("probesPerHop"))
         XCTAssertTrue(NetworkLANDiscoverTool.parametersJSON
             .contains("serviceTypes"))
         XCTAssertTrue(NetworkLANDiscoverTool.parametersJSON
@@ -677,6 +766,37 @@ final class NetworkToolTests: XCTestCase {
 
     private func wifiFixture() throws -> Data {
         try observationFixture(operationID: operationID, method: "network.wifiScan")
+    }
+
+    private func tracerouteFixture(hopCount: Int = 3) throws -> Data {
+        var hops: [String] = []
+        for index in 0..<hopCount {
+            let ttl = index + 1
+            if ttl == hopCount && hopCount <= 3 {
+                hops.append("""
+                {"ttl":\(ttl),"status":"reached","address":"203.0.113.44","rttsMs":[11.5,10.75]}
+                """)
+            } else {
+                hops.append("""
+                {"ttl":\(ttl),"status":"timeExceeded","address":"198.51.100.\(ttl)","rttsMs":[4.25,4.5]}
+                """)
+            }
+        }
+        // The default three-hop fixture intentionally stops short of the
+        // target so the typed PARTIAL shape (real prefix + timeout rows) is
+        // exercised; longer fixtures keep appending timeExceeded rows.
+        if hopCount == 3 {
+            hops[2] = #"{"ttl":3,"status":"timeout"}"#
+        }
+        let observations = """
+        {"resolvedAddress":"203.0.113.44","family":"IPv4","maxHops":20,
+        "probesPerHop":2,"probeTimeoutMs":2000,"socketType":"unprivilegedDatagram",
+        "elapsedMs":3120,"reachedTarget":false,"budgetExhausted":false,
+        "hops":[\(hops.joined(separator: ","))]}
+        """
+        return try observationFixture(
+            operationID: operationID, method: "network.traceroute",
+            status: "partial", observations: observations)
     }
 
     private func lanFixture(serviceCount: Int = 1) throws -> Data {

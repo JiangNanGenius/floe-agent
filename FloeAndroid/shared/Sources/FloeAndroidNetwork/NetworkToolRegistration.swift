@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// G07.1/G07.2 network diagnostics — the eight `network.*` AgentTools.
+// G07.1/G07.2/NET-PING-TRACE network diagnostics — the nine `network.*` AgentTools.
 //
 // Thin adapters over the ORIGINAL `ToolCatalog` + `ToolRunnerRegistry`:
 // each tool validates model arguments into the frozen request v1, asks the
@@ -229,6 +229,52 @@ public struct NetworkPingTool: AgentTool {
             executor: executor,
             request: try .ping(host: args.host, count: args.count,
                                timeoutMs: args.timeoutMs),
+            context: context)
+    }
+}
+
+// MARK: - network.traceroute
+
+public struct NetworkTracerouteTool: AgentTool {
+    public struct Arguments: Decodable, Sendable {
+        public var host: String
+        public var maxHops: Int?
+        public var probesPerHop: Int?
+        public var probeTimeoutMs: Int?
+        public var timeoutMs: Int?
+    }
+
+    public static let name = "network.traceroute"
+    public static let toolDescription = "Run a bounded genuine ICMP traceroute from this device on its actual selected network (IPv4): increasing IP TTL with up to three probes per hop, numeric per-hop addresses and real RTTs. Timed-out or filtered hops are reported as timeout hops, never invented; a route that stops early keeps its actually observed hop prefix. Uses the same unprivileged datagram ICMP socket as network.ping; no shell, no root and no remote host. Never infer hops from TCP or HTTP probes."
+    public static let parametersJSON = #"""
+    {"type":"object","properties":{
+      "host":{"type":"string","description":"Bare hostname or IPv4 address, without scheme or path"},
+      "maxHops":{"type":"integer","minimum":1,"maximum":30,"description":"Hop budget; default 20, clamped to 1-30"},
+      "probesPerHop":{"type":"integer","minimum":1,"maximum":3,"description":"Probes sent per TTL; default 2, clamped to 1-3"},
+      "probeTimeoutMs":{"type":"integer","minimum":500,"maximum":5000,"description":"Per-probe wait in milliseconds; default 2000, clamped to 500-5000"},
+      "timeoutMs":{"type":"integer","minimum":500,"maximum":30000,"description":"Whole-operation bound in milliseconds; default 15000, clamped to 500-30000"}
+    },"required":["host"],"additionalProperties":false}
+    """#
+    public static let riskLabels: Set<RiskLabel> = [.networkAccess]
+    public static let isSideEffecting = false
+    public static let toolEffect: ToolEffect = .readOnly
+    public static let requiresHostScope = false
+
+    private let executor: any NetworkHostExecuting
+    public init(executor: any NetworkHostExecuting) { self.executor = executor }
+
+    public func validate(_ args: Arguments) throws {
+        let host = try NetworkToolValidation.normalizedHost(args.host)
+        try NetworkToolValidation.validateDiagnosticTarget(host: host)
+    }
+
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await NetworkToolRun.invoke(
+            executor: executor,
+            request: try .traceroute(host: args.host, maxHops: args.maxHops,
+                                     probesPerHop: args.probesPerHop,
+                                     probeTimeoutMs: args.probeTimeoutMs,
+                                     timeoutMs: args.timeoutMs),
             context: context)
     }
 }
@@ -487,7 +533,7 @@ public struct NetworkSpeedTestTool: AgentTool {
 
 // MARK: - Registration
 
-/// Registers all eight runners (and their catalog descriptors). Idempotent:
+/// Registers all nine runners (and their catalog descriptors). Idempotent:
 /// `ToolRunnerRegistry.register` replaces by name. Called by the trusted
 /// `floe_network_diag_bind` export after the current epoch actually bound.
 @discardableResult
@@ -507,6 +553,7 @@ public func registerNetworkTools(
     add(NetworkWifiScanTool.self) { NetworkWifiScanTool(executor: executor) }
     add(NetworkDNSLookupTool.self) { NetworkDNSLookupTool(executor: executor) }
     add(NetworkPingTool.self) { NetworkPingTool(executor: executor) }
+    add(NetworkTracerouteTool.self) { NetworkTracerouteTool(executor: executor) }
     add(NetworkTCPProbeTool.self) { NetworkTCPProbeTool(executor: executor) }
     add(NetworkHTTPTool.self) { NetworkHTTPTool(executor: executor) }
     add(NetworkLANDiscoverTool.self) { NetworkLANDiscoverTool(executor: executor) }

@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(floe_network C)
+add_library(floe_network SHARED floe_icmp_error.c)
+target_compile_options(floe_network PRIVATE -Wall -Wextra -Werror)
+target_link_options(floe_network PRIVATE "-Wl,-z,max-page-size=16384")

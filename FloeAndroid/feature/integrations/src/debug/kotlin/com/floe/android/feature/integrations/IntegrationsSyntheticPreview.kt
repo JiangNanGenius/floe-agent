@@ -188,6 +188,8 @@ private object NoopHost : IntegrationUiCallbacks {
     override fun closeAll() = Unit
     override fun refreshCatalog(force: Boolean): Boolean = false
     override fun installOfficialSkill(skillId: String): Boolean = false
+    override fun loadSkillDetail(skillId: String): Boolean = false
+    override fun dismissSkillDetail(skillId: String) = Unit
     override fun setSkillEnabled(skillId: String, expectedRevision: String, enabled: Boolean): Boolean = false
     override fun deleteSkill(skillId: String, expectedRevision: String): Boolean = false
     override fun cancelSkillRun(scope: SkillRunScopeUi): Boolean = false
@@ -239,6 +241,7 @@ fun IntegrationsMcpSyntheticPreview(modifier: Modifier = Modifier) {
             holder = remember { IntegrationsFlowHolder(NoopHost) },
             onBack = {},
             onAdd = {},
+            onCreateService = {},
         )
     }
 }

@@ -60,6 +60,7 @@ enum G04WorkspaceComposition {
                         == owner.workspaceID,
                       let workspace = try await live.cluster.workspaceStore.workspace(id: owner.workspaceID),
                       workspace.kind == .privateTask
+                        || C01ProjectRootLayout.isManagedProject(workspace)
                 else { throw G04DocumentError.ownerChanged }
                 if let target, intent == .write || intent == .fileMutation {
                     // Independent containment proof re-derived from the
@@ -69,9 +70,17 @@ enum G04WorkspaceComposition {
                     // conversation. A symlink swap under the root resolves to
                     // a physical path outside the canonical component and
                     // refuses here, in addition to the guard's own checks.
-                    let canonical = URL(fileURLWithPath: live.cluster.identity.root.path)
-                        .appendingPathComponent("Workspace/PrivateTasks", isDirectory: true)
-                        .appendingPathComponent(owner.taskID.uuidString, isDirectory: true)
+                    // Re-derived from the ORIGINAL persisted record, not
+                    // from the payload or the guard's own state. A private
+                    // task keeps the exact PrivateTasks shape; a managed
+                    // project uses Projects/<projectUUID>. A symlink swap
+                    // under either root resolves outside and refuses here.
+                    guard let canonicalPath = C01ProjectRootLayout.canonicalRootPath(
+                        rootPath: live.cluster.identity.root.path,
+                        record: workspace, conversationID: owner.taskID) else {
+                        throw G04DocumentError.ownerChanged
+                    }
+                    let canonical = URL(fileURLWithPath: canonicalPath)
                         .standardizedFileURL.resolvingSymlinksInPath()
                     let allowed = canonical.path
                     guard target.resolvedURL.path == allowed
@@ -88,13 +97,13 @@ enum G04WorkspaceComposition {
                 try cancellation.throwIfCancelled()
             },
             resolve: { owner, cancellation in
-                // The exact persisted private-task shape via the ORIGINAL
-                // authority. A managed/source (SAF/webdav/smb) write layer
-                // requires its own ORIGINAL workspace record/source binding
-                // through the trusted source coordinator; nothing here ever
-                // reinterprets a `content://` as a POSIX path or guesses a
-                // first project.
-                return try await G04LiveWorkspaceAccess.privateTaskService(owner, cancellation: cancellation)
+                // The ONE normalized managed-root resolver: the ORIGINAL
+                // private-task shape or the C01 managed project shape. A
+                // managed/source (SAF/webdav/smb) write layer still requires
+                // its own ORIGINAL record/source binding through the trusted
+                // source coordinator; nothing here ever reinterprets a
+                // `content://` as a POSIX path or guesses a first project.
+                return try await G04LiveWorkspaceAccess.managedService(owner, cancellation: cancellation)
             })
     }
 }

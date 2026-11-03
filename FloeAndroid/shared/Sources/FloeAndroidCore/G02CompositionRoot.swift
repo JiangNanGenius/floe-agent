@@ -39,6 +39,7 @@
 // keeps the root open through RB1's real drain predicate.
 import Foundation
 import FloePersistence
+import FloeAndroidShellTools
 
 public final class G02RuntimeComposition: @unchecked Sendable {
 
@@ -472,6 +473,9 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         // G08: a failed build must not leave the artifact-root binding live
         // for an epoch that never published composition.
         PlatformToolHostMailbox.shared.retireArtifactRoot(epoch: epoch)
+        // C02: a failed build must not leave a guided-setup bridge for an
+        // epoch that never published composition. Epoch-guarded.
+        C02MCPSetupIntegration.uninstall(epoch: epoch)
         // Capture the exact owned instance before any await.
         let ownedRunDomain: FacadeRunDomain? =
             RunDomainFacade.current(epoch: epoch)?.0
@@ -553,6 +557,25 @@ public final class G02RuntimeComposition: @unchecked Sendable {
             await ext.beginRetirement(epoch: epoch)
         }
 
+        // C02: close every model-owned SSH transport and clear the ShellTools
+        // routing handler for the exact retiring epoch. A stale retirement
+        // never touches a newer generation's graph. Durable migration rows
+        // and receipts remain for the next generation's explicit recovery.
+        if let components = target?.executionTargets, target?.epoch == epoch {
+            await components.adapter.closeAll()
+            if ownsEpoch {
+                C02RemoteShellRouting.shared.clear(epoch: epoch)
+            }
+        }
+        // C02: drop this generation's result bridge binding. The method is
+        // epoch-guarded, so a stale retirement can never clear a newer graph;
+        // retained bytes stay under the task's owned root for ordinary
+        // restart/deletion handling.
+        C02ToolResultIntegration.uninstall(epoch: epoch)
+        // C02 guided MCP setup: retire only the exact generation's bridge.
+        // A stale epoch is a no-op and can never clear a newer installation.
+        C02MCPSetupIntegration.uninstall(epoch: epoch)
+
         // 3. Cancel owned services. The run facade's retirement cascade is
         //    epoch-guarded; the process-lane uninstall runs ONLY for the
         //    owning epoch — a stale epoch cancels its own epoch-guarded
@@ -565,6 +588,7 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         }
         AttachmentStagingFacade.retire(epoch: epoch)
         UserQuestionHostAPI.shared.retire(epoch: epoch)
+        C02TaskContinuityRuntimeHost.retire(epoch: epoch)
 
         // 4. Drop the installed pointer and generation-scoped fences last,
         //    owning epoch only.

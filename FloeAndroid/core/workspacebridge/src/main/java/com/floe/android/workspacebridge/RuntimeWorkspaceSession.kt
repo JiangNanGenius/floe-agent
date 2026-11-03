@@ -86,7 +86,17 @@ class RuntimeWorkspaceSession(
 
     // MARK: - Import (transactional fresh swap into the STABLE destination)
 
-    fun importBeforeLaunch(cancel: WorkspaceCancelSignal): WorkspaceImportReceipt {
+    private var inputOnly = false
+    private var inputTransferClosed = false
+
+    fun importBeforeLaunch(cancel: WorkspaceCancelSignal): WorkspaceImportReceipt =
+        importSnapshot(cancel, newInputsOnly = false)
+
+    fun importNewInputs(cancel: WorkspaceCancelSignal): WorkspaceImportReceipt =
+        importSnapshot(cancel, newInputsOnly = true)
+
+    private fun importSnapshot(cancel: WorkspaceCancelSignal, newInputsOnly: Boolean): WorkspaceImportReceipt {
+        inputOnly = newInputsOnly
         require(!imported) { "import already completed for this session" }
         val state = requireOk(
             transact(WorkspaceBridgeWire.GET_STATE, identityControl()).first,
@@ -127,6 +137,7 @@ class RuntimeWorkspaceSession(
 
         val staged = mutableListOf<StagedEntry>()
         var stagedBytes = 0L
+        var retainedExistingInputs = 0
         var swapOutcome: WorkspaceImportSwap.SwapOutcome? = null
         try {
             // Phase 1: stream every baseline entry into the journal-owned
@@ -146,6 +157,17 @@ class RuntimeWorkspaceSession(
                 val components = WorkspaceRelativeValidation.validate(path)
                     ?: throw WorkspaceBridgeException("snapshotPathUnsafe")
                 val kind = headerReply.optString("kind")
+                if (newInputsOnly) {
+                    val current = ops.kindNoFollow(destination, path)
+                    if (current == SwapKind.UNREADABLE) throw WorkspaceBridgeException("newInputPathUnavailable")
+                    if (current != SwapKind.MISSING) {
+                        // Existing guest bytes are the live truth. Do not even
+                        // request their source PFD, stage or replace them.
+                        retainedExistingInputs += 1
+                        index += 1
+                        continue
+                    }
+                }
                 when (kind) {
                     "file" -> {
                         val dataReply = transact(WorkspaceBridgeWire.BASELINE_DATA, JSONObject().put("index", index))
@@ -203,8 +225,10 @@ class RuntimeWorkspaceSession(
 
             // Phase 2: atomic swap into the STABLE destination.
             swapOutcome = try {
-                swap.apply(staged) { cancel.shouldCancel() || !grant.alive() }
+                if (newInputsOnly) swap.applyMissingOnly(staged) { cancel.shouldCancel() || !grant.alive() }
+                else swap.apply(staged) { cancel.shouldCancel() || !grant.alive() }
             } catch (failure: WorkspaceSwapException) {
+                if (newInputsOnly) throw WorkspaceBridgeException(failure.code, failure)
                 val restore = swap.restoreDetailed()
                 // Finite, data-free phase observations from SUCCESSFUL reverse
                 // operations, never planned changes. User cancellation may
@@ -252,17 +276,29 @@ class RuntimeWorkspaceSession(
                 )
             }
 
-            // Phase 3: Core acknowledgement, THEN prune only synced backups.
-            requireOk(
-                transact(
-                    WorkspaceBridgeWire.BASELINE_FINISH,
-                    JSONObject().put("appliedCount", staged.size.toLong()).put("appliedBytes", stagedBytes),
-                ).first,
-                "finishUnavailable",
-            )
-            swap.acknowledge(staged)
-            markJournalAcknowledged(journal, key)
+            if (newInputsOnly) {
+                // This was a read-only Core snapshot used for additions. It is
+                // NOT a faithful full mirror and must never mint ready/export
+                // evidence through BASELINE_FINISH.
+                requireOk(transact(WorkspaceBridgeWire.ABORT,
+                    JSONObject().put("reason", "new-input-transfer-complete")).first, "inputSnapshotCloseFailed")
+                inputTransferClosed = true
+            } else {
+                // Phase 3: Core acknowledgement, THEN prune only synced backups.
+                requireOk(
+                    transact(
+                        WorkspaceBridgeWire.BASELINE_FINISH,
+                        JSONObject().put("appliedCount", staged.size.toLong()).put("appliedBytes", stagedBytes),
+                    ).first,
+                    "finishUnavailable",
+                )
+                swap.acknowledge(staged)
+                markJournalAcknowledged(journal, key)
+            }
         } catch (failure: Exception) {
+            if (newInputsOnly) runCatching {
+                transact(WorkspaceBridgeWire.ABORT, JSONObject().put("reason", "new-input-transfer-stopped"))
+            }
             // Staging-only leftovers never reached the destination; the swap
             // journal (if any) was restored above. Keep the journal directory
             // for recovery/sweep; independent destination data is untouched.
@@ -276,7 +312,7 @@ class RuntimeWorkspaceSession(
             importedBaseline[entry.path] = WorkspaceMirrorEntry(entry.kind, entry.size, entry.linkTarget, entry.digest)
         }
         val outcome = requireNotNull(swapOutcome) { "swap outcome missing after acknowledged import" }
-        val conflicts = outcomeConflicts(swap, journal)
+        val conflicts = if (newInputsOnly) outcome.conflicts else outcomeConflicts(swap, journal)
         // Digest-verified preserved copies: ONLY real custody facts the swap
         // engine measured on successful move-aside + install. Entries it
         // cannot show (symlink preserves, kind mismatch, unhashed legacy
@@ -293,6 +329,7 @@ class RuntimeWorkspaceSession(
         stageRoot.deleteRecursivelySafe()
         return WorkspaceImportReceipt(
             key,
+            retainedExistingCount = retainedExistingInputs + outcome.retainedExisting,
             runID = expectedRunID,
             createdCount = outcome.created,
             replacedSyncedCount = outcome.replacedSynced,
@@ -300,7 +337,7 @@ class RuntimeWorkspaceSession(
             unchangedCount = outcome.unchanged,
             conflictPaths = conflicts.take(16),
             conflictsTruncated = conflicts.size > 16,
-            appliedBytes = stagedBytes,
+            appliedBytes = if (newInputsOnly) outcome.createdBytes else stagedBytes,
             skippedCount = skipped,
             budgets = view,
             preservedCopies = verifiedPreserved.take(RECOVERY_MAX_ENTRIES).map { fact ->
@@ -335,6 +372,7 @@ class RuntimeWorkspaceSession(
      * is the same pipeline, not a parallel workspace mechanism.
      */
     fun exportAfterQuiescence(cancel: WorkspaceCancelSignal, faithfulMirror: Boolean = false): WorkspaceExportOutcome {
+        check(!inputOnly) { "An additions-only transfer has no export baseline" }
         val key = sessionKey ?: return WorkspaceExportOutcome.RecoverableFailure("noSession", false, null)
         val view = budgets ?: return WorkspaceExportOutcome.RecoverableFailure("budgetsMissing", false, key)
         if (!imported) return WorkspaceExportOutcome.RecoverableFailure("importPending", false, key)
@@ -478,6 +516,9 @@ class RuntimeWorkspaceSession(
      *  session forgets local bookkeeping. Acknowledged journals with zero
      *  open preserves become sweep-eligible; anything else is preserved. */
     override fun close() {
+        if (inputOnly && inputTransferClosed) {
+            journalDirectory?.deleteRecursivelySafe()
+        }
         sessionKey?.let { liveSessions.remove(it) }
         val journal = journalDirectory
         if (imported && journal != null && openPreserveCount(journal) == 0 && isAcknowledged(journal)) {

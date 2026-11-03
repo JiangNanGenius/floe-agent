@@ -316,6 +316,10 @@ internal class ConversationFixtureHost(
         record("deleteConversation", conversationId); return true
     }
 
+    override fun setConversationPinned(conversationId: String, pinned: Boolean): Boolean {
+        record("setConversationPinned", conversationId, pinned); return true
+    }
+
     override fun requestContentSearch(query: String, epoch: Long): Boolean {
         record("requestContentSearch", query, epoch)
         val holder = historyHolder ?: return true

@@ -150,6 +150,31 @@ fun FloeSkillsSettingsDestination(
                         holder = holder,
                         onBack = { holder.back() },
                         onAdd = { holder.openMcpEditor(null) },
+                        onCreateService = { holder.openMcpSetup() },
+                    )
+                }
+            }
+
+            IntegrationsPane.MCP_SETUP -> {
+                FloePageSheet(
+                    visible = true,
+                    onDismiss = { holder.back() },
+                    widthFraction = if (wide) IntegrationsSheetMetrics.MCP_EDITOR_WIDTH_FRACTION else 1f,
+                    heightFraction = if (wide) IntegrationsSheetMetrics.MCP_EDITOR_HEIGHT_FRACTION else 1f,
+                    placement = if (wide) FloeSheetPlacement.CENTER else FloeSheetPlacement.BOTTOM,
+                ) {
+                    McpSetupWizardPage(
+                        setup = state.mcpSetup,
+                        draft = holder.mcpSetupDraft.value,
+                        busy = state.mcpSetup?.busy == true,
+                        onDraft = holder::setMcpSetupDraft,
+                        onSelectProject = holder::selectMcpSetupProject,
+                        onStart = { holder.startMcpSetup() },
+                        onCancel = { id, revision -> holder.cancelMcpSetup(id, revision) },
+                        onDiscard = { id, revision -> holder.discardMcpSetup(id, revision) },
+                        onRetryCommit = { id, revision -> holder.retryMcpSetupCommit(id, revision) },
+                        onClearError = holder::clearMcpSetupError,
+                        onClose = { holder.back() },
                     )
                 }
             }
@@ -228,6 +253,24 @@ fun FloeSkillsSettingsDestination(
                         skills = state.skills,
                         holder = holder,
                         onClose = { holder.closeForm(entry.key) },
+                    )
+                }
+            }
+
+            IntegrationsPane.SKILL_DETAIL -> {
+                val skillId = entry.key
+                FloePageSheet(
+                    visible = true,
+                    onDismiss = { holder.closeSkillDetail(skillId) },
+                    widthFraction = if (wide) IntegrationsSheetMetrics.SKILL_DETAIL_WIDTH_FRACTION else 1f,
+                    heightFraction = if (wide) IntegrationsSheetMetrics.SKILL_DETAIL_HEIGHT_FRACTION else 1f,
+                    placement = if (wide) FloeSheetPlacement.CENTER else FloeSheetPlacement.BOTTOM,
+                ) {
+                    SkillDetailPage(
+                        skillId = skillId,
+                        detail = state.skillDetail,
+                        holder = holder,
+                        onClose = { holder.closeSkillDetail(skillId) },
                     )
                 }
             }

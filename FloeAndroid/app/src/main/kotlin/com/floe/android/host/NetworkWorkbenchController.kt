@@ -530,6 +530,8 @@ internal object NetworkWorkbenchProjection {
             "nsdNetworkScopeUnsupported" -> messages += "mDNS discovery needs Android 13 or later. Use the private subnet scan." to "mDNS 发现需要 Android 13 或更高版本，请使用私有子网扫描。"
             "nsdPermissionDenied" -> messages += "Local network access is needed. Allow it, then start a new check." to "需要局域网访问权限，允许后请重新开始检测。"
             "localNetworkPermissionRequired" -> messages += "This local endpoint needs Local Network access. Allow it, then start a new check." to "此本地地址需要局域网访问权限，允许后请重新开始检测。"
+            "ttlOptionUnsupported" -> messages += "This system does not allow per-hop route probing, so traceroute is unavailable here." to "此系统不允许逐跳路由探测，因此无法使用路由追踪。"
+            "icmpSocketDenied" -> messages += "The OS blocked ICMP diagnostics on this device." to "系统已阻止此设备的 ICMP 检测。"
         }
         if (observations.has("locationServicesEnabled") && !observations.optBoolean("locationServicesEnabled"))
             messages += "Turn on Location in system settings, then refresh." to "请在系统设置中开启定位后刷新。"
@@ -707,6 +709,17 @@ internal object NetworkWorkbenchProjection {
             "configured" to ("Configured" to "已配置"),
             "used" to ("Used" to "已使用"),
             "requestHeadersMs" to ("Request headers (ms)" to "请求头（毫秒）"),
+            // NET-PING-TRACE traceroute facts.
+            "hops" to ("Route hops" to "路由跳数"),
+            "maxHops" to ("Hop budget" to "跳数上限"),
+            "probesPerHop" to ("Probes per hop" to "每跳探测数"),
+            "probeTimeoutMs" to ("Probe timeout (ms)" to "探测超时（毫秒）"),
+            "reachedTarget" to ("Reached target" to "已到达目标"),
+            "budgetExhausted" to ("Budget exhausted" to "预算已用尽"),
+            "unreachableCode" to ("Unreachable code" to "不可达代码"),
+            "rttsMs" to ("RTTs (ms)" to "RTT（毫秒）"),
+            "sendErrorClass" to ("Send error" to "发送错误"),
+            "ttl" to ("TTL" to "TTL"),
         )
         val entry = labels[key]
         return entry?.let { if (zh) it.second else it.first }

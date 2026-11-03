@@ -1,0 +1,314 @@
+{
+  "base": "a5171c89a872ddb5e2b8f8654b99c45b20ab6eab",
+  "kind": "Incremental actual-source review; previous handoffs reused, current entry/service/runtime/failure wiring inspected",
+  "items": [
+    {
+      "id": "SSH-AUTH-HOSTKEY",
+      "chain": "Settings host profiles -> existing DB/vault -> real Citadel connection; explicit first-use/changed-key challenge, post-await epoch check",
+      "evidence": [
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt",
+        "shared/Sources/FloeAndroidCore/C05RemoteDomain.swift",
+        "shared/Sources/FloeSSH/SSHConnectionService.swift",
+        "app/src/main/kotlin/com/floe/android/host/remote/C05RemoteHostController.kt"
+      ],
+      "evidenceSha256": {
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift": "a4c412bc0dc654dcae33813ef5c625edd10b4cf4548c041bd2f18583157af36a",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt": "eed0d7e03db9ed1f35330067cb25d24ebd37f8d6a8bf5c0dc97090e43bb78cf5",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt": "496e58ed72fa80c7e9eb51fd9ac5b42a1da39dde8ee23555634a4ff608ebba5a",
+        "shared/Sources/FloeAndroidCore/C05RemoteDomain.swift": "2377ef9122ee11e635c701464f9f1ef0cb965fb40ffa14fdf7266e1e519704f0",
+        "shared/Sources/FloeSSH/SSHConnectionService.swift": "dd3c6bc2871dd1d0a0e0084c8c1a177e09cf1cf011a717d3c90cd0af60a01052",
+        "app/src/main/kotlin/com/floe/android/host/remote/C05RemoteHostController.kt": "a90a3443d78670a7d32935d419b1a914336fadb4dd149a7d4b864b8070b12081"
+      },
+      "review": "present-source-connected; final configured runtime/device behavior pending"
+    },
+    {
+      "id": "SSH-EXEC-LONG",
+      "chain": "Actual independent SSH exec/PTY, bounded streams and explicit close/disconnect state",
+      "evidence": [
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt",
+        "shared/Sources/FloeAndroidCore/C05RemoteDomain.swift",
+        "shared/Sources/FloeSSH/SSHExecService.swift",
+        "feature/remote/src/main/kotlin/com/floe/android/feature/remote/RemoteSessionPage.kt"
+      ],
+      "evidenceSha256": {
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift": "a4c412bc0dc654dcae33813ef5c625edd10b4cf4548c041bd2f18583157af36a",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt": "eed0d7e03db9ed1f35330067cb25d24ebd37f8d6a8bf5c0dc97090e43bb78cf5",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt": "496e58ed72fa80c7e9eb51fd9ac5b42a1da39dde8ee23555634a4ff608ebba5a",
+        "shared/Sources/FloeAndroidCore/C05RemoteDomain.swift": "2377ef9122ee11e635c701464f9f1ef0cb965fb40ffa14fdf7266e1e519704f0",
+        "shared/Sources/FloeSSH/SSHExecService.swift": "a610f1c757c9b0526224951b7782e3aed9b1ec5204485389b95f98fa298b12ee",
+        "feature/remote/src/main/kotlin/com/floe/android/feature/remote/RemoteSessionPage.kt": "e6c8bc95bd126658ce761bf8e3800cbeaf1e943dfa05e74ba7480d3ee0785f8c"
+      },
+      "review": "present-source-connected; final configured runtime/device behavior pending"
+    },
+    {
+      "id": "SSH-DIRECTORY",
+      "chain": "SFTP UI -> owner/epoch-fenced channel and actual list/stat/read/transfer -> original workspace scope",
+      "evidence": [
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt",
+        "shared/Sources/FloeAndroidCore/C05SFTPDomain.swift",
+        "app/src/main/kotlin/com/floe/android/host/sftp/C05SFTPHostController.kt",
+        "feature/sftp/src/main/kotlin/com/floe/android/feature/sftp/SftpBrowserPage.kt"
+      ],
+      "evidenceSha256": {
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift": "a4c412bc0dc654dcae33813ef5c625edd10b4cf4548c041bd2f18583157af36a",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt": "eed0d7e03db9ed1f35330067cb25d24ebd37f8d6a8bf5c0dc97090e43bb78cf5",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt": "496e58ed72fa80c7e9eb51fd9ac5b42a1da39dde8ee23555634a4ff608ebba5a",
+        "shared/Sources/FloeAndroidCore/C05SFTPDomain.swift": "241562d4d2717e6200dcde256a24b55a3da59d2dbb7ee590586e2a54cbfae5fa",
+        "app/src/main/kotlin/com/floe/android/host/sftp/C05SFTPHostController.kt": "79bf324a4824f572f6ff7e6daa40c37b9365e452e16ed004a84a4489a2ca5cb5",
+        "feature/sftp/src/main/kotlin/com/floe/android/feature/sftp/SftpBrowserPage.kt": "6e17fb70ea92e26936145624b9c13da60c85c0be7c3142586c56a845d2154e05"
+      },
+      "review": "present-source-connected; final configured runtime/device behavior pending"
+    },
+    {
+      "id": "REMOTE-AGENT-TASK",
+      "chain": "Original exec.shell -> durable C02 run pin and explicit target -> SSH adapter with real pre-dispatch/terminal/unknown receipts",
+      "evidence": [
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt",
+        "shared/Sources/FloeAndroidCore/C02SSHExecutionAdapter.swift",
+        "shared/Sources/FloeAndroidCore/C02ExecutionTargetDomain.swift",
+        "shared/Sources/FloeAndroidShellTools/LocalShellService.swift"
+      ],
+      "evidenceSha256": {
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift": "a4c412bc0dc654dcae33813ef5c625edd10b4cf4548c041bd2f18583157af36a",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt": "eed0d7e03db9ed1f35330067cb25d24ebd37f8d6a8bf5c0dc97090e43bb78cf5",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt": "496e58ed72fa80c7e9eb51fd9ac5b42a1da39dde8ee23555634a4ff608ebba5a",
+        "shared/Sources/FloeAndroidCore/C02SSHExecutionAdapter.swift": "eff764c96e8f151791b1a502fe3f741213bd824804a92adcec6bef29d4a809eb",
+        "shared/Sources/FloeAndroidCore/C02ExecutionTargetDomain.swift": "8a668e4dcb34d94a51112e19d708c34c4c89e1fd64ec4d0971102359b07ab3ef",
+        "shared/Sources/FloeAndroidShellTools/LocalShellService.swift": "58e841ab23fa47e5377ad6d60390dd40e8b9c1b0643ba7c94588b5679ed3c494"
+      },
+      "review": "present-source-connected; final configured runtime/device behavior pending"
+    },
+    {
+      "id": "VNC-DISPLAY-INPUT",
+      "chain": "Actual RFB core -> bounded real frame ABI -> viewport and owned input lane; release on detach",
+      "evidence": [
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt",
+        "shared/Sources/FloeAndroidCore/C05VNCDomain.swift",
+        "shared/Sources/FloeVNC/VNCFloeSession.swift",
+        "app/src/main/kotlin/com/floe/android/host/remote/C05VNCInputLane.kt",
+        "feature/remote/src/main/kotlin/com/floe/android/feature/remote/RemoteVncPage.kt"
+      ],
+      "evidenceSha256": {
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift": "a4c412bc0dc654dcae33813ef5c625edd10b4cf4548c041bd2f18583157af36a",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt": "eed0d7e03db9ed1f35330067cb25d24ebd37f8d6a8bf5c0dc97090e43bb78cf5",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt": "496e58ed72fa80c7e9eb51fd9ac5b42a1da39dde8ee23555634a4ff608ebba5a",
+        "shared/Sources/FloeAndroidCore/C05VNCDomain.swift": "8b58ca6322c734b5543bcce4874e389efb196f2f035079e8a909e21f76536170",
+        "shared/Sources/FloeVNC/VNCFloeSession.swift": "d579f0cb117d32bc3ba2423f0f6c92d8da4921c27b1e474c958bd30d58c397cf",
+        "app/src/main/kotlin/com/floe/android/host/remote/C05VNCInputLane.kt": "21fa68ce9871b8d1145a741b75eb013137548c95058da6fb7bd7d23d792112ac",
+        "feature/remote/src/main/kotlin/com/floe/android/feature/remote/RemoteVncPage.kt": "410ca8b4ad779f673b65195952f07bfac185aa6e565eafde891a5a53625d7b3d"
+      },
+      "review": "present-source-connected; final configured runtime/device behavior pending"
+    },
+    {
+      "id": "RDP-CONNECT",
+      "chain": "Actual FreeRDP backend, explicit certificate trust, real bounded frame/input/close; same ordinary remote tools",
+      "evidence": [
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt",
+        "shared/Sources/FloeAndroidCore/C05RDPDomain.swift",
+        "shared/Sources/FloeAndroidCore/C05RemoteDesktopTools.swift",
+        "app/src/main/kotlin/com/floe/android/host/rdp/C05RDPHostController.kt",
+        "feature/rdp/src/main/kotlin/com/floe/android/feature/rdp/RdpPage.kt"
+      ],
+      "evidenceSha256": {
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift": "a4c412bc0dc654dcae33813ef5c625edd10b4cf4548c041bd2f18583157af36a",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt": "eed0d7e03db9ed1f35330067cb25d24ebd37f8d6a8bf5c0dc97090e43bb78cf5",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt": "496e58ed72fa80c7e9eb51fd9ac5b42a1da39dde8ee23555634a4ff608ebba5a",
+        "shared/Sources/FloeAndroidCore/C05RDPDomain.swift": "e4a52a4fc3bd744f43b339ddf108f85ce2cf9a50ae3eecafa00e6b530e1b7b39",
+        "shared/Sources/FloeAndroidCore/C05RemoteDesktopTools.swift": "facc021c7f485c8342f30341c6d8489835b676f09c8148c2dfb2e65c25d0fb43",
+        "app/src/main/kotlin/com/floe/android/host/rdp/C05RDPHostController.kt": "b65f3d89227232d536e95b67547b311eea41073820d656cce04108eae67bbf53",
+        "feature/rdp/src/main/kotlin/com/floe/android/feature/rdp/RdpPage.kt": "2d22d770445ba5cdf64814782bbd2e54cbce30116e60004d340fb09fbee742a6"
+      },
+      "review": "present-source-connected; final configured runtime/device behavior pending"
+    },
+    {
+      "id": "TELNET-TCP",
+      "chain": "Devices -> actual Socket/Telnet codec, bounded stream and awaited close",
+      "evidence": [
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt",
+        "shared/Sources/FloeAndroidCore/C05DeviceCommunicationDomain.swift",
+        "core/devicecommunication/src/main/kotlin/com/floe/android/core/devicecommunication/TcpTelnetSession.kt",
+        "app/src/main/kotlin/com/floe/android/host/devicecommunication/C05DevicesHostController.kt"
+      ],
+      "evidenceSha256": {
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift": "a4c412bc0dc654dcae33813ef5c625edd10b4cf4548c041bd2f18583157af36a",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt": "eed0d7e03db9ed1f35330067cb25d24ebd37f8d6a8bf5c0dc97090e43bb78cf5",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt": "496e58ed72fa80c7e9eb51fd9ac5b42a1da39dde8ee23555634a4ff608ebba5a",
+        "shared/Sources/FloeAndroidCore/C05DeviceCommunicationDomain.swift": "49fb60f16f3bea424c8fbe9426ba195d885f06b68a841aa7622ca06bb1cdff39",
+        "core/devicecommunication/src/main/kotlin/com/floe/android/core/devicecommunication/TcpTelnetSession.kt": "ece782e4610932e0d62f17c3ee5506bce35605e896df7c92c2e85d398d487ed8",
+        "app/src/main/kotlin/com/floe/android/host/devicecommunication/C05DevicesHostController.kt": "1f97ad07bd7380772acc02b98028df65c183d51f36692b6fcdfdd9766afda306"
+      },
+      "review": "present-source-connected; final configured runtime/device behavior pending"
+    },
+    {
+      "id": "BLE-USB",
+      "chain": "Android GATT or granted USB serial; bounded queues, generation fences and real detach/Root-stop drain",
+      "evidence": [
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt",
+        "core/devicecommunication/src/main/kotlin/com/floe/android/core/devicecommunication/AndroidBleSession.kt",
+        "core/devicecommunication/src/main/kotlin/com/floe/android/core/devicecommunication/AndroidUsbSerialSession.kt",
+        "app/src/main/kotlin/com/floe/android/host/devicecommunication/C05DevicesHostController.kt"
+      ],
+      "evidenceSha256": {
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift": "a4c412bc0dc654dcae33813ef5c625edd10b4cf4548c041bd2f18583157af36a",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt": "eed0d7e03db9ed1f35330067cb25d24ebd37f8d6a8bf5c0dc97090e43bb78cf5",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt": "496e58ed72fa80c7e9eb51fd9ac5b42a1da39dde8ee23555634a4ff608ebba5a",
+        "core/devicecommunication/src/main/kotlin/com/floe/android/core/devicecommunication/AndroidBleSession.kt": "f5f30a2e7f5cc16ae48df3067504adc65ce51670e7755868a929111140d7f058",
+        "core/devicecommunication/src/main/kotlin/com/floe/android/core/devicecommunication/AndroidUsbSerialSession.kt": "206d1e11005b4949e77573b7354f0d19cef7dce89822e4d58efa6b994da20114",
+        "app/src/main/kotlin/com/floe/android/host/devicecommunication/C05DevicesHostController.kt": "1f97ad07bd7380772acc02b98028df65c183d51f36692b6fcdfdd9766afda306"
+      },
+      "review": "present-source-connected; final configured runtime/device behavior pending"
+    },
+    {
+      "id": "PORT-FORWARD",
+      "chain": "Actual loopback NIO listener/direct-tcpip, explicit owned tunnel lifecycle",
+      "evidence": [
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt",
+        "shared/Sources/FloeSSH/LoopbackSSHForwarder.swift",
+        "shared/Sources/FloeAndroidCore/C05RemoteDomain.swift",
+        "app/src/main/kotlin/com/floe/android/host/remote/C05RemoteHostController.kt"
+      ],
+      "evidenceSha256": {
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift": "a4c412bc0dc654dcae33813ef5c625edd10b4cf4548c041bd2f18583157af36a",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt": "eed0d7e03db9ed1f35330067cb25d24ebd37f8d6a8bf5c0dc97090e43bb78cf5",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt": "496e58ed72fa80c7e9eb51fd9ac5b42a1da39dde8ee23555634a4ff608ebba5a",
+        "shared/Sources/FloeSSH/LoopbackSSHForwarder.swift": "6822cfe8be1124075886d941af05cf77d58ed48df73a3b030c891f26697ea8b9",
+        "shared/Sources/FloeAndroidCore/C05RemoteDomain.swift": "2377ef9122ee11e635c701464f9f1ef0cb965fb40ffa14fdf7266e1e519704f0",
+        "app/src/main/kotlin/com/floe/android/host/remote/C05RemoteHostController.kt": "a90a3443d78670a7d32935d419b1a914336fadb4dd149a7d4b864b8070b12081"
+      },
+      "review": "present-source-connected; final configured runtime/device behavior pending"
+    },
+    {
+      "id": "MAIL-LIST-SEARCH",
+      "chain": "Mail UI -> actual IMAP/POP3, UIDVALIDITY/search and bounded pages over Android verified TLS",
+      "evidence": [
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt",
+        "shared/Sources/FloeAndroidCore/C06MailBindings.swift",
+        "shared/Sources/FloeAndroidCore/C06MailDomain.swift",
+        "shared/Sources/FloeAndroidMail/MailClient.swift",
+        "app/src/main/kotlin/com/floe/android/host/mail/C06MailHostController.kt"
+      ],
+      "evidenceSha256": {
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift": "a4c412bc0dc654dcae33813ef5c625edd10b4cf4548c041bd2f18583157af36a",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt": "eed0d7e03db9ed1f35330067cb25d24ebd37f8d6a8bf5c0dc97090e43bb78cf5",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt": "496e58ed72fa80c7e9eb51fd9ac5b42a1da39dde8ee23555634a4ff608ebba5a",
+        "shared/Sources/FloeAndroidCore/C06MailBindings.swift": "045da4dca0fcf2ab56c2a1cc641a7aa29b1a5452c5b01a4031635d226f1b816e",
+        "shared/Sources/FloeAndroidCore/C06MailDomain.swift": "c8ecbdab698d4a4675c45bbb1ce66a4c6b51ede4dc8f617e7a3681b8c01a56c0",
+        "shared/Sources/FloeAndroidMail/MailClient.swift": "ff76000d7923140bf21124ec9fdec2c2b1cbb339dfb69bf57508a5a6d8a81b0e",
+        "app/src/main/kotlin/com/floe/android/host/mail/C06MailHostController.kt": "204ee81fb9bda57656d110b1c42afaf67f26a9d217de0c64232e5c15ee4b73a9"
+      },
+      "review": "present-source-connected; final configured runtime/device behavior pending"
+    },
+    {
+      "id": "MAIL-ATTACH-MOVE",
+      "chain": "Scoped attachments, bounded streaming, durable mutation identity and read-only unknown reconciliation",
+      "evidence": [
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt",
+        "shared/Sources/FloeAndroidCore/C06MailBindings.swift",
+        "shared/Sources/FloeAndroidCore/C06MailDomain.swift",
+        "shared/Sources/FloeAndroidMail/MailClient.swift"
+      ],
+      "evidenceSha256": {
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift": "a4c412bc0dc654dcae33813ef5c625edd10b4cf4548c041bd2f18583157af36a",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt": "eed0d7e03db9ed1f35330067cb25d24ebd37f8d6a8bf5c0dc97090e43bb78cf5",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt": "496e58ed72fa80c7e9eb51fd9ac5b42a1da39dde8ee23555634a4ff608ebba5a",
+        "shared/Sources/FloeAndroidCore/C06MailBindings.swift": "045da4dca0fcf2ab56c2a1cc641a7aa29b1a5452c5b01a4031635d226f1b816e",
+        "shared/Sources/FloeAndroidCore/C06MailDomain.swift": "c8ecbdab698d4a4675c45bbb1ce66a4c6b51ede4dc8f617e7a3681b8c01a56c0",
+        "shared/Sources/FloeAndroidMail/MailClient.swift": "ff76000d7923140bf21124ec9fdec2c2b1cbb339dfb69bf57508a5a6d8a81b0e"
+      },
+      "review": "present-source-connected; final configured runtime/device behavior pending"
+    },
+    {
+      "id": "MAIL-SEND-AUTH",
+      "chain": "approvalGrantID and workspace scope before SMTP; reserve before send, acceptedByServer/unknown receipt, no automatic resend",
+      "evidence": [
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt",
+        "shared/Sources/FloeAndroidCore/C06MailBindings.swift",
+        "shared/Sources/FloeAndroidCore/C06MailDomain.swift",
+        "shared/Sources/FloeAndroidMail/MailClient.swift"
+      ],
+      "evidenceSha256": {
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift": "a4c412bc0dc654dcae33813ef5c625edd10b4cf4548c041bd2f18583157af36a",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt": "eed0d7e03db9ed1f35330067cb25d24ebd37f8d6a8bf5c0dc97090e43bb78cf5",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt": "496e58ed72fa80c7e9eb51fd9ac5b42a1da39dde8ee23555634a4ff608ebba5a",
+        "shared/Sources/FloeAndroidCore/C06MailBindings.swift": "045da4dca0fcf2ab56c2a1cc641a7aa29b1a5452c5b01a4031635d226f1b816e",
+        "shared/Sources/FloeAndroidCore/C06MailDomain.swift": "c8ecbdab698d4a4675c45bbb1ce66a4c6b51ede4dc8f617e7a3681b8c01a56c0",
+        "shared/Sources/FloeAndroidMail/MailClient.swift": "ff76000d7923140bf21124ec9fdec2c2b1cbb339dfb69bf57508a5a6d8a81b0e"
+      },
+      "review": "present-source-connected; final configured runtime/device behavior pending"
+    },
+    {
+      "id": "CAL-READ-WRITE",
+      "chain": "Actual CalendarContract permissions/queries/writes/readback; failed exception update retains pre-existing row, unverified atomic split retains both series",
+      "evidence": [
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt",
+        "core/calendar/src/main/kotlin/com/floe/android/core/calendar/CalendarProviderClient.kt",
+        "shared/Sources/FloeAndroidCore/C06CalendarBindings.swift",
+        "app/src/main/kotlin/com/floe/android/host/calendar/C06CalendarHostController.kt"
+      ],
+      "evidenceSha256": {
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift": "a4c412bc0dc654dcae33813ef5c625edd10b4cf4548c041bd2f18583157af36a",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt": "eed0d7e03db9ed1f35330067cb25d24ebd37f8d6a8bf5c0dc97090e43bb78cf5",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt": "496e58ed72fa80c7e9eb51fd9ac5b42a1da39dde8ee23555634a4ff608ebba5a",
+        "core/calendar/src/main/kotlin/com/floe/android/core/calendar/CalendarProviderClient.kt": "c17bda456520b4d979fbde5beca742d848015ae950b5ed3150a0f7574d87782d",
+        "shared/Sources/FloeAndroidCore/C06CalendarBindings.swift": "43a0a7de7e603dc254a5710b377696abac83c48dc784f8cdcfd0abf516ecfecd",
+        "app/src/main/kotlin/com/floe/android/host/calendar/C06CalendarHostController.kt": "74db01665b034743673dc5652cff2655dafa43df39286f55523c39cfcf256235"
+      },
+      "review": "present-source-connected; final configured runtime/device behavior pending"
+    },
+    {
+      "id": "CAL-TODO-DATA",
+      "chain": "Original independent revision-CAS SQLite todo store -> actual reminder host, revision checked return",
+      "evidence": [
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt",
+        "shared/Sources/FloeAndroidCore/C06TodoStore.swift",
+        "shared/Sources/FloeAndroidCore/C06CalendarDomain.swift",
+        "app/src/main/kotlin/com/floe/android/host/calendar/C06CalendarHostController.kt"
+      ],
+      "evidenceSha256": {
+        "shared/Sources/FloeAndroidCore/G02DomainServices.swift": "a4c412bc0dc654dcae33813ef5c625edd10b4cf4548c041bd2f18583157af36a",
+        "app/src/main/kotlin/com/floe/android/SettingsOperationalPages.kt": "eed0d7e03db9ed1f35330067cb25d24ebd37f8d6a8bf5c0dc97090e43bb78cf5",
+        "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt": "496e58ed72fa80c7e9eb51fd9ac5b42a1da39dde8ee23555634a4ff608ebba5a",
+        "shared/Sources/FloeAndroidCore/C06TodoStore.swift": "8493fc2aadbfbb3778e2373eba17b1ea3eed598bfb2103fe76c67b66f1316c0f",
+        "shared/Sources/FloeAndroidCore/C06CalendarDomain.swift": "d678cbfc641442e90e940c3a26dbb94cdae7d2931762bbaed07171da6f824bc9",
+        "app/src/main/kotlin/com/floe/android/host/calendar/C06CalendarHostController.kt": "74db01665b034743673dc5652cff2655dafa43df39286f55523c39cfcf256235"
+      },
+      "review": "present-source-connected; final configured runtime/device behavior pending"
+    }
+  ],
+  "fullPlayKotlin": "passed",
+  "arm64": "Unchanged Core interfaces/object evidence reused where source matches",
+  "newRemoteNetworkCalls": false,
+  "newCalendarProviderWrites": false,
+  "deviceVerified": false,
+  "limits": "No actual remote host, mail account, BLE/USB hardware or calendar-provider success implied. Configured services remain open to users; real account absence is not an enablement gate.",
+  "calendarRulesTests": 7,
+  "calendarFailureLimitation": "Rules tests do not emulate Android provider failure. Actual failed-exception/split readback checks remain in unified APK acceptance."
+}

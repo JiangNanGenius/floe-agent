@@ -1,0 +1,26 @@
+{
+  "status": "Font tools and notification cancellation source component; backup incomplete",
+  "sourceHashes": {
+    "core/fonts/src/main/java/com/floe/android/core/fonts/ManagedFontStore.kt": "5013b9e2f5e9f960190d7109ad97a03fe11807faead73448d795606460cd823d",
+    "app/src/main/kotlin/com/floe/android/host/fonts/FontToolHostPump.kt": "44da85a062782fc212d6f0a4adddef6942975b0759b0d96509281b2e46b9190e",
+    "app/src/main/kotlin/com/floe/android/host/RuntimeHost.kt": "e32c56b862bd1efd41337a8523d629ec2dd2363d1a289c8b0a541f63de9c4dc8",
+    "app/src/main/kotlin/com/floe/android/host/creative/GenerationForegroundOwner.kt": "f0de8ca4086e1a313398b0ea7e8b18e12b118b1ccf771575defd9536b39abe47",
+    "app/src/main/kotlin/com/floe/android/host/creative/GenerationForegroundService.kt": "40df3d2991cc33de644169a2e5358ca121244cd50f7404766edb73de6f1ef66e",
+    "shared/Sources/FloeAndroidCore/FontHostAPI.swift": "be10454325e6e0d20995a15ad501abc8431d6dce9c1d382760f7058baa5b37b5",
+    "shared/Sources/FloeAndroidCore/C08FontToolBindings.swift": "c42a94504091e48980cc96d8eb39b69ae25408eec97894630ea0e683a67272ab",
+    "shared/Sources/FloeAndroidCore/Bridge.swift": "201589ea5838396ea36a182c4d3bba5bd1f82511e85c1a99c7402ce857f0945c",
+    "shared/Sources/FloeAndroidCore/G02DomainServices.swift": "a4c412bc0dc654dcae33813ef5c625edd10b4cf4548c041bd2f18583157af36a",
+    "shared/Sources/FloeAndroidWebTools/HTTPRequestService.swift": "f1e36ab872d7af25fd8e12d13d70dd2c4b52f5fb77370de165b8a6dfc51f97c7",
+    "shared/Tests/FloeAndroidCoreTests/ManagedFontTests.swift": "c6b37219ba9733b4eadcd79448e9d9d92fac1f35041afd316175e0ecb71438b8"
+  },
+  "checks": [
+    "Full/Play release Kotlin passed",
+    "Swift6 ARM64 release object compilation passed including real font host/tool/Web interfaces"
+  ],
+  "pending": [
+    "New Swift mailbox tests authored not executed",
+    "No new native product link/APK or device/model/font/Office acceptance",
+    "Font C07 backup/restore remains missing",
+    "Core/media notification return target still pending"
+  ]
+}

@@ -803,6 +803,10 @@ public struct RunToolAssembly {
             let frozenCeiling = TemporaryChatToolPolicy.nativeToolNames
                 .union(TemporaryChatToolPolicy.providerBackedWebSearchToolNames)
             ceiling = ceiling.map { $0.intersection(frozenCeiling) } ?? frozenCeiling
+        } else {
+            // The compiled default includes the generic result reader.
+            // Explicit task/host ceilings remain exact, especially [] = no tools.
+            ceiling = C02ToolResultIntegration.offeredToolNames(ceiling, temporary: false)
         }
         return ceiling
     }

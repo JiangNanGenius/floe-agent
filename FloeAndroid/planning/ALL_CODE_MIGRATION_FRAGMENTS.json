@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "owner": "Main integration only",
+  "registeredSchemaVersion": 52,
+  "status": "Registered once as v52_android_code_closure; unified Swift/runtime verification pending",
+  "preserve": [
+    "v1-v51 registry",
+    "G09-R2 selected_at",
+    "mail_accounts"
+  ],
+  "fragments": [
+    {
+      "feature": "C06 independent todos",
+      "path": "planning/all-code-migrations/calendar_todos.sql",
+      "sha256": "1efa892cc7d46344ce6e794792fa2116830fe7ab3b30f2ac4d93c3fb208b0ed5",
+      "note": "Includes reminders_suspended; declaration only, schema registration remains51."
+    },
+    {
+      "feature": "C02 durable task targets, run pins and remote dispatch receipts",
+      "path": "planning/all-code-migrations/execution_targets.sql",
+      "sha256": "cb831ac4a2a8d9c1be60bb46d19338fbb9de5889044710422ee6c7d9d7ead0c0"
+    },
+    {
+      "feature": "C02 canonical task storage pause and explicit resume",
+      "path": "planning/all-code-migrations/task_continuity.sql",
+      "sha256": "f8dc1cedc3574fd513d0079f6cdfeb68bbbbcc9ab03e1d404887e5ea3df5b20a"
+    }
+  ],
+  "pendingInputs": [],
+  "registration": "shared/Sources/FloePersistence/Migrations/V52AndroidCodeClosure.swift",
+  "registrationSha256": "8b3cc29080e2b689859c9eebe1f1b42083cd596abea6cc96369c40bdbc2c0375"
+}

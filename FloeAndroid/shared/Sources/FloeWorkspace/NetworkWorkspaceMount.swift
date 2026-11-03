@@ -51,6 +51,10 @@ import FoundationNetworking
 public enum NetworkWorkspaceProtocol: String, Codable, Sendable, CaseIterable {
     case webDAV
     case smb
+    /// C05 SSH/SFTP source. The trusted production factory supplies the
+    /// adapter from FloeAndroidCore; the default factory fails closed
+    /// because FloeWorkspace cannot depend on the C05 SSH domain.
+    case sftp
 }
 
 public enum NetworkWorkspaceMountStatus: String, Codable, Sendable {
@@ -115,6 +119,15 @@ public struct NetworkWorkspaceEntry: Codable, Hashable, Sendable {
     public var byteCount: Int64
     public var modifiedAt: Date?
     public var entityTag: String?
+    public init(name: String, path: String, isDirectory: Bool, byteCount: Int64, modifiedAt: Date?, entityTag: String?) {
+        self.name = name
+        self.path = path
+        self.isDirectory = isDirectory
+        self.byteCount = byteCount
+        self.modifiedAt = modifiedAt
+        self.entityTag = entityTag
+    }
+
 }
 
 public struct NetworkWorkspaceFileMetadata: Codable, Hashable, Sendable {
@@ -123,6 +136,14 @@ public struct NetworkWorkspaceFileMetadata: Codable, Hashable, Sendable {
     public var byteCount: Int64
     public var modifiedAt: Date?
     public var entityTag: String?
+    public init(path: String, isDirectory: Bool, byteCount: Int64, modifiedAt: Date?, entityTag: String?) {
+        self.path = path
+        self.isDirectory = isDirectory
+        self.byteCount = byteCount
+        self.modifiedAt = modifiedAt
+        self.entityTag = entityTag
+    }
+
 }
 
 public enum NetworkWorkspaceErrorCode: String, Codable, Sendable {
@@ -184,6 +205,13 @@ public enum WorkspaceMountAdapterFactory {
             return try WebDAVWorkspaceMountAdapter(mount: mount, credentialResolver: credentialResolver)
         case .smb:
             return try SMBWorkspaceMountAdapter(mount: mount, credentialResolver: credentialResolver)
+        case .sftp:
+            throw NetworkWorkspaceError(
+                code: .unsupported,
+                stage: "configuration",
+                retryable: false,
+                safeDetail: "SFTP mounts require the trusted C05 adapter factory."
+            )
         }
     }
 }

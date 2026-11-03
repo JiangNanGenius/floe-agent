@@ -176,6 +176,14 @@ object SettingsHostPages {
         }
     }
 
+    @Composable
+    fun AuxiliaryPage(settings: SettingsHostController) {
+        LaunchedEffect(settings.roles) { settings.roles.refresh() }
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+            ModelRolesCard(settings.roles, mediaOnly = true)
+        }
+    }
+
     // --------------------------------------------------------- model roles
 
     /**
@@ -186,113 +194,117 @@ object SettingsHostPages {
      * value row states its honest inherit/unavailable state.
      */
     @Composable
-    private fun ModelRolesCard(roles: SettingsRoleModelController) {
+    private fun ModelRolesCard(roles: SettingsRoleModelController, mediaOnly: Boolean = false) {
         val state by roles.state.collectAsState()
         var pickerSlot by remember { mutableStateOf<SettingsRoleModelController.RoleSlot?>(null) }
         FloeSettingsSectionCard(title = stringResource(R.string.settings_model_roles)) {
-            FloeSectionRow(title = {
-                Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                    FloeText(
-                        stringResource(R.string.settings_model_roles_primary),
-                        style = Floe.typography.metadata,
-                        color = Floe.colors.secondaryLabel,
-                    )
-                }
-            })
-            RoleSlotRow(state, SettingsRoleModelController.RoleSlot.DEFAULT_AGENT) {
-                pickerSlot = SettingsRoleModelController.RoleSlot.DEFAULT_AGENT
-            }
-            RoleSlotRow(state, SettingsRoleModelController.RoleSlot.CANVAS_AGENT) {
-                pickerSlot = SettingsRoleModelController.RoleSlot.CANVAS_AGENT
-            }
-            FloeSectionRow(title = {
-                Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                    FloeText(
-                        stringResource(R.string.settings_model_roles_auxiliary),
-                        color = Floe.colors.secondaryLabel,
-                    )
-                }
-            })
-            RoleSlotRow(state, SettingsRoleModelController.RoleSlot.GENERAL_AUXILIARY_LLM) {
-                pickerSlot = SettingsRoleModelController.RoleSlot.GENERAL_AUXILIARY_LLM
-            }
-            RoleSlotRow(state, SettingsRoleModelController.RoleSlot.VISION) {
-                pickerSlot = SettingsRoleModelController.RoleSlot.VISION
-            }
-            RoleSlotRow(state, SettingsRoleModelController.RoleSlot.CANVAS_VISION) {
-                pickerSlot = SettingsRoleModelController.RoleSlot.CANVAS_VISION
-            }
-            RoleSlotRow(state, SettingsRoleModelController.RoleSlot.APPROVAL) {
-                pickerSlot = SettingsRoleModelController.RoleSlot.APPROVAL
-            }
-            RoleSlotRow(state, SettingsRoleModelController.RoleSlot.PACKAGE_REVIEW) {
-                pickerSlot = SettingsRoleModelController.RoleSlot.PACKAGE_REVIEW
-            }
-            FloeSectionRow(title = {
-                Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                    FloeText(
-                        stringResource(R.string.settings_model_roles_media),
-                        color = Floe.colors.secondaryLabel,
-                    )
-                }
-            })
-            val separate = state.auxiliaryImageMode ==
-                SettingsRoleModelController.MODE_SEPARATE
-            FloeSectionRow(
-                description = stringResource(R.string.settings_role_media_mode_footer),
-                title = {
+            if (!mediaOnly) {
+                FloeSectionRow(title = {
                     Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                         FloeText(
-                            stringResource(R.string.settings_role_media_mode),
-                            style = Floe.typography.body,
-                            color = Floe.colors.label,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        FloeSegmented(
-                            options = listOf(
-                                stringResource(R.string.settings_role_mode_shared),
-                                stringResource(R.string.settings_role_mode_separate),
-                            ),
-                            selectedIndex = if (separate) 1 else 0,
-                            onSelect = { index ->
-                                roles.setAuxiliaryMode(separate = index == 1)
-                            },
+                            stringResource(R.string.settings_model_roles_primary),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
                         )
                     }
-                },
-            )
-            if (separate) {
-                RoleSlotRow(state, SettingsRoleModelController.RoleSlot.IMAGE_GENERATION) {
-                    pickerSlot = SettingsRoleModelController.RoleSlot.IMAGE_GENERATION
+                })
+                RoleSlotRow(state, SettingsRoleModelController.RoleSlot.DEFAULT_AGENT) {
+                    pickerSlot = SettingsRoleModelController.RoleSlot.DEFAULT_AGENT
                 }
-                RoleSlotRow(state, SettingsRoleModelController.RoleSlot.IMAGE_EDITING) {
-                    pickerSlot = SettingsRoleModelController.RoleSlot.IMAGE_EDITING
+                RoleSlotRow(state, SettingsRoleModelController.RoleSlot.CANVAS_AGENT) {
+                    pickerSlot = SettingsRoleModelController.RoleSlot.CANVAS_AGENT
                 }
-            } else {
-                RoleSlotRow(state, SettingsRoleModelController.RoleSlot.SHARED_IMAGE) {
-                    pickerSlot = SettingsRoleModelController.RoleSlot.SHARED_IMAGE
+                FloeSectionRow(title = {
+                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        FloeText(
+                            stringResource(R.string.settings_model_roles_auxiliary),
+                            color = Floe.colors.secondaryLabel,
+                        )
+                    }
+                })
+                RoleSlotRow(state, SettingsRoleModelController.RoleSlot.GENERAL_AUXILIARY_LLM) {
+                    pickerSlot = SettingsRoleModelController.RoleSlot.GENERAL_AUXILIARY_LLM
+                }
+                RoleSlotRow(state, SettingsRoleModelController.RoleSlot.VISION) {
+                    pickerSlot = SettingsRoleModelController.RoleSlot.VISION
+                }
+                RoleSlotRow(state, SettingsRoleModelController.RoleSlot.CANVAS_VISION) {
+                    pickerSlot = SettingsRoleModelController.RoleSlot.CANVAS_VISION
+                }
+                RoleSlotRow(state, SettingsRoleModelController.RoleSlot.APPROVAL) {
+                    pickerSlot = SettingsRoleModelController.RoleSlot.APPROVAL
+                }
+                RoleSlotRow(state, SettingsRoleModelController.RoleSlot.PACKAGE_REVIEW) {
+                    pickerSlot = SettingsRoleModelController.RoleSlot.PACKAGE_REVIEW
                 }
             }
-            RoleSlotRow(state, SettingsRoleModelController.RoleSlot.DEFAULT_VIDEO) {
-                pickerSlot = SettingsRoleModelController.RoleSlot.DEFAULT_VIDEO
-            }
-            FloeSectionRow(title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    FloeText(
-                        stringResource(R.string.settings_role_autonomous_routing),
-                        style = Floe.typography.body,
-                        color = Floe.colors.label,
-                        modifier = Modifier.weight(1f),
-                    )
-                    FloeInlineSwitch(
-                        checked = state.autonomousImageRouting,
-                        onCheckedChange = { checked ->
-                            roles.setAutonomousImageRouting(checked)
-                        },
-                        description = stringResource(R.string.settings_role_autonomous_routing),
-                    )
+            if (mediaOnly) {
+                FloeSectionRow(title = {
+                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        FloeText(
+                            stringResource(R.string.settings_model_roles_media),
+                            color = Floe.colors.secondaryLabel,
+                        )
+                    }
+                })
+                val separate = state.auxiliaryImageMode ==
+                    SettingsRoleModelController.MODE_SEPARATE
+                FloeSectionRow(
+                    description = stringResource(R.string.settings_role_media_mode_footer),
+                    title = {
+                        Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                            FloeText(
+                                stringResource(R.string.settings_role_media_mode),
+                                style = Floe.typography.body,
+                                color = Floe.colors.label,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            FloeSegmented(
+                                options = listOf(
+                                    stringResource(R.string.settings_role_mode_shared),
+                                    stringResource(R.string.settings_role_mode_separate),
+                                ),
+                                selectedIndex = if (separate) 1 else 0,
+                                onSelect = { index ->
+                                    roles.setAuxiliaryMode(separate = index == 1)
+                                },
+                            )
+                        }
+                    },
+                )
+                if (separate) {
+                    RoleSlotRow(state, SettingsRoleModelController.RoleSlot.IMAGE_GENERATION) {
+                        pickerSlot = SettingsRoleModelController.RoleSlot.IMAGE_GENERATION
+                    }
+                    RoleSlotRow(state, SettingsRoleModelController.RoleSlot.IMAGE_EDITING) {
+                        pickerSlot = SettingsRoleModelController.RoleSlot.IMAGE_EDITING
+                    }
+                } else {
+                    RoleSlotRow(state, SettingsRoleModelController.RoleSlot.SHARED_IMAGE) {
+                        pickerSlot = SettingsRoleModelController.RoleSlot.SHARED_IMAGE
+                    }
                 }
-            })
+                RoleSlotRow(state, SettingsRoleModelController.RoleSlot.DEFAULT_VIDEO) {
+                    pickerSlot = SettingsRoleModelController.RoleSlot.DEFAULT_VIDEO
+                }
+                FloeSectionRow(title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        FloeText(
+                            stringResource(R.string.settings_role_autonomous_routing),
+                            style = Floe.typography.body,
+                            color = Floe.colors.label,
+                            modifier = Modifier.weight(1f),
+                        )
+                        FloeInlineSwitch(
+                            checked = state.autonomousImageRouting,
+                            onCheckedChange = { checked ->
+                                roles.setAutonomousImageRouting(checked)
+                            },
+                            description = stringResource(R.string.settings_role_autonomous_routing),
+                        )
+                    }
+                })
+            }
             if (state.hasDraftChanges) {
                 Row(
                     Modifier.padding(horizontal = 12.dp, vertical = 8.dp),

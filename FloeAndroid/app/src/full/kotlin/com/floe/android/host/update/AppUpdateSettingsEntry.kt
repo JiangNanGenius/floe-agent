@@ -116,7 +116,7 @@ private fun primaryAction(
         }
         ui.install is AppInstallState.Confirming -> {
             controller.consumeSystemIntent()?.let { intent ->
-                if (!launchSystemIntent(context, intent)) controller.onConfirmationUnavailable()
+                if (!launchSystemIntent(context, intent)) controller.onConfirmationUnavailable((ui.install as AppInstallState.Confirming).sessionID)
             }
         }
         ui.install is AppInstallState.Preparing ||

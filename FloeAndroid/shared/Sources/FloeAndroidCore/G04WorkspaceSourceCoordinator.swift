@@ -567,7 +567,7 @@ public actor G04WorkspaceSourceCoordinator {
         }
         do {
             let owner = G04WorkspaceOwner(epoch: epoch, taskID: taskID, workspaceID: workspaceID)
-            let service = try await G04LiveWorkspaceAccess.privateTaskService(owner,
+            let service = try await G04LiveWorkspaceAccess.managedService(owner,
                                                                               cancellation: lease.cancellation)
             let stagedDigest = try FloeDigest.sha256Hex(ofFileAt: stagedURL,
                                                         isCancelled: { lease.cancellation.isCancelled })
@@ -638,16 +638,24 @@ public actor G04WorkspaceSourceCoordinator {
         }
         do {
             let owner = G04WorkspaceOwner(epoch: epoch, taskID: taskID, workspaceID: workspaceID)
-            let service = try await G04LiveWorkspaceAccess.privateTaskService(owner,
+            let service = try await G04LiveWorkspaceAccess.managedService(owner,
                                                                               cancellation: lease.cancellation)
             let sourceURL = try service.guardResolver.resolve(logicalPath)
             let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
             let before = try sourceURL.resourceValues(forKeys: keys)
             guard before.isRegularFile == true, before.isSymbolicLink != true,
-                  let size = before.fileSize, size > 0,
-                  size <= Self.maximumProviderCopyBytes else {
+                  let size = before.fileSize, size > 0 else {
                 await endLease(lease)
                 throw G04SourceCoordinatorError.invalidWorkingCopy("notRegularFile")
+            }
+            // The generic provider-copy ceiling is a SIZE refusal, not a
+            // working-copy shape refusal: report it as the typed size status
+            // (-509) so callers can distinguish "too large" from a missing/
+            // unsafe file (-504). The bound itself and every save/export
+            // caller are unchanged.
+            guard size <= Self.maximumProviderCopyBytes else {
+                await endLease(lease)
+                throw G04SourceCoordinatorError.tooLarge(limit: Self.maximumProviderCopyBytes)
             }
             try Self.streamCopy(from: sourceURL, to: snapshotURL,
                                 freeReservePath: snapshotURL.deletingLastPathComponent().path,
@@ -668,6 +676,60 @@ public actor G04WorkspaceSourceCoordinator {
             return WorkingCopySnapshot(sha256: snapshotDigest, bytes: size)
         } catch {
             await endLease(lease)
+            throw Self.remapFileError(error)
+        }
+    }
+
+    // MARK: - Closed media-purpose egress (G09-R2, additive)
+
+    /// Prepares ONE media-only egress over the EXACT native working copy at
+    /// `logicalPath`, under the same ordinary task/workspace binding and the
+    /// same `.conversation` owned-work lease as every other source operation.
+    ///
+    /// This is the ONLY entry that can reach the closed media ceilings
+    /// (image 128 MiB / audio 1 GiB / video 8 GiB). It does NOT widen
+    /// `maximumProviderCopyBytes` (1 GiB) and it does NOT materialize a
+    /// second snapshot: the returned preparation is opened by the host on a
+    /// detached thread, which pins one `O_NOFOLLOW` descriptor, hashes the
+    /// exact bytes once and streams those bytes back through the existing
+    /// ticket protocol. The kind must EQUAL the logical path's own final
+    /// extension before any owner lookup, so a caller-supplied kind or a
+    /// path/intent can never route another file through the media ceilings.
+    ///
+    /// The lease is held until the host closes the media egress session; a
+    /// Root retirement cancels that owned-work token (the same
+    /// `cancelG04WorkspaceOperations` path as every G04 operation), so the
+    /// stream refuses typed instead of reporting drained behind a flag.
+    public func prepareMediaEgress(kind: G04WorkspaceMediaKind, taskID: UUID,
+                                   workspaceID: UUID, logicalPath: String) async throws
+        -> G04WorkspaceMediaEgressPreparation {
+        guard G04WorkspaceMediaKind.kind(forLogicalPath: logicalPath) == kind else {
+            throw G04SourceCoordinatorError.invalidMetadata("mediaKind")
+        }
+        try await requireOrdinaryConversation(taskID: taskID, workspaceID: workspaceID)
+        guard !retired, let (domain, _) = RunDomainFacade.current(epoch: epoch),
+              let operation = await domain.beginG04WorkspaceOperation(conversationID: taskID,
+                                                                      expectedEpoch: epoch) else {
+            throw G04SourceCoordinatorError.retired
+        }
+        do {
+            let owner = G04WorkspaceOwner(epoch: epoch, taskID: taskID, workspaceID: workspaceID)
+            let service = try await G04LiveWorkspaceAccess.managedService(
+                owner, cancellation: operation.cancellation)
+            if operation.cancellation.isCancelled {
+                throw G04SourceCoordinatorError.transitionRefused("cancelled")
+            }
+            let sourceURL = try service.guardResolver.resolve(logicalPath)
+            let row = try await store.source(workspaceID: workspaceID, logicalPath: logicalPath)
+            let release: @Sendable () async -> Void = {
+                await domain.endG04WorkspaceOperation(operation)
+            }
+            return G04WorkspaceMediaEgressPreparation(
+                kind: kind, sourceURL: sourceURL, sourceID: row?.id,
+                sourceRevision: row?.revision, cancellation: operation.cancellation,
+                release: release)
+        } catch {
+            await domain.endG04WorkspaceOperation(operation)
             throw Self.remapFileError(error)
         }
     }

@@ -31,9 +31,13 @@ object RuntimeWire {
     const val FILES_TREE = "workspace.files.tree"
     const val FILES_READ = "workspace.files.read"
     const val EXPORT_STATUS = "workspace.exportStatus"
+    // Authenticated host Settings maintenance, never model-facing controls.
+    const val STORAGE_INVENTORY = "storage.inventory"
+    const val STORAGE_CLEANUP = "storage.cleanup"
     val operations = setOf("status", "request.status", "install.start", "install.cancel", "install.status",
         "environment.list", "shell.start", "shell.poll", "shell.input", "shell.resize", "shell.cancel",
-        CLEANUP, PREFLIGHT, PREFLIGHT_CANCEL, FILES_TREE, FILES_READ, EXPORT_STATUS)
+        "stdio.start", "stdio.write", "stdio.poll", "stdio.stdinEof", "service.readiness",
+        CLEANUP, PREFLIGHT, PREFLIGHT_CANCEL, FILES_TREE, FILES_READ, EXPORT_STATUS, STORAGE_INVENTORY, STORAGE_CLEANUP)
 
     data class Request(val id: String, val operation: String, val payload: JSONObject)
 

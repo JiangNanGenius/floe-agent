@@ -185,7 +185,7 @@ class SupervisedPtyJob internal constructor(
     private val boundary: RuntimeUidBoundary,
     private val quiescer: RuntimeUidQuiescer,
     private val census: ProcCensus,
-    val lease: LeaseToken,
+    override val lease: LeaseToken,
     val ownership: RunOwnership,
     val spec: LaunchSpec,
     private val policy: PtyJobPolicy,
@@ -208,7 +208,7 @@ class SupervisedPtyJob internal constructor(
      * refuse (retain the lease) instead of guessing and killing it.
      */
     private val enforceProvider: () -> Boolean = { true },
-) {
+) : SupervisedWorkload {
     private val stateLock = ReentrantLock()
     private val ring = BoundedOutputRing(policy.maxRetainedOutputBytes)
     private val terminating = AtomicBoolean(false)
@@ -259,7 +259,7 @@ class SupervisedPtyJob internal constructor(
      * never promoted into a usable identity, so [rootReap] checks can only ever
      * compare against a real kernel fact.
      */
-    val rootBirth: ProcessBirth = rootBirthOverride
+    override val rootBirth: ProcessBirth = rootBirthOverride
         ?: ProcessBirth.fromCreationIdentity(session.creationIdentity)
         ?: throw IllegalArgumentException(
             "transport must report a parsable creationIdentity, got '${session.creationIdentity}'",
@@ -268,9 +268,9 @@ class SupervisedPtyJob internal constructor(
     /** Whether the root's own exit was proven by a waitpid-backed result. */
     val rootReapProven: Boolean get() = rootExit?.let { it.waitErrno == 0 } ?: false
 
-    val pid: Int get() = session.pid
-    val stateNow: JobState get() = state
-    val exitResult: ExitResult? get() = rootExit
+    override val pid: Int get() = session.pid
+    override val stateNow: JobState get() = state
+    override val exitResult: ExitResult? get() = rootExit
     val retainedBytes: Int get() = ring.retainedBytes
     val totalProducedBytes: Long get() = ring.totalProducedBytes
     val droppedOutputBytes: Long get() = ring.totalDroppedBytes
@@ -307,7 +307,7 @@ class SupervisedPtyJob internal constructor(
      * terminal callback. A background daemon therefore cannot leave the
      * environment silently idle.
      */
-    fun pump(): PumpOutcome {
+    override fun pump(): PumpOutcome {
         requireDrainOwner()
         val before = state
         if (before == JobState.TERMINATED) {
@@ -381,7 +381,7 @@ class SupervisedPtyJob internal constructor(
      * master), then whole-runtime-UID quiescence. The trusted owner's callback is
      * invoked only when that proof exists.
      */
-    fun requestCancel(reason: String): CancelOutcome {
+    override fun requestCancel(reason: String): CancelOutcome {
         val current = stateLock.withLock {
             val observed = state
             if (observed == JobState.TERMINATED) return CancelOutcome.Rejected("already terminated")
@@ -433,7 +433,7 @@ class SupervisedPtyJob internal constructor(
      * or states precisely why the lease cannot be released. It never fabricates
      * success and never releases on a mere cancellation or disconnect.
      */
-    fun settleLease(): LeaseSettlement {
+    override fun settleLease(): LeaseSettlement {
         val observed = state
         if (observed == JobState.TERMINATED) {
             val terminal = terminalResult
@@ -497,20 +497,20 @@ class SupervisedPtyJob internal constructor(
      * than zero means the consumer missed bytes; it is never presented as
      * continuous output.
      */
-    fun output(cursor: Long, maxBytes: Int = BoundedOutputRing.MAX_PAGE_BYTES): OutputPage =
+    override fun output(cursor: Long, maxBytes: Int): OutputPage =
         stateLock.withLock { ring.read(cursor, maxBytes) }
 
     /** Whole-UID census view for the owner's diagnostics (no signal side effects). */
     fun inspectCensus(): CensusSnapshot = census.snapshot()
 
     /** The stdin descriptor choice carried by this job's explicit [LaunchSpec]. */
-    val stdinDelivery: StdinDelivery get() = spec.stdinDelivery
+    override val stdinDelivery: StdinDelivery get() = spec.stdinDelivery
 
     /** Largest [writeStdin] chunk this job accepts; callers page larger payloads. */
-    val maxStdinChunkBytes: Int get() = policy.maxWriteChunkBytes
+    override val maxStdinChunkBytes: Int get() = policy.maxWriteChunkBytes
 
     /** Honest bounded stdin accounting for engine polls (never output bytes). */
-    fun stdinStatus(): StdinStatus =
+    override fun stdinStatus(): StdinStatus =
         StdinStatus(spec.stdinDelivery, stdinAcceptedBytes, stdinEofDelivered, stdinLastErrno)
 
     /**
@@ -522,7 +522,7 @@ class SupervisedPtyJob internal constructor(
      * where real EOF can only come from [requestStdinEof]/lifecycle close —
      * an EOT byte here is ordinary stdin DATA, never an EOF emulation.
      */
-    fun writeStdin(data: ByteArray, offset: Int = 0, length: Int = data.size): StdinWrite {
+    override fun writeStdin(data: ByteArray, offset: Int, length: Int): StdinWrite {
         require(length in 0..policy.maxWriteChunkBytes) {
             "chunk exceeds maxWriteChunkBytes=${policy.maxWriteChunkBytes}"
         }
@@ -544,7 +544,7 @@ class SupervisedPtyJob internal constructor(
      * — a lifecycle close is reported, never re-labelled as a delivered
      * command.
      */
-    fun requestStdinEof(): StdinEof {
+    override fun requestStdinEof(): StdinEof {
         if (spec.stdinDelivery != StdinDelivery.OneShotPipe) {
             return StdinEof.Rejected(
                 "stdin delivery is ${spec.stdinDelivery.name.lowercase()}, not one-shot pipe",
@@ -644,7 +644,7 @@ class SupervisedPtyJob internal constructor(
     }
 
     /** Terminal size change; refused once the master is closed (post-terminal). */
-    fun resize(rows: Int, cols: Int): Boolean {
+    override fun resize(rows: Int, cols: Int): Boolean {
         if (state == JobState.TERMINATED) return false
         return runCatching { session.resize(rows, cols) }.getOrDefault(false)
     }

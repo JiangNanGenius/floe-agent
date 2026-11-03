@@ -378,6 +378,11 @@ public enum LinuxAuthorityLeaseRole: String, Codable, Sendable, Equatable, Hasha
     case agent
     /// Language run / LSP service session.
     case run
+    /// C01 managed service: a long-lived service-owned workload with its own
+    /// engine lease. Never consumes an interactive tab or the shared
+    /// Agent/run execution slot. Only the trusted C01 service domain selects
+    /// it; an older engine that does not know the role refuses the start.
+    case service
 
     /// The historical default: an acquire without a role is one Agent command,
     /// preserving the previous single-slot admission for legacy callers.
@@ -749,11 +754,13 @@ public struct LinuxAuthorityEnvironmentMetadata: Codable, Sendable, Equatable {
     public var packageCount: Int
     public var parentID: String?
     public var templateID: String?
+    /// Absent on older runtime components; callers must not invent a version.
+    public var layerFormat: Int?
 
     public init(id: String, kind: String, ownerID: String?, name: String?, state: String,
                 baseRevision: String, requiresRebuild: Bool, rebuildReason: String?,
                 executionBackend: String?, bytes: Int64, packageCount: Int,
-                parentID: String?, templateID: String?) {
+                parentID: String?, templateID: String?, layerFormat: Int? = nil) {
         self.id = id
         self.kind = kind
         self.ownerID = ownerID
@@ -767,6 +774,7 @@ public struct LinuxAuthorityEnvironmentMetadata: Codable, Sendable, Equatable {
         self.packageCount = packageCount
         self.parentID = parentID
         self.templateID = templateID
+        self.layerFormat = layerFormat
     }
 }
 

@@ -1630,6 +1630,42 @@
           "reasoning": true,
           "toolCall": true
         },
+        "qwen-image-2.1-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "qwen-image-2.1-turbo": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "qwen-image-3.0": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "qwen-image-3.0-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
         "qwen-plus": {
           "attachment": false,
           "input": [
@@ -2066,6 +2102,33 @@
           ],
           "reasoning": true,
           "toolCall": true
+        },
+        "wan2.7-image": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "wan2.7-image-pro": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "image"
+          ]
+        },
+        "wan3.0-video": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
         }
       },
       "models": [
@@ -2122,6 +2185,25 @@
       ],
       "name": "Alibaba Cloud DashScope",
       "presetID": "alibaba",
+      "serviceOffers": [
+        {
+          "models": [
+            "qwen-image-2.1-pro",
+            "qwen-image-2.1-turbo",
+            "qwen-image-3.0",
+            "qwen-image-3.0-pro",
+            "wan2.7-image",
+            "wan2.7-image-pro"
+          ],
+          "role": "image"
+        },
+        {
+          "models": [
+            "wan3.0-video"
+          ],
+          "role": "video"
+        }
+      ],
       "toolNameCompatibility": false,
       "unsupportedReason": null,
       "upstreamID": "alibaba",

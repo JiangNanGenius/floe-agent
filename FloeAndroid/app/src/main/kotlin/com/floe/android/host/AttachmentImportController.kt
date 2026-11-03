@@ -270,6 +270,7 @@ class AttachmentImportController internal constructor(
          *  shared core). Oversized imports are refused typed BEFORE streaming;
          *  the native side enforces its own caps regardless. */
         const val MAX_STAGING_BYTES = 128L * 1024 * 1024
+        private const val MAX_STAGED_URIS = 5
         private const val CHUNK_BYTES = 64 * 1024
 
         /** Presentation owner marker for a Home-draft staged row. This is a
@@ -391,6 +392,7 @@ class AttachmentImportController internal constructor(
         owner.job.set(job)
         job.invokeOnCompletion {
             SharedUriGrantAuthority.withExclusiveAuthority { copies.remove(owner) }
+            owner.sourceUri?.let(::releaseScopedReadIfUnused)
             replacedAttempt?.retrying?.set(false)
         }
         job.start()
@@ -446,6 +448,61 @@ class AttachmentImportController internal constructor(
             draftNonce = draftNonce,
             draftHomeGeneration = draftHomeGeneration,
         )
+        return true
+    }
+
+    /**
+     * C07 app-entry handoff: stage already-admitted external content URIs into
+     * the CURRENT Home draft under its exact nonce/generation. This uses the
+     * SAME StageOwner/copy/native-producer/publication path as a picker result;
+     * it only skips the platform picker round because the Intent already
+     * carried the content. Every file still passes SharedUriGrantAuthority,
+     * the native size bound, the draft-owner fence and the existing row
+     * publication. Returns false BEFORE starting any copy when staging is not
+     * admitted, the Home owner changed or an input is not a content URI.
+     */
+    fun stageDraftUris(
+        draftNonce: String,
+        draftHomeGeneration: Long,
+        uris: List<Uri>,
+    ): Boolean {
+        if (!admitted()) return false
+        if (draftNonce.isBlank() || draftHomeGeneration < 0L) return false
+        if (uris.isEmpty() || uris.size > MAX_STAGED_URIS) return false
+        if (host.conversations.rootWorkspace.currentDraftOwner() !=
+            (draftNonce to draftHomeGeneration)
+        ) {
+            return false
+        }
+        if (uris.any { it.scheme != "content" }) return false
+        // The intake still owns each source grant during this synchronous
+        // handoff. Retain the consumer references before acknowledging it;
+        // IO scheduling latency cannot release the last reference early.
+        val acquired = mutableListOf<Uri>()
+        try {
+            SharedUriGrantAuthority.withExclusiveAuthority {
+                for (uri in uris) {
+                    if (!readGrantLeases.containsKey(uri)) {
+                        readGrantLeases[uri] = SharedUriGrantAuthority.broker.retain(
+                            com.floe.android.safgateway.SafUriRef(uri.toString()),
+                            com.floe.android.safgateway.SafAccessFlag.READ,
+                        )
+                        acquired += uri
+                    }
+                }
+            }
+        } catch (_: RuntimeException) {
+            acquired.forEach(::releaseScopedReadIfUnused)
+            return false
+        }
+        for (uri in uris) {
+            val owner = StageOwner(null, draftNonce, draftHomeGeneration)
+            if (!ownerIsCurrent(owner)) {
+                acquired.forEach(::releaseScopedReadIfUnused)
+                return false
+            }
+            startCopy(owner, uri)
+        }
         return true
     }
 

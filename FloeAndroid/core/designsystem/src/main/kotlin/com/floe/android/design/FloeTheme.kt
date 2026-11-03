@@ -53,6 +53,8 @@ object Floe {
 @Composable
 fun FloeTheme(
     themeMode: FloeThemeMode = FloeThemeMode.AUTO,
+    /** Future Settings/accessibility switch; false keeps the opaque fallback. */
+    materialEnabled: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     val dark = floeIsDarkAppearance(themeMode)
@@ -90,13 +92,19 @@ fun FloeTheme(
             tertiarySystemBackground = colors.groupedSurface,
         )
     }
-    CupertinoTheme(colorScheme = scheme) {
-        // Android hit-target floor: upstream Cupertino provides 44dp.
-        androidx.compose.runtime.CompositionLocalProvider(
-            LocalMinimumInteractiveComponentSize provides FloeLayout.MinimumTarget,
-            LocalFloeColors provides colors,
-            LocalFloeType provides FloeTypography(),
-            content = content,
-        )
+    // One real Haze source/effect owner for this App theme subtree. The host
+    // only publishes the controller; a page still marks its actual moving
+    // content with FloeMaterialScene/floeMaterialSource. Without that scene
+    // every material surface keeps its opaque, readable fallback.
+    FloeMaterialHost(userEnabled = materialEnabled) {
+        CupertinoTheme(colorScheme = scheme) {
+            // Android hit-target floor: upstream Cupertino provides 44dp.
+            androidx.compose.runtime.CompositionLocalProvider(
+                LocalMinimumInteractiveComponentSize provides FloeLayout.MinimumTarget,
+                LocalFloeColors provides colors,
+                LocalFloeType provides FloeTypography(),
+                content = content,
+            )
+        }
     }
 }

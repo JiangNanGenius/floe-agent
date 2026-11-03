@@ -136,7 +136,7 @@ class SettingsRoleModelController internal constructor(
         }
 
         /** True when any draft differs from the saved document. */
-        val hasDraftChanges: Boolean get() = draft.isNotEmpty()
+        val hasDraftChanges: Boolean get() = draft.isNotEmpty() || modeDirty || routingDirty
     }
 
     private val stateFlow = MutableStateFlow(RoleModelState())

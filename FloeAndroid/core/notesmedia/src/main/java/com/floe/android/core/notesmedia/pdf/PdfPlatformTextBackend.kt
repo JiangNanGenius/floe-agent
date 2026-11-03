@@ -6,6 +6,9 @@ import android.os.Build
 import androidx.annotation.RequiresApi
 import com.floe.android.core.notesmedia.source.VerifiedMediaSnapshot
 import com.floe.android.core.officeengine.pdf.OfficePdfSourceAccess
+import com.floe.android.core.officeengine.pdf.OfficePdfTextContract
+import com.floe.android.core.officeengine.pdf.OfficePdfTextLine
+import com.floe.android.core.officeengine.pdf.OfficePdfTextLineRect
 
 /**
  * OPT-IN platform text backend (API 35+).
@@ -124,6 +127,91 @@ class PlatformPdfTextBackend(
             return PdfTextSearchOutcome.Unavailable(PdfTextUnavailableReason.ENCRYPTED, id)
         } catch (_: Exception) {
             return PdfTextSearchOutcome.Unavailable(PdfTextUnavailableReason.BACKEND_FAILED, id)
+        } finally {
+            runCatching { fd.close() }
+        }
+    }
+
+    /**
+     * One-page extraction for selection. This opt-in backend keeps the same
+     * bounded identity rules as search: the page count/size come from the
+     * renderer, all rectangles are clamped by [OfficePdfTextContract.build],
+     * and a refused/encrypted document is a typed failure, never fake text.
+     */
+    override suspend fun pageText(
+        source: VerifiedMediaSnapshot,
+        pageCount: Int,
+        page: PdfPageId,
+        isCancelled: () -> Boolean,
+    ): PdfPageTextOutcome {
+        if (isCancelled()) {
+            return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.CANCELLED, id)
+        }
+        if (page.pageIndex !in 0 until pageCount) {
+            return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.PAGE_OUT_OF_RANGE, id)
+        }
+        val fd = OfficePdfSourceAccess.openPinnedReadOnly(source.readableFile, source.byteCount)
+            ?: return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.BACKEND_FAILED, id)
+        try {
+            PdfRenderer(fd).use { renderer ->
+                if (renderer.pageCount != pageCount) {
+                    return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.BACKEND_FAILED, id)
+                }
+                if (isCancelled()) {
+                    return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.CANCELLED, id)
+                }
+                renderer.openPage(page.pageIndex).use { platformPage ->
+                    val contents = runCatching { platformPage.textContents }.getOrElse {
+                        return PdfPageTextOutcome.Unavailable(
+                            PdfTextUnavailableReason.BACKEND_FAILED,
+                            id,
+                        )
+                    }
+                    val lines = ArrayList<OfficePdfTextLine>(
+                        minOf(contents.size, OfficePdfTextContract.MAX_TEXT_REGIONS),
+                    )
+                    for (content in contents) {
+                        if (lines.size >= OfficePdfTextContract.MAX_TEXT_REGIONS) break
+                        val text = runCatching { content.text }.getOrNull().orEmpty()
+                        if (text.isEmpty()) continue
+                        val bounds = runCatching { content.bounds }.getOrNull().orEmpty()
+                        val rects = ArrayList<OfficePdfTextLineRect>(
+                            minOf(bounds.size, OfficePdfTextContract.MAX_REGION_RECTS),
+                        )
+                        for (rect in bounds) {
+                            if (rects.size >= OfficePdfTextContract.MAX_REGION_RECTS) break
+                            rects.add(
+                                OfficePdfTextLineRect(
+                                    left = rect.left,
+                                    top = rect.top,
+                                    right = rect.right,
+                                    bottom = rect.bottom,
+                                ),
+                            )
+                        }
+                        lines.add(OfficePdfTextLine(text, rects))
+                    }
+                    if (isCancelled()) {
+                        return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.CANCELLED, id)
+                    }
+                    val payload = OfficePdfTextContract.build(
+                        pageIndex = page.pageIndex,
+                        pageCount = pageCount,
+                        sourceBytes = source.byteCount,
+                        pageWidthPt = platformPage.width.toFloat(),
+                        pageHeightPt = platformPage.height.toFloat(),
+                        lines = lines,
+                    ) ?: return PdfPageTextOutcome.Unavailable(
+                        PdfTextUnavailableReason.BACKEND_FAILED,
+                        id,
+                    )
+                    return PdfPageTextOutcome.Ready(payload)
+                }
+            }
+        } catch (_: SecurityException) {
+            return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.ENCRYPTED, id)
+        } catch (_: Exception) {
+            return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.BACKEND_FAILED, id)
         } finally {
             runCatching { fd.close() }
         }

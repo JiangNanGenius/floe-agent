@@ -84,6 +84,9 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
         let onTerminal: (@Sendable (BackgroundJob) async -> Void)?
         let shellConfiguration: ExecShellJobRunnerConfiguration
         let processorOwnership: JobProcessorOwnershipDelegate?
+        /// C01 typed managed services. Nil keeps the ordinary job surface and
+        /// makes service submissions a typed refusal.
+        let serviceHost: (any C01ManagedServiceJobHosting)?
     }
 
     private let stateLock = NSLock()
@@ -167,7 +170,8 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
         adapters: [String: NativeJobServiceAdapter] = [:],
         onTerminal: (@Sendable (BackgroundJob) async -> Void)? = nil,
         shellConfiguration: ExecShellJobRunnerConfiguration = ExecShellJobRunnerConfiguration(),
-        processorOwnership: JobProcessorOwnershipDelegate? = nil
+        processorOwnership: JobProcessorOwnershipDelegate? = nil,
+        serviceHost: (any C01ManagedServiceJobHosting)? = nil
     ) -> Bool {
         guard outputRootURL.isFileURL, outputRootURL.path != "/" else { return false }
         do {
@@ -175,7 +179,18 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
         } catch {
             return false
         }
-        let resolvedPolicy = policy ?? Self.androidJobPolicy
+        var resolvedPolicy = policy ?? Self.androidJobPolicy
+        // C01: the service payload must be validated BEFORE the durable job
+        // row exists. Normal exec.shell payloads return immediately.
+        if let serviceHost,
+           let existing = resolvedPolicy.handlers[ExecShellJobRunner.toolName] {
+            resolvedPolicy.handlers[ExecShellJobRunner.toolName] = NativeJobHandler(
+                allowedActions: existing.allowedActions,
+                preflight: { payload, root in
+                    try await serviceHost.validateJobPayload(payload, workspaceRootURL: root)
+                },
+                reconcile: existing.reconcile)
+        }
         var resolvedAdapters = adapters
         if resolvedPolicy.supportedTargetNames.contains(OfficeDocumentEditTool.name),
            resolvedAdapters[OfficeDocumentEditTool.name] == nil {
@@ -205,7 +220,8 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
             adapters: resolvedAdapters,
             onTerminal: onTerminal,
             shellConfiguration: shellConfiguration,
-            processorOwnership: processorOwnership
+            processorOwnership: processorOwnership,
+            serviceHost: serviceHost
         )
         serviceStorage = nil // re-compose invalidates the previous registration
         admittedStorage = []
@@ -259,7 +275,8 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
                     transport: plan.transport,
                     gate: plan.settlementGate,
                     index: liveIndex,
-                    configuration: plan.shellConfiguration
+                    configuration: plan.shellConfiguration,
+                    serviceHost: plan.serviceHost
                 )
                 jobRegistry.register(runner.makeRunner())
             } else {
@@ -289,8 +306,18 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
             },
             outputRootURL: plan.outputRootURL,
             runnerLookup: jobRegistry,
+            serviceHost: plan.serviceHost,
             advertise: false
         )
+        if plan.serviceHost != nil {
+            // On the FIRST proven service readiness, resolve the durable
+            // `service` dependency edge so the waiting parent run continues in
+            // the same run. The service itself keeps running; terminal later
+            // resolves nothing new.
+            C01ManagedServiceDomain.shared.installReadyReporter { jobID, note in
+                await service.resolveServiceReady(id: jobID, note: note)
+            }
+        }
         stateLock.lock()
         serviceStorage = service
         jobRegistryStorage = jobRegistry
@@ -320,6 +347,7 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
     /// Exact-root retirement after original store/work cleanup. No live
     /// processor/service is replaced by a new generation's composition.
     public func retire(epoch: UInt64) async -> Bool {
+        await C01ManagedServiceDomain.shared.requestStopAll(epoch: epoch)
         guard let owner = G03JobLifecycle.current, owner.epoch == epoch else { return true }
         guard await owner.stopAndDrain(timeoutMillis: 0), await liveIndex.isIdle() else { return false }
         if let service = withState({ serviceStorage }), !(await service.ownedProcessorIDs()).isEmpty { return false }
@@ -328,6 +356,7 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
             serviceStorage = nil; jobRegistryStorage = nil; planStorage = nil; admittedStorage = []
         }
         jobOwnershipBox.set(nil)
+        C01ManagedServiceDomain.shared.installReadyReporter(nil)
         ToolRunnerRegistry.shared.unregister {
             ["jobs.submit", "jobs.status", "jobs.result", "jobs.cancel"].contains($0)
                 || $0 == OfficeDocumentEditTool.name
@@ -406,11 +435,11 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
                     note: job.lastError ?? "job \(job.state.rawValue)")
                 continue
             }
-            // Android admits no long-lived service targets this round, so a
-            // "service" kind edge (only ever written for exec.localService
-            // by the ORIGINAL service) is held as outstanding until its
-            // real job row reaches a terminal state — never a guessed
-            // readiness.
+            // A typed C01 service edge is resolved by
+            // `BackgroundJobService.resolveServiceReady` on the FIRST proven
+            // readiness; until then it is held outstanding exactly like a
+            // finite job. It is never resolved by a guessed readiness or a
+            // timer.
             labels.append(RunDependencyLabel(
                 identifier: job.id.uuidString,
                 kind: dependency.kind,
@@ -466,6 +495,7 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
             "admittedTargets": admitted,
             "shellComponentsPresent": epochShellBound,
             "spoolRootConfigured": withState { planStorage?.outputRootURL != nil },
+            "managedServiceHost": withState { planStorage?.serviceHost != nil },
             "liveWorkCount": "async://liveJobWorkCount",
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),

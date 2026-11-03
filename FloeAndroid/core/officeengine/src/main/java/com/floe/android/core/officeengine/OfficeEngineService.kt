@@ -25,6 +25,12 @@ import com.floe.android.core.officeengine.precision.OfficePrecisionFailure
 import com.floe.android.core.officeengine.precision.OfficePrecisionRequest
 import com.floe.android.core.officeengine.precision.OfficePrecisionResult
 import com.floe.android.core.officeengine.precision.OfficePrecisionState
+import com.floe.android.core.officeengine.revisionreview.OfficeRevisionAction
+import com.floe.android.core.officeengine.revisionreview.OfficeRevisionContract
+import com.floe.android.core.officeengine.revisionreview.OfficeRevisionDispatch
+import com.floe.android.core.officeengine.revisionreview.OfficeRevisionPdfProof
+import com.floe.android.core.officeengine.revisionreview.OfficeRevisionState
+import com.floe.android.core.officeengine.revisionreview.OfficeRevisionTracker
 import java.io.File
 import java.util.Collections
 import java.util.Locale
@@ -107,6 +113,23 @@ class OfficeEngineService : Service() {
          * Default no-op keeps R1 hosts compiling.
          */
         fun onHostSaveSettlement(settlement: OfficeHostSaveSettlement) {}
+
+        /**
+         * Observed tracked-change/review state for the exact mount. Emitted
+         * only from real `statechanged:` frames, a real `filemode:` reply or
+         * a local dispatch failure; never an optimistic command result.
+         * Default no-op keeps existing hosts compiling.
+         */
+        fun onRevisionState(state: OfficeRevisionState) {}
+
+        /**
+         * One keep-revisions PDF proof for an export that explicitly asked
+         * for it. [OfficeRevisionPdfProof.completed] is true only for the
+         * verified OUTPUT_READY terminal; failure/cancel receipts still
+         * report the source-side facts and never claim a PDF exists.
+         * Default no-op keeps existing hosts compiling.
+         */
+        fun onRevisionPdfProof(proof: OfficeRevisionPdfProof) {}
     }
 
     inner class LocalBinder : Binder() {
@@ -118,6 +141,13 @@ class OfficeEngineService : Service() {
         val view: COWebView,
         val layoutListener: View.OnLayoutChangeListener,
         val attachListener: View.OnAttachStateChangeListener,
+    )
+
+    /** Source-side facts frozen when a keep-revisions PDF export is admitted. */
+    internal data class RevisionExportStart(
+        val workingCopySha256: String?,
+        val workingCopyBytes: Long,
+        val mutationEpoch: Long,
     )
 
     private inner class Session(
@@ -165,6 +195,21 @@ class OfficeEngineService : Service() {
         /** Server `filemode:` readOnly fact — unmasked native truth. */
         @Volatile var nativeFileModeReadOnly: Boolean? = null
             private set
+
+        /**
+         * Server `filemode:manageRedlines` fact — the real per-view redline
+         * permission (kit/ChildSession.cpp). `null`/false means the review
+         * actions are not offered; the UI must not infer authority from the
+         * editable mount alone.
+         */
+        @Volatile var nativeManageRedlines: Boolean? = null
+            private set
+
+        /** Mount-scoped tracked-change/review observation. */
+        val revision = OfficeRevisionTracker()
+
+        /** One keep-revisions PDF export start, keyed by exact opId. */
+        internal val revisionExportStarts = HashMap<String, RevisionExportStart>()
 
         /** A modify-password-protected document is not editable in this stage. */
         @Volatile var hasPasswordToModify = false
@@ -1885,6 +1930,7 @@ class OfficeEngineService : Service() {
                     pageEditModeFact.onPageFact(on, android.os.SystemClock.elapsedRealtime())
                     recordDiagnostic(OfficeSessionDiagnostics.KIND_STATE, "page EDITMODE=$on")
                     publishEditState()
+                    publishRevisionState()
                     runCatching {
                         controlExecutor.execute {
                             if (retired || presentationSuperseded || current !== this@Session) return@execute
@@ -1963,6 +2009,12 @@ class OfficeEngineService : Service() {
                         return false
                     }
                     precision.noteForwardedPageCommand(head)
+                    // The page's own Review menu can issue the same accept/
+                    // reject UNO commands. Observe them for the keep-revisions
+                    // PDF proof; the frame is still forwarded unchanged.
+                    OfficeRevisionContract.pageUnoCommand(message)?.let { command ->
+                        revision.notePageMutation(command)
+                    }
                     if (head == "useractive") {
                         // The page can only emit this frame while its socket
                         // transport is open (pinned Socket.ts gate + mobile
@@ -2057,6 +2109,14 @@ class OfficeEngineService : Service() {
                             "ModifiedStatus=${change.state}",
                         )
                     }
+                    if (revision.onStateChanged(
+                            change.commandName,
+                            change.state,
+                            android.os.SystemClock.elapsedRealtime(),
+                        )
+                    ) {
+                        publishRevisionState()
+                    }
                     // Precision tracks ModifiedStatus as corroboration only
                     // (never as completion evidence by itself).
                     precision.observeNativeFrame(triage, message)
@@ -2096,10 +2156,12 @@ class OfficeEngineService : Service() {
                 }
                 CoolMessageTriage.Kind.FILEMODE -> triage.fileMode?.let { mode ->
                     nativeFileModeReadOnly = mode.readOnly
+                    nativeManageRedlines = mode.manageRedlines
                     recordDiagnostic(
                         OfficeSessionDiagnostics.KIND_PERMISSION,
-                        "filemode readOnly=${mode.readOnly} editComment=${mode.editComment}",
+                        "filemode readOnly=${mode.readOnly} editComment=${mode.editComment} manageRedlines=${mode.manageRedlines}",
                     )
+                    publishRevisionState()
                     maybePromoteReady()
                 }
                 CoolMessageTriage.Kind.HAS_PASSWORD_TO_MODIFY -> {
@@ -2280,6 +2342,7 @@ class OfficeEngineService : Service() {
                     )
                     setState(OfficeViewerState.READY_EDITABLE)
                     publishEditState()
+                    publishRevisionState()
                 }
                 else -> degradeToReadOnly("editPermissionUnconfirmed")
             }
@@ -2293,6 +2356,7 @@ class OfficeEngineService : Service() {
             lastPhaseText = null
             setState(OfficeViewerState.READY_READ_ONLY)
             publishEditState()
+            publishRevisionState()
         }
 
         /** Publishes the observed edit/dirty/undo projection (never a claim). */
@@ -2305,6 +2369,37 @@ class OfficeEngineService : Service() {
                     OfficeHostSaveChannel.postEditState(channel, snapshot)
                 }
             }
+        }
+
+        /** Public exact-mount projection for the viewer's review sheet. */
+        fun revisionStateSnapshot(): OfficeRevisionState = revision.snapshot(
+            sessionToken = request.sessionToken,
+            generation = generation,
+            format = request.format,
+            manageRedlines = nativeManageRedlines == true,
+            liveEditableMount = !retired && !presentationSuperseded && current === this@Session &&
+                state == OfficeViewerState.READY_EDITABLE,
+            editPermissionEstablished = editPermissionEstablished,
+            pageEditMode = pageEditMode,
+            nativeLeaseBusy = precision.leaseActive(),
+            nowElapsedMs = android.os.SystemClock.elapsedRealtime(),
+        )
+
+        /** Ships only observed review facts to the exact mount's listeners. */
+        fun publishRevisionState() {
+            val snapshot = revisionStateSnapshot()
+            mainHandler.post {
+                if (retired || presentationSuperseded || current !== this@Session) return@post
+                listeners.forEach { l -> runCatching { l.onRevisionState(snapshot) } }
+            }
+        }
+
+        /** Bounded acknowledgement window for one really dispatched action. */
+        fun armRevisionAckTimeout(action: OfficeRevisionAction) {
+            mainHandler.postDelayed({
+                if (retired || presentationSuperseded || current !== this@Session) return@postDelayed
+                if (revision.expirePending(action)) publishRevisionState()
+            }, OfficeRevisionTracker.ACK_WINDOW_MS)
         }
 
         fun editStateSnapshot(): OfficeEditState = OfficeEditState(
@@ -2889,6 +2984,57 @@ class OfficeEngineService : Service() {
     }
 
     /**
+     * Submits the SAME verified STAGED_EXPORT (PDF) through the existing
+     * save pipeline, while capturing source-side facts for the
+     * keep-revisions proof.
+     *
+     * It adds no export path: [submitSaveOperation] still runs the pinned
+     * JNI `saveAs` + output verification, and nothing in this method accepts,
+     * rejects, flushes or rewrites the document's revisions. The listener
+     * receives [OfficeRevisionPdfProof] once the operation reaches a terminal
+     * receipt. A synchronous refusal returns that receipt and leaves no proof
+     * entry behind.
+     */
+    fun submitRevisionPreservingPdfExport(op: OfficeSaveRequest): OfficeSaveReceipt {
+        if (op.operation != OfficeSaveOperation.STAGED_EXPORT ||
+            op.format?.lowercase(Locale.ROOT) != "pdf"
+        ) {
+            return rejectedReceipt(
+                op,
+                OfficeSaveFailureCode.INVALID_REQUEST,
+                "keep-revisions export requires a staged PDF export operation",
+            )
+        }
+        val session = current
+        if (session == null || session.retired || session.presentationSuperseded ||
+            session.request.sessionToken != op.sessionToken || session.generation != op.generation ||
+            session.state != OfficeViewerState.READY_EDITABLE
+        ) {
+            return rejectedReceipt(
+                op,
+                OfficeSaveFailureCode.SESSION_MISMATCH,
+                "no live editable mount for this exact identity",
+            )
+        }
+        val before = session.workingCopyFile?.let { OfficeRequestPolicy.digestWorkingCopy(it) }
+        val start = RevisionExportStart(
+            workingCopySha256 = before?.first,
+            workingCopyBytes = before?.second ?: 0L,
+            mutationEpoch = session.revision.mutationEpoch(),
+        )
+        synchronized(session.revisionExportStarts) {
+            session.revisionExportStarts[op.opId] = start
+        }
+        val receipt = submitSaveOperation(op)
+        if (receipt.state == OfficeSaveState.REJECTED) {
+            synchronized(session.revisionExportStarts) {
+                session.revisionExportStarts.remove(op.opId)
+            }
+        }
+        return receipt
+    }
+
+    /**
      * Honest cancel: only a not-yet-dispatched operation can be cancelled
      * (the pinned producer has no save-cancel command). After dispatch the
      * operation stays pending until its real ack/error, the bounded timeout
@@ -3118,6 +3264,78 @@ class OfficeEngineService : Service() {
             }
         }
         return true
+    }
+
+    /**
+     * Dispatches ONE real tracked-change command for the exact editable
+     * mount. This returns an admission/dispatch result only; the applied
+     * state must still arrive through [OfficeEngineListener.onRevisionState]
+     * from the engine's own `statechanged:` frames. No optimistic success is
+     * written into the observed state here.
+     */
+    fun requestRevisionAction(
+        sessionToken: String,
+        generation: Long,
+        action: OfficeRevisionAction,
+    ): OfficeRevisionDispatch {
+        val session = current ?: return OfficeRevisionDispatch.NO_LIVE_EDIT_SESSION
+        if (session.retired || session.presentationSuperseded ||
+            session.request.sessionToken != sessionToken || session.generation != generation
+        ) return OfficeRevisionDispatch.NO_LIVE_EDIT_SESSION
+        if (!session.editable || session.state != OfficeViewerState.READY_EDITABLE ||
+            !session.editPermissionEstablished
+        ) return OfficeRevisionDispatch.EDIT_MODE_REQUIRED
+        if (!OfficeRevisionContract.supports(session.request.format)) {
+            return OfficeRevisionDispatch.WRITER_ONLY
+        }
+        if (session.nativeManageRedlines != true) {
+            return OfficeRevisionDispatch.REVIEW_NOT_AUTHORIZED
+        }
+        if (!session.pageEditMode) return OfficeRevisionDispatch.EDIT_MODE_REQUIRED
+        if (session.precision.leaseActive()) return OfficeRevisionDispatch.NATIVE_LEASE_BUSY
+        if (session.saveCoordinator.pendingFlushOpId() != null ||
+            session.saveCoordinator.runningExportOpId() != null
+        ) return OfficeRevisionDispatch.NATIVE_LEASE_BUSY
+        if (session.revision.hasPending()) return OfficeRevisionDispatch.ACTION_PENDING
+        var sendFailed = false
+        synchronized(session.host.nativeIngressLock) {
+            if (session.retired || session.cancelled.get() || current !== session ||
+                session.revision.hasPending()
+            ) return OfficeRevisionDispatch.NO_LIVE_EDIT_SESSION
+            if (!session.precision.canDispatchCompetingNative()) {
+                return OfficeRevisionDispatch.NATIVE_LEASE_BUSY
+            }
+            sendFailed = runCatching {
+                session.host.postMobileMessageNative(action.wireFrame)
+            }.isFailure
+        }
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (sendFailed) {
+            session.revision.onDispatchFailed(action, "transport-write-failed")
+            session.recordDiagnostic(
+                OfficeSessionDiagnostics.KIND_STATE,
+                "revision action ${action.name} dispatch failed",
+            )
+            session.publishRevisionState()
+            return OfficeRevisionDispatch.TRANSPORT_FAILED
+        }
+        session.revision.onDispatched(action, now)
+        session.recordDiagnostic(
+            OfficeSessionDiagnostics.KIND_STATE,
+            "revision action ${action.name} accepted for dispatch",
+        )
+        session.publishRevisionState()
+        if (action.expectsStateChange) session.armRevisionAckTimeout(action)
+        return OfficeRevisionDispatch.ACCEPTED
+    }
+
+    /** Observed review state for the exact mount (null when fenced/absent). */
+    fun revisionState(sessionToken: String, generation: Long): OfficeRevisionState? {
+        val session = current ?: return null
+        if (session.retired || session.presentationSuperseded ||
+            session.request.sessionToken != sessionToken || session.generation != generation
+        ) return null
+        return session.revisionStateSnapshot()
     }
 
     /** Observed edit-state snapshot for the exact mount (null when fenced/absent). */
@@ -3719,7 +3937,43 @@ class OfficeEngineService : Service() {
     )
 
     /** Delivers one receipt to the App host channel FIRST, then in-process. */
+    /**
+     * Emits the source-side proof for one explicitly-marked keep-revisions
+     * PDF export. Called before the receipt is posted so the viewer already
+     * knows whether the source stayed untouched when it handles OUTPUT_READY.
+     * Never runs for ordinary Save Copy / preview / print operations.
+     */
+    private fun maybeEmitRevisionPdfProof(session: Session, receipt: OfficeSaveReceipt) {
+        if (receipt.operation != OfficeSaveOperation.STAGED_EXPORT) return
+        if (receipt.state == OfficeSaveState.SUBMITTED) return
+        val start = synchronized(session.revisionExportStarts) {
+            session.revisionExportStarts.remove(receipt.opId)
+        } ?: return
+        val after = session.workingCopyFile?.let { OfficeRequestPolicy.digestWorkingCopy(it) }
+        val proof = OfficeRevisionPdfProof(
+            opId = receipt.opId,
+            sessionToken = receipt.sessionToken,
+            generation = receipt.generation,
+            workingCopySha256Before = start.workingCopySha256,
+            workingCopyBytesBefore = start.workingCopyBytes,
+            workingCopySha256After = after?.first,
+            workingCopyBytesAfter = after?.second ?: 0L,
+            revisionMutationEpochBefore = start.mutationEpoch,
+            revisionMutationEpochAfter = session.revision.mutationEpoch(),
+            outputSha256 = receipt.outputSha256,
+            outputBytes = receipt.outputBytes,
+            completed = receipt.state == OfficeSaveState.OUTPUT_READY,
+            completedAtElapsedMs = android.os.SystemClock.elapsedRealtime(),
+        )
+        val recipients = listeners.toList()
+        mainHandler.post {
+            if (session.retired || session.presentationSuperseded || current !== session) return@post
+            recipients.forEach { l -> runCatching { l.onRevisionPdfProof(proof) } }
+        }
+    }
+
     private fun dispatchReceipt(session: Session, receipt: OfficeSaveReceipt) {
+        maybeEmitRevisionPdfProof(session, receipt)
         session.rememberReceipt(receipt)
         session.recordDiagnostic(
             OfficeSessionDiagnostics.KIND_SAVE,

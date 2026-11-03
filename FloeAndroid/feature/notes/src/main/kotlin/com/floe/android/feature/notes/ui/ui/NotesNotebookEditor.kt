@@ -8,6 +8,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -45,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -75,10 +78,12 @@ import com.floe.android.feature.notes.NoteRect
 import com.floe.android.feature.notes.ui.NotesIcons
 import com.floe.android.feature.notes.ui.R
 import com.floe.android.feature.notes.ui.api.NotesInkCreateRequest
+import com.floe.android.feature.notes.ui.api.NotesNormalizedRect
 import com.floe.android.feature.notes.ui.api.NotesInkSurface
 import com.floe.android.feature.notes.ui.api.NotesInkToolKind
 import com.floe.android.feature.notes.ui.presentation.NotesEditorTool
 import com.floe.android.feature.notes.ui.presentation.NotesElementGeometry
+import com.floe.android.feature.notes.ui.presentation.NotesPdfTextSelectionRules
 import com.floe.android.feature.notes.ui.presentation.NotesResizeCorner
 import com.floe.android.feature.notes.ui.presentation.markdownPlainText
 import com.floe.android.feature.notes.ui.presentation.resolveElementText
@@ -111,157 +116,179 @@ internal fun NotesNotebookEditor(
     onShowInkOptions: () -> Unit,
     onShowFind: () -> Unit,
     onShowInspector: () -> Unit,
+    onRequestOcr: (() -> Unit)? = null,
 ) {
     val document = session.document ?: return
     val page = session.currentPage
     val scope = rememberCoroutineScope()
     var shapesOpen by remember { mutableStateOf(false) }
     var showPageMenu by remember { mutableStateOf(false) }
+    var showPdfTextSheet by remember(session.documentID, page?.id) { mutableStateOf(false) }
+    LaunchedEffect(page?.id) { showPdfTextSheet = false }
+    LaunchedEffect(session.pdfTextMode) {
+        if (!session.pdfTextMode) showPdfTextSheet = false
+    }
 
     Column(Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Floe.colors.chromeSurface)
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 6.dp, vertical = 3.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            NotesToolButton(
-                icon = NotesIcons.Cursor,
-                label = stringResource(R.string.notes_tool_select),
-                selected = session.editorTool == NotesEditorTool.SELECT,
-                onClick = { session.selectEditorTool(NotesEditorTool.SELECT) },
-            )
-            NotesToolButton(
-                icon = NotesIcons.TextTool,
-                label = stringResource(R.string.notes_tool_text),
-                selected = session.editorTool == NotesEditorTool.TEXT,
-                onClick = {
-                    session.selectEditorTool(NotesEditorTool.TEXT)
-                    val element = session.insertTextElement()
-                    if (element != null) onOpenText(element)
-                },
-            )
-            NotesToolButton(
-                icon = FloeIcons.Pencil,
-                label = stringResource(R.string.notes_tool_pen),
-                selected = session.editorTool == NotesEditorTool.INK &&
-                    session.inkTool == NotesInkToolKind.PEN,
-                onClick = {
-                    session.selectEditorTool(NotesEditorTool.INK)
-                    session.selectInkTool(NotesInkToolKind.PEN)
-                },
-            )
-            NotesToolButton(
-                icon = NotesIcons.Shapes,
-                label = stringResource(R.string.notes_tool_marker),
-                selected = session.editorTool == NotesEditorTool.INK &&
-                    session.inkTool == NotesInkToolKind.MARKER,
-                onClick = {
-                    session.selectEditorTool(NotesEditorTool.INK)
-                    session.selectInkTool(NotesInkToolKind.MARKER)
-                },
-            )
-            NotesToolButton(
-                icon = NotesIcons.Eraser,
-                label = stringResource(R.string.notes_tool_eraser),
-                selected = session.editorTool == NotesEditorTool.INK &&
-                    session.inkTool == NotesInkToolKind.ERASER,
-                onClick = {
-                    session.selectEditorTool(NotesEditorTool.INK)
-                    session.selectInkTool(NotesInkToolKind.ERASER)
-                },
-            )
-            NotesToolButton(
-                icon = NotesIcons.Lasso,
-                label = stringResource(R.string.notes_tool_lasso),
-                selected = session.editorTool == NotesEditorTool.INK &&
-                    session.inkTool == NotesInkToolKind.LASSO,
-                onClick = {
-                    session.selectEditorTool(NotesEditorTool.INK)
-                    session.selectInkTool(NotesInkToolKind.LASSO)
-                },
-            )
-            NotesVerticalHairline()
-            Box {
+        if (!session.readingMode) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Floe.colors.chromeSurface)
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                NotesToolButton(
+                    icon = NotesIcons.Cursor,
+                    label = stringResource(R.string.notes_tool_select),
+                    selected = session.editorTool == NotesEditorTool.SELECT,
+                    onClick = { session.selectEditorTool(NotesEditorTool.SELECT) },
+                )
+                NotesToolButton(
+                    icon = NotesIcons.TextTool,
+                    label = stringResource(R.string.notes_tool_text),
+                    selected = session.editorTool == NotesEditorTool.TEXT,
+                    onClick = {
+                        session.selectEditorTool(NotesEditorTool.TEXT)
+                        val element = session.insertTextElement()
+                        if (element != null) onOpenText(element)
+                    },
+                )
+                NotesToolButton(
+                    icon = FloeIcons.Pencil,
+                    label = stringResource(R.string.notes_tool_pen),
+                    selected = session.editorTool == NotesEditorTool.INK &&
+                        session.inkTool == NotesInkToolKind.PEN,
+                    onClick = {
+                        session.selectEditorTool(NotesEditorTool.INK)
+                        session.selectInkTool(NotesInkToolKind.PEN)
+                    },
+                )
                 NotesToolButton(
                     icon = NotesIcons.Shapes,
-                    label = stringResource(R.string.notes_tool_shapes),
-                    selected = false,
-                    onClick = { shapesOpen = true },
+                    label = stringResource(R.string.notes_tool_marker),
+                    selected = session.editorTool == NotesEditorTool.INK &&
+                        session.inkTool == NotesInkToolKind.MARKER,
+                    onClick = {
+                        session.selectEditorTool(NotesEditorTool.INK)
+                        session.selectInkTool(NotesInkToolKind.MARKER)
+                    },
                 )
-                DropdownMenu(expanded = shapesOpen, onDismissRequest = { shapesOpen = false }) {
-                    listOf(
-                        NoteElementKind.RECTANGLE to R.string.notes_insert_rectangle,
-                        NoteElementKind.ELLIPSE to R.string.notes_insert_ellipse,
-                        NoteElementKind.LINE to R.string.notes_insert_line,
-                        NoteElementKind.ARROW to R.string.notes_insert_arrow,
-                    ).forEach { (kind, label) ->
-                        DropdownMenuItem(
-                            text = { FloeText(stringResource(label), style = Floe.typography.body) },
-                            onClick = {
-                                shapesOpen = false
-                                session.insertElement(kind)
-                            },
-                        )
+                NotesToolButton(
+                    icon = NotesIcons.Eraser,
+                    label = stringResource(R.string.notes_tool_eraser),
+                    selected = session.editorTool == NotesEditorTool.INK &&
+                        session.inkTool == NotesInkToolKind.ERASER,
+                    onClick = {
+                        session.selectEditorTool(NotesEditorTool.INK)
+                        session.selectInkTool(NotesInkToolKind.ERASER)
+                    },
+                )
+                NotesToolButton(
+                    icon = NotesIcons.Lasso,
+                    label = stringResource(R.string.notes_tool_lasso),
+                    selected = session.editorTool == NotesEditorTool.INK &&
+                        session.inkTool == NotesInkToolKind.LASSO,
+                    onClick = {
+                        session.selectEditorTool(NotesEditorTool.INK)
+                        session.selectInkTool(NotesInkToolKind.LASSO)
+                    },
+                )
+                NotesVerticalHairline()
+                Box {
+                    NotesToolButton(
+                        icon = NotesIcons.Shapes,
+                        label = stringResource(R.string.notes_tool_shapes),
+                        selected = false,
+                        onClick = { shapesOpen = true },
+                    )
+                    DropdownMenu(expanded = shapesOpen, onDismissRequest = { shapesOpen = false }) {
+                        listOf(
+                            NoteElementKind.RECTANGLE to R.string.notes_insert_rectangle,
+                            NoteElementKind.ELLIPSE to R.string.notes_insert_ellipse,
+                            NoteElementKind.LINE to R.string.notes_insert_line,
+                            NoteElementKind.ARROW to R.string.notes_insert_arrow,
+                        ).forEach { (kind, label) ->
+                            DropdownMenuItem(
+                                text = { FloeText(stringResource(label), style = Floe.typography.body) },
+                                onClick = {
+                                    shapesOpen = false
+                                    session.insertElement(kind)
+                                },
+                            )
+                        }
                     }
                 }
+                NotesToolButton(
+                    icon = FloeIcons.Photo,
+                    label = stringResource(R.string.notes_insert_image),
+                    selected = false,
+                    onClick = { scope.launch { controller.insertImageIntoActivePage() } },
+                )
+                NotesToolButton(
+                    icon = FloeIcons.Pencil,
+                    label = stringResource(R.string.notes_ink_options),
+                    selected = false,
+                    onClick = onShowInkOptions,
+                )
+                NotesVerticalHairline()
+                NotesToolButton(
+                    icon = NotesIcons.Bookmark,
+                    label = stringResource(
+                        if (page?.isBookmarked == true) R.string.notes_bookmark_remove else R.string.notes_bookmark_add,
+                    ),
+                    selected = page?.isBookmarked == true,
+                    onClick = { page?.let { session.toggleBookmark(it.id) } },
+                )
+                NotesToolButton(
+                    icon = NotesIcons.Pages,
+                    label = stringResource(R.string.notes_pages),
+                    selected = false,
+                    onClick = onShowPages,
+                )
+                NotesToolButton(
+                    icon = NotesIcons.Layers,
+                    label = stringResource(R.string.notes_inspector),
+                    selected = session.selectedElementIDs.isNotEmpty(),
+                    onClick = onShowInspector,
+                    enabled = session.selectedElementIDs.isNotEmpty(),
+                )
+                NotesToolButton(
+                    icon = FloeIcons.Magnifier,
+                    label = stringResource(R.string.notes_find),
+                    selected = false,
+                    onClick = onShowFind,
+                )
+                if (page?.pdfPageIndex != null) {
+                    NotesToolButton(
+                        icon = NotesIcons.ScanText,
+                        label = stringResource(R.string.notes_pdf_select_text),
+                        selected = session.pdfTextMode,
+                        onClick = {
+                            if (session.pdfTextMode) {
+                                session.exitPdfTextMode()
+                            } else {
+                                scope.launch { session.beginPdfTextSelection() }
+                            }
+                        },
+                    )
+                }
+                NotesToolButton(
+                    icon = FloeIcons.Ellipsis,
+                    label = stringResource(R.string.notes_tool_insert),
+                    selected = false,
+                    onClick = { showPageMenu = true },
+                )
             }
-            NotesToolButton(
-                icon = FloeIcons.Photo,
-                label = stringResource(R.string.notes_insert_image),
-                selected = false,
-                onClick = { scope.launch { controller.insertImageIntoActivePage() } },
-            )
-            NotesToolButton(
-                icon = FloeIcons.Pencil,
-                label = stringResource(R.string.notes_ink_options),
-                selected = false,
-                onClick = onShowInkOptions,
-            )
-            NotesVerticalHairline()
-            NotesToolButton(
-                icon = NotesIcons.Bookmark,
-                label = stringResource(
-                    if (page?.isBookmarked == true) R.string.notes_bookmark_remove else R.string.notes_bookmark_add,
-                ),
-                selected = page?.isBookmarked == true,
-                onClick = { page?.let { session.toggleBookmark(it.id) } },
-            )
-            NotesToolButton(
-                icon = NotesIcons.Pages,
-                label = stringResource(R.string.notes_pages),
-                selected = false,
-                onClick = onShowPages,
-            )
-            NotesToolButton(
-                icon = NotesIcons.Layers,
-                label = stringResource(R.string.notes_inspector),
-                selected = session.selectedElementIDs.isNotEmpty(),
-                onClick = onShowInspector,
-                enabled = session.selectedElementIDs.isNotEmpty(),
-            )
-            NotesToolButton(
-                icon = FloeIcons.Magnifier,
-                label = stringResource(R.string.notes_find),
-                selected = false,
-                onClick = onShowFind,
-            )
-            NotesToolButton(
-                icon = FloeIcons.Ellipsis,
-                label = stringResource(R.string.notes_tool_insert),
-                selected = false,
-                onClick = { showPageMenu = true },
-            )
         }
         FloeDivider()
         if (page == null) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     FloeText(stringResource(R.string.notes_no_page), style = Floe.typography.body)
-                    NotesToolButton(
+                    if (!session.readingMode) NotesToolButton(
                         icon = FloeIcons.Plus,
                         label = stringResource(R.string.notes_add_page),
                         selected = false,
@@ -327,6 +354,7 @@ internal fun NotesNotebookEditor(
                                 scale = scale,
                                 density = density,
                                 onOpenText = onOpenText,
+                                readOnly = session.readingMode,
                             )
                         }
                         // Reserve the pinned footer so the page can scroll
@@ -340,8 +368,22 @@ internal fun NotesNotebookEditor(
                     compact = compact,
                     onShowPages = onShowPages,
                     onShowPageMenu = { showPageMenu = true },
+                    readOnly = session.readingMode,
                     modifier = Modifier.align(Alignment.BottomCenter),
                 )
+                if (session.pdfTextMode) {
+                    NotesPdfTextBar(
+                        session = session,
+                        onOpenFullText = {
+                            session.fencePdfTextIfStale()
+                            if (session.pdfTextPage != null) showPdfTextSheet = true
+                        },
+                        onRequestOcr = onRequestOcr,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = PageFooterHeight + 6.dp),
+                    )
+                }
             }
         }
     }
@@ -355,6 +397,14 @@ internal fun NotesNotebookEditor(
             onShowPages = onShowPages,
         )
     }
+    if (showPdfTextSheet && page != null) {
+        NotesPdfTextSheet(
+            session = session,
+            pdfPageNumber = (page.pdfPageIndex ?: 0) + 1,
+            visible = true,
+            onDismiss = { showPdfTextSheet = false },
+        )
+    }
 }
 
 @Composable
@@ -366,6 +416,7 @@ private fun PageSurface(
     scale: Float,
     density: Float,
     onOpenText: (NoteElement) -> Unit,
+    readOnly: Boolean,
 ) {
     val artifacts = session.artifacts
     val capabilities = remember { controller.ports.media.capabilities() }
@@ -377,7 +428,7 @@ private fun PageSurface(
     // Never accept strokes before an existing drawing is loaded: a preserved
     // PencilKit resource must not be replaced by a fresh blank FLOEINK draft.
     val inkReady = page.drawingResourceID == null || inkBytes != null
-    val inkSurface = remember(page.id, session.documentID, capabilities.inkAuthoring) {
+    val inkSurface = remember(page.id, session.documentID, capabilities.inkAuthoring, readOnly) {
         if (!capabilities.inkAuthoring) {
             null
         } else {
@@ -389,7 +440,9 @@ private fun PageSurface(
                         pageWidthPt = page.width.toFloat(),
                         pageHeightPt = page.height.toFloat(),
                         tool = session.inkToolSpec(),
-                        onDrawingChanged = { bytes -> session.onInkDraft(page.id, bytes) },
+                        onDrawingChanged = { bytes ->
+                            if (!readOnly && !session.readingMode) session.onInkDraft(page.id, bytes)
+                        },
                     ),
                 )
             }.getOrNull()
@@ -416,10 +469,16 @@ private fun PageSurface(
         inkReadOnly,
         inkReady,
         inkLoaded,
+        session.pdfTextMode,
+        readOnly,
     ) {
         inkSurface?.setTool(session.inkToolSpec())
         inkSurface?.setInteractionEnabled(
-            session.editorTool == NotesEditorTool.INK && !inkReadOnly && inkReady && inkLoaded,
+            !readOnly && session.editorTool == NotesEditorTool.INK &&
+                !session.pdfTextMode &&
+                !inkReadOnly &&
+                inkReady &&
+                inkLoaded,
         )
     }
     LaunchedEffect(inkSurface) {
@@ -467,6 +526,12 @@ private fun PageSurface(
         } else {
             PaperBackground(page)
         }
+        if (page.pdfPageIndex != null && session.pdfSearchHighlightPage == page.pdfPageIndex) {
+            PdfNormalizedRectsOverlay(
+                rects = session.pdfSearchRects,
+                color = Floe.colors.accent.copy(alpha = 0.28f),
+            )
+        }
         if (inkSurface != null) {
             key(inkSurface) {
                 AndroidView(
@@ -495,7 +560,7 @@ private fun PageSurface(
         }
         page.elements.forEach { element ->
             val frame = frameOf(element)
-            val selected = element.id in session.selectedElementIDs
+            val selected = !readOnly && element.id in session.selectedElementIDs
             NoteElementView(
                 element = element,
                 text = resolveElementText(document, element),
@@ -506,6 +571,7 @@ private fun PageSurface(
                 page = page,
                 selected = selected,
                 tool = session.editorTool,
+                selectionMode = readOnly || session.pdfTextMode,
                 onTap = {
                     if (session.editorTool == NotesEditorTool.TEXT && element.kind == NoteElementKind.TEXT) {
                         session.setSelection(setOf(element.id))
@@ -545,7 +611,7 @@ private fun PageSurface(
                 },
                 onDragEnd = {
                     val drag = moveDrag
-                    if (drag != null) {
+                    if (drag != null && !session.readingMode) {
                         session.moveSelected(
                             drag.startFrames.mapValues { (_, frame) ->
                                 NotesElementGeometry.snap(
@@ -587,11 +653,17 @@ private fun PageSurface(
                 },
                 onResizeEnd = {
                     val drag = resizeDrag
-                    if (drag != null) {
+                    if (drag != null && !session.readingMode) {
                         session.updateElement(element.copy(frame = NotesElementGeometry.snap(drag.frame)))
                     }
                     resizeDrag = null
                 },
+            )
+        }
+        if (session.pdfTextMode && page.pdfPageIndex != null) {
+            PdfNormalizedRectsOverlay(
+                rects = session.pdfTextSelection?.rects.orEmpty(),
+                color = Floe.colors.accent.copy(alpha = 0.26f),
             )
         }
         val pdfFailure = artifacts?.pdfFailure
@@ -618,7 +690,7 @@ private fun PageSurface(
             )
         }
         val activeInkSurface = inkSurface
-        if (session.inkSelectionCount > 0 && activeInkSurface != null) {
+        if (!readOnly && session.inkSelectionCount > 0 && activeInkSurface != null && !session.pdfTextMode) {
             Box(
                 Modifier
                     .align(Alignment.BottomCenter)
@@ -647,7 +719,95 @@ private fun PageSurface(
                 modifier = Modifier.align(Alignment.TopCenter).padding(8.dp),
             )
         }
+        if (session.pdfTextMode &&
+            page.pdfPageIndex != null &&
+            session.pdfTextPage?.geometryMatchesPage == true
+        ) {
+            PdfTextSelectionGestureLayer(session = session, pageID = page.id)
+        }
     }
+}
+
+@Composable
+private fun PdfNormalizedRectsOverlay(
+    rects: List<NotesNormalizedRect>,
+    color: Color,
+) {
+    if (rects.isEmpty()) return
+    Canvas(Modifier.fillMaxSize()) {
+        rects.forEach { rect ->
+            drawRect(
+                color = color,
+                topLeft = Offset(rect.left * size.width, rect.top * size.height),
+                size = Size(
+                    ((rect.right - rect.left) * size.width).coerceAtLeast(1f),
+                    ((rect.bottom - rect.top) * size.height).coerceAtLeast(1f),
+                ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun PdfTextSelectionGestureLayer(
+    session: NotesDocumentSession,
+    pageID: String,
+) {
+    val hint = stringResource(R.string.notes_pdf_text_mode_hint)
+    var anchorRegion by remember(pageID, session.pdfTextMode) { mutableStateOf<Int?>(null) }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .semantics { contentDescription = hint }
+            .pointerInput(pageID, session.pdfTextMode) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val width = size.width.toFloat()
+                    val height = size.height.toFloat()
+                    if (width <= 0f || height <= 0f) return@awaitEachGesture
+                    val downPoint = NotesPdfTextSelectionRules.normalizedPoint(
+                        down.position.x,
+                        down.position.y,
+                        width,
+                        height,
+                    ) ?: return@awaitEachGesture
+                    val hit = session.pdfTextRegionAt(downPoint.first, downPoint.second)
+                    if (hit == null) {
+                        // Empty margin: leave the gesture unconsumed so the
+                        // surrounding page scroll still works.
+                        anchorRegion = null
+                        session.clearPdfTextSelection()
+                        return@awaitEachGesture
+                    }
+                    anchorRegion = hit
+                    session.clearSelection()
+                    session.selectPdfTextRegions(hit, hit)
+                    down.consume()
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) {
+                            change.consume()
+                            break
+                        }
+                        val movePoint = NotesPdfTextSelectionRules.normalizedPoint(
+                            change.position.x,
+                            change.position.y,
+                            width,
+                            height,
+                        ) ?: continue
+                        val region = session.pdfTextRegionAt(movePoint.first, movePoint.second)
+                        if (region != null) {
+                            session.selectPdfTextRegions(anchorRegion ?: hit, region)
+                        }
+                        // The gesture started on real text: keep the page from
+                        // scrolling under the selection even while the pointer
+                        // passes a gap between lines.
+                        change.consume()
+                    }
+                }
+            },
+    )
 }
 
 @Composable
@@ -692,6 +852,7 @@ private fun NoteElementView(
     page: NotePage,
     selected: Boolean,
     tool: NotesEditorTool,
+    selectionMode: Boolean,
     onTap: () -> Unit,
     onLongTap: () -> Unit,
     onDragStart: () -> Unit,
@@ -711,9 +872,9 @@ private fun NoteElementView(
             .offset(x, y)
             .size(width, height)
             .then(
-                if (tool != NotesEditorTool.INK) {
+                if (tool != NotesEditorTool.INK && !selectionMode) {
                     Modifier
-                        .pointerInput(element.id, tool) {
+                        .pointerInput(element.id, tool, selectionMode) {
                             detectDragGestures(
                                 onDragStart = { onDragStart() },
                                 onDrag = { change, amount ->
@@ -799,7 +960,7 @@ private fun NoteElementView(
                     .fillMaxSize()
                     .border(2.dp, Floe.colors.accent, RoundedCornerShape(3.dp)),
             )
-            if (tool != NotesEditorTool.INK) {
+            if (tool != NotesEditorTool.INK && !selectionMode) {
                 listOf(
                     NotesResizeCorner.TOP_LEFT to Alignment.TopStart,
                     NotesResizeCorner.TOP_RIGHT to Alignment.TopEnd,
@@ -850,6 +1011,7 @@ private fun PageFooter(
     compact: Boolean,
     onShowPages: () -> Unit,
     onShowPageMenu: () -> Unit,
+    readOnly: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     BoxWithConstraints(
@@ -931,7 +1093,7 @@ private fun PageFooter(
                 { session.applyPageZoom(session.pageZoom + 0.1f) },
                 visualSize = 32.dp,
             )
-            if (layout == NotesPageFooterLayout.FULL) {
+            if (layout == NotesPageFooterLayout.FULL && !readOnly) {
                 NotesIconAction(
                     NotesIcons.Pages,
                     stringResource(R.string.notes_pages),

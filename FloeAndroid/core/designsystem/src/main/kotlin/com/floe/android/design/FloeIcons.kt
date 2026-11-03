@@ -341,4 +341,25 @@ object FloeIcons {
     /** iOS chart.bar — Settings "Usage" (was FloeIcons.Gauge, which is the reasoning
      *  "automatic" chip). Cupertino "chart_bar". */
     val ChartBar: ImageVector = glyphIcon("floe.chart_bar", "chart_bar")
+
+    /* ---- document / media toolbar glyphs (C07) ---- */
+
+    /** iOS square.and.arrow.up — share/export (FilePreviewView toolbar,
+     *  MediaEditorCover export). Cupertino "share". */
+    val Share: ImageVector = glyphIcon("floe.share", "share")
+
+    /** iOS film — media workbench. Cupertino "film". */
+    val Film: ImageVector = glyphIcon("floe.film", "film")
+
+    /** iOS safari role — Preview Website. No safari glyph exists in the
+     *  pinned cupertino_icons 2.0.0, so the licensed compass outline is the
+     *  closest real navigation glyph (approximation recorded in roles.json). */
+    val Compass: ImageVector = glyphIcon("floe.compass", "compass")
+
+    /** iOS arrow.up.left.and.arrow.down.right — full-screen document/editor.
+     *  Cupertino "fullscreen_exit" is the outward-corners variant. */
+    val Expand: ImageVector = glyphIcon("floe.expand", "fullscreen_exit")
+
+    /** iOS doc.richtext — typed document placeholder. Cupertino "doc_richtext". */
+    val Document: ImageVector = glyphIcon("floe.document", "doc_richtext")
 }

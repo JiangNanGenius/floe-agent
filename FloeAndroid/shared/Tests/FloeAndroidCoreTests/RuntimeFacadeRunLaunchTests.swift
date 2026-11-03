@@ -273,6 +273,105 @@ final class RuntimeFacadeRunLaunchTests: XCTestCase {
                        "provider-only attachment context must not rewrite persisted user text")
     }
 
+    /// G09-R2: the ONE exact media project the user explicitly selected for
+    /// this task must reach the MODEL's system context by its exact native
+    /// identity, while the user-visible goal text stays free of raw ids.
+    ///
+    /// The case is deliberately ambiguous for a human: two projects share the
+    /// same display name, the older one is reselected only after more than the
+    /// legacy 16-row listing window, and the run context must still identify
+    /// the exact selected project and none of the others. This traces the REAL
+    /// outgoing provider request end-to-end (offline scripted adapter; no
+    /// provider, network or paid call) through the real launch/prepare/store
+    /// path and the real ConversationRunService context assembly.
+    func testConnectedMediaProjectReachesModelContextWithoutRawIdInGoal() async throws {
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let selected = UUID()
+        let sameNamedOther = UUID()
+        let store = G09R2MediaTaskBindingStore(database: fixture.database)
+        let workspaceID = UUID()
+        func associate(_ projectID: UUID, opID: String, at seconds: TimeInterval)
+            async throws {
+            _ = try await store.select(
+                plan: G09R2MediaTaskSelectionPlan(
+                    rootDigest: String(repeating: "a", count: 64),
+                    taskID: conversationID,
+                    workspaceID: workspaceID,
+                    workspaceRelativePath: "PrivateTasks/\(workspaceID.uuidString)",
+                    projectID: projectID,
+                    projectOwnerKind: "standalone",
+                    projectOwnerID: nil,
+                    recordedEnvironment: nil,
+                    storageKind: .appOwned,
+                    storageWorkspaceID: nil,
+                    projectRootDigest: String(repeating: "b", count: 64),
+                    projectRevision: 2),
+                request: G09R2MediaTaskSelectionRequest(
+                    selectionOpID: opID,
+                    projectID: projectID,
+                    taskID: conversationID,
+                    expectedRevision: 2,
+                    replaceExisting: false),
+                now: Date(timeIntervalSince1970: seconds))
+        }
+        // Same human name for both projects; only the exact identity differs.
+        try await associate(selected, opID: "select-first", at: 100)
+        try await associate(sameNamedOther, opID: "select-second", at: 200)
+        // More associations than the legacy 16-row context window.
+        for offset in 0..<18 {
+            try await associate(
+                UUID(), opID: "select-newer-\(offset)",
+                at: 300 + TimeInterval(offset))
+        }
+        // Reselect the OLDER exact project with a NEW explicit operation:
+        // the durable selection marker must move, never a pin/update guess.
+        try await associate(selected, opID: "select-first-again", at: 400)
+
+        // Exactly the production read path: the composition binds this
+        // provider to the accepted creative service; the store is the same
+        // durable association the Ask AI action committed.
+        let domain = fixture.makeCustomDomain(fixture.components(
+            mediaTaskContext: { taskID in
+                guard let line = try? await store.currentSelection(taskID: taskID)?
+                    .modelContextLine else { return [] }
+                return [line]
+            }))
+        let humanGoal = "Please edit the media project “Launch still”."
+        let reply = await startReply(domain, fixture: fixture,
+                                     conversationID: conversationID,
+                                     goal: humanGoal,
+                                     receipt: "op:v1:" + String(repeating: "9", count: 32))
+        guard case .mutationAccepted(let detail) = reply.outcome else {
+            return XCTFail("expected accepted; got \(reply.outcome)")
+        }
+        let runID = try XCTUnwrap(UUID(uuidString: detail["runID"] ?? ""))
+        _ = await waitDurableTerminal(fixture: fixture, runID: runID)
+        let request = try XCTUnwrap(fixture.adapter.lastRequest)
+        let system = try XCTUnwrap(request.messages.first { $0.role == "system" })
+        XCTAssertTrue(system.content.contains("# Connected task resources"),
+                      "the model context must declare the connected-resource section")
+        XCTAssertTrue(system.content.contains(selected.uuidString.lowercased()),
+                      "the exact reselected project id must reach the model")
+        XCTAssertFalse(system.content.contains(sameNamedOther.uuidString.lowercased()),
+                       "another same-named association must not be presented as current")
+        XCTAssertTrue(system.content.contains("reference data, not permission"),
+                      "resource identity must stay framed as data")
+        let userTurns = request.messages.filter { $0.role == "user" }
+        XCTAssertTrue(userTurns.contains { $0.content.contains(humanGoal) },
+                      "the human draft text must reach the model as the user turn")
+        for turn in userTurns {
+            XCTAssertFalse(turn.content.contains(selected.uuidString.lowercased()),
+                           "no user turn may carry the raw project id")
+            XCTAssertFalse(turn.content.contains(sameNamedOther.uuidString.lowercased()),
+                           "no user turn may carry a raw project id")
+            XCTAssertFalse(turn.content.contains("media.project"),
+                           "no user turn may carry the internal tool name")
+        }
+        // The persisted user message is the human text, never a hidden id.
+        let messages = try await fixture.conversationStore.messages(conversationID: conversationID)
+        XCTAssertTrue(messages.contains { $0.role == "user" && $0.content == humanGoal })
+    }
+
     func testStartTaskCreateIntentMintsAfterAtomicCommit() async throws {
         let domain = fixture.makeDomain()
         let receipt = fixture.effects.register(correlationID: "corr:newtask")

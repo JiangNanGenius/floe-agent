@@ -85,6 +85,7 @@ internal fun NotesDocumentPane(
     val scope = rememberCoroutineScope()
     val document = session.document
     var showMore by remember(session.documentID) { mutableStateOf(false) }
+    var showTaskLaunch by remember(session.documentID) { mutableStateOf(false) }
     var showRename by remember(session.documentID) { mutableStateOf(false) }
     var showTags by remember(session.documentID) { mutableStateOf(false) }
     var showMove by remember(session.documentID) { mutableStateOf(false) }
@@ -115,6 +116,9 @@ internal fun NotesDocumentPane(
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 val shortcut = event.isCtrlPressed || event.isMetaPressed
+                if (session.readingMode && event.key != Key.F && event.key != Key.Escape) {
+                    return@onPreviewKeyEvent false
+                }
                 when {
                     shortcut && event.key == Key.Z && event.isShiftPressed -> {
                         scope.launch { session.undo(redo = true) }
@@ -162,11 +166,18 @@ internal fun NotesDocumentPane(
                     )
                 },
                 actions = {
+                    if (document?.kind == NoteDocumentKind.NOTEBOOK) {
+                        NotesIconAction(
+                            if (session.readingMode) FloeIcons.Pencil else FloeIcons.BookPages,
+                            stringResource(if (session.readingMode) R.string.notes_mode_edit else R.string.notes_mode_read),
+                            { session.toggleReadingMode() },
+                        )
+                    }
                     NotesIconAction(
                         NotesIcons.Undo,
                         stringResource(R.string.notes_undo),
                         { scope.launch { session.undo(redo = false) } },
-                        enabled = session.canUndo && session.pendingEditCount == 0,
+                        enabled = !session.readingMode && session.canUndo && session.pendingEditCount == 0,
                     )
                     // iOS keeps redo out of the compact header; the title
                     // needs the width. Redo remains available from the
@@ -176,7 +187,7 @@ internal fun NotesDocumentPane(
                             NotesIcons.Redo,
                             stringResource(R.string.notes_redo),
                             { scope.launch { session.undo(redo = true) } },
-                            enabled = session.canRedo && session.pendingEditCount == 0,
+                            enabled = !session.readingMode && session.canRedo && session.pendingEditCount == 0,
                         )
                     }
                     NotesIconAction(
@@ -233,6 +244,7 @@ internal fun NotesDocumentPane(
                             onShowInkOptions = { showInkOptions = true },
                             onShowFind = { showFind = true },
                             onShowInspector = { showInspector = true },
+                            onRequestOcr = { showOcr = true },
                         )
                         NoteDocumentKind.MIND_MAP -> NotesMindMapEditor(
                             controller = controller,
@@ -292,6 +304,13 @@ internal fun NotesDocumentPane(
     val doc = session.document
     if (doc != null) {
         val page = session.currentPage
+        if (showTaskLaunch) {
+            NotesTaskLaunchSheet(session, controller.ports.taskLaunch,
+                onDismiss = { showTaskLaunch = false },
+                onCreated = { id ->
+                    if (controller.ports.taskLaunch?.openCreatedTask(id) == true) showTaskLaunch = false
+                })
+        }
         if (showMore) {
             NotesDocumentMoreSheet(
                 controller = controller,
@@ -303,6 +322,7 @@ internal fun NotesDocumentPane(
                 onCover = { showCover = true },
                 onTrash = { showTrash = true },
                 onExport = { showExport = true },
+                onTaskLaunch = { showTaskLaunch = true },
                 onLinkedMaps = { showLinkedMaps = true },
                 onOcr = { showOcr = true },
                 onAssistantSave = { showAssistantSave = true },
@@ -671,6 +691,7 @@ private fun NotesDocumentMoreSheet(
     onCover: () -> Unit,
     onTrash: () -> Unit,
     onExport: () -> Unit,
+    onTaskLaunch: () -> Unit,
     onLinkedMaps: () -> Unit,
     onOcr: () -> Unit,
     onAssistantSave: () -> Unit,
@@ -689,6 +710,10 @@ private fun NotesDocumentMoreSheet(
         }
         add(NotesActionItem(stringResource(R.string.notes_find), FloeIcons.Magnifier, onClick = onFind))
         add(NotesActionItem(stringResource(R.string.notes_export), NotesIcons.Share, onClick = onExport))
+        if (controller.ports.taskLaunch?.isAvailable() == true) {
+            add(NotesActionItem(stringResource(R.string.notes_task_launch_title), FloeIcons.ChatRole,
+                onClick = onTaskLaunch))
+        }
         if (doc.kind != NoteDocumentKind.MIND_MAP) {
             add(NotesActionItem(stringResource(R.string.notes_mindmap_linked_maps), NotesIcons.MindMap, onClick = onLinkedMaps))
         }

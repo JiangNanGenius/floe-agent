@@ -79,7 +79,8 @@ class NetworkDiagnosticsWireG072Test {
     fun closedMethodSetIncludesBothNewMethodsAndStillRefusesUnknown() {
         assertTrue("network.lanDiscover" in NetworkDiagnosticsWire.METHODS)
         assertTrue("network.speedTest" in NetworkDiagnosticsWire.METHODS)
-        assertEquals(8, NetworkDiagnosticsWire.METHODS.size)
+        assertTrue("network.traceroute" in NetworkDiagnosticsWire.METHODS)
+        assertEquals(9, NetworkDiagnosticsWire.METHODS.size)
         val payload = request("network.lanDiscover", JSONObject()
             .put("serviceTypes", JSONArray().put("_http._tcp")))
         refused("descriptorInvalid") {
@@ -87,6 +88,18 @@ class NetworkDiagnosticsWireG072Test {
                 descriptor("network.portScan", payload), boundEpoch = 7,
             )
         }
+    }
+
+    @Test
+    fun tracerouteTicketAdmitsHostOnlyHint() {
+        val arguments = JSONObject()
+            .put("host", "example.com")
+            .put("maxHops", 20)
+            .put("probesPerHop", 2)
+            .put("probeTimeoutMs", 2_000)
+        val result = facts("network.traceroute", arguments)
+        assertEquals("network.traceroute", result.method)
+        assertEquals("example.com", result.targetHost)
     }
 
     @Test

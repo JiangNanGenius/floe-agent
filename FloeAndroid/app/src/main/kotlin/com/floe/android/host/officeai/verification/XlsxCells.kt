@@ -24,12 +24,43 @@ internal data class WorksheetCell(
     val inlineText: String?,
 )
 
+/** Result of indexing EVERY addressable cell of one worksheet part. */
+internal sealed class WorksheetScan {
+    data class Ready(
+        val byAddress: Map<String, WorksheetCell>,
+        /** Addresses appearing more than once: ambiguous, never resolved. */
+        val duplicateAddresses: Set<String>,
+    ) : WorksheetScan()
+
+    object TooManyCells : WorksheetScan()
+
+    /** A <c> without the required r attribute cannot be addressed honestly. */
+    object Unaddressable : WorksheetScan()
+}
+
 internal object WorksheetCells {
     val ADDRESS_PATTERN = Regex("^[A-Z]+[0-9]+$")
 
     fun normalizedAddress(raw: String): String? {
         val trimmed = raw.trim().uppercase()
         return if (ADDRESS_PATTERN.matches(trimmed)) trimmed else null
+    }
+
+    /** Indexes one worksheet's <c> elements by address for bounded dependency
+     * resolution. Refuses (instead of guessing) when the part exceeds the
+     * caller's cell cap or carries a cell without the required r identity. */
+    fun scan(document: Document, maxCells: Int): WorksheetScan {
+        val elements = DomUtil.elements(document, XlsxParts.S_NS, "c")
+        if (elements.size > maxCells) return WorksheetScan.TooManyCells
+        val byAddress = LinkedHashMap<String, WorksheetCell>(elements.size)
+        val duplicates = LinkedHashSet<String>()
+        for (element in elements) {
+            val ref = element.getAttribute("r").trim().uppercase()
+            if (ref.isEmpty()) return WorksheetScan.Unaddressable
+            val cell = toCell(element, ref)
+            if (byAddress.put(ref, cell) != null) duplicates.add(ref)
+        }
+        return WorksheetScan.Ready(byAddress, duplicates)
     }
 
     fun findCell(document: Document, address: String): WorksheetCell? {

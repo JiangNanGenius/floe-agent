@@ -495,6 +495,84 @@ public struct NetworkPingObservation: Sendable, Equatable {
     public var echoes: [NetworkPingProbe] { probes }
 }
 
+// MARK: - network.traceroute
+
+/// One observed route hop. Rows are exactly what the probes saw: a timed-out
+/// hop has no address, a responding hop always has one, and an unreachable
+/// hop additionally carries the ICMP unreachable code.
+public struct NetworkTracerouteHop: Sendable, Equatable {
+    public let ttl: Int?
+    public let status: String?
+    public let address: String?
+    public let rttsMs: [Double]
+    public let unreachableCode: Int?
+
+    init(object: [String: NetworkJSONValue]) {
+        ttl = NetworkJSONValue.firstInt(object, ["ttl", "hop"])
+        status = NetworkJSONValue.firstString(object, ["status"])
+        address = NetworkJSONValue.firstString(object, ["address", "from", "ip"])
+        rttsMs = (NetworkJSONValue.firstArray(object, ["rttsMs", "rtts"]) ?? [])
+            .compactMap(\.doubleValue)
+        unreachableCode = NetworkJSONValue.firstInt(
+            object, ["unreachableCode", "code"])
+    }
+
+    /// True only for a row that matches the hop grammar the phone emits.
+    public var isWellFormed: Bool {
+        guard let ttl, (1...30).contains(ttl) else { return false }
+        switch status {
+        case "reached", "timeExceeded":
+            return address != nil && unreachableCode == nil &&
+                rttsMs.allSatisfy { $0.isFinite && $0 >= 0 }
+        case "unreachable":
+            return address != nil && unreachableCode != nil &&
+                rttsMs.allSatisfy { $0.isFinite && $0 >= 0 }
+        case "timeout":
+            return address == nil && unreachableCode == nil
+        default:
+            return false
+        }
+    }
+}
+
+public struct NetworkTracerouteObservation: Sendable, Equatable {
+    public let resolvedAddress: String?
+    public let family: String?
+    public let maxHops: Int?
+    public let probesPerHop: Int?
+    public let probeTimeoutMs: Int?
+    public let timeoutBudgetMs: Int?
+    public let socketType: String?
+    public let elapsedMs: Int?
+    public let reachedTarget: Bool?
+    public let budgetExhausted: Bool?
+    public let hops: [NetworkTracerouteHop]
+
+    init(object: [String: NetworkJSONValue]) {
+        resolvedAddress = NetworkJSONValue.firstString(
+            object, ["resolvedAddress", "address", "ip"])
+        family = NetworkJSONValue.firstString(object, ["family"])
+        maxHops = NetworkJSONValue.firstInt(object, ["maxHops"])
+        probesPerHop = NetworkJSONValue.firstInt(object, ["probesPerHop"])
+        probeTimeoutMs = NetworkJSONValue.firstInt(object, ["probeTimeoutMs"])
+        timeoutBudgetMs = NetworkJSONValue.firstInt(
+            object, ["timeoutBudgetMs", "timeoutMs"])
+        socketType = NetworkJSONValue.firstString(object, ["socketType"])
+        elapsedMs = NetworkJSONValue.firstInt(object, ["elapsedMs"])
+        reachedTarget = NetworkJSONValue.firstBool(object, ["reachedTarget"])
+        budgetExhausted = NetworkJSONValue.firstBool(object, ["budgetExhausted"])
+        hops = (NetworkJSONValue.firstArray(object, ["hops"]) ?? [])
+            .compactMap { value in
+                guard let object = value.objectValue else { return nil }
+                return NetworkTracerouteHop(object: object)
+            }
+    }
+
+    /// True when every delivered hop row obeys the frozen hop grammar.
+    public var hopsWellFormed: Bool { hops.allSatisfy(\.isWellFormed) }
+    public var reached: Bool { reachedTarget == true }
+}
+
 public struct NetworkTCPAttempt: Sendable, Equatable {
     public let address: String?
     public let family: String?
@@ -925,6 +1003,7 @@ public struct NetworkObservationPayload: Sendable, Equatable {
     public let wifiScan: NetworkWifiScanObservation?
     public let dnsLookup: NetworkDNSLookupObservation?
     public let ping: NetworkPingObservation?
+    public let traceroute: NetworkTracerouteObservation?
     public let tcpProbe: NetworkTCPProbeObservation?
     public let http: NetworkHTTPObservation?
     public let lanDiscover: NetworkLANDiscoveryObservation?
@@ -939,6 +1018,7 @@ public struct NetworkObservationPayload: Sendable, Equatable {
         var wifiValue: NetworkWifiScanObservation?
         var dnsValue: NetworkDNSLookupObservation?
         var pingValue: NetworkPingObservation?
+        var tracerouteValue: NetworkTracerouteObservation?
         var tcpValue: NetworkTCPProbeObservation?
         var httpValue: NetworkHTTPObservation?
         var lanValue: NetworkLANDiscoveryObservation?
@@ -954,6 +1034,9 @@ public struct NetworkObservationPayload: Sendable, Equatable {
                 object: raw["dnsLookup"]?.objectValue ?? raw)
         case .ping:
             pingValue = NetworkPingObservation(object: raw["ping"]?.objectValue ?? raw)
+        case .traceroute:
+            tracerouteValue = NetworkTracerouteObservation(
+                object: raw["traceroute"]?.objectValue ?? raw)
         case .tcpProbe:
             tcpValue = NetworkTCPProbeObservation(
                 object: raw["tcpProbe"]?.objectValue ?? raw)
@@ -970,6 +1053,7 @@ public struct NetworkObservationPayload: Sendable, Equatable {
         self.wifiScan = wifiValue
         self.dnsLookup = dnsValue
         self.ping = pingValue
+        self.traceroute = tracerouteValue
         self.tcpProbe = tcpValue
         self.http = httpValue
         self.lanDiscover = lanValue

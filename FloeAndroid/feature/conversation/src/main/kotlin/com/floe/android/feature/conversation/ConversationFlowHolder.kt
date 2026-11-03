@@ -116,6 +116,10 @@ class ConversationFlowHolder(
     var isConsumingDraft: Boolean by mutableStateOf(false)
         private set
 
+    /** C03 dictation is active for this holder; display-only state. */
+    var voiceListening: Boolean by mutableStateOf(false)
+        private set
+
     /** ⇄ temporaryDraftHandoffPending: after a temporary toggle-off handed an
      * unedited ephemeral draft back, the visible text must not reach the
      * durable draft store until the user edits it again (first edit re-arms). */
@@ -201,7 +205,7 @@ class ConversationFlowHolder(
         val availability = ComposerAvailability(
             providerConfigured = !state.needsProvider,
             attachmentsProcessing = anyAttachmentProcessing(),
-            voiceAvailable = state.voiceAvailable,
+            voiceAvailable = state.voiceInputAvailable,
             temporaryChatAvailable = false,
         )
         val inlineGuard = ComposerSendPolicy.canSend(
@@ -2064,11 +2068,49 @@ class ConversationFlowHolder(
         if (host.refreshRunOutputs(session, runId)) ConversationFlowResult.Accepted
         else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
 
+    /** Explicit microphone tap. True is host ADMISSION only; the final text
+     * arrives through [applyVoiceTranscript] after the real recognizer result. */
+    fun startVoiceInput(): ConversationFlowResult {
+        val state = snapshot.value ?: return rejected(ConversationRejectedReason.NO_SESSION)
+        if (retired || !state.voiceInputAvailable) {
+            return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        }
+        return if (host.startVoiceInput(session)) ConversationFlowResult.Accepted
+        else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+    }
+
+    fun stopVoiceInput() {
+        if (!retired) host.stopVoiceInput(session)
+    }
+
+    /** Host callback for the ONE actual recognizer terminal. */
+    fun applyVoiceTranscript(text: String) {
+        if (retired) return
+        val clean = text.trim()
+        if (clean.isEmpty()) return
+        val current = draft.value
+        val separator = if (current.text.isEmpty() || current.text.last().isWhitespace()) "" else " "
+        val nextText = current.text + separator + clean
+        applyDraftEdit(
+            current.copy(
+                text = nextText,
+                selection = androidx.compose.ui.text.TextRange(nextText.length),
+                composition = null,
+            ),
+            recordPrevious = current,
+        )
+        voiceListening = false
+    }
+
+    fun updateVoiceListening(listening: Boolean) {
+        if (!retired) voiceListening = listening
+    }
+
     /** Read-aloud is offered only when the host projects voice as usable; a
      * false host state never claims the affordance works. */
     fun speakMessage(text: String): ConversationFlowResult {
         val state = snapshot.value ?: return rejected(ConversationRejectedReason.NO_SESSION)
-        if (!state.voiceAvailable) return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        if (!state.voiceOutputAvailable) return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
         return if (host.speakMessageText(session, text)) ConversationFlowResult.Accepted
         else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
     }

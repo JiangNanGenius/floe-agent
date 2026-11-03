@@ -53,6 +53,22 @@ object McpFormPreflight {
     /** True when the local draft would certainly fail host validation. */
     fun looksInvalid(draft: McpDraftSnapshot): McpPreflightFinding? {
         if (draft.displayName.isBlank()) return McpPreflightFinding.NAME_REQUIRED
+        if (draft.transportKind == McpTransportKindUi.STDIO) {
+            if (draft.stdioCommand.isBlank()) {
+                return McpPreflightFinding.COMMAND_REQUIRED
+            }
+            val directory = draft.stdioWorkingDirectory.trim()
+            if (directory.isNotEmpty()) {
+                val components = directory.split('/')
+                    .filter { it.isNotEmpty() }
+                if (directory.startsWith("/") || directory.contains("\\") ||
+                    components.any { it == "." || it == ".." }
+                ) {
+                    return McpPreflightFinding.WORKING_DIRECTORY_INVALID
+                }
+            }
+            return null
+        }
         val endpoint = draft.endpointText.trim()
         if (endpoint.isEmpty()) return McpPreflightFinding.ENDPOINT_REQUIRED
         val origin = endpointOrigin(endpoint)
@@ -85,6 +101,8 @@ enum class McpPreflightFinding {
     ENDPOINT_EMBEDS_CREDENTIAL,
     INSECURE_HTTP_NOT_ALLOWED,
     HEADER_NAME_INVALID,
+    COMMAND_REQUIRED,
+    WORKING_DIRECTORY_INVALID,
 }
 
 /**
@@ -149,6 +167,10 @@ object McpCredentialIntent {
         seedOriginToken: String?,
         currentOriginToken: String?,
     ): CredentialDraftIntent {
+        // The stdio transport accepts no transport credential at all.
+        if (draft.transportKind == McpTransportKindUi.STDIO) {
+            return CredentialDraftIntent.CLEAR
+        }
         if (draft.authentication == McpAuthenticationUi.NONE) return CredentialDraftIntent.CLEAR
         if (!typedSecret.isNullOrEmpty()) return CredentialDraftIntent.SET
         val sameOrigin = seedOriginToken != null &&

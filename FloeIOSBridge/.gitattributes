@@ -1,0 +1,3 @@
+# Preserve byte-exact upstream notices and unified-diff context lines.
+ThirdParty/idevice/** -whitespace
+Vendor/*.patch -whitespace

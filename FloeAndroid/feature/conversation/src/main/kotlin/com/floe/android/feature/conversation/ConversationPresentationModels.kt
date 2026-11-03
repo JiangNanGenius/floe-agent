@@ -201,6 +201,8 @@ data class MessageUi(
      * (⇄ InternalNoticeProjection / ProposalDecisionPresentation); raw template
      * bytes never reach the ordinary surface, and `trustedNotice` says why. */
     val trustedNoticeSummary: String? = null,
+    /** Original full wire timestamp for chronology; never sort by display HH:mm. */
+    val createdAtEpochMillis: Long? = null,
 )
 
 /* -------------------------------- approvals -------------------------------- */
@@ -645,6 +647,22 @@ data class StagedAttachmentUi(
         "StagedAttachmentUi(id=$id, kind=${kind.swiftRaw}, bytes=$byteCount, import=${import::class.simpleName})"
 }
 
+/**
+ * Explicit local Design action for ONE persisted private attachment.
+ *
+ * This carries the REAL conversation/message/attachment identities only; it
+ * is an identity, never a permission. The App resolves the actual binding and
+ * the native design owner re-verifies the attachment row, storage layer and
+ * digest before any design write. Temporary chats never produce this request.
+ */
+data class AttachmentDesignRequest(
+    val conversationId: String,
+    val messageId: String,
+    val attachmentId: String,
+    val displayName: String,
+    val isImage: Boolean,
+)
+
 /** Request to open one persisted message attachment (⇄ ChatAttachmentOpenRequest). */
 data class AttachmentOpenRequest(
     val conversationId: String,
@@ -908,8 +926,8 @@ data class ThreadUiState(
     /** ⇄ usesLocalModel — always false on Android (cloud-only); kept as an
      * explicit projection so bindings cannot silently invent the flag. */
     val usesLocalModel: Boolean,
-    /** ⇄ Voice availability for this host build (Apple speech service has no
-     * Android product implementation; false until a real adapter exists). */
+    /** ⇄ Voice availability for this host build (false until a real adapter
+     * exists). Input gates the microphone control; output gates read-aloud. */
     val voiceAvailable: Boolean,
     /** ⇄ skill-capability availability surfaced in chat selectors
      * (enabled+configured+usable; admin pages are a later package). */
@@ -938,6 +956,10 @@ data class ThreadUiState(
      * `none` is the only settlement proof. Runs the native reply omits
      * simply have no entry (never assumed active or settled). */
     val goalReviewByRun: Map<String, String> = emptyMap(),
+    /** C03 system-recognizer availability + microphone permission. */
+    val voiceInputAvailable: Boolean = false,
+    /** C03 system/cloud TTS availability for read-aloud. */
+    val voiceOutputAvailable: Boolean = false,
 )
 
 /** ⇄ ImportantFileShortcut (host-projected working set; this module never
@@ -981,6 +1003,10 @@ data class ConversationListItemUi(
     val projectedStateName: String?,
     val isArchived: Boolean,
     val archivedAtLabel: String?,
+    /** ⇄ ConversationRecord.pinnedAt != nil (schema v50 row column). The host
+     * delivers rows in the native pinned-first order; this flag is the durable
+     * state, never an optimistic UI-only marker. */
+    val isPinned: Boolean = false,
 )
 
 /** ⇄ ConversationTaskBulkService.runningCount(among:) input. */

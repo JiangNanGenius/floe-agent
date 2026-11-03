@@ -42,6 +42,12 @@ enum class MoreDestination(val order: Int) {
     SETTINGS(8),
     DIAGNOSTICS(9),
     NETWORK(10),
+    REMOTE(11),
+    MAIL(12),
+    CALENDAR(13),
+    DEVICES(14),
+    SYSTEM_SERVICES(15),
+    RDP(16),
 }
 
 /** On-demand inspector contents (iOS `AppRouter.InspectorRoute.content`). */
@@ -71,7 +77,22 @@ enum class FloeSettingsSection {
     USAGE,       // token/run usage aggregates
     PRIVACY,     // summary, typed clears with trusted confirmation
     WEB_SEARCH,  // web-search provider metadata + secure credential editor
+    DESKTOP_ASSIST, // secure credential cards + Linux text-recognition readiness
     DIAGNOSTICS, // real JNI handshake + debug-only component preview
+    AUXILIARY,
+    EXECUTION,
+    REMOTE,
+    SYSTEM_CAPABILITIES,
+    ;
+
+    companion object {
+        /** Desktop-assist's persisted name remains a valid deep link; its
+         * ordinary entry belongs to Remote, alongside host management. */
+        val visibleCases: List<FloeSettingsSection> = listOf(
+            GENERAL, MEMORY, PROVIDERS, AUXILIARY, SKILLS, WEB_SEARCH,
+            PRIVACY, EXECUTION, SYSTEM_CAPABILITIES, REMOTE, USAGE, DIAGNOSTICS,
+        )
+    }
 }
 
 /**

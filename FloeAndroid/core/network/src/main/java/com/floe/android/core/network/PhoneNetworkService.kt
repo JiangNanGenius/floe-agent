@@ -174,6 +174,12 @@ class PhoneNetworkService internal constructor(
                             "speed test arguments are required",
                         ),
                     )
+                    NetworkMethod.TRACEROUTE -> opened.traceroute(
+                        request.traceroute ?: throw RequestParseException(
+                            "invalidArguments",
+                            "traceroute arguments are required",
+                        ),
+                    )
                 }
             }
             return envelopeFor(request, result, opened.snapshot, measuredAt)

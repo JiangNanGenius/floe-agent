@@ -80,6 +80,10 @@ class IntegrationsFlowHolder(
     val mcpEditors = McpEditorStore()
     val skillForms = SkillFormStore()
 
+    /** Guided service draft. Local form state only; the host owns every
+     * project/environment/phase fact. */
+    val mcpSetupDraft: MutableState<McpSetupDraftUi> = mutableStateOf(McpSetupDraftUi())
+
     /** ⇄ SkillsView @State searchText (hub; local filtering only). */
     val hubSearchQuery: MutableState<String> = mutableStateOf("")
 
@@ -129,9 +133,51 @@ class IntegrationsFlowHolder(
 
     fun refreshCatalog(force: Boolean): Boolean = host.refreshCatalog(force)
 
+    fun updateHubSearchQuery(value: String) {
+        hubSearchQuery.value = value
+        if (!showingInstalled.value) host.searchCatalog(value)
+    }
+
+    fun selectHubSegment(installed: Boolean) {
+        showingInstalled.value = installed
+        if (!installed) host.searchCatalog(hubSearchQuery.value)
+    }
+
+    fun loadMoreCatalog(): Boolean = host.loadMoreCatalog()
+
     fun installOfficialSkill(skillId: String): IntegrationsFlowResult =
         if (host.installOfficialSkill(skillId)) IntegrationsFlowResult.Accepted
         else rejected(RejectedReason.HOST_UNAVAILABLE)
+
+    /**
+     * Open the dedicated full-catalog detail sheet. The host owns the verified
+     * `curated.detail` read; the holder only pushes the pane and keeps the
+     * request identity so a late response cannot land in a newer sheet.
+     */
+    fun openSkillDetail(skillId: String): IntegrationsFlowResult {
+        // Only one detail sheet exists at a time. Opening another entry from
+        // the hub replaces the top detail pane so a stale underlying sheet
+        // can never show a loading state after the host moved on.
+        val top = navigation.top
+        if (top.pane == IntegrationsPane.SKILL_DETAIL) {
+            navigation.back()
+            host.dismissSkillDetail(top.key)
+        }
+        navigation.push(IntegrationsPane.SKILL_DETAIL, skillId)
+        return if (host.loadSkillDetail(skillId)) {
+            IntegrationsFlowResult.Accepted
+        } else {
+            // Nothing started: never leave a sheet stuck in loading.
+            navigation.closeTopIf(IntegrationsPane.SKILL_DETAIL, skillId)
+            rejected(RejectedReason.HOST_UNAVAILABLE)
+        }
+    }
+
+    /** Close the detail sheet only when it is still the top pane. */
+    fun closeSkillDetail(skillId: String) {
+        navigation.closeTopIf(IntegrationsPane.SKILL_DETAIL, skillId)
+        host.dismissSkillDetail(skillId)
+    }
 
     /**
      * Enable toggle. NOTE (SKL-SOURCE-NO-GRANT): flipping enable never grants
@@ -474,6 +520,56 @@ class IntegrationsFlowHolder(
 
     fun openMcpServers() = navigation.push(IntegrationsPane.MCP_SERVERS, "mcp")
 
+    fun openMcpSetup(): IntegrationsFlowResult {
+        if (!host.loadMcpSetup(mcpSetupDraft.value.projectId)) {
+            return rejected(RejectedReason.HOST_UNAVAILABLE)
+        }
+        navigation.push(IntegrationsPane.MCP_SETUP, "mcp-setup")
+        return IntegrationsFlowResult.Accepted
+    }
+
+    fun updateMcpSetupDraft(transform: (McpSetupDraftUi) -> McpSetupDraftUi) {
+        mcpSetupDraft.value = transform(mcpSetupDraft.value)
+    }
+
+    fun setMcpSetupDraft(value: McpSetupDraftUi) {
+        mcpSetupDraft.value = value
+    }
+
+    fun selectMcpSetupProject(projectId: String): Boolean {
+        mcpSetupDraft.value = mcpSetupDraft.value.copy(
+            projectId = projectId,
+            environmentId = null,
+        )
+        return host.loadMcpSetupEnvironments(projectId)
+    }
+
+    fun startMcpSetup(): IntegrationsFlowResult {
+        val draft = mcpSetupDraft.value
+        val projectId = draft.projectId ?: return rejected(RejectedReason.HOST_UNAVAILABLE)
+        val environmentId = draft.environmentId ?: return rejected(RejectedReason.HOST_UNAVAILABLE)
+        return if (host.startMcpSetup(McpSetupStartRequestUi(
+                displayName = draft.displayName,
+                projectId = projectId,
+                environmentId = environmentId,
+                portText = draft.portText,
+                details = draft.details,
+                allowInCanvas = draft.allowInCanvas,
+            ))) IntegrationsFlowResult.Accepted
+        else rejected(RejectedReason.HOST_UNAVAILABLE)
+    }
+
+    fun cancelMcpSetup(recordId: String, revision: Long): Boolean =
+        host.cancelMcpSetup(recordId, revision)
+
+    fun discardMcpSetup(recordId: String, revision: Long): Boolean =
+        host.discardMcpSetup(recordId, revision)
+
+    fun clearMcpSetupError() = host.clearMcpSetupError()
+
+    fun retryMcpSetupCommit(recordId: String, revision: Long): Boolean =
+        host.retryMcpSetupCommit(recordId, revision)
+
     fun openConnectorDestination(destinationId: String): Boolean =
         host.openConnectorDestination(destinationId)
 
@@ -511,6 +607,41 @@ class IntegrationsFlowHolder(
 
     fun setMcpEndpoint(identity: McpEditorIdentity, value: String): IntegrationsFlowResult =
         withEditor(identity) { it.update { s -> s.copy(endpointText = value) } }
+
+    fun setMcpTransport(
+        identity: McpEditorIdentity,
+        kind: McpTransportKindUi,
+    ): IntegrationsFlowResult = withEditor(identity) { slot ->
+        slot.update { draft ->
+            draft.copy(
+                transportKind = kind,
+                authentication = if (kind == McpTransportKindUi.STDIO) {
+                    McpAuthenticationUi.NONE
+                } else {
+                    draft.authentication
+                },
+            )
+        }
+        if (kind == McpTransportKindUi.STDIO) slot.clearSecureInput()
+    }
+
+    fun requestMcpStdioChoices(identity: McpEditorIdentity, projectId: String?): Boolean =
+        host.requestMcpStdioChoices(identity, projectId)
+
+    fun setMcpStdioSelection(identity: McpEditorIdentity, selection: McpStdioSelectionUi?): IntegrationsFlowResult =
+        withEditor(identity) { it.update { draft -> draft.copy(stdioSelection = selection) } }
+
+    fun setMcpCommand(identity: McpEditorIdentity, value: String): IntegrationsFlowResult =
+        withEditor(identity) { it.update { s -> s.copy(stdioCommand = value) } }
+
+    fun setMcpArguments(identity: McpEditorIdentity, value: String): IntegrationsFlowResult =
+        withEditor(identity) { it.update { s -> s.copy(stdioArgumentsText = value) } }
+
+    fun setMcpWorkingDirectory(
+        identity: McpEditorIdentity,
+        value: String,
+    ): IntegrationsFlowResult =
+        withEditor(identity) { it.update { s -> s.copy(stdioWorkingDirectory = value) } }
 
     fun setMcpEnabled(identity: McpEditorIdentity, enabled: Boolean): IntegrationsFlowResult =
         withEditor(identity) { it.update { s -> s.copy(enabled = enabled) } }
@@ -558,7 +689,9 @@ class IntegrationsFlowHolder(
         // Swift validation stays the authority.
         val preflight = McpFormPreflight.looksInvalid(slot.snapshot.value)
         if (preflight == McpPreflightFinding.ENDPOINT_REQUIRED ||
-            preflight == McpPreflightFinding.ENDPOINT_UNPARSEABLE
+            preflight == McpPreflightFinding.ENDPOINT_UNPARSEABLE ||
+            preflight == McpPreflightFinding.COMMAND_REQUIRED ||
+            preflight == McpPreflightFinding.WORKING_DIRECTORY_INVALID
         ) {
             return rejected(RejectedReason.INPUT_INSUFFICIENT)
         }
@@ -668,8 +801,13 @@ class IntegrationsFlowHolder(
             IntegrationsPane.MCP_SERVERS -> navigation.back()
             IntegrationsPane.MCP_EDITOR ->
                 mcpEditors.slot(top.key)?.let { cancelMcpEditor(it.identity) }
+            IntegrationsPane.MCP_SETUP -> {
+                host.closeMcpSetup()
+                navigation.back()
+            }
             IntegrationsPane.SKILL_CREATOR, IntegrationsPane.SKILL_FINDER, IntegrationsPane.SKILL_IMPORT ->
                 closeForm(top.key)
+            IntegrationsPane.SKILL_DETAIL -> closeSkillDetail(top.key)
             IntegrationsPane.INSTALL_REVIEW -> top.key.toLongOrNull()?.let { key ->
                 // Back on the review sheet without confirming = drop review.
                 host.cancelPendingInstallation(key)
@@ -697,6 +835,7 @@ class IntegrationsFlowHolder(
         presentedReviewId = null
         hubSearchQuery.value = ""
         showingInstalled.value = false
+        host.closeMcpSetup()
         navigation.resetToBase()
         host.closeAll()
     }
@@ -716,6 +855,10 @@ class IntegrationsFlowHolder(
     private fun draftFromSeed(seed: McpEditorSeedUi): McpDraftSnapshot = McpDraftSnapshot(
         displayName = seed.displayName,
         endpointText = seed.endpointText,
+        transportKind = seed.transportKind,
+        stdioCommand = seed.stdioCommand,
+        stdioArgumentsText = seed.stdioArguments.joinToString("\n"),
+        stdioWorkingDirectory = seed.stdioWorkingDirectory,
         enabled = seed.enabled,
         allowInCanvas = seed.allowInCanvas,
         allowInsecureHttp = seed.allowInsecureHttp,

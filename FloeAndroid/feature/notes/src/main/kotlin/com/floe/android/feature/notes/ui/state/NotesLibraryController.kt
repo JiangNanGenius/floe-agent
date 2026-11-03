@@ -117,7 +117,7 @@ internal class NotesLibraryController(
         private set
 
     private var searchJob: Job? = null
-    private var coverJob: Job? = null
+    private val coverJobs = mutableMapOf<String, Job>()
     private var disposed = false
 
     fun visibleDocuments(): List<NoteDocumentSummary> = filterAndSortDocuments(
@@ -450,27 +450,54 @@ internal class NotesLibraryController(
     /* ------------------------------- cover -------------------------------- */
 
     fun ensureCover(summary: NoteDocumentSummary) {
-        val resourceID = summary.coverResourceID ?: return
+        if (disposed) return
+        val resourceID = summary.coverResourceID
+        if (resourceID == null && summary.kind != NoteDocumentKind.ENGINEERING) return
         val key = coverKey(summary, resourceID)
-        if (coverBytes.containsKey(key) || key in coverFailures) return
-        coverJob = scope.launch {
+        if (coverBytes.containsKey(key) || key in coverFailures || key in coverJobs || coverJobs.size >= 16) return
+        val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             try {
-                val bytes = resources.readAll(resourceID, maxBytes = 8L * 1024L * 1024L)
-                coverBytes = coverBytes + (key to bytes)
+                val bytes = if (resourceID != null) {
+                    resources.readAll(resourceID, maxBytes = 8L * 1024L * 1024L)
+                } else {
+                    val document = service.document(summary.id)
+                    if (document.revision != summary.revision) return@launch
+                    val sourceID = document.engineeringResourceID ?: return@launch
+                    val sourceName = document.engineeringFileName ?: return@launch
+                    val source = resources.readAll(sourceID, maxBytes = 8L * 1024L * 1024L)
+                    ports.media.engineeringCover(
+                        com.floe.android.feature.notes.ui.api.NotesEngineeringCoverRequest(
+                            document.id, sourceID, sourceName, source),
+                    ) ?: throw NotesException("resourceUnavailable", "engineeringCoverUnavailable")
+                }
+                if (disposed) return@launch
+                val current = service.documentSummary(summary.id)
+                if (coverKey(current, current.coverResourceID) != key) return@launch
+                val cache = LinkedHashMap(coverBytes)
+                cache[key] = bytes
+                while (cache.size > 32 || cache.values.sumOf { it.size.toLong() } > 16L * 1024L * 1024L) {
+                    cache.remove(cache.keys.first())
+                }
+                coverBytes = cache
                 coverFailures = coverFailures - key
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Throwable) {
-                coverFailures = coverFailures + key
+                if (!disposed) coverFailures = (coverFailures + key).toList().takeLast(128).toSet()
+            } finally {
+                coverJobs.remove(key)
             }
         }
+        coverJobs[key] = job
+        job.start()
     }
 
     fun coverFor(summary: NoteDocumentSummary): ByteArray? =
-        summary.coverResourceID?.let { coverBytes[coverKey(summary, it)] }
+        coverBytes[coverKey(summary, summary.coverResourceID)]
 
-    private fun coverKey(summary: NoteDocumentSummary, resourceID: String): String =
-        "${summary.id}:${summary.coverRevision ?: 0}:$resourceID"
+    private fun coverKey(summary: NoteDocumentSummary, resourceID: String?): String =
+        if (resourceID != null) "${summary.id}:${summary.coverRevision ?: 0}:$resourceID"
+        else "${summary.id}:${summary.revision}:engineering"
 
     suspend fun setCover(summary: NoteDocumentSummary): Boolean {
         busy = true
@@ -711,122 +738,34 @@ internal class NotesLibraryController(
         picked: NotesPickedFile,
         title: String,
         notebookID: String?,
-    ): Boolean {
-        val resource = importPickedAsResource(picked)
-        val record = service.resourceMetadata(resource.resourceID)
-        val handle: NotesPdfHandle = when (val outcome = ports.media.openPdf(
-            NotesPdfOpenRequest(
-                documentID = "",
-                resourceID = resource.resourceID,
-                sha256 = record.hash,
-                byteCount = record.byteCount,
-                fileName = picked.fileName,
-                mediaType = record.mediaType,
-                read = resources.reader(),
-            ),
-        )) {
-            is NotesPdfOpenOutcome.Opened -> outcome.handle
-            NotesPdfOpenOutcome.PasswordRequired ->
-                throw NotesException("passwordRequired", "passwordProtected")
-            is NotesPdfOpenOutcome.Unavailable ->
-                throw NotesPortFailureException(outcome.failure)
-            is NotesPdfOpenOutcome.Failed ->
-                throw NotesPortFailureException(outcome.failure)
-        }
-        try {
-            if (handle.pageCount <= 0) throw NotesException("invalidDocument", "emptyPdf")
-            val document = service.createDocument(
-                NotesCreateDocument(
-                    kind = NoteDocumentKind.NOTEBOOK,
-                    title = title,
-                    notebookID = notebookID,
-                    documentID = UUID.randomUUID().toString(),
-                ),
-            )
-            var revision = document.revision
-            var current = document
-            val pages = (0 until handle.pageCount).map { index ->
-                val size = handle.pageSize(index)
-                NotePage(
-                    id = UUID.randomUUID().toString(),
-                    width = (size?.widthPt ?: 612f).toDouble().coerceIn(1.0, 16_384.0),
-                    height = (size?.heightPt ?: 792f).toDouble().coerceIn(1.0, 16_384.0),
-                    backgroundResourceID = resource.resourceID,
-                    pdfPageIndex = index,
-                )
-            }
-            // A new notebook starts with one native placeholder page. Replace
-            // it with the first PDF page; inserting the PDF after it would
-            // leave an empty cover and shift every imported page by one.
-            importedNotebookPageEdits(
-                placeholderPageID = current.pages.firstOrNull()?.id,
-                pages = pages,
-            ).chunked(40).forEach { edits ->
-                current = service.apply(
-                    NotesApplyRequest(
-                        documentID = document.id,
-                        expectedRevision = revision,
-                        title = "Import PDF",
-                        edits = edits,
-                        requestID = UUID.randomUUID().toString(),
-                    ),
-                )
-                revision = current.revision
-            }
-            notice = NotesLibraryNotice.IMPORTED_PDF
-            load(initial = false)
-            onOpenDocument(document.id, null)
-            return true
-        } finally {
-            runCatching { handle.close() }
-        }
-    }
+    ): Boolean = importVisual(picked, title, notebookID, pdf = true)
 
     private suspend fun importImage(
         picked: NotesPickedFile,
         title: String,
         notebookID: String?,
+    ): Boolean = importVisual(picked, title, notebookID, pdf = false)
+
+    private suspend fun importVisual(
+        picked: NotesPickedFile,
+        title: String,
+        notebookID: String?,
+        pdf: Boolean,
     ): Boolean {
-        val info = ports.media.probeImage(
-            NotesImageProbeRequest(
-                fileName = picked.fileName,
-                mediaType = picked.mediaType,
-                byteCount = picked.byteCount,
-                read = picked.read,
-            ),
-        ) ?: throw NotesException("unsupportedAction", "imageFormat")
-        // Probe consumed no service resource; import the exact original bytes.
         val resource = importPickedAsResource(picked)
-        val width = 768.0
-        val height = (width * info.height.toDouble() / info.width.toDouble().coerceAtLeast(1.0))
-            .coerceIn(1.0, 16_384.0)
-        val document = service.createDocument(
-            NotesCreateDocument(
-                kind = NoteDocumentKind.NOTEBOOK,
-                title = title,
+        try {
+            val document = NotesVisualResourceImport.create(
+                service, ports.media, resource.resourceID, picked.fileName, title,
                 notebookID = notebookID,
-                documentID = UUID.randomUUID().toString(),
-            ),
-        )
-        val page = NotePage(
-            id = UUID.randomUUID().toString(),
-            width = width,
-            height = height,
-            backgroundResourceID = resource.resourceID,
-        )
-        val importedDocument = service.apply(
-            NotesApplyRequest(
-                documentID = document.id,
-                expectedRevision = document.revision,
-                title = "Import image",
-                edits = importedNotebookPageEdits(document.pages.firstOrNull()?.id, listOf(page)),
-                requestID = UUID.randomUUID().toString(),
-            ),
-        )
-        notice = NotesLibraryNotice.IMPORTED
-        load(initial = false)
-        onOpenDocument(document.id, importedDocument.pages.firstOrNull()?.id)
-        return true
+            )
+            notice = if (pdf) NotesLibraryNotice.IMPORTED_PDF else NotesLibraryNotice.IMPORTED
+            load(initial = false)
+            onOpenDocument(document.id, document.pages.firstOrNull()?.id)
+            return true
+        } finally {
+            // References keep original bytes on success or uncertain native commit.
+            runCatching { service.discardUnreferencedResource(resource.resourceID) }
+        }
     }
 
     /**
@@ -958,6 +897,9 @@ internal class NotesLibraryController(
     fun dispose() {
         disposed = true
         searchJob?.cancel()
-        coverJob?.cancel()
+        coverJobs.values.toList().forEach { it.cancel() }
+        coverJobs.clear()
+        coverBytes = emptyMap()
+        coverFailures = emptySet()
     }
 }

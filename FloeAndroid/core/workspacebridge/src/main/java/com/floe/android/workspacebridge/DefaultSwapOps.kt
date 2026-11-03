@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.workspacebridge
 
+import android.os.ParcelFileDescriptor
 import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
@@ -27,6 +28,83 @@ class DefaultSwapOps : WorkspaceSwapOps {
     } catch (_: Exception) {
         SwapKind.UNREADABLE
     }
+
+    private data class ParentAnchor(val descriptor: ParcelFileDescriptor, val leaf: String) : java.io.Closeable {
+        override fun close() = descriptor.close()
+        val path: String get() = "/proc/self/fd/${descriptor.fd}/$leaf"
+    }
+
+    private fun parentAnchor(root: File, relativePath: String, createParents: Boolean): ParentAnchor {
+        val parts = WorkspaceRelativeValidation.validate(relativePath)
+            ?: throw IllegalArgumentException("inputPathInvalid")
+        // O_DIRECTORY is not exposed by Android's public OsConstants. Validate
+        // the opened descriptor itself; NONBLOCK also refuses a FIFO race
+        // without waiting for a writer.
+        val flags = OsConstants.O_RDONLY or OsConstants.O_NONBLOCK or
+            OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC
+        fun ownedDirectory(path: String): ParcelFileDescriptor {
+            val fd = Os.open(path, flags, 0)
+            return try {
+                check(OsConstants.S_ISDIR(Os.fstat(fd).st_mode)) { "inputParentNotDirectory" }
+                ParcelFileDescriptor.dup(fd)
+            } finally { Os.close(fd) }
+        }
+        var cursor = ownedDirectory(root.absolutePath)
+        try {
+            for (part in parts.dropLast(1)) {
+                val child = "/proc/self/fd/${cursor.fd}/$part"
+                if (createParents) {
+                    try { Os.mkdir(child, WorkspaceFileModes.DIR_DEFAULT) }
+                    catch (error: ErrnoException) { if (error.errno != OsConstants.EEXIST) throw error }
+                }
+                val next = ownedDirectory(child)
+                cursor.close()
+                cursor = next
+            }
+            return ParentAnchor(cursor, parts.last())
+        } catch (error: Exception) {
+            cursor.close()
+            throw error
+        }
+    }
+
+    override fun kindNoFollow(root: File, relativePath: String): SwapKind = try {
+        parentAnchor(root, relativePath, false).use { anchor -> kind(File(anchor.path)) }
+    } catch (error: ErrnoException) {
+        if (error.errno == OsConstants.ENOENT) SwapKind.MISSING else SwapKind.UNREADABLE
+    } catch (_: Exception) { SwapKind.UNREADABLE }
+
+    private fun commitNew(root: File, relativePath: String, install: (String) -> Unit): Boolean {
+        var committed = false
+        return try {
+            parentAnchor(root, relativePath, true).use { anchor ->
+                install(anchor.path)
+                committed = true
+                Os.fsync(anchor.descriptor.fileDescriptor)
+                true
+            }
+        } catch (error: Exception) {
+            // A link/mkdir succeeded but its durability could not be proved.
+            // Keep the new entry (a live guest may already use it), fail the
+            // transfer, and never misreport it as a concurrent retained file.
+            if (committed) throw WorkspaceSwapException("inputCommitUncertain")
+            false
+        }
+    }
+
+    override fun installNewFile(stage: File, root: File, relativePath: String): Boolean {
+        val source = try { Os.lstat(stage.absolutePath) } catch (_: Exception) { return false }
+        if (!OsConstants.S_ISREG(source.st_mode)) return false
+        // The source is our private import journal, never a guest path.
+        // link() atomically refuses an existing destination.
+        return commitNew(root, relativePath) { target -> Os.link(stage.absolutePath, target) }
+    }
+
+    override fun createNewDirectory(root: File, relativePath: String): Boolean =
+        commitNew(root, relativePath) { target -> Os.mkdir(target, WorkspaceFileModes.DIR_DEFAULT) }
+
+    override fun createNewSymlink(root: File, relativePath: String, target: String): Boolean =
+        commitNew(root, relativePath) { destination -> Os.symlink(target, destination) }
 
     override fun size(path: File): Long = try {
         Os.lstat(path.absolutePath).st_size

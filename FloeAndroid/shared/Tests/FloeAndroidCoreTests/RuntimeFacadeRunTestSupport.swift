@@ -686,7 +686,9 @@ final class RunDomainFixture: @unchecked Sendable {
                     cancellation: (any RunOwnedToolCancellation)? = nil,
                     environmentProof: (any RunEnvironmentOwnershipProving)? = nil,
                     feed: (any RunIntelligencePostCommitFeeding)? = nil,
-                    contextEpoch: UInt64? = nil) -> RunDomainComponents {
+                    contextEpoch: UInt64? = nil,
+                    mediaTaskContext: (@Sendable (UUID) async -> [String])? = nil)
+        -> RunDomainComponents {
         RunDomainComponents(
             context: RunIngressContext(
                 epoch: contextEpoch ?? epoch,
@@ -718,7 +720,8 @@ final class RunDomainFixture: @unchecked Sendable {
             intelligenceFeed: feed ?? self.feed,
             personalizationProvider: nil,
             adapterFactoryOverride: { [adapter] _ in adapter },
-            registry: registry)
+            registry: registry,
+            mediaTaskContext: mediaTaskContext)
     }
 
     /// ONE owned factory/register for every domain the fixture creates

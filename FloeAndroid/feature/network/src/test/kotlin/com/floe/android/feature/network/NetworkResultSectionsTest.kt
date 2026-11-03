@@ -157,6 +157,39 @@ class NetworkResultSectionsTest {
     }
 
     @Test
+    fun tracerouteLeadsWithWhereTheRouteActuallyStoppedAndTheRealHopRows() {
+        val connection = listOf(
+            fact("network.typeName", "WIFI"),
+            fact("network.linkAddresses", "192.168.1.5/24"),
+        )
+        val observations = listOf(
+            fact("observations.resolvedAddress", "203.0.113.44"),
+            fact("observations.family", "IPv4"),
+            fact("observations.reachedTarget", "No"),
+            fact("observations.maxHops", "20"),
+            fact("observations.probesPerHop", "2"),
+            fact("observations.probeTimeoutMs", "2000"),
+            fact("observations.elapsedMs", "3120"),
+            fact("observations.hops", "1: 198.51.100.1 timeExceeded\n2: timeout\n3: timeout"),
+            fact("observations.budgetExhausted", "No"),
+            fact("observations.socketType", "unprivilegedDatagram"),
+        )
+        val sections = NetworkResultSections.partition(NetworkPage.TRACE.method, connection, observations)
+        assertEquals(
+            listOf(
+                "observations.resolvedAddress", "observations.family",
+                "observations.reachedTarget", "observations.maxHops",
+                "observations.probesPerHop", "observations.probeTimeoutMs",
+                "observations.elapsedMs", "observations.hops",
+                "observations.budgetExhausted",
+            ),
+            keys(sections.primary),
+        )
+        assertEquals(keys(connection), keys(sections.connection))
+        assertEquals(listOf("observations.socketType"), keys(sections.detail))
+    }
+
+    @Test
     fun httpsLeadsWithStatusFinalUrlPhaseTimingsAndTls() {
         val connection = listOf(
             fact("network.typeName", "WIFI"),

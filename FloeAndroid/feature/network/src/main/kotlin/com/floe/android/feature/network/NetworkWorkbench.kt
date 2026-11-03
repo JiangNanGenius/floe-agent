@@ -39,7 +39,7 @@ fun NetworkWorkbench(
     /**
      * Optional dedicated monitoring panel. The workbench only owns its
      * selection/back behavior; the service-owned state and report controls
-     * stay in the App host/UI. When absent, the eight measurement pages are
+     * stay in the App host/UI. When absent, the nine measurement pages are
      * byte-for-byte the previous surface.
      */
     monitoringLabel: String? = null,
@@ -49,6 +49,7 @@ fun NetworkWorkbench(
     artifactContent: (@Composable (Modifier) -> Unit)? = null,
     diagnosticReport: (@Composable (NetworkObservationUi) -> Unit)? = null,
     modifier: Modifier = Modifier,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     var selection by rememberSaveable { mutableStateOf<String?>(null) }
     var detailsPage by rememberSaveable { mutableStateOf<String?>(null) }
@@ -102,6 +103,7 @@ fun NetworkWorkbench(
                         )
                     }
                 }
+                sheetNavigation != null -> { { sheetNavigation() } }
                 compact -> {
                     {
                         FloeCircleButton(
@@ -141,6 +143,7 @@ fun NetworkWorkbench(
                                 NetworkPage.PING -> FloeIcons.Gauge
                                 NetworkPage.TCP -> FloeIcons.Terminal
                                 NetworkPage.HTTPS -> FloeIcons.ShieldCheck
+                                NetworkPage.TRACE -> FloeIcons.Compass
                             },
                             label = pageTitle(item), selected = item == page,
                             onClick = {
@@ -599,6 +602,7 @@ private fun pageTitle(page: NetworkPage): String = stringResource(when (page) {
     NetworkPage.PING -> R.string.network_ping
     NetworkPage.TCP -> R.string.network_tcp
     NetworkPage.HTTPS -> R.string.network_https
+    NetworkPage.TRACE -> R.string.network_trace
 })
 
 @Composable

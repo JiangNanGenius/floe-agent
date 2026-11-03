@@ -1,5 +1,22 @@
 # Floe for Android
 
+## Current checkpoint — G09-R2 (2026-11-01)
+
+Media timeline/playback/captions/audio, cloud-generation candidates, renderer/export,
+Design owner workflows and the actual App integration are code-ready. Swift 6 Core
+objects, FullDebug App/bridge Kotlin, focused native/JVM checks and changed JNI
+syntax pass; unchanged component evidence is reused. Ask AI keeps readable draft
+text while the real run context carries the exact selected project as reference
+data, without granting authority. See the [current progress and limits](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md).
+
+This is a source checkpoint, not a new installable build. Alpha22/code24 remains
+current. G09-R3 owns the matching Android ARM64 Core, JNI link, APK, device/visual
+acceptance, upgrade verification and the next Android prerelease. No live App
+provider call was made in R2; cloud subtitle transcription remains a follow-up.
+
+当前为 G09-R2 代码与组件检查点：完整 App／共享核心及定向检查通过；
+尚无新 APK。R3 再做同源二进制、平板／三星实际验收和新阶段发布，保留 iOS Latest。
+
 Native Compose application with a Swift shared-core overlay. Development follows
 [the agreed plan](../docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md#23-目标模式执行顺序先代码完整-再集中调试).
 G01 establishes the build, shared contracts and iPad-style visual foundation.

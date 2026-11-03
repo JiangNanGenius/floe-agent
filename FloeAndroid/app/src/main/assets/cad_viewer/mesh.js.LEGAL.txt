@@ -1,0 +1,20 @@
+Bundled license information:
+
+three/build/three.core.js:
+three/build/three.module.js:
+  /**
+   * @license
+   * Copyright 2010-2025 Three.js Authors
+   * SPDX-License-Identifier: MIT
+   */
+
+three/examples/jsm/libs/fflate.module.js:
+  /*!
+  fflate - fast JavaScript compression/decompression
+  <https://101arrowz.github.io/fflate>
+  Licensed under MIT. https://github.com/101arrowz/fflate/blob/master/LICENSE
+  version 0.8.2
+  */
+
+three/examples/jsm/libs/chevrotain.module.min.js:
+  /*! chevrotain - v9.0.1 */

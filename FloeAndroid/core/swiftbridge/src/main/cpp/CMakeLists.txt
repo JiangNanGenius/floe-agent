@@ -57,13 +57,56 @@ set_target_properties(FloeAndroidCore PROPERTIES
 # calls the ONE App-owned PhoneNetworkService. Not a V3 command, never
 # model-reachable; all validation/ownership lives in FloeAndroidCore. Additive
 # TU only; all prior wrappers byte-identical.
+# G09-R2 MEDIA RENDER (2026-11-01, job-b72b2978320e484e):
+# floe_media_render_jni.cpp appended the same way — the trusted-host bounded
+# render-ticket pump ABI (bind/claim/describe/isLive/shouldStop/heartbeat/
+# complete/close/stats/rootStop/drainPending) over the epoch-fenced Swift
+# mailbox. Not a V3 command, never model-reachable; every lease/root/digest/
+# revision/token decision lives in FloeAndroidCore/G09R2. Additive TU only;
+# all prior wrappers byte-identical.
 # G07.3B NETWORK ARTIFACTS (2026-10-31, job-6ceb057501034a00):
 # floe_network_artifact_jni.cpp appended the same way — the trusted-host pump
 # ABI (bind/next/describe/payload/isLive/shouldStop/complete/close/stats/
 # readiness) over the epoch-fenced Swift saved-artifact mailbox. Not a V3
 # command, never model-reachable; all decisions live in FloeAndroidCore and
 # the App-private stores. Additive TU only; all prior wrappers byte-identical.
-add_library(floe_jni SHARED floe_jni.cpp floe_secret_jni.cpp floe_runtime_jni.cpp floe_attachment_staging_jni.cpp floe_security_corpus_jni.cpp floe_provider_catalog_jni.cpp floe_provider_draft_probe_jni.cpp floe_skills_folder_staging_jni.cpp floe_provider_modelset_jni.cpp floe_privacy_jni.cpp floe_linux_shell_jni.cpp floe_run_foreground_jni.cpp floe_jobs_jni.cpp floe_linux_workspace_jni.cpp floe_linux_runtime_cleanup_jni.cpp floe_linux_readiness_jni.cpp floe_workspace_source_jni.cpp floe_git_trust_jni.cpp floe_terminal_jni.cpp floe_browser_jni.cpp floe_git_actions_jni.cpp floe_network_workspace_jni.cpp floe_run_output_jni.cpp floe_office_ai_jni.cpp floe_network_diagnostics_jni.cpp floe_network_artifact_jni.cpp floe_platform_tools_jni.cpp)
+# G09-R2 GENERATION FOREGROUND (2026-11-01, job-6666081a8075473e):
+# floe_generation_foreground_jni.cpp appended the same way — the trusted-host
+# bounded foreground admission/lease proof for real cloud generation jobs
+# (register/deny/release/cancel/snapshot/count/releaseAll). The Kotlin App
+# `dataSync` service owns the actual FGS/notification; all job/epoch/token
+# validation lives in FloeAndroidCore/G09R2. Not a V3 command, never
+# model-reachable. Additive TU only; all prior wrappers byte-identical.
+# G09-R2 FOUNDATION AUTHORITY (2026-11-01, job-aa95dd9b26044ded):
+# floe_media_foundation_jni.cpp appended the same way — the trusted-host plain
+# authority proof (status/verify renderBinding|probeRoot|ticket) and aggregate
+# Root-drain (rootStop/drainPending) lane over the SAME bound creative cluster,
+# native snapshot lease records and claimed render tickets. Not a V3 command,
+# never model-reachable; all decisions live in FloeAndroidCore/G09R2. Additive
+# TU only; all prior wrappers byte-identical.
+# G09-R2 DESIGN AUTHORITY (2026-11-01, job-6bd337e5e61b4917):
+# floe_design_authority_jni.cpp appended the same way — the privileged
+# trusted-UI restructure-preservation ingress (prepare/confirm/revoke/retire)
+# over the epoch-fenced Swift store. The App calls it only from the explicit
+# user confirmation; the design service burns the existing single-use grant
+# immediately before freeze/propose/adopt. Not a V3 command, never
+# model-reachable; all decisions live in FloeAndroidCore/G09R2/Design.
+# Additive TU only; all prior wrappers byte-identical.
+# C05 DEVICE COMMUNICATIONS (2026-11-02, job-2f4f7ceefe474948):
+# floe_device_communication_jni.cpp appended the same way — the trusted-host
+# device model-tool mailbox ABI (bind/next/describe/payload/isLive/shouldStop/
+# complete/close/stats/readiness) over the epoch-fenced Swift mailbox. The
+# Kotlin App pump performs real TCP/Telnet/BLE/USB operations through the
+# App-owned engine. Not a V3 command, never model-reachable; every ownership/
+# approval/cancellation decision lives in FloeAndroidCore. Additive TU only;
+# all prior wrappers byte-identical.
+# C05 RDP (2026-11-02, job-ed2243f494104990): floe_rdp_jni.cpp appended the
+# same way — the trusted-host binary RDP frame lane (acquire/read/release)
+# over the SAME imported FloeAndroidCore.so. Pixels never cross JSON/base64
+# and every epoch/owner/lease check lives in FloeAndroidCore. Additive TU
+# only; all prior wrappers byte-identical.
+add_library(floe_jni SHARED floe_jni.cpp floe_secret_jni.cpp floe_runtime_jni.cpp floe_attachment_staging_jni.cpp floe_security_corpus_jni.cpp floe_provider_catalog_jni.cpp floe_provider_draft_probe_jni.cpp floe_skills_folder_staging_jni.cpp floe_provider_modelset_jni.cpp floe_privacy_jni.cpp floe_linux_shell_jni.cpp floe_run_foreground_jni.cpp floe_jobs_jni.cpp floe_linux_workspace_jni.cpp floe_linux_runtime_cleanup_jni.cpp floe_linux_readiness_jni.cpp floe_workspace_source_jni.cpp floe_git_trust_jni.cpp floe_terminal_jni.cpp floe_browser_jni.cpp floe_git_actions_jni.cpp floe_network_workspace_jni.cpp floe_run_output_jni.cpp floe_office_ai_jni.cpp floe_network_diagnostics_jni.cpp floe_network_artifact_jni.cpp floe_platform_tools_jni.cpp floe_media_render_jni.cpp floe_media_foundation_jni.cpp floe_generation_foreground_jni.cpp floe_design_authority_jni.cpp floe_mail_transport_jni.cpp floe_vnc_jni.cpp floe_rdp_jni.cpp floe_calendar_host_jni.cpp floe_system_host_jni.cpp
+    ../../../../devicecommunication/src/main/cpp/floe_device_communication_jni.cpp)
 target_link_libraries(floe_jni PRIVATE FloeAndroidCore)
 target_link_options(floe_jni PRIVATE "-Wl,-z,max-page-size=16384")
 

@@ -15,6 +15,7 @@ license texts or the final distribution source/notice obligations.
 | AndroidX Ink 1.0.0 (`ink-authoring`, `ink-brush`, `ink-geometry`, `ink-nativeloader`, `ink-rendering`, `ink-storage`, `ink-strokes`), graphics-core 1.0.4 and espresso-idling-resource 3.5.0 (upstream runtime dependency) | https://android.googlesource.com/platform/frameworks/support/ | Apache-2.0; license and pinned provenance in `core/notesmedia/licenses/ink/` |
 | kotlinx.coroutines | https://github.com/Kotlin/kotlinx.coroutines | Apache-2.0 |
 | Compose Cupertino 3.3.1 (selected for the G01 UI foundation) | https://github.com/RobinPcrd/compose-cupertino/tree/3.3.1 | Apache-2.0; retain upstream NOTICE and contributor lineage |
+| Haze 1.7.3 (`dev.chrisbanes.haze:haze`, Android AAR) — real backdrop blur for shared chrome | https://github.com/chrisbanes/haze/tree/1.7.3 | Apache-2.0, copyright Christopher Banes and the Haze project contributors; full text at `licenses/haze/LICENSE` and `assets/legal/haze/LICENSE`; pins/hashes in `licenses/haze/PROVENANCE.json` |
 | Cupertino Icons font 2.0.0 — source-derived vector glyph data only (generated ImageVector paths; the font binary is not shipped and is not a runtime dependency) | https://github.com/flutter/packages/tree/main/third_party/packages/cupertino_icons | MIT; copyright per the shipped license ("Copyright (c) 2016 Vladimir Kharlampidi"), full text bundled at `assets/legal/cupertino-icons/LICENSE`; pinned inputs and hashes in `FloeAndroid/licenses/cupertino-icons/PROVENANCE.json` |
 | commonmark-java 0.30.1 (`org.commonmark:commonmark`, `commonmark-ext-gfm-tables`, `commonmark-ext-gfm-strikethrough`) — pure-JVM Markdown parse adapter for the conversation rich-body projection | https://github.com/atlassian/commonmark-java | BSD-2-Clause; copyright per the shipped license ("Copyright (c) 2015, Atlassian Pty Ltd"), full text preserved at `FloeAndroid/licenses/commonmark/LICENSE.txt` (extracted from the pinned jar's `META-INF/LICENSE.txt`) |
 | Sora Editor 0.24.4 (`io.github.rosemoe:editor`) | https://github.com/Rosemoe/sora-editor/tree/0.24.4 | LGPL-2.1; retain per-file version notices. Exact text and source provenance are preserved at `FloeAndroid/licenses/sora-editor/`. |
@@ -35,6 +36,16 @@ cross-compilation Swift host toolchain are development tools and are not copied
 into the APK. G01 does not bundle Termux, LibreOffice, CAD kernels, root managers
 or any local LLM. Future goals must add the corresponding exact upstream notices
 and source obligations when they integrate those components.
+
+### Haze backdrop material
+
+Haze 1.7.3 is pinned to tag `1.7.3` / commit
+`671eda90f5b8e6e72ebc4fce7455353f581c77d9`. It supplies the real
+source/effect blur used by `FloeMaterial.kt`; no translucent-alpha substitute
+is presented as blur. The Apache-2.0 text is retained at
+`licenses/haze/LICENSE` and bundled at `assets/legal/haze/LICENSE`, with the
+artifact hashes and API readback recorded in `licenses/haze/PROVENANCE.json`.
+SDK 31 and older keep the opaque readable fallback.
 
 The Cupertino selection excludes `cupertino-icons-extended`: its original README
 separately identifies the SF Symbols artwork as copyrighted. Floe ships none of that
@@ -89,3 +100,67 @@ materials required by the applicable licenses.
 ## Embedded terminal
 
 The selected terminal-emulator sources and TerminalRenderer from termux/termux-app v0.118.3 (5b657c6adf4304e5198951ce815fe0205dcac29c) use the upstream terminal-library Apache-2.0 exception. Full license texts and lineage are in `licenses/terminal` and packaged under `assets/legal/terminal`. Only the documented parser/buffer/renderer subset is reused; Floe owns the execution lifecycle. Source hashes and the two documented patches are recorded in `feature/terminal/PROVENANCE-TERMUX.md`.
+
+## C03 image encoding and C04 offline viewing
+
+AndroidX HeifWriter 1.1.0 (`androidx.heifwriter:heifwriter`) is Apache-2.0.
+The exact upstream license and pinned provenance are bundled at
+`assets/legal/heifwriter/` and retained in `licenses/heifwriter/`.
+
+The read-only CAD viewer retains its pinned CAD/OCCT source notices, license
+texts and source locations under `assets/cad_viewer/` and
+`licenses/cad_viewer/`. MiSans font license and provenance are also bundled
+under `assets/legal/cad-viewer/`. Android-specific adapters do not change
+those upstream terms. Component source availability and final package
+contents remain part of release qualification.
+
+## C05 native SSH
+
+The Android SSH port reuses the fixed FloeSSH source and exact Citadel,
+SwiftNIO, NIOSSH, Crypto, BigInt and support-package revisions recorded in
+`licenses/ssh/`. Full upstream license/source notices are retained there and
+bundled under `assets/legal/ssh/`. No SwiftTerm or host ssh executable is
+used. Android-specific transport changes retain their source lineage.
+
+## C06 pinned NetBare forwarding and root capture helper
+
+C06 vendors only the reviewed IPv4 TCP/UDP forwarding subset of
+`MegatronKing/NetBare-Android` at commit
+`df5b417ea663763932cabf1ef52f15b09ddc2e16`. The repository `LICENSE` is MIT
+(Copyright © 2019 Megatron King), while upstream source file headers still
+carry GPLv3 text. Both notices are retained and the exact vendored source,
+paths, hashes and local compatibility patch lineage are recorded in
+`FloeAndroid/vendor/netbare/UPSTREAM.json` and
+`FloeAndroid/licenses/netbare/`. No NetBare HTTP/SSL injection, UID dumper,
+sample app, prebuilt JNI or Maven/JCenter artifact is linked.
+
+The Full-only root capture helper is built from tcpdump 4.99.5 and libpcap
+1.10.5 under their BSD licenses. Exact upstream URLs, SHA-256 values, build
+flags and license texts are retained in `FloeAndroid/licenses/root-capture/`.
+The helper is packaged only in the Full APK as
+`lib/arm64-v8a/libfloecapture_helper.so` with
+`assets/root-capture/helper.json`; the root server verifies those bytes from
+the installed package before execution. It is never downloaded at runtime.
+The same PIE contains the Floe-authored MPL-2.0 capture guard
+(`scripts/root-capture/guard/` and
+`scripts/root-capture/patches/0001-tcpdump-install-guard.patch`), which
+independently enforces parent-pipe liveness, a monotonic deadline and the
+output byte budget. Its source/header/patch hashes are embedded in the ELF and
+bound by `helper.json`; unguarded bytes are rejected. Play contains no root
+adapter, helper asset or native helper library.
+
+## C05 VNC
+
+RoyalVNCKit is pinned to 92d4427c73817d8f849bb289ff190aa4b40c44ea, with the documented Android socket and lifetime port. CryptoSwift is pinned to a59b4d91ebb22011656c830f874fe7152e183a57. MIT, d3des public-domain and platform zlib notices are retained under licenses/vnc and packaged under assets/legal/vnc. The vendored source and local port notes are under shared/Vendor/Remote/RoyalVNCKit.
+
+## C05 device communication
+
+USB serial uses usb-serial-for-android3.11.0, fixed upstream8e694372dee4531d140766df7af3189d3d9531c5 and the pinned JitPack artifact. The MIT license and artifact/source hashes are retained under licenses/devicecommunication and packaged under assets/legal/devicecommunication. BLE GATT uses Android platform APIs; TCP/Telnet uses the JDK socket implementation.
+
+## C06 system services
+
+Read-only Android Health Connect uses the pinned AndroidX connect-client 1.1.0 under Apache-2.0. Exact direct artifact digests and provenance are recorded in FloeAndroid/licenses/systemservices/; the license and provenance are bundled in application legal assets. Location, contacts and foreground NDEF reading use Android platform APIs.
+
+## C05 RDP
+
+The Android RDP bridge uses pinned FreeRDP 3.31.1/WinPR and OpenSSL 4.0.1 under Apache-2.0. Immutable source hashes and the Android static-build recipe are recorded in FloeAndroid/licenses/rdp/ and scripts/rdp/. Their exact license texts and runtime source lock are bundled in the application legal assets. No Apple binary is included.

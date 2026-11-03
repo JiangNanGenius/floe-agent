@@ -1,4 +1,5 @@
 // swift-tools-version: 6.4
+import Foundation
 import PackageDescription
 
 // Production G02 shared-core overlay (audit job-dee5658543974844 recipes
@@ -8,6 +9,10 @@ import PackageDescription
 // Android mirror patches exist as narrow copied overlays (see PROVENANCE.md).
 // KeychainStore.swift is EXCLUDED entirely: its non-Security branch is a
 // process-wide RAM store, forbidden on Android (fail-closed directive).
+let floePackageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
+let floeRDPPrefix = ProcessInfo.processInfo.environment["FLOE_FREERDP_PREFIX"]
+    ?? floePackageRoot + "/Vendor/Remote/FreeRDP/android-arm64"
+
 let strictSettings: [SwiftSetting] = [
     .swiftLanguageMode(.v6),
     .enableExperimentalFeature("StrictConcurrency"),
@@ -31,6 +36,23 @@ let package = Package(
         // symlink so no product source points at personal cache paths).
         .package(url: "https://github.com/apple/swift-crypto.git",
                  revision: "95ba0316a9b733e92bb6b071255ff46263bbe7dc"),
+        // C05 SSH: the fixed iOS-proven Citadel/SwiftNIO graph. Exact
+        // revisions and transitive exact pins keep the Android product graph
+        // reproducible; licence lineage is in licenses/ssh/README.md.
+        .package(name: "Citadel", path: "Vendor/SSH/Citadel"),
+        .package(url: "https://github.com/apple/swift-nio.git", exact: "2.88.0"),
+        .package(url: "https://github.com/Wellz26/swift-nio-ssh.git", exact: "0.3.6"),
+        .package(url: "https://github.com/attaswift/BigInt.git", exact: "5.7.0"),
+        .package(url: "https://github.com/apple/swift-log.git", exact: "1.15.0"),
+        .package(url: "https://github.com/apple/swift-atomics.git", exact: "1.3.1"),
+        .package(url: "https://github.com/apple/swift-collections.git", exact: "1.6.0"),
+        .package(url: "https://github.com/apple/swift-system.git", exact: "1.8.0"),
+        // C05 VNC: the fixed RoyalVNCKit RFB slice and its exact CryptoSwift
+        // pin. Vendored under shared/Vendor/Remote/RoyalVNCKit; licence and
+        // Android-port patch lineage are in licenses/vnc and FLOE_PATCHES.md.
+        .package(name: "RoyalVNCKit", path: "Vendor/Remote/RoyalVNCKit"),
+        .package(url: "https://github.com/royalapplications/CryptoSwift.git",
+                 revision: "a59b4d91ebb22011656c830f874fe7152e183a57"),
     ],
     targets: [
         // Original value layer (69 of 75 files are links; the 6 patched
@@ -555,8 +577,24 @@ let package = Package(
             "FloeCore", "GRDB", "ZIPFoundation",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: [.swiftLanguageMode(.v6)]),
+        // C07 manual data exchange: typed backup manifest/archive staging,
+        // iOS-compatible .floenote reader/writer and the restore journal.
+        // Pure Foundation/Crypto/ZIPFoundation + the real shared FloeNotes
+        // types; no socket, UI, provider or second persistence authority.
+        .target(name: "FloeAndroidDataExchange", dependencies: [
+            "FloeNotes", "ZIPFoundation",
+            .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
         .target(name: "FloeAndroidJobTools", dependencies: [
             "FloeCore", "FloeModels", "FloeTools", "FloePersistence", "FloeAndroidShellTools",
+            .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
+        // C02 generic tool-result retention/paging. Pure Foundation/Crypto
+        // over the ORIGINAL FloeTools value layer; bytes live under the
+        // existing app-owned artifact root. No database, session, job or
+        // interpreter authority is introduced here.
+        .target(name: "FloeAndroidToolResults", dependencies: [
+            "FloeCore", "FloeModels", "FloeTools",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
         // D1 minimal web.search/web.fetch closure (Main decisions
@@ -630,18 +668,100 @@ let package = Package(
         // MigrationSupport). No renderer, AVFoundation, Media3, CAD or app UI
         // is vendored; see PROVENANCE.md.
         .target(name: "FloeAndroidWorkbench", dependencies: [
-            "FloeCore",
+            "FloeCore", "FloeTools",
         ], swiftSettings: strictSettings),
         .target(name: "FloeAgentRuntime", dependencies: [
             "FloeCore", "FloeModels", "FloeProviders", "FloeTools",
             "FloePersistence", "FloeSecurity", "GRDB",
+            "FloeAndroidToolResults",
             .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
+        // C05 SSH: the real Citadel/NIO transport, host-key trust chain,
+        // bounded exec and loopback forwarder. No SwiftTerm/Apple UI, no
+        // host `ssh` process. The framework-neutral protocols let the
+        // Android domain inject fake sessions in host-runnable tests.
+        .target(name: "FloeSSH", dependencies: [
+            "FloeCore", "FloeTools", "FloePersistence",
+            .product(name: "Citadel", package: "Citadel"),
+            .product(name: "NIOCore", package: "swift-nio"),
+            .product(name: "NIOPosix", package: "swift-nio"),
+            .product(name: "NIOSSH", package: "swift-nio-ssh"),
+            .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
+        // C06 generic mail: bounded IMAP/POP3/SMTP protocol, MIME, body
+        // paging, no-replay journals and the Swift-owned transport mailbox.
+        // The real TCP/SSL IO is the App-owned Kotlin lane; no Apple CFStream
+        // branch and no new third-party dependency or pin.
+        .target(name: "FloeAndroidMail", dependencies: [
+            "FloeCore",
+        ], swiftSettings: strictSettings),
+        // C05 RDP: the small Floe C bridge over the pinned upstream FreeRDP
+        // 3.31.1 core. The Android ARM64 static prefix (FreeRDP + WinPR +
+        // OpenSSL) is built by scripts/rdp and supplied through
+        // FLOE_FREERDP_PREFIX; a missing prefix is a build error, never a
+        // fallback to Apple binaries or a placeholder protocol.
+        .target(
+            name: "FloeRDPNative",
+            path: "Sources/FloeRDPNative",
+            publicHeadersPath: "include",
+            cSettings: [
+                .define("_GNU_SOURCE", to: "1", .when(platforms: [.android])),
+                .unsafeFlags([
+                    "-I", floeRDPPrefix + "/include/freerdp3",
+                    "-I", floeRDPPrefix + "/include/winpr3",
+                    "-I", floeRDPPrefix + "/openssl/include",
+                ], .when(platforms: [.android])),
+            ],
+            linkerSettings: [
+                .unsafeFlags([
+                    "-L", floeRDPPrefix + "/lib",
+                    "-L", floeRDPPrefix + "/openssl/lib",
+                ], .when(platforms: [.android])),
+                // These are embedded implementation archives, not a second
+                // public OpenSSL/FreeRDP ABI. Hide their symbols so ARM64
+                // assembly's direct local references remain non-interposable.
+                .unsafeFlags([
+                    "-Xlinker", "--exclude-libs=libcrypto.a:libssl.a:libfreerdp3.a:libwinpr3.a",
+                ], .when(platforms: [.android])),
+                .linkedLibrary("freerdp3", .when(platforms: [.android])),
+                .linkedLibrary("winpr3", .when(platforms: [.android])),
+                .linkedLibrary("ssl", .when(platforms: [.android])),
+                .linkedLibrary("crypto", .when(platforms: [.android])),
+                .linkedLibrary("z", .when(platforms: [.android])),
+                .linkedLibrary("log", .when(platforms: [.android])),
+                .linkedLibrary("dl", .when(platforms: [.android])),
+                .linkedLibrary("m", .when(platforms: [.android])),
+            ]
+        ),
+        // C05 RDP lifetime/trust/frame module. Protocol bytes, TLS and input
+        // are owned by FreeRDP/FloeRDPNative; no CoreGraphics, UIKit, Metal or
+        // screenshot-refresh substitute is linked.
+        .target(name: "FloeRDP", dependencies: [
+            "FloeCore", "FloeRDPNative",
+        ], swiftSettings: strictSettings),
+        // C05 VNC: real RFB via the fixed RoyalVNCKit slice. No UIKit,
+        // CoreGraphics, Metal, SwiftTerm or screenshot-refresh fallback.
+        .target(name: "FloeVNC", dependencies: [
+            .product(name: "RoyalVNCKit", package: "RoyalVNCKit"),
         ], swiftSettings: strictSettings),
         // Product bridge: v1 frozen operations + append-only v2 envelope
         // seam + fail-closed credential backend + real dependency anchors.
         .target(name: "FloeAndroidCore", dependencies: [
             "FloeCore", "FloeModels", "FloeProviders", "FloeSecurity",
             "FloeTools", "FloeSkills", "FloePersistence", "FloeAgentRuntime",
+            // C02 retained tool results + generic paging tool. Main binds the
+            // bridge/tool in composition; the runtime resolves the SAME store
+            // actor from the generation's artifact root.
+            "FloeAndroidToolResults",
+            // C05 SSH/VNC/RDP transport/domain dependencies (same native .so).
+            "FloeSSH",
+            "FloeVNC",
+            "FloeRDP",
+            // C05 screenshots: the vendored zlib already linked through
+            // FloeWorkspace is used directly for real PNG artifacts.
+            "CZLib",
+            // C06 mail protocol/domain transport.
+            "FloeAndroidMail",
             // D1 web closure: included in the actual native .so so the
             // qualified original tools/service link before the facade
             // registers them (dependency only; NO service registration here).
@@ -654,6 +774,8 @@ let package = Package(
             // G06 independent Notes authority (one NotesStore per runtime
             // generation; no chat database dependency or incidental open).
             "FloeNotes",
+            // C07 data exchange domain/bindings and typed archive reader.
+            "FloeAndroidDataExchange",
             // G09-R1 creative media project store (seven portable original
             // FloeWorkbench files). Canvas files/asset references reuse the
             // already-linked FloeCore/FloePersistence authorities.
@@ -677,6 +799,20 @@ let package = Package(
             // already compiled into the product library through GRDB.
             "GRDB", "GRDBSQLite",
             .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
+        .testTarget(name: "FloeSSHTests", dependencies: [
+            "FloeSSH", "FloeCore", "FloePersistence",
+            .product(name: "NIOCore", package: "swift-nio"),
+            .product(name: "NIOEmbedded", package: "swift-nio"),
+        ], swiftSettings: strictSettings),
+        .testTarget(name: "FloeVNCTests", dependencies: [
+            "FloeVNC",
+        ], swiftSettings: strictSettings),
+        .testTarget(name: "FloeRDPTests", dependencies: [
+            "FloeRDP", "FloeCore",
+        ], swiftSettings: strictSettings),
+        .testTarget(name: "FloeAndroidMailTests", dependencies: [
+            "FloeAndroidMail", "FloeCore",
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidLinuxAuthorityTests", dependencies: [
             "FloeAndroidLinuxAuthority", "FloeCore", "FloeEnvironments",
@@ -723,8 +859,26 @@ let package = Package(
         .testTarget(name: "FloeAndroidWorkbenchTests", dependencies: [
             "FloeAndroidWorkbench", "FloeCore",
         ], swiftSettings: strictSettings),
+        // C07 authored archive/staging/journal/Notes-compatibility suites.
+        .testTarget(name: "FloeAndroidDataExchangeTests", dependencies: [
+            "FloeAndroidDataExchange", "FloeNotes", "FloeCore", "ZIPFoundation",
+            .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
+        .testTarget(name: "FloeAndroidToolResultsTests", dependencies: [
+            "FloeAndroidToolResults", "FloeCore", "FloeModels", "FloeTools",
+            .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
+        // Focused DTO regression for the split FloeTools saved-definition
+        // surface (C02). Main adds this target from the bounded patch; the
+        // canonical tree keeps the test source under Tests/FloeToolsTests.
+        .testTarget(name: "FloeToolsTests", dependencies: [
+            "FloeTools", "FloeCore",
+        ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidCoreTests", dependencies: [
-            "FloeBrowser", "FloeAndroidCore", "FloeCore", "FloeModels", "FloePersistence", "GRDB",
+            "FloeBrowser", "FloeAndroidCore", "FloeSSH", "FloeVNC", "FloeRDP", "FloeAndroidMail",
+            "FloeAndroidDataExchange", "FloeAndroidToolResults",
+            .product(name: "Crypto", package: "swift-crypto"),
+            "FloeCore", "FloeModels", "FloePersistence", "GRDB",
             "FloeAndroidNetwork",
             "FloeWorkspace",
             // G02-P3 transport suites: the REAL incremental seam + provider

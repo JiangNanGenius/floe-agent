@@ -2254,6 +2254,13 @@ class SettingsHostController internal constructor(
                                 lastGenerateDraftReason =
                                     state.personalization.lastGenerateDraftReason
                                         .takeIf { state.personalization.kind == kind },
+                                generating = state.personalization.generating && state.personalization.kind == kind,
+                                generateCorrelation = state.personalization.generateCorrelation
+                                    .takeIf { state.personalization.kind == kind },
+                                generateReceipt = state.personalization.generateReceipt
+                                    .takeIf { state.personalization.kind == kind },
+                                generateError = state.personalization.generateError
+                                    .takeIf { state.personalization.kind == kind },
                             )
                         }
                         state.copy(
@@ -2836,15 +2843,23 @@ class SettingsHostController internal constructor(
                 }
             },
         ) { outcome ->
-            val current = stateFlow.value.personalization
-            if (current.generateCorrelation != correlation) return@trackOperation
-            update {
-                it.copy(personalization = it.personalization.copy(
-                    generating = false,
-                    generateCorrelation = null,
-                    generateReceipt = null,
-                ))
+            // Check ownership and settle under the same lock. A newer
+            // generation may begin between independent IO callbacks.
+            val settled = synchronized(stateMutationLock) {
+                if (stateFlow.value.personalization.generateCorrelation != correlation) {
+                    false
+                } else {
+                    update {
+                        it.copy(personalization = it.personalization.copy(
+                            generating = false,
+                            generateCorrelation = null,
+                            generateReceipt = null,
+                        ))
+                    }
+                    true
+                }
             }
+            if (!settled) return@trackOperation
             when (outcome) {
                 is HostOperationOutcome.Completed -> {
                     val effect = outcome.value as? JsonObject

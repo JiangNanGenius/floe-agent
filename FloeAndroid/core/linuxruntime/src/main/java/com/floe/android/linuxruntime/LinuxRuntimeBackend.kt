@@ -163,6 +163,56 @@ interface PtySession {
     fun lastWaitErrno(): Int
 }
 
+/**
+ * One owned child process whose three stdio descriptors are DISTINCT OS pipes
+ * and whose whole process tree is addressed by the session. This is the C01
+ * managed-service stdio transport: no PTY, no line discipline, no echo and no
+ * merged stderr. [readStdout]/[readStderr] keep the streams independent.
+ *
+ * Semantics:
+ * * [read] returns `null` ONLY on real descriptor EOF; an empty array means
+ *   "no data within the bounded wait" (timeout). A read failure throws.
+ * * [writeStdin] is nonblocking and reports accepted bytes / -errno.
+ * * [closeStdin] is the descriptor EOF command (idempotent); it is never an
+ *   exit and never closes stdout/stderr.
+ * * [cancel] releases stdin, verifies the creation identity (PID-reuse guard),
+ *   terminates exactly the owned process group (TERM then bounded KILL),
+ *   reaps the root and closes every owned descriptor. Idempotent.
+ */
+interface PipeProcessSession {
+    val pid: Int
+    val creationIdentity: String
+    val executable: String
+    val argv: List<String>
+    val ownership: RunOwnership
+
+    /** One bounded stdout read: null = EOF, empty = timeout, else bytes. */
+    fun readStdout(capacity: Int, timeoutMs: Long): ByteArray?
+
+    /** One bounded stderr read: null = EOF, empty = timeout, else bytes. */
+    fun readStderr(capacity: Int, timeoutMs: Long): ByteArray?
+
+    /** Nonblocking stdin write; accepted bytes (possibly partial) or -errno. */
+    fun writeStdin(data: ByteArray, offset: Int = 0, length: Int = data.size): Int
+
+    /** Close the stdin write end (real descriptor EOF); idempotent, 0 or -errno. */
+    fun closeStdin(): Int
+
+    /** Close the two OUTPUT read ends only (after the terminal drain). */
+    fun closeStreams()
+
+    fun pollExit(): ExitResult?
+    fun awaitExit(timeoutMs: Long): ExitResult?
+    fun cancel(): ExitResult?
+    fun lastWaitErrno(): Int
+}
+
+/** Result of [LinuxRuntimeBackend.spawnPipes]. */
+sealed class PipeSpawnOutcome {
+    data class Spawned(val session: PipeProcessSession) : PipeSpawnOutcome()
+    data class Failed(val error: SpawnError) : PipeSpawnOutcome()
+}
+
 /** Explicit inputs the caller must supply. Nothing here is invented by the backend. */
 data class LaunchSpec(
     val executable: String,
@@ -205,4 +255,13 @@ interface LinuxRuntimeBackend {
      * startup deadline. Invoke this blocking transport off the UI thread.
      */
     fun spawn(spec: LaunchSpec, timeoutMs: Long = 10_000): SpawnOutcome
+
+    /**
+     * Spawn the SAME explicit [spec] (executable/argv/env/cwd) with three
+     * dedicated pipes instead of a PTY. The default honestly answers ENOSYS;
+     * only a backend with a real pipe transport may override it. No
+     * implementation may emulate this with a PTY or a host interpreter.
+     */
+    fun spawnPipes(spec: LaunchSpec, timeoutMs: Long = 10_000): PipeSpawnOutcome =
+        PipeSpawnOutcome.Failed(SpawnError(38 /* ENOSYS */, "pipe process transport unavailable"))
 }

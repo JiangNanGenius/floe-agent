@@ -192,6 +192,8 @@ internal object OoxmlTestFixtures {
         val fileName: String,
         val cells: List<XlsxCell>,
         val relType: String = WORKSHEET_REL_TYPE,
+        /** Declared workbook <sheet name>; defaults to the historical TabN. */
+        val name: String? = null,
     )
 
     fun xlsxBytes(
@@ -200,7 +202,8 @@ internal object OoxmlTestFixtures {
         sharedStringsRelOverride: Pair<String, String>? = null,
     ): ByteArray {
         val sheets = sheetsInTabOrder.mapIndexed { index, sheet ->
-            "<sheet name=\"Tab${index + 1}\" sheetId=\"${index + 1}\" r:id=\"${sheet.relId}\"/>"
+            val declared = esc(sheet.name ?: "Tab${index + 1}")
+            "<sheet name=\"$declared\" sheetId=\"${index + 1}\" r:id=\"${sheet.relId}\"/>"
         }.joinToString("")
         val workbook = XML_DECL +
             "<workbook xmlns=\"$S_NS\" xmlns:r=\"$R_NS\"><sheets>$sheets</sheets></workbook>"

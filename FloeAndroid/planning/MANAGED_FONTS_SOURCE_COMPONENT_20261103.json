@@ -1,0 +1,34 @@
+{
+  "status": "Source component compiled; not complete font feature",
+  "checks": [
+    "Full/Play release Kotlin passed",
+    "8 SFNT metadata boundary tests and3 Office config tests passed; no skips"
+  ],
+  "paths": {
+    "core/fonts/gradle.lockfile": "27e3328d634991eacd2712509a764a942489d14e308a9204f905296bf77a1d88",
+    "core/fonts/build.gradle.kts": "73997428948be18f2373645790d8ddfb994161bfd5ffca303c85a1c4caa2bf5c",
+    "core/fonts/src/main/java/com/floe/android/core/fonts/ManagedFontStore.kt": "aa925dbfdf9c3315daf8073bd9bf026d31488e3497d49f2c43ab7d339490a8f9",
+    "core/fonts/src/main/java/com/floe/android/core/fonts/SfntMetadata.kt": "e51ff5086c951f31dacb467c7590cb0c9e661acbe951ad7450311368e3432e9c",
+    "core/fonts/src/test/java/com/floe/android/core/fonts/SfntMetadataTest.kt": "cb9acb0d765c756afa977d8a14770acefa61b61a35be19e4a36f3e4e8c007537",
+    "settings.gradle.kts": "0d5b575123917c4f193bf4dec89b9ae070e715e19b3faee32345b8db410c16b7",
+    "app/build.gradle.kts": "4fe22607a77dae8ce6529450418fcf95666099e75f5f7fde1b2c8f89e021bfe2",
+    "core/workbenchmedia/build.gradle.kts": "e2861243ea9e45f8006264629034ebb1fa8bd96fe5b394e197f170949c82afaf",
+    "core/officeengine/build.gradle.kts": "8c22fd77301c231f65e69a311645588c697e55bb1982aa1728a3017617033829",
+    "app/src/main/kotlin/com/floe/android/FloeApplication.kt": "47b536431054dd661a924c5edd3067ae2027200a1a7f28c5d9cf7de2eddbc753",
+    "app/src/main/kotlin/com/floe/android/FontSettingsDestination.kt": "e85b43faa5b397bea24df992d2d0a0c7d7c210ff9d85cfa08e7141c3db348435",
+    "app/src/main/kotlin/com/floe/android/host/fonts/FontSettingsHost.kt": "fdbd3fb959c087e193a4c70511e267c83ab315cc79e7a84773492fa7143f97f3",
+    "app/src/main/kotlin/com/floe/android/host/dataexchange/C07DataExchangeFeature.kt": "eb0b2d4817ce0c7bec64115b1bce4b31d12f8226caf67f43f9d09c6d128ea943",
+    "app/src/main/res/values/fonts_strings.xml": "9db56952f3abd0fa7836e390bb892a04850379fa534fab628210ab8642e9b5e6",
+    "app/src/main/res/values-zh-rCN/fonts_strings.xml": "eb06855521749cd44893db09185a6c33774dec047c45fb8314f32281bcef96f7",
+    "core/workbenchmedia/src/main/kotlin/com/floe/android/core/workbenchmedia/image/TextRenderer.kt": "10b943afed94db5b27a508180b4c78393df1913cbbfe4ff84b617e220b932c5d",
+    "core/officeengine/src/main/java/com/floe/android/core/officeengine/OfficePayloadBootstrap.kt": "838a9a7ae65a3ab688f276dbbc91d8c119dd046603d2fcd940ae5c16699ebee4",
+    "core/officeengine/src/main/java/com/floe/android/core/officeengine/OfficeUnpackPreparation.kt": "f89e7152aecd0ba1da39101af9b27929e6ee0fb0202d0bfcac4614a9e4ce6924",
+    "core/officeengine/src/test/java/com/floe/android/core/officeengine/ManagedFontsConfTest.kt": "4aede4aff185adee9aa55d39826a3d7a2d2b4ca99e52ab2fc8ad3eda7ae828f5"
+  },
+  "remaining": [
+    "font.list/install/remove task tools",
+    "Font backup/restore through C07",
+    "Real font import/actual Office/media acceptance on final APK",
+    "No new APK or public Release"
+  ]
+}

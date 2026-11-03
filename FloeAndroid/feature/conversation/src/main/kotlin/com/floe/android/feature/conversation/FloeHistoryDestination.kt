@@ -238,6 +238,7 @@ fun FloeConversationHistoryDestination(
                             onRestore = { holder.restoreConversation(item.id) },
                             onRequestDelete = { holder.requestSingleDeletion(item.id) },
                             onRename = { holder.requestRename(item) },
+                            onTogglePin = { holder.setPinned(item.id, !item.isPinned) },
                             onSelectMultiple = {
                                 holder.setEditMode(true)
                                 holder.toggleSelect(item.id)
@@ -331,6 +332,8 @@ fun FloeConversationHistoryDestination(
  * generic line — nothing is ever presented as success here. */
 @Composable
 private fun historyActionErrorText(code: String): String = when (code) {
+    "toolResultCleanupPending" -> stringResource(R.string.history_results_cleanup_pending)
+    "toolResultCleanupFailed" -> stringResource(R.string.history_results_cleanup_failed)
     "staleRevision" -> stringResource(R.string.history_action_failed_stale)
     "revision_unavailable", "runtime_unavailable", "runtimeUnavailable",
     "exchangeUnavailable" -> stringResource(R.string.history_action_failed_unavailable)
@@ -461,6 +464,7 @@ private fun HistoryRow(
     onRestore: () -> Unit,
     onRequestDelete: () -> Unit,
     onRename: () -> Unit,
+    onTogglePin: () -> Unit,
     onSelectMultiple: () -> Unit,
 ) {
     val colors = Floe.colors
@@ -495,6 +499,17 @@ private fun HistoryRow(
                 color = colors.secondaryLabel,
             )
         }
+        if (item.isPinned) {
+            // Durable pin state (schema v50). Text, not a new glyph: the
+            // shared icon set stays stable and the state is readable to
+            // screen readers without an extra semantics node.
+            FloeText(
+                stringResource(R.string.history_pinned_badge),
+                style = Floe.typography.metadata,
+                color = colors.accent,
+                maxLines = 1,
+            )
+        }
         item.projectedStateName?.let { stateName ->
             ActivityBadge(stateName)
         }
@@ -510,6 +525,16 @@ private fun HistoryRow(
                     contentAlignment = Alignment.Center,
                 ) { IconGlyph(FloeIcons.ChevronUpDown, colors.secondaryLabel, 16.dp) }
                 FloeChipMenu(expanded = menuExpanded, onDismiss = { menuExpanded = false }) {
+                    if (!item.isArchived) {
+                        CupertinoMenuEntry(
+                            title = stringResource(
+                                if (item.isPinned) R.string.history_unpin_action
+                                else R.string.history_pin_action,
+                            ),
+                            selected = false,
+                            onClick = { menuExpanded = false; onTogglePin() },
+                        )
+                    }
                     CupertinoMenuEntry(
                         title = stringResource(R.string.history_rename_title),
                         selected = false,

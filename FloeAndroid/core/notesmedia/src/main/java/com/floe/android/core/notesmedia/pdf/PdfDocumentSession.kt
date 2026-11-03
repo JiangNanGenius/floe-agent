@@ -8,10 +8,14 @@ import com.floe.android.core.notesmedia.source.MediaSnapshotVerifier
 import com.floe.android.core.notesmedia.source.SnapshotRefusal
 import com.floe.android.core.notesmedia.source.SnapshotResult
 import com.floe.android.core.notesmedia.source.VerifiedMediaSnapshot
+import com.floe.android.core.officeengine.pdf.OfficePdfPageText
 import com.floe.android.core.officeengine.pdf.OfficePdfVerifiedSourceContract
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
+import kotlin.math.max
 
 /**
  * One open, verified PDF document.
@@ -59,6 +63,7 @@ class PdfDocumentSession internal constructor(
         onEvict = { bitmap -> if (!bitmap.isRecycled) runCatching { bitmap.recycle() } },
     )
     private val textIndex = PdfTextIndex()
+    private val pageTextCache = PdfPageTextCache()
     private val verifiedAspects = HashMap<Int, Boolean>()
     private val closed = AtomicBoolean(false)
 
@@ -104,6 +109,10 @@ class PdfDocumentSession internal constructor(
                 // uncached rather than dropping a valid render.
                 return result
             }
+            // Ownership transferred to the cache. The first render must
+            // report the same ownership as a later cache hit; otherwise
+            // releaseBitmap recycles the still-cached page after encoding it.
+            return result.copy(fromCache = true)
         }
         return result
     }
@@ -274,6 +283,135 @@ class PdfDocumentSession internal constructor(
         }
     }
 
+    /**
+     * Extracts the actual page text for arbitrary user selection.
+     *
+     * Deliberately bypasses [textIndex]: an index may hold OCR text, which is
+     * useful for search but is NOT the PDF source text a user is selecting.
+     * The transaction runs in the same isolated renderer as pixels, every
+     * reply is re-validated against this session's SHA-bound snapshot and page
+     * count, and the result is cached only under the exact source identity.
+     *
+     * A blank page is [PdfPageTextOutcome.NoText], never a fabricated OCR
+     * result. Devices without the platform text API get
+     * [PdfTextUnavailableReason.NATIVE_TEXT_UNSUPPORTED].
+     */
+    suspend fun pageTextAwait(
+        page: PdfPageId,
+        isCancelled: () -> Boolean = { false },
+    ): PdfPageTextOutcome {
+        if (closed.get()) {
+            return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.SESSION_CLOSED, "session")
+        }
+        if (page.pageIndex !in 0 until pageCount) {
+            return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.PAGE_OUT_OF_RANGE, "session")
+        }
+        val pageGeometry = geometry
+        if (pageGeometry != null) {
+            if (!pageGeometry.isBoundTo(source.sha256)) {
+                return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.SOURCE_CHANGED, "session")
+            }
+            if (pageGeometry.pageCount != pageCount) {
+                return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.BACKEND_FAILED, "session")
+            }
+        }
+        if (pageGeometry?.encrypted == true && password == null) {
+            return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.ENCRYPTED, "session")
+        }
+        if (isCancelled()) {
+            return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.CANCELLED, "session")
+        }
+        pageTextCache.get(source, page, pageCount)?.let { payload ->
+            val geometryMatches = pageBox(page)?.let { pageTextMatchesBox(payload, it) } ?: true
+            return readyOrNoText(payload, geometryMatches)
+        }
+
+        val outcome = try {
+            withContext(Dispatchers.IO) {
+                textBackend.pageText(source, pageCount, page, isCancelled)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.BACKEND_FAILED, textBackend.id)
+        }
+        if (closed.get()) {
+            return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.SESSION_CLOSED, textBackend.id)
+        }
+        if (isCancelled()) {
+            // Do not cache work the caller no longer owns.
+            return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.CANCELLED, textBackend.id)
+        }
+        return when (outcome) {
+            is PdfPageTextOutcome.Ready -> {
+                val payload = outcome.page
+                when {
+                    payload.pageIndex != page.pageIndex || payload.pageCount != pageCount ->
+                        PdfPageTextOutcome.Unavailable(
+                            PdfTextUnavailableReason.BACKEND_FAILED,
+                            textBackend.id,
+                        )
+                    payload.sourceBytes != source.byteCount ->
+                        PdfPageTextOutcome.Unavailable(
+                            PdfTextUnavailableReason.SOURCE_CHANGED,
+                            textBackend.id,
+                        )
+                    else -> {
+                        val box = pageBox(page)
+                        val geometryMatches = box == null || pageTextMatchesBox(payload, box)
+                        if (!pageTextCache.put(source, page, pageCount, payload)) {
+                            PdfPageTextOutcome.Unavailable(
+                                PdfTextUnavailableReason.BACKEND_FAILED,
+                                textBackend.id,
+                            )
+                        } else {
+                            readyOrNoText(payload, geometryMatches)
+                        }
+                    }
+                }
+            }
+            is PdfPageTextOutcome.NoText ->
+                if (outcome.pageIndex != page.pageIndex || outcome.pageCount != pageCount) {
+                    PdfPageTextOutcome.Unavailable(
+                        PdfTextUnavailableReason.BACKEND_FAILED,
+                        textBackend.id,
+                    )
+                } else {
+                    outcome
+                }
+            is PdfPageTextOutcome.Unavailable -> outcome
+            is PdfPageTextOutcome.StaleSource -> outcome
+        }
+    }
+
+    private fun readyOrNoText(
+        payload: OfficePdfPageText,
+        geometryMatches: Boolean,
+    ): PdfPageTextOutcome =
+        if (payload.text.isBlank()) {
+            PdfPageTextOutcome.NoText(
+                pageIndex = payload.pageIndex,
+                pageCount = payload.pageCount,
+                truncated = payload.truncated,
+            )
+        } else {
+            PdfPageTextOutcome.Ready(payload, geometryMatches)
+        }
+
+    private fun pageTextMatchesBox(payload: OfficePdfPageText, box: PdfPageBox): Boolean {
+        val expectedWidth = box.displayedWidthPt
+        val expectedHeight = box.displayedHeightPt
+        if (!expectedWidth.isFinite() || !expectedHeight.isFinite() ||
+            expectedWidth <= 0f || expectedHeight <= 0f
+        ) {
+            return false
+        }
+        val toleranceX = max(1.5f, expectedWidth * 0.005f)
+        val toleranceY = max(1.5f, expectedHeight * 0.005f)
+        return abs(payload.pageWidthPt - expectedWidth) <= toleranceX &&
+            abs(payload.pageHeightPt - expectedHeight) <= toleranceY
+    }
+
     // ------------------------------------------------------------------
     // Lifecycle
     // ------------------------------------------------------------------
@@ -282,6 +420,7 @@ class PdfDocumentSession internal constructor(
         if (!closed.compareAndSet(false, true)) return
         renderCache.clear()
         thumbnailCache.clear()
+        pageTextCache.clear()
         password?.close()
         if (ownsGateway) {
             gateway.release { /* caches are already empty; nothing else is owned */ }

@@ -170,6 +170,18 @@ public struct ImageProviderAdapterFactory: Sendable {
     public init() {}
 
     public func adapter(for provider: ProviderProfile) -> (any ImageProviderAdapter)? {
+        // Subscription endpoints are identified by their exact route first:
+        // Agent Plan serves images on `/api/plan/v3/images/generations`, and
+        // Token Plan serves them through the native Model Studio multimodal
+        // route. Neither may inherit a PAYG behavior by kind alone.
+        if let billing = ProviderBillingEndpoint.resolve(provider.baseURL) {
+            switch billing {
+            case .volcengineAgentPlan:
+                return VolcengineImageAdapter()
+            case .alibabaTokenPlan:
+                return AlibabaImageAdapter()
+            }
+        }
         switch provider.kind {
         case .openAI:
             return OpenAIImageAdapter()
@@ -179,10 +191,24 @@ public struct ImageProviderAdapterFactory: Sendable {
             return AlibabaImageAdapter()
         case .googleGemini:
             return GoogleGeminiImageAdapter()
-        case .anthropic, .local, .custom:
-            // Anthropic has no image-generation endpoint; custom endpoints are
-            // not assumed to support image operations.
+        case .anthropic, .local:
+            // Anthropic has no image-generation endpoint; local has no remote
+            // image service.
             return nil
+        case .custom:
+            // Older hand-entered DashScope connections keep their saved URL
+            // but use the real Alibaba image contract.
+            if AlibabaEndpointIdentity.isPayAsYouGo(provider.baseURL) {
+                return AlibabaImageAdapter()
+            }
+            // Custom endpoints are not assumed to support image operations —
+            // except a verified Kimi Code Coding Plan route (api.kimi.com with
+            // the evidenced /coding or /coding/v1 base): its synchronous
+            // OpenAI-compatible /coding/v1/images/generations and
+            // /coding/v1/images/edits route is grounded in upstream
+            // implementation evidence (see KimiImageAdapter's header for
+            // commit/path citations).
+            return KimiCodeEndpointIdentity.matches(provider) ? KimiImageAdapter() : nil
         }
     }
 }

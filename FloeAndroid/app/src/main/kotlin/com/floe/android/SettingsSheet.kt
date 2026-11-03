@@ -54,7 +54,6 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
-import com.floe.android.design.FloeCircleButton
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeLayout
@@ -66,6 +65,7 @@ import com.floe.android.design.FloeSettingsSection
 import com.floe.android.design.FloeSettingsHostGeometry
 import com.floe.android.design.FloeSidebarRow
 import com.floe.android.design.FloeText
+import com.floe.android.design.FloeToolbarIconButton
 import com.floe.android.design.FloeThemeMode
 import com.floe.android.design.FloeValueRow
 import com.floe.android.design.FloeVerticalDivider
@@ -77,6 +77,8 @@ import com.floe.android.host.RuntimeHost
 import com.floe.android.host.SettingsHostPages
 import com.floe.android.host.WebSearchSettingsPage
 import com.floe.android.host.GitHubCredentialEditor
+import com.floe.android.feature.desktopassist.DesktopAssistSettingsPage
+import com.floe.android.host.voice.C03VoiceSettingsCard
 import io.github.robinpcrd.cupertino.section.SectionItem
 
 /**
@@ -256,7 +258,7 @@ fun SettingsSheet(
                                         .verticalScroll(rememberScrollState())
                                         .padding(vertical = 8.dp),
                                 ) {
-                                    FloeSettingsSection.entries.forEach { entry ->
+                                    FloeSettingsSection.visibleCases.forEach { entry ->
                                         FloeSidebarRow(
                                             icon = settingsIcon(entry),
                                             label = settingsTitle(entry),
@@ -452,7 +454,7 @@ fun SettingsSheet(
                                     .verticalScroll(rememberScrollState())
                                     .padding(vertical = 8.dp),
                             ) {
-                                FloeSettingsSection.entries.forEach { entry ->
+                                FloeSettingsSection.visibleCases.forEach { entry ->
                                     FloeSidebarRow(
                                         icon = settingsIcon(entry),
                                         label = settingsTitle(entry),
@@ -501,13 +503,11 @@ private fun SettingsSidebarHeader(onToggleColumns: () -> Unit, onDone: () -> Uni
             modifier = Modifier.weight(1f),
         )
         FloeDoneButton(onDone)
-        FloeCircleButton(
+        FloeToolbarIconButton(
             icon = FloeIcons.SidebarToggle,
             contentDescription = stringResource(R.string.toggle_sheet_columns),
             onClick = onToggleColumns,
-            visualSize = 38.dp,
-            iconSize = 20.dp,
-            modifier = Modifier.padding(start = 8.dp),
+            modifier = Modifier.padding(start = 4.dp),
         )
     }
 }
@@ -533,12 +533,10 @@ private fun SettingsDetailHeader(
             modifier = Modifier.weight(1f),
         )
         if (showColumnToggle) {
-            FloeCircleButton(
+            FloeToolbarIconButton(
                 icon = FloeIcons.SidebarToggle,
                 contentDescription = stringResource(R.string.toggle_sheet_columns),
                 onClick = onToggleColumns,
-                visualSize = 38.dp,
-                iconSize = 20.dp,
             )
         }
     }
@@ -560,14 +558,10 @@ private fun SheetToolbar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (compactDetail) {
-            FloeCircleButton(
+            FloeToolbarIconButton(
                 icon = FloeIcons.ChevronBack,
                 contentDescription = stringResource(R.string.back),
                 onClick = onBack,
-                visualSize = 38.dp,
-                iconSize = 18.dp,
-                background = Color.Transparent,
-                hairline = false,
                 modifier = Modifier.padding(end = 2.dp),
             )
         }
@@ -618,12 +612,19 @@ private fun SettingsSectionContent(
     when (section) {
         FloeSettingsSection.GENERAL -> {
             GeneralSettingsPage(themeMode, onThemeModeChange)
-            com.floe.android.host.linux.LocalRuntimeSettingsCard()
+            C03VoiceSettingsCard(runtimeHost?.voiceOrNull())
             if (runtimeHost != null) {
                 SettingsHostPages.DefaultsPage(runtimeHost.settings)
             }
         }
         FloeSettingsSection.PROVIDERS -> ProvidersSettingsPage()
+        FloeSettingsSection.AUXILIARY -> {
+            if (runtimeHost != null) SettingsHostPages.AuxiliaryPage(runtimeHost.settings)
+            else HostPendingPage(R.string.settings_skills_pending)
+        }
+        FloeSettingsSection.EXECUTION -> com.floe.android.host.linux.LocalRuntimeSettingsCard()
+        FloeSettingsSection.REMOTE -> RemoteOperationalSettingsPage(runtimeHost)
+        FloeSettingsSection.SYSTEM_CAPABILITIES -> SystemOperationalSettingsPage(runtimeHost)
         FloeSettingsSection.SKILLS -> SkillsSettingsPage(runtimeHost)
         FloeSettingsSection.MEMORY -> {
             if (runtimeHost != null) {
@@ -650,6 +651,20 @@ private fun SettingsSectionContent(
         FloeSettingsSection.WEB_SEARCH -> {
             if (runtimeHost != null) {
                 WebSearchSettingsPage(runtimeHost.webSearch)
+            } else {
+                HostPendingPage(R.string.settings_skills_pending)
+            }
+        }
+        FloeSettingsSection.DESKTOP_ASSIST -> {
+            if (runtimeHost != null) {
+                LaunchedEffect(runtimeHost.desktopAssist) {
+                    runtimeHost.desktopAssist.ensureLoaded()
+                }
+                val assistState by runtimeHost.desktopAssist.state.collectAsState()
+                DesktopAssistSettingsPage(
+                    state = assistState,
+                    actions = runtimeHost.desktopAssist,
+                )
             } else {
                 HostPendingPage(R.string.settings_skills_pending)
             }
@@ -848,7 +863,12 @@ private fun settingsIcon(section: FloeSettingsSection) = when (section) {
     FloeSettingsSection.USAGE -> FloeIcons.ChartBar
     FloeSettingsSection.PRIVACY -> FloeIcons.HandRaised
     FloeSettingsSection.WEB_SEARCH -> FloeIcons.Magnifier
+    FloeSettingsSection.DESKTOP_ASSIST -> FloeIcons.DeviceLocal
     FloeSettingsSection.DIAGNOSTICS -> FloeIcons.Stethoscope
+    FloeSettingsSection.AUXILIARY -> FloeIcons.Photo
+    FloeSettingsSection.EXECUTION -> FloeIcons.Terminal
+    FloeSettingsSection.REMOTE -> FloeIcons.DeviceLocal
+    FloeSettingsSection.SYSTEM_CAPABILITIES -> FloeIcons.Gearshape
 }
 
 @Composable
@@ -860,5 +880,10 @@ private fun settingsTitle(section: FloeSettingsSection): String = when (section)
     FloeSettingsSection.USAGE -> stringResource(R.string.settings_usage)
     FloeSettingsSection.PRIVACY -> stringResource(R.string.settings_privacy)
     FloeSettingsSection.WEB_SEARCH -> stringResource(R.string.settings_web_search)
+    FloeSettingsSection.DESKTOP_ASSIST -> stringResource(R.string.settings_desktop_assist)
     FloeSettingsSection.DIAGNOSTICS -> stringResource(R.string.settings_diagnostics)
+    FloeSettingsSection.AUXILIARY -> stringResource(R.string.settings_auxiliary_capabilities)
+    FloeSettingsSection.EXECUTION -> stringResource(R.string.settings_execution_environment)
+    FloeSettingsSection.REMOTE -> stringResource(R.string.settings_remote_connections)
+    FloeSettingsSection.SYSTEM_CAPABILITIES -> stringResource(R.string.settings_system_capabilities)
 }

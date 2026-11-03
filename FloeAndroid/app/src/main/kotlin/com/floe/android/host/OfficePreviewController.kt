@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.host
 
+import com.floe.android.host.officerecovery.OfficeRecoveryRoute
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import android.os.IBinder
 import com.floe.android.MainActivity
 import com.floe.android.core.officeengine.OfficeApprovalNotice
@@ -12,8 +14,36 @@ import com.floe.android.core.officeengine.OfficeCloseAck
 import com.floe.android.core.officeengine.OfficeCloseAckPolicy
 import com.floe.android.core.officeengine.OfficeEngine
 import com.floe.android.core.officeengine.OfficePermission
+import com.floe.android.core.officeengine.OfficePreviewActivity
 import com.floe.android.core.officeengine.OfficePreviewRequest
+import com.floe.android.core.officeengine.OfficeRequestPolicy
+import com.floe.android.core.officeengine.OfficeSaveOriginalChannel
+import com.floe.android.core.officeengine.OfficeSaveOriginalHandoffPolicy
 import com.floe.android.core.officeengine.OfficeViewerOutcome
+import com.floe.android.core.officeengine.revisionreview.OfficeConflictPreviewNaming
+import com.floe.android.core.officeengine.revisionreview.OfficeConflictPreviewRole
+import com.floe.android.core.officeengine.revisionreview.OfficeConflictReviewChannel
+import com.floe.android.host.officereview.OfficeConflictArtifacts
+import com.floe.android.host.officereview.OfficeConflictPreviewBuild
+import com.floe.android.host.officereview.OfficeConflictPreviewRead
+import com.floe.android.host.officereview.OfficeConflictPreviewReader
+import com.floe.android.host.officereview.OfficeConflictReviewCoordinator
+import com.floe.android.host.officereview.OfficeConflictReviewHost
+import com.floe.android.host.officereview.OfficeConflictReviewIdentity
+import com.floe.android.host.officereview.OfficeConflictRoute
+import com.floe.android.host.officereview.OfficeConflictVersion
+import com.floe.android.host.officereview.OfficeOriginalCapture
+import com.floe.android.host.officerecovery.OfficeRecoveryArtifacts
+import com.floe.android.host.officerecovery.OfficeRecoveryCandidate
+import com.floe.android.host.officerecovery.OfficeRecoveryController
+import com.floe.android.host.officerecovery.OfficeRecoveryJournal
+import com.floe.android.host.officerecovery.OfficeRecoveryOpenPort
+import com.floe.android.host.officerecovery.OfficeRecoveryOpenResult
+import com.floe.android.host.officerecovery.OfficeRecoveryOriginalState
+import com.floe.android.host.officerecovery.OfficeRecoveryPhase
+import com.floe.android.host.officerecovery.OfficeRestoredDocument
+import com.floe.android.host.officerecovery.OfficeRestoredDocumentOpenPort
+import com.floe.android.host.officerecovery.OfficeRestoredOpenResult
 import com.floe.android.host.output.NativeRunOutputChannel
 import com.floe.android.host.output.RunOutputOfficeSnapshotStager
 import com.floe.android.safgateway.SafOperation
@@ -21,7 +51,9 @@ import com.floe.android.safgateway.SafFailure
 import com.floe.android.safgateway.SafOutcome
 import com.floe.android.safgateway.SafUriRef
 import java.io.File
+import java.nio.file.Files
 import java.util.Locale
+import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -58,13 +90,196 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
     /** R2: separate owned MUTABLE working copy per edit route (never a chmod of
      * the immutable snapshot or any original; retained after close for recovery). */
     private val working = OfficeEditableCopyStager(workingRoot)
+    /** Verified module outputs are written here by the Office engine module. */
+    private val outputsRoot = File(this.context.noBackupFilesDir, "floe-office-outputs")
+    /** C08 fresh restored documents written by the C07 full restore. */
+    private val restoredDocumentsRoot = File(
+        this.context.applicationInfo.dataDir, "files/OfficeInputs/restored")
+    /** Ownership/byte checks for recovery paths; never authority by itself. */
+    private val recoveryArtifacts = OfficeRecoveryArtifacts(workingRoot, outputsRoot)
+    private val recoveryJournal: OfficeRecoveryJournal
     /** Application-owned Save-Copy handoff: exact-session controllers, module
      * command bind, host channel and the SAF gateway IO it schedules. Views
      * never own this lifetime. */
-    private val saveCopy = OfficeSaveCopyHost(this.context)
+    private val saveCopy: OfficeSaveCopyHost
+    /** Durable recovery review/action owner (C08 OFC-SAVE-REOPEN). */
+    internal val recovery: OfficeRecoveryController
+    /** App-owned immutable snapshots used only while a conflict is reviewed. */
+    private val reviewRoot = File(
+        this.context.noBackupFilesDir,
+        OfficeConflictPreviewNaming.REVIEW_ROOT,
+    )
+    /** App-side implementation of the viewer's exact-token review channel. */
+    private val conflictReview: OfficeConflictReviewCoordinator =
+        OfficeConflictReviewCoordinator(reviewRoot, object : OfficeConflictReviewHost {
+            override fun liveIdentity(sessionToken: String, generation: Long): OfficeConflictReviewIdentity? =
+                conflictReviewIdentity(sessionToken, generation)
+
+            override fun captureMine(
+                identity: OfficeConflictReviewIdentity,
+                directory: File,
+            ): OfficeConflictVersion? = conflictMine(identity, directory)
+
+            override fun captureCurrent(
+                identity: OfficeConflictReviewIdentity,
+                directory: File,
+            ): OfficeConflictVersion? = conflictCurrent(identity, directory)
+
+            override fun buildPreview(
+                version: OfficeConflictVersion,
+                directory: File,
+                role: OfficeConflictPreviewRole,
+                fileName: String,
+                format: String,
+                maxChars: Int,
+            ): OfficeConflictPreviewBuild {
+                // Path escape, symlink swap, byte swap and package identity
+                // are re-proved against the retained record before a reader
+                // opens the file. The working copy and original are never read.
+                val owned = OfficeConflictArtifacts.ownedVersionFile(reviewRoot, directory, version)
+                    ?: return OfficeConflictPreviewBuild.Refused("snapshotChanged")
+                val read = OfficeConflictPreviewReader.read(
+                    version = version.copy(file = owned),
+                    format = format,
+                    maxChars = maxChars,
+                )
+                if (read is OfficeConflictPreviewRead.Refused) {
+                    return OfficeConflictPreviewBuild.Refused(read.code)
+                }
+                val ready = read as OfficeConflictPreviewRead.Ready
+                val written = OfficeConflictArtifacts.writePreviewText(
+                    root = reviewRoot,
+                    directory = directory,
+                    name = fileName,
+                    text = ready.text,
+                ) ?: return OfficeConflictPreviewBuild.Refused("previewStorageUnavailable")
+                return OfficeConflictPreviewBuild.Ready(
+                    sha256 = written.first,
+                    bytes = written.second,
+                    truncated = ready.truncated,
+                )
+            }
+
+            override fun deleteReviewDirectory(directory: File) =
+                OfficeConflictArtifacts.deleteReviewDirectory(reviewRoot, directory)
+        })
+    private val conflictReviewBinder: IBinder by lazy {
+        OfficeConflictReviewChannel.parentBinder(conflictReview)
+    }
+
+    /**
+     * Parent endpoint of the module's narrow manual-original-save
+     * capability (OfficeSaveOriginalHandoffPolicy, OFC-SAVE-REOPEN): the
+     * foreground viewer posts ONE verified working-copy notice here and the
+     * App answers with a single bounded verdict. Same trust model as the
+     * conflict-review channel: a same-UID, non-exported binder on THIS
+     * non-exported launch Intent only; every transaction re-proves the exact
+     * owned operation, the live owner and the engine generation. It grants
+     * no file, provider or navigation authority by itself.
+     */
+    private val saveOriginalBinder: IBinder by lazy {
+        OfficeSaveOriginalChannel.parentBinder(this::acceptSaveOriginalNotice)
+    }
+
+    /**
+     * App-side orchestration of the manual workspace original save. Every
+     * join is the EXISTING owned object (this controller for the operation
+     * and its App-owned working copy; the trusted source-host native lane
+     * for the CAS; the RuntimeHost-installed push port for the provider
+     * journal). No parallel controller, no raw write path.
+     */
+    private val saveOriginalHost = OfficeSaveOriginalHost(
+        commitPort = NativeOfficeOriginalCommitPort,
+        operation = this::saveOriginalOperationFacts,
+        verifyWorkingCopy = { file, notice ->
+            OfficeSaveOriginalVerification.verify(file, workingRoot, notice)
+        },
+        workingCopyFile = { path -> File(path) },
+    )
+
+    /**
+     * RuntimeHost-installed provider journal push (the EXISTING
+     * [WorkspaceSourceHostController] headless lane, byte-reusing the Core
+     * model path's pushOriginalViaHeadlessLane). Null until Main wiring.
+     * The host invokes it AT MOST ONCE per explicit save action, awaited on
+     * the handoff lane, and correlates its typed terminal into the final
+     * verdict (synced vs source-pending vs source-conflict) — never
+     * fire-and-forget. A document without a source binding (or an unwired
+     * host) simply skips the push; the local commit answer is unaffected,
+     * and a missing lane at call time is an honest source-pending verdict,
+     * never evidence the external original updated.
+     */
+    @Volatile
+    internal var saveOriginalPushPort: (suspend (OfficeOriginalPushRequest) -> WorkspaceSourceResult?)? = null
+
+    /** One provider journal push over the existing headless lane, pre-bound
+     *  to the exact owner facts and fence by [saveOriginalOperationFacts]. */
+    internal data class OfficeOriginalPushRequest(
+        val taskID: String,
+        val workspaceID: String,
+        val nativeEpoch: Long,
+        val hostGeneration: Long,
+        val logicalPath: String,
+        val ownerFence: () -> Boolean,
+    )
+
     private val lock = Any()
     private var sequence = 0L
     private var active: Operation? = null
+
+    init {
+        recoveryJournal = OfficeRecoveryJournal(
+            root = File(this.context.noBackupFilesDir, "floe-office-recovery"),
+            // Bounded retention is performed by OfficeRecoveryController
+            // BEFORE an add, outside the journal lock; the journal itself never
+            // reaches into viewer/handoff locks.
+            canEvict = { false },
+            onEvict = { evicted ->
+                scope.launch(Dispatchers.IO) { recoveryArtifacts.deleteOwned(evicted) }
+            },
+        )
+        saveCopy = OfficeSaveCopyHost(this.context, scope, recoveryJournal)
+        recovery = OfficeRecoveryController(
+            scope = scope,
+            journal = recoveryJournal,
+            artifacts = recoveryArtifacts,
+            exportPort = saveCopy,
+            openPort = object : OfficeRecoveryOpenPort {
+                override fun open(
+                    candidate: OfficeRecoveryCandidate,
+                    observedSha256: String,
+                    observedBytes: Long,
+                ): OfficeRecoveryOpenResult = openRecovered(candidate, observedSha256, observedBytes)
+
+                override fun activeCandidateId(): String? = activeRecoveryCandidateId()
+
+                override fun probeOriginal(candidate: OfficeRecoveryCandidate): OfficeRecoveryOriginalState =
+                    probeRecoveryOriginal(candidate)
+            },
+            restoredOpenPort = object : OfficeRestoredDocumentOpenPort {
+                override fun open(
+                    document: OfficeRestoredDocument,
+                    path: File,
+                    observedSha256: String,
+                    observedBytes: Long,
+                ): OfficeRestoredOpenResult = openRestoredReadOnly(
+                    document, path, observedSha256, observedBytes)
+            },
+        )
+        saveCopy.setSessionQuiescentListener { token -> recovery.onSessionQuiescent(token) }
+        // Review snapshots are temporary, App-owned copies only. A previous
+        // process can leave them behind (a crash or a viewer that outlived
+        // the App process); no live review can exist before this controller
+        // is constructed. Delete only this dedicated root, never working or
+        // recovery bytes.
+        scope.launch(Dispatchers.IO) {
+            reviewRoot.listFiles()?.forEach { child ->
+                if (child.isDirectory && child.name.startsWith("review-")) {
+                    OfficeConflictArtifacts.deleteReviewDirectory(reviewRoot, child)
+                }
+            }
+        }
+    }
 
     /**
      * Parent endpoint of the module's narrow close-intent capability
@@ -191,6 +406,18 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         @Volatile var saveOriginal: OfficeSaveCopyOriginal? = null
         /** Set exactly once by settle: fences late Save-Copy/owner-alive reads. */
         @Volatile var viewEnded = false
+        /** CURRENT authoritative baseline for the workspace original CAS: the
+         *  open-time snapshot digest until a proven manual original save
+         *  updates it to the committed bytes. Never mutated without the
+         *  corresponding bytes/proof (the immutable open-time snapshot pair
+         *  below stays untouched). Null when this route owns no workspace
+         *  original (provider/run-output/recovery mounts stay copy-only). */
+        @Volatile var originalBaselineSha256: String? = null
+        @Volatile var originalBaselineBytes: Long = -1L
+        /** Fences a second handoff while one original save is in flight. */
+        @Volatile var saveOriginalInFlight = false
+        /** Durable recovery candidate created before the editable mount. */
+        @Volatile var recoveryCandidateId: String? = null
     }
 
     private fun current(op: Operation): Boolean = synchronized(lock) {
@@ -267,6 +494,21 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                         op.saveOriginal = OfficeSaveCopyOriginal(
                             SafUriRef(snapshot.sourceUri), snapshot.sourceDocumentID,
                         )
+                        val candidateId = recordRecoveryCandidate(
+                            op = op,
+                            route = OfficeRecoveryRoute.PROVIDER,
+                            displayName = snapshot.displayName,
+                            snapshotSha256 = snapshot.sha256,
+                            snapshotBytes = snapshot.bytes,
+                            copy = copy,
+                            original = op.saveOriginal,
+                        )
+                        if (candidateId == null) {
+                            discardUnjournaledWorkingCopy(copy)
+                            settle(op, "recovery")
+                            return@launch
+                        }
+                        op.recoveryCandidateId = candidateId
                         prepare(op, OfficePreviewRequest.of(
                             sessionToken = copy.sessionID, stagedFilePath = copy.file.canonicalPath,
                             sha256 = copy.sha256, lengthBytes = copy.bytes,
@@ -317,6 +559,33 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                 op.workingCopyBytes = copy.bytes
                 op.input = copy.file
                 op.editable = true
+                // The workspace route owns the original: the open-time
+                // snapshot digest is the FIRST CAS baseline. A proven manual
+                // original save advances it; nothing else may.
+                op.originalBaselineSha256 = snapshot.sha256
+                op.originalBaselineBytes = snapshot.bytes
+                val candidateId = recordRecoveryCandidate(
+                    op = op,
+                    route = OfficeRecoveryRoute.WORKSPACE,
+                    displayName = path.substringAfterLast('/'),
+                    snapshotSha256 = snapshot.sha256,
+                    snapshotBytes = snapshot.bytes,
+                    copy = copy,
+                    original = null,
+                    ownerTaskId = owner.taskID,
+                    workspaceId = owner.workspaceID,
+                    nativeEpoch = owner.nativeEpoch.toString(),
+                    hostGeneration = owner.hostGeneration.toString(),
+                    sourceLogicalPath = snapshot.logicalPath,
+                    sourceId = snapshot.sourceID,
+                    sourceRevision = snapshot.sourceRevision,
+                )
+                if (candidateId == null) {
+                    discardUnjournaledWorkingCopy(copy)
+                    settle(op, "recovery")
+                    return@launch
+                }
+                op.recoveryCandidateId = candidateId
                 prepare(op, OfficePreviewRequest.of(
                     sessionToken = copy.sessionID, stagedFilePath = copy.file.canonicalPath,
                     sha256 = copy.sha256, lengthBytes = copy.bytes,
@@ -368,6 +637,26 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                 op.workingCopyBytes = copy.bytes
                 op.input = copy.file
                 op.editable = true
+                val candidateId = recordRecoveryCandidate(
+                    op = op,
+                    route = OfficeRecoveryRoute.RUN_OUTPUT,
+                    displayName = snapshot.displayName,
+                    snapshotSha256 = snapshot.sha256,
+                    snapshotBytes = snapshot.bytes,
+                    copy = copy,
+                    original = null,
+                    ownerTaskId = owner.conversationID,
+                    nativeEpoch = owner.nativeEpoch.toString(),
+                    hostGeneration = owner.hostGeneration.toString(),
+                    sourceLogicalPath = snapshot.relativePath,
+                    sourceId = snapshot.outputID,
+                )
+                if (candidateId == null) {
+                    discardUnjournaledWorkingCopy(copy)
+                    settle(op, "recovery")
+                    return@launch
+                }
+                op.recoveryCandidateId = candidateId
                 prepare(op, OfficePreviewRequest.of(
                     sessionToken = copy.sessionID, stagedFilePath = copy.file.canonicalPath,
                     sha256 = copy.sha256, lengthBytes = copy.bytes,
@@ -387,6 +676,257 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         }
     }
 
+    // ------------------------------------------------------------------
+    // C08 durable recovery (working copy + verified outputs)
+    // ------------------------------------------------------------------
+
+    /**
+     * Persist the App-owned working-copy identity BEFORE the module session
+     * is opened. No picker, save transaction or user file is involved here.
+     * Failure refuses the open (and removes only this attempt's own copy):
+     * editing without a durable recoverability record is never silently
+     * allowed.
+     */
+    private fun recordRecoveryCandidate(
+        op: Operation,
+        route: OfficeRecoveryRoute,
+        displayName: String,
+        snapshotSha256: String,
+        snapshotBytes: Long,
+        copy: OfficeEditableCopyStager.EditableCopy,
+        original: OfficeSaveCopyOriginal?,
+        ownerTaskId: String? = null,
+        workspaceId: String? = null,
+        nativeEpoch: String? = null,
+        hostGeneration: String? = null,
+        sourceLogicalPath: String? = null,
+        sourceId: String? = null,
+        sourceRevision: String? = null,
+    ): String? {
+        val now = System.currentTimeMillis()
+        val safeName = displayName
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+            .filter { it.code >= 0x20 && it.code != 0x7f }
+            .trim()
+            .take(240)
+            .ifBlank { "document.${copy.extension}" }
+        val candidate = OfficeRecoveryCandidate(
+            id = UUID.randomUUID().toString(),
+            createdAtMillis = now,
+            updatedAtMillis = now,
+            phase = OfficeRecoveryPhase.EDITING,
+            route = route,
+            displayName = safeName,
+            format = copy.extension,
+            ownerTaskId = ownerTaskId,
+            workspaceId = workspaceId,
+            nativeEpoch = nativeEpoch,
+            hostGeneration = hostGeneration,
+            sourceLogicalPath = sourceLogicalPath,
+            sourceId = sourceId,
+            sourceRevision = sourceRevision,
+            originalUri = original?.uri?.uriString,
+            originalDocumentId = original?.documentId,
+            sourceSha256 = snapshotSha256,
+            sourceBytes = snapshotBytes,
+            workingCopyPath = runCatching { copy.file.canonicalPath }.getOrElse { copy.file.path },
+            workingCopyBaseSha256 = copy.sha256,
+            workingCopyBaseBytes = copy.bytes,
+            originSessionToken = copy.sessionID,
+        )
+        return try {
+            recovery.reclaimCapacity()
+            recoveryJournal.add(candidate).id
+        } catch (failure: Exception) {
+            recordFailure(op, failure)
+            if (failure is OfficeRecoveryJournal.Full) {
+                // Make the bounded-ledger refusal actionable: the user can
+                // review/discard old records, then open the document again.
+                recovery.show()
+            }
+            null
+        }
+    }
+
+    /** Remove ONLY this attempt's never-exposed working-copy directory. */
+    private fun discardUnjournaledWorkingCopy(copy: OfficeEditableCopyStager.EditableCopy) {
+        runCatching {
+            val root = workingRoot.canonicalFile
+            val parent = copy.file.parentFile?.canonicalFile ?: return
+            if (parent.parentFile?.path != root.path) return
+            copy.file.delete()
+            parent.delete()
+        }
+    }
+
+    /**
+     * Open the EXACT retained working copy in the existing Office viewer.
+     * The recovery record supplies no owner/task/workspace claim: the new
+     * mount is an unowned editable copy, so recovery metadata can never join
+     * the AI lane or authorize a workspace/provider write.
+     */
+    private fun openRecovered(
+        candidate: OfficeRecoveryCandidate,
+        observedSha256: String,
+        observedBytes: Long,
+    ): OfficeRecoveryOpenResult {
+        if (candidate.phase == OfficeRecoveryPhase.DISCARDED) {
+            return OfficeRecoveryOpenResult.Refused("discarded")
+        }
+        val op = admit(Phase.LAUNCH, owner = { true })
+            ?: return OfficeRecoveryOpenResult.Refused("busy")
+        op.recoveryCandidateId = candidate.id
+        op.workingCopy = File(candidate.workingCopyPath)
+        op.workingCopySha256 = observedSha256
+        op.workingCopyBytes = observedBytes
+        // The recovery candidate preserves the ORIGINAL source identity,
+        // not the working-copy digest. Conflict review must compare the live
+        // original against this base, never against the mutable copy.
+        op.snapshotSha256 = candidate.sourceSha256
+        op.snapshotBytes = candidate.sourceBytes
+        op.input = op.workingCopy
+        op.editable = true
+        op.saveOriginal = candidate.originalUri?.let { uri ->
+            runCatching { OfficeSaveCopyOriginal(SafUriRef(uri), candidate.originalDocumentId) }.getOrNull()
+        }
+        val request = OfficePreviewRequest.of(
+            sessionToken = UUID.randomUUID().toString(),
+            stagedFilePath = candidate.workingCopyPath,
+            sha256 = observedSha256,
+            lengthBytes = observedBytes,
+            displayName = candidate.displayName,
+            languageTag = languageTag(),
+            permission = OfficePermission.EDIT,
+        ).getOrNull()
+        if (request == null) {
+            settle(op, "format")
+            return OfficeRecoveryOpenResult.Refused("format")
+        }
+        op.sessionToken = request.sessionToken
+        val alive = { !op.retired && !op.viewEnded }
+        if (!saveCopy.beginEditSession(
+                request.sessionToken,
+                request.displayName,
+                op.saveOriginal,
+                candidate.id,
+                alive,
+            )
+        ) {
+            recordFailure(op, saveCopy.lastDiagnostic() ?: "recovery session unavailable")
+            settle(op, "recovery")
+            return OfficeRecoveryOpenResult.Refused("session")
+        }
+        synchronized(lock) {
+            if (!current(op)) {
+                settle(op, null)
+                return OfficeRecoveryOpenResult.Refused("stale")
+            }
+            op.phase = Phase.LAUNCH
+            mutableState.value = State(viewer = ViewerLaunch(op.id, request))
+        }
+        runCatching { recoveryJournal.touchSessionToken(candidate.id, request.sessionToken) }
+            .onFailure { diagnosticFailure = it }
+        return OfficeRecoveryOpenResult.Accepted(request.sessionToken)
+    }
+
+    /**
+     * C08 read-only preview for a fresh restored document. The file is
+     * re-validated against the ONE App-owned restored root and the digest
+     * supplied by the data-exchange controller before admission. No recovery
+     * journal record, save session, owner/task claim or provider/workspace
+     * write is created: this is a local read-only mount.
+     */
+    private fun openRestoredReadOnly(
+        document: OfficeRestoredDocument,
+        path: File,
+        observedSha256: String,
+        observedBytes: Long,
+    ): OfficeRestoredOpenResult {
+        val root = runCatching { restoredDocumentsRoot.canonicalFile }.getOrNull()
+            ?: return OfficeRestoredOpenResult.Refused("storage")
+        val canonical = runCatching { path.canonicalFile }.getOrNull()
+            ?: return OfficeRestoredOpenResult.Refused("storage")
+        if (!canonical.path.startsWith(root.path + File.separator) ||
+            Files.isSymbolicLink(canonical.toPath()) || !canonical.isFile ||
+            canonical.length() != observedBytes
+        ) {
+            return OfficeRestoredOpenResult.Refused("unsafe")
+        }
+        val op = admit(Phase.LAUNCH, owner = { true })
+            ?: return OfficeRestoredOpenResult.Refused("busy")
+        op.input = canonical
+        op.snapshotSha256 = observedSha256
+        op.snapshotBytes = observedBytes
+        op.editable = false
+        val request = OfficePreviewRequest.of(
+            sessionToken = UUID.randomUUID().toString(),
+            stagedFilePath = canonical.path,
+            sha256 = observedSha256,
+            lengthBytes = observedBytes,
+            displayName = document.displayName,
+            languageTag = languageTag(),
+            permission = OfficePermission.READ_ONLY,
+        ).getOrNull()
+        if (request == null) {
+            settle(op, "format")
+            return OfficeRestoredOpenResult.Refused("format")
+        }
+        op.sessionToken = request.sessionToken
+        synchronized(lock) {
+            if (!current(op)) {
+                settle(op, null)
+                return OfficeRestoredOpenResult.Refused("stale")
+            }
+            op.phase = Phase.LAUNCH
+            mutableState.value = State(viewer = ViewerLaunch(op.id, request))
+        }
+        return OfficeRestoredOpenResult.Accepted(request.sessionToken)
+    }
+
+    private fun activeRecoveryCandidateId(): String? = synchronized(lock) {
+        active?.takeIf { !it.retired && !it.viewEnded }?.recoveryCandidateId
+    }
+
+    /**
+     * Explicit original probe. Provider reads under the existing live grant;
+     * workspace re-reads through the EXISTING native egress authority and
+     * compares the verified digest. Neither grants, writes nor overwrites.
+     */
+    private fun probeRecoveryOriginal(candidate: OfficeRecoveryCandidate): OfficeRecoveryOriginalState {
+        return when (candidate.route) {
+            OfficeRecoveryRoute.PROVIDER -> candidate.originalUri?.let { uri ->
+                saveCopy.probeOriginal(uri, candidate.sourceSha256, candidate.sourceBytes)
+            } ?: OfficeRecoveryOriginalState.UNAVAILABLE
+            OfficeRecoveryRoute.WORKSPACE -> probeWorkspaceOriginal(candidate)
+            OfficeRecoveryRoute.RUN_OUTPUT -> OfficeRecoveryOriginalState.NOT_APPLICABLE
+        }
+    }
+
+    private fun probeWorkspaceOriginal(candidate: OfficeRecoveryCandidate): OfficeRecoveryOriginalState {
+        val taskID = candidate.ownerTaskId ?: return OfficeRecoveryOriginalState.UNAVAILABLE
+        val workspaceID = candidate.workspaceId ?: return OfficeRecoveryOriginalState.UNAVAILABLE
+        val epoch = candidate.nativeEpoch?.toLongOrNull() ?: return OfficeRecoveryOriginalState.UNAVAILABLE
+        val generation = candidate.hostGeneration?.toLongOrNull()
+            ?: return OfficeRecoveryOriginalState.UNAVAILABLE
+        val path = candidate.sourceLogicalPath ?: return OfficeRecoveryOriginalState.UNAVAILABLE
+        val owner = try {
+            WorkspaceOfficeSnapshotStager.Owner(taskID, workspaceID, epoch, generation)
+        } catch (_: IllegalArgumentException) {
+            return OfficeRecoveryOriginalState.UNAVAILABLE
+        }
+        return try {
+            val snapshot = workspace.stage(owner, path) { true }
+            val same = snapshot.sha256 == candidate.sourceSha256 && snapshot.bytes == candidate.sourceBytes
+            removeOwnUnreferencedInput(snapshot.file)
+            if (same) OfficeRecoveryOriginalState.UNCHANGED else OfficeRecoveryOriginalState.CHANGED
+        } catch (_: Exception) {
+            OfficeRecoveryOriginalState.UNAVAILABLE
+        } catch (_: LinkageError) {
+            OfficeRecoveryOriginalState.UNAVAILABLE
+        }
+    }
+
     private fun prepare(op: Operation, result: Result<OfficePreviewRequest>) {
         val request = result.getOrNull()
         if (request == null) {
@@ -400,7 +940,14 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
             // Lock-free liveness closure: the Save-Copy core calls this while
             // holding its own lock, so it must never re-enter the preview lock.
             val alive = { !op.retired && !op.viewEnded }
-            if (!saveCopy.beginEditSession(request.sessionToken, request.displayName, op.saveOriginal, alive)) {
+            if (!saveCopy.beginEditSession(
+                    request.sessionToken,
+                    request.displayName,
+                    op.saveOriginal,
+                    op.recoveryCandidateId,
+                    alive,
+                )
+            ) {
                 recordFailure(op, saveCopy.lastDiagnostic() ?: "edit session unavailable")
                 settle(op, if (op.retired) null else "source")
                 return
@@ -544,7 +1091,20 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
             closedCleanly = false,
             ackedUserClose = true,
         )
-        settle(op, resolution.errorKey, removeInput = resolution.removeInput)
+        if (!settle(op, resolution.errorKey, removeInput = resolution.removeInput)) return
+        // The engine acknowledged the exact user close but its native exit
+        // bypassed the Activity result. Reconcile the durable record now so a
+        // post-save working copy with later bytes is not left certified by the
+        // earlier destination merely because no result arrived.
+        recovery.onViewerClosed(
+            candidateId = op.recoveryCandidateId,
+            sessionToken = op.sessionToken,
+            resultPresent = false,
+            closedCleanly = false,
+            dirtyAtClose = false,
+            discarded = false,
+            outputDescriptors = emptyList(),
+        )
     }
 
     /** Claim immediately before launching, on the UI thread. Admission is
@@ -588,12 +1148,27 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         // launch Intent; the module can display the banner and raise the chat,
         // but the answer itself is always re-validated here per query.
         val ownedNotice = op.ownerTaskId != null && approvalNoticeLookup != null
-        OfficeEngine.viewerIntent(
+        // Manual original save: ONLY the exact owned workspace EDIT mount
+        // with full owner facts receives the capability; every other route
+        // stays copy-only and never sees the button.
+        val saveOriginalCapable = saveOriginalRouteAuthority(op, request)
+        val intent = OfficeEngine.viewerIntent(
             context, request, closeAckBinder, op.id,
             hostSaveChannel = if (op.editable) saveCopy.channel else null,
             approvalNotice = if (ownedNotice) approvalNoticeBinder else null,
             reviewComponent = if (ownedNotice) ComponentName(context, MainActivity::class.java) else null,
+            saveOriginalChannel = if (saveOriginalCapable) saveOriginalBinder else null,
         )
+        // C08 revision/conflict review capability: a same-UID, non-exported
+        // binder on THIS non-exported launch Intent only. It answers observed
+        // version facts and admits deliberate decisions; it grants no file or
+        // provider write authority. A read-only mount never receives it.
+        if (op.editable) {
+            val capabilities = Bundle()
+            capabilities.putBinder(OfficeConflictReviewChannel.EXTRA_REVIEW_CHANNEL, conflictReviewBinder)
+            intent.putExtras(capabilities)
+        }
+        intent
     }
 
     /**
@@ -691,7 +1266,22 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         // std::_exit(0) is honest uncertainty: no open-failure report, the
         // staged snapshot is retained, closedCleanly is never inferred.
         // Unknown/unacknowledged dead-process results keep failing as before.
-        settle(op, resolution.errorKey, removeInput = resolution.removeInput)
+        val settled = settle(op, resolution.errorKey, removeInput = resolution.removeInput)
+        if (!settled) return
+        // C08 reconcile AFTER the admission slot is released: the durable
+        // journal learns the real close/discard facts and any OUTPUT_READY
+        // descriptor the host channel missed. Nothing here reopens, retries or
+        // deletes; the working copy and verified outputs are retained.
+        val discarded = data?.getBooleanExtra(OfficePreviewActivity.EXTRA_USER_DISCARDED, false) == true
+        recovery.onViewerClosed(
+            candidateId = op.recoveryCandidateId,
+            sessionToken = op.sessionToken,
+            resultPresent = outcome != null,
+            closedCleanly = outcome?.closedCleanly == true,
+            dirtyAtClose = outcome?.dirtyAtClose == true,
+            discarded = discarded,
+            outputDescriptors = outcome?.saveReceiptDescriptors.orEmpty(),
+        )
     }
 
     fun launchFailed(incarnation: Long) {
@@ -708,7 +1298,10 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         op.providerIO?.cancel()
         if (op.phase == Phase.STAGING) {
             mutableState.value = State(staging = true, cancelling = true)
-        } else settle(op, null)
+        } else {
+            settle(op, null)
+        }
+        Unit
     }
 
     /** True while the single admission slot carries an operation (busy at
@@ -783,8 +1376,16 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
             sourceLogicalPath = request.sourceLogicalPath,
             sourceId = request.sourceId,
             sourceRevision = request.sourceRevision,
-            originalSnapshotSha256 = op.snapshotSha256,
-            originalSnapshotBytes = op.snapshotBytes,
+            // The Core lane's CAS expectation binds the CURRENT authoritative
+            // baseline: after a proven manual original save, the model path
+            // and repeat saves compare against the committed bytes, never
+            // the stale open-time digest.
+            originalSnapshotSha256 = op.originalBaselineSha256 ?: op.snapshotSha256,
+            originalSnapshotBytes = if (op.originalBaselineSha256 != null) {
+                op.originalBaselineBytes
+            } else {
+                op.snapshotBytes
+            },
             editable = op.editable,
             stagedWorkingCopyPath = op.workingCopy?.let {
                 runCatching { it.canonicalPath }.getOrNull()
@@ -792,6 +1393,347 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
             stagedWorkingCopySha256 = op.workingCopySha256,
             stagedWorkingCopyBytes = op.workingCopyBytes,
         )
+    }
+
+    // ------------------------------------------------------------------
+    // C08 original-version conflict review (exact viewer channel)
+    // ------------------------------------------------------------------
+
+    /**
+     * Re-derives the exact live editing identity for the viewer's request.
+     * The engine generation is read from the SAME Save-Copy host binding the
+     * viewer already uses; a token-only match is never enough. No path or
+     * provider authority is granted by answering.
+     */
+    private fun conflictReviewIdentity(
+        sessionToken: String,
+        generation: Long,
+    ): OfficeConflictReviewIdentity? {
+        synchronized(lock) {
+            val op = active ?: return null
+            if (op.retired || op.viewEnded || op.phase != Phase.VIEWING || !op.editable ||
+                !op.ownerCurrent() || op.sessionToken != sessionToken
+            ) return null
+            val request = mutableState.value.viewer?.request ?: return null
+            if (request.sessionToken != sessionToken || request.permission != OfficePermission.EDIT) return null
+            op to request
+        }
+        // The command binding is established asynchronously when the edit
+        // session opens. A bounded wait avoids a false "session fenced"
+        // answer during the first frames, while never accepting a different
+        // generation.
+        var liveGeneration = 0L
+        for (attempt in 0 until 20) {
+            liveGeneration = runCatching { saveCopy.aiReadGeneration(sessionToken) }.getOrDefault(0L)
+            if (liveGeneration == generation) break
+            if (attempt < 19) runCatching { Thread.sleep(50L) }
+        }
+        if (liveGeneration != generation) return null
+        return synchronized(lock) {
+            val op = active ?: return null
+            if (op.retired || op.viewEnded || op.phase != Phase.VIEWING || !op.ownerCurrent() ||
+                op.sessionToken != sessionToken
+            ) return null
+            val request = mutableState.value.viewer?.request ?: return null
+            if (request.sessionToken != sessionToken) return null
+            val route = when {
+                op.saveOriginal != null -> OfficeConflictRoute.PROVIDER
+                op.ownerTaskId != null && op.ownerWorkspaceId != null &&
+                    op.ownerNativeEpoch?.toLongOrNull() != null &&
+                    request.hostGeneration?.toLongOrNull() != null &&
+                    request.sourceLogicalPath != null -> OfficeConflictRoute.WORKSPACE
+                else -> OfficeConflictRoute.NONE
+            }
+            OfficeConflictReviewIdentity(
+                sessionToken = sessionToken,
+                generation = generation,
+                route = route,
+                // The review compares the live original against the CURRENT
+                // authoritative baseline (advanced by a proven manual
+                // original save), never stale open-time metadata: after a
+                // save, "unchanged" must mean unchanged since THAT version.
+                baseSha256 = op.originalBaselineSha256 ?: op.snapshotSha256 ?: request.sha256,
+                baseRevision = request.sourceRevision,
+                originalUri = op.saveOriginal?.uri?.uriString,
+                ownerTaskId = op.ownerTaskId,
+                workspaceId = op.ownerWorkspaceId,
+                nativeEpoch = op.ownerNativeEpoch?.toLongOrNull(),
+                hostGeneration = request.hostGeneration?.toLongOrNull(),
+                sourceLogicalPath = request.sourceLogicalPath,
+                workingCopy = op.workingCopy ?: return null,
+                extension = request.format.fileExtension,
+            )
+        }
+    }
+
+    /** Immutable copy of the ACTUAL working copy, verified as a real package. */
+    private fun conflictMine(
+        identity: OfficeConflictReviewIdentity,
+        directory: File,
+    ): OfficeConflictVersion? = OfficeConflictArtifacts.copyVerified(
+        source = identity.workingCopy,
+        directory = directory,
+        name = "mine.${identity.extension}",
+        format = identity.extension,
+    )
+
+    /**
+     * Immutable copy of the live original through its EXISTING read lane.
+     * Provider: the shared gateway under the current live grant. Workspace:
+     * the native egress snapshot. Neither writes, renames or re-grants.
+     */
+    private fun conflictCurrent(
+        identity: OfficeConflictReviewIdentity,
+        directory: File,
+    ): OfficeConflictVersion? = when (identity.route) {
+        OfficeConflictRoute.PROVIDER -> {
+            val uri = identity.originalUri ?: return null
+            when (val capture = saveCopy.captureOriginal(uri, directory)) {
+                is OfficeOriginalCapture.Captured -> verifyExistingVersion(
+                    file = capture.file,
+                    expectedSha256 = capture.sha256,
+                    expectedBytes = capture.bytes,
+                    revision = null,
+                    format = identity.extension,
+                )
+                is OfficeOriginalCapture.Failed -> null
+            }
+        }
+        OfficeConflictRoute.WORKSPACE -> {
+            val taskID = identity.ownerTaskId ?: return null
+            val workspaceID = identity.workspaceId ?: return null
+            val epoch = identity.nativeEpoch ?: return null
+            val hostGeneration = identity.hostGeneration ?: return null
+            val path = identity.sourceLogicalPath ?: return null
+            val owner = try {
+                WorkspaceOfficeSnapshotStager.Owner(taskID, workspaceID, epoch, hostGeneration)
+            } catch (_: IllegalArgumentException) {
+                return null
+            }
+            val snapshot = try {
+                workspace.stage(owner, path) { conflictIdentityStillCurrent(identity) }
+            } catch (_: Exception) {
+                return null
+            } catch (_: LinkageError) {
+                return null
+            }
+            try {
+                val copied = OfficeConflictArtifacts.copyVerified(
+                    source = snapshot.file,
+                    directory = directory,
+                    name = "current.${identity.extension}",
+                    format = identity.extension,
+                    expectedSha256 = snapshot.sha256,
+                    expectedBytes = snapshot.bytes,
+                )
+                copied?.copy(revision = snapshot.sourceRevision)
+            } finally {
+                removeOwnUnreferencedInput(snapshot.file)
+            }
+        }
+        OfficeConflictRoute.RUN_OUTPUT,
+        OfficeConflictRoute.NONE -> null
+    }
+
+    /** Chunk-level liveness for the read-only workspace stage (never authority). */
+    private fun conflictIdentityStillCurrent(identity: OfficeConflictReviewIdentity): Boolean =
+        synchronized(lock) {
+            val op = active ?: return false
+            !op.retired && !op.viewEnded && op.phase == Phase.VIEWING && op.ownerCurrent() &&
+                op.sessionToken == identity.sessionToken
+        }
+
+    /** Verifies an already-staged immutable file without rewriting its bytes. */
+    private fun verifyExistingVersion(
+        file: File,
+        expectedSha256: String,
+        expectedBytes: Long,
+        revision: String?,
+        format: String,
+    ): OfficeConflictVersion? {
+        if (!file.isFile || file.length() != expectedBytes) return null
+        val digest = OfficeConflictArtifacts.digest(file) ?: return null
+        if (digest.second != expectedBytes || !digest.first.equals(expectedSha256, ignoreCase = true)) return null
+        val verified = OfficeRequestPolicy.verifyStagedOutput(file, format)
+        if (!verified.verified) return null
+        if (!file.setReadOnly()) return null
+        return OfficeConflictVersion(digest.first, digest.second, revision, file)
+    }
+
+    /** Drop temporary review snapshots for an exact session (never input). */
+    private fun releaseConflictReview(sessionToken: String) {
+        runCatching { conflictReview.releaseSession(sessionToken) }
+    }
+
+    // ------------------------------------------------------------------
+    // Manual workspace original save (OFC-SAVE-REOPEN)
+    // ------------------------------------------------------------------
+
+    /**
+     * True ONLY for an EDIT mount of an ordinary task-owned workspace
+     * document whose full owner facts and CAS baseline are present. Mirrors
+     * [conflictReviewIdentity]'s WORKSPACE route rule: provider-picked,
+     * run-output, recovery and read-only mounts answer false and stay
+     * copy-only — never a fake workspace-ownership control.
+     */
+    private fun saveOriginalRouteAuthority(op: Operation, request: OfficePreviewRequest): Boolean {
+        if (op.retired || op.viewEnded || !op.editable || !op.ownerCurrent()) return false
+        if (request.permission != OfficePermission.EDIT) return false
+        if (op.ownerTaskId == null || op.ownerWorkspaceId == null) return false
+        if (op.ownerNativeEpoch?.toLongOrNull() == null) return false
+        if (request.hostGeneration?.toLongOrNull() == null) return false
+        if (request.sourceLogicalPath.isNullOrEmpty()) return false
+        if (op.originalBaselineSha256 == null) return false
+        // The durable open-time snapshot pair must exist (the immutable
+        // artifact the baseline was derived from).
+        return op.snapshot != null && op.snapshotSha256 != null
+    }
+
+    /**
+     * Resolves the EXACT live owned operation for one original-save notice
+     * under the controller lock: current, un-retired, VIEWING, editable,
+     * owner-current, exact session token AND the exact engine mount
+     * generation (the caller proves the generation with the SAME bounded
+     * retry the review lane uses, then this join re-proves it against the
+     * captured [Operation]). Marks the handoff in flight so a duplicate
+     * notice can never interleave with the verification/commit. Returns
+     * null (REFUSED) for any other owner, epoch, session or state.
+     */
+    private fun saveOriginalOperationFacts(
+        sessionToken: String,
+        generation: Long,
+    ): OfficeSaveOriginalOperation? = synchronized(lock) {
+        val op = active ?: return null
+        if (op.retired || op.viewEnded || op.phase != Phase.VIEWING || !op.editable ||
+            !op.ownerCurrent() || op.sessionToken != sessionToken
+        ) return null
+        val request = mutableState.value.viewer?.request ?: return null
+        if (request.sessionToken != sessionToken || request.permission != OfficePermission.EDIT) {
+            return null
+        }
+        if (op.saveOriginalInFlight) return null
+        if (!saveOriginalRouteAuthority(op, request)) return null
+        val workingCopy = op.workingCopy ?: return null
+        val workingPath = runCatching { workingCopy.canonicalPath }.getOrNull() ?: return null
+        val taskID = op.ownerTaskId ?: return null
+        val workspaceID = op.ownerWorkspaceId ?: return null
+        val epoch = op.ownerNativeEpoch?.toLongOrNull() ?: return null
+        val hostGeneration = request.hostGeneration?.toLongOrNull() ?: return null
+        val logicalPath = request.sourceLogicalPath ?: return null
+        val baselineSha = op.originalBaselineSha256 ?: return null
+        // The engine generation binding is established asynchronously when
+        // the edit session opens; the bounded retry happens in
+        // [acceptSaveOriginalNotice] BEFORE this join, so here we only
+        // require the notice generation to be the live one.
+        val liveGeneration = runCatching { saveCopy.aiReadGeneration(sessionToken) }.getOrDefault(0L)
+        if (liveGeneration != generation) return null
+        op.saveOriginalInFlight = true
+        OfficeSaveOriginalOperation(
+            baselineSha256 = baselineSha,
+            baselineBytes = op.originalBaselineBytes,
+            commit = OfficeOriginalCommitFacts(
+                taskID = taskID,
+                workspaceID = workspaceID,
+                nativeEpoch = epoch,
+                hostGeneration = hostGeneration,
+                logicalPath = logicalPath,
+                sourceID = request.sourceId,
+                sourceRevision = request.sourceRevision,
+                expectedOriginalSHA256 = baselineSha,
+                sourcePath = workingPath,
+            ),
+            stillOwned = { saveOriginalStillOwned(sessionToken, workingPath) },
+            markCommitted = { sha256, bytes ->
+                synchronized(lock) {
+                    if (active === op && !op.retired) {
+                        // The real commit proved these bytes; only now may
+                        // the expectation advance (repeat saves can never
+                        // fight stale open-time metadata).
+                        op.originalBaselineSha256 = sha256
+                        op.originalBaselineBytes = bytes
+                    }
+                }
+            },
+            releaseInFlight = {
+                synchronized(lock) {
+                    if (active === op && op.sessionToken == sessionToken) {
+                        op.saveOriginalInFlight = false
+                    }
+                }
+            },
+            // Provider sync rides the EXISTING journaled ladder only when a
+            // source binding exists AND RuntimeHost installed the push port.
+            // The lane itself re-admits the exact owner + live root epoch on
+            // every hop, so this fence stays minimal.
+            pushOriginal = request.sourceId
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { saveOriginalPushPort }
+                ?.let { push ->
+                    suspend {
+                        push(
+                            OfficeOriginalPushRequest(
+                                taskID = taskID,
+                                workspaceID = workspaceID,
+                                nativeEpoch = epoch,
+                                hostGeneration = hostGeneration,
+                                logicalPath = logicalPath,
+                                ownerFence = { saveOriginalStillOwned(sessionToken, workingPath) },
+                            ),
+                        )
+                    }
+                },
+        )
+    }
+
+    /** Post-commit/post-copy re-fence for ONE exact operation: still the
+     *  current, un-retired, not-view-ended, VIEWING owner with the SAME
+     *  App-owned working copy. Never touches another owner or a replaced
+     *  operation. */
+    private fun saveOriginalStillOwned(sessionToken: String, workingPath: String): Boolean =
+        synchronized(lock) {
+            val op = active ?: return false
+            !op.retired && !op.viewEnded && op.phase == Phase.VIEWING && op.ownerCurrent() &&
+                op.sessionToken == sessionToken &&
+                op.workingCopy?.let { runCatching { it.canonicalPath }.getOrNull() } == workingPath
+        }
+
+    /**
+     * Answers ONE verified original-save notice on a Binder thread (the
+     * viewer posts from its dedicated handoff thread). First proves the
+     * exact engine mount generation with the SAME bounded retry the review
+     * lane uses, then runs the real orchestration; the native hop blocks
+     * this thread to its honest terminal. One of the
+     * [OfficeSaveOriginalHandoffPolicy] verdicts; the in-flight mark is
+     * always released.
+     */
+    private fun acceptSaveOriginalNotice(
+        notice: OfficeSaveOriginalHandoffPolicy.SaveOriginalNotice,
+    ): Int {
+        if (OfficeSaveOriginalHandoffPolicy.validateSaveOriginal(
+                notice.opId,
+                notice.sessionToken,
+                notice.generation,
+                notice.format,
+                notice.workingCopySha256,
+                notice.workingCopyBytes,
+            ) == null
+        ) {
+            return OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_REFUSED
+        }
+        var liveGeneration = 0L
+        for (attempt in 0 until 20) {
+            liveGeneration = runCatching { saveCopy.aiReadGeneration(notice.sessionToken) }.getOrDefault(0L)
+            if (liveGeneration == notice.generation) break
+            if (attempt < 19) runCatching { Thread.sleep(50L) }
+        }
+        if (liveGeneration != notice.generation) {
+            return OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_REFUSED
+        }
+        // The in-flight fence is released by the host on EVERY path after
+        // the facts were acquired (see OfficeSaveOriginalOperation).
+        return runCatching {
+            kotlinx.coroutines.runBlocking { saveOriginalHost.accept(notice) }
+        }.getOrDefault(OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_REJECTED)
     }
 
     /** Narrow READ-ONLY capability join for the G05-R2 Office AI host lane
@@ -865,32 +1807,42 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         if (active === op) diagnosticFailure = error
     }
 
-    private fun settle(op: Operation, error: String?, removeInput: Boolean = true) = synchronized(lock) {
-        if (active !== op) return
-        ackQuiescence?.cancel()
-        // A close-intent belongs only to the operation it acknowledged.
-        ackedClose = null
-        op.viewEnded = true
-        if (op.editable) {
-            // Close the exact Save-Copy session. Its controller releases only
-            // after scheduled IO drains (quiescence, never a mid-IO clear);
-            // in-flight transfers keep their honest verified outcome.
-            op.sessionToken?.let { saveCopy.endEditSession(it) }
-            // Retention contract: the mutable working copy and any module-
-            // verified outputs are NEVER deleted here — on success, failure,
-            // cancel or process loss they stay the recoverable base (a
-            // user-visible recovery flow is separate pending work). Only the
-            // immutable intermediate snapshot follows removal eligibility.
-            if (removeInput) op.snapshot?.let { file ->
-                scope.launch(Dispatchers.IO) { removeOwnUnreferencedInput(file) }
-            }
-        } else if (removeInput) {
-            op.input?.let { file ->
-                scope.launch(Dispatchers.IO) { removeOwnUnreferencedInput(file) }
+    private fun settle(op: Operation, error: String?, removeInput: Boolean = true): Boolean {
+        var releasedReviewToken: String? = null
+        val settled = synchronized(lock) {
+            if (active !== op) {
+                false
+            } else {
+                ackQuiescence?.cancel()
+                // A close-intent belongs only to the operation it acknowledged.
+                ackedClose = null
+                op.viewEnded = true
+                if (op.editable) {
+                    // Close the exact Save-Copy session. Its controller releases only
+                    // after scheduled IO drains (quiescence, never a mid-IO clear);
+                    // in-flight transfers keep their honest verified outcome.
+                    op.sessionToken?.let { saveCopy.endEditSession(it) }
+                    // Retention contract: the mutable working copy and any module-
+                    // verified outputs are NEVER deleted here — on success, failure,
+                    // cancel or process loss they stay the recoverable base owned by
+                    // the durable recovery journal and its user-visible review. Only
+                    // the immutable intermediate snapshot follows removal eligibility.
+                    if (removeInput) op.snapshot?.let { file ->
+                        scope.launch(Dispatchers.IO) { removeOwnUnreferencedInput(file) }
+                    }
+                } else if (removeInput) {
+                    op.input?.let { file ->
+                        scope.launch(Dispatchers.IO) { removeOwnUnreferencedInput(file) }
+                    }
+                }
+                releasedReviewToken = op.sessionToken
+                active = null
+                mutableState.value = State(error = error)
+                true
             }
         }
-        active = null
-        mutableState.value = State(error = error)
+        if (settled) releasedReviewToken?.let { releaseConflictReview(it) }
+        return settled
     }
 
     private fun removeOwnUnreferencedInput(file: File?) {

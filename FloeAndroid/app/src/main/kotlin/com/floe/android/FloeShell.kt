@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.key
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.compositionLocalOf
@@ -58,7 +59,12 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.floe.android.design.Floe
+import com.floe.android.design.LocalFloeOverlayMaterial
+import com.floe.android.design.floeMaterialSource
+import com.floe.android.design.rememberFloeMaterialController
 import com.floe.android.design.FloeCheckboxRow
 import com.floe.android.design.FloeColors
 import com.floe.android.design.FloeDraftStore
@@ -72,14 +78,31 @@ import com.floe.android.design.FloeVerticalDivider
 import com.floe.android.design.InspectorContent
 import com.floe.android.design.InspectorRoute
 import com.floe.android.design.MoreDestination
+import com.floe.android.host.capture.PacketCaptureNavigation
+import com.floe.android.host.calendar.C06CalendarNavigation
+import com.floe.android.host.entryflow.C07EntryFlowFeature
+import com.floe.android.host.entryflow.C07EntryFlowHost
+import com.floe.android.host.entryflow.C07EntryFlowSurface
+import com.floe.android.host.entryflow.C07EntryNavigation
+import com.floe.android.host.entryflow.C07EntryPackageKind
+import com.floe.android.host.entryflow.C07HomeAttachmentStager
+import com.floe.android.host.entryflow.C07PackageReviewOwner
 import com.floe.android.design.SidebarSelection
 import com.floe.android.design.WorkbenchSelection
+import com.floe.android.feature.canvas.CreativeAvailability
+import com.floe.android.feature.dataexchange.DataExchangePhase
 import com.floe.android.feature.providers.FloeProviderSettingsDestination
 import com.floe.android.host.AttachmentPickerEffect
 import com.floe.android.host.LocalNetworkPermissionEffect
 import com.floe.android.host.RuntimeHost
+import com.floe.android.host.officerecovery.OfficeRecoveryEffect
 import com.floe.android.host.RuntimeHostProvider
 import com.floe.android.host.SkillsFolderPickerEffect
+import com.floe.android.safgateway.SafAccessFlag
+import com.floe.android.safgateway.SafUriRef
+import com.floe.android.host.creative.GenerationForegroundOwner
+import com.floe.android.host.creative.GenerationReturnDecision
+import com.floe.android.host.creative.GenerationReturnNavigation
 import com.floe.android.host.rememberRuntimeHost
 import kotlinx.coroutines.launch
 
@@ -98,22 +121,25 @@ fun FloeShell(
     onThemeModeChange: (FloeThemeMode) -> Unit,
 ) {
     val runtimeHost = rememberRuntimeHost()
-    // The shell renders with or without the runtime host; without it every
-    // G02 surface keeps its honest G01 unavailable state.
-    if (runtimeHost != null) {
-        RuntimeHostProvider(runtimeHost) {
+    val overlayMaterial = rememberFloeMaterialController()
+    CompositionLocalProvider(LocalFloeOverlayMaterial provides overlayMaterial) {
+        // The shell renders with or without the runtime host; without it every
+        // G02 surface keeps its honest G01 unavailable state.
+        if (runtimeHost != null) {
+            RuntimeHostProvider(runtimeHost) {
+                FloeShellContent(
+                    themeMode = themeMode,
+                    onThemeModeChange = onThemeModeChange,
+                    runtimeHost = runtimeHost,
+                )
+            }
+        } else {
             FloeShellContent(
                 themeMode = themeMode,
                 onThemeModeChange = onThemeModeChange,
-                runtimeHost = runtimeHost,
+                runtimeHost = null,
             )
         }
-    } else {
-        FloeShellContent(
-            themeMode = themeMode,
-            onThemeModeChange = onThemeModeChange,
-            runtimeHost = null,
-        )
     }
 }
 
@@ -124,8 +150,19 @@ private fun FloeShellContent(
     runtimeHost: RuntimeHost?,
 ) {
     val application = androidx.compose.ui.platform.LocalContext.current.applicationContext as? FloeApplication
+    val shellLifecycle = LocalLifecycleOwner.current.lifecycle
+    val shellLifecycleState by shellLifecycle.currentStateFlow.collectAsState()
+    // External SEND/VIEW can leave an older Activity in another task. Only
+    // the resumed surface may consume application-owned navigation requests.
+    val consumesExternalRoutes = shellLifecycleState.isAtLeast(Lifecycle.State.RESUMED)
     val officePreviews = application?.officePreviews
-    if (officePreviews != null) OfficePreviewEffect(officePreviews, themeMode)
+    if (officePreviews != null) {
+        OfficePreviewEffect(officePreviews, themeMode)
+        // C08: durable interrupted-Office-save review. Mounted beside the
+        // existing preview effect; the controller owns discovery/actions and
+        // performs nothing until the user chooses.
+        OfficeRecoveryEffect(officePreviews.recovery)
+    }
     if (application != null) {
         NotesPdfPasswordDialog(application.notesPdfPasswords)
         val notesPlatform by application.notesPlatform.collectAsState()
@@ -213,6 +250,10 @@ private fun FloeShellContent(
     // shell's existing route authority.
     var taskCenterSchedulesToken by rememberSaveable { mutableIntStateOf(0) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
+    // Exact raw notification return, admitted only after the live claim and
+    // current native bound epoch are re-proven. It survives Activity rotation
+    // through the process-scoped owner; a refused fence dismisses it.
+    val generationReturnRequest by GenerationReturnNavigation.pending.collectAsState()
 
     // G05-R2 Office AI transient launch admission (Main review 2026-10-27):
     // project the shell's MODAL surfaces (Settings Dialog, preview Dialog,
@@ -256,6 +297,65 @@ private fun FloeShellContent(
         // CREATE_DOCUMENT launcher mounts exactly once with the other
         // platform pickers; a null service (fixtures) is inert.
         com.floe.android.host.output.RunOutputSavePickerEffect(application?.runOutputs)
+        LaunchedEffect(runtimeHost) {
+            val host = runtimeHost ?: return@LaunchedEffect
+            C07EntryFlowHost.attach(host)
+            C07EntryFlowHost.installHomeAttachmentStager(
+                object : C07HomeAttachmentStager {
+                    override fun stage(uris: List<android.net.Uri>): Boolean {
+                        val (nonce, generation) =
+                            host.conversations.rootWorkspace.currentDraftOwner()
+                        return host.attachments.stageDraftUris(nonce, generation, uris)
+                    }
+                },
+            )
+            // C07 package handoff: the EXISTING Data Exchange owner performs
+            // archive inspection/review (never restore on arrival). The source
+            // reference is retained here BEFORE the entry owner releases its
+            // lease, and released by that owner's exact source-settled callback.
+            C07EntryFlowHost.installPackageReviewOwner(
+                object : C07PackageReviewOwner {
+                    override val settingsSectionKey: String = "data-exchange"
+
+                    override fun beginReview(
+                        uri: android.net.Uri,
+                        kind: C07EntryPackageKind,
+                        displayName: String,
+                        releaseSource: () -> Unit,
+                    ): Boolean {
+                        // A .floecad package is a DIRECTORY. The only real
+                        // import is the existing task-scoped workspace tree
+                        // import; never fabricate a ZIP review for it.
+                        if (kind == C07EntryPackageKind.CAD) return false
+                        if (host.nativeRootEpoch() == null) return false
+                        val exchange = host.c07DataExchange
+                        if (exchange.state.value.busy ||
+                            exchange.state.value.phase == DataExchangePhase.REVIEWING
+                        ) {
+                            return false
+                        }
+                        val retained = try {
+                            com.floe.android.host.SharedUriGrantAuthority.broker.retain(
+                                SafUriRef(uri.toString()),
+                                SafAccessFlag.READ,
+                            )
+                        } catch (_: RuntimeException) {
+                            return false
+                        }
+                        return try {
+                            exchange.beginRestore(uri, kind.wire) {
+                                runCatching { retained.release() }
+                                releaseSource()
+                            }
+                            true
+                        } catch (_: Throwable) {
+                            runCatching { retained.release() }
+                            false
+                        }
+                    }
+                },
+            )
+        }
         LaunchedEffect(runtimeHost) {
             // ONE serial consumer for host navigation. Collecting (instead of
             // keying a LaunchedEffect on the value) means clearing the
@@ -327,6 +427,20 @@ private fun FloeShellContent(
                             SidebarSelection.Conversation(promotion.durableConversationId),
                         )
                     }
+                }
+            }
+        }
+        LaunchedEffect(runtimeHost, consumesExternalRoutes) {
+            // C06 notification return: reveal the existing Network workbench
+            // so its live capture panel reads the service-owned state. The
+            // Intent carries no path/session content and is consumed once.
+            if (!consumesExternalRoutes) return@LaunchedEffect
+            PacketCaptureNavigation.requests.collect { nonce ->
+                if (nonce != null) {
+                    PacketCaptureNavigation.consume(nonce)
+                    commitVisibleSelection(SidebarSelection.More(MoreDestination.NETWORK))
+                    drawerOpen = false
+                    inspectorRoute = null
                 }
             }
         }
@@ -427,6 +541,7 @@ private fun FloeShellContent(
     }
 
     val route: InspectorRoute? = inspectorRoute?.let { decodeInspectorRoute(it) }
+    val overlayMaterial = LocalFloeOverlayMaterial.current
 
     BoxWithConstraints(
         Modifier
@@ -494,8 +609,20 @@ private fun FloeShellContent(
         }
         ImeFirstBackHandler(enabled = drawerOpen) { drawerOpen = false }
 
-        fun navigateTo(target: SidebarSelection, openSchedules: Boolean) {
+        fun navigateTo(
+            target: SidebarSelection,
+            openSchedules: Boolean,
+            onCommitted: (() -> Unit)? = null,
+            onRefused: (() -> Unit)? = null,
+            mayCommit: () -> Boolean = { true },
+        ) {
+            if (!mayCommit()) {
+                onRefused?.invoke()
+                return
+            }
             officeNavigationGeneration++
+            val navigationGeneration = officeNavigationGeneration
+            val previousSelectionKey = selection.key
             officePreviews?.cancelUnopened()
             val opensSkillsSheet = target is SidebarSelection.More &&
                 target.destination == MoreDestination.SKILLS
@@ -511,17 +638,22 @@ private fun FloeShellContent(
                     settingsSectionKey =
                         com.floe.android.design.FloeSettingsSection.SKILLS.name
                     settingsVisible = true
+                    onCommitted?.invoke()
                 }
                 // Genuine route transition while a temporary session owns the
                 // surface: fence admission BEFORE the transition (TMP-NAV-2);
                 // the async drain continues afterwards. A REFUSED/timeout
-                // fence commits nothing — including no schedule sub-view.
+                // fence commits nothing — including no schedule sub-view and
+                // no generation-return open.
                 runtimeHost != null && currentTemporary != null && leavingConversation -> {
                     val ref = currentTemporary
                     scope.launch {
                         runtimeHost.conversations.tempFence.beginEnd(ref)
                         val admitted = runtimeHost.conversations.tempFence.awaitAdmission(ref)
-                        if (admitted) {
+                        if (admitted &&
+                            navigationGeneration == officeNavigationGeneration &&
+                            selection.key == previousSelectionKey && mayCommit()
+                        ) {
                             runtimeHost?.home?.onNavigation(target)
                             commitVisibleSelection(target)
                             if (taskCenterSchedulesOpenOnCommit(target, openSchedules)) {
@@ -529,6 +661,11 @@ private fun FloeShellContent(
                             }
                             drawerOpen = false
                             inspectorRoute = null
+                            onCommitted?.invoke()
+                        } else {
+                            // The refused fence owns NO destination: nothing
+                            // is opened and the caller must not claim success.
+                            onRefused?.invoke()
                         }
                     }
                 }
@@ -543,12 +680,204 @@ private fun FloeShellContent(
                     // conversation surface ends temporary chat; rotation,
                     // recreation, background and lock never reach this path.
                     inspectorRoute = null
+                    onCommitted?.invoke()
                 }
             }
         }
 
         val select: (SidebarSelection) -> Unit = { target ->
             navigateTo(target, openSchedules = false)
+        }
+
+        // Aggregate notifications carry no invented task association. Use
+        // the existing route authority, including the temporary-chat fence.
+        val ownedNotification by com.floe.android.host.notification.OwnedNotificationNavigation.pending.collectAsState()
+        LaunchedEffect(ownedNotification?.id, consumesExternalRoutes) {
+            if (!consumesExternalRoutes) return@LaunchedEffect
+            val request = ownedNotification ?: return@LaunchedEffect
+            val navigation = com.floe.android.host.notification.OwnedNotificationNavigation
+            if (!navigation.isCurrent(request)) { navigation.dismiss(request.id); return@LaunchedEffect }
+            navigateTo(
+                target = SidebarSelection.Workbench(WorkbenchSelection.OVERVIEW),
+                openSchedules = false,
+                mayCommit = { shellLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) && navigation.isCurrent(request) },
+                onCommitted = {
+                    settingsVisible = false
+                    previewVisible = false
+                    navigation.dismiss(request.id)
+                },
+                onRefused = { navigation.dismiss(request.id) },
+            )
+        }
+
+        // C06 local reminder route. This is the shell's ONE calendar route
+        // authority: the destination re-reads the exact todo and never opens a
+        // different task/root. A temporary-chat fence refusal dismisses the
+        // request instead of committing a partial navigation.
+        val calendarReminderRoute by C06CalendarNavigation.pending.collectAsState()
+        LaunchedEffect(calendarReminderRoute?.requestID, consumesExternalRoutes) {
+            if (!consumesExternalRoutes) return@LaunchedEffect
+            val request = calendarReminderRoute ?: return@LaunchedEffect
+            if (C06CalendarNavigation.isExpired(request)) {
+                C06CalendarNavigation.dismiss(request.requestID)
+                return@LaunchedEffect
+            }
+            navigateTo(
+                target = SidebarSelection.More(MoreDestination.CALENDAR),
+                openSchedules = false,
+                onRefused = { C06CalendarNavigation.dismiss(request.requestID) },
+            )
+        }
+
+        // C07 external entry route. The App host has already re-read the
+        // existing conversation/schedule store and refused stale targets; this
+        // consumer only commits the ordinary route, with the EXISTING
+        // temporary-chat fence and the existing schedule sub-view token.
+        LaunchedEffect(runtimeHost, consumesExternalRoutes) {
+            runtimeHost ?: return@LaunchedEffect
+            if (!consumesExternalRoutes) return@LaunchedEffect
+            C07EntryFlowHost.navigation.collect { requested ->
+                val request = requested ?: return@collect
+                fun navigateEntry(
+                    target: SidebarSelection,
+                    openSchedules: Boolean = false,
+                    onCommitted: () -> Unit = {},
+                    onRefused: () -> Unit = { C07EntryFlowHost.navigationRefused() },
+                ) {
+                    fun current() = shellLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                        C07EntryFlowHost.navigation.value == request
+                    navigateTo(target, openSchedules,
+                        mayCommit = { current() },
+                        onCommitted = {
+                            onCommitted()
+                            C07EntryFlowHost.consumeNavigation(request)
+                        },
+                        onRefused = {
+                            // Leave a paused surface's request pending for the
+                            // actual resumed Activity; do not consume its route.
+                            if (current()) {
+                                onRefused()
+                                C07EntryFlowHost.consumeNavigation(request)
+                            }
+                        },
+                    )
+                }
+                when (request) {
+                    is C07EntryNavigation.OpenTask -> navigateEntry(
+                        target = SidebarSelection.Conversation(request.conversationID),
+                    )
+                    is C07EntryNavigation.OpenSchedule -> navigateEntry(
+                        target = SidebarSelection.Workbench(WorkbenchSelection.OVERVIEW),
+                        openSchedules = true,
+                    )
+                    is C07EntryNavigation.OpenNewTask -> navigateEntry(
+                        target = SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK),
+                        openSchedules = false,
+                        onCommitted = {
+                            request.intakeID?.let(C07EntryFlowHost::applyTaskDestination)
+                        },
+                        onRefused = {
+                            request.intakeID?.let {
+                                C07EntryFlowHost.taskDestinationRefused(it, temporary = true)
+                            }
+                        },
+                    )
+                    C07EntryNavigation.OpenNotes -> navigateEntry(
+                        target = SidebarSelection.More(MoreDestination.NOTES),
+                        openSchedules = false,
+                    )
+                }
+            }
+        }
+
+        // Generation notification return. This is the shell's single route
+        // authority: it re-proves the opaque token against the LIVE registered
+        // foreground claim, the exact captured project context and the CURRENT
+        // native bound epoch, then uses the ordinary Creative route (including
+        // the existing temporary-chat fence). A rejected token is dismissed
+        // with no navigation; a refused fence publishes no approval, so no
+        // project can open and no success is claimed.
+        LaunchedEffect(application, generationReturnRequest?.requestID, consumesExternalRoutes) {
+            if (!consumesExternalRoutes) return@LaunchedEffect
+            val request = generationReturnRequest ?: return@LaunchedEffect
+            val app = application ?: return@LaunchedEffect
+            // Never swallow coroutine cancellation: a rotation during the
+            // read must leave the one-shot pending for the next composition.
+            val status = try {
+                app.creativeHost.services.status()
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                null
+            }
+            if (!shellLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return@LaunchedEffect
+            val decision = if (request.source == GenerationReturnNavigation.Source.EXPORT) {
+                com.floe.android.host.notification.resolveExportReturn(
+                    request.token, status?.boundEpoch,
+                    status?.availability ?: CreativeAvailability.Unavailable)
+            } else GenerationForegroundOwner.resolveReturn(
+                token = request.token,
+                nowElapsedMillis = android.os.SystemClock.elapsedRealtime(),
+                liveEpoch = status?.boundEpoch,
+                availability =
+                    status?.availability ?: CreativeAvailability.Unavailable,
+            )
+            when (decision) {
+                is GenerationReturnDecision.Rejected -> {
+                    // Unknown/expired token, unregistered claim, missing
+                    // captured context, wrong root/epoch or unavailable host:
+                    // refuse safely. Never falls back to the first project.
+                    GenerationReturnNavigation.dismiss(request.requestID)
+                }
+                is GenerationReturnDecision.Authorized -> {
+                    if (GenerationReturnNavigation.pending.value?.requestID !=
+                        request.requestID) return@LaunchedEffect
+                    val creative =
+                        SidebarSelection.More(MoreDestination.CREATIVE)
+                    val liveTemporary =
+                        runtimeHost?.conversations?.activeTemporarySession()
+                    if (selection == creative && liveTemporary == null) {
+                        // Already on the exact destination: no redundant
+                        // route side effect. Transient shell overlays must not
+                        // hide the full-window project; the outer split and
+                        // route order are unchanged.
+                        settingsVisible = false
+                        previewVisible = false
+                        drawerOpen = false
+                        inspectorRoute = null
+                        GenerationReturnNavigation.approve(
+                            request.requestID, decision.target)
+                    } else {
+                        navigateTo(
+                            target = creative,
+                            openSchedules = false,
+                            mayCommit = {
+                                shellLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                                    GenerationReturnNavigation.pending.value?.requestID ==
+                                    request.requestID &&
+                                    (request.source != GenerationReturnNavigation.Source.EXPORT ||
+                                        com.floe.android.host.notification.resolveExportReturn(request.token,
+                                            application?.mediaWorkbench?.currentEpoch(), CreativeAvailability.Available) == decision)
+                            },
+                            onCommitted = {
+                                // Close transient overlays only after the real
+                                // route/fence commit, so a refused fence leaves
+                                // the current surface untouched.
+                                settingsVisible = false
+                                previewVisible = false
+                                drawerOpen = false
+                                inspectorRoute = null
+                                GenerationReturnNavigation.approve(
+                                    request.requestID, decision.target)
+                            },
+                            onRefused = {
+                                GenerationReturnNavigation.dismiss(
+                                    request.requestID)
+                            },
+                        )
+                    }
+                }
+            }
         }
 
         val sidebarBody: @Composable (Boolean) -> Unit = { inDrawer ->
@@ -613,6 +942,10 @@ private fun FloeShellContent(
             // strip disappears with it. Provider-pick opens have no owner
             // and never show it.
             val officeState = officePreviews?.state?.collectAsState()?.value
+            val recoveryState = officePreviews?.recovery?.state?.collectAsState()?.value
+            val recoveryEntry = recoveryState != null &&
+                !recoveryState.visible &&
+                recoveryState.candidates.any { it.unresolved }
             val visibleConversationId =
                 (selection as? SidebarSelection.Conversation)?.conversationId
             val ownedReturnTarget = officeState?.ownedReturn?.takeIf { target ->
@@ -651,6 +984,37 @@ private fun FloeShellContent(
                         Spacer(Modifier.width(10.dp))
                         FloeText(
                             text = stringResource(R.string.office_return_action),
+                            style = Floe.typography.bodyEmphasized,
+                            color = Floe.colors.accent,
+                        )
+                    }
+                }
+                if (recoveryEntry) {
+                    // Bounded re-entry after the recovery sheet is dismissed:
+                    // the review stays discoverable without a process restart.
+                    val zhRecovery = java.util.Locale.getDefault().language == "zh"
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 44.dp)
+                            .clickable { officePreviews?.recovery?.show() }
+                            .semantics {
+                                contentDescription = if (zhRecovery) "恢复 Office 文档" else "Recover Office document"
+                            }
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FloeText(
+                            text = if (zhRecovery) "恢复 Office 文档" else "Recover Office document",
+                            modifier = Modifier.weight(1f),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.label,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        FloeText(
+                            text = if (zhRecovery) "查看" else "Review",
                             style = Floe.typography.bodyEmphasized,
                             color = Floe.colors.accent,
                         )
@@ -698,7 +1062,7 @@ private fun FloeShellContent(
         }
 
         if (persistentSidebar) {
-            Row(Modifier.fillMaxSize().statusBarsPadding()) {
+            Row(Modifier.fillMaxSize().statusBarsPadding().floeMaterialSource(overlayMaterial)) {
                 Box(
                     Modifier
                         .widthIn(FloeLayout.SidebarMinWidth, FloeLayout.SidebarMaxWidth)
@@ -728,7 +1092,7 @@ private fun FloeShellContent(
                 }
             }
         } else {
-            Box(Modifier.fillMaxSize().statusBarsPadding()) {
+            Box(Modifier.fillMaxSize().statusBarsPadding().floeMaterialSource(overlayMaterial)) {
                 detail()
                 // Compact drawer: iOS phone idiom — width
                 // min(390, max(300, w-44)), rounded corner, slight scale of
@@ -767,7 +1131,7 @@ private fun FloeShellContent(
             // persistent sidebar + readable content + inspector minimum
             // widths cannot coexist, the inspector takes a full-height
             // trailing overlay instead of squeezing content to near zero.
-            Box(Modifier.fillMaxSize().statusBarsPadding()) {
+            Box(Modifier.fillMaxSize().statusBarsPadding().floeMaterialSource(overlayMaterial, zIndex = 1f)) {
                 Box(
                     Modifier
                         .fillMaxSize()
@@ -790,6 +1154,21 @@ private fun FloeShellContent(
                     .padding(16.dp).widthIn(max = 560.dp),
             )
         }
+
+        // C07 share/setup surfaces. Both are dismissible Dialogs over the
+        // CURRENT route; arrival never navigates. The notice is a small
+        // bounded card, not a second navigation layer.
+        C07EntryFlowSurface(
+            onOpenSettingsSection = { key ->
+                settingsSectionKey = key
+                settingsVisible = true
+            },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .imePadding()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        )
 
         SettingsSheet(
             visible = settingsVisible,
@@ -827,7 +1206,12 @@ private fun FloeShellContent(
             // only after the App integrator attaches a real presentation; the
             // PLAY flavour returns an empty list and imports no channel type.
             externalSections =
-                com.floe.android.host.settings.DistributionSettingsFeature.sections(),
+                com.floe.android.host.settings.DistributionSettingsFeature.sections() +
+                    listOf(
+                        com.floe.android.host.dataexchange.C07DataExchangeFeature
+                            .settingsSection(runtimeHost),
+                        C07EntryFlowFeature.settingsSection(),
+                    ),
         )
 
         // G05-R3 Alpha14: one self-update surface (full channel only; the

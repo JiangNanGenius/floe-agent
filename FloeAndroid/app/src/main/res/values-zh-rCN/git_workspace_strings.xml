@@ -33,6 +33,8 @@
     <string name="git_workspace_remote_url">仓库 HTTPS 地址</string>
     <string name="git_workspace_discard_confirmation">丢弃此路径的工作区及暂存更改？可恢复时会保留副本。请先保存编辑器中未保存的内容。</string>
     <string name="git_workspace_push_confirmation">将已提交的更改推送到配置的远端仓库？</string>
+    <string name="git_workspace_push_rejected">服务器拒绝了本次推送，请检查远端分支、访问权限或仓库规则后再试。</string>
+    <string name="git_workspace_push_unreported">无法确认本次推送的结果，请先检查远端分支后再操作。</string>
     <string name="git_workspace_abort_confirmation">中止当前合并并恢复之前的工作状态？请先保存编辑器中未保存的内容。</string>
     <string name="git_workspace_action_caption">此操作应用于所选任务的工作区。</string>
     <string name="git_workspace_actions">云端构建</string>

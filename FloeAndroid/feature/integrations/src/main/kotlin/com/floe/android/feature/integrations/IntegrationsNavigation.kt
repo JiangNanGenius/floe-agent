@@ -25,6 +25,9 @@ enum class IntegrationsPane {
     /** MCP add/edit form sheet (⇄ MCPServerEditor). Key = editorId. */
     MCP_EDITOR,
 
+    /** Guided Linux-owned MCP service creation (C02). Key = record/editor id. */
+    MCP_SETUP,
+
     /** Skill Creator sheet (⇄ SkillCreatorSheet). Key = formId. */
     SKILL_CREATOR,
 
@@ -34,6 +37,9 @@ enum class IntegrationsPane {
     /** Folder-import sheet (staged opaque reference; Android surface for
      * ⇄ the fileImporter step). Key = formId. */
     SKILL_IMPORT,
+
+    /** Full-catalog entry detail sheet. Key = skillId. */
+    SKILL_DETAIL,
 
     /** Install review sheet (⇄ SkillInstallReviewSheet). Key = reviewId. */
     INSTALL_REVIEW,

@@ -307,7 +307,7 @@ final class G04NetworkWorkspaceHost: @unchecked Sendable {
                             credentialTicket: Int64) -> (UUID, UUID, G04NetworkMountDraft)? {
         guard let taskID = Self.canonicalUUID(taskHex),
               let workspaceID = Self.canonicalUUID(workspaceHex) else { return nil }
-        guard transport == "webdav" || transport == "smb" else { return nil }
+        guard transport == "webdav" || transport == "smb" || transport == "sftp" else { return nil }
         guard !endpoint.isEmpty, let url = URL(string: endpoint) else { return nil }
         let mountID: UUID?
         if let mountHex, !mountHex.isEmpty {
@@ -319,7 +319,8 @@ final class G04NetworkWorkspaceHost: @unchecked Sendable {
               Self.boundedUTF8(rootPath, limit: 4096) != nil,
               Self.boundedUTF8(username, limit: 256) != nil else { return nil }
         return (taskID, workspaceID, G04NetworkMountDraft(
-            mountID: mountID, name: name, transport: transport == "smb" ? .smb : .webDAV,
+            mountID: mountID, name: name,
+            transport: transport == "smb" ? .smb : (transport == "sftp" ? .sftp : .webDAV),
             endpoint: url, rootPath: rootPath, username: username,
             readOnly: readOnly != 0, credentialTicket: credentialTicket))
     }

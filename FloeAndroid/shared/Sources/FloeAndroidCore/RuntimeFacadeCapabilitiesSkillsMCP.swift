@@ -105,8 +105,12 @@ enum SkillsInstallOperation: String, Sendable, CaseIterable {
 
 /// skills.list operations (reads; stateful=false so no revision/create).
 enum SkillsListOperation: String, Sendable, CaseIterable {
-    case snapshot                              // default (load hub)
-    case catalogRefresh = "catalog.refresh"    // refreshCatalog (async effect)
+    case snapshot                              // default (legacy + curated state)
+    case catalogRefresh = "catalog.refresh"    // refresh BOTH independent catalogs
+    case curatedRefresh = "curated.refresh"    // schemaVersion-3 full channel only
+    case curatedDetail = "curated.detail"      // one verified full-catalog entry
+    case curatedCards = "curated.cards"        // bounded full-catalog card page
+    case curatedSearch = "curated.search"      // source-backed search over the feed
     case detail                                // bounded markdown window
     case settingsRead = "settings.read"        // skills settings document
 }
@@ -236,7 +240,41 @@ public actor SkillsCommandRouter {
             try ConfigJSON.closed(payload, allowed: ["operation", "force", "cursor"],
                                   context: "skillsCatalogRefresh")
             let force = (payload["force"] as? Bool) ?? false
-            return CapabilitiesReplies.completed(try await domain.refreshCatalog(force: force))
+            return CapabilitiesReplies.completed(try await domain.refreshCatalogs(force: force))
+        case SkillsListOperation.curatedRefresh.rawValue:
+            try ConfigJSON.closed(payload, allowed: ["operation", "force", "cursor"],
+                                  context: "skillsCuratedRefresh")
+            let force = (payload["force"] as? Bool) ?? false
+            return CapabilitiesReplies.completed(
+                try await domain.refreshCuratedCatalog(force: force))
+        case SkillsListOperation.curatedDetail.rawValue:
+            try ConfigJSON.closed(payload, allowed: ["operation", "skillId", "cursor"],
+                                  required: ["skillId"],
+                                  context: "skillsCuratedDetail")
+            guard let skillID = payload["skillId"] as? String else {
+                throw ConfigDomainError(code: .invalidEnvelope, reason: "curatedDetailSkillID")
+            }
+            return CapabilitiesReplies.completed(try await domain.curatedDetail(skillID: skillID))
+        case SkillsListOperation.curatedCards.rawValue:
+            try ConfigJSON.closed(payload, allowed: ["operation", "cursor", "pageToken"],
+                                  context: "skillsCuratedCards")
+            guard payload["pageToken"] == nil || payload["pageToken"] is String,
+                  cursor == nil || cursor == "0" else {
+                throw ConfigDomainError(code: .invalidEnvelope, reason: "curatedCardsPageShape")
+            }
+            return CapabilitiesReplies.completed(try await domain.curatedCards(
+                pageToken: payload["pageToken"] as? String))
+        case SkillsListOperation.curatedSearch.rawValue:
+            try ConfigJSON.closed(payload, allowed: ["operation", "query", "cursor", "pageToken"],
+                                  context: "skillsCuratedSearch")
+            guard payload["query"] == nil || payload["query"] is String,
+                  payload["pageToken"] == nil || payload["pageToken"] is String,
+                  cursor == nil || cursor == "0" else {
+                throw ConfigDomainError(code: .invalidEnvelope, reason: "curatedSearchPageShape")
+            }
+            let query = (payload["query"] as? String) ?? ""
+            return CapabilitiesReplies.completed(try await domain.curatedSearch(
+                query: query, pageToken: payload["pageToken"] as? String))
         case SkillsListOperation.detail.rawValue:
             try ConfigJSON.closed(payload,
                                   allowed: ["operation", "skillId", "byteOffset",
@@ -875,7 +913,7 @@ public enum RuntimeFacadeCapabilitiesBindings {
                 command: "mcp.servers.list", configurationScope: "mcp",
                 revisionRequired: false, allowsCreateIntent: false,
                 serviceMethod: "MCPCommandRouter.handle",
-                integrationNote: "servers+tool inventory+per-server connection truth+ credential STATUS (canonical ref, never bytes)+cleanupPending+transports inventory (streamable HTTP/SSE real; stdio/SSH/linux NOT_IMPLEMENTED G03, retained not dropped)."),
+                integrationNote: "servers+tool inventory+per-server connection truth+ credential STATUS (canonical ref, never bytes)+cleanupPending+transports inventory (streamable HTTP/SSE real; stdio adapter source-wired through the original factory/domain, C01 pipe/admission closed until qualified; SSH/Linux execution transports NOT_IMPLEMENTED)."),
         Binding(handlerKey: CapabilityDomainCommand.mcpConnect.bridgeV3HandlerKey,
                 command: "mcp.connect", configurationScope: "mcp",
                 revisionRequired: true, allowsCreateIntent: true,

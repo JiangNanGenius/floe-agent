@@ -37,6 +37,8 @@ class RuntimeControlBinder(
         // A native completion/lease-release operation is intentionally absent.
         val response = try {
             RuntimeWire.reply(request, handle(request, foregroundPermit, workspaceGrant))
+        } catch (failure: RuntimeOperationRefused) {
+            RuntimeWire.failure(request, failure.refusal.code)
         } catch (_: IllegalStateException) {
             RuntimeWire.failure(request, "runtime_not_ready")
         } catch (_: IllegalArgumentException) {

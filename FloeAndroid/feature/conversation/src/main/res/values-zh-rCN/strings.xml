@@ -110,6 +110,9 @@
     <string name="secure_credentials_hint">已安全保存；本任务可以引用。</string>
     <string name="secure_credentials_card">安全凭据卡片</string>
     <string name="attachment_open_named">打开附件 %1$s</string>
+    <string name="attachment_menu_open">打开</string>
+    <string name="attachment_design_action">设计</string>
+    <string name="attachment_more_actions">%1$s 的更多操作</string>
     <string name="attachment_remove">移除附件 %1$s</string>
     <string name="attachment_importing">正在导入…</string>
     <string name="attachment_progress">正在导入 %1$d%%</string>
@@ -284,6 +287,9 @@
     <string name="history_filter_tasks">任务</string>
     <string name="history_filter_archive">已归档</string>
     <string name="history_archive_action">归档</string>
+    <string name="history_pin_action">置顶</string>
+    <string name="history_unpin_action">取消置顶</string>
+    <string name="history_pinned_badge">已置顶</string>
     <string name="history_restore_action">恢复</string>
     <string name="history_delete_forever">永久删除</string>
     <string name="history_delete_confirm_title">删除任务</string>
@@ -385,4 +391,7 @@
     <string name="user_question_multiple">可多选</string>
     <string name="user_question_optional">可选：你考虑时 Floe 可以继续其他工作。</string>
     <string name="user_question_waiting">等待你的回答</string>
+    <string name="history_results_cleanup_pending">任务已删除，部分已保存结果仍待清理。</string>
+    <string name="history_results_cleanup_failed">任务已删除，部分已保存结果未能移除。</string>
+    <string name="menu_execution_target">执行位置</string>
 </resources>

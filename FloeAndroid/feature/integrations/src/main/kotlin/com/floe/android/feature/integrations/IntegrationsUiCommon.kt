@@ -43,6 +43,8 @@ internal object IntegrationsSheetMetrics {
     const val UPGRADE_HEIGHT_FRACTION = 0.86f
     const val INSTALL_REVIEW_WIDTH_FRACTION = 0.60f
     const val INSTALL_REVIEW_HEIGHT_FRACTION = 0.72f
+    const val SKILL_DETAIL_WIDTH_FRACTION = 0.64f
+    const val SKILL_DETAIL_HEIGHT_FRACTION = 0.82f
     const val SKILL_FORM_WIDTH_FRACTION = 0.60f
     const val SKILL_FORM_HEIGHT_FRACTION = 0.66f
 }

@@ -154,7 +154,8 @@ public actor G04WorkspaceFacade {
                       conversation.purpose == .ordinary,
                       let workspaceID = try? await cluster.workspaceStore.workspaceID(conversationID: taskID),
                       let record = try? await cluster.workspaceStore.workspace(id: workspaceID),
-                      record.kind == .privateTask,
+                      record.kind == .privateTask
+                        || C01ProjectRootLayout.isManagedProject(record),
                       G02NativeRootEpoch.readback() == epoch else { return nil }
                 return G04WorkspaceOwner(epoch: epoch, taskID: taskID, workspaceID: workspaceID)
             },
@@ -201,11 +202,12 @@ public actor G04WorkspaceFacade {
     /// conversation exists with `ordinary` purpose (temporary sessions never
     /// enter SQLite; Notes documents live in a different workspace), the
     /// payload workspaceID equals the exact ORIGINAL ownership binding, and
-    /// the bound record is the accepted private-task shape. A managed/source
-    /// write layer needs its own explicit ORIGINAL record/source binding and
-    /// native validated ownership, so it stays typed `backendUnavailable`
-    /// here — never a guessed first project, never a reinterpreted
-    /// `content://` as a POSIX path.
+    /// the bound record is one of the TWO accepted managed shapes: the
+    /// original private task or a C01 managed project. A managed/source
+    /// (SAF/webdav/smb) write layer needs its own explicit ORIGINAL
+    /// record/source binding and native validated ownership, so it stays
+    /// typed `backendUnavailable` here — never a guessed first project,
+    /// never a reinterpreted `content://` as a POSIX path.
     /// Result carrier: `G04WorkspaceReply` is the closed JNI reply enum;
     /// Result requires an Error, so refusal passes through this thin
     /// typed carrier and the dispatch sites return the EXACT reply below.
@@ -229,7 +231,8 @@ public actor G04WorkspaceFacade {
                   let workspace = try await cluster.workspaceStore.workspace(id: workspaceID)
             else { return .failure(AdmissionRefusal(reply: .refused(code: "ownerChanged", reason: "workspaceBindingMismatch"))) }
             guard compositionIsLive else { return .failure(AdmissionRefusal(reply: .refused(code: "retired", reason: nil))) }
-            guard workspace.kind == .privateTask else {
+            guard workspace.kind == .privateTask
+                    || C01ProjectRootLayout.isManagedProject(workspace) else {
                 return .failure(AdmissionRefusal(reply: .refused(code: "backendUnavailable",
                                                                   reason: "managedSourceLayerRequiresExplicitBinding")))
             }
@@ -819,7 +822,7 @@ public actor G04WorkspaceFacade {
     fileprivate func preserveUnderGate(_ draft: G04RetainedDraft) async -> Bool {
         let digest = FloeDigest.sha256Hex(Data(draft.text.utf8))
         do {
-            let service = try await G04LiveWorkspaceAccess.privateTaskService(
+            let service = try await G04LiveWorkspaceAccess.managedService(
                 draft.header.owner, cancellation: CancellationToken())
             return Self.preserved(draft, digest: digest, via: service)
         } catch {
@@ -950,6 +953,16 @@ public actor G04WorkspaceFacade {
         }
         if let credential = error as? G04GitCredentialLease.Failure {
             return .refused(code: "gitCredentialUnavailable", reason: String(describing: credential))
+        }
+        // GIT-PUSH-CONFLICT: typed push outcomes. Codes are bounded and
+        // closed; the refusal reason carries only the bounded rejection
+        // classification (never tokens, remote URLs or the server's raw
+        // status text — the FloeGit receipt discards those at the callback).
+        if let push = error as? GitPushRefusedError {
+            return .refused(code: "gitPushRejected", reason: push.classification.rawValue)
+        }
+        if error is GitPushUnreportedError {
+            return .refused(code: "gitPushUnreported", reason: nil)
         }
         // Durable Actions engine refusals: typed codes; the reason carries
         // ONLY redacted, bounded diagnostic text (never tokens, headers or

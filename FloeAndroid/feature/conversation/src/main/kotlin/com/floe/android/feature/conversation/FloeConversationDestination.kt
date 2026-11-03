@@ -62,6 +62,10 @@ import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloePlainFormField
 import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeLayout
+import com.floe.android.design.FloeMaterialLevel
+import com.floe.android.design.FloeToolbarIconButton
+import com.floe.android.design.LocalFloeMaterial
+import com.floe.android.design.floeMaterialSource
 import com.floe.android.design.FloePageSheet
 import com.floe.android.design.FloePopoverCard
 import com.floe.android.design.FloePrimaryAction
@@ -87,6 +91,15 @@ fun FloeConversationDestination(
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
     paneGeometry: ConversationPaneGeometry? = null,
+    /**
+     * Generic App callback for the optional Design action on a PERSISTED
+     * private attachment. The feature emits the real conversation/message/
+     * attachment identity only; it has no App/design dependency and adds no
+     * route. Temporary sessions never receive this action.
+     */
+    onAttachmentDesign: ((AttachmentDesignRequest) -> Unit)? = null,
+    onOpenExecutionTarget: (() -> Unit)? = null,
+    statusContent: (@Composable () -> Unit)? = null,
 ) {
     val state = holder.snapshot.value
     // Timeline density follows the ACTUAL pane when the host measured one;
@@ -97,8 +110,9 @@ fun FloeConversationDestination(
         ?: (LocalConfiguration.current.screenWidthDp.dp >= FloeLayout.PersistentTwoColumnMinWidth)
 
     Column(modifier = modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
-        ThreadTopBar(holder, onBack)
+        ThreadTopBar(holder, onBack, onOpenExecutionTarget)
         FloeDivider()
+        statusContent?.invoke()
         if (holder.threadSearchVisible) {
             ThreadSearchBar(holder)
         }
@@ -128,7 +142,12 @@ fun FloeConversationDestination(
                 )
                 FloeDivider()
             }
-            ThreadTimeline(holder, isWide = isWide, modifier = Modifier.weight(1f))
+            ThreadTimeline(
+                holder = holder,
+                isWide = isWide,
+                modifier = Modifier.weight(1f),
+                onAttachmentDesign = if (state.isTemporary) null else onAttachmentDesign,
+            )
             ThreadCompactionStatus(holder)
             ThreadErrorBanner(holder)
             ThreadContinuationBar(holder)
@@ -163,7 +182,11 @@ fun FloeConversationDestination(
 /* ---------------------------------- top bar ---------------------------------- */
 
 @Composable
-private fun ThreadTopBar(holder: ConversationFlowHolder, onBack: (() -> Unit)?) {
+private fun ThreadTopBar(
+    holder: ConversationFlowHolder,
+    onBack: (() -> Unit)?,
+    onOpenExecutionTarget: (() -> Unit)?,
+) {
     val state = holder.snapshot.value
     val title = state?.taskTitle?.takeIf { it.isNotEmpty() } ?: stringResource(R.string.thread_title_default)
     var menuExpanded by remember(state?.session) { mutableStateOf(false) }
@@ -171,11 +194,10 @@ private fun ThreadTopBar(holder: ConversationFlowHolder, onBack: (() -> Unit)?) 
         title = title,
         navigation = onBack?.let { back ->
             {
-                FloeCircleButton(
+                FloeToolbarIconButton(
                     icon = FloeIcons.ChevronBack,
                     contentDescription = stringResource(R.string.action_back),
                     onClick = back,
-                    hairline = false,
                 )
             }
         },
@@ -185,16 +207,11 @@ private fun ThreadTopBar(holder: ConversationFlowHolder, onBack: (() -> Unit)?) 
             }
             if (state != null) {
                 val searchLabel = stringResource(R.string.thread_search_placeholder)
-                Box(
-                    modifier = Modifier
-                        .heightIn(min = FloeLayout.MinimumTarget)
-                        .widthIn(min = FloeLayout.MinimumTarget)
-                        .clickable { holder.beginThreadSearch() }
-                        .semantics { contentDescription = searchLabel },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    IconGlyph(FloeIcons.Magnifier, Floe.colors.label, 18.dp)
-                }
+                FloeToolbarIconButton(
+                    icon = FloeIcons.Magnifier,
+                    contentDescription = searchLabel,
+                    onClick = holder::beginThreadSearch,
+                )
             }
             // Context usage ring (only when the window is known — never an
             // invented token count).
@@ -260,30 +277,23 @@ private fun ThreadTopBar(holder: ConversationFlowHolder, onBack: (() -> Unit)?) 
             // resources, and the UI never shows bindings it never made).
             Box {
                 val menuCd = stringResource(R.string.thread_inspector_menu)
-                Box(
-                    modifier = Modifier
-                        .heightIn(min = FloeLayout.MinimumTarget)
-                        // Icon-only toolbar targets need BOTH dimensions at the
-                        // 48dp floor: the bare 20dp glyph measured a 40px hitbox
-                        // (e.g. [2504,52][2544,148]) next to "Round ended"
-                        // (device evidence 2026-10-25). The CenterEnd actions
-                        // row grows leftward, so widening this target cannot
-                        // push it offscreen; the title ellipsises instead.
-                        .widthIn(min = FloeLayout.MinimumTarget)
-                        .clickable { menuExpanded = true }
-                        .semantics { contentDescription = menuCd },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    // ⇄ inspectorButton: iOS chart.bar (temporary Progress)
-                    // and sidebar.right (ordinary inspector menu).
-                    IconGlyph(
-                        if (state?.isTemporary == true) FloeIcons.ChartBar else FloeIcons.SidebarTrailing,
-                        Floe.colors.label,
-                        20.dp,
-                    )
-                }
+                // ⇄ inspectorButton: iOS chart.bar (temporary Progress)
+                // and sidebar.right (ordinary inspector menu). Compact glyph,
+                // full 48dp target.
+                FloeToolbarIconButton(
+                    icon = if (state?.isTemporary == true) FloeIcons.ChartBar else FloeIcons.SidebarTrailing,
+                    contentDescription = menuCd,
+                    onClick = { menuExpanded = true },
+                )
                 FloeChipMenu(expanded = menuExpanded, onDismiss = { menuExpanded = false }) {
                     if (state != null && !state.isTemporary) {
+                        if (onOpenExecutionTarget != null) {
+                            CupertinoMenuEntry(
+                                title = stringResource(R.string.menu_execution_target),
+                                selected = false,
+                                onClick = { menuExpanded = false; onOpenExecutionTarget() },
+                            )
+                        }
                         CupertinoMenuEntry(
                             title = stringResource(if (holder.mediaRefreshInFlight) R.string.menu_refreshing_media else R.string.menu_refresh_media),
                             selected = false,
@@ -362,10 +372,16 @@ private fun ThreadTopBar(holder: ConversationFlowHolder, onBack: (() -> Unit)?) 
 /* --------------------------------- timeline --------------------------------- */
 
 @Composable
-private fun ThreadTimeline(holder: ConversationFlowHolder, isWide: Boolean, modifier: Modifier = Modifier) {
+private fun ThreadTimeline(
+    holder: ConversationFlowHolder,
+    isWide: Boolean,
+    modifier: Modifier = Modifier,
+    onAttachmentDesign: ((AttachmentDesignRequest) -> Unit)? = null,
+) {
     val state = holder.snapshot.value ?: return
     val search = holder.threadSearch
     val listState = rememberLazyListState()
+    val material = LocalFloeMaterial.current
     // ⇄ latest-follow: scroll to the bottom when the user follows latest and
     // content/length ticks changed; an intentional scroll-away is respected
     // (content growth is not a user scroll).
@@ -424,6 +440,14 @@ private fun ThreadTimeline(holder: ConversationFlowHolder, isWide: Boolean, modi
     // them and left a blank half-pane below the list (Samsung c02-model-*
     // evidence: viewport 0..1115 with a blank gap after the keyboard closed).
     Box(modifier = modifier.fillMaxWidth()) {
+        // The timeline is the actual moving scene. The effect surfaces below
+        // are siblings (never children) so Haze can blur the real rows under
+        // the floating control without recursive self-sampling.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .floeMaterialSource(material),
+        ) {
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
@@ -451,7 +475,10 @@ private fun ThreadTimeline(holder: ConversationFlowHolder, isWide: Boolean, modi
                 }?.query
                 Box(modifier = Modifier.fillMaxWidth()) {
                     ConversationTimelineRow(
-                        row = row, holder = holder, searchHighlightQuery = searchQuery,
+                        row = row,
+                        holder = holder,
+                        searchHighlightQuery = searchQuery,
+                        onAttachmentDesign = onAttachmentDesign,
                     )
                 }
             }
@@ -470,25 +497,24 @@ private fun ThreadTimeline(holder: ConversationFlowHolder, isWide: Boolean, modi
                 }
             }
         }
+        }
 
         // ⇄ return-to-latest floating button. It is an OVERLAY inside the one
         // weighted timeline slot (iOS ZStack alignment .bottomTrailing), not a
-        // second weighted column child.
+        // second weighted column child. Real Haze chrome over the rows.
         if (holder.showsReturnToLatest) {
             val jumpCd = stringResource(R.string.jump_to_latest)
-            Box(
+            FloeCircleButton(
+                icon = FloeIcons.ChevronDown,
+                contentDescription = jumpCd,
+                onClick = holder::returnToLatest,
+                visualSize = FloeLayout.ToolbarCompactVisualSize,
+                iconSize = 18.dp,
+                materialLevel = FloeMaterialLevel.CHROME,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(end = 14.dp, bottom = 12.dp)
-                    .heightIn(min = FloeLayout.MinimumTarget)
-                    .clickable {
-                        holder.returnToLatest()
-                    }
-                    .semantics { contentDescription = jumpCd },
-                contentAlignment = Alignment.Center,
-            ) {
-                IconGlyph(FloeIcons.ChevronDown, Floe.colors.accent, 18.dp)
-            }
+                    .padding(end = 14.dp, bottom = 12.dp),
+            )
         }
     }
 }

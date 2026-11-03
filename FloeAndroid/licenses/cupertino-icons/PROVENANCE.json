@@ -41,8 +41,8 @@
  },
  "output": {
   "file": "core/designsystem/src/main/kotlin/com/floe/android/design/FloeGlyphs.kt",
-  "sha256": "4fae98e31b68d1e659973d3a218bda7d6da759fed20d260a08632bf5b9844945",
-  "glyphCount": 45
+  "sha256": "a646c08c2c28004c9e20e49bac516a09ab07a87017e82c3c0659a871f636eaa1",
+  "glyphCount": 50
  },
  "glyphMap": [
   {
@@ -359,6 +359,41 @@
    "cupertinoKey": "ellipsis",
    "codepoint": "0xf46a",
    "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Share",
+   "ios": "square.and.arrow.up",
+   "cupertinoKey": "share",
+   "codepoint": "0xf4ca",
+   "addedForMappingFix": true
+  },
+  {
+   "floeVal": "Film",
+   "ios": "film",
+   "cupertinoKey": "film",
+   "codepoint": "0xf66b",
+   "addedForMappingFix": true
+  },
+  {
+   "floeVal": "Compass",
+   "ios": "safari",
+   "cupertinoKey": "compass",
+   "codepoint": "0xf8ca",
+   "addedForMappingFix": true
+  },
+  {
+   "floeVal": "Expand",
+   "ios": "arrow.up.left.and.arrow.down.right",
+   "cupertinoKey": "fullscreen_exit",
+   "codepoint": "0xf37d",
+   "addedForMappingFix": true
+  },
+  {
+   "floeVal": "Document",
+   "ios": "doc.richtext",
+   "cupertinoKey": "doc_richtext",
+   "codepoint": "0xf637",
+   "addedForMappingFix": true
   }
  ],
  "handDrawnFallbackKept": [

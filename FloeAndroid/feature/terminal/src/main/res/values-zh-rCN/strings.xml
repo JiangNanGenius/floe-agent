@@ -6,7 +6,7 @@
     <string name="terminal_exited">进程已退出，代码 %1$d</string>
     <string name="terminal_stopped">进程已停止（%1$s）</string>
     <string name="terminal_closed">终端已关闭</string>
-    <string name="terminal_fault">终端不可用：%1$s</string>
+    <string name="terminal_fault">终端暂不可用，请查看终端设置。</string>
     <string name="terminal_engine_unqualified">Linux 运行环境尚未就绪。请打开运行环境设置，完成安装后再试。</string>
     <string name="terminal_not_ready">终端未启动</string>
     <string name="terminal_workspace_mapping_pending">打开终端以准备此工作区。</string>

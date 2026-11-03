@@ -178,7 +178,7 @@ fun ConversationComposerSection(
             availability = ComposerAvailability(
                 providerConfigured = !state.needsProvider,
                 attachmentsProcessing = holder.anyAttachmentProcessing(),
-                voiceAvailable = state.voiceAvailable,
+                voiceAvailable = state.voiceInputAvailable,
                 temporaryChatAvailable = false, // starting temporary chat is a New-Task-only entry
             ),
             placeholder = placeholder,
@@ -187,8 +187,11 @@ fun ConversationComposerSection(
             sendDescription = sendLabel,
             onAttach = { holder.requestAttach() },
             onVoice = {
-                // Honest affordance only: no Android speech product exists in
-                // the current host projection (availability gates the tap).
+                // C03: the host creates/uses the system recognizer on the main
+                // thread and streams the actual final transcript back into
+                // this same holder. A permission-required result is surfaced
+                // by the host before any listening begins.
+                holder.startVoiceInput()
             },
             onSend = onSend,
             isRunning = state.isRunning,

@@ -4,7 +4,7 @@
 // The ORIGINAL file stays linked unmodified wherever its dependencies exist;
 // this mirror exists ONLY because two exclusions/inclusions are required on
 // Android (documented here and delivered to Main in
-// Local/Private/android-g03-20261022/r2/shell-port/SOURCE_READY.json; Main
+// Local source handoff retained by the integration owner.
 // appends the shared PROVENANCE.md entry during assembly — this lane does
 // not edit that file):
 //
@@ -80,7 +80,7 @@ public struct ShellRunRequest: Sendable {
     public var command: String
     /// Virtual working directory, workspace-relative (`"."` = root).
     public var cwd: String
-    /// Workspace root for relative paths; native commands share the App process.
+    /// Resolved task workspace root; Android commands execute in the separate Linux runtime UID.
     public var rootURL: URL
     /// Additional environment exported for this run only.
     public var environment: [String: String]
@@ -98,6 +98,9 @@ public struct ShellRunRequest: Sendable {
     public var sessionID: String
     public var runID: UUID?
     public var toolEnvironment: ToolEnvironment?
+    /// Explicit run target, preserved even without a materialized ToolEnvironment.
+    public var environmentID: String?
+    public var environmentTransaction: Bool
     // D2: Android-only additive owner field (see file header).
     /// Runtime-issued conversation identity, carried unchanged from the
     /// trusted `ToolContext`. Model code can never set this: it is threaded
@@ -126,7 +129,9 @@ public struct ShellRunRequest: Sendable {
         toolEnvironment: ToolEnvironment? = nil,
         conversationID: UUID? = nil,
         trackingHook: LinuxShellCallTrackingHook? = nil,
-        toolCallID: String? = nil
+        toolCallID: String? = nil,
+        environmentID: String? = nil,
+        environmentTransaction: Bool = false
     ) {
         self.command = command
         self.cwd = cwd
@@ -142,6 +147,8 @@ public struct ShellRunRequest: Sendable {
         self.conversationID = conversationID
         self.trackingHook = trackingHook
         self.toolCallID = toolCallID
+        self.environmentID = environmentID
+        self.environmentTransaction = environmentTransaction
     }
 }
 
@@ -212,6 +219,16 @@ public struct ShellOpenRequest: Sendable {
     /// never a model value, never inferred from session text. nil keeps the
     /// ORIGINAL grant route byte-for-byte for every other open.
     public var workspaceOperationID: UUID?
+    /// C01: trusted model/job call identity. Only the durable-job form
+    /// (`jobs.<uuid>`) changes the Core workspace-grant mint route; every
+    /// other shape keeps the ORIGINAL ordinary-run route. Never model-supplied:
+    /// it comes from the runtime-issued `ToolContext.toolCallID`.
+    public var hostToolCallID: String?
+    /// C01: explicit environment identity for a service/session job, whose
+    /// processor context carries `environmentID` but may not carry the full
+    /// `ToolEnvironment` value. Nil keeps the ORIGINAL `toolEnvironment?.id`
+    /// route unchanged.
+    public var environmentID: String?
     /// UI terminals surface an installation card instead of downloading during open.
     public var prepareLinuxIfMissing: Bool
     /// G07.3A trusted workload role for engine admission accounting.
@@ -233,6 +250,8 @@ public struct ShellOpenRequest: Sendable {
         toolEnvironment: ToolEnvironment? = nil,
         conversationID: UUID? = nil,
         workspaceOperationID: UUID? = nil,
+        hostToolCallID: String? = nil,
+        environmentID: String? = nil,
         prepareLinuxIfMissing: Bool = true,
         leaseRole: LinuxShellLeaseRole = .interactive,
         workspaceReuse: LinuxShellWorkspaceReuse? = nil
@@ -249,6 +268,8 @@ public struct ShellOpenRequest: Sendable {
         self.toolEnvironment = toolEnvironment
         self.conversationID = conversationID
         self.workspaceOperationID = workspaceOperationID
+        self.hostToolCallID = hostToolCallID
+        self.environmentID = environmentID
         self.prepareLinuxIfMissing = prepareLinuxIfMissing
         self.leaseRole = leaseRole
         self.workspaceReuse = workspaceReuse

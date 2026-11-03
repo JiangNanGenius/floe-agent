@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="desktop_assist_title">Desktop Assist</string>
+    <string name="desktop_assist_cards">Secure credential cards</string>
+    <string name="desktop_assist_cards_footer">Use saved credentials only on the remote host you authorize. Their contents are never shown to the model.</string>
+    <string name="desktop_assist_add">Add card</string>
+    <string name="desktop_assist_empty">No secure credential cards yet.</string>
+    <string name="desktop_assist_loading">Loading cards</string>
+    <string name="desktop_assist_retry">Retry</string>
+    <string name="desktop_assist_kind_password">Password</string>
+    <string name="desktop_assist_kind_token">Token</string>
+    <string name="desktop_assist_kind_other">Not usable for remote typing</string>
+    <string name="desktop_assist_host_any">Any host</string>
+    <string name="desktop_assist_host_title">Host scope</string>
+    <string name="desktop_assist_host_any_hint">This card can be typed into any remote desktop.</string>
+    <string name="desktop_assist_host_hint">This card can only be typed into the selected host.</string>
+    <string name="desktop_assist_reference">Reference</string>
+    <string name="desktop_assist_updated">Updated</string>
+    <string name="desktop_assist_editor_create">New secure card</string>
+    <string name="desktop_assist_editor_edit">Edit secure card</string>
+    <string name="desktop_assist_label">Label</string>
+    <string name="desktop_assist_secret">Secret</string>
+    <string name="desktop_assist_secret_keep">Leave empty to keep the saved secret</string>
+    <string name="desktop_assist_show">Show</string>
+    <string name="desktop_assist_hide">Hide</string>
+    <string name="desktop_assist_save">Save</string>
+    <string name="desktop_assist_cancel">Cancel</string>
+    <string name="desktop_assist_done">Done</string>
+    <string name="desktop_assist_delete">Delete</string>
+    <string name="desktop_assist_delete_title">Delete this card?</string>
+    <string name="desktop_assist_delete_message">The saved secret is removed from this device. Remote typing will fail until you add the card again.</string>
+    <string name="desktop_assist_notice_saved">Card saved</string>
+    <string name="desktop_assist_notice_deleted">Card deleted</string>
+    <string name="desktop_assist_notice_invalid">Enter a label and a secret between 1 and 4096 bytes</string>
+    <string name="desktop_assist_notice_unavailable">The runtime is not ready; try again</string>
+    <string name="desktop_assist_ocr_title">Text recognition</string>
+    <string name="desktop_assist_ocr_ready">Linux text recognition is available</string>
+    <string name="desktop_assist_ocr_pending">Ready to prepare on your first remote connection</string>
+    <string name="desktop_assist_ocr_body">Screen text is recognized on this device. First use may download a free component.</string>
+    <string name="desktop_assist_missing_host">Unknown host</string>
+    <string name="desktop_assist_saving">Saving</string>
+    <string name="desktop_assist_not_typing_allowed">Not usable for remote typing</string>
+    <string name="desktop_assist_error">Could not load desktop assist settings</string>
+    <string name="desktop_assist_selected">Selected</string>
+    <string name="desktop_assist_copy_reference">Copy reference</string>
+</resources>

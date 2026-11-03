@@ -52,6 +52,10 @@ import com.floe.android.feature.conversation.TimelineRowUi
 import com.floe.android.feature.providers.ProviderCredentialStateUi
 import com.floe.android.FloeApplication
 import com.floe.android.host.questions.UserQuestionHostController
+import com.floe.android.host.voice.C03DictationSink
+import com.floe.android.host.voice.C03StartOutcome
+import com.floe.android.host.voice.C03VoiceFailure
+import com.floe.android.host.voice.C03VoiceOwner
 import com.floe.android.host.questions.UserQuestionSurface
 import com.floe.android.host.output.RunOutputHostService
 import com.floe.android.host.output.RunOutputListResult
@@ -982,7 +986,14 @@ class ConversationHostController internal constructor(
         if (temporaryNativeRootEpoch >= 0L) {
             holder.temporaryNativeRootEpoch = temporaryNativeRootEpoch
         }
-        val builder = ThreadProjectionBuilder(conversationId).also {
+        val builder = ThreadProjectionBuilder(
+            conversationId = conversationId,
+            voiceAvailability = {
+                val snapshot = host.voiceOrNull()?.state?.value
+                (snapshot?.inputAvailable == true) to
+                    (snapshot?.outputAvailable == true)
+            },
+        ).also {
             it.session = holder.session
             val projection = currentModels()
             it.applyModels(projection.models, projection.needsProvider)
@@ -1017,6 +1028,7 @@ class ConversationHostController internal constructor(
         invalidatePlanGoalDetails(conversationId)
         invalidatePendingInputBodies(conversationId)
         holders.remove(conversationId)?.let { entry ->
+            host.voiceOrNull()?.cancelForConversation(conversationId)
             retireHolderResources(conversationId, entry)
         }
         // Question/search facts are RAM-only per holder; drop them with the
@@ -1035,6 +1047,7 @@ class ConversationHostController internal constructor(
         entry: ConversationFlowHolderEntry,
     ) {
         val retiredSession = entry.holder.session
+        taskExports.remove(conversationId)?.cancel()
         host.scope.launch(host.ioDispatcher) { host.attachments.drainSession(retiredSession) }
         eventPumps.values.filter { it.runID in entry.builder.runIds() }
             .forEach { it.close() }
@@ -3132,6 +3145,18 @@ class ConversationHostController internal constructor(
     private fun surfaceError(entry: ConversationFlowHolderEntry, code: String) {
         entry.builder.actionError(code)
         entry.holder.applyHostSnapshot(entry.builder.build())
+        // C02 task continuity: a real store refusal triggers a bounded
+        // storage probe for THIS task/run. If storage is genuinely
+        // unavailable the native coordinator records the durable pause and
+        // parks the live run; if it is healthy no marker is created. This
+        // never resumes, answers or retries anything.
+        if (code == "persistenceUnavailable" && !entry.isTemporary) {
+            val runID = entry.holder.snapshot.value?.selectedRunId
+            if (!runID.isNullOrBlank()) {
+                host.taskContinuity.noteRunStorageFailure(
+                    entry.holder.conversationId, runID)
+            }
+        }
     }
 
     override fun cancelRun(session: ConversationSessionToken, runId: String): Boolean {
@@ -4587,10 +4612,55 @@ class ConversationHostController internal constructor(
 
     // ------------------------------------------------------------ thread menu
 
+    private val taskExports = ConcurrentHashMap<String, Job>()
+
     override fun exportStructuredConversation(session: ConversationSessionToken): Boolean {
         val entry = holders[session.conversationId] ?: return false
-        host.shareText(ConversationWire.exportMarkdown(entry.builder), "text/markdown")
-        entry.holder.applyExportSettled(null)
+        val context = host.appContextOrNull ?: return false
+        val epoch = host.nativeRootEpoch() ?: return false
+        if (entry.builder.isTemporary || !ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) ||
+            taskExports.containsKey(session.conversationId)) return false
+        val job = host.scope.launch(host.ioDispatcher, start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            var file: java.io.File? = null
+            var shared = false
+            try {
+                file = com.floe.android.host.dataexchange.C08TaskTranscriptExport.create(
+                    context.cacheDir, session.conversationId, epoch,
+                    current = { host.nativeRootEpoch() == epoch && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) })
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                    check(host.nativeRootEpoch() == epoch && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch))
+                    val uri = androidx.core.content.FileProvider.getUriForFile(context,
+                        context.packageName + ".taskexports", file!!)
+                    val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                        type = "application/x-ndjson"
+                        putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                        clipData = android.content.ClipData.newRawUri("Task transcript", uri)
+                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(android.content.Intent.createChooser(send, null)
+                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                    shared = true
+                    entry.holder.applyExportSettled(null)
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                if (!shared) file?.delete()
+                throw cancelled
+            } catch (_: Exception) {
+                if (!shared) file?.delete()
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                    if (ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) {
+                        entry.holder.applyExportSettled(context.getString(com.floe.android.R.string.task_transcript_export_failed))
+                    }
+                }
+            } finally {
+                taskExports.remove(session.conversationId, kotlinx.coroutines.currentCoroutineContext()[Job])
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable + kotlinx.coroutines.Dispatchers.Main.immediate) {
+                    if (ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) entry.holder.applyExportSettled(null)
+                }
+            }
+        }
+        taskExports[session.conversationId] = job
+        job.start()
         return true
     }
 
@@ -5331,11 +5401,12 @@ class ConversationHostController internal constructor(
                 is HostOperationOutcome.Completed -> {
                     val page = outcome.value?.let { ConversationWire.decodeConversationList(it) }
                     if (page != null) {
+                        val pinned = ConversationPinProjection.pinnedConversationIDs(outcome.value)
                         historyHolder.applyHostState(
                             HistoryListUiState(
                                 isLoading = false,
-                                items = page.active,
-                                archivedItems = page.archived,
+                                items = page.active.map { it.copy(isPinned = it.id in pinned) },
+                                archivedItems = page.archived.map { it.copy(isPinned = it.id in pinned) },
                                 contentSnippets = emptyMap(),
                                 searchEpoch = historyHolder.state.value?.searchEpoch ?: 0,
                                 isSearching = false,
@@ -5594,11 +5665,20 @@ class ConversationHostController internal constructor(
                          // A fresh single-row success replaces the last real
                          // settlement failure on this surface (the bulk lane
                          // reports per-item truth through the receipt).
-                         if (correlationPrefix != "blk") {
+                         val resultCleanup = if (command == "conversation.delete")
+                             (outcome.value as? JsonObject)?.string("toolResultCleanup") else null
+                         val cleanupNotice = when (resultCleanup) {
+                             "deferredQueueRetained" -> "toolResultCleanupPending"
+                             "failed" -> "toolResultCleanupFailed"
+                             else -> null
+                         }
+                         if (cleanupNotice != null) {
+                             historyHolder.applyActionError(cleanupNotice)
+                         } else if (correlationPrefix != "blk") {
                              historyHolder.dismissActionError()
                          }
                          refreshHistory()
-                         onSettled(true, null)
+                         onSettled(true, cleanupNotice)
                     }
                     is HostOperationOutcome.Rejected -> {
                         // A stale revision means the row advanced after the
@@ -5638,6 +5718,26 @@ class ConversationHostController internal constructor(
             command = "conversation.archive",
             payload = JsonObject(mapOf("archived" to JsonPrimitive(false))),
             correlationPrefix = "crest",
+        )
+        return true
+    }
+
+    /**
+     * Durable sidebar pin (schema v50) through the EXISTING conversation
+     * metadata envelope/CAS: `conversation.archive` with the closed
+     * `{"pinned": Bool}` payload discriminator. The host re-reads the CURRENT
+     * row digest immediately before dispatch, so a pin after any run/message
+     * commit is admitted under the real revision; a stale row surfaces the
+     * typed `staleRevision` and the native UPDATE writes nothing. Success
+     * reloads the native pinned-first list — no optimistic local flag.
+     */
+    override fun setConversationPinned(conversationId: String, pinned: Boolean): Boolean {
+        if (!conversationAdmitted()) return false
+        mutateConversation(
+            conversationId,
+            command = ConversationPinProjection.COMMAND,
+            payload = ConversationPinProjection.payload(pinned),
+            correlationPrefix = "cpin",
         )
         return true
     }
@@ -5742,10 +5842,11 @@ class ConversationHostController internal constructor(
                 is HostOperationOutcome.Completed -> {
                     val results = outcome.value?.let { ConversationWire.decodeSearch(it) }
                         ?: emptyList()
+                    val pinned = ConversationPinProjection.pinnedConversationIDs(outcome.value)
                     historyHolder.applyHostState(
                         HistoryListUiState(
                             isLoading = false,
-                            items = results,
+                            items = results.map { it.copy(isPinned = it.id in pinned) },
                             archivedItems = emptyList(),
                             contentSnippets = emptyMap(),
                             searchEpoch = epoch,
@@ -6072,10 +6173,73 @@ class ConversationHostController internal constructor(
     override fun speakMessageText(
         session: ConversationSessionToken,
         text: String,
-    ): Boolean = false
+    ): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.holder.session != session || entry.builder.isTemporary) return false
+        if (host.nativeRootEpoch() == null) return false
+        return host.voiceOrNull()?.speak(
+            text,
+            C03VoiceOwner(conversationID = session.conversationId),
+        ) == true
+    }
 
     override fun stopSpeaking(session: ConversationSessionToken) {
-        // No TTS backend in G02.
+        host.voiceOrNull()?.stopSpeaking()
+    }
+
+    override fun startVoiceInput(session: ConversationSessionToken): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.holder.session != session) return false
+        if (host.nativeRootEpoch() == null) return false
+        val sink = object : C03DictationSink {
+            override fun onPartial(text: String) {
+                if (holders[session.conversationId]?.holder?.session == session) {
+                    entry.holder.updateVoiceListening(true)
+                }
+            }
+
+            override fun onFinal(text: String) {
+                if (holders[session.conversationId]?.holder?.session == session) {
+                    entry.holder.applyVoiceTranscript(text)
+                }
+            }
+
+            override fun onFailure(failure: C03VoiceFailure) {
+                if (holders[session.conversationId]?.holder?.session == session) {
+                    entry.holder.updateVoiceListening(false)
+                }
+            }
+
+            override fun onCancelled() {
+                if (holders[session.conversationId]?.holder?.session == session) {
+                    entry.holder.updateVoiceListening(false)
+                }
+            }
+        }
+        entry.holder.updateVoiceListening(true)
+        val outcome = host.voiceOrNull()?.startDictation(
+            C03VoiceOwner(
+                conversationID = session.conversationId,
+                // RAM temporary keeps text-only system dictation. The host
+                // rejects cloud microphone capture with a typed failure.
+                temporary = entry.builder.isTemporary,
+            ),
+            sink,
+        )
+        if (outcome != C03StartOutcome.ACCEPTED &&
+            outcome != C03StartOutcome.PERMISSION_REQUIRED
+        ) {
+            entry.holder.updateVoiceListening(false)
+        }
+        return outcome == C03StartOutcome.ACCEPTED ||
+            outcome == C03StartOutcome.PERMISSION_REQUIRED
+    }
+
+    override fun stopVoiceInput(session: ConversationSessionToken) {
+        val entry = holders[session.conversationId] ?: return
+        if (entry.holder.session != session) return
+        host.voiceOrNull()?.stopDictation()
+        entry.holder.updateVoiceListening(false)
     }
 
     /**
@@ -6392,3 +6556,37 @@ internal class QueueSettleRerun(
     val fact: QueueSettleFact?,
     val resync: Boolean,
 )
+
+/**
+ * Durable conversation pin projection (schema v50).
+ *
+ * The pin is an ordinary conversation-row column. Android sends it through
+ * the EXISTING frozen `conversation.archive` metadata envelope with a closed
+ * `{"pinned": Bool}` discriminator (the native facade parses exactly one of
+ * `archived`/`pinned`), so no new v3 command rule, handler registration or
+ * readiness key is fabricated. Rows still arrive in the native pinned-first
+ * order; this projection only reads the durable boolean the host/reply
+ * already carries — it never invents or caches a UI-only pin state.
+ */
+internal object ConversationPinProjection {
+    const val COMMAND = "conversation.archive"
+
+    fun payload(pinned: Boolean): JsonObject =
+        JsonObject(mapOf("pinned" to JsonPrimitive(pinned)))
+
+    /** Ids whose projected row carries `pinned == true`. Unknown/absent
+     * values are unpinned (the schema default); malformed rows are skipped. */
+    fun pinnedConversationIDs(value: JsonElement?): Set<String> {
+        val rows = ((value as? JsonObject)?.get("rows") as? JsonArray) ?: return emptySet()
+        val pinnedIds = LinkedHashSet<String>()
+        for (element in rows) {
+            val obj = element as? JsonObject ?: continue
+            val id = (obj["conversationID"] as? JsonPrimitive)?.contentOrNull
+                ?: (obj["id"] as? JsonPrimitive)?.contentOrNull
+                ?: continue
+            val pinned = (obj["pinned"] as? JsonPrimitive)?.booleanOrNull ?: false
+            if (pinned) pinnedIds.add(id)
+        }
+        return pinnedIds
+    }
+}

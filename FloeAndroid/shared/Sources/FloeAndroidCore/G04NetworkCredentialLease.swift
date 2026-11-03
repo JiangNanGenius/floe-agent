@@ -169,8 +169,13 @@ enum G04NetworkSecretRedaction {
                                endpoint: URL) -> String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = trimmed.isEmpty ? (endpoint.host ?? "network") : trimmed
-        return "\(base) (\(transport == .smb ? "SMB" : "WebDAV")) "
-            + endpointLabelSuffix(endpoint)
+        let transportLabel: String
+        switch transport {
+        case .webDAV: transportLabel = "WebDAV"
+        case .smb: transportLabel = "SMB"
+        case .sftp: transportLabel = "SFTP"
+        }
+        return "\(base) (\(transportLabel)) " + endpointLabelSuffix(endpoint)
     }
 
     private static func endpointLabelSuffix(_ endpoint: URL) -> String {

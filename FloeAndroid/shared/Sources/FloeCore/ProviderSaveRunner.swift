@@ -72,6 +72,10 @@ public struct ProviderSaveDraft: Sendable, Equatable {
     public let baseURLString: String
     public let displayName: String
     public let presetID: String?
+    /// Persisted provider region carried through read-edit-save. The editor
+    /// form has no region picker, so this is seeded from the ACTUAL durable
+    /// row and re-emitted unchanged. `nil` for profiles without a region.
+    public let region: String?
     public let existingSecretRef: SecretReference?
     public let nonSecretHeaders: [String: String]
     public let isEnabled: Bool
@@ -115,7 +119,8 @@ public struct ProviderSaveDraft: Sendable, Equatable {
         existingCreatedAt: Date?,
         existingSyncRevision: Int64,
         existingBaseURL: URL? = nil,
-        existingKind: ProviderKind? = nil
+        existingKind: ProviderKind? = nil,
+        region: String? = nil
     ) {
         self.providerID = providerID
         self.kind = kind
@@ -138,6 +143,7 @@ public struct ProviderSaveDraft: Sendable, Equatable {
         self.existingSyncRevision = existingSyncRevision
         self.existingBaseURL = existingBaseURL
         self.existingKind = existingKind
+        self.region = region
     }
 
     /// Builds the frozen request from the draft, or every field-level issue.
@@ -195,6 +201,10 @@ public struct ProviderSaveDraft: Sendable, Equatable {
             displayName: normalizedName,
             presetID: presetID,
             secretRef: secretRef,
+            // Preserve the persisted region: the form has no region field, so
+            // omitting it here would silently erase the durable value on every
+            // ordinary edit/save (ModelConfigurationCommitter compares it).
+            region: region,
             nonSecretHeaders: nonSecretHeaders,
             isEnabled: isEnabled,
             allowsPlainHTTP: allowsPlainHTTP,

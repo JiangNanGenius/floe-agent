@@ -256,6 +256,10 @@ data class SkillCatalogCardUi(
     /** ⇄ pluginSummary(definition): one-sentence purpose. */
     val summary: String,
     val state: CatalogCardStateUi,
+    /** True only for a verified schemaVersion-3 entry whose detail backend
+     * exists (`curated.detail`). Legacy four-item cards keep a compact row
+     * and never open a detail sheet with no backend. */
+    val detailAvailable: Boolean = false,
 )
 
 /** ⇄ the card's conditional affordance block, one-to-one. */
@@ -285,6 +289,121 @@ data class RewriteModelUi(
     val modelId: String,
     val displayName: String,
 )
+
+/**
+ * One full-catalog entry detail (⇄ `skills.list` operation `curated.detail`).
+ * Every value comes from the verified schemaVersion-3 feed plus the actual
+ * installed row; the sheet never derives availability or a dependency ready
+ * state on its own. Localized display text is resolved by the host.
+ */
+data class SkillDetailUi(
+    val skillId: String,
+    val name: String,
+    val description: String,
+    val notes: String?,
+    val version: String,
+    val category: String,
+    val tags: List<String>,
+    val installPlatforms: List<String>,
+    val scriptRuntime: String,
+    val executionOS: String?,
+    val executionArch: String?,
+    val executionEvidence: String?,
+    val containsScripts: Boolean,
+    val packageSize: Long?,
+    val packageSHA256: String?,
+    val minAppVersion: String?,
+    val offer: String,
+    val offerReason: String?,
+    val installed: Boolean,
+    val installedVersion: String?,
+    val installedRevision: String?,
+    val installedEnabled: Boolean,
+    val updateAvailable: Boolean,
+    val rollbackAvailable: Boolean,
+    val dependencies: SkillDetailDependenciesUi,
+    val isLoading: Boolean = false,
+    val errorMessage: String? = null,
+) {
+    /** The UI may only show an install trigger when the host's signed offer
+     * says installable and the row is not installed. */
+    val canInstall: Boolean get() = !installed && offer == "installable"
+    /** Update/rollback route through the existing upgrade sheet. */
+    val canUpdate: Boolean get() = installed && updateAvailable
+    val canManageRollback: Boolean get() = installed && rollbackAvailable
+
+    companion object {
+        /** Honest pre-response state; never renders an action. */
+        fun loading(skillId: String): SkillDetailUi = SkillDetailUi(
+            skillId = skillId, name = skillId, description = "", notes = null,
+            version = "", category = "", tags = emptyList(),
+            installPlatforms = emptyList(), scriptRuntime = "",
+            executionOS = null, executionArch = null, executionEvidence = null,
+            containsScripts = false, packageSize = null, packageSHA256 = null,
+            minAppVersion = null, offer = "unavailable", offerReason = null,
+            installed = false, installedVersion = null, installedRevision = null,
+            installedEnabled = false, updateAvailable = false,
+            rollbackAvailable = false,
+            dependencies = SkillDetailDependenciesUi.NOT_DECLARED,
+            isLoading = true, errorMessage = null)
+
+        /** Honest unavailable state with a host-localized message. */
+        fun failed(skillId: String, message: String): SkillDetailUi =
+            loading(skillId).copy(isLoading = false, errorMessage = message)
+    }
+}
+
+/** Dependency declaration facts shown in the detail sheet. */
+data class SkillDetailDependenciesUi(
+    val state: String,
+    val schemaVersion: Int?,
+    val declarationSHA256: String?,
+    val readinessState: String?,
+    val readinessReason: String?,
+    val profiles: List<SkillDetailDependencyProfileUi>,
+    val runtimeComponents: List<SkillDetailRuntimeComponentUi>,
+) {
+    companion object {
+        val NOT_DECLARED = SkillDetailDependenciesUi(
+            state = "notDeclared", schemaVersion = null,
+            declarationSHA256 = null, readinessState = null,
+            readinessReason = null, profiles = emptyList(),
+            runtimeComponents = emptyList(),
+        )
+    }
+}
+
+data class SkillDetailDependencyProfileUi(
+    val id: String,
+    val os: String,
+    val architectures: List<String>,
+    val requirements: List<SkillDetailDependencyRequirementUi>,
+)
+
+data class SkillDetailDependencyRequirementUi(
+    val kind: String,
+    val name: String,
+    val version: String?,
+    val required: Boolean,
+    val purpose: String,
+)
+
+/** Precise signed runtime-component facts. A missing Android/task-Linux
+ * artifact is a supply/version state, never "device unsupported". */
+data class SkillDetailRuntimeComponentUi(
+    val componentID: String,
+    val componentVersion: String,
+    val minimumAppVersion: String?,
+    val targetOS: String?,
+    val targetArch: String?,
+    val targetTriple: String?,
+    val classification: String?,
+    val androidSupply: String?,
+    val reason: String?,
+) {
+    val unavailableOnAndroidTaskLinux: Boolean
+        get() = androidSupply == "notPublishedForAndroidTaskLinux"
+}
 
 /** ⇄ SkillsCenter rewrite/create outcome, addressed to one form session. */
 data class SkillsFormOutcomeUi(
@@ -449,14 +568,55 @@ enum class McpAuthenticationUi(val swiftRaw: String) {
     CUSTOM_HEADER("customHeader"),
 }
 
+/** ⇄ `MCPServerConfiguration.Transport` raw values. */
+enum class McpTransportKindUi(val swiftRaw: String) {
+    STREAMABLE_HTTP("streamableHTTP"),
+    STDIO("stdio"),
+}
+
+/** The saved command's runtime-binding state. `UNBOUND` is a real saved
+ * state (definition visible/editable, no C01 project/environment pipe yet). */
+enum class McpStdioBindingStateUi {
+    BOUND,
+    UNBOUND,
+    UNAVAILABLE,
+}
+
+/** Non-secret binding facts for display/prefill. The root identity hash and
+ * task/run fingerprints are intentionally NOT projected into UI state. */
+data class McpStdioChoiceUi(val id: String, val label: String)
+data class McpStdioSelectionUi(
+    val projectId: String,
+    val rootIdentity: String?,
+    val environmentId: String? = null,
+    val taskId: String? = null,
+)
+data class McpStdioChoicesUi(
+    val projects: List<McpStdioChoiceUi> = emptyList(),
+    val projectId: String? = null,
+    val rootIdentity: String? = null,
+    val environments: List<McpStdioChoiceUi> = emptyList(),
+    val tasks: List<McpStdioChoiceUi> = emptyList(),
+    val loading: Boolean = false,
+    val failed: Boolean = false,
+)
+
+data class McpStdioBindingUi(
+    val state: McpStdioBindingStateUi,
+    val projectId: String? = null,
+    val environmentId: String? = null,
+    val revision: String? = null,
+    val remediation: String? = null,
+)
+
 /**
  * ⇄ MCPRemoteClient transport. The original ships standard Streamable HTTP;
- * the future Linux/stdio route (plan §MCP transports, G03 environment) stays
- * in the projection as a PENDING_ENVIRONMENT entry so G02 capability lists
- * report it as temporarily unavailable — not permanently removed.
+ * the Linux/stdio route remains a PENDING_ENVIRONMENT entry when the C01 pipe
+ * is absent, but a saved stdio DEFINITION stays visible and editable.
  */
 sealed interface McpTransportUi {
     data object StreamableHttp : McpTransportUi
+    data class Stdio(val binding: McpStdioBindingUi) : McpTransportUi
     data class PendingEnvironment(val remediation: String) : McpTransportUi
 }
 
@@ -546,6 +706,13 @@ data class McpServerRowUi(
     /** ⇄ the row's saved disabledRemoteToolNames (sorted names): the per-tool
      * enable set an edit/save round trip must PRESERVE, never reset. */
     val disabledRemoteToolNames: List<String> = emptyList(),
+    /** ⇄ MCPServerConfiguration.transport (`streamableHTTP` / `stdio`). */
+    val transportKind: McpTransportKindUi = McpTransportKindUi.STREAMABLE_HTTP,
+    val stdioCommand: String? = null,
+    val stdioArguments: List<String> = emptyList(),
+    val stdioWorkingDirectory: String? = null,
+    /** Null for HTTP; true/false for stdio (the real binding state). */
+    val stdioBound: Boolean? = null,
 )
 
 /**
@@ -599,6 +766,13 @@ data class McpEditorSeedUi(
     val credentialStored: Boolean,
     val timeoutSeconds: Int,
     val transport: McpTransportUi,
+    /** ⇄ MCPServerConfiguration.transport. For a pending stdio definition the
+     * editor still shows/round-trips command, arguments and relative cwd. */
+    val transportKind: McpTransportKindUi = McpTransportKindUi.STREAMABLE_HTTP,
+    val stdioCommand: String = "",
+    val stdioArguments: List<String> = emptyList(),
+    val stdioWorkingDirectory: String = "",
+    val stdioBinding: McpStdioBindingUi? = null,
     /** ⇄ center.toolsByServerID[serverId]: the live tool list. */
     val tools: List<McpToolRowUi>,
     /** Saved row revision when editing (null for a NEW server): the REAL
@@ -637,6 +811,11 @@ data class McpEditorIdentity(
 data class McpDraftSnapshot(
     val displayName: String = "",
     val endpointText: String = "",
+    val transportKind: McpTransportKindUi = McpTransportKindUi.STREAMABLE_HTTP,
+    val stdioCommand: String = "",
+    /** One argument per line; a blank line is not an empty argument. */
+    val stdioArgumentsText: String = "",
+    val stdioWorkingDirectory: String = "",
     val enabled: Boolean = true,
     val allowInCanvas: Boolean = false,
     val allowInsecureHttp: Boolean = false,
@@ -647,6 +826,7 @@ data class McpDraftSnapshot(
     /** ⇄ disabledRemoteToolNames edited against the draft (iOS editor edits
      * its own @State server copy; persistence happens on save). */
     val disabledRemoteToolNames: Set<String> = emptySet(),
+    val stdioSelection: McpStdioSelectionUi? = null,
 )
 
 /**
@@ -679,6 +859,7 @@ data class McpSaveRequest(
     override fun toString(): String =
         "McpSaveRequest(editor=${identity.editorId}, epoch=${identity.epoch}, " +
             "serverId=$serverId, name=${draft.displayName}, " +
+            "transport=${draft.transportKind}, " +
             "endpoint=${draft.endpointText}, auth=${draft.authentication}, " +
             "credential=${if (credentialDraft.isNullOrEmpty()) "absent" else "<present:redacted>"}, " +
             "intent=$credentialIntent)"
@@ -743,6 +924,7 @@ data class McpEditorUiState(
      * backend identifier, never a credential/secret carrier.
      */
     val saveFailureSequence: Long = 0,
+    val stdioChoices: McpStdioChoicesUi = McpStdioChoicesUi(),
 )
 
 /* ---------------------------------- root ---------------------------------- */
@@ -758,6 +940,9 @@ data class SkillsHubUiState(
     val catalogChecking: Boolean,
     /** ⇄ center.catalogError ("updates cannot be checked right now"). */
     val catalogError: String?,
+    /** Full schemaVersion-3 catalog unavailable/stale copy. Kept separate
+     * from the legacy four-item catalog so neither failure hides the other. */
+    val curatedError: String? = null,
     val installed: List<SkillInstalledRowUi>,
     /** ⇄ center.rewriteModels / defaultRewriteModelID for the Finder sheet. */
     val rewriteModels: List<RewriteModelUi>,
@@ -770,9 +955,98 @@ data class SkillsHubUiState(
     /** Outcome for the current transient form session (creator/finder/
      * folder import), keyed by the module's form id. */
     val formOutcome: SkillsFormOutcomeUi? = null,
+    val catalogHasMore: Boolean = false,
+    val catalogPagingBusy: Boolean = false,
 ) {
     val installedIds: Set<String> get() = installed.mapTo(HashSet()) { it.skillId }
 }
+
+/* ---------------------------- MCP service setup ---------------------------- */
+
+data class McpSetupProjectUi(val id: String, val name: String)
+
+data class McpSetupEnvironmentUi(
+    val id: String,
+    val label: String,
+    val backend: String,
+)
+
+data class McpSetupOptionsUi(
+    val loading: Boolean = false,
+    val projects: List<McpSetupProjectUi> = emptyList(),
+    val environments: List<McpSetupEnvironmentUi> = emptyList(),
+    val selectedProjectId: String? = null,
+    val templateAvailable: Boolean = false,
+    /** C01 long-lived Linux service lane. Absent = honest unavailable. */
+    val serviceLaneAvailable: Boolean = false,
+    /** Custom tool generation seam. Absent = fixed template only. */
+    val generationAvailable: Boolean = false,
+    val stdioAvailable: Boolean = false,
+    val errorMessage: String? = null,
+)
+
+data class McpSetupStepUi(
+    val name: String,
+    val state: String,
+    val exitCode: Int?,
+    val errorCode: String?,
+)
+
+data class McpSetupReceiptUi(
+    val endpoint: String,
+    val smokeDigest: String,
+    val verifiedTools: List<String>,
+    val serverId: String?,
+)
+
+data class McpSetupRecordUi(
+    val id: String,
+    val revision: Long,
+    val phase: String,
+    val busy: Boolean,
+    val displayName: String,
+    val projectName: String,
+    val environmentLabel: String,
+    val port: Int,
+    val serviceEndpoint: String?,
+    val errorCode: String?,
+    val errorMessage: String?,
+    val steps: List<McpSetupStepUi>,
+    val receipt: McpSetupReceiptUi?,
+)
+
+/**
+ * Guided Linux-owned MCP service setup. The module never starts a service
+ * itself; every phase is the host's real native projection. A missing
+ * `serviceLaneAvailable` is shown as temporarily unavailable, never as a
+ * fake success.
+ */
+data class McpSetupUiState(
+    val options: McpSetupOptionsUi = McpSetupOptionsUi(),
+    val record: McpSetupRecordUi? = null,
+    val busy: Boolean = false,
+    val errorCode: String? = null,
+    val errorMessage: String? = null,
+)
+
+/** What the form asks the host to create. The native side re-validates. */
+data class McpSetupStartRequestUi(
+    val displayName: String,
+    val projectId: String,
+    val environmentId: String,
+    val portText: String,
+    val details: String,
+    val allowInCanvas: Boolean,
+)
+
+data class McpSetupDraftUi(
+    val displayName: String = "",
+    val projectId: String? = null,
+    val environmentId: String? = null,
+    val portText: String = "8080",
+    val details: String = "",
+    val allowInCanvas: Boolean = false,
+)
 
 /** Everything the destination renders for one moment in time. */
 data class IntegrationsDestinationState(
@@ -787,4 +1061,9 @@ data class IntegrationsDestinationState(
     /** Active MCP editor projection, or null; ignored unless its identity
      * matches the module's open editor session (epoch guard). */
     val editor: McpEditorUiState? = null,
+    /** Open full-catalog detail sheet; ignored unless its skill id matches
+     * the pane key (stale-root/request fence). */
+    val skillDetail: SkillDetailUi? = null,
+    /** Guided MCP service setup projection; null until opened. */
+    val mcpSetup: McpSetupUiState? = null,
 )

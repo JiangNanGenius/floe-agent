@@ -22,6 +22,57 @@ import Foundation
 import FloeCore
 import FloeTools
 
+/// C01 trusted ownership request for a MODEL-OPENED interactive session.
+/// Supplied only by the model-facing `shell.open` runner from the
+/// runtime-issued `ToolContext`; the UI terminal owner supplies nil and keeps
+/// its existing `G04WorkspaceOwnedOperation` receipt instead.
+public struct LinuxShellSessionTrackingRequest: Sendable {
+    /// The full trusted call context (run/conversation/client/environment/
+    /// cancellation). Never reconstructed from model text.
+    public var context: ToolContext
+    /// Center-issued session identity, allocated before the engine start so
+    /// the ledger can name the exact session even when the start is uncertain.
+    public var sessionID: String
+
+    public init(context: ToolContext, sessionID: String) {
+        self.context = context
+        self.sessionID = sessionID
+    }
+}
+
+/// What the trusted facade owns for one model interactive session. The
+/// settlement closure is called exactly once by the center when the session
+/// truly leaves its table; the facade then waits for the engine lease proof
+/// before dropping the durable owned-work receipt.
+public struct LinuxShellSessionOwnership: Sendable {
+    public enum Settlement: String, Sendable {
+        /// Explicit close, natural exit or an exchange-proven terminal.
+        case closed
+        /// The start never produced a usable session (refusal or immediate exit).
+        case failedBeforeStart
+        /// The sliding session lifetime expired.
+        case expired
+        /// Trusted lifecycle/drain request (root stop, conversation deletion).
+        case cancelled
+    }
+
+    private let settlement: @Sendable (Settlement) async -> Void
+
+    public init(settlement: @escaping @Sendable (Settlement) async -> Void) {
+        self.settlement = settlement
+    }
+
+    public func settle(_ reason: Settlement) async {
+        await settlement(reason)
+    }
+}
+
+/// Injected only by `RuntimeFacadeLinuxBindings`. A nil answer refuses the
+/// open BEFORE any engine dispatch; a hook must never return ownership it
+/// cannot prove.
+public typealias LinuxShellSessionTrackingHook =
+    @Sendable (LinuxShellSessionTrackingRequest) async -> LinuxShellSessionOwnership?
+
 public actor ShellSessionCenter {
     public struct Configuration: Sendable {
         public var maximumSessions: Int
@@ -65,6 +116,9 @@ public actor ShellSessionCenter {
         var expiresAt: Date
         var buffer: String
         var alive: Bool
+        /// C01 model-session owned-work receipt. nil for UI/legacy sessions
+        /// (their ownership is the G04 operation lease).
+        var ownership: LinuxShellSessionOwnership?
     }
 
     /// Outcome of a session-scoped operation (close/signal/resize). `applied`
@@ -96,17 +150,26 @@ public actor ShellSessionCenter {
     private let backend: any LocalShellBackend
     private let policy: ShellCommandPolicy
     private let configuration: Configuration
+    /// C01 trusted model-session ledger hook, installed by the facade only.
+    /// UI terminals never pass an ownership context, so this hook is never
+    /// invoked for them.
+    private let ownershipHook: LinuxShellSessionTrackingHook?
     private var sessions: [String: Entry] = [:]
+    /// Model sessions for which the trusted root/lifecycle drain already
+    /// issued one stop request. Cleared when the entry tears down.
+    private var stopRequestedSessions: Set<String> = []
     private var pendingOpens = 0
 
     public init(
         backend: any LocalShellBackend,
         policy: ShellCommandPolicy = ShellCommandPolicy(),
-        configuration: Configuration = Configuration()
+        configuration: Configuration = Configuration(),
+        ownershipHook: LinuxShellSessionTrackingHook? = nil
     ) {
         self.backend = backend
         self.policy = policy
         self.configuration = configuration
+        self.ownershipHook = ownershipHook
     }
 
     public func activeSessionIDs(runID: UUID) -> [String] {
@@ -132,8 +195,10 @@ public actor ShellSessionCenter {
         clientSessionID: String? = nil,
         conversationID: UUID? = nil,
         workspaceOperationID: UUID? = nil,
+        hostToolCallID: String? = nil,
         leaseRole: LinuxShellLeaseRole = .interactive,
-        workspaceReuse: LinuxShellWorkspaceReuse? = nil
+        workspaceReuse: LinuxShellWorkspaceReuse? = nil,
+        ownershipContext: ToolContext? = nil
     ) async throws -> ShellOpenResult {
         try cancellation?.throwIfCancelled()
         try ShellInputValidation.validate(command: command, cwd: cwd, environment: environment)
@@ -149,8 +214,35 @@ public actor ShellSessionCenter {
         }
         pendingOpens += 1
         defer { pendingOpens -= 1 }
-        let sessionID = UUID().uuidString.lowercased()
-        let lease = try await ToolEnvironmentRouting.shared.acquire(ToolContext(runID: runID, workspaceRootURL: rootURL, cancellation: cancellation ?? CancellationToken(), environmentID: toolEnvironment?.id, environment: toolEnvironment))
+        let resolvedSessionID = UUID().uuidString.lowercased()
+        // C01: a model session must not silently run untracked. The facade
+        // hook re-proves task/conversation/root/epoch/readiness and attaches
+        // the real owned-work receipt BEFORE any engine dispatch. UI
+        // terminals pass no ownershipContext and keep their existing G04
+        // operation lease unchanged.
+        let finalOwnership: LinuxShellSessionOwnership?
+        if let ownershipContext {
+            guard let ownershipHook else {
+                throw FloeError.validationFailed(
+                    "Interactive shell ownership is not composed in this build; nothing was started")
+            }
+            guard let admitted = await ownershipHook(
+                LinuxShellSessionTrackingRequest(context: ownershipContext,
+                                                 sessionID: resolvedSessionID)) else {
+                throw FloeError.validationFailed(
+                    "This interactive shell session is not admitted for the exact task/environment/root generation; nothing was started")
+            }
+            finalOwnership = admitted
+        } else {
+            finalOwnership = nil
+        }
+        let lease: ToolEnvironmentLease
+        do {
+            lease = try await ToolEnvironmentRouting.shared.acquire(ToolContext(runID: runID, workspaceRootURL: rootURL, cancellation: cancellation ?? CancellationToken(), environmentID: toolEnvironment?.id, environment: toolEnvironment))
+        } catch {
+            await finalOwnership?.settle(.failedBeforeStart)
+            throw error
+        }
         let request = ShellOpenRequest(
             command: command,
             cwd: cwd,
@@ -159,37 +251,44 @@ public actor ShellSessionCenter {
             columns: max(20, min(columns, 500)),
             rows: max(5, min(rows, 200)),
             gateTimeout: configuration.gateWaitTimeout,
-            sessionID: sessionID,
+            sessionID: resolvedSessionID,
             runID: runID,
             toolEnvironment: lease.context.environment,
             conversationID: conversationID,   // A1 (see file header)
             workspaceOperationID: workspaceOperationID, // G04-R2 trusted UI operation lease (nil = unchanged path)
+            hostToolCallID: hostToolCallID,   // C01 durable-job/owner identity
             prepareLinuxIfMissing: !forTerminal,
             leaseRole: leaseRole,           // G07.3A engine admission accounting
             workspaceReuse: workspaceReuse  // G07.3A validated same-workspace participation
         )
         let result: ShellOpenResult
         do { result = try await backend.openSession(request, cancellation: cancellation) }
-        catch { await lease.finish(); throw error }
+        catch {
+            await lease.finish()
+            await finalOwnership?.settle(.failedBeforeStart)
+            throw error
+        }
         let entry = Entry(
-            sessionID: sessionID,
+            sessionID: resolvedSessionID,
             schedulerID: UUID(),
             runID: runID,
             clientSessionID: clientSessionID,
             environmentLease: lease,
             expiresAt: Date().addingTimeInterval(configuration.sessionLifetime),
             buffer: "",
-            alive: result.alive
+            alive: result.alive,
+            ownership: finalOwnership
         )
         if result.alive {
-            sessions[sessionID] = entry
-            await scheduleExpiry(for: sessionID, schedulerID: entry.schedulerID)
+            sessions[resolvedSessionID] = entry
+            await scheduleExpiry(for: resolvedSessionID, schedulerID: entry.schedulerID)
         } else {
-            await backend.closeSession(sessionID: sessionID)
+            await backend.closeSession(sessionID: resolvedSessionID)
             await lease.finish()
+            await finalOwnership?.settle(.closed)
         }
         return ShellOpenResult(
-            sessionID: sessionID,
+            sessionID: resolvedSessionID,
             initialOutput: SecretRedactor.redact(ShellOutputSanitizer.sanitize(ShellInputValidation.prefix(result.initialOutput, maxBytes: configuration.maximumBufferBytes))),
             alive: result.alive,
             terminalOutput: forTerminal ? (result.terminalOutput ?? Data(result.initialOutput.utf8)) : nil,
@@ -376,7 +475,7 @@ public actor ShellSessionCenter {
         let owned = sessions.values.filter { $0.environmentLease.context.environmentID == environmentID }
         for entry in owned {
             sessions.removeValue(forKey: entry.sessionID)
-            await tearDown(entry)
+            await tearDown(entry, reason: .cancelled)
         }
     }
 
@@ -386,8 +485,22 @@ public actor ShellSessionCenter {
         let all = Array(sessions.values)
         for entry in all {
             sessions.removeValue(forKey: entry.sessionID)
-            await tearDown(entry)
+            await tearDown(entry, reason: .cancelled)
         }
+    }
+
+    /// Trusted root-drain entry: requests a stop for every model session of
+    /// this generation while KEEPING the center records, so the ledger can
+    /// observe the engine's real `leaseReleased` before it detaches. UI
+    /// sessions are drained by their own G04 owner, not by a model path.
+    public func requestStopAllModelSessions() async -> [String] {
+        var requested: [String] = []
+        for entry in sessions.values where entry.ownership != nil && entry.alive {
+            guard stopRequestedSessions.insert(entry.sessionID).inserted else { continue }
+            await backend.requestStopForSettlement(sessionID: entry.sessionID)
+            requested.append(entry.sessionID)
+        }
+        return requested
     }
 
     /// Removes and tears down one session WITHOUT an ownership check. Only
@@ -397,13 +510,18 @@ public actor ShellSessionCenter {
     /// must be able to orderly close owned resources regardless of client.
     private func closeUnchecked(sessionID: String) async {
         guard let entry = sessions.removeValue(forKey: sessionID) else { return }
-        await tearDown(entry)
+        await tearDown(entry, reason: .closed)
     }
 
-    private func tearDown(_ entry: Entry) async {
+    private func tearDown(_ entry: Entry,
+                          reason: LinuxShellSessionOwnership.Settlement = .closed) async {
         await SessionExpiryScheduler.shared.cancel(id: entry.schedulerID)
+        stopRequestedSessions.remove(entry.sessionID)
         await backend.closeSession(sessionID: entry.sessionID)
         await entry.environmentLease.finish()
+        // This is the CENTER-side end. The facade ledger still waits for the
+        // engine's real lease release; a timer/close itself is never proof.
+        await entry.ownership?.settle(reason)
     }
 
     private func scheduleExpiry(for sessionID: String, schedulerID: UUID) async {
@@ -422,6 +540,6 @@ public actor ShellSessionCenter {
             return
         }
         sessions.removeValue(forKey: sessionID)
-        await tearDown(entry)
+        await tearDown(entry, reason: .expired)
     }
 }

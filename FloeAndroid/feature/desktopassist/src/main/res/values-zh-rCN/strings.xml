@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="desktop_assist_title">桌面协助</string>
+    <string name="desktop_assist_cards">安全凭据卡</string>
+    <string name="desktop_assist_cards_footer">仅向你授权的远程主机输入已保存的凭据，不向模型显示其内容。</string>
+    <string name="desktop_assist_add">添加卡片</string>
+    <string name="desktop_assist_empty">还没有安全凭据卡。</string>
+    <string name="desktop_assist_loading">正在加载卡片</string>
+    <string name="desktop_assist_retry">重试</string>
+    <string name="desktop_assist_kind_password">密码</string>
+    <string name="desktop_assist_kind_token">令牌</string>
+    <string name="desktop_assist_kind_other">不能用于远程输入</string>
+    <string name="desktop_assist_host_any">任意主机</string>
+    <string name="desktop_assist_host_title">主机范围</string>
+    <string name="desktop_assist_host_any_hint">这张卡片可以输入到任意远程桌面。</string>
+    <string name="desktop_assist_host_hint">这张卡片只能输入到所选主机。</string>
+    <string name="desktop_assist_reference">引用</string>
+    <string name="desktop_assist_updated">更新时间</string>
+    <string name="desktop_assist_editor_create">新建安全卡片</string>
+    <string name="desktop_assist_editor_edit">编辑安全卡片</string>
+    <string name="desktop_assist_label">名称</string>
+    <string name="desktop_assist_secret">密钥</string>
+    <string name="desktop_assist_secret_keep">留空则保留已保存的密钥</string>
+    <string name="desktop_assist_show">显示</string>
+    <string name="desktop_assist_hide">隐藏</string>
+    <string name="desktop_assist_save">保存</string>
+    <string name="desktop_assist_cancel">取消</string>
+    <string name="desktop_assist_done">完成</string>
+    <string name="desktop_assist_delete">删除</string>
+    <string name="desktop_assist_delete_title">删除这张卡片？</string>
+    <string name="desktop_assist_delete_message">已保存的密钥会从本设备移除，在重新添加前远程输入将失败。</string>
+    <string name="desktop_assist_notice_saved">卡片已保存</string>
+    <string name="desktop_assist_notice_deleted">卡片已删除</string>
+    <string name="desktop_assist_notice_invalid">请输入名称和 1 到 4096 字节的密钥</string>
+    <string name="desktop_assist_notice_unavailable">运行环境尚未就绪，请重试</string>
+    <string name="desktop_assist_ocr_title">文字识别</string>
+    <string name="desktop_assist_ocr_ready">Linux 文字识别已可用</string>
+    <string name="desktop_assist_ocr_pending">首次远程连接时准备文字识别</string>
+    <string name="desktop_assist_ocr_body">在本机识别远程屏幕的文字。首次使用可能需要下载免费组件。</string>
+    <string name="desktop_assist_missing_host">未知主机</string>
+    <string name="desktop_assist_saving">正在保存</string>
+    <string name="desktop_assist_not_typing_allowed">不能用于远程输入</string>
+    <string name="desktop_assist_error">无法加载桌面协助设置</string>
+    <string name="desktop_assist_selected">已选择</string>
+    <string name="desktop_assist_copy_reference">复制引用</string>
+</resources>

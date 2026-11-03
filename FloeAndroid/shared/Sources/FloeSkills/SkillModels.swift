@@ -19,6 +19,11 @@ public enum SkillPlatform: String, Codable, CaseIterable, Sendable, Hashable {
     case iOS = "ios"
     case macOS = "macos"
     case linux = "linux"
+    /// Android host/store OS. Additive: legacy packages that do not list it
+    /// are not silently widened. A package that declares `linux` may run on
+    /// Android only through an ACTUALLY selected/qualified task Linux
+    /// runtime; that decision lives in `SkillCompatibility`, never here.
+    case android = "android"
 }
 
 public enum SkillScriptRuntime: String, Codable, CaseIterable, Sendable, Hashable {

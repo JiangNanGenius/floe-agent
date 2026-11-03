@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
@@ -66,6 +67,21 @@ import com.floe.android.core.officeengine.pdf.OfficePdfRenderHost
 import com.floe.android.core.officeengine.pdf.PdfDocResult
 import com.floe.android.core.officeengine.pdf.PrintStartOutcome
 import com.floe.android.core.officeengine.pdf.VerifiedPdfSnapshot
+import com.floe.android.core.officeengine.revisionreview.OfficeConflictPreviewAnswer
+import com.floe.android.core.officeengine.revisionreview.OfficeConflictPreviewNaming
+import com.floe.android.core.officeengine.revisionreview.OfficeConflictPreviewRole
+import com.floe.android.core.officeengine.revisionreview.OfficeConflictReviewAction
+import com.floe.android.core.officeengine.revisionreview.OfficeConflictReviewAnswer
+import com.floe.android.core.officeengine.revisionreview.OfficeConflictReviewChannel
+import com.floe.android.core.officeengine.revisionreview.OfficeConflictReviewState
+import com.floe.android.core.officeengine.revisionreview.OfficeRevisionAction
+import com.floe.android.core.officeengine.revisionreview.OfficeRevisionDispatch
+import com.floe.android.core.officeengine.revisionreview.OfficeRevisionPdfProof
+import com.floe.android.core.officeengine.revisionreview.OfficeRevisionState
+import com.floe.android.core.officeengine.revisionreview.OfficeRevisionSupport
+import java.io.File
+import java.nio.file.Files
+import java.security.MessageDigest
 
 /**
  * The R1 viewer surface: Floe toolbar chrome (Back left, centered title,
@@ -155,6 +171,49 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
     private var pendingHandoffOpId: String? = null
     private var pendingHandoffFormat: String? = null
 
+    /** C08 observed tracked-change/review projection for this exact mount. */
+    private var revisionState: OfficeRevisionState? by mutableStateOf(null)
+    private var revisionProof: OfficeRevisionPdfProof? by mutableStateOf(null)
+
+    /**
+     * One App-minted keep-revisions PDF export. The proof is emitted by the
+     * engine for this exact opId; the existing SAF handoff then proceeds
+     * unchanged.
+     */
+    private var revisionPdfOpId: String? = null
+
+    /**
+     * Same-UID conflict-review capability from this Activity's own launch
+     * Intent. Null for read-only or legacy launches; the review sheet then
+     * reports that original comparison is unavailable rather than inventing
+     * one.
+     */
+    private var reviewChannel: android.os.IBinder? = null
+    private var conflictReview: OfficeConflictReviewAnswer? by mutableStateOf(null)
+    private var conflictReviewLoading by mutableStateOf(false)
+    private var conflictResolving by mutableStateOf(false)
+    private var conflictReviewMessage: String? by mutableStateOf(null)
+    private var conflictReviewSeq = 0L
+
+    /**
+     * C08 retained-snapshot preview. The viewer asks the App for ONE bounded
+     * text projection of the exact record/role/digest; the reply is a
+     * relative App-owned receipt plus a cleanup lease. The snapshot itself
+     * and the live editor are never touched. The lease is released when this
+     * sheet closes, the review is refreshed or the Activity is destroyed.
+     */
+    private var conflictPreviewRole: OfficeConflictPreviewRole? by mutableStateOf(null)
+    private var conflictPreviewSnapshotSha: String? by mutableStateOf(null)
+    private var conflictPreviewText: String? by mutableStateOf(null)
+    private var conflictPreviewTruncated by mutableStateOf(false)
+    private var conflictPreviewLoading by mutableStateOf(false)
+    private var conflictPreviewMessage: String? by mutableStateOf(null)
+    private var conflictPreviewVisible by mutableStateOf(false)
+    private var conflictPreviewSeq = 0L
+    private var conflictPreviewLeaseId: String? = null
+    /** Exact mount generation the preview lease was admitted for. */
+    private var conflictPreviewGeneration = 0L
+
     /** Export ops awaiting OUTPUT_READY (opId -> format), fenced by opId. */
     private val pendingExportFormats = HashMap<String, String>()
 
@@ -207,6 +266,33 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
     private var internalSaveEnabled = false
 
     /**
+     * Manual workspace original save (OFC-SAVE-REOPEN): this mount's App
+     * host owns the workspace-original commit and explicitly accepts
+     * [OfficeSaveOriginalHandoffPolicy.TRANSACTION_SAVE_ORIGINAL] (launch
+     * Intent extra + same-UID capability binder). The visible "Save Original"
+     * action performs one real `.uno:Save` flush and hands the verified
+     * working-copy facts to that host; the App alone re-verifies its OWN
+     * working copy and runs the existing native workspace CAS. Save Copy
+     * stays fully available beside it. Present ONLY for ordinary task-owned
+     * workspace EDIT mounts — never provider/run-output/recovery mounts.
+     */
+    private var saveOriginalEnabled = false
+    private var saveOriginalChannel: android.os.IBinder? = null
+
+    /**
+     * The one original-save op in flight for this mount. Its terminal
+     * receipt is consumed here (never by the external/internal lanes); a
+     * stale or duplicate receipt after the op settled opens nothing.
+     */
+    private var saveOriginalOpId: String? = null
+
+    /** One handoff verification in flight (never two original saves per op). */
+    private var saveOriginalHandoffInFlight = false
+
+    /** True when the accepted answer must close this mount (dirty sheet). */
+    private var saveOriginalClosePending = false
+
+    /**
      * The one internal-save op in flight for this mount. Its terminal receipt
      * is consumed here (never by the external close-save path); a stale or
      * duplicate receipt after the op settled opens nothing.
@@ -227,6 +313,14 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
     private var viewerUrl: String? by mutableStateOf(null)
     private var localFailure: Pair<OfficeFailureCode, String?>? by mutableStateOf(null)
     private var showDirtyCloseSheet by mutableStateOf(false)
+
+    /**
+     * C08: the user chose the dirty sheet's explicit Discard action. It is
+     * carried out ONLY in this Activity result so the App can distinguish a
+     * deliberate discard from a process-loss/unknown close. It never deletes
+     * anything here; the App owns its retained artifacts.
+     */
+    private var userDiscarded = false
     private var diagnosticEvents: List<OfficeSessionDiagnostics.Event> by mutableStateOf(emptyList())
 
     /**
@@ -381,12 +475,20 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         // capability — an inert IBinder reference from our own non-exported
         // launch Intent, used only for the fenced handoff transactions.
         hostSaveChannel = intent.extras?.getBinder(OfficeEngineCommandsPolicy.EXTRA_HOST_SAVE_CHANNEL)
+        // C08 same-UID original review capability (editable mounts only).
+        reviewChannel = intent.extras?.getBinder(OfficeConflictReviewChannel.EXTRA_REVIEW_CHANNEL)
         // R3 internal destination: the App declares that it owns a private
         // working-copy commit (Notes). The capability itself is still the
         // same-UID host save channel; this extra only selects the dirty-sheet
         // action. Without it everything below behaves exactly as before.
         internalSaveEnabled = intent.getBooleanExtra(OfficeHostSaveHandoffPolicy.EXTRA_INTERNAL_SAVE, false) &&
             hostSaveChannel != null
+        // Manual workspace original save: same trust model — an inert
+        // same-UID capability reference from our own non-exported launch
+        // Intent, present only when the App declared the mount eligible.
+        saveOriginalChannel = intent.extras?.getBinder(OfficeSaveOriginalHandoffPolicy.EXTRA_SAVE_ORIGINAL_CHANNEL)
+        saveOriginalEnabled = intent.getBooleanExtra(OfficeSaveOriginalHandoffPolicy.EXTRA_SAVE_ORIGINAL, false) &&
+            saveOriginalChannel != null
         // G05-R3 approval-notice capability + App-owned review target: same
         // trust model again. Both are present only for OWNED opens; either
         // missing simply means this surface never shows the banner.
@@ -441,7 +543,28 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                     viewerUrl = viewerUrl,
                     editableSession = request?.permission == OfficePermission.EDIT,
                     internalSaveSession = internalSaveEnabled,
+                    originalSaveSession = saveOriginalEnabled,
                     editState = editState,
+                    revisionState = revisionState,
+                    revisionProof = revisionProof,
+                    conflictReview = conflictReview,
+                    conflictReviewLoading = conflictReviewLoading,
+                    conflictResolving = conflictResolving,
+                    conflictReviewMessage = conflictReviewMessage,
+                    conflictPreviewRole = conflictPreviewRole,
+                    conflictPreviewSnapshotSha = conflictPreviewSnapshotSha,
+                    conflictPreviewText = conflictPreviewText,
+                    conflictPreviewTruncated = conflictPreviewTruncated,
+                    conflictPreviewLoading = conflictPreviewLoading,
+                    conflictPreviewMessage = conflictPreviewMessage,
+                    conflictPreviewVisible = conflictPreviewVisible,
+                    onPreviewVersion = ::loadConflictPreview,
+                    onCloseConflictPreview = ::closeConflictPreview,
+                    onRevisionAction = ::requestRevisionAction,
+                    onCheckOriginal = ::checkOriginalReview,
+                    onKeepCurrent = { resolveOriginalConflict(OfficeConflictReviewAction.KEEP_CURRENT) },
+                    onSaveMineAsCopy = { resolveOriginalConflict(OfficeConflictReviewAction.PRESERVE_MINE_AS_COPY) },
+                    onSavePdfKeepingRevisions = ::startRevisionPdfExport,
                     diagnosticEvents = diagnosticEvents,
                     busyPhaseKey = closeSavePhase?.let { phase ->
                         when (phase) {
@@ -454,6 +577,7 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                     onBack = ::performBack,
                     onToggleEdit = ::toggleEditMode,
                     onSaveCopy = { startSaveCopy(forClose = false) },
+                    onSaveOriginal = { startSaveOriginal(forClose = false) },
                     onSavePdfCopy = { startExportOp(OfficeExportPurpose.SAF_COPY) },
                     onPreviewPdf = { startExportOp(OfficeExportPurpose.PDF_PREVIEW) },
                     onPrintPdf = { startExportOp(OfficeExportPurpose.PDF_PRINT) },
@@ -507,10 +631,12 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                 // Dirty-close guard (editable mounts): explicit user choice,
                 // honest outcomes only. An internal-Notes mount offers "Save
                 // and close" (one real flush, App-owned snapshot, no picker);
-                // a generic host keeps "Save Copy and close", which closes
-                // ONLY after the App's verified COPY_SAVED settlement for that
-                // exact op. Failure/cancel/UNKNOWN keeps the editor open with
-                // everything retained.
+                // a workspace-original mount offers "Save Original and close"
+                // (one real flush, App-owned workspace CAS proof) with Save
+                // Copy kept beside it; a generic host keeps "Save Copy and
+                // close", which closes ONLY after the App's verified
+                // COPY_SAVED settlement for that exact op. Failure/cancel/
+                // UNKNOWN keeps the editor open with everything retained.
                 FloeActionSheet(
                     visible = showDirtyCloseSheet,
                     onDismiss = { showDirtyCloseSheet = false },
@@ -520,22 +646,33 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                         FloeText(stringResource(R.string.office_viewer_dirty_title), style = Floe.typography.toolbarTitle)
                         FloeText(
                             stringResource(
-                                if (internalSaveEnabled) {
-                                    R.string.office_viewer_dirty_internal_message
-                                } else {
-                                    R.string.office_viewer_dirty_message
+                                when {
+                                    internalSaveEnabled -> R.string.office_viewer_dirty_internal_message
+                                    saveOriginalEnabled -> R.string.office_viewer_dirty_original_message
+                                    else -> R.string.office_viewer_dirty_message
                                 },
                             ),
                             color = Floe.colors.secondaryLabel,
                         )
-                        if (internalSaveEnabled) {
-                            FloeCapsuleButton(stringResource(R.string.office_action_save_note_close), onClick = {
-                                startInternalSaveAndClose()
-                            })
-                        } else {
-                            FloeCapsuleButton(stringResource(R.string.office_action_save_close), onClick = {
-                                startSaveCopy(forClose = true)
-                            })
+                        when {
+                            internalSaveEnabled -> {
+                                FloeCapsuleButton(stringResource(R.string.office_action_save_note_close), onClick = {
+                                    startInternalSaveAndClose()
+                                })
+                            }
+                            saveOriginalEnabled -> {
+                                FloeCapsuleButton(stringResource(R.string.office_action_save_original_close), onClick = {
+                                    startSaveOriginal(forClose = true)
+                                })
+                                FloeCapsuleButton(stringResource(R.string.office_action_save_close), onClick = {
+                                    startSaveCopy(forClose = true)
+                                })
+                            }
+                            else -> {
+                                FloeCapsuleButton(stringResource(R.string.office_action_save_close), onClick = {
+                                    startSaveCopy(forClose = true)
+                                })
+                            }
                         }
                         FloeCapsuleButton(stringResource(R.string.office_action_discard_close), onClick = ::discardAndClose)
                         FloeCapsuleButton(stringResource(R.string.office_action_keep_editing), onClick = {
@@ -576,7 +713,8 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         // Only the explicit Discard choice or a verified App COPY_SAVED
         // close-save bypasses it. Native FLUSHED/UNMODIFIED/ModifiedStatus
         // facts describe the PRIVATE working copy only and never authorize a
-        // close (no original writeback or user-visible recovery exists yet).
+        // close (the App recovery review exists, but it never turns a private
+        // working-copy fact into a completed save or an automatic close).
         val state = editState
         if (request?.permission == OfficePermission.EDIT &&
             (state?.documentModified == true || everEnteredEditMode) &&
@@ -623,6 +761,7 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
      * that exact op.
      */
     private fun startSaveCopy(forClose: Boolean) {
+        userDiscarded = false
         val token = request?.sessionToken ?: return
         val format = request?.format?.fileExtension ?: return
         val opId = newOpId("export")
@@ -673,11 +812,14 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
     private fun startExportOp(purpose: OfficeExportPurpose) {
         if (closeSavePhase != null || pdfBusyKey != null) return
         val token = request?.sessionToken ?: return
+        val generation = nativeGeneration.takeIf { it > 0L }
+            ?: service?.currentGenerationFor(token)?.takeIf { it > 0L }
+            ?: return
         val opId = newOpId("export")
         val op = OfficeSaveRequest.of(
             opId = opId,
             sessionToken = token,
-            generation = nativeGeneration,
+            generation = generation,
             operation = OfficeSaveOperation.STAGED_EXPORT,
             format = "pdf",
             suggestedName = suggestedExportName("pdf"),
@@ -800,6 +942,13 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
             applyInternalSaveReceipt(receipt)
             return
         }
+        // The manual original-save lane is narrowed the same way: its
+        // FLUSHED/UNMODIFIED receipt must never clear the external copy
+        // state, and a stale/duplicate terminal for a settled op is dropped.
+        if (receipt.opId == saveOriginalOpId) {
+            applySaveOriginalReceipt(receipt)
+            return
+        }
         val isCloseSave = closeAfterExportOpId == receipt.opId
         when (receipt.state) {
             OfficeSaveState.SUBMITTED -> Unit // no notice: terminal states speak
@@ -918,6 +1067,7 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
      * any recovery data retained. No SAF, URI or path is created here.
      */
     private fun startInternalSaveAndClose() {
+        userDiscarded = false
         if (closeSavePhase != null || pdfBusyKey != null) return
         // Never start a working-copy flush underneath an external Save-Copy
         // picker/settlement: the two destinations must not interleave.
@@ -1036,6 +1186,203 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         noticeDetail = detail
     }
 
+    // --- Manual workspace original save (OFC-SAVE-REOPEN) ---
+
+    /**
+     * The visible "Save Original" action for an ordinary task-owned
+     * workspace mount. One real `WORKING_COPY_FLUSH` on the existing engine
+     * lane (`.uno:Save`, dontTerminateEdit=1) writes the latest in-memory
+     * state to the App-owned working copy; the engine re-reads and digests
+     * it. Only a FLUSHED/UNMODIFIED receipt with real working-copy facts is
+     * offered to the App host, which re-verifies its OWN working copy and
+     * runs the existing native workspace CAS before answering. Accepted ->
+     * the original carries the verified edit (and the armed close proceeds
+     * when [forClose]); refused/rejected/unknown -> the editor stays open
+     * with the working copy and any recovery data retained, and a rejected
+     * (conflict-shaped) answer points at the existing original-version
+     * review. No model content operation is faked and no edit is reapplied;
+     * Save Copy remains available beside this action.
+     */
+    private fun startSaveOriginal(forClose: Boolean) {
+        userDiscarded = false
+        if (!saveOriginalEnabled) return
+        if (closeSavePhase != null || pdfBusyKey != null) return
+        // Never start an original save underneath an external Save-Copy
+        // picker/settlement or an internal-save handoff: the destinations
+        // must not interleave.
+        if (pendingHandoffOpId != null) return
+        if (synchronized(awaitingSettlementOps) { awaitingSettlementOps.isNotEmpty() }) return
+        if (internalSaveOpId != null || internalSaveHandoffInFlight) return
+        if (saveOriginalOpId != null || saveOriginalHandoffInFlight) return
+        val token = request?.sessionToken ?: return
+        if (request?.permission != OfficePermission.EDIT) return
+        val opId = newOpId("original")
+        val op = OfficeSaveRequest.of(
+            opId = opId,
+            sessionToken = token,
+            generation = nativeGeneration,
+            operation = OfficeSaveOperation.WORKING_COPY_FLUSH,
+            // false = dontSaveIfUnmodified=0: an explicit user save must
+            // produce a real write + verified digest, never a silent skip.
+            saveIfUnmodified = false,
+        ).getOrNull() ?: run {
+            noticeKey = "saveFailed"
+            noticeDetail = "invalid original save request"
+            return
+        }
+        showDirtyCloseSheet = false
+        saveOriginalOpId = opId
+        saveOriginalClosePending = forClose
+        // The input stays frozen through the handoff answer in both the
+        // menu and the dirty-close case: the App re-verifies the exact
+        // working-copy digest, so no later edit may land underneath it. The
+        // busy cover absorbs touches while the App verifies + commits.
+        closeSavePhase = CloseSavePhase.SAVING
+        freezeDocumentInput()
+        val receipt = service?.submitSaveOperation(op) ?: run {
+            saveOriginalOpId = null
+            abortSaveOriginal("saveFailed", "editor unavailable")
+            return
+        }
+        // A synchronous REJECTED was never dispatched to listeners; apply it
+        // through the same narrowed handler exactly once.
+        if (receipt.state == OfficeSaveState.REJECTED) applyReceipt(receipt)
+    }
+
+    private fun applySaveOriginalReceipt(receipt: OfficeSaveReceipt) {
+        when (receipt.state) {
+            OfficeSaveState.SUBMITTED -> Unit
+            OfficeSaveState.FLUSHED, OfficeSaveState.UNMODIFIED -> {
+                if (saveOriginalHandoffInFlight) return
+                val mountFormat = request?.format?.fileExtension
+                val notice = OfficeSaveOriginalHandoffPolicy.noticeFromReceipt(receipt, mountFormat)
+                if (notice == null) {
+                    abortSaveOriginal("saveFailed", "working copy unavailable")
+                    return
+                }
+                saveOriginalHandoffInFlight = true
+                // The App re-reads/digests/commits against its own working
+                // copy, so this bounded verification runs off the main
+                // thread; the busy cover keeps input frozen until the answer.
+                runCatching {
+                    Thread({
+                        val answer = OfficeSaveOriginalChannel.postSaveOriginal(saveOriginalChannel, notice)
+                        mainHandler.post {
+                            saveOriginalHandoffInFlight = false
+                            if (isDestroyed || isFinishing) return@post
+                            when (answer) {
+                                OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_ACCEPTED -> {
+                                    // The App proved the workspace original
+                                    // now carries the verified edit.
+                                    saveOriginalOpId = null
+                                    closeSavePhase = null
+                                    noticeKey = "originalSaved"
+                                    noticeDetail = null
+                                    if (saveOriginalClosePending) {
+                                        saveOriginalClosePending = false
+                                        request?.sessionToken?.let { token ->
+                                            service?.requestClose(token, "user-back", userInitiated = true)
+                                        }
+                                    } else {
+                                        unfreezeDocumentInput()
+                                    }
+                                }
+                                OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_UNCHANGED -> {
+                                    // The working copy still equals the
+                                    // authoritative original: nothing to
+                                    // commit, which is an honest success.
+                                    saveOriginalOpId = null
+                                    closeSavePhase = null
+                                    noticeKey = "saveUnmodified"
+                                    noticeDetail = null
+                                    if (saveOriginalClosePending) {
+                                        saveOriginalClosePending = false
+                                        request?.sessionToken?.let { token ->
+                                            service?.requestClose(token, "user-back", userInitiated = true)
+                                        }
+                                    } else {
+                                        unfreezeDocumentInput()
+                                    }
+                                }
+                                OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_REJECTED -> {
+                                    // A real conflict / verification refusal:
+                                    // the original stays untouched, the
+                                    // working copy is retained, and the
+                                    // existing original-version review
+                                    // decides. The editor stays open.
+                                    abortSaveOriginal("originalSaveConflict", null)
+                                }
+                                OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_ACCEPTED_SOURCE_PENDING ->
+                                    finishSaveOriginalSourcePending(savedLocally = true, conflict = false)
+                                OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_ACCEPTED_SOURCE_CONFLICT ->
+                                    finishSaveOriginalSourcePending(savedLocally = true, conflict = true)
+                                OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_UNCHANGED_SOURCE_PENDING ->
+                                    finishSaveOriginalSourcePending(savedLocally = false, conflict = false)
+                                OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_UNCHANGED_SOURCE_CONFLICT ->
+                                    finishSaveOriginalSourcePending(savedLocally = false, conflict = true)
+                                else -> {
+                                    // Transport/fence refusal: nothing was
+                                    // proven either way; the editor stays
+                                    // open with everything retained.
+                                    abortSaveOriginal("originalSaveFailed", null)
+                                }
+                            }
+                        }
+                    }, "office-original-save").start()
+                }.onFailure {
+                    saveOriginalHandoffInFlight = false
+                    abortSaveOriginal("saveFailed", "originalSaveUnavailable")
+                }
+            }
+            OfficeSaveState.FAILED, OfficeSaveState.UNKNOWN -> {
+                abortSaveOriginal(
+                    if (receipt.state == OfficeSaveState.UNKNOWN) "saveUnknown" else "saveFailed",
+                    (receipt.failure?.name ?: "") + (receipt.message?.let { ": $it" } ?: ""),
+                )
+            }
+            OfficeSaveState.CANCELLED, OfficeSaveState.REJECTED ->
+                abortSaveOriginal("saveFailed", receipt.failure?.name)
+            else -> abortSaveOriginal("saveFailed", "unexpected original save state")
+        }
+    }
+
+    /** Ends an original-save attempt honestly: the editor stays open, input
+     *  is unfrozen, the working copy is retained, and no close is
+     *  authorized. A conflict-shaped refusal surfaces the existing review
+     *  entry so the user can compare versions deliberately. */
+    private fun abortSaveOriginal(notice: String, detail: String?) {
+        saveOriginalOpId = null
+        saveOriginalClosePending = false
+        saveOriginalHandoffInFlight = false
+        closeSavePhase = null
+        unfreezeDocumentInput()
+        noticeKey = notice
+        noticeDetail = detail
+    }
+
+    /**
+     * The LOCAL workspace original is proven saved (or already current) but
+     * the attached provider sync did not complete — never close as if fully
+     * synced. The editor stays open with the working copy retained, an
+     * actionable bilingual notice says exactly what did and didn't happen,
+     * and the existing Save Copy / close choices stay usable. The journaled
+     * provider row keeps its recovery identity for the existing reconcile
+     * flow; nothing is replayed here.
+     */
+    private fun finishSaveOriginalSourcePending(savedLocally: Boolean, conflict: Boolean) {
+        saveOriginalOpId = null
+        saveOriginalClosePending = false
+        closeSavePhase = null
+        unfreezeDocumentInput()
+        noticeKey = when {
+            savedLocally && conflict -> "originalSavedSourceConflict"
+            savedLocally -> "originalSavedSourcePending"
+            conflict -> "originalUnchangedSourceConflict"
+            else -> "originalUnchangedSourcePending"
+        }
+        noticeDetail = null
+    }
+
     /**
      * Ends a close-save attempt honestly: the editor stays open, input is
      * unfrozen, the staged output and working copy are retained, and no
@@ -1054,7 +1401,13 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
      */
     private fun discardAndClose() {
         showDirtyCloseSheet = false
-        request?.sessionToken?.let { service?.requestClose(it, "user-back", userInitiated = true) }
+        val token = request?.sessionToken
+        val engine = service
+        if (token == null || engine == null) return
+        // Mark the result only when an exact close request was actually
+        // issued; a failed keep-editing path must not tag a later save.
+        userDiscarded = true
+        engine.requestClose(token, "user-back", userInitiated = true)
     }
 
     private fun freezeDocumentInput() {
@@ -1170,8 +1523,29 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
 
     override fun onDestroy() {
         stopApprovalNoticePoll()
+        // Release any open preview lease first; the generic review release
+        // below then retires the record and drains only after that reader.
+        closeConflictPreview()
+        // Drop only this review's temporary snapshots. The App controller
+        // also releases on settle; this covers an Activity recreation where
+        // the Compose sheet state is gone but the session stays live.
+        val reviewToken = request?.sessionToken
+        val reviewGeneration = nativeGeneration
+        val reviewBinder = reviewChannel
+        if (reviewToken != null && reviewGeneration > 0L && reviewBinder != null) {
+            runCatching {
+                Thread({
+                    OfficeConflictReviewChannel.release(
+                        reviewBinder, reviewToken, reviewGeneration, null,
+                    )
+                }, "office-review-release").start()
+            }
+        }
         internalSaveOpId = null
         internalSaveHandoffInFlight = false
+        saveOriginalOpId = null
+        saveOriginalHandoffInFlight = false
+        saveOriginalClosePending = false
         exportPurposes.clear()
         pdfBusyKey = null
         pdfRenderHost?.release()
@@ -1225,6 +1599,372 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         editState = state
     }
 
+    override fun onRevisionState(state: OfficeRevisionState) {
+        if (!accepts(state.sessionToken, state.generation)) return
+        revisionState = state
+    }
+
+    override fun onRevisionPdfProof(proof: OfficeRevisionPdfProof) {
+        if (!accepts(proof.sessionToken, proof.generation)) return
+        if (proof.opId != revisionPdfOpId) return
+        revisionProof = proof
+        if (proof.completed) {
+            noticeKey = if (proof.revisionsPreserved) "pdfRevisionsKept" else "pdfRevisionWarning"
+            noticeDetail = proof.verdict
+        }
+    }
+
+    /** Sends one real tracked-change command through the engine service. */
+    private fun requestRevisionAction(action: OfficeRevisionAction) {
+        val token = request?.sessionToken ?: return
+        val engine = service
+        if (engine == null) {
+            noticeKey = "revisionFailed"
+            noticeDetail = OfficeRevisionDispatch.NO_LIVE_EDIT_SESSION.name
+            return
+        }
+        val generation = nativeGeneration.takeIf { it > 0L }
+            ?: engine.currentGenerationFor(token).takeIf { it > 0L }
+            ?: return
+        val dispatch = engine.requestRevisionAction(token, generation, action)
+        if (dispatch == OfficeRevisionDispatch.ACCEPTED) {
+            noticeKey = "revisionPending"
+            noticeDetail = action.name
+        } else {
+            noticeKey = "revisionFailed"
+            noticeDetail = dispatch.name
+        }
+    }
+
+    /**
+     * Reads the exact current original through the App-owned channel. The
+     * call runs off the main thread because it can perform one bounded
+     * provider/workspace read; no UI state is treated as proof.
+     */
+    private fun checkOriginalReview() {
+        if (conflictReviewLoading || conflictResolving) return
+        // A fresh check invalidates any preview lease bound to the old record.
+        closeConflictPreview()
+        val token = request?.sessionToken ?: return
+        val generation = nativeGeneration.takeIf { it > 0L }
+            ?: service?.currentGenerationFor(token)?.takeIf { it > 0L }
+            ?: return
+        val binder = reviewChannel
+        if (binder == null) {
+            conflictReview = null
+            conflictReviewMessage = "noReviewCapability"
+            return
+        }
+        val seq = ++conflictReviewSeq
+        conflictReviewLoading = true
+        conflictReviewMessage = null
+        conflictReview = null
+        val requestId = "r" + seq + "-" + System.currentTimeMillis()
+        runCatching {
+            Thread({
+                val answer = OfficeConflictReviewChannel.review(binder, token, generation, requestId)
+                mainHandler.post {
+                    if (seq != conflictReviewSeq || isDestroyed || isFinishing) return@post
+                    conflictReviewLoading = false
+                    if (answer == null) {
+                        conflictReviewMessage = "reviewUnavailable"
+                    } else {
+                        conflictReview = answer
+                        if (answer.state == OfficeConflictReviewState.CHANGED) {
+                            noticeKey = "originalChanged"
+                            noticeDetail = null
+                        } else if (answer.state == OfficeConflictReviewState.UNCHANGED) {
+                            noticeKey = "originalUnchanged"
+                            noticeDetail = null
+                        }
+                    }
+                }
+            }, "office-original-review").start()
+        }.onFailure {
+            conflictReviewLoading = false
+            conflictReviewMessage = "reviewUnavailable"
+        }
+    }
+
+    /** Applies one deliberate decision; the App re-reads the original first. */
+    private fun resolveOriginalConflict(action: OfficeConflictReviewAction) {
+        if (conflictResolving) return
+        val token = request?.sessionToken ?: return
+        val generation = nativeGeneration.takeIf { it > 0L }
+            ?: service?.currentGenerationFor(token)?.takeIf { it > 0L }
+            ?: return
+        val binder = reviewChannel ?: return
+        val recordId = conflictReview?.recordId ?: return
+        conflictResolving = true
+        conflictReviewMessage = null
+        runCatching {
+            Thread({
+                val result = OfficeConflictReviewChannel.resolve(
+                    binder, token, generation, recordId, action,
+                )
+                mainHandler.post {
+                    if (isDestroyed || isFinishing) return@post
+                    conflictResolving = false
+                    if (result == null) {
+                        conflictReviewMessage = "resolutionUnavailable"
+                        return@post
+                    }
+                    when {
+                        result.accepted && action == OfficeConflictReviewAction.KEEP_CURRENT -> {
+                            conflictReview = null
+                            noticeKey = "originalKept"
+                            noticeDetail = result.code
+                        }
+                        result.accepted && action == OfficeConflictReviewAction.PRESERVE_MINE_AS_COPY -> {
+                            conflictReview = null
+                            // Existing verified Save Copy; the original stays
+                            // untouched and the working version is retained.
+                            startSaveCopy(forClose = false)
+                        }
+                        result.code == "reviewStale" -> {
+                            conflictReview = null
+                            conflictReviewMessage = "reviewStale"
+                            noticeKey = "originalStale"
+                            noticeDetail = null
+                        }
+                        else -> {
+                            conflictReviewMessage = result.code
+                            noticeKey = "revisionFailed"
+                            noticeDetail = result.code
+                        }
+                    }
+                }
+            }, "office-original-resolution").start()
+        }.onFailure {
+            conflictResolving = false
+            conflictReviewMessage = "resolutionUnavailable"
+        }
+    }
+
+    /**
+     * Loads ONE retained version's bounded text projection through the
+     * App-owned review channel. The reply carries only a relative receipt and
+     * a cleanup lease; the viewer re-proves the App review root, the exact
+     * leaf, the length and the text-file digest before showing anything.
+     * Runs off the main thread because the App re-verifies and may project a
+     * bounded package part. The editor session is never commanded.
+     */
+    private fun loadConflictPreview(role: OfficeConflictPreviewRole) {
+        if (conflictPreviewLoading) return
+        val review = conflictReview ?: return
+        val recordId = review.recordId ?: return
+        val expectedSha = when (role) {
+            OfficeConflictPreviewRole.MINE -> review.mineSha256
+            OfficeConflictPreviewRole.CURRENT -> review.currentSha256
+        } ?: return
+        val token = request?.sessionToken ?: return
+        val generation = nativeGeneration.takeIf { it > 0L }
+            ?: service?.currentGenerationFor(token)?.takeIf { it > 0L }
+            ?: run {
+                conflictPreviewRole = role
+                conflictPreviewVisible = true
+                conflictPreviewMessage = "sessionFenced"
+                return
+            }
+        val binder = reviewChannel
+        releaseConflictPreviewLease()
+        val seq = ++conflictPreviewSeq
+        conflictPreviewGeneration = generation
+        conflictPreviewRole = role
+        conflictPreviewSnapshotSha = expectedSha
+        conflictPreviewText = null
+        conflictPreviewTruncated = false
+        conflictPreviewMessage = null
+        conflictPreviewLoading = true
+        conflictPreviewVisible = true
+        if (binder == null) {
+            conflictPreviewLoading = false
+            conflictPreviewMessage = "noReviewCapability"
+            return
+        }
+        runCatching {
+            Thread({
+                val receipt = OfficeConflictReviewChannel.preview(
+                    binder, token, generation, recordId, role, expectedSha,
+                )
+                val text = receipt
+                    ?.takeIf { it.ready && it.matches(recordId, role, expectedSha) }
+                    ?.let { readConflictPreviewText(it) }
+                mainHandler.post {
+                    if (seq != conflictPreviewSeq || isDestroyed || isFinishing) {
+                        // The sheet was closed or the Activity ended while the
+                        // binder call was in flight: hand the lease straight
+                        // back so the App can drain the review directory.
+                        if (receipt != null && receipt.ready) {
+                            releaseConflictPreviewLease(binder, token, generation, receipt.leaseId)
+                        }
+                        return@post
+                    }
+                    conflictPreviewLoading = false
+                    if (receipt == null) {
+                        conflictPreviewMessage = "previewUnavailable"
+                    } else if (!receipt.ready) {
+                        conflictPreviewMessage = receipt.reason ?: "previewUnavailable"
+                    } else if (text == null) {
+                        releaseConflictPreviewLease(binder, token, generation, receipt.leaseId)
+                        conflictPreviewMessage = "previewUnavailable"
+                    } else {
+                        conflictPreviewText = text
+                        conflictPreviewTruncated = receipt.truncated
+                        conflictPreviewLeaseId = receipt.leaseId
+                    }
+                }
+            }, "office-conflict-preview").start()
+        }.onFailure {
+            conflictPreviewLoading = false
+            conflictPreviewMessage = "previewUnavailable"
+        }
+    }
+
+    /** Returns to the review sheet; releases the cleanup lease exactly once. */
+    private fun closeConflictPreview() {
+        conflictPreviewSeq++
+        conflictPreviewVisible = false
+        conflictPreviewLoading = false
+        conflictPreviewText = null
+        conflictPreviewTruncated = false
+        conflictPreviewMessage = null
+        conflictPreviewRole = null
+        conflictPreviewSnapshotSha = null
+        releaseConflictPreviewLease()
+        conflictPreviewGeneration = 0L
+    }
+
+    private fun releaseConflictPreviewLease() {
+        val leaseId = conflictPreviewLeaseId ?: return
+        conflictPreviewLeaseId = null
+        val token = request?.sessionToken ?: return
+        // Release under the EXACT generation the lease was admitted for: a
+        // later engine generation must not strand the App cleanup lease.
+        val generation = conflictPreviewGeneration.takeIf { it > 0L } ?: return
+        val binder = reviewChannel ?: return
+        releaseConflictPreviewLease(binder, token, generation, leaseId)
+    }
+
+    private fun releaseConflictPreviewLease(
+        binder: android.os.IBinder,
+        token: String,
+        generation: Long,
+        leaseId: String?,
+    ) {
+        if (leaseId == null) return
+        runCatching {
+            Thread({
+                OfficeConflictReviewChannel.releasePreview(binder, token, generation, leaseId)
+            }, "office-preview-lease-release").start()
+        }
+    }
+
+    /**
+     * Re-proves that the receipt names exactly one App-owned review file under
+     * this process's own root, with the expected role leaf, length and SHA-256.
+     * Only then is the bounded UTF-8 text returned. No path is displayed or
+     * logged, and a swapped/short/oversize file yields an honest refusal.
+     */
+    private fun readConflictPreviewText(receipt: OfficeConflictPreviewAnswer): String? {
+        val relative = receipt.relativePath ?: return null
+        val role = receipt.role ?: return null
+        if (!OfficeConflictPreviewNaming.isValidRelativePath(relative, role)) return null
+        val directoryName = relative.substringBefore('/')
+        val fileName = relative.substringAfter('/')
+        val root = runCatching {
+            File(noBackupFilesDir, OfficeConflictPreviewNaming.REVIEW_ROOT).canonicalFile
+        }.getOrNull() ?: return null
+        val directory = runCatching { File(root, directoryName).canonicalFile }.getOrNull()
+            ?: return null
+        if (directory.parentFile?.canonicalFile != root) return null
+        val file = runCatching { File(directory, fileName).canonicalFile }.getOrNull()
+            ?: return null
+        if (file.parentFile?.canonicalFile != directory) return null
+        if (Files.isSymbolicLink(file.toPath())) return null
+        if (!file.isFile || file.length() != receipt.previewBytes) return null
+        if (file.length() !in 1L..OfficeConflictPreviewAnswer.MAX_PREVIEW_FILE_BYTES) return null
+        // Bounded read: never trust the pre-read length for allocation, and
+        // refuse a stream that does not end at the exact receipt length.
+        val bytes = runCatching {
+            java.io.FileInputStream(file).use { input ->
+                val buffer = ByteArray(OfficeConflictPreviewAnswer.MAX_PREVIEW_FILE_BYTES.toInt() + 1)
+                var offset = 0
+                while (offset < buffer.size) {
+                    val read = input.read(buffer, offset, buffer.size - offset)
+                    if (read < 0) break
+                    if (read == 0) continue
+                    offset += read
+                }
+                if (offset != receipt.previewBytes.toInt()) null else buffer.copyOf(offset)
+            }
+        }.getOrNull() ?: return null
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+        if (!digest.equals(receipt.previewSha256, ignoreCase = true)) return null
+        return String(bytes, Charsets.UTF_8)
+            .replace("\u0000", "")
+            .take(OfficeConflictPreviewAnswer.MAX_TEXT_CHARS)
+    }
+
+    /**
+     * The keep-revisions PDF case: the SAME pinned STAGED_EXPORT, with the
+     * engine's source-side proof. It never accepts/rejects/flushes the
+     * document and never claims the PDF is an editable revision container.
+     */
+    private fun startRevisionPdfExport() {
+        if (closeSavePhase != null || pdfBusyKey != null) return
+        val token = request?.sessionToken ?: return
+        val opId = newOpId("export")
+        val op = OfficeSaveRequest.of(
+            opId = opId,
+            sessionToken = token,
+            generation = nativeGeneration,
+            operation = OfficeSaveOperation.STAGED_EXPORT,
+            format = "pdf",
+            suggestedName = suggestedExportName("pdf"),
+        ).getOrNull() ?: run {
+            noticeKey = "pdfFailed"
+            noticeDetail = "invalid export request"
+            return
+        }
+        val engine = service ?: run {
+            noticeKey = "pdfFailed"
+            noticeDetail = "editor unavailable"
+            return
+        }
+        exportPurposes.register(opId, OfficeExportPurpose.SAF_COPY)
+        pendingExportFormats[opId] = "pdf"
+        revisionPdfOpId = opId
+        revisionProof = null
+        // The source digest is measured before dispatch. Keep that bounded
+        // file read off the UI thread; the export itself still runs on the
+        // engine control lane, and terminal receipts stay on the main thread.
+        runCatching {
+            Thread({
+                val receipt = runCatching { engine.submitRevisionPreservingPdfExport(op) }.getOrNull()
+                mainHandler.post {
+                    if (isDestroyed || isFinishing || request?.sessionToken != token) return@post
+                    if (receipt == null) {
+                        exportPurposes.consume(opId)
+                        pendingExportFormats.remove(opId)
+                        revisionPdfOpId = null
+                        noticeKey = "pdfFailed"
+                        noticeDetail = "revisionExportUnavailable"
+                    } else if (receipt.state == OfficeSaveState.REJECTED) {
+                        applyReceipt(receipt)
+                    }
+                }
+            }, "office-revision-pdf").start()
+        }.onFailure {
+            exportPurposes.consume(opId)
+            pendingExportFormats.remove(opId)
+            revisionPdfOpId = null
+            noticeKey = "pdfFailed"
+            noticeDetail = "revisionExportUnavailable"
+        }
+    }
+
     /**
      * The App's terminal Save-Copy settlement — the ONLY event that may show
      * a saved-to-destination outcome or authorize a close-save (COPY_SAVED
@@ -1240,6 +1980,7 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         val isCloseSave = closeAfterExportOpId == settlement.opId
         when (settlement.verdict) {
             OfficeHostSaveVerdict.COPY_SAVED -> {
+                userDiscarded = false
                 if (isCloseSave) {
                     closeAfterExportOpId = null
                     closeSavePhase = null
@@ -1364,6 +2105,7 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                     ArrayList(outcome.saveReceiptDescriptors),
                 )
             }
+            if (userDiscarded) putExtra(EXTRA_USER_DISCARDED, true)
         }
         val resultCode = if (outcome.failure == null) RESULT_OK else RESULT_CANCELED
         setResult(resultCode, data)
@@ -1377,6 +2119,9 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
          *  delay is honest and cheap; the query itself is a tiny same-UID
          *  binder round-trip on a dedicated thread. */
         private const val APPROVAL_NOTICE_POLL_MS = 1_000L
+
+        /** App-owned recovery result flag: explicit user discard (never a save). */
+        const val EXTRA_USER_DISCARDED = "com.floe.android.office.USER_DISCARDED"
 
         internal fun intentFor(context: Context, request: OfficePreviewRequest): Intent =
             Intent(context, OfficePreviewActivity::class.java).apply {
@@ -1414,12 +2159,36 @@ private fun OfficeViewerScreen(
     viewerUrl: String?,
     editableSession: Boolean,
     internalSaveSession: Boolean = false,
+    /** Manual workspace original save: this mount may write the workspace
+     *  original through the App-owned CAS (the "Save Original" action). */
+    originalSaveSession: Boolean = false,
     editState: OfficeEditState?,
+    revisionState: OfficeRevisionState?,
+    revisionProof: OfficeRevisionPdfProof?,
+    conflictReview: OfficeConflictReviewAnswer?,
+    conflictReviewLoading: Boolean,
+    conflictResolving: Boolean,
+    conflictReviewMessage: String?,
+    conflictPreviewRole: OfficeConflictPreviewRole?,
+    conflictPreviewSnapshotSha: String?,
+    conflictPreviewText: String?,
+    conflictPreviewTruncated: Boolean,
+    conflictPreviewLoading: Boolean,
+    conflictPreviewMessage: String?,
+    conflictPreviewVisible: Boolean,
+    onPreviewVersion: (OfficeConflictPreviewRole) -> Unit,
+    onCloseConflictPreview: () -> Unit,
+    onRevisionAction: (OfficeRevisionAction) -> Unit,
+    onCheckOriginal: () -> Unit,
+    onKeepCurrent: () -> Unit,
+    onSaveMineAsCopy: () -> Unit,
+    onSavePdfKeepingRevisions: () -> Unit,
     diagnosticEvents: List<OfficeSessionDiagnostics.Event>,
     busyPhaseKey: String?,
     onBack: () -> Unit,
     onToggleEdit: () -> Unit,
     onSaveCopy: () -> Unit,
+    onSaveOriginal: () -> Unit,
     onSavePdfCopy: () -> Unit,
     onPreviewPdf: () -> Unit,
     onPrintPdf: () -> Unit,
@@ -1446,6 +2215,12 @@ private fun OfficeViewerScreen(
     var showInfo by remember { mutableStateOf(false) }
     var showDetails by remember { mutableStateOf(false) }
     var showEditorMenu by remember { mutableStateOf(false) }
+    var showReview by remember { mutableStateOf(false) }
+    // Opening the review sheet performs ONE read-only original check (when
+    // the App supplied the capability). It never saves or overwrites.
+    LaunchedEffect(showReview) {
+        if (showReview) onCheckOriginal()
+    }
 
     FloeActionSheet(visible = showDetails, onDismiss = { showDetails = false }, maxCardWidth = 560.dp) {
         Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()).padding(20.dp),
@@ -1472,6 +2247,20 @@ private fun OfficeViewerScreen(
     }
     FloeActionSheet(visible = showEditorMenu, onDismiss = { showEditorMenu = false }, maxCardWidth = 420.dp) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            FloeCapsuleButton(reviewText("Review changes", "审阅更改"), onClick = {
+                showEditorMenu = false
+                showReview = true
+            })
+            if (originalSaveSession) {
+                // Manual workspace original save (OFC-SAVE-REOPEN): one
+                // visible action that saves the verified working copy back
+                // to the task workspace original through the App-owned CAS.
+                // Save Copy stays right below it, always.
+                FloeCapsuleButton(stringResource(R.string.office_action_save_original), onClick = {
+                    showEditorMenu = false
+                    onSaveOriginal()
+                })
+            }
             FloeCapsuleButton(stringResource(R.string.office_action_save_copy), onClick = {
                 showEditorMenu = false
                 onSaveCopy()
@@ -1506,6 +2295,383 @@ private fun OfficeViewerScreen(
                 onOpenNotices()
             })
             FloeCapsuleButton(stringResource(R.string.office_viewer_done), onClick = { showEditorMenu = false })
+        }
+    }
+    FloeActionSheet(visible = showReview, onDismiss = { showReview = false }, maxCardWidth = 560.dp) {
+        Column(
+            Modifier
+                .heightIn(max = 620.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            FloeText(reviewText("Changes & versions", "更改与版本"), style = Floe.typography.toolbarTitle)
+            FloeText(
+                reviewText(
+                    "Review tracked changes and the original version. Commands are sent to the document; the result appears only after the engine reports it.",
+                    "审阅修订和原始版本。命令会发送到文档，仅在引擎回报后显示结果。",
+                ),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+            FloeText(reviewText("Tracked changes", "修订"), style = Floe.typography.bodyEmphasized)
+            val revision = revisionState
+            when {
+                revision == null -> FloeText(
+                    reviewText("Tracked-change state is not available yet.", "尚未获得修订状态。"),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+                revision.support == OfficeRevisionSupport.WRITER_ONLY -> FloeText(
+                    reviewText(
+                        "Tracked-change review is available for Word documents in this engine build.",
+                        "此引擎版本的修订审阅仅适用于 Word 文档。",
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+                revision.support == OfficeRevisionSupport.REVIEW_NOT_AUTHORIZED -> FloeText(
+                    reviewText(
+                        "The document did not grant redline management for this view.",
+                        "当前视图未获得红线管理权限。",
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+                revision.support == OfficeRevisionSupport.EDIT_MODE_REQUIRED -> FloeText(
+                    reviewText(
+                        "Enter Edit Copy to review tracked changes.",
+                        "进入编辑副本后才能审阅修订。",
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+                revision.support == OfficeRevisionSupport.NO_LIVE_EDIT_SESSION -> FloeText(
+                    reviewText(
+                        "Open the document for editing to review changes.",
+                        "请以编辑方式打开文档后再审阅更改。",
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+                revision.support == OfficeRevisionSupport.NATIVE_LEASE_BUSY -> FloeText(
+                    reviewText(
+                        "Another document operation is still using the editor.",
+                        "另一个文档操作仍占用编辑器。",
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+                else -> {
+                    FloeText(
+                        reviewText(
+                            "Record changes: ${onOff(revision.recording)}",
+                            "记录修订：${onOff(revision.recording)}",
+                        ),
+                        style = Floe.typography.metadata,
+                    )
+                    FloeText(
+                        reviewText(
+                            "Show changes: ${onOff(revision.showingChanges)}",
+                            "显示修订：${onOff(revision.showingChanges)}",
+                        ),
+                        style = Floe.typography.metadata,
+                    )
+                    if (revision.pendingAction != null) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            FloeActivityIndicator(modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            FloeText(
+                                reviewText(
+                                    "Waiting for the document to acknowledge the last change…",
+                                    "正在等待文档确认上一项更改…",
+                                ),
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.secondaryLabel,
+                            )
+                        }
+                    } else if (revision.lastFailure == "noAcknowledgement") {
+                        FloeText(
+                            reviewText(
+                                "The document did not report a state change. Check the document and retry.",
+                                "文档未回报状态变化。请检查文档后重试。",
+                            ),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.accent,
+                        )
+                    } else if (revision.lastAcknowledged != null) {
+                        FloeText(
+                            reviewText("The document reported the change.", "文档已回报该更改。"),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                    }
+                    val controls = revision.supported && revision.pendingAction == null && revision.pageEditMode
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FloeCapsuleButton(
+                            label = if (revision.recording == true) {
+                                reviewText("Stop recording", "停止记录")
+                            } else {
+                                reviewText("Record changes", "记录修订")
+                            },
+                            onClick = { onRevisionAction(OfficeRevisionAction.TOGGLE_RECORDING) },
+                            modifier = Modifier.weight(1f),
+                            enabled = controls,
+                        )
+                        FloeCapsuleButton(
+                            label = if (revision.showingChanges == true) {
+                                reviewText("Hide changes", "隐藏修订")
+                            } else {
+                                reviewText("Show changes", "显示修订")
+                            },
+                            onClick = { onRevisionAction(OfficeRevisionAction.SHOW_CHANGES) },
+                            modifier = Modifier.weight(1f),
+                            enabled = controls,
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FloeCapsuleButton(
+                            label = reviewText("Accept change", "接受更改"),
+                            onClick = { onRevisionAction(OfficeRevisionAction.ACCEPT_CURRENT) },
+                            modifier = Modifier.weight(1f),
+                            enabled = controls && revision.acceptCurrentAvailable != false,
+                        )
+                        FloeCapsuleButton(
+                            label = reviewText("Reject change", "拒绝更改"),
+                            onClick = { onRevisionAction(OfficeRevisionAction.REJECT_CURRENT) },
+                            modifier = Modifier.weight(1f),
+                            enabled = controls && revision.rejectCurrentAvailable != false,
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FloeCapsuleButton(
+                            label = reviewText("Accept all", "全部接受"),
+                            onClick = { onRevisionAction(OfficeRevisionAction.ACCEPT_ALL) },
+                            modifier = Modifier.weight(1f),
+                            enabled = controls && revision.acceptAllAvailable != false,
+                        )
+                        FloeCapsuleButton(
+                            label = reviewText("Reject all", "全部拒绝"),
+                            onClick = { onRevisionAction(OfficeRevisionAction.REJECT_ALL) },
+                            modifier = Modifier.weight(1f),
+                            enabled = controls && revision.rejectAllAvailable != false,
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FloeCapsuleButton(
+                            label = reviewText("Previous change", "上一处更改"),
+                            onClick = { onRevisionAction(OfficeRevisionAction.PREVIOUS) },
+                            modifier = Modifier.weight(1f),
+                            enabled = controls && revision.previousAvailable != false,
+                        )
+                        FloeCapsuleButton(
+                            label = reviewText("Next change", "下一处更改"),
+                            onClick = { onRevisionAction(OfficeRevisionAction.NEXT) },
+                            modifier = Modifier.weight(1f),
+                            enabled = controls && revision.nextAvailable != false,
+                        )
+                    }
+                }
+            }
+
+            FloeText(reviewText("PDF with revisions", "保留修订的 PDF"), style = Floe.typography.bodyEmphasized)
+            FloeText(
+                reviewText(
+                    "Exports a PDF through the existing verified save pipeline. It never accepts or rejects changes. A PDF cannot store editable revisions; the source document keeps them.",
+                    "通过现有已验证的保存流程导出 PDF。此过程不会接受或拒绝修订。PDF 无法保存可编辑的修订记录，源文档仍会保留。",
+                ),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+            FloeCapsuleButton(
+                label = reviewText("Save PDF (keep revisions)", "保存 PDF（保留修订）"),
+                onClick = onSavePdfKeepingRevisions,
+            )
+            revisionProof?.let { proof ->
+                val verdict = when (proof.verdict) {
+                    "revisionsKeptSourceUnchanged" -> reviewText(
+                        "PDF created. Revisions were kept and the source file was unchanged during export.",
+                        "PDF 已创建。修订已保留，导出期间源文件未改变。",
+                    )
+                    "revisionsKeptSourceChanged" -> reviewText(
+                        "PDF created with no accept/reject action. The working copy changed during export, so the PDF may not match the latest edit.",
+                        "PDF 已创建，且未执行接受/拒绝操作。导出期间工作副本发生变化，PDF 可能与最新编辑不一致。",
+                    )
+                    "revisionsKeptSourceUnmeasured" -> reviewText(
+                        "PDF created with no accept/reject action. The source digest could not be measured.",
+                        "PDF 已创建，且未执行接受/拒绝操作。无法测量源文件摘要。",
+                    )
+                    "revisionActionDuringExport" -> reviewText(
+                        "An accept/reject action was observed during export. Export again for a clean keep-revisions proof.",
+                        "导出期间观察到接受/拒绝操作。请重新导出以获得完整的保留修订证明。",
+                    )
+                    else -> reviewText("No PDF was created.", "未创建 PDF。")
+                }
+                FloeText(verdict, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                FloeText(
+                    reviewText(
+                        "Source unchanged during export: ${onOff(proof.sourceUnchanged)}",
+                        "导出期间源文件未改变：${onOff(proof.sourceUnchanged)}",
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
+
+            FloeText(reviewText("Original version", "原始版本"), style = Floe.typography.bodyEmphasized)
+            FloeText(
+                reviewText(
+                    "Compares the version you opened with the current original. This check is read-only; it never saves or overwrites the original.",
+                    "将打开时的版本与当前原始文件进行比较。此检查为只读，不会保存或覆盖原始文件。",
+                ),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+            when {
+                conflictReviewLoading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    FloeActivityIndicator(modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    FloeText(
+                        reviewText("Reading the current original…", "正在读取当前原始文件…"),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
+                conflictReview == null -> {
+                    conflictReviewMessage?.let { code ->
+                        FloeText(
+                            reviewMessageText(code),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.accent,
+                        )
+                    }
+                    FloeCapsuleButton(
+                        label = reviewText("Check original version", "检查原始版本"),
+                        onClick = onCheckOriginal,
+                        enabled = !conflictResolving,
+                    )
+                }
+                else -> {
+                    val answer = conflictReview!!
+                    when (answer.state) {
+                        OfficeConflictReviewState.UNCHANGED -> {
+                            FloeText(
+                                reviewText(
+                                    "The original still matches the version you opened.",
+                                    "原始文件仍与打开时的版本一致。",
+                                ),
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.secondaryLabel,
+                            )
+                            ReviewVersionLine("My version (saved working copy)", answer.mineSha256, answer.mineBytes, null)
+                            ReviewVersionLine("Current original", answer.currentSha256, answer.currentBytes, answer.currentRevision)
+                            FloeCapsuleButton(
+                                label = reviewText("Check again", "重新检查"),
+                                onClick = onCheckOriginal,
+                                enabled = !conflictResolving,
+                            )
+                        }
+                        OfficeConflictReviewState.CHANGED -> {
+                            FloeText(
+                                reviewText(
+                                    "The original changed since you opened it. Both versions are retained; choose deliberately.",
+                                    "打开后原始文件已发生变化。两个版本都会保留，请明确选择。",
+                                ),
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.accent,
+                            )
+                            ReviewVersionLine("My version (saved working copy)", answer.mineSha256, answer.mineBytes, null)
+                            ReviewVersionLine("Current original", answer.currentSha256, answer.currentBytes, answer.currentRevision)
+                            if (answer.recordId != null) {
+                                FloeCapsuleButton(
+                                    label = reviewText("View my version", "查看我的版本"),
+                                    onClick = { onPreviewVersion(OfficeConflictPreviewRole.MINE) },
+                                    enabled = !conflictResolving && !conflictPreviewLoading,
+                                )
+                                FloeCapsuleButton(
+                                    label = reviewText("View current original", "查看当前原始版本"),
+                                    onClick = { onPreviewVersion(OfficeConflictPreviewRole.CURRENT) },
+                                    enabled = !conflictResolving && !conflictPreviewLoading,
+                                )
+                                FloeText(
+                                    reviewText(
+                                        "Previews show the saved text of each version. The editor and your changes stay untouched.",
+                                        "预览显示各版本已保存的文本。编辑器和你的更改保持不变。",
+                                    ),
+                                    style = Floe.typography.metadata,
+                                    color = Floe.colors.secondaryLabel,
+                                )
+                            }
+                            if (conflictResolving) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    FloeActivityIndicator(modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    FloeText(
+                                        reviewText("Checking the current original again…", "正在重新检查当前原始文件…"),
+                                        style = Floe.typography.metadata,
+                                        color = Floe.colors.secondaryLabel,
+                                    )
+                                }
+                            }
+                            FloeCapsuleButton(
+                                label = reviewText("Keep current original", "保留当前原始文件"),
+                                onClick = onKeepCurrent,
+                                enabled = answer.canKeepCurrent && !conflictResolving,
+                            )
+                            FloeCapsuleButton(
+                                label = reviewText("Save my version as a copy", "将我的版本另存为副本"),
+                                onClick = {
+                                    showReview = false
+                                    onSaveMineAsCopy()
+                                },
+                                enabled = answer.canPreserveMineAsCopy && !conflictResolving,
+                            )
+                            FloeText(
+                                reviewText(
+                                    "Overwriting the original is not available from this viewer. The original can only change through its own compare-and-swap path.",
+                                    "此查看器不提供覆盖原始文件的选项。原始文件只能通过其自身的比较并交换路径修改。",
+                                ),
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.secondaryLabel,
+                            )
+                        }
+                        OfficeConflictReviewState.UNAVAILABLE -> {
+                            FloeText(
+                                reviewText(
+                                    "The original could not be read (${answer.reason ?: "unavailable"}). Nothing was changed.",
+                                    "无法读取原始文件（${answer.reason ?: "不可用"}）。未更改任何内容。",
+                                ),
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.accent,
+                            )
+                            FloeCapsuleButton(
+                                label = reviewText("Check again", "重新检查"),
+                                onClick = onCheckOriginal,
+                                enabled = !conflictResolving,
+                            )
+                        }
+                        OfficeConflictReviewState.NOT_APPLICABLE -> FloeText(
+                            reviewText(
+                                "This document has no workspace or provider original to compare.",
+                                "此文档没有可比较的工作区或提供商原始文件。",
+                            ),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                    }
+                    conflictReviewMessage?.let { code ->
+                        FloeText(
+                            reviewMessageText(code),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.accent,
+                        )
+                    }
+                }
+            }
+            FloeCapsuleButton(
+                label = reviewText("Done", "完成"),
+                onClick = { showReview = false },
+            )
         }
     }
     FloeActionSheet(visible = showInfo, onDismiss = { showInfo = false }, maxCardWidth = 420.dp) {
@@ -1751,6 +2917,214 @@ private fun OfficeViewerScreen(
             }
         }
     }
+    // Full-sheet read-only view of ONE retained version. The review sheet
+    // stays composed underneath; closing this returns exactly to the version
+    // comparison and releases the App cleanup lease.
+    FloeActionSheet(
+        visible = conflictPreviewVisible,
+        onDismiss = onCloseConflictPreview,
+        maxCardWidth = 680.dp,
+    ) {
+        Column(
+            Modifier
+                .heightIn(max = 640.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            val previewRole = conflictPreviewRole
+            FloeText(
+                reviewText(
+                    if (previewRole == OfficeConflictPreviewRole.CURRENT) {
+                        "Current original"
+                    } else {
+                        "My version (saved working copy)"
+                    },
+                    if (previewRole == OfficeConflictPreviewRole.CURRENT) {
+                        "当前原始文件"
+                    } else {
+                        "我的版本（已保存的工作副本）"
+                    },
+                ),
+                style = Floe.typography.toolbarTitle,
+            )
+            FloeText(
+                reviewText(
+                    "Read-only text preview. The editor and your changes stay untouched; nothing is saved or overwritten.",
+                    "只读文本预览。编辑器和你的更改保持不变，不会保存或覆盖任何内容。",
+                ),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+            var showVersionDetails by remember(conflictPreviewRole, conflictPreviewSnapshotSha) {
+                mutableStateOf(false)
+            }
+            FloeCapsuleButton(
+                label = reviewText("Version details", "版本信息"),
+                onClick = { showVersionDetails = !showVersionDetails },
+            )
+            if (showVersionDetails) {
+                FloeText(
+                    "SHA-256 ${shortSha(conflictPreviewSnapshotSha)}",
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
+            when {
+                conflictPreviewLoading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    FloeActivityIndicator(modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    FloeText(
+                        reviewText("Reading the retained version…", "正在读取保留的版本…"),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
+                conflictPreviewMessage != null -> FloeText(
+                    reviewMessageText(conflictPreviewMessage.orEmpty()),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.accent,
+                )
+                conflictPreviewText.isNullOrEmpty() -> FloeText(
+                    reviewText(
+                        "No readable text was found in this version.",
+                        "此版本中未找到可读取的文本。",
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+                else -> FloeText(
+                    conflictPreviewText.orEmpty(),
+                    style = Floe.typography.body,
+                )
+            }
+            if (conflictPreviewTruncated && conflictPreviewText != null) {
+                FloeText(
+                    reviewText(
+                        "Preview limited to the first part of this version.",
+                        "预览仅显示此版本的前一部分。",
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
+            FloeText(
+                reviewText(
+                    "Text only from the main document body. Layout, images, comments, headers and tracked deletions are not shown. The full document stays in the editor.",
+                    "仅显示文档正文文本。不显示版式、图片、批注、页眉页脚和已删除的修订内容。完整文档仍保留在编辑器中。",
+                ),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+            FloeCapsuleButton(
+                label = reviewText("Back to review", "返回对比"),
+                onClick = onCloseConflictPreview,
+            )
+        }
+    }
+}
+
+private fun reviewText(english: String, chinese: String): String =
+    if (java.util.Locale.getDefault().language == "zh") chinese else english
+
+private fun onOff(value: Boolean?): String = when (value) {
+    true -> reviewText("On", "开")
+    false -> reviewText("Off", "关")
+    null -> reviewText("Unknown", "未知")
+}
+
+private fun shortSha(sha: String?): String = sha?.take(12) ?: "—"
+
+private fun reviewMessageText(code: String): String = when (code) {
+    "noReviewCapability" -> reviewText(
+        "This view has no original-version review capability.",
+        "此视图没有原始版本审阅能力。",
+    )
+    "reviewUnavailable" -> reviewText(
+        "The original version could not be read. Nothing was changed.",
+        "无法读取原始版本。未更改任何内容。",
+    )
+    "resolutionUnavailable" -> reviewText(
+        "The decision could not be admitted. Nothing was overwritten.",
+        "无法受理该决定。未覆盖任何内容。",
+    )
+    "reviewStale" -> reviewText(
+        "The original changed again after review. Check it again before deciding.",
+        "审阅后原始文件又发生变化。请重新检查后再决定。",
+    )
+    "originalUnavailable" -> reviewText(
+        "The current original could not be read again. Nothing was written and the review is retained.",
+        "无法再次读取当前原始文件。未写入任何内容，审阅记录仍保留。",
+    )
+    "originalCasUnavailable", "originalCasNotImplemented" -> reviewText(
+        "Overwriting the original is not available here; this viewer owns no original compare-and-swap authority.",
+        "此处不支持覆盖原始文件；此查看器没有原始文件的比较并交换权限。",
+    )
+    "sessionFenced", "sessionMismatch" -> reviewText(
+        "The document session changed. Reopen the review.",
+        "文档会话已变化。请重新打开审阅。",
+    )
+    "reviewExpired" -> reviewText(
+        "This review expired. Check the original again.",
+        "此审阅已过期。请重新检查原始文件。",
+    )
+    "previewUnavailable", "previewUnreadable", "previewStorageUnavailable", "previewFailed" -> reviewText(
+        "The saved version could not be read for preview. Nothing was changed.",
+        "无法读取该已保存版本进行预览。未更改任何内容。",
+    )
+    "previewEmpty" -> reviewText(
+        "No readable text was found in this version.",
+        "此版本中未找到可读取的文本。",
+    )
+    "previewUnsupported" -> reviewText(
+        "This version cannot be shown as a text preview.",
+        "此版本无法以文本预览显示。",
+    )
+    "previewTooLarge" -> reviewText(
+        "This version is too large for the text preview.",
+        "此版本过大，无法进行文本预览。",
+    )
+    "previewBusy" -> reviewText(
+        "Another preview is still open. Close it and try again.",
+        "另一个预览仍处于打开状态。请关闭后重试。",
+    )
+    "snapshotMismatch" -> reviewText(
+        "This version changed after it was reviewed. Check the original again.",
+        "此版本在审阅后发生变化。请重新检查原始文件。",
+    )
+    else -> reviewText(
+        "The original was not changed ($code).",
+        "原始文件未更改（$code）。",
+    )
+}
+
+@Composable
+private fun ReviewVersionLine(
+    label: String,
+    sha256: String?,
+    bytes: Long,
+    revision: String?,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        FloeText(
+            text = if (java.util.Locale.getDefault().language == "zh") {
+                when (label) {
+                    "My version (saved working copy)" -> "我的版本（已保存的工作副本）"
+                    "Current original" -> "当前原始文件"
+                    else -> label
+                }
+            } else {
+                label
+            },
+            style = Floe.typography.bodyEmphasized,
+        )
+        FloeText(
+            text = "SHA-256 ${shortSha(sha256)} · ${bytes} B" +
+                (revision?.takeIf { it.isNotBlank() }?.let { " · rev " + it.take(24) } ?: ""),
+            style = Floe.typography.metadata,
+            color = Floe.colors.secondaryLabel,
+        )
+    }
 }
 
 @Composable
@@ -1760,8 +3134,14 @@ private fun NoticeGlyph(key: String) {
         "editPermissionDenied", "protectedDocument", "editEntryUnavailable",
         "pdfFailed", "printUnavailable" -> FloeIcons.WarningTriangle
         "saveUnknown" -> FloeIcons.WarningTriangle
-        "saveFlushed", "copySaved" -> FloeIcons.CheckCircle
+        "saveFlushed", "copySaved", "pdfRevisionsKept", "originalUnchanged",
+        "originalKept", "originalSaved" -> FloeIcons.CheckCircle
         "macroBlocked" -> FloeIcons.ShieldAlert
+        "revisionFailed", "pdfRevisionWarning", "originalStale",
+        "originalSaveConflict", "originalSaveFailed" -> FloeIcons.WarningTriangle
+        "originalSavedSourcePending", "originalSavedSourceConflict",
+        "originalUnchangedSourcePending", "originalUnchangedSourceConflict",
+        -> FloeIcons.WarningTriangle
         else -> FloeIcons.InfoCircle
     }
     Image(
@@ -1808,6 +3188,72 @@ private fun noticeText(key: String, detail: String?): String {
         "pdfFailed" -> stringResource(R.string.office_notice_pdf_failed)
         "printSubmitted" -> stringResource(R.string.office_notice_print_submitted)
         "printUnavailable" -> stringResource(R.string.office_notice_print_unavailable)
+        "revisionPending" -> reviewText(
+            "Change request sent; waiting for the document to acknowledge it.",
+            "更改请求已发送；正在等待文档确认。",
+        )
+        "revisionFailed" -> reviewText(
+            "The tracked-change request was not sent.",
+            "修订请求未发送。",
+        )
+        "pdfRevisionsKept" -> reviewText(
+            "PDF created. Revisions remain in the source document.",
+            "PDF 已创建。修订仍保留在源文档中。",
+        )
+        "pdfRevisionWarning" -> reviewText(
+            "PDF created, but an accept/reject action was observed during export.",
+            "PDF 已创建，但导出期间观察到接受/拒绝操作。",
+        )
+        "originalChanged" -> reviewText(
+            "The original changed since you opened it. Review both versions before deciding.",
+            "打开后原始文件已变化。决定前请审阅两个版本。",
+        )
+        "originalUnchanged" -> reviewText(
+            "The original still matches the version you opened.",
+            "原始文件仍与打开时的版本一致。",
+        )
+        "originalKept" -> reviewText(
+            "The current original was kept; your version remains retained.",
+            "当前原始文件已保留；你的版本仍被保存。",
+        )
+        "originalStale" -> reviewText(
+            "The original changed again. Check it again before deciding.",
+            "原始文件又发生变化。决定前请重新检查。",
+        )
+        // Manual workspace original save (OFC-SAVE-REOPEN): honest wording —
+        // "saved" only after the App's real CAS answer; a conflict keeps the
+        // editor open and routes the decision to the existing review.
+        "originalSaved" -> reviewText(
+            "Saved to the original in your workspace.",
+            "已保存到工作空间中的原始文件。",
+        )
+        "originalSaveConflict" -> reviewText(
+            "The original changed and wasn\'t overwritten. Your version is kept — review both versions to decide.",
+            "原始文件已变化，未覆盖。你的版本已保留——请审阅两个版本后再决定。",
+        )
+        "originalSaveFailed" -> reviewText(
+            "Couldn\'t save to the original. Your working copy is kept.",
+            "保存到原始文件失败，工作副本已保留。",
+        )
+        // The local original is saved (or already current) but the attached
+        // provider sync is incomplete — never worded as a fully synced save,
+        // and the editor stays open with everything retained.
+        "originalSavedSourcePending" -> reviewText(
+            "Saved to the original in your workspace. Syncing to your connected file provider is still pending — reconcile it from Provider files.",
+            "已保存到工作空间中的原始文件。与已连接文件提供方的同步仍在等待——可在“外部文件”中核对处理。",
+        )
+        "originalSavedSourceConflict" -> reviewText(
+            "Saved to the original in your workspace. Your file provider has a conflicting version — review it in Provider files.",
+            "已保存到工作空间中的原始文件。你的文件提供方存在冲突版本——请在“外部文件”中审阅处理。",
+        )
+        "originalUnchangedSourcePending" -> reviewText(
+            "Your edits are already saved in the workspace original. Syncing to your connected file provider is still pending — reconcile it from Provider files.",
+            "你的更改已保存在工作空间原始文件中。与已连接文件提供方的同步仍在等待——可在“外部文件”中核对处理。",
+        )
+        "originalUnchangedSourceConflict" -> reviewText(
+            "Your edits are already saved in the workspace original. Your file provider has a conflicting version — review it in Provider files.",
+            "你的更改已保存在工作空间原始文件中。你的文件提供方存在冲突版本——请在“外部文件”中审阅处理。",
+        )
         else -> stringResource(R.string.office_notice_internal_error)
     }
     return base

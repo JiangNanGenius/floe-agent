@@ -517,10 +517,24 @@ struct SkillsCatalogCache: Sendable {
         let contentDigest: String
         let minimumAppVersion: String
         let releaseNotes: [String: String]
+        /// Whether THIS client compatibility version satisfies the entry's
+        /// minimum. Decoding/caching remains separate from installability.
+        var compatible: Bool = true
     }
     var commit: String
     var checkedAt: Date
     var entries: [Entry]
+    var lastFailure: String?
+    var retryAfter: Date?
+}
+
+/// The full schemaVersion-3 Android channel (JiangNanGenius/floe-skill-hub)
+/// is cached SEPARATELY from the legacy four-item catalog above. A failed or
+/// absent full feed never erases the legacy cache and never becomes a fake
+/// empty catalog.
+struct SkillsCuratedCatalogCache: Sendable {
+    var publication: CuratedSkillHub.Publication
+    var checkedAt: Date
     var lastFailure: String?
     var retryAfter: Date?
 }
@@ -557,9 +571,19 @@ public actor SkillsDomain {
 
     // Bounded domain state, generation-fenced.
     private var reviews: [String: SkillsReview] = [:]
+    /// Exact signed artifacts for a live install/upgrade review. They are
+    /// persisted only after the ORIGINAL staging service commits; the
+    /// receipt itself is derived from these artifacts on load.
+    private var reviewCuratedEnvelopes: [String: C02CuratedReceiptEnvelope] = [:]
+    /// RAM-only positive cache of cryptographically re-verified curated
+    /// receipts, keyed by skill id + installed content digest.
+    private var verifiedCuratedAuthorities: [String: CuratedSkillHub.Receipt] = [:]
     private var stagingReceipts: [String: StagedFolder] = [:]
     private var catalogCache: SkillsCatalogCache?
+    private var curatedCatalogCache: SkillsCuratedCatalogCache?
     private var inflightSkills: Set<String> = []
+    private let curatedReceipts: C02CuratedReceiptStore
+    private let dependencyPreparation: C02SkillDependencyPreparation
     private let autoUpdatesKey = "floe.content.update.autoScriptedSkills"
 
     private struct StagedFolder {
@@ -611,7 +635,8 @@ public actor SkillsDomain {
     }
 
     public init(services: Services) throws {
-        self.store = SQLiteSkillStore(database: services.database)
+        let skillStore = SQLiteSkillStore(database: services.database)
+        self.store = skillStore
         self.settingsStore = SQLiteSettingsStore(database: services.database)
         self.installationRoot = services.installationRoot
         self.stagingRoot = services.stagingRoot
@@ -623,6 +648,12 @@ public actor SkillsDomain {
         self.ownedWork = services.ownedWork
         self.toolWork = services.toolWork
         self.registry = services.registry
+        let receiptStore = C02CuratedReceiptStore(installationRoot: services.installationRoot)
+        self.curatedReceipts = receiptStore
+        self.dependencyPreparation = C02SkillDependencyPreparation(
+            store: skillStore,
+            installationRoot: services.installationRoot,
+            ownedWork: services.ownedWork)
         if let injected = services.trustedKeys {
             self.trustedKeys = try Self.validatedTrustRoots(injected)
         } else {
@@ -662,6 +693,47 @@ public actor SkillsDomain {
         return binding
     }
 
+    // MARK: Curated authority (derive, never trust persisted metadata)
+
+    private func invalidateVerifiedCurated(skillID: String) {
+        let prefix = skillID + ":"
+        verifiedCuratedAuthorities = verifiedCuratedAuthorities.filter {
+            !$0.key.hasPrefix(prefix)
+        }
+    }
+
+    /// Returns a receipt ONLY after re-verifying the exact signed catalog and
+    /// review envelopes and the ACTUAL installed package digest. The sidecar
+    /// is a cache/evidence container, not authority. Optional `snapshot`
+    /// avoids re-reading a snapshot the caller already validated.
+    private func verifiedCuratedReceipt(
+        for row: PersistedSkill,
+        snapshot: SkillContentSnapshot? = nil
+    ) -> CuratedSkillHub.Receipt? {
+        let key = "\(row.id):\(row.rewrittenDigest)"
+        if let cached = verifiedCuratedAuthorities[key] { return cached }
+        guard curatedReceipts.hasCurrent(skillID: row.id) else { return nil }
+        let packageRoot = Self.packageDirectory(installationRoot: installationRoot,
+                                                id: row.id)
+        let validated: SkillContentSnapshot
+        if let snapshot {
+            guard snapshot.package.canonicalSHA256 == row.rewrittenDigest,
+                  snapshot.package.manifest.id == row.id else { return nil }
+            validated = snapshot
+        } else {
+            guard let created = try? SkillContentSnapshot(
+                root: packageRoot,
+                expectedDigest: row.rewrittenDigest,
+                manifestOverride: Self.sidecarManifest(for: row)) else { return nil }
+            validated = created
+        }
+        guard let receipt = curatedReceipts.verifiedCurrent(
+            skillID: row.id, contentDigest: row.rewrittenDigest,
+            snapshot: validated) else { return nil }
+        verifiedCuratedAuthorities[key] = receipt
+        return receipt
+    }
+
     // MARK: skills.list
 
     /// Installed rows (metadata-only like the native list view; description
@@ -678,11 +750,13 @@ public actor SkillsDomain {
         // rollback path could legitimately find (bounded directory scan of
         // the ORIGINAL .upgrade-history layout; contents never leak).
         let rollbackIDs = Self.completedUpgradeJournalSkillIDs(installationRoot: installationRoot)
-        var objects: [[String: Any]] = []
-        var bytes = 0
-        var index = start
-        while index < rows.count, objects.count < ConfigPageBudget.maximumItemsPerPage {
-            let row = rows[index]
+        // Build the canonical row projections once; the composer then selects
+        // a whole-reply bounded page. Installed rows stay metadata-only
+        // (description parsed via the ORIGINAL parseSkillMarkdown, ≤1024 like
+        // ManagedSkill.discoveryMetadata) and never carry the full markdown.
+        var projections: [[String: Any]] = []
+        projections.reserveCapacity(rows.count)
+        for row in rows {
             var descriptionText = ""
             if let metadata = try? validator.parseSkillMarkdown(Data(row.skillMarkdown.utf8)) {
                 descriptionText = String(metadata.description.prefix(1_024))
@@ -696,28 +770,22 @@ public actor SkillsDomain {
                 "revision": ["resourceID": "skill.\(row.id)",
                              "version": row.rewrittenDigest],
                 "updatedAt": Self.iso8601String(from: row.updatedAt),
-                "official": OfficialSkillHub.skillIDs.contains(row.id),
+                "official": OfficialSkillHub.skillIDs.contains(row.id)
+                    || verifiedCuratedReceipt(for: row) != nil,
                 "bundledSeedSuppressed": try await store.wasBundledSkillRemoved(id: row.id),
                 "description": descriptionText,
                 "rollbackAvailable": rollbackIDs.contains(row.id),
             ]
-            let candidate = try Self.canonicalData(object)
-            let overhead = objects.isEmpty ? 2 : 1
-            if bytes + candidate.count + overhead > ConfigPageBudget.maximumPageItemsBytes {
-                if objects.isEmpty {
-                    throw ConfigDomainError(code: .payloadTooLarge, reason: "itemDoesNotFitPage")
-                }
-                break
-            }
-            objects.append(object)
-            bytes += candidate.count + overhead
-            index += 1
+            projections.append(object)
         }
-        return [
-            "skills": objects,
-            "hasMore": index < rows.count,
-            "nextCursor": index < rows.count ? String(index) : NSNull(),
+        // Repeated non-paged fields are part of the exact whole-reply
+        // measurement. The full schemaVersion-3 card list is deliberately
+        // NOT embedded here: it is fetched through the separately bounded
+        // `curated.cards` page chain so a 48 KiB row page plus a second
+        // 48 KiB card page can never compose an oversized event frame.
+        let base: [String: Any] = [
             "catalog": catalogProjection(),
+            "curated": curatedProjection(),
             "pendingReviews": reviews.values.map { review in
                 ["reviewToken": review.token,
                  "skillID": review.skillID,
@@ -729,6 +797,9 @@ public actor SkillsDomain {
             },
             "settings": try await settingsDocument(),
         ]
+        let page = try C02BoundedSkillSnapshot.compose(
+            base: base, rows: projections, cursor: start)
+        return page.payload
     }
 
     /// Bounded markdown detail window (byteOffset / maxBytes ≤ 32 KiB owned
@@ -812,15 +883,23 @@ public actor SkillsDomain {
         var entries: [SkillsCatalogCache.Entry] = []
         do {
             for id in OfficialSkillHub.skillIDs.sorted() {
+                // The legacy decoder and signature stay the authority. A
+                // minimum-app-version miss is retained as an honest
+                // `compatible: false` entry instead of discarding the whole
+                // signed catalog; install/upgrade re-check the gate.
                 let package = try OfficialSkillHub.verifiedPackage(
                     catalog: catalogBytes, signature: signature, id: id,
-                    appVersion: appVersion, trustedKeys: self.trustedKeys)
-                entries.append(.init(id: package.id, version: package.version,
-                                     path: package.path, size: package.size,
-                                     sha256: package.sha256,
-                                     contentDigest: package.contentDigest,
-                                     minimumAppVersion: package.minimumAppVersion,
-                                     releaseNotes: package.releaseNotes))
+                    appVersion: appVersion, trustedKeys: self.trustedKeys,
+                    enforceAppCompatibility: false)
+                entries.append(.init(
+                    id: package.id, version: package.version,
+                    path: package.path, size: package.size,
+                    sha256: package.sha256,
+                    contentDigest: package.contentDigest,
+                    minimumAppVersion: package.minimumAppVersion,
+                    releaseNotes: package.releaseNotes,
+                    compatible: OfficialSkillHub.isAppCompatible(
+                        package, appVersion: appVersion)))
             }
         } catch let failure as OfficialSkillHub.Failure {
             recordCatalogFailure(reason: "hub.\(Self.safe(failure))", now: now)
@@ -837,13 +916,657 @@ public actor SkillsDomain {
                 "catalog": catalogProjection()]
     }
 
+    // MARK: Full schemaVersion-3 curated channel (separate from legacy)
+
+    /// Refreshes BOTH independent catalogs. The legacy four-item cache and
+    /// the full channel cache never overwrite each other; a missing/failed
+    /// full feed is reported beside the legacy result, never as an empty
+    /// catalog and never as an installable supply.
+    public func refreshCatalogs(force: Bool, now: Date = Date()) async throws
+        -> sending [String: Any] {
+        var result = try await refreshCatalog(force: force, now: now)
+        let curatedRefresh = await refreshCuratedCatalog(force: force, now: now)
+        // The snapshot and the refresh reply keep the SAME `curated`
+        // projection shape; the refresh outcome stays in `curatedState`.
+        result["curated"] = (curatedRefresh["curated"] as? [String: Any])
+            ?? curatedRefresh
+        result["curatedState"] = curatedRefresh["state"] ?? "failed"
+        return result
+    }
+
+    public func refreshCuratedCatalog(force: Bool, now: Date = Date()) async
+        -> sending [String: Any] {
+        if !force, let cache = curatedCatalogCache {
+            if now.timeIntervalSince(cache.checkedAt) < 3_600 {
+                return ["state": "upToDate", "curated": curatedProjection()]
+            }
+            if let retryAfter = cache.retryAfter, now < retryAfter {
+                return ["state": "retryBackoff",
+                        "retryAfter": Self.iso8601String(from: retryAfter),
+                        "curated": curatedProjection()]
+            }
+        }
+        if !force, let fallback = curatedFailureFallback, now < fallback.retryAfter {
+            return ["state": "retryBackoff",
+                    "retryAfter": Self.iso8601String(from: fallback.retryAfter),
+                    "curated": curatedProjection()]
+        }
+        guard let appVersion = Self.validatedAppVersion(hostContext.appVersion()) else {
+            recordCuratedCatalogFailure(reason: "appVersionUnbound", now: now)
+            return ["state": "failed", "reason": "appVersionUnbound",
+                    "curated": curatedProjection()]
+        }
+        do {
+            let publication = try await CuratedSkillHub.loadPublication(
+                channel: .android,
+                mode: .production,
+                ref: "main",
+                resolve: { [transport] source in
+                    try await transport.resolveCommit(source)
+                },
+                fetch: { [transport] source, commit, path in
+                    try await transport.fetch(source, commit: commit, path: path)
+                })
+            // `loadPublication` already verifies the exact-bytes Ed25519
+            // envelope and strictly decodes the schemaVersion-3 feed. Keep
+            // the app version visible only for card compatibility; it is not
+            // used to skip any signature/digest gate.
+            _ = appVersion
+            curatedCatalogCache = SkillsCuratedCatalogCache(
+                publication: publication, checkedAt: now,
+                lastFailure: nil, retryAfter: nil)
+            return ["state": "refreshed",
+                    "checkedAt": Self.iso8601String(from: now),
+                    "curated": curatedProjection()]
+        } catch {
+            let reason = Self.curatedFailureReason(error)
+            recordCuratedCatalogFailure(reason: reason, now: now)
+            return ["state": "failed", "reason": reason,
+                    "curated": curatedProjection()]
+        }
+    }
+
+    /// Public detail read for one full-catalog entry. It returns only data
+    /// from the verified feed plus the actual installed row; no "ready"
+    /// claim is made for dependencies (that needs a task environment).
+    public func curatedDetail(skillID: String) async throws -> sending [String: Any] {
+        _ = try requireBinding()
+        guard let cache = curatedCatalogCache else {
+            throw ConfigDomainError(code: .needsConfiguration,
+                                    reason: "curatedCatalogRefreshRequired")
+        }
+        guard let entry = cache.publication.feed.entry(id: skillID) else {
+            throw ConfigDomainError(code: .notFound, reason: "curatedEntryUnknown")
+        }
+        let rows = try await store.all()
+        let installed = rows.first { $0.id == skillID }
+        let rollbackIDs = Self.completedUpgradeJournalSkillIDs(installationRoot: installationRoot)
+        let appVersion = Self.validatedAppVersion(hostContext.appVersion())
+        var card = curatedCard(entry: entry, rows: rows, installed: installed,
+                               rollbackAvailable: rollbackIDs.contains(skillID),
+                               appVersion: appVersion,
+                               preferredLanguages: Locale.preferredLanguages)
+        card.removeValue(forKey: "searchText")
+        var dependencies: [String: Any] = ["state": "notInstalled"]
+        if let installed {
+            dependencies = dependencyDeclarationSummary(skillID: skillID, row: installed)
+        }
+        let result: [String: Any] = [
+            "entry": curatedEntryProjection(entry, preferredLanguages: Locale.preferredLanguages),
+            "offer": card["offer"] ?? "unavailable",
+            "offerReason": card["offerReason"] ?? NSNull(),
+            "installed": !(installed == nil),
+            "installedVersion": installed?.version ?? NSNull(),
+            "installedRevision": installed?.rewrittenDigest ?? NSNull(),
+            "installedEnabled": installed.map { $0.status == "enabled" } ?? false,
+            "updateAvailable": card["updateAvailable"] ?? false,
+            "rollbackAvailable": card["rollbackAvailable"] ?? false,
+            "dependencies": dependencies,
+            "card": card,
+        ]
+        // The detail reply is one entry, but its signed text/path fields can
+        // still be large. Keep the same actual-serialized-byte bound as every
+        // other page instead of letting the bridge drop an oversized frame.
+        guard let encoded = ConfigJSON.canonicalData(result),
+              encoded.count <= ConfigPageBudget.maximumPageItemsBytes else {
+            throw ConfigDomainError(code: .payloadTooLarge, reason: "curatedDetailTooLarge")
+        }
+        return try Self.transferredJSON(encoded)
+    }
+
+    /// Reconstruct an owned wire value from Sendable bytes before leaving the
+    /// actor. Projection dictionaries may contain actor-retained nested values.
+    private nonisolated static func transferredJSON(_ data: Data) throws -> sending [String: Any] {
+        guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "invalidCuratedProjection")
+        }
+        return value
+    }
+
+    /// Bounded full-catalog page. This is the ONLY transport for the complete
+    /// schemaVersion-3 card list; the snapshot/refresh projections carry
+    /// metadata only. Cards remain individually whole and every entry is
+    /// reachable through the opaque catalog/query-bound `nextPageToken`.
+    public func curatedCards(pageToken: String? = nil) async throws -> sending [String: Any] {
+        try await curatedCardPage(query: "", pageToken: pageToken, normalized: "")
+    }
+
+    /// Local substring search over the verified feed's id, tags, bilingual
+    /// name/description and category. The feed is source-backed; no client
+    /// list of four ids exists here. Search results use the same bounded page
+    /// contract as the full-catalog chain.
+    public func curatedSearch(query: String, pageToken: String? = nil) async throws -> sending [String: Any] {
+        let needle = try C02CuratedSearchPage.normalizedQuery(query)
+        return try await curatedCardPage(query: query, pageToken: pageToken,
+                                         normalized: needle)
+    }
+
+    private func curatedCardPage(query: String, pageToken: String?,
+                                 normalized needle: String) async throws -> sending [String: Any] {
+        _ = try requireBinding()
+        guard let cache = curatedCatalogCache else {
+            throw ConfigDomainError(code: .needsConfiguration,
+                                    reason: "curatedCatalogRefreshRequired")
+        }
+        let rows = try await store.all()
+        let rollbackIDs = Self.completedUpgradeJournalSkillIDs(installationRoot: installationRoot)
+        let appVersion = Self.validatedAppVersion(hostContext.appVersion())
+        let cards = curatedCards(feed: cache.publication.feed, rows: rows,
+                                 rollbackIDs: rollbackIDs, appVersion: appVersion,
+                                 preferredLanguages: Locale.preferredLanguages)
+            .filter { card in
+                guard !needle.isEmpty else { return true }
+                let search = (card["searchText"] as? String) ?? ""
+                return search.contains(needle)
+            }
+            .map { card -> [String: Any] in
+                var visible = card
+                visible.removeValue(forKey: "searchText")
+                return visible
+            }
+        let page = try C02CuratedSearchPage.make(
+            cards: cards, query: query,
+            catalogSHA256: cache.publication.verifiedFeed.catalogSHA256,
+            pageToken: pageToken)
+        guard let encoded = ConfigJSON.canonicalData(page) else {
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "invalidCuratedProjection")
+        }
+        return try Self.transferredJSON(encoded)
+    }
+
+    // MARK: Curated install / upgrade routing
+
+    /// New install or upgrade review for a schemaVersion-3 package. Every
+    /// signature, archive digest, review join, size, path, version and
+    /// platform gate is the ORIGINAL `CuratedSkillHub` gate; this method only
+    /// supplies the real app compatibility version and the existing staging
+    /// funnel.
+    private func installCurated(skillID: String, revision: ConfigRevision?,
+                                createIntent: Bool) async throws -> SkillsReviewProjection {
+        let binding = try requireBinding()
+        guard let appVersion = Self.validatedAppVersion(hostContext.appVersion()) else {
+            throw SkillsDomainRefusal.appVersionUnbound
+        }
+        guard let cache = curatedCatalogCache else {
+            throw ConfigDomainError(code: .needsConfiguration,
+                                    reason: "curatedCatalogRefreshRequired")
+        }
+        guard let entry = cache.publication.feed.entry(id: skillID) else {
+            throw ConfigDomainError(code: .notFound, reason: "curatedEntryUnknown")
+        }
+        let rows = try await store.all()
+        let existing = rows.first { $0.id == skillID }
+        try Self.checkRevision(existing: existing, revision: revision,
+                               createIntent: createIntent, skillID: skillID)
+        if let existing {
+            try Self.rejectVersionRegression(oldVersion: existing.version,
+                                             newVersion: entry.version)
+        }
+        guard inflightSkills.insert(skillID).inserted else {
+            throw ConfigDomainError(code: .duplicateInFlight, reason: "skillOperationActive")
+        }
+        defer { inflightSkills.remove(skillID) }
+
+        let stagingRoot = try makeStagingDirectory(namespace: "curated")
+        let packageRoot = stagingRoot.appendingPathComponent("package")
+        do {
+            let installedSnapshot: SkillContentSnapshot?
+            var effectiveCapabilities: Set<String> = []
+            var effectiveTools: Set<String> = []
+            var effectiveSpecs: Set<String> = []
+            if let existing {
+                installedSnapshot = try SkillContentSnapshot(
+                    root: Self.packageDirectory(installationRoot: installationRoot, id: skillID),
+                    expectedDigest: existing.rewrittenDigest,
+                    manifestOverride: Self.sidecarManifest(for: existing))
+                effectiveCapabilities = try await store.allowedCapabilities(skillID: skillID)
+                if let manifest = Self.sidecarManifest(for: existing) {
+                    effectiveTools = Set(manifest.tools)
+                    effectiveSpecs = Set(manifest.pythonPackages.map { $0.spec.lowercased() })
+                }
+            } else {
+                installedSnapshot = nil
+            }
+            let staged = try await CuratedSkillHub.stage(
+                cache.publication,
+                entryID: skillID,
+                appVersion: appVersion,
+                at: packageRoot,
+                effectiveCapabilities: effectiveCapabilities,
+                effectiveTools: effectiveTools,
+                effectivePythonPackageSpecs: effectiveSpecs,
+                fetch: { [transport] source, commit, path in
+                    try await transport.fetch(source, commit: commit, path: path)
+                })
+            try requireCompatibility(staged.content.package)
+            let token = FacadeCapabilityToken.make(namespace: FacadeCapabilityToken.effectPrefix)
+            if let existing, let installedSnapshot {
+                let candidate = try staged.upgradeCandidate(installed: installedSnapshot)
+                registerUpgradeReview(token: token, candidate: candidate,
+                                      stagingRoot: stagingRoot, binding: binding,
+                                      curatedEnvelope: Self.curatedEnvelope(from: staged))
+                if await autoScriptedUpdatesEnabled(),
+                   candidate.addedCapabilities.isEmpty,
+                   candidate.addedTools.isEmpty,
+                   staged.permissionDelta.isCoveredByEffectiveGrants {
+                    _ = try await upgradeApply(reviewToken: token, effectToken: nil,
+                                               revision: nil)
+                    return SkillsReviewProjection(
+                        token: token, skillID: skillID,
+                        version: candidate.snapshot.package.manifest.version,
+                        committed: true,
+                        changedFiles: candidate.changedFiles,
+                        addedCapabilities: [], addedTools: [],
+                        releaseNotes: candidate.releaseNotes)
+                }
+                return Self.project(candidate: candidate, token: token)
+            }
+            registerInstallReview(
+                token: token, packageDirectory: packageRoot,
+                canonicalSHA256: staged.content.package.canonicalSHA256,
+                sourceURL: Self.curatedSourceURL(publication: cache.publication, entry: entry),
+                sourceDigest: entry.package?.sha256,
+                rewriteModelID: "curated-hub",
+                manifestOverride: nil,
+                binding: binding,
+                curatedEnvelope: Self.curatedEnvelope(from: staged))
+            return SkillsReviewProjection(
+                token: token, skillID: skillID, version: entry.version,
+                committed: false,
+                changedFiles: staged.content.package.files.map(\.relativePath).sorted(),
+                addedCapabilities: staged.content.package.manifest.capabilities,
+                addedTools: staged.content.package.manifest.tools,
+                releaseNotes: [:])
+        } catch {
+            cleanup(stagingRoot)
+            throw Self.mapSkillError(error)
+        }
+    }
+
+    /// The full-catalog metadata projection. The legacy `catalog` object is
+    /// untouched; this object is additive and can be ignored by old clients.
+    ///
+    /// Cards are intentionally NOT embedded here. A full schemaVersion-3 feed
+    /// can be much larger than one bridge frame, and the ordinary installed-row
+    /// snapshot already consumes most of its 48 KiB page budget. The verified
+    /// card list is projected through the separately bounded
+    /// `curated.cards` / `curated.search` page chain; `cardsPaged` makes that
+    /// explicit instead of silently hiding entries. `cardCount` is the real
+    /// feed count and `installableCount` is computed from the same signed
+    /// offer gate without materializing card dictionaries.
+    private func curatedProjection() -> sending [String: Any] {
+        guard let cache = curatedCatalogCache else {
+            if let fallback = curatedFailureFallback {
+                return ["state": "failed",
+                        "lastFailure": fallback.reason,
+                        "retryAfter": Self.iso8601String(from: fallback.retryAfter),
+                        "cards": [], "cardsPaged": true, "cardCount": 0]
+            }
+            return ["state": "unavailable",
+                    "cards": [], "cardsPaged": true, "cardCount": 0]
+        }
+        let appVersion = Self.validatedAppVersion(hostContext.appVersion())
+        let feed = cache.publication.feed
+        var installable = 0
+        if let appVersion {
+            for entry in feed.entries {
+                if case .installable = CuratedSkillHub.offerState(
+                    for: entry, mode: .production, appVersion: appVersion) {
+                    installable += 1
+                }
+            }
+        }
+        var projection: [String: Any] = [
+            "state": cache.lastFailure != nil ? "staleCached" : "ready",
+            "checkedAt": Self.iso8601String(from: cache.checkedAt),
+            "source": CuratedSkillHub.hubRepository,
+            "channel": feed.channel.rawValue,
+            "feedSchemaVersion": feed.schemaVersion,
+            "feedStatus": feed.feedStatus.rawValue,
+            "publicationCommit": cache.publication.publicationCommit,
+            "feedSignatureKeyID": cache.publication.verifiedFeed.keyID,
+            "catalogSHA256": cache.publication.verifiedFeed.catalogSHA256,
+            "catalogByteCount": cache.publication.verifiedFeed.byteCount,
+            "counts": [
+                "total": feed.counts.total, "builtin": feed.counts.builtin,
+                "optional": feed.counts.optional,
+                "deepAdaptation": feed.counts.deepAdaptation,
+                "packaged": feed.counts.packaged,
+                "reviewed": feed.counts.reviewed,
+                "qualified": feed.counts.qualified,
+                "offerQualified": feed.counts.offerQualified,
+            ],
+            "installableCount": installable,
+            "cardCount": feed.entries.count,
+            "cardsPaged": true,
+            "cards": [],
+        ]
+        projection["auditedSourceCommit"] = feed.sourceCommit ?? NSNull()
+        projection["lastFailure"] = cache.lastFailure ?? NSNull()
+        projection["retryAfter"] = cache.retryAfter.map { Self.iso8601String(from: $0) } ?? NSNull()
+        return projection
+    }
+
+    private func curatedCards(feed: CuratedSkillFeed, rows: [PersistedSkill],
+                              rollbackIDs: Set<String>, appVersion: String?,
+                              preferredLanguages: [String]) -> [[String: Any]] {
+        feed.entries.map { entry in
+            let installed = rows.first { $0.id == entry.id }
+            return curatedCard(entry: entry, rows: rows, installed: installed,
+                               rollbackAvailable: rollbackIDs.contains(entry.id),
+                               appVersion: appVersion,
+                               preferredLanguages: preferredLanguages)
+        }
+    }
+
+    private func curatedCard(entry: CuratedSkillEntry, rows: [PersistedSkill],
+                             installed: PersistedSkill?, rollbackAvailable: Bool,
+                             appVersion: String?,
+                             preferredLanguages: [String]) -> [String: Any] {
+        let offer: CuratedSkillHub.OfferState
+        if let appVersion {
+            offer = CuratedSkillHub.offerState(for: entry, mode: .production,
+                                               appVersion: appVersion)
+        } else {
+            offer = .unavailable(reason: "appVersionUnbound")
+        }
+        let offerName: String
+        let offerReason: Any
+        switch offer {
+        case .installable:
+            offerName = "installable"; offerReason = NSNull()
+        case .simulatedFixture:
+            offerName = "simulatedFixture"; offerReason = "fixture-only offer"
+        case .incompatibleApp(let minimum):
+            offerName = "incompatible"
+            offerReason = "minimumAppVersion \(minimum)"
+        case .unavailable(let reason):
+            offerName = "unavailable"; offerReason = reason
+        }
+        let updateAvailable: Bool
+        if let installed, let old = try? SignedContentVersion(installed.version),
+           let new = try? SignedContentVersion(entry.version) {
+            updateAvailable = old < new
+        } else {
+            updateAvailable = false
+        }
+        let searchText = [
+            entry.id, entry.category.rawValue, entry.name.en, entry.name.zhHans,
+            entry.description.en, entry.description.zhHans,
+            entry.tags.joined(separator: " "),
+        ].joined(separator: " ").lowercased()
+        return [
+            "id": entry.id,
+            "version": entry.version,
+            "name": ["en": entry.name.en, "zh-Hans": entry.name.zhHans],
+            "description": ["en": entry.description.en, "zh-Hans": entry.description.zhHans],
+            "category": entry.category.rawValue,
+            "tags": entry.tags,
+            "kind": entry.kind.rawValue,
+            "source": entry.source.rawValue,
+            "planNumber": entry.planNumber,
+            "deepAdaptation": entry.deepAdaptation,
+            "minimumAppVersion": entry.minimumAppVersion ?? NSNull(),
+            "installPlatforms": entry.runtime.installPlatforms.map(\.rawValue),
+            "scriptRuntime": entry.runtime.scriptRuntime.rawValue,
+            "execution": ["os": entry.runtime.execution.os as Any? ?? NSNull(),
+                          "arch": entry.runtime.execution.arch as Any? ?? NSNull(),
+                          "evidence": entry.runtime.execution.evidence.rawValue],
+            "containsScripts": entry.package?.containsScripts ?? false,
+            "offer": offerName,
+            "offerReason": offerReason,
+            "installed": !(installed == nil),
+            "installedVersion": installed?.version ?? NSNull(),
+            "installedEnabled": installed.map { $0.status == "enabled" } ?? false,
+            "updateAvailable": updateAvailable,
+            "rollbackAvailable": rollbackAvailable,
+            "searchText": searchText,
+        ]
+    }
+
+    private func curatedEntryProjection(_ entry: CuratedSkillEntry,
+                                        preferredLanguages: [String]) -> [String: Any] {
+        var object: [String: Any] = [
+            "id": entry.id, "version": entry.version,
+            "planNumber": entry.planNumber, "kind": entry.kind.rawValue,
+            "source": entry.source.rawValue,
+            "name": ["en": entry.name.en, "zh-Hans": entry.name.zhHans],
+            "description": ["en": entry.description.en, "zh-Hans": entry.description.zhHans],
+            "notes": ["en": entry.notes.en, "zh-Hans": entry.notes.zhHans],
+            "category": entry.category.rawValue,
+            "tags": entry.tags,
+            "deepAdaptation": entry.deepAdaptation,
+            "minimumAppVersion": entry.minimumAppVersion ?? NSNull(),
+            "installOffer": entry.installOffer.rawValue,
+            "runtime": [
+                "scriptRuntime": entry.runtime.scriptRuntime.rawValue,
+                "capabilities": entry.runtime.capabilities,
+                "tools": entry.runtime.tools,
+                "installPlatforms": entry.runtime.installPlatforms.map(\.rawValue),
+                "pythonPackagesPlan": entry.runtime.pythonPackagesPlan,
+                "execution": ["os": entry.runtime.execution.os as Any? ?? NSNull(),
+                              "arch": entry.runtime.execution.arch as Any? ?? NSNull(),
+                              "evidence": entry.runtime.execution.evidence.rawValue],
+            ],
+            "status": [
+                "sourcePinned": entry.status.sourcePinned,
+                "licenseChecked": entry.status.licenseChecked,
+                "adaptation": entry.status.adaptation.rawValue,
+                "packaged": entry.status.packaged,
+                "reviewed": entry.status.reviewed,
+                "qualified": entry.status.qualified,
+                "published": entry.status.published,
+                "executionVerified": entry.status.executionVerified,
+            ],
+        ]
+        if let package = entry.package {
+            object["package"] = [
+                "path": package.path, "size": package.size,
+                "sha256": package.sha256,
+                "contentDigest": package.contentDigest,
+                "containsScripts": package.containsScripts,
+            ]
+        } else {
+            object["package"] = NSNull()
+        }
+        if let review = entry.review {
+            object["review"] = ["path": review.path, "sha256": review.sha256,
+                                "keyID": review.keyID]
+        } else {
+            object["review"] = NSNull()
+        }
+        _ = preferredLanguages
+        return object
+    }
+
+    /// Installed-package dependency declaration facts only. This is not a
+    /// readiness claim: real verification requires a selected task
+    /// environment and the approved skill invocation.
+    private func dependencyDeclarationSummary(skillID: String,
+                                              row: PersistedSkill) -> [String: Any] {
+        let packageRoot = Self.packageDirectory(installationRoot: installationRoot, id: skillID)
+        let declarationURL = packageRoot.appendingPathComponent(SkillDependency.packagePath)
+        guard let data = try? Data(contentsOf: declarationURL, options: [.mappedIfSafe]),
+              data.count <= SkillDependency.maximumDeclarationBytes,
+              let declaration = try? SkillDependency.decode(data) else {
+            return ["state": "notDeclared"]
+        }
+        // The runtime-component requirement carries no name/version in its
+        // own bytes: both come from the strictly decoded pinned descriptor.
+        // Expose the descriptor facts here so the detail sheet can show a
+        // precise supply/target state instead of an empty dependency row.
+        var runtimeComponents: [[String: Any]] = []
+        for profile in declaration.profiles {
+            for requirement in profile.requirements where requirement.kind == .runtimeComponent {
+                guard let path = requirement.componentDescriptorPath else { continue }
+                let descriptorURL = packageRoot.appendingPathComponent(path)
+                guard let descriptorData = try? Data(contentsOf: descriptorURL,
+                                                     options: [.mappedIfSafe]),
+                      descriptorData.count <= SkillRuntimeDependency.maximumDescriptorBytes,
+                      let descriptor = try? SkillRuntimeDependency.decode(descriptorData) else {
+                    continue
+                }
+                let appVersion = C02AndroidSkillCompatibility.version
+                let versionMet = SkillRuntimeDependency.isCompatible(
+                    minimumAppVersion: descriptor.minimumAppVersion,
+                    appVersion: appVersion)
+                let targetIsAppLocalRiscV = descriptor.target.os == "linux"
+                    && descriptor.target.arch == "riscv64"
+                    && descriptor.target.triple == SkillRuntimeDependency.frozenTargetTriple
+                runtimeComponents.append([
+                    "componentID": descriptor.componentID,
+                    "componentVersion": descriptor.componentVersion,
+                    "minimumAppVersion": descriptor.minimumAppVersion,
+                    "targetOS": descriptor.target.os,
+                    "targetArch": descriptor.target.arch,
+                    "targetTriple": descriptor.target.triple,
+                    "targetFormat": descriptor.target.format,
+                    "artifactSize": descriptor.artifact.size,
+                    "artifactSHA256": descriptor.artifact.sha256,
+                    "clientVersionMet": versionMet,
+                    "classification": targetIsAppLocalRiscV
+                        ? "appLocalRiscVGuestArtifact"
+                        : "taskLinuxCandidate",
+                    "androidSupply": targetIsAppLocalRiscV
+                        ? (versionMet ? "requiresRiscVTaskLinux" : "clientVersionFloorNotMet")
+                        : "requiresTaskEnvironmentComparison",
+                    "reason": targetIsAppLocalRiscV
+                        ? (versionMet
+                            ? "the signed component targets the app-local RISC-V Linux guest; it can run only where the selected task Linux is RISC-V"
+                            : "the signed component's minimum app version is above the Android client compatibility version; this is a supply/version fact, not a missing device capability")
+                        : "the signed component targets a Linux architecture; preparation compares it with the actual selected task Linux before any download",
+                ])
+            }
+        }
+        let component = runtimeComponents.first
+        let profiles: [[String: Any]] = declaration.profiles.map { profile in
+            ["id": profile.id, "os": profile.os,
+             "architectures": profile.architectures,
+             "requirements": profile.requirements.map { requirement -> [String: Any] in
+                 let isComponent = requirement.kind == .runtimeComponent
+                 let name: String = isComponent
+                    ? (component?["componentID"] as? String ?? "runtimeComponent")
+                    : requirement.name
+                 let version: Any
+                 if let pinned = requirement.version {
+                     version = pinned
+                 } else if isComponent,
+                           let componentVersion = component?["componentVersion"] as? String {
+                     version = componentVersion
+                 } else {
+                     version = NSNull()
+                 }
+                 return ["kind": requirement.kind.rawValue, "name": name,
+                         "version": version,
+                         "required": requirement.required,
+                         "purpose": requirement.purpose]
+             }]
+        }
+        return [
+            "state": "declared",
+            "schemaVersion": declaration.schemaVersion,
+            "declarationSHA256": FloeDigest.sha256Hex(data),
+            "profiles": profiles,
+            "runtimeComponents": runtimeComponents,
+            "readiness": [
+                "state": "taskRequired",
+                "reason": "dependency verification runs inside the approved skill invocation in a selected task Linux environment",
+            ],
+            "packageDigest": row.rewrittenDigest,
+        ]
+    }
+
+    private func recordCuratedCatalogFailure(reason: String, now: Date) {
+        let prior = curatedCatalogCache?.retryAfter.map { max(0, $0.timeIntervalSinceNow) } ?? 0
+        let interval = min(24 * 60 * 60, 15 * 60 + prior)
+        if let cache = curatedCatalogCache {
+            curatedCatalogCache = SkillsCuratedCatalogCache(
+                publication: cache.publication, checkedAt: cache.checkedAt,
+                lastFailure: reason, retryAfter: now.addingTimeInterval(interval))
+        } else {
+            // No signed feed is retained. The object is a failed state, not an
+            // empty catalog.
+            curatedCatalogCache = nil
+            curatedFailureFallback = (reason, now.addingTimeInterval(interval))
+        }
+    }
+
+    /// A failed first load has no publication to cache, but the projection
+    /// still needs the honest failure/backoff window. Kept separately so no
+    /// fake `CuratedSkillFeed` is constructed.
+    private var curatedFailureFallback: (reason: String, retryAfter: Date)?
+
+    private static func curatedFailureReason(_ error: Error) -> String {
+        if let refusal = error as? SkillsDomainRefusal {
+            return safe(refusal)
+        }
+        if let failure = error as? CuratedSkillHubFailure {
+            switch failure {
+            case .unavailable: return "supplyUnavailable"
+            case .signature: return "signature"
+            case .feed: return "feed"
+            case .offer: return "offer"
+            case .compatibility: return "compatibility"
+            case .archive: return "archive"
+            case .digest: return "digest"
+            case .review: return "review"
+            case .immutableVersion: return "immutableVersion"
+            case .source: return "source"
+            case .trust: return "trust"
+            }
+        }
+        return redacted(error)
+    }
+
+    private static func curatedEnvelope(
+        from staged: CuratedSkillHub.StagedSkill
+    ) -> C02CuratedReceiptEnvelope {
+        C02CuratedReceiptEnvelope(
+            catalogBytes: staged.catalogBytes,
+            catalogSignature: staged.catalogSignature,
+            reviewBytes: staged.reviewBytes,
+            reviewSignature: staged.reviewSignature,
+            publicationCommit: staged.receipt.publicationCommit)
+    }
+
+    private static func curatedSourceURL(publication: CuratedSkillHub.Publication,
+                                         entry: CuratedSkillEntry) -> String {
+        let path = entry.package?.path ?? "android/packages/\(entry.id)/\(entry.version)/\(entry.id).zip"
+        return "https://github.com/\(CuratedSkillHub.owner)/\(CuratedSkillHub.repository)"
+            + "/blob/\(publication.publicationCommit)/\(path)"
+    }
+
     // MARK: skills.install — official hub (new install review or upgrade review)
 
     public func installOfficial(skillID: String, revision: ConfigRevision?,
                                 createIntent: Bool) async throws -> SkillsReviewProjection {
         let binding = try requireBinding()
         guard OfficialSkillHub.skillIDs.contains(skillID) else {
-            throw ConfigDomainError(code: .notFound, reason: "officialSkillUnknown")
+            // The same frozen command serves the legacy four-item catalog
+            // and the schemaVersion-3 full channel. Unknown ids are refused
+            // inside the curated path after checking the verified feed.
+            return try await installCurated(skillID: skillID, revision: revision,
+                                            createIntent: createIntent)
         }
         guard let appVersion = Self.validatedAppVersion(hostContext.appVersion()) else {
             throw SkillsDomainRefusal.appVersionUnbound
@@ -859,6 +1582,13 @@ public actor SkillsDomain {
         guard let cache = catalogCache, !cache.commit.isEmpty,
               let entry = cache.entries.first(where: { $0.id == skillID }) else {
             throw ConfigDomainError(code: .needsConfiguration, reason: "catalogRefreshRequired")
+        }
+        guard entry.compatible else {
+            // The signed entry is retained and visible, but this client is
+            // below its minimum app version. Never change the version or
+            // claim availability.
+            throw ConfigDomainError(code: .needsConfiguration,
+                                    reason: "appVersionBelowCatalogMinimum")
         }
         if let existing {
             try Self.rejectVersionRegression(oldVersion: existing.version,
@@ -969,10 +1699,20 @@ public actor SkillsDomain {
                 rewriteModelID: rewriteModelID,
                 manifestOverride: manifestOverride,
                 replaceExisting: false, verifiedUpgrade: nil)
+            var curatedReceiptPersisted = true
+            if let envelope = reviewCuratedEnvelopes[token] {
+                curatedReceiptPersisted = (try? curatedReceipts.persist(
+                    envelope, skillID: record.skillID,
+                    contentDigest: record.canonicalSHA256)) ?? false
+                if curatedReceiptPersisted {
+                    invalidateVerifiedCurated(skillID: record.skillID)
+                }
+            }
             retireReview(token)
             return ["state": "installed", "skillID": record.skillID,
                     "version": record.version,
                     "digest": record.canonicalSHA256,
+                    "curatedReceiptPersisted": curatedReceiptPersisted,
                     "revision": ["resourceID": "skill.\(record.skillID)",
                                  "version": record.canonicalSHA256]]
         case .upgrade:
@@ -1076,6 +1816,8 @@ public actor SkillsDomain {
         for token in Array(reviews.keys) where reviews[token]?.skillID == skillID {
             retireReview(token)
         }
+        curatedReceipts.remove(skillID: skillID)
+        invalidateVerifiedCurated(skillID: skillID)
         return ["state": "removed", "skillID": skillID,
                 "recoveryAvailable": exists,
                 "recoveryToken": backupToken ?? NSNull(),
@@ -1446,11 +2188,14 @@ public actor SkillsDomain {
             root: Self.packageDirectory(installationRoot: installationRoot, id: skillID),
             expectedDigest: row.rewrittenDigest,
             manifestOverride: Self.sidecarManifest(for: row))
+        let looksCurated = row.rewriteModelID == "curated-hub"
+            || (row.sourceURL?.contains("floe-skill-hub") == true)
         let reviewToken = FacadeCapabilityToken.make(namespace: FacadeCapabilityToken.effectPrefix)
         let stagingRoot = try makeStagingDirectory(namespace: "upgrade")
         let packageRoot = stagingRoot.appendingPathComponent("package")
         do {
             let candidate: SkillUpgradeCandidate
+            var curatedEnvelope: C02CuratedReceiptEnvelope?
             if OfficialSkillHub.skillIDs.contains(skillID) {
                 candidate = try await OfficialSkillHub.stage(
                     id: skillID, appVersion: appVersion, installed: installed,
@@ -1459,6 +2204,38 @@ public actor SkillsDomain {
                     fetch: { [transport] source, commit, path in
                         try await transport.fetch(source, commit: commit, path: path)
                     })
+            } else if let receipt = verifiedCuratedReceipt(
+                for: row, snapshot: installed) {
+                guard receipt.channel == .android else {
+                    throw CuratedSkillHubFailure.source(
+                        "the installed curated skill belongs to another store channel")
+                }
+                let publication = try await CuratedSkillHub.loadPublication(
+                    channel: receipt.channel, mode: .production, ref: "main",
+                    resolve: { [transport] source in
+                        try await transport.resolveCommit(source)
+                    },
+                    fetch: { [transport] source, commit, path in
+                        try await transport.fetch(source, commit: commit, path: path)
+                    })
+                let manifest = Self.sidecarManifest(for: row)
+                let staged = try await CuratedSkillHub.stage(
+                    publication, entryID: skillID, appVersion: appVersion,
+                    at: packageRoot,
+                    effectiveCapabilities: try await store.allowedCapabilities(skillID: skillID),
+                    effectiveTools: Set(manifest?.tools ?? []),
+                    effectivePythonPackageSpecs: Set(
+                        (manifest?.pythonPackages ?? []).map { $0.spec.lowercased() }),
+                    fetch: { [transport] source, commit, path in
+                        try await transport.fetch(source, commit: commit, path: path)
+                    })
+                try requireCompatibility(staged.content.package)
+                candidate = try staged.upgradeCandidate(installed: installed)
+                curatedEnvelope = Self.curatedEnvelope(from: staged)
+            } else if looksCurated {
+                throw ConfigDomainError(
+                    code: .needsConfiguration,
+                    reason: "curatedReceiptVerificationFailed")
             } else {
                 guard let source else {
                     throw ConfigDomainError(code: .notFound, reason: "upgradeSourceMissing")
@@ -1474,7 +2251,8 @@ public actor SkillsDomain {
                 try requireCompatibility(candidate.snapshot.package)
             }
             registerUpgradeReview(token: reviewToken, candidate: candidate,
-                                  stagingRoot: stagingRoot, binding: binding)
+                                  stagingRoot: stagingRoot, binding: binding,
+                                  curatedEnvelope: curatedEnvelope)
             return Self.project(candidate: candidate, token: reviewToken)
         } catch {
             cleanup(stagingRoot)
@@ -1550,6 +2328,20 @@ public actor SkillsDomain {
             _ = try SkillContentSnapshot(
                 root: Self.packageDirectory(installationRoot: installationRoot, id: skillID),
                 expectedDigest: record.canonicalSHA256)
+            // A curated upgrade is not dependency-authorized until the new
+            // receipt is durably written. If that write fails, the journal
+            // restoration below puts the previous version back instead of
+            // leaving a package with stale authority.
+            if let envelope = reviewCuratedEnvelopes[reviewToken] {
+                let persisted = (try? curatedReceipts.persist(
+                    envelope, skillID: record.skillID,
+                    contentDigest: record.canonicalSHA256)) ?? false
+                guard persisted else {
+                    throw ConfigDomainError(code: .persistenceUnavailable,
+                                            reason: "curatedReceipt")
+                }
+                invalidateVerifiedCurated(skillID: record.skillID)
+            }
             journal.phase = "complete"
             try Self.canonicalData(try journal.jsonObject())
                 .write(to: journalDirectory.appendingPathComponent("transaction.json"),
@@ -1651,6 +2443,8 @@ public actor SkillsDomain {
             throw ConfigDomainError(code: .persistenceUnavailable, reason: "rollbackApply")
         }
         mutated.phase = "rolledBack"
+        curatedReceipts.restoreCurrent(skillID: skillID,
+                                       contentDigest: mutated.oldSkill.rewrittenDigest)
         try? Self.canonicalData(try mutated.jsonObject())
             .write(to: journalDirectory.appendingPathComponent("transaction.json"),
                    options: .atomic)
@@ -1717,6 +2511,13 @@ public actor SkillsDomain {
                                  grantCapabilities: journal.oldGrants,
                                  replaceGrants: true,
                                  restoringPermissions: journal.oldPermissions)
+            // Restore the receipt that belongs to the version the journal is
+            // putting back. This also covers startup recovery; a missing
+            // sidecar removes `current` instead of leaving stale authority.
+            curatedReceipts.restoreCurrent(
+                skillID: journal.oldSkill.id,
+                contentDigest: journal.oldSkill.rewrittenDigest)
+            invalidateVerifiedCurated(skillID: journal.oldSkill.id)
         } catch {
             // Never leave the skill without bytes: restore the quarantine
             // (original :727 file-restore pattern) before rethrowing.
@@ -1831,6 +2632,36 @@ public actor SkillsDomain {
                                       preapprovedPythonPackages: [])
     }
 
+    // MARK: - Official dependency preparation (C02)
+
+    /// Called ONLY from the already approved skill-scoped `exec.shell`
+    /// invocation. The context carries the real run, conversation, selected
+    /// environment and approval grant; this method never mints or reuses a
+    /// synthetic grant and never falls back to a host interpreter.
+    public func prepareSkillDependencies(
+        skillID: String, context: ToolContext
+    ) async -> C02DependencyPreparationOutcome {
+        await dependencyPreparation.prepare(skillID: skillID, context: context)
+    }
+
+    /// Previously verified readiness for the exact same package/declaration/
+    /// environment/target/generation tuple. Nil means no receipt exists; it
+    /// never means "ready".
+    public func skillDependencyReadiness(
+        skillID: String, context: ToolContext
+    ) async -> C02DependencyPreparationOutcome? {
+        await dependencyPreparation.cachedReadiness(skillID: skillID, context: context)
+    }
+
+    /// The installed curated receipt for UI/provenance reads. It proves the
+    /// package came through the verified production feed; it grants nothing.
+    public func curatedReceipt(skillID: String) async -> CuratedSkillHub.Receipt? {
+        guard let row = (try? await store.all())?.first(where: { $0.id == skillID }) else {
+            return nil
+        }
+        return verifiedCuratedReceipt(for: row)
+    }
+
     // MARK: - Funnel + staging internals
 
     /// THE install funnel — a narrow composition of the ORIGINAL pieces
@@ -1859,8 +2690,9 @@ public actor SkillsDomain {
                                     reason: "reservedIDReplaceRequiresVerifiedUpgrade")
         }
         try requireCompatibility(package)
-        let compatibility = try Self.compatibilityJSON(package,
-                                                       registered: registry.allDescriptors)
+        let compatibility = try Self.compatibilityJSON(
+            package, registered: registry.allDescriptors,
+            environment: androidRuntimeEnvironment())
         let markdownText = Self.text(at: stagedPackageDirectory
             .appendingPathComponent("SKILL.md"), fileManager: fileManager)
         let now = Date()
@@ -1916,7 +2748,8 @@ public actor SkillsDomain {
                                        canonicalSHA256: String, sourceURL: String,
                                        sourceDigest: String?, rewriteModelID: String,
                                        manifestOverride: SkillManifest?,
-                                       binding: FacadeRootGeneration) {
+                                       binding: FacadeRootGeneration,
+                                       curatedEnvelope: C02CuratedReceiptEnvelope? = nil) {
         guard reviews.count < SkillsMcpLimits.maximumLiveReviews else {
             cleanup(packageDirectory.deletingLastPathComponent())
             return
@@ -1930,18 +2763,22 @@ public actor SkillsDomain {
                            sourceURL: sourceURL, sourceDigest: sourceDigest,
                            rewriteModelID: rewriteModelID,
                            manifestOverride: manifestOverride))
+        if let curatedEnvelope { reviewCuratedEnvelopes[token] = curatedEnvelope }
     }
 
     private func registerUpgradeReview(token: String, candidate: SkillUpgradeCandidate,
-                                       stagingRoot: URL, binding: FacadeRootGeneration) {
+                                       stagingRoot: URL, binding: FacadeRootGeneration,
+                                       curatedEnvelope: C02CuratedReceiptEnvelope? = nil) {
         guard reviews.count < SkillsMcpLimits.maximumLiveReviews else { return }
         reviews[token] = SkillsReview(
             token: token, skillID: candidate.snapshot.package.manifest.id,
             createdAtEpoch: binding.epoch,
             kind: .upgrade(candidate: candidate, stagingRoot: stagingRoot))
+        if let curatedEnvelope { reviewCuratedEnvelopes[token] = curatedEnvelope }
     }
 
     private func retireReview(_ token: String) {
+        reviewCuratedEnvelopes.removeValue(forKey: token)
         guard let review = reviews.removeValue(forKey: token) else { return }
         switch review.kind {
         case .install(let packageURL, _, _, _, _, _):
@@ -2002,6 +2839,7 @@ public actor SkillsDomain {
                 "size": entry.size, "sha256": entry.sha256,
                 "contentDigest": entry.contentDigest,
                 "minimumAppVersion": entry.minimumAppVersion,
+                "compatible": entry.compatible,
                 "releaseNotes": entry.releaseNotes,
             ] as [String: Any]
         }
@@ -2044,13 +2882,18 @@ public actor SkillsDomain {
     }
 
     private func androidRuntimeEnvironment() -> SkillRuntimeEnvironment {
+        // Explicit Android HOST platform. A package must declare `android`
+        // or `linux`; iOS-only packages are never widened. Script packages
+        // also need the ACTUAL live task Linux runtime — the readiness gate
+        // comes from the existing qualified shell binding, not the OS name.
         SkillRuntimeEnvironment(
-            platform: .linux,
+            platform: .android,
             supportedCapabilities: [.workspaceRead, .workspaceWrite, .workspaceDelete,
                                     .network, .browserObserve, .browserInteract],
             registeredTools: Set(registry.allDescriptors.map(\.name)),
             supportsJavaScriptCore: false,
-            hasRemoteExecutionHost: false)
+            hasRemoteExecutionHost: false,
+            hasQualifiedTaskLinuxRuntime: RuntimeFacadeLinuxBindings.shared.isCapabilityQualified)
     }
 
     // MARK: static helpers (pure; reused by the authored tests)
@@ -2087,19 +2930,21 @@ public actor SkillsDomain {
     }
 
     static func compatibilityJSON(_ package: ValidatedSkillPackage,
-                                  registered: [ToolCatalog.Descriptor]) throws -> String {
-        let environment = SkillRuntimeEnvironment(
-            platform: .linux,
-            supportedCapabilities: [.workspaceRead, .workspaceWrite, .workspaceDelete,
-                                    .network, .browserObserve, .browserInteract],
-            registeredTools: Set(registered.map(\.name)),
-            supportsJavaScriptCore: false,
-            hasRemoteExecutionHost: false)
+                                  registered: [ToolCatalog.Descriptor],
+                                  environment: SkillRuntimeEnvironment) throws -> String {
         let report = SkillCompatibility.evaluate(package, in: environment)
         let problems = report.problems.map { problem -> [String: String] in
             ["kind": safe(problem)]
         }
-        return try canonicalString(["isRunnable": report.isRunnable, "problems": problems])
+        let runtimeProblems = report.runtimeProblems.map { problem -> [String: String] in
+            ["kind": safe(problem)]
+        }
+        return try canonicalString([
+            "isRunnable": report.isRunnable,
+            "problems": problems,
+            "isRuntimeReady": report.isRuntimeReady,
+            "runtimeProblems": runtimeProblems,
+        ])
     }
 
     /// The ORIGINAL revision gate for skill.<id> mutations. New identity ⇒
@@ -2331,8 +3176,28 @@ public actor SkillsDomain {
         if error is SkillValidationError {
             return ConfigDomainError(code: .invalidEnvelope, reason: "package.\(safe(error))")
         }
+        if let failure = error as? OfficialSkillHub.Failure, failure == .incompatible {
+            return ConfigDomainError(code: .needsConfiguration,
+                                     reason: "appVersionBelowCatalogMinimum")
+        }
         if error is OfficialSkillHub.Failure || error is SignedContentFailure {
             return ConfigDomainError(code: .invalidEnvelope, reason: "hub.\(safe(error))")
+        }
+        if let failure = error as? CuratedSkillHubFailure {
+            switch failure {
+            case .unavailable:
+                return ConfigDomainError(code: .transportUnavailable,
+                                         reason: "curated.supplyUnavailable")
+            case .compatibility:
+                return ConfigDomainError(code: .needsConfiguration,
+                                         reason: "curated.appVersion")
+            case .offer:
+                return ConfigDomainError(code: .needsConfiguration,
+                                         reason: "curated.offerUnavailable")
+            default:
+                return ConfigDomainError(code: .invalidEnvelope,
+                                         reason: "curated.\(safe(failure))")
+            }
         }
         if error is SkillUpgradeError || error is SkillInstallError {
             return ConfigDomainError(code: .invalidEnvelope, reason: "upgrade.\(safe(error))")

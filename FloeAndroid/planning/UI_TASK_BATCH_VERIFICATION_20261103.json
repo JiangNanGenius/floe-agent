@@ -1,0 +1,51 @@
+{
+  "sourceBase": "7e584e5ede04434f6e5693af0f871e391b514d01",
+  "iosReference": "36f63bf400dfaa3a127259eac006b38d72516390",
+  "inputs": {
+    "app/src/main/kotlin/com/floe/android/host/WorkspaceArchiveHostController.kt": "a35708cd2c8096d48865b8016b44d936941ecf288e0d0e1762acffe0c6029948",
+    "app/src/main/kotlin/com/floe/android/WorkspaceArchiveDestination.kt": "dac895a443dd99ce4a3ff9a769eff8798a95e2901ff2a71009c74a246f8cd71e",
+    "app/src/test/kotlin/com/floe/android/host/WorkspaceArchiveHostControllerTest.kt": "8a2cbc24d1c3a766363af509df697f4016534b83ffd55781d8fc4319f9da72f3",
+    "app/src/test/kotlin/com/floe/android/host/WorkspaceArchiveBlockingLifecycleTest.kt": "eb6cfa0efac4c211be5a34b24dfd931c3f3a34bee72b87d3a6792527394a4be4",
+    "app/src/test/kotlin/com/floe/android/host/officeai/OfficeSaveOriginalHostTest.kt": "9cb3c3c2152f842c8dd2c379d471c18d4ac974571e9b4f5a07b4b1fa8b5ad06a",
+    "shared/Sources/FloeAndroidCore/G04WorkspaceArchive.swift": "8c4e92f588daaf84016cedb58b19c7ebb97c280cb31d8778297639bd21330cfa",
+    "shared/Tests/FloeAndroidCoreTests/G04WorkspaceArchiveTests.swift": "ea1d67f4b69bd46d93a349d0a163e1fd74ba02f2887fd59f1614593c133c3bfc",
+    "app/src/main/kotlin/com/floe/android/StorageSettingsDestination.kt": "61f826bb53777a59dc7de2de523969cbc710b11092b070f088ac3d289bfe9283",
+    "app/src/main/kotlin/com/floe/android/host/storage/StorageSettingsHost.kt": "3c2e9790cf6d421896d7a4e71ce6c6f16542d4c5541129cfa3ddf81a955aa651",
+    "app/src/main/kotlin/com/floe/android/FloeApplication.kt": "4efb8393d57e1786b9c52008ee677353eaeddd9949fbae6b57b599654c9214a8",
+    "app/src/main/kotlin/com/floe/android/host/dataexchange/C07DataExchangeFeature.kt": "bc0c718b50c719b876ac421552fe97cc72620fcc7e769b0d33738b552be24a5a",
+    "app/src/main/res/values/storage_strings.xml": "18096baba757b9d09d6dc8efc780e80fffa4aaf44e7e3adbb96f643f6f1c0bca",
+    "app/src/main/res/values-zh-rCN/storage_strings.xml": "fc741732a871cbcc1ba667dc77d47e3478d63c8cc9ea5778d2a3feb323e56a3e",
+    "core/runtimeipc/src/main/java/com/floe/android/runtimeipc/RuntimeWire.kt": "980fbaef3ab1ee4906746c58b0b032d6fa64919ac93fec57df14bdc3f6ed48b3",
+    "core/runtimeipc/src/main/java/com/floe/android/runtimeipc/StorageUsageMeter.kt": "a3383d71e96ac1b2ba3c196e19146f02618386c46775311f997398d56530faf6",
+    "runtimeapp/src/main/java/com/floe/android/runtime/RuntimeKernel.kt": "c23a823efe8c356fc59958d14875fea4524c8a43cdc28e9ea9a190c916d3afbe",
+    "runtimeapp/src/main/java/com/floe/android/runtime/RuntimeStorageOperations.kt": "9356fd245a18e80729a170c771279309b3bf595744708ce453531c3793e5d83a",
+    "core/network/src/main/java/com/floe/android/core/network/AndroidIcmpTraceroute.kt": "8459c7f20e1d0864c0e0fea51231de8e2542049e6171e23f5e9c9b08eb8157cf"
+  },
+  "checks": {
+    "fullPlayAppAndRuntimeReleaseKotlin": "passed",
+    "focusedAppJVM": {
+      "passed": 59,
+      "skipped": 0,
+      "scope": "archive/Office original-save/network wire, including blocking-JNI lifecycle regressions"
+    },
+    "networkComponentJVM": {
+      "passed": 20,
+      "skipped": 0,
+      "scope": "error frame, request and hop grammar"
+    },
+    "networkArm64CMakeAnd16KiB": "passed; actual component exported",
+    "swift6Arm64ReleaseObjects": "passed; not linked into a new shared library",
+    "swiftArchiveRegistryTests": "authored, not executed",
+    "newApk": false,
+    "deviceStorageOrArchiveOrOfficeAcceptance": false,
+    "newCloudCalls": 0,
+    "release": false
+  },
+  "remaining": [
+    "Managed font library is still a confirmed implementation gap",
+    "59 original operations still require source reconciliation; not59 missing features",
+    "Storage destructive cleanup and actual capacity need focused device/behavior qualification",
+    "Native product/JNI link, frozen Full APK and original core acceptance/OTA chains remain"
+  ],
+  "originalFailures": "Preserved original compiler/test failures; retired owner remains non-retryable. Added an actual transport-retry case and refused invalid container decompression rather than weakening permissions."
+}

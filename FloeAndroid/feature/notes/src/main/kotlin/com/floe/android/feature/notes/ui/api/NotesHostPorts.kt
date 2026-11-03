@@ -83,6 +83,13 @@ public data class NotesShareOutcome(
     public val launched: Boolean,
     /** Redacted label only (for example “Files”); never a filesystem path. */
     public val locationLabel: String? = null,
+    /**
+     * Opaque, App-owned read-only content URI for the exact exported bytes.
+     * It is never displayed or persisted; only an explicit reopen/Open action
+     * may pass it back to [NotesExchangePort.openOwnedExport]. Null when the
+     * host's share surface has no owned replay handle.
+     */
+    public val contentUri: String? = null,
 )
 
 public class NotesOpenAttachmentRequest(
@@ -113,6 +120,17 @@ public interface NotesExchangePort {
     /** Share a small text artifact (outline/plain text) through the same surface. */
     public suspend fun shareText(request: NotesShareTextRequest): NotesShareOutcome
 
+    /**
+     * Reopen the exact exported bytes named by [uri] in an existing App-owned
+     * read-only preview consumer. [uri] must be an opaque handle previously
+     * returned in [NotesShareOutcome.contentUri]; hosts reject anything else.
+     * This is a launch/open boundary, not a recipient-consumption claim.
+     */
+    public suspend fun openOwnedExport(uri: String): NotesOpenAttachmentOutcome =
+        NotesOpenAttachmentOutcome.Unavailable(
+            NotesPortFailure(NotesPortFailure.UNSUPPORTED, "openExportUnavailable"),
+        )
+
     /** Open an imported attachment read-only through an existing platform handler. */
     public suspend fun openAttachment(request: NotesOpenAttachmentRequest): NotesOpenAttachmentOutcome
 }
@@ -123,11 +141,18 @@ public data class NotesMediaCapabilities(
     public val pdfRendering: Boolean = false,
     public val pdfThumbnails: Boolean = false,
     public val pdfTextSearch: Boolean = false,
+    /**
+     * Arbitrary page-text selection/copy is available from the device's
+     * observed isolated text backend. A false value is a device/runtime fact,
+     * not a promise that no future build can provide it.
+     */
+    public val pdfTextSelection: Boolean = false,
     public val pdfPasswordUnlock: Boolean = false,
     public val inkAuthoring: Boolean = false,
     public val inkEditablePersistence: Boolean = false,
     public val imageExport: Boolean = false,
     public val pdfExport: Boolean = false,
+    public val docxExport: Boolean = false,
     public val systemPrint: Boolean = false,
 )
 
@@ -170,6 +195,63 @@ public data class NotesPdfSearchHit(
 )
 
 /**
+ * One real page-text region from the isolated PDF text transaction. Bounds are
+ * normalized to the page (top-left origin) because the producer supplies
+ * region/line geometry, not per-glyph boxes; the viewport therefore selects
+ * whole regions while the platform text sheet provides character-level
+ * selection.
+ */
+public data class NotesPdfTextRegion(
+    public val startChar: Int,
+    public val endChar: Int,
+    public val rects: List<NotesNormalizedRect> = emptyList(),
+)
+
+public data class NotesPdfPageText(
+    public val sourceSha256: String,
+    public val sourceByteCount: Long,
+    public val pageIndex: Int,
+    public val pageCount: Int,
+    public val pageWidthPt: Float,
+    public val pageHeightPt: Float,
+    public val text: String,
+    public val regions: List<NotesPdfTextRegion> = emptyList(),
+    public val truncated: Boolean = false,
+    /**
+     * False when the producer's page box did not agree with the session's
+     * proven page box. The text remains usable in the full-text sheet; the
+     * viewport must not place selection boxes.
+     */
+    public val geometryMatches: Boolean = true,
+)
+
+public enum class NotesPdfTextUnavailableReason {
+    NATIVE_TEXT_UNSUPPORTED,
+    ENCRYPTED,
+    PASSWORD_REJECTED,
+    PASSWORD_UNSUPPORTED,
+    SOURCE_CHANGED,
+    CANCELLED,
+    BACKEND_FAILED,
+    PAGE_OUT_OF_RANGE,
+    GEOMETRY_MISMATCH,
+    SESSION_CLOSED,
+}
+
+public sealed interface NotesPdfPageTextOutcome {
+    public data class Ready(public val page: NotesPdfPageText) : NotesPdfPageTextOutcome
+    public data class NoText(
+        public val pageIndex: Int,
+        public val pageCount: Int,
+        public val truncated: Boolean = false,
+    ) : NotesPdfPageTextOutcome
+    public data class Unavailable(
+        public val reason: NotesPdfTextUnavailableReason,
+    ) : NotesPdfPageTextOutcome
+    public data object StaleSource : NotesPdfPageTextOutcome
+}
+
+/**
  * Mirrors the media layer's typed outcome. `NeedsOcr` means the platform text
  * transaction is unavailable on this API/engine and the UI must say so rather
  * than show a false empty result; no in-process parser is opened to fake it.
@@ -200,9 +282,27 @@ public interface NotesPdfHandle {
     public val documentID: String
     public val resourceID: String
     public val pageCount: Int
+
+    /**
+     * Exact verified snapshot identities. Hosts that provide real page text
+     * MUST override both; the empty/zero defaults only keep older fakes
+     * source-compatible and make selection refuse rather than trust a guess.
+     */
+    public val sourceSha256: String get() = ""
+    public val sourceByteCount: Long get() = 0L
+
     public fun pageSize(pageIndex: Int): NotesPdfPageSize?
     public suspend fun renderPage(pageIndex: Int, targetWidthPx: Int): ByteArray
     public suspend fun search(query: String, limit: Int, matchCase: Boolean): NotesPdfSearchOutcome
+
+    /**
+     * Extracts the actual source text of one page for user selection. The
+     * default is a typed refusal: a handle that cannot provide real page text
+     * must never return an empty successful page.
+     */
+    public suspend fun pageText(pageIndex: Int): NotesPdfPageTextOutcome =
+        NotesPdfPageTextOutcome.Unavailable(NotesPdfTextUnavailableReason.NATIVE_TEXT_UNSUPPORTED)
+
     public suspend fun close()
 }
 
@@ -246,6 +346,47 @@ public class NotesPageImageExportRequest(
     public val targetWidthPx: Int,
     public val read: NotesResourceReader,
 )
+
+/**
+ * Localized labels for the generated Word document. The App supplies resource
+ * strings; these defaults keep direct callers/tests deterministic and are the
+ * same meaning in English.
+ */
+public data class NotesDocxLabels(
+    public val pageHeadingFormat: String = "Page %1\$d",
+    public val emptyPage: String = "No text content on this page.",
+    public val imageAltText: String = "Note image",
+    public val pageVisualAltText: String = "Page visual",
+    public val conversionNote: String =
+        "Text is editable. Handwriting, shapes and PDF page visuals are page images; complex layout may differ.",
+)
+
+/**
+ * One real, ordered DOCX export request. [pages] are the exact selected pages
+ * in caller order; the media host must never widen that list to the whole
+ * document. [read] is the existing bounded Notes resource reader used for
+ * image/page-visual composition.
+ */
+public class NotesDocxExportRequest(
+    public val documentID: String,
+    public val title: String,
+    public val pages: List<NotesExportPage>,
+    public val fileName: String,
+    public val labels: NotesDocxLabels = NotesDocxLabels(),
+    /**
+     * Stable 1-based document page numbers parallel to [pages]. Empty keeps
+     * the caller's ordinal (direct callers/tests); the Notes UI passes the
+     * real page numbers so an ordered subset keeps its page identity.
+     */
+    public val pageNumbers: List<Int> = emptyList(),
+    public val read: NotesResourceReader,
+) {
+    init {
+        require(pageNumbers.isEmpty() || pageNumbers.size == pages.size) {
+            "page numbers must match pages"
+        }
+    }
+}
 
 public class NotesExportedStream(
     public val fileName: String,
@@ -350,7 +491,16 @@ public data class NotesPreparedImage(
     public val height: Int,
 )
 
+public data class NotesEngineeringCoverRequest(
+    public val documentID: String,
+    public val resourceID: String,
+    public val fileName: String,
+    public val bytes: ByteArray,
+)
+
 public interface NotesMediaPort {
+    /** Actual offline CAD viewport pixels, or null when rendering fails. */
+    public suspend fun engineeringCover(request: NotesEngineeringCoverRequest): ByteArray? = null
     public fun capabilities(): NotesMediaCapabilities
     /** Bounded image bounds probe; null when the bytes are not a decodable image. */
     public suspend fun probeImage(request: NotesImageProbeRequest): NotesImageInfo?
@@ -359,6 +509,11 @@ public interface NotesMediaPort {
     public suspend fun openPdf(request: NotesPdfOpenRequest): NotesPdfOpenOutcome
     public suspend fun exportPdf(request: NotesPdfExportRequest): NotesExportedStream
     public suspend fun exportPageImage(request: NotesPageImageExportRequest): NotesExportedStream
+    /** Real WordprocessingML export from exactly [NotesDocxExportRequest.pages]. */
+    public suspend fun exportDocx(request: NotesDocxExportRequest): NotesExportedStream =
+        throw NotesPortFailureException(
+            NotesPortFailure(NotesPortFailure.UNAVAILABLE, "docxExportUnavailable"),
+        )
     public suspend fun print(request: NotesPrintRequest): NotesPrintOutcome
     public fun createInk(request: NotesInkCreateRequest): NotesInkSurface
 }
@@ -699,6 +854,11 @@ public class NotesHostPorts(
      * row instead of showing a placeholder that cannot work.
      */
     public val workspaceImport: NotesWorkspaceImportPort? = null,
+    /**
+     * Optional explicit Notes-selection -> ordinary-task host. Null hides the
+     * action; the library never presents an unavailable placeholder.
+     */
+    public val taskLaunch: NotesTaskLaunchPort? = null,
 )
 
 public enum class NotesSettingsTarget { MODELS, GENERAL }
@@ -738,6 +898,8 @@ private object UnavailableNotesMedia : NotesMediaPort {
     override suspend fun exportPdf(request: NotesPdfExportRequest): NotesExportedStream =
         throw NotesPortFailureException(NotesPortFailure(NotesPortFailure.UNAVAILABLE))
     override suspend fun exportPageImage(request: NotesPageImageExportRequest): NotesExportedStream =
+        throw NotesPortFailureException(NotesPortFailure(NotesPortFailure.UNAVAILABLE))
+    override suspend fun exportDocx(request: NotesDocxExportRequest): NotesExportedStream =
         throw NotesPortFailureException(NotesPortFailure(NotesPortFailure.UNAVAILABLE))
     override suspend fun print(request: NotesPrintRequest): NotesPrintOutcome =
         NotesPrintOutcome.Unavailable(NotesPortFailure(NotesPortFailure.UNAVAILABLE))

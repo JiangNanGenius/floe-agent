@@ -70,10 +70,58 @@ interface IntegrationUiCallbacks {
     /** Pull-to-refresh / explicit refresh. True = check started. */
     fun refreshCatalog(force: Boolean): Boolean
 
+    /** Search the complete verified catalog, including unloaded pages. */
+    fun searchCatalog(query: String) {}
+
+    /** Continue after the automatic page budget on explicit user demand. */
+    fun loadMoreCatalog(): Boolean = false
+
+    /* -------------------------- MCP guided service -------------------------- */
+
+    /** Read the explicit projects and eligible Linux environments for the
+     * guided setup. The host publishes [McpSetupUiState.options]; no first
+     * project or temp directory is guessed. */
+    fun loadMcpSetup(projectId: String? = null): Boolean = false
+
+    /** Read the environments for one explicit project. */
+    fun loadMcpSetupEnvironments(projectId: String): Boolean = false
+
+    /** Start one user-initiated setup. True = the host accepted the request
+     * and will publish every real phase through [McpSetupUiState]. */
+    fun startMcpSetup(request: McpSetupStartRequestUi): Boolean = false
+
+    /** Stop/cancel the record's owned build/service. The terminal state
+     * arrives through the projection; nothing is dismissed silently. */
+    fun cancelMcpSetup(recordId: String, revision: Long): Boolean = false
+
+    /** Remove an unfinished record and its staging/service directory. The
+     * existing MCP connection/config is never touched. */
+    fun discardMcpSetup(recordId: String, revision: Long): Boolean = false
+
+    fun clearMcpSetupError() {}
+
+    /** Retry only the verified connection commit (the service/receipt are
+     * already real). True = the host accepted the retry. */
+    fun retryMcpSetupCommit(recordId: String, revision: Long): Boolean = false
+
+    /** Leave the guided surface. An in-flight record is cancelled through
+     * its owned build/service lanes; a terminal record is preserved for
+     * review/removal. Never deletes a saved MCP connection. */
+    fun closeMcpSetup() {}
+
     /* -------------------------------- skills -------------------------------- */
 
     /** Official hub install (⇄ installOfficialSkill). True = started. */
     fun installOfficialSkill(skillId: String): Boolean
+
+    /** Read one verified full-catalog entry for the detail sheet
+     * (⇄ `skills.list` operation `curated.detail`). True = request started;
+     * the host publishes [SkillDetailUi] (or an honest unavailable state). */
+    fun loadSkillDetail(skillId: String): Boolean
+
+    /** Detail sheet dismissed; any in-flight read for this id becomes
+     * stale and must not publish into a newer sheet. */
+    fun dismissSkillDetail(skillId: String)
 
     /** Enable/disable, revision-bound (⇄ expectedDigest). True = accepted;
      * a changed skill surfaces the host's conflict error via projection. */
@@ -187,6 +235,9 @@ interface IntegrationUiCallbacks {
 
     /** Destructive; only after the explicit confirm dialog (⇄ remove: also
      * deletes the bound credential account — the host's authority). */
+    /** Read current native project/environment/task choices for this editor. */
+    fun requestMcpStdioChoices(identity: McpEditorIdentity, projectId: String?): Boolean = false
+
     fun deleteMcpServer(serverId: String): Boolean
 
     /** ⇄ setEnabled: enabling triggers a real refresh; disabling

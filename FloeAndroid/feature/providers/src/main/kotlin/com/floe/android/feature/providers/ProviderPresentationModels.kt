@@ -249,6 +249,10 @@ data class OfficialSupplierUi(
     val unsupportedReason: String?,
     /** Roles a shipped adapter can really serve (⇄ ProviderServiceOfferResolver). */
     val servedRoles: List<ProviderServiceRoleUi>,
+    /** Catalog-declared model IDs per served role
+     * (⇄ ProviderCatalogServiceOffer.models). Empty when the entry declares no
+     * identifiers; never filled from chat model keywords. */
+    val serviceOfferModels: Map<ProviderServiceRoleUi, List<String>> = emptyMap(),
     val isLocalEndpoint: Boolean,
     /** True when a saved provider already uses this catalog identity
      * (⇄ configuredPresetIDs.contains(entry.presetID)); host-projected. */
@@ -405,6 +409,11 @@ data class ProviderDraftSnapshot(
     val supplier: SupplierChoice? = null,
     val protocol: WireProtocolUi = WireProtocolUi.OPENAI_CHAT_COMPLETIONS,
     val baseUrl: String = "",
+    /** Persisted provider region, carried through read-edit-save. The current
+     * form has no region picker, so an edit re-emits the exact value it was
+     * seeded with; native `ProviderSaveDraft` preserves the persisted column
+     * when the field is absent. Never inferred from the endpoint or a preset. */
+    val region: String? = null,
     /** "Header: value" per line (⇄ nonSecretHeadersText). */
     val nonSecretHeaders: String = "",
     val allowsPlainHttp: Boolean = false,

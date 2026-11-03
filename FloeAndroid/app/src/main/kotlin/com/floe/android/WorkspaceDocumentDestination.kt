@@ -22,6 +22,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -39,8 +40,16 @@ import com.floe.android.design.FloeCircleButton
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeLayout
+import com.floe.android.design.FloeStatusLine
 import com.floe.android.design.FloeText
+import com.floe.android.design.FloeToolbarIconButton
 import com.floe.android.design.IconGlyph
+import com.floe.android.designintegration.DesignExportPickerEffect
+import com.floe.android.designintegration.DesignTargetResolver
+import com.floe.android.feature.canvas.ui.design.DesignSessionRequest
+import com.floe.android.feature.canvas.ui.design.DesignTargetDescriptor
+import com.floe.android.feature.canvas.ui.design.DesignWorkflowController
+import com.floe.android.feature.canvas.ui.design.DesignWorkflowSheet
 import com.floe.android.feature.ide.FloeIdeDocumentWindow
 import com.floe.android.feature.ide.IdeBottomAccessory
 import com.floe.android.feature.ide.IdePresenter
@@ -48,6 +57,8 @@ import com.floe.android.feature.ide.IdeWorkspacePresentation
 import com.floe.android.feature.workbench.ui.R as WorkbenchR
 import com.floe.android.host.Owner
 import com.floe.android.host.RuntimeHost
+import com.floe.android.host.cad.C04CadFormat
+import com.floe.android.host.cad.C04CadViewerDestination
 import com.floe.android.host.WorkspaceDocumentPreviewPolicy
 import java.util.Locale
 
@@ -64,7 +75,7 @@ import java.util.Locale
  * L172-180 exposes the explicit close and, on compact widths, keeps the tree
  * behind a drawer instead of a permanent column.
  *
- * Android has no separate preview surface yet, so the settled mapping is:
+ * Android uses the existing typed preview services with this mapping:
  * - text/code: the same [IdePresenter] editor that owns drafts/undo/save is
  *   presented full-window on a phone, and stays in the tablet inspector with
  *   an explicit "open full window" entry;
@@ -73,9 +84,12 @@ import java.util.Locale
  * - PDF/raster bitmap: the real READ-ONLY full-window preview over the
  *   existing verified workspace snapshot + isolated PDF renderer / bounded
  *   BitmapFactory decoder (G07.1);
- * - media/CAD/archive/binary and SVG/TIFF: a typed document surface that
- *   names the file and its type and says honestly that this build has no
- *   in-app viewer for it. Their bytes are never decoded as text.
+ * - media and supported CAD: their owned media preview and read-only C04
+ *   viewer; unsupported formats keep an explicit typed fallback;
+ * - archive: the real bounded archive browser (list/inspect/extract) over
+ *   the ORIGINAL safe engine and G04 workspace lease;
+ * - binary and unsupported image encodings: a typed fallback rather
+ *   than decoding arbitrary bytes as text.
  *
  * Nothing here is a second document authority: the request only carries the
  * already-owned task/workspace/path identity, and every byte and every draft
@@ -130,7 +144,8 @@ internal object WorkspaceDocumentRouter {
         "ppt", "odt", "ods", "odp", "rtf",
     )
     private val cadExtensions = setOf(
-        "dxf", "dwg", "step", "stp", "iges", "igs", "stl", "obj", "floecad",
+        "dxf", "dwg", "step", "stp", "iges", "igs", "brep",
+        "stl", "obj", "glb", "gltf", "3mf", "floecad",
     )
     private val imageExtensions = setOf(
         "png", "jpg", "jpeg", "gif", "heic", "heif", "webp", "tiff", "tif",
@@ -283,6 +298,7 @@ internal fun WorkspaceDocumentDestination(
     temporary: Boolean,
     onBackToFiles: () -> Unit,
     onCloseTask: () -> Unit,
+    onOpenFolder: ((String) -> Unit)? = null,
 ) {
     val current = WorkspaceDocumentPresentation.requestIsCurrent(
         request = request,
@@ -350,6 +366,69 @@ internal fun WorkspaceDocumentDestination(
     val closeTask: () -> Unit = {
         closePreview()
         onCloseTask()
+    }
+    // App-owned design session for the SAME file document request. The sheet
+    // is a feature-owned dialog; this destination only supplies the real
+    // workspace/file identity and the App owner. No design project, path
+    // authority or second document store is created here.
+    val application = uiContext.applicationContext as? FloeApplication
+    var designController by remember(request.token) {
+        mutableStateOf<DesignWorkflowController?>(null)
+    }
+    var designEntryFailure by remember(request.token) { mutableStateOf(false) }
+    var designSheetRequested by rememberSaveable(request.token) { mutableStateOf(false) }
+    val latestDesignController by rememberUpdatedState(designController)
+    val designSessionToken = remember(
+        request.taskID, request.workspaceID, request.path, request.token,
+    ) {
+        DesignTargetResolver.documentSessionToken(
+            taskID = request.taskID,
+            workspaceID = request.workspaceID,
+            relativePath = request.path,
+            requestToken = request.token,
+        )
+    }
+    val openDesign: () -> Unit = {
+        val owner = application?.designUi
+        if (owner == null) {
+            designEntryFailure = true
+        } else {
+            try {
+                designEntryFailure = false
+                designController = owner.acquire(
+                    DesignSessionRequest(
+                        binding = DesignTargetResolver.workspaceFileBinding(
+                            workspaceID = request.workspaceID,
+                            relativePath = request.path,
+                            sessionToken = designSessionToken,
+                        ),
+                        descriptor = DesignTargetDescriptor(
+                            title = request.fileName,
+                            kindLabel = uiContext.getString(R.string.design_app_target_document),
+                        ),
+                    ),
+                )
+                designSheetRequested = true
+            } catch (_: Throwable) {
+                designEntryFailure = true
+            }
+        }
+    }
+    LaunchedEffect(designSheetRequested, request.token) {
+        // Rotation restores the request flag; re-acquire the SAME retained
+        // App controller so the sheet and its drafts survive.
+        if (designSheetRequested && designController == null) {
+            openDesign()
+        }
+    }
+    DisposableEffect(request.token) {
+        onDispose {
+            if ((uiContext as? Activity)?.isChangingConfigurations != true) {
+                latestDesignController?.let { design ->
+                    application?.designUi?.release(design)
+                }
+            }
+        }
     }
     Dialog(
         onDismissRequest = backToFiles,
@@ -451,28 +530,118 @@ internal fun WorkspaceDocumentDestination(
                         )
                     }
                 }
+                WorkspaceDocumentSurface.CAD -> {
+                    // C04A/C04B: real offline read-only DXF/DWG/STEP/IGES/BREP
+                    // and GLB/glTF/OBJ/STL/3MF viewing over the pinned bundled
+                    // readers, plus native `.floecad` directory packages read
+                    // by the App adapter. A malformed package is a typed
+                    // failure inside the viewer, never a ZIP guess or a text
+                    // document; its failure surface offers the safe folder
+                    // escape below.
+                    val cadFormat = C04CadFormat.fromPath(request.path)
+                    when {
+                        cadFormat != null && previewOwner != null ->
+                            C04CadViewerDestination(
+                                controller = host.cadViewer,
+                                request = request,
+                                owner = previewOwner,
+                                onBackToFiles = backToFiles,
+                                onCloseTask = closeTask,
+                                onOpenFolder = onOpenFolder?.let { open ->
+                                    { open(request.path) }
+                                },
+                            )
+                        previewOwner == null ->
+                            LaunchedEffect(request.token) { onBackToFiles() }
+                        else -> WorkspaceTypedDocumentSurface(
+                            request = request,
+                            onBackToFiles = backToFiles,
+                            onCloseTask = closeTask,
+                        )
+                    }
+                }
+                WorkspaceDocumentSurface.ARCHIVE -> {
+                    // WSF-SAFE-EXTRACT: the real bounded browser over the
+                    // Application-owned controller and the ORIGINAL safe
+                    // engine/lease authority. A missing live native root
+                    // retires the request instead of rendering a dead
+                    // surface; formats the engine refuses (RAR) fail as an
+                    // honest typed state inside the browser, never as a
+                    // fake list.
+                    if (previewOwner != null) {
+                        WorkspaceArchiveDestination(
+                            controller = host.workspaceArchive,
+                            request = request,
+                            owner = previewOwner,
+                            onBackToFiles = backToFiles,
+                            onCloseTask = closeTask,
+                            onOpenFolder = onOpenFolder,
+                        )
+                    } else {
+                        LaunchedEffect(request.token) { onBackToFiles() }
+                    }
+                }
                 // Office is handled by its owned viewer Activity before this
                 // destination is raised; reaching here means the engine is
-                // unavailable. CAD/archive/binary keep their honest typed cover.
+                // unavailable. Binary keeps its honest typed cover.
                 else -> WorkspaceTypedDocumentSurface(
                     request = request,
                     onBackToFiles = backToFiles,
                     onCloseTask = closeTask,
                 )
             }
+            val designEntryVisible = previewOwner != null && !imageEditOpen &&
+                !(request.surface == WorkspaceDocumentSurface.MEDIA &&
+                    mediaWorkbenchKind(request.path) != null)
+            if (designEntryVisible) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 48.dp, end = 12.dp),
+                    horizontalAlignment = Alignment.End,
+                ) {
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.design_app_action),
+                        onClick = openDesign,
+                        modifier = Modifier.testTag("workspace.design"),
+                    )
+                    if (designEntryFailure) {
+                        FloeStatusLine(
+                            icon = FloeIcons.WarningTriangle,
+                            text = stringResource(R.string.design_app_entry_unavailable),
+                            color = Floe.colors.pending,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                }
+            }
         }
     }
+    designController?.let { design ->
+        DesignWorkflowSheet(
+            controller = design,
+            onClosed = {
+                designController = null
+                designSheetRequested = false
+                application?.designUi?.release(design)
+            },
+        )
+    }
+    DesignExportPickerEffect(application?.designUi?.exportDelivery)
 }
 
-/** The one document header shared by the real PDF/image preview and the
- * honest typed cover: Back to the owning file list, the exact file name and
- * Close. It adds no second navigation authority. */
+/** The one document header shared by the real PDF/image/archive surfaces
+ * and the honest typed cover: Back to the owning file list, the exact file
+ * name and Close. [onEdit] is a surface-owned primary action (image edit,
+ * archive extract/decompress) with its own label; it adds no second
+ * navigation authority. */
 @Composable
 internal fun WorkspaceDocumentHeader(
     fileName: String,
     onBackToFiles: () -> Unit,
     onCloseTask: () -> Unit,
     onEdit: (() -> Unit)? = null,
+    editLabel: Int = WorkbenchR.string.creative_edit_image,
 ) {
     Row(
         modifier = Modifier
@@ -482,12 +651,10 @@ internal fun WorkspaceDocumentHeader(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        FloeCircleButton(
+        FloeToolbarIconButton(
             icon = FloeIcons.ChevronBack,
             contentDescription = stringResource(R.string.workspace_document_back_to_files),
             onClick = onBackToFiles,
-            visualSize = 34.dp,
-            iconSize = 16.dp,
             modifier = Modifier.testTag("workspace.documentBack"),
         )
         FloeText(
@@ -500,16 +667,14 @@ internal fun WorkspaceDocumentHeader(
         )
         if (onEdit != null) {
             FloeCapsuleAction(
-                label = stringResource(WorkbenchR.string.creative_edit_image),
+                label = stringResource(editLabel),
                 onClick = onEdit,
             )
         }
-        FloeCircleButton(
+        FloeToolbarIconButton(
             icon = FloeIcons.Xmark,
             contentDescription = stringResource(R.string.close),
             onClick = onCloseTask,
-            visualSize = 34.dp,
-            iconSize = 15.dp,
         )
     }
 }

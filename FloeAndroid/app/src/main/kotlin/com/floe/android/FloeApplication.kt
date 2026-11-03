@@ -3,6 +3,7 @@ package com.floe.android
 
 import android.app.Application
 import com.floe.android.host.RuntimeHost
+import com.floe.android.mediaintegration.MediaWorkbenchHost
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -80,6 +81,23 @@ class FloeApplication : Application() {
      */
     internal lateinit var creativeHost: com.floe.android.host.creative.CreativeHostController
         private set
+    /**
+     * G09-R2 App-owned media platform/lifecycle/export/import integration.
+     * Created data-only in onCreate; the process platform session starts only
+     * after the native creative bind accepts a live epoch. Rotation and
+     * background never retire it; an actual Root/epoch replacement does.
+     */
+    internal lateinit var mediaWorkbench: MediaWorkbenchHost
+        private set
+    /**
+     * G09-R2 App-owned design UI integration: bounded retained design
+     * sessions, real proposal staging, verified preview/export opening and
+     * the design Save/Share drain gate. Data-only construction here; native
+     * and disk work starts only on an explicit design action after the
+     * accepted creative epoch exists.
+     */
+    internal lateinit var designUi: com.floe.android.designintegration.DesignUiOwner
+        private set
     internal val notesPdfPasswords = com.floe.android.notesplatform.NotesPdfPasswordPromptBroker {
         (runtimeHost?.nativeRootEpoch() ?: 0L) > 0L && isActivityInForeground()
     }
@@ -136,7 +154,8 @@ class FloeApplication : Application() {
                             // the platform host above and participates in the
                             // same root-stop gate. The handle is read-only;
                             // the workspace file is never modified.
-                            val ports = platform.hostPorts(assistant = assistant, indexing = ocr)
+                            val ports = platform.hostPorts(assistant = assistant, indexing = ocr,
+                                taskLaunch = com.floe.android.notesplatform.NotesTaskLaunchHost(host, notesHost))
                             val session = com.floe.android.feature.notes.ui.state.createNotesWorkspaceSession(
                                 notesHost.service, ports,
                             )
@@ -228,6 +247,16 @@ class FloeApplication : Application() {
         if (runtimeHost?.nativeRootEpoch() != epoch) return
         try {
             creativeHost.bindCurrent()
+            if (runtimeHost?.nativeRootEpoch() != epoch) return
+            // The native creative bind accepted the live epoch; only now may
+            // the process media platform session and its ticket consumer start.
+            if (!mediaWorkbench.onNativeCreativeBound(epoch)) {
+                android.util.Log.i(
+                    "FloeCreative",
+                    "media_platform_" + mediaWorkbench.platformState().javaClass.simpleName.lowercase(),
+                )
+            }
+            designUi.onNativeCreativeBound(epoch)
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (error: com.floe.android.feature.canvas.CreativeException) {
@@ -238,9 +267,54 @@ class FloeApplication : Application() {
         }
     }
 
+    /**
+     * Actual creative Root retirement order:
+     *  1. fence NEW App media work and drop retained library/route sessions;
+     *  2. await the App-owned Save/Share operation and the old platform
+     *     workers/players/claims/native pins;
+     *  3. App staging drain + native aggregate gate (imports/render pins);
+     *  4. require aggregate pending 0, then stop the host.
+     * Any FALSE keeps the old Root and every owned reference; a later exact
+     * attempt may retry. Never clear/replace the epoch while A work is active.
+     */
     private suspend fun prepareCreativeForRootStop(): Boolean {
         if (!this::creativeHost.isInitialized) return true
+        if (!this::mediaWorkbench.isInitialized) {
+            return try {
+                creativeHost.stop()
+                true
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                false
+            }
+        }
         return try {
+            mediaWorkbench.fenceForRootStop()
+            CreativeUiHost.retireMediaSessions()
+            if (!mediaWorkbench.prepareForRootStop()) {
+                android.util.Log.i(
+                    "FloeCreative",
+                    "media_platform_drain_pending:" +
+                        (mediaWorkbench.lastDrainSummary() ?: "reportUnavailable"),
+                )
+                return false
+            }
+            // Design UI save/staging drain precedes the native design fence.
+            // FALSE keeps Root bound and every owned reference; a later exact
+            // attempt may retry. No boolean cancel is treated as drained.
+            if (!designUi.prepareForRootStop()) {
+                android.util.Log.i("FloeCreative", "design_ui_drain_pending")
+                return false
+            }
+            if (!creativeHost.beginR2NativeRootStop()) {
+                android.util.Log.i("FloeCreative", "creative_native_root_stop_pending")
+                return false
+            }
+            if (creativeHost.r2DrainPending() != 0) {
+                android.util.Log.i("FloeCreative", "creative_native_drain_pending")
+                return false
+            }
             creativeHost.stop()
             true
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
@@ -326,12 +400,18 @@ class FloeApplication : Application() {
         private set
 
     private val hostScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    internal val storageSettings by lazy {
+        com.floe.android.host.storage.StorageSettingsHost(this, hostScope)
+    }
+
+    internal val fontSettings by lazy { com.floe.android.host.fonts.FontSettingsHost(this, hostScope) }
 
     override fun onCreate() {
         super.onCreate()
         // Isolated PDF rendering receives only verified file descriptors;
         // it must never bootstrap the credential, store or Agent owners.
         if (android.os.Process.isIsolated()) return
+        com.floe.android.core.fonts.ManagedFontTypeface.configure(this)
         // The native Office module owns its own service and engine in this
         // same-UID process. Starting another credential/store/Core owner here
         // would duplicate the main process's lifecycle and database writers.
@@ -348,6 +428,16 @@ class FloeApplication : Application() {
         runOutputPdf = com.floe.android.host.output.RunOutputPdfPreviewController(this, hostScope)
         linuxSetup = com.floe.android.host.linux.LocalRuntimeSetupHost(this, hostScope)
         linuxShell = com.floe.android.host.linux.LinuxShellPump(this, hostScope)
+        // C01 environment lifecycle: the owner reports the REAL setup phase
+        // and runtime status. A stop request goes through the existing app
+        // root stop/drain only when the runtime reports no foreign owned work.
+        com.floe.android.host.linux.C01LinuxEnvironmentOwner.attach(
+            context = this,
+            setup = linuxSetup,
+            requestRootStop = {
+                hostScope.launch { runtimeHost?.stop() }
+            }
+        )
         workspaceSources = com.floe.android.host.WorkspaceSourcePump(this, hostScope) {
             runtimeHost?.nativeRootEpoch()
         }
@@ -375,6 +465,30 @@ class FloeApplication : Application() {
             this,
             epochProvider = { runtimeHost?.nativeRootEpoch()?.takeIf { it > 0L } },
             acceptedRootProvider = { runtimeCoordinator.acceptedStorageRoot() },
+            designAuthorityIssuer =
+                com.floe.android.designintegration.DesignAuthorityBridge { runtimeCoordinator },
+        )
+        mediaWorkbench = MediaWorkbenchHost(
+            this,
+            hostScope,
+            { creativeHost },
+            agentBindingOwner = com.floe.android.mediaintegration.MediaAgentBindingOwner(
+                { runtimeCoordinator },
+                { runtimeHost },
+            ),
+        )
+        designUi = com.floe.android.designintegration.DesignUiOwner(
+            context = this,
+            hostScope = hostScope,
+            hostProvider = { creativeHost },
+            acceptedRootProvider = { runtimeCoordinator.acceptedStorageRoot() },
+            epochProvider = { runtimeHost?.nativeRootEpoch()?.takeIf { it > 0L } },
+            // The captured native Canvas owner's read-only Materials root for
+            // the design snapshot's digest-verified image bytes. Null when no
+            // live editor is captured for that exact canvas.
+            canvasAssetsBasePathProvider = { canvasID ->
+                CreativeUiHost.canvasAssetsBasePath(this, canvasID)
+            },
         )
         linuxCleanup = com.floe.android.host.linux.LinuxRuntimeCleanupPump(this, hostScope)
         // The controller receives the APPLICATION-owned scope only to run
@@ -413,22 +527,60 @@ class FloeApplication : Application() {
             // remain the lifecycle authority.
             // Drain the actual queued UI edits before native Root admission
             // is fenced; a timeout/refused recovery retains the owner.
-            (runtimeHost?.workspaceEditors?.prepareForRootStop() != false) &&
+            val drained = (runtimeHost?.workspaceEditors?.prepareForRootStop() != false) &&
                 (workspaceTerminal.boundNativeEpoch == 0L || workspaceTerminal.stopAndJoin(workspaceTerminal.boundNativeEpoch, 5_000)) &&
                 linuxShell.stopAndDrain(linuxShell.boundNativeEpoch) &&
                 (linuxCleanup.boundNativeEpoch == 0L ||
                     linuxCleanup.drainAndStop(linuxCleanup.boundNativeEpoch)) &&
                 prepareCreativeForRootStop() &&
+                (runtimeHost?.prepareVoiceForRootStop() != false) &&
                 prepareNotesForRootStop() &&
                 // G07.1: the full-window PDF/image preview holds a verified
                 // native-root snapshot plus an isolated renderer lease. Its
                 // real quiescent closure must precede Root retirement.
                 (runtimeHost?.prepareWorkspaceDocumentPreviewForRootStop() != false) &&
+                // C04A: the offline CAD/3D viewer owns a local WebView and
+                // immutable native-workspace snapshots; destroy the surface,
+                // delete those snapshots and release the Swift session before
+                // Root retirement.
+                (runtimeHost?.prepareCadViewerForRootStop() != false) &&
+                // C05: every live SSH session, PTY, exec channel and
+                // loopback tunnel listener closes and joins before the
+                // native root retires.
+                (runtimeHost?.prepareC02ExecutionTargetsForRootStop() != false) &&
+                (runtimeHost?.prepareC05RemoteForRootStop() != false) &&
+                (runtimeHost?.prepareC05SFTPForRootStop() != false) &&
+                // C05 RDP: every live FreeRDP session, frame lease and
+                // bounded input lane closes before the native root retires.
+                (runtimeHost?.prepareC05RDPForRootStop() != false) &&
+                // C05 Desktop Assist: drain any in-flight secure-card
+                // save/delete before the native Root epoch retires.
+                (runtimeHost?.prepareC05DesktopAssistForRootStop() != false) &&
+                // C06: close every platform mail TLS socket and acknowledge
+                // the lane closure before the native Root epoch retires.
+                (runtimeHost?.prepareC06MailForRootStop() != false) &&
+                // C06: stop the calendar provider lane and acknowledge its
+                // mailbox closure before the native Root epoch retires.
+                (runtimeHost?.prepareC06CalendarForRootStop() != false) &&
+                // C06 system services: unregister capability receivers, disable
+                // NFC reader mode and drain the platform mailbox before the
+                // native Root epoch retires.
+                (runtimeHost?.prepareC06SystemServicesForRootStop() != false) &&
+                (runtimeHost?.prepareC07DataExchangeForRootStop() != false) &&
+                // C07 rollback may still need the font mailbox. Retire it
+                // only after every actual data-exchange operation settled.
+                (runtimeHost?.prepareFontsForRootStop() != false) &&
+                // C05 devices: close every App/tool TCP/Telnet/BLE/USB
+                // session and stop the trusted device tool mailbox before
+                // the native Root epoch retires.
+                (runtimeHost?.prepareC05DevicesForRootStop() != false) &&
                 // G08: the Full platform-tool pump/phone/ADB/Root extension
                 // fences and joins its own work before the root retires.
                 (runtimeHost?.preparePlatformForRootStop() != false) &&
                 // The network lane remains the LAST drain clause.
                 (runtimeHost?.prepareNetworkForRootStop() != false)
+            if (!drained) runtimeHost?.resumeFontsAfterRefusedStop()
+            drained
         }
         runtimeCoordinator.start()
         // G02 App host binding: data-only creation; commands stay off-main.
@@ -480,6 +632,20 @@ class FloeApplication : Application() {
             officePreviews.setApprovalNoticeLookup(host.conversations) { taskID ->
                 host.conversations.approvalNoticeFor(taskID)
             }
+            // OFC-SAVE-REOPEN (job-4c314431dd8348d4): the manual workspace original save
+            // pushes an attached provider original through the EXISTING journaled ladder
+            // on the headless runtime-owned lane — the same call the Core model path's
+            // pushOriginalViaHeadlessLane makes. Unbound source or an absent lane simply
+            // skips; the local commit answer is unaffected.
+            officePreviews.saveOriginalPushPort = { request ->
+                host.workspaceSourceHost?.headlessLaneFor(
+                    taskID = request.taskID,
+                    workspaceID = request.workspaceID,
+                    nativeEpoch = request.nativeEpoch,
+                    hostGeneration = request.hostGeneration,
+                    isCurrentOwner = request.ownerFence,
+                )?.savePathToProvider(request.logicalPath)
+            }
         }
         // G05-R3 Alpha14 (user requirement): GitHub full-channel App
         // self-update. Application-owned, data-only creation here; checks,
@@ -519,7 +685,7 @@ class FloeApplication : Application() {
                 // fails closed when a drain is unproven.
                 val firstStart = !started
                 started = true
-                if (firstStart) runtimeHost?.start()
+                if (firstStart) runtimeHost?.start() else runtimeHost?.onVoiceRootChanged()
                 // Bind the schedule platform on the FIRST ready epoch AND on
                 // every later root-generation replacement. bindHost is
                 // idempotent for the same live host and performs a bounded
@@ -639,16 +805,24 @@ class FloeApplication : Application() {
     internal fun setActivityForeground(active: Boolean) {
         activityForeground = active
         runtimeHost?.workspaceActions?.scene(active)
+        runtimeHost?.onVoiceForeground(active)
+        if (active) {
+            runtimeHost?.c06SystemServices?.onAppForeground()
+        } else {
+            runtimeHost?.c06SystemServices?.onAppBackground()
+        }
         if (!active) runtimeHost?.browser?.flushPersistentState()
     }
 
     /** Channel flavour resume hook (FULL reconciles real phone/ADB status). */
     internal fun onPlatformActivityResumed(activity: android.app.Activity) {
         runCatching { runtimeHost?.platformExtension?.onActivityResumed(activity) }
+        runtimeHost?.c06SystemServices?.setCurrentActivity(activity)
     }
 
     internal fun onPlatformActivityPaused() {
         runCatching { runtimeHost?.platformExtension?.onActivityPaused() }
+        runtimeHost?.c06SystemServices?.setCurrentActivity(null)
     }
 
     private suspend fun startBrowserLane(epoch: Long) {

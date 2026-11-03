@@ -35,6 +35,9 @@ import FloeAgentRuntime
 import FloeModels
 import FloeProviders
 import FloeAndroidWebTools
+import FloeAndroidShellTools
+import FloeAndroidJobTools
+import FloeEnvironments
 
 /// One generation's installed G02 ordinary service graph. Immutable after
 /// build (except the truthful transport-admission propagation); retired as a
@@ -99,6 +102,18 @@ public final class G02InstalledComposition: @unchecked Sendable {
     /// table binds `G073TaskScheduleBindings` against this same instance.
     public let taskSchedules: G073TaskScheduleService
 
+    /// C01: the ONE managed user-project library over this generation's SAME
+    /// owned store cluster. Main's command table binds `C01ProjectBindings`
+    /// against this same instance; no second database or project registry.
+    public let projectLibrary: C01ProjectLibrary
+
+    /// C02: the ONE durable task execution-target domain and its real SSH
+    /// adapter over this generation's SAME database/RemoteHostStore. Main
+    /// registers `bridge` on `floe.target/19` and `shellBridge` in the
+    /// ShellTools routing seam. nil means the coordinated schema/store was
+    /// not installed; target requests then fail closed with schemaUnavailable.
+    public let executionTargets: C02ExecutionTargetProduction.Components?
+
     /// Optional-domain extensions that attached successfully for this
     /// epoch (temporary, privacy successors). Empty in the ordinary product.
     internal var attachedExtensions: [G02DomainExtensionID: any G02DomainExtension] = [:]
@@ -141,7 +156,9 @@ public final class G02InstalledComposition: @unchecked Sendable {
          defaultsAdapter: FacadeSettingsDefaultsAdapter,
          usageAdapter: FacadeUsageAdapter,
          feedBinder: RunPersonalizationFeedBinder,
-         taskSchedules: G073TaskScheduleService) {
+         taskSchedules: G073TaskScheduleService,
+         projectLibrary: C01ProjectLibrary,
+         executionTargets: C02ExecutionTargetProduction.Components?) {
         self.epoch = epoch
         self.cluster = cluster
         self.registry = registry
@@ -172,6 +189,8 @@ public final class G02InstalledComposition: @unchecked Sendable {
         self.usageAdapter = usageAdapter
         self.feedBinder = feedBinder
         self.taskSchedules = taskSchedules
+        self.projectLibrary = projectLibrary
+        self.executionTargets = executionTargets
     }
 
     // MARK: - Build
@@ -184,7 +203,8 @@ public final class G02InstalledComposition: @unchecked Sendable {
                       cluster: G02OwnedStoreCluster,
                       transportGate: G02QualifiedTransportGate,
                       routeContext: G02HostRouteContextProvider,
-                      catalogBytes: Data?) async -> G02InstalledComposition? {
+                      catalogBytes: Data?,
+                      environmentRegistry: EnvironmentRegistry? = nil) async -> G02InstalledComposition? {
         let epoch = gen.epoch
         let database = cluster.database
         let rootURL = URL(fileURLWithPath: cluster.identity.root.path)
@@ -284,15 +304,28 @@ public final class G02InstalledComposition: @unchecked Sendable {
             coordinator: toolWork,
             rootProvider: { nil },
             readiness: LinuxShellLiveReadiness.makeInjected())
+        // C01 environment lifecycle: the production host reads the REAL
+        // Kotlin LocalRuntimeSetupHost/runtime status through the bounded
+        // mailbox operation. Registration is independent of full shell
+        // qualification so a model can read installRequired/componentRequired
+        // before the engine is ready. A nil host would register nothing.
+        C01LinuxEnvironmentDomain.shared.install(
+            C01LinuxEnvironmentMailboxHost(
+                epoch: { RuntimeFacadeLinuxBindings.shared.boundNativeEpoch }),
+            epoch: epoch)
+        _ = RuntimeFacadeLinuxBindings.shared.registerEnvironmentToolsIfAvailable()
+        var backgroundJobs: BackgroundJobService?
         if let shell = RuntimeFacadeLinuxBindings.shared.components,
            let spool = BackgroundJobOutputSpoolRoot.url() {
             let owner = G03JobLifecycle(epoch: epoch)
             guard RuntimeFacadeJobBindings.shared.compose(database: database, shell: shell,
                 transport: MailboxLinuxShellTransport(), settlementGate: LinuxShellJobSettlement.gate,
-                outputRootURL: spool, onTerminal: { await owner.terminal($0) }, processorOwnership: owner),
+                outputRootURL: spool, onTerminal: { await owner.terminal($0) }, processorOwnership: owner,
+                serviceHost: C01ManagedServiceDomain.shared),
                 let jobs = RuntimeFacadeJobBindings.shared.register() else { return nil }
             owner.bind(jobs)
             G03JobLifecycle.install(owner)
+            backgroundJobs = jobs
             do { _ = try await RuntimeFacadeJobBindings.shared.reconcileInterruptedOnLaunch() }
             catch { return nil }
         }
@@ -322,12 +355,30 @@ public final class G02InstalledComposition: @unchecked Sendable {
             trustedKeys: nil)) else {
             return nil
         }
+        // C01 separated stdio: ONE provider instance owns the live-peer
+        // contract check and the real three-pipe channel. The SAME instance is
+        // passed to the original MCP factory and to the C02 setup installation.
+        let stdioChannelProvider = C01MCPStdioChannelProvider()
+        transportGate.setMCPStdioProbe {
+            guard G02NativeRootEpoch.readback() == epoch,
+                  RuntimeFacadeLinuxBindings.shared.isCapabilityQualified else { return false }
+            let proof = await MailboxC01LinuxStdioTransport().capability(epoch: epoch)
+            return G02NativeRootEpoch.readback() == epoch && proof.stdioAvailable &&
+                proof.serviceRoleAvailable &&
+                proof.stdioContractVersion == C01ManagedServiceDomain.stdioContractVersion
+        }
+        // C02: the ONE original MCP client factory now has a transport
+        // discriminator. The stdio maker is wired to the REAL C01 provider;
+        // the HTTP/SSE construction and every existing command stay unchanged.
+        let mcpFactory = OriginalMCPClientFactory(
+            stdio: C02MCPSetupStdioClientFactory(epoch: epoch,
+                                                 provider: stdioChannelProvider))
         let mcpDomain = MCPDomain(services: MCPDomain.Services(
             database: database,
             gateway: SecretGatewayRegistry.shared,
             routeContext: routeContext,
             transportAdmission: transportGate,
-            clientFactory: OriginalMCPClientFactory(),
+            clientFactory: mcpFactory,
             ownedWork: ownedWorkLifecycle,
             toolWork: toolWork,
             registry: .shared,
@@ -519,6 +570,17 @@ public final class G02InstalledComposition: @unchecked Sendable {
                 }),
             )
 
+        let executionTargets = C02ExecutionTargetProduction.make(
+            epoch: epoch,
+            database: database,
+            storageRoot: URL(fileURLWithPath: cluster.identity.root.path, isDirectory: true),
+            metadata: C02ScheduleMetadataSource(ownership: environmentOwnership),
+            hosts: RemoteHostStore(database: database),
+            credentialResolver: { reference in
+                try await C05ProductionWiring.readCredential(reference)
+            }
+        )
+
         let runComponents = RunDomainComponents(
             context: RunIngressContext(
                 epoch: epoch,
@@ -566,7 +628,15 @@ public final class G02InstalledComposition: @unchecked Sendable {
             // accepted generation (`<owned root>/FloeAgent`). The original
             // run factory forwards it to FloeAgentRuntime; nil would mean the
             // iOS Application Support behavior and is never used on Android.
-            artifactRootURL: cluster.identity.root.artifactStoreURL)
+            artifactRootURL: cluster.identity.root.artifactStoreURL,
+            // G09-R2: the SAME accepted creative service that owns the trusted
+            // Ask AI task/project association supplies its durable, data-only
+            // task context. It grants nothing; the media.project tool still
+            // authorizes every call.
+            mediaTaskContext: { taskID in
+                await BridgeV5.service.r2MediaTaskContext(taskID: taskID)
+            },
+            executionTargets: executionTargets)
         RunDomainFacade.install(components: runComponents, registry: gen.registry)
         G073TaskScheduleFacade.install(epoch: epoch, service: scheduleService)
         // Cold-start ordering is enforced by the service: settle occurrences
@@ -622,6 +692,76 @@ public final class G02InstalledComposition: @unchecked Sendable {
                     environmentID: environmentID, policy: policy)
             })
 
+        // C06: register the seven ordinary mail tools over the SAME accepted
+        // generation/registry. Discovery stays hidden until a real account
+        // exists and the App platform-TLS lane reports ready; the mirror is
+        // refreshed here and again by the RuntimeHost mail controller.
+        registerC06MailTools(registry: runComponents.registry)
+        await C06MailDomain.shared.refreshAvailability(epoch: epoch)
+
+        // C06: register the two ordinary calendar tools and the four local
+        // todo tools over the SAME accepted generation/registry. Calendar
+        // discovery stays hidden until the App host pushes an actual provider
+        // + read grant; writes additionally need the write grant and a
+        // writable calendar. No account, subscription or developer calendar
+        // is invented here.
+        registerC08FontTools(epoch: epoch, registry: runComponents.registry)
+        registerC06CalendarTools(registry: runComponents.registry)
+        registerC06TodoTools(registry: runComponents.registry)
+        await C06TodoDomain.shared.refreshAvailability(epoch: epoch)
+        await C06CalendarDomain.shared.refreshAvailability(epoch: epoch)
+
+        // C06: register the four ordinary system-service tools over the SAME
+        // accepted generation/registry. Location, contacts, NFC and Health
+        // Connect discovery stays hidden until the trusted App host pushes an
+        // ACTUAL permission/provider/foreground projection; no tool prompt or
+        // developer-account gate exists here.
+        registerC06SystemServicesTools(registry: runComponents.registry)
+        await C06SystemServicesDomain.shared.refreshAvailability(epoch: epoch)
+
+        // C05 SFTP uses this accepted ordinary registry and the original
+        // task workspace, host trust and credential services.
+        registerC05SFTPTools(registry: runComponents.registry)
+
+        // C05: register the ordinary VNC/RDP screen tools over the SAME
+        // accepted generation/registry. The screenshot artifact root is the
+        // EXACT owned FloeAgent directory of this generation
+        // (`<owned root>/FloeAgent`), matching the runtime artifact reader.
+        // No screenshot/input tool is advertised before that root exists.
+        //
+        // The two real backends are now wired through the EXISTING services:
+        //  * text anchors run Tesseract inside the task's Linux environment
+        //    through the same LocalShellService as exec.shell (prepared on
+        //    connect, never a hidden cloud/model call);
+        //  * typeCredential resolves an approved secure card through the ONE
+        //    installed AndroidCredentialVault (original metadata + keystore).
+        // The RDP/VNC session credentials themselves still use the existing
+        // floe.rdp/floe.vnc gateway and are unaffected.
+        registerC05RemoteDesktopTools(
+            environment: C05DesktopAssistProduction.toolEnvironment(
+                vault: vault,
+                workspaceStore: workspace,
+                epoch: epoch,
+                artifactRootURL: cluster.identity.root.artifactStoreURL
+            ),
+            registry: runComponents.registry
+        )
+
+        // C02: install generic tool-result retention over the SAME accepted
+        // artifact root and register the ordinary read-only `tools.readResult`
+        // runner on the SAME registry. This adds no database, session, job or
+        // interpreter authority. The bridge is host-only (`floe.results/20`);
+        // model access is the catalog runner whose task identity comes from
+        // the runtime's trusted ToolContext.
+        C02ToolResultIntegration.install(
+            epoch: epoch,
+            artifactRoot: cluster.identity.root.artifactStoreURL,
+            registry: runComponents.registry
+        )
+        // Bounded launch reconciliation of any deletion tombstone left by a
+        // previous process; idempotent and scoped to this generation's root.
+        _ = await C02ToolResultIntegration.reconcilePendingPurges()
+
         // Close the REAL feed/lease cycle with the exact accepted domain
         // instance; until this line both sides answered fail-closed.
         if let (runDomain, _) = RunDomainFacade.current(epoch: epoch) {
@@ -663,6 +803,74 @@ public final class G02InstalledComposition: @unchecked Sendable {
         let defaultsAdapter = FacadeSettingsDefaultsAdapter(database: database)
         let usageAdapter = FacadeUsageAdapter(database: database)
 
+        // C01: the managed project library over the SAME cluster. Its
+        // lifecycle provider resolves the run deletion lifecycle lazily, so
+        // construction order cannot invent a second run domain.
+        let projectLibrary = C01ProjectLibrary(epoch: epoch, cluster: cluster)
+
+        // C02: durable task execution targets + explicit migration + the real
+        // SSH adapter. It reuses the SAME database, the host-registered G07.3
+        // environment snapshot (not a second registry), RemoteHostStore and
+        // the ordinary run-domain deletion/drain lifecycle as a migration
+        // fence. The coordinated schema registration is Main-owned.
+        C02RemoteShellRouting.shared.configure(epoch: epoch) { request in
+            await executionTargets.shellBridge.execute(C02RemoteShellRequest(
+                command: request.command,
+                cwd: request.cwd,
+                environment: request.environment,
+                stdin: request.stdin,
+                timeout: request.timeout,
+                maxOutputBytes: request.maxOutputBytes,
+                environmentTransaction: request.environmentTransaction,
+                context: request.context
+            ))
+        }
+        // MCP setup runs reuse the original persisted task/run/job graph and
+        // conversation-owned cancellation leases without selecting a model.
+        if let backgroundJobs {
+            let setupContexts = C02MCPSetupOwnedRunContexts(epoch: epoch,
+                conversations: conversationDomain, library: projectLibrary,
+                runs: cluster.runStore, jobs: backgroundJobs, targets: executionTargets.domain)
+            let setupInstallation = C02MCPSetupIntegration.makeInstallation(
+                epoch: epoch,
+                appSupportRoot: rootURL,
+                projectLibrary: projectLibrary,
+                storageRootPath: cluster.identity.root.path,
+                environmentRegistry: environmentRegistry,
+                runtimeEnvironments: C02MCPSetupRuntimeEnvironmentProvider(epoch: epoch),
+                jobs: backgroundJobs,
+                jobContexts: setupContexts,
+                mcpDomain: mcpDomain,
+                mcpFactory: mcpFactory,
+                mcpAdmission: transportGate,
+                generation: nil,
+                serviceHost: C02MCPSetupJobServiceHost(jobs: backgroundJobs, contexts: setupContexts),
+                stdioChannelProvider: stdioChannelProvider,
+                // The four reviewed template bytes are packaged by
+                // feature/integrations; the host re-verifies every byte
+                // before upload. A missing asset still fails typed.
+                templateAssetAvailable: true,
+                stdioLaneAvailable: true,
+                liveEpoch: { G02NativeRootEpoch.readback() ?? 0 })
+            C02MCPSetupIntegration.install(setupInstallation)
+        }
+
+        // C02 task continuity: recoverable storage pause and the canonical
+        // question/approval wait identity over the SAME database/root and the
+        // SAME live run services. Installed for this exact generation only;
+        // retirement uses the same epoch.
+        C02TaskContinuityProduction.install(
+            epoch: epoch,
+            database: database,
+            rootURL: URL(fileURLWithPath: cluster.identity.root.path,
+                         isDirectory: true),
+            recoveryDirectory: URL(fileURLWithPath: cluster.identity.root.path,
+                                   isDirectory: true)
+                .deletingLastPathComponent()
+                .appendingPathComponent("Recovery/TaskContinuity",
+                                        isDirectory: true),
+            liveEpoch: { G02NativeRootEpoch.readback() })
+
         var installed = G02InstalledComposition(
             epoch: epoch, cluster: cluster,
             registry: gen.registry,
@@ -692,7 +900,9 @@ public final class G02InstalledComposition: @unchecked Sendable {
             defaultsAdapter: defaultsAdapter,
             usageAdapter: usageAdapter,
             feedBinder: feedBinder,
-            taskSchedules: scheduleService)
+            taskSchedules: scheduleService,
+            projectLibrary: projectLibrary,
+            executionTargets: executionTargets)
         // Capture the SAME-database identity evidence at build time: each
         // entry is the identifier of the ACTUAL argument bound at the
         // domain's construction call site — a second DatabaseManager opened
@@ -705,6 +915,7 @@ public final class G02InstalledComposition: @unchecked Sendable {
             "memory": ObjectIdentifier(database),
             "skillsMcpCapabilities": ObjectIdentifier(database),
             "runDomain": ObjectIdentifier(database),
+            "executionTargets": ObjectIdentifier(database),
             "attachmentStaging": ObjectIdentifier(database),
             "defaults": ObjectIdentifier(database),
             "usage": ObjectIdentifier(database),
@@ -717,6 +928,14 @@ public final class G02InstalledComposition: @unchecked Sendable {
             return nil
         }
         registerTaskChecklistTools(store: taskChecklist, registry: runComponents.registry)
+        // G09-R2 media.project: the ORIGINAL portable tool over the REAL
+        // accepted-root media host. Registration is unconditional for this
+        // generation; model discovery stays gated by the live renderer
+        // consumer lease, the accepted epoch and the explicit host enable
+        // switch. A stale/stopped renderer hides the descriptor truthfully.
+        G09R2MediaToolRegistration.install(
+            service: BridgeV5.service,
+            registry: runComponents.registry)
         // G07.3A user questions: install the durable/RAM coordinator for this
         // exact epoch and register the main-run-only `user.ask` runner. The
         // runner's availability closure reads this installation, so a

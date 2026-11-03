@@ -59,6 +59,9 @@ dependencies {
     // facts arrive as host projections only.
     implementation(project(":core:designsystem"))
     implementation(project(":core:contracts"))
+    // C02: the existing tool card embeds the bounded retained-result reader.
+    // Presentation only; the App host owns the trusted bridge call.
+    implementation(project(":feature:toolresults"))
     implementation(libs.androidx.activity.compose)
     // REAL Markdown parse adapter (Main-accepted Option A): pure-JVM
     // commonmark-java 0.30.1 behind the typed requestMarkdownParse /

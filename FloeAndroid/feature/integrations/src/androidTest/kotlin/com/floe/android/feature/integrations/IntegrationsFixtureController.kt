@@ -167,6 +167,9 @@ class IntegrationsFixtureController : IntegrationUiCallbacks {
         return true
     }
 
+    override fun loadSkillDetail(skillId: String): Boolean = false
+    override fun dismissSkillDetail(skillId: String) = Unit
+
     override fun installOfficialSkill(skillId: String): Boolean {
         officialInstalls += skillId
         if (!officialInstallAccepted) return false

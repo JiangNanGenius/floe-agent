@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,7 +54,7 @@ import kotlinx.coroutines.launch
 
 private enum class HomeDialog {
     NONE, TEMP_CHAT, VOICE, ATTACH, ATTACH_REFUSED, REASONING, REASONING_FAILED,
-    PROJECT, TARGET, PERMISSIONS, SEND_FAILED, FRESH_TASK_FAILED,
+    TARGET, PERMISSIONS, SEND_FAILED, FRESH_TASK_FAILED,
 }
 
 /**
@@ -82,6 +83,19 @@ fun HomeLaunchpadPage(
     var field by remember {
         mutableStateOf(TextFieldValue(HomeDraftTransfer.draft(FloeFoundation.draftStore)))
     }
+    // C07 explicit share→New Task merge. The host has already appended the
+    // shared text to the SAME RAM Home draft; this adopts that exact merged
+    // value once (never a background auto-send and never a temporary session).
+    val entryDraftAdoption by
+        com.floe.android.host.entryflow.C07EntryFlowHost.homeDraftAdoption.collectAsState()
+    LaunchedEffect(entryDraftAdoption?.revision) {
+        val adoption = entryDraftAdoption ?: return@LaunchedEffect
+        if (field.text != adoption.text) {
+            field = TextFieldValue(adoption.text)
+        }
+        com.floe.android.host.entryflow.C07EntryFlowHost
+            .consumeHomeDraftAdoption(adoption.revision)
+    }
     // The RAM draft store is updated synchronously with every edit so a
     // navigation/rotation cancellation can never race ahead of the last
     // text change; selection/composition stay in the live TextFieldValue.
@@ -90,6 +104,7 @@ fun HomeLaunchpadPage(
     var modeMenuOpen by remember { mutableStateOf(false) }
     var permissionMenuOpen by remember { mutableStateOf(false) }
     var reasoningMenuOpen by remember { mutableStateOf(false) }
+    var projectMenuOpen by remember { mutableStateOf(false) }
 
     // The REAL Home draft ownership surface (RootWorkspaceController): live
     // staged rows, the human draft task-policy selection and the selected
@@ -125,6 +140,7 @@ fun HomeLaunchpadPage(
     if (runtimeHost != null) {
         androidx.compose.runtime.LaunchedEffect(runtimeHost) {
             runtimeHost.home.refresh()
+            runtimeHost.projects.refresh()
         }
     }
     val availability = if (runtimeHost == null) {
@@ -176,6 +192,31 @@ fun HomeLaunchpadPage(
         selected
     }
     var modelMenuOpen by remember { mutableStateOf(false) }
+    // REAL managed project projection. The selection is a Home-owned choice;
+    // the native project.assign happens after conversation.create and before
+    // the first run. A project that disappeared from the durable list is
+    // cleared rather than silently sending to a stale id.
+    val projectState = if (runtimeHost == null) {
+        null
+    } else {
+        val observed by runtimeHost.projects.state.collectAsState()
+        observed
+    }
+    val projectRows = projectState?.projects.orEmpty()
+    val selectedProjectId = if (runtimeHost == null) {
+        null
+    } else {
+        val selected by runtimeHost.home.selectedProjectId.collectAsState()
+        selected
+    }
+    val selectedProject = projectRows.firstOrNull { it.id == selectedProjectId }
+    androidx.compose.runtime.LaunchedEffect(projectRows, selectedProjectId, projectState?.loading, runtimeHost) {
+        if (runtimeHost != null && projectState?.loading == false &&
+            selectedProjectId != null && selectedProject == null) {
+            runtimeHost.home.selectProject(null)
+        }
+    }
+    val defaultProjectName = stringResource(R.string.project_default_name)
     val modeLabel = when (agentModeKey) {
         "chat" -> stringResource(R.string.mode_chat)
         "plan" -> stringResource(R.string.mode_plan)
@@ -466,9 +507,41 @@ fun HomeLaunchpadPage(
                 }
                 FloeComposerChip(
                     icon = FloeIcons.Folder,
-                    text = stringResource(R.string.project_none),
-                    onClick = { dialog = HomeDialog.PROJECT },
+                    text = selectedProject?.name ?: stringResource(R.string.project_none),
+                    onClick = { projectMenuOpen = true },
                 )
+                FloeChipMenu(expanded = projectMenuOpen, onDismiss = { projectMenuOpen = false }) {
+                    CupertinoMenuEntry(
+                        title = stringResource(R.string.project_none),
+                        selected = selectedProjectId == null,
+                        onClick = {
+                            runtimeHost?.home?.selectProject(null)
+                            projectMenuOpen = false
+                        },
+                    )
+                    for (project in projectRows) {
+                        CupertinoMenuEntry(
+                            title = project.name,
+                            selected = project.id == selectedProjectId,
+                            onClick = {
+                                runtimeHost?.home?.selectProject(project.id)
+                                projectMenuOpen = false
+                            },
+                        )
+                    }
+                    CupertinoMenuEntry(
+                        title = stringResource(R.string.project_new),
+                        selected = false,
+                        onClick = {
+                            projectMenuOpen = false
+                            runtimeHost?.let { host ->
+                                host.projects.create(defaultProjectName) { projectId ->
+                                    host.home.selectProject(projectId)
+                                }
+                            }
+                        },
+                    )
+                }
                 FloeComposerChip(
                     icon = FloeIcons.DeviceLocal,
                     text = stringResource(R.string.target_local),
@@ -560,12 +633,6 @@ fun HomeLaunchpadPage(
         HomeDialog.REASONING -> FloeInfoDialog(
             title = stringResource(R.string.reasoning_effort),
             message = stringResource(R.string.reasoning_unavailable),
-            confirmLabel = stringResource(R.string.done),
-            onDismiss = { dialog = HomeDialog.NONE },
-        )
-        HomeDialog.PROJECT -> FloeInfoDialog(
-            title = stringResource(R.string.workspaces),
-            message = stringResource(R.string.projects_runtime_pending),
             confirmLabel = stringResource(R.string.done),
             onDismiss = { dialog = HomeDialog.NONE },
         )

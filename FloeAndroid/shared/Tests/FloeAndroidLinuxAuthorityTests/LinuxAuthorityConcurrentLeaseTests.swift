@@ -87,7 +87,7 @@ final class LinuxAuthorityConcurrentLeaseTests: XCTestCase {
         XCTAssertEqual(handshake.maxInteractiveLeases, 2)
         XCTAssertEqual(handshake.maxAgentLeases, 1)
         XCTAssertEqual(handshake.maxExecutionLeases, 1)
-        XCTAssertEqual(handshake.maxConcurrentRuntimeLeases, 3)
+        XCTAssertEqual(handshake.maxConcurrentRuntimeLeases, 5)
 
         try await finish(agent, pid: 7001)
         try await finish(first, pid: 7002)

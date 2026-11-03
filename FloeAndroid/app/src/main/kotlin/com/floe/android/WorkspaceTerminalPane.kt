@@ -387,8 +387,7 @@ internal fun WorkspaceTerminalPane(
             snapshot?.stopReason.orEmpty())
         TerminalSessionPhase.CLOSED -> stringResource(com.floe.android.feature.terminal.R.string.terminal_closed)
         TerminalSessionPhase.FAULT -> stringResource(
-            com.floe.android.feature.terminal.R.string.terminal_fault,
-            snapshot?.faultCode.orEmpty())
+            com.floe.android.feature.terminal.R.string.terminal_fault)
     }
 
     // ONE explicit new-tab action shared by the strip "+" and the empty

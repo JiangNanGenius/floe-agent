@@ -47,8 +47,23 @@ internal class OfficeUnpackPreparation(
                 return false
             }
         val targetRoot = File(dataDir)
+        if (cancelled()) { lastError = "cancelled"; return false }
+        val fonts = try { com.floe.android.core.fonts.ManagedFontStore(context).officeSnapshot() }
+        catch (e: Exception) { lastError = "font library preparation failed"; return false }
+
         if (!OfficePayloadBootstrap.needsExtraction(prefs.getString(OfficePayloadBootstrap.KEY_UNPACK_MARKER, ""), payloadRevision, context.packageName)) {
-            return true
+            return try {
+                val config = File(targetRoot, "etc/fonts/fonts.conf")
+                val current = config.readText()
+                val updated = OfficePayloadBootstrap.withManagedFonts(current, fonts.path)
+                if (updated != current) {
+                    val atomic = android.util.AtomicFile(config)
+                    val out = atomic.startWrite()
+                    try { out.write(updated.toByteArray(Charsets.UTF_8)); atomic.finishWrite(out) }
+                    catch (e: Throwable) { atomic.failWrite(out); throw e }
+                }
+                !cancelled()
+            } catch (e: Exception) { lastError = "font configuration failed"; false }
         }
         val assets = context.assets
         val files = ArrayList<String>()
@@ -75,8 +90,9 @@ internal class OfficeUnpackPreparation(
                         val content = assets.open(assetPath).bufferedReader().use { it.readText() }
                         out.write(
                             OfficePayloadBootstrap
-                                .rewriteFontsConf(content, context.packageName, dataDir)
-                                .toByteArray(Charsets.UTF_8),
+                                .withManagedFonts(
+                                    OfficePayloadBootstrap.rewriteFontsConf(content, context.packageName, dataDir), fonts.path,
+                                ).toByteArray(Charsets.UTF_8),
                         )
                     } else {
                         assets.open(assetPath).use { input -> input.copyTo(out) }

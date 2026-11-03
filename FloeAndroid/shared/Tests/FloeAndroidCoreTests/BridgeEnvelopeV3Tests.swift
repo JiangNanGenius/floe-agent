@@ -113,8 +113,8 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
         // G07.3B appends thirteen schedule configuration tuples to the
         // preserved Alpha20 matrix. Existing role counts and mailbox bounds
         // are unchanged; the new label grants no execution role by itself.
-        XCTAssertEqual(rules.count, 108)
-        XCTAssertEqual(rules.filter { $0.scope == .applicationConfiguration }.count, 68)
+        XCTAssertEqual(rules.count, 114)
+        XCTAssertEqual(rules.filter { $0.scope == .applicationConfiguration }.count, 74)
         XCTAssertEqual(rules.filter { $0.scope == .conversationLifecycle }.count, 21)
         XCTAssertEqual(rules.filter { $0.scope == .launch }.count, 5)
         XCTAssertEqual(rules.filter { $0.scope == .taskExecution }.count, 14)
@@ -143,7 +143,7 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
                         "run.startTask", "conversation.create", "temp.start",
                         "memory.add", "memory.delete.bulk", "memory.organize.start",
                         "memory.organize.apply", "personalization.generate",
-                        "schedule.create"])
+                        "schedule.create", "project.create"])
         XCTAssertEqual(rules.filter { $0.isRunEventPoll }.map { $0.command }, ["event.poll"])
         // The declared vocabulary is the closed 20 labels. Active command
         // labels must match the approved matrix; the three reserved labels are
@@ -154,16 +154,16 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
             "conversations", "capabilities", "system", "operations",
             "attachmentStaging",
             "settings.defaults", "memory", "personalization", "usage", "privacy",
-            "schedule",
+            "schedule", "projects",
         ]
-        XCTAssertEqual(BridgeV3.configurationScopes.count, 20)
+        XCTAssertEqual(BridgeV3.configurationScopes.count, 21)
         XCTAssertEqual(Set(BridgeV3.configurationScopes), declaredLabels)
         let activeLabels = Set(rules.compactMap { $0.configurationScope })
         XCTAssertEqual(activeLabels, [
             "providers", "models", "preferences", "catalog", "skills", "mcp",
             "settings.websearch", "conversations", "capabilities", "system",
             "attachmentStaging", "settings.defaults", "memory", "personalization",
-            "usage", "privacy", "schedule",
+            "usage", "privacy", "schedule", "projects",
         ])
         // `settings.approval` is reserved/inactive for this wire slice:
         // approval preferences remain implemented through the actual
@@ -304,15 +304,21 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
             ("applicationConfiguration", "schedule", "schedule.dispatch"),
             ("applicationConfiguration", "schedule", "schedule.rearm"),
             ("applicationConfiguration", "schedule", "schedule.dispatchPending"),
+            ("applicationConfiguration", "projects", "project.list"),
+            ("applicationConfiguration", "projects", "project.get"),
+            ("applicationConfiguration", "projects", "project.create"),
+            ("applicationConfiguration", "projects", "project.rename"),
+            ("applicationConfiguration", "projects", "project.assign"),
+            ("applicationConfiguration", "projects", "project.delete"),
         ]
-        XCTAssertEqual(goldenPairs.count, 108)
+        XCTAssertEqual(goldenPairs.count, 114)
         // The uniqueness key includes configurationScope: the third
         // content.read entry intentionally shares scope+command with the
         // conversations entry. The 57 legacy tuples remain unchanged.
         let goldenKeys = goldenPairs.map {
             "\($0.scope)|\($0.configurationScope ?? "")|\($0.command)"
         }
-        XCTAssertEqual(Set(goldenKeys).count, 108)
+        XCTAssertEqual(Set(goldenKeys).count, 114)
         XCTAssertEqual(Set(goldenPairs.prefix(57).map {
             "\($0.scope)|\($0.configurationScope ?? "")|\($0.command)"
         }).count, 57)
@@ -320,12 +326,12 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
         // workspace.read + workspace.write + workspace.activate (all three
         // are new distinct commands) => 89 (86+3); distinct COMMAND names are
         // 88 (85+3).
-        XCTAssertEqual(Set(goldenPairs.map { "\($0.scope)|\($0.command)" }).count, 107)
-        XCTAssertEqual(Set(goldenPairs.map { "\($0.command)" }).count, 106)
+        XCTAssertEqual(Set(goldenPairs.map { "\($0.scope)|\($0.command)" }).count, 113)
+        XCTAssertEqual(Set(goldenPairs.map { "\($0.command)" }).count, 112)
         XCTAssertEqual(Set(rules.map {
             "\($0.scope.rawValue)|\($0.configurationScope ?? "")|\($0.command)"
         }), Set(goldenKeys),
-                       "Swift matrix must equal the approved 108-entry golden matrix")
+                       "Swift matrix must equal the approved 114-entry golden matrix")
     }
 
     func testScheduleWritesRetainCASAndTheClosedConfigurationRole() {

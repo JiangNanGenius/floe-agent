@@ -20,7 +20,7 @@ iOS sources and `FloeAgent/Package.swift` are NOT edited by this overlay.
 | FloeTools | 25 | 23 links + `MCPRemoteToolSource.swift`, `NetworkDestinationPolicy.swift` copies |
 | FloeSkills | 22 | all links |
 | FloePersistence | 71 | original links plus reviewed `ConversationStore.swift`, `RunLaunchStore.swift`, `ConversationPromoter.swift` and the frozen byte-identical v46 `DatabaseManager.swift` mirrors; same 46-migration chain, no second store |
-| FloeAgentRuntime | 40 | links + the documented Android-owned regulars (`AgentRuntime.swift`, `SubagentRunner.swift`, `ToolWorkflowGuidance.swift`; from the goal-core batch also the narrow reviewed `IntelligenceStore.swift` mirror with an additive-only in-transaction block — see the dated sections below; ConversationRunService/FloeAgentRuntime actor/HarnessEventChannel authority unchanged) |
+| FloeAgentRuntime | 40 | links + the documented Android-owned regulars (`AgentRuntime.swift`, `SubagentRunner.swift`, `ToolWorkflowGuidance.swift`, and the Android-owned `ConversationRunService.swift` regular documented in the G09-R2 section below; from the goal-core batch also the narrow reviewed `IntelligenceStore.swift` mirror with an additive-only in-transaction block — see the dated sections below; ConversationRunService/FloeAgentRuntime actor/HarnessEventChannel authority unchanged) |
 | FloeAndroidWebTools | 5 | 3 links (`WebRetrievalModels.swift`, `Tools/WebFetchTool.swift`, `Tools/WebSearchTool.swift`) + 2 narrow mirrors (`HTTPRequestService.swift`, `WebSearchService.swift`) — see D1 section |
 | FloeEnvironments | 13 | 9 links + 3 narrow mirrors (`ContainerRecord.swift`, `EnvironmentRoots.swift`, `EnvironmentRegistry.swift`) + 1 Android-owned regular (`LinuxExecutionLeaseDescriptor.swift`) — see G03-R1 section |
 
@@ -1020,3 +1020,147 @@ added. The new G09 files under `FloeAndroidCore` are Android-owned MPL-2.0
 host/wire code; Android-only storage rules (accepted-root derivation,
 durable receipts/journal, explicit workspace resolution) are documented in
 the lane handoff.
+
+## G09-R2 image/video provider refresh (2026-11-01)
+
+Nine `Sources/FloeProviders` entries were refreshed from the public source
+commit `10fc0083c0f8e341ec97ec517c20cfa4e45d7d09` (tree
+`24045043df0418a3a96f0162517691f475320488`, provider subtree
+`b1fa7c173d5a4e573ab448c67a4cb44680ba84a1`). Three files are additions and
+six replace per-file symlinks into the older `FloeAgent` donor
+(`49222ba1edd558645900a18909aa2c80aad13d5b`). The symlink directory entries
+were replaced with regular files via atomic rename; the link targets were
+never opened for writing. The donor targets' SHA-256 and modification times
+are unchanged.
+
+| File | SHA-256 (10fc source == Android regular) |
+| --- | --- |
+| `AlibabaEndpointIdentity.swift` | `8dc91836e93e619a3d71ba242159654498e59d1ff6d9cf041df3affbe253e464` |
+| `Seedream5ImageFamily.swift` | `a3bb5193bb3be6102adffd64a907c0ba9f94b3c9fe4f2eea7e545d5553ee34cd` |
+| `KimiImageAdapter.swift` | `b113e69bb9ab92a1445a42366b98520b7cd9fb58d9d4b070ba25dd632fda8d56` |
+| `ImageAdapters.swift` | `53b28c6170760e31411350ebe769e57f8da56798f3fa08db4f03f41da5fa1537` |
+| `ImageProviderAdapter.swift` | `3f412815cc1e3e3c33edda615c8efc3330059d0a128e85684fc1550610effe5a` |
+| `ImageGenerationPresetResolver.swift` | `1dfd80c057a3c152591a954a51577a5c6bf0382525a1f480ce0c31176de77e67` |
+| `VideoProviderAdapter.swift` | `ad00b5237fc49d04c342133909f8d489b09ab0750ed1f931281828538e7b1de0` |
+| `VideoModelRegistry.swift` | `5fecd1a979ea5ca9b08a0588be8f96f3ad25ae2dc23814237445dd61e6cfa207` |
+| `VideoReferenceImageSupport.swift` | `138218dc86e41260e78619b0fad30fa19698e23f9ee2c7d6a9dab050d568d4ac` |
+
+This supersedes the G09-R1 link classification for exactly these nine entries.
+`ProviderAdapter.swift` (the Android incremental-transport copy) is untouched:
+SHA-256 `689d0b8f36c242a8211554c3bb0e9ccf1f4be3bae9e1b3cbf4db2d01e6cf4c46`
+before and after. No chat/SSE/speech/authentication/catalog/settings/Package/
+API-contract/App UI file changed.
+
+The refreshed routing requires two support types that did not exist in the
+older donor. Main supplied them as separate regular files (no whole-file
+`ProviderProfile.swift` replacement):
+
+| FloeCore file | SHA-256 | Provenance |
+| --- | --- | --- |
+| `ProviderBillingEndpoint.swift` | `90b71095372bf31268a95d6e6cfc475eca084028d477deedc2f66b1152d2dd62` | byte-identical 10fc file |
+| `KimiCodeEndpointIdentity.swift` | `9feb4c96172e07bede78c930ae34bb8929e549376bc83e46402d8750fab6ea36` | exact `KimiCodeEndpointIdentity` enum section from 10fc `ProviderProfile.swift` plus Foundation/SPDX/provenance header |
+
+Targeted Swift 6 object compile of `FloeProviders` (Apple Swift 6.4,
+Xcode 27.1, warm `swift-native` scratch) completed with rc=0 on 2026-11-01.
+The synthetic `G09R2ProviderRoutingTests.swift` source was authored and
+typechecked against the built modules, but was not executed in this package;
+the coherent R2 batch owns test execution. `ProviderCatalog.json` is not part
+of this refresh (the older catalog may not list every new plan/seed model
+until the separate catalog slice lands). R3 owns ARM64/APK/device/real
+provider/media/visual acceptance.
+
+## G09-R2 media-only catalog slice (2026-11-01)
+
+`core/swiftbridge/src/main/assets/provider/ProviderCatalog.json` retains its
+20-provider Android catalog and chat/authentication behavior. Only Alibaba
+image/video metadata and service-offer model lists were selected from the
+public iOS resource at `10fc0083c0f8e341ec97ec517c20cfa4e45d7d09`
+(upstream resource SHA-256
+`fe603289604db6f060d640104447e57394d62209c67d96334d3ead8671565fa6`).
+The Android result is SHA-256
+`b72cb804f702a6c85be95b3c2c4443e35e809f49ea4c4e7c0bd2d8a36b72af81`.
+The remaining 19 provider records and existing chat model ordering are
+unchanged. Companion presentation code reads the actual image/video
+service-offer models rather than guessing media support from chat names.
+
+Plan-specific preset templates were not added to this catalog slice.
+The provider adapters support explicit configured endpoints; this record
+does not claim all plan presets or real-provider behavior are qualified.
+No provider call, credential migration or paid test was performed.
+
+## G09-R2 portable media tool source (2026-11-01)
+
+Four additional `FloeAndroidWorkbench` files are byte-identical exports from
+public source `10fc0083c0f8e341ec97ec517c20cfa4e45d7d09`. The existing
+`FloeTools` target is added as a dependency; no platform renderer is copied.
+
+| File | SHA-256 |
+| --- | --- |
+| `MediaProjectHostSupport.swift` | `47f869f6145786a015e44a096af6002732faa441f4e0d75b839c9cf82627e9ea` |
+| `MediaProposal.swift` | `f0b3449851dcd4f241d82cc130ca450b0da8e885a636ef036e57c6ed25fba243` |
+| `MediaProposalGrantStore.swift` | `1f5bcb1a203ff4aca5525d975a53efea4f536c80e9eddec090a16a8a003d5bf3` |
+| `MediaProjectTool.swift` | `f5b1737c3098b1a9f582cbc83735790984a8faf54fc87eeeaaac5f25fd82cb6a` |
+
+These define the original media tool, proposal/grant rules, command coding and
+`MediaProjectHost` protocol. Source integration does not register the tool:
+Android still must supply the real owner-bound host and render-ticket
+export path before discovery may advertise it. No export/inference/device
+result follows from copying or compiling these files.
+
+`MediaPlatformExportReceipts.swift` carries only the two receipt value types
+from the same source commit (`WorkbenchImageRenderer.swift` and
+`WorkbenchVideoRenderer.swift`), with public memberwise initializers for the
+separate Android host target. Fields and conformances are unchanged. No
+CoreImage, AVFoundation or substitute renderer is included. The initial
+object-build failure identified these missing value types and is retained.
+
+## G09-R2 task-context data-only overlay (2026-11-01)
+
+`Sources/FloeAgentRuntime/ConversationRunService.swift` is an Android-owned
+REGULAR file (not a relative symlink), so nothing here writes through to the
+iOS tree. Its original public-source anchor is
+`FloeAgent/Sources/FloeAgentRuntime/ConversationRunService.swift`, SHA-256
+`8dcb6ce34a18155438daad664c6ee2d691fd04dcbe6d9916d6bdad03a5d307f2`; that iOS
+file was NOT modified. The Android preimage for this round was
+`a333e19b38ed39ebfb9c3af81dd8b0ea80e453c752f177195da49b870767161b`.
+
+This round adds ONE narrow, DATA-ONLY overlay, nothing else:
+
+* `ConversationRunService.RunContext.taskResources: [String]` (default `[]`);
+* one bounded data section in `buildContextMessage` ("Connected task
+  resources") that explicitly frames the identities as reference data, not
+  permission.
+
+An empty/default `taskResources` reproduces the previous prompt exactly, and no
+permission, approval, tool-authority, history or temporary-session semantics
+change. The value comes only from the accepted creative generation's durable
+explicit-selection marker
+(`G09CreativeDomainService.r2MediaTaskContext` →
+`G09R2MediaTaskBindingStore.currentSelection(taskID:)`), is excluded for
+Notes/temporary runs at assembly, and is rechecked against the same
+un-stopped accepted epoch/root after the read await. It grants nothing: every
+`media.project` call still goes through the original runtime authority and the
+exact task/environment/workspace binding CAS.
+
+The additive task-association table (Android-owned store, same accepted
+database, no `user_version` change, no migration-registry change) also gains
+one nullable `selected_at REAL` marker, written ONLY by an explicit Ask AI
+selection (a same-project reselection refreshes it; pin/background updates
+never touch it). Existing pre-fix tables are altered idempotently and
+backfilled from `created_at`, which was itself the selection time. No optional
+V50 patch is required or applied.
+
+Final Android regular hash after this round:
+`5e19292574adaf36fe69a8e6a022e9d151c322ea36b7b326809cd0c40b8b737f`
+(bytes 110,384). Original source untouched; future upstream adoption requires
+an explicit diff and relevant checks.
+
+## C01/C03 additive Android source overlays (2026-11-02)
+
+`FloeCore/ProviderSaveRunner.swift` and `FloePersistence/SettingsStore.swift` are materialized Android overlay files. The former preserves the provider region through read-edit-save; the latter adds atomic raw-value compare-and-set on the existing app_settings table. Their frozen donor preimages were respectively `7fbf0a39b5341b7e51ce8a0692f85481a78fde2daadebc9ca4a37e731730cd33` and `aa48dc53b4e7efad03dfa640f07c682c1114753ab3f1000b96521adfebaee67f`. Frozen donors and the native iOS checkout were not modified. No database table is added by the settings CAS method.
+
+C01 conversation pinning uses schema 50 and preserves R2 tables/selected_at. C03 system/cloud speech and media transcription are source integrations; object compilation, Android linking, App/device behavior and provider qualification are pending the unified all-code cohort. Existing packaged native libraries do not prove these new sources are linked.
+
+## C02 Android Hub overlays (2026-11-02)
+
+The Android FloeSkills per-file source links were materialized byte-for-byte before the Android platform and full-catalog consumer changes. CuratedSkillHub/Models/Review/Upgrade and SkillDependency/RuntimeDependency reuse fixed iOS Git object a59b4d4005f616c611df67fab7620e9853c525b9; the legacy four-package client remains separate. Original frozen donors, compiled trust keys and the native iOS checkout were not changed. Android dependency preparation uses the existing selected guest exec.shell/jobs services and verifies signed evidence plus actual installed bytes; shell registration glue is a separately tracked integration dependency. These are uncompiled source changes pending the unified cohort.

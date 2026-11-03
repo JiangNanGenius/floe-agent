@@ -4,6 +4,7 @@ package com.floe.android.host.linux
 import android.content.Context
 import com.floe.android.runtimeipc.RuntimeExecutionTrace
 import com.floe.android.runtimeipc.RuntimeExecutionTrace.Stage
+import com.floe.android.host.services.C01ManagedServiceOwner
 import com.floe.android.bridge.LinuxShellNative
 import com.floe.android.runlifecycle.ForegroundLease
 import com.floe.android.runlifecycle.OperationKind
@@ -31,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 /** App-owned transient transport. Original Swift services remain job/run authority. */
 class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
-    private class AdmissionRefused : IllegalStateException("Runtime refused admission")
+    private class AdmissionRefused(val code: String = "runtime_not_started") : IllegalStateException("Runtime refused admission")
     private val context = context.applicationContext
     private val foreground = RunForegroundController.forApplication(context)
     private val epoch = AtomicLong()
@@ -76,7 +77,8 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
      *  operations; planned or post-hoc actions are never counted here. */
     internal data class FailedStartEvidence(val failureCode: String, val recovery: JsonObject)
 
-    private inner class OwnedSession(val controlID: String, val nativeEpoch: Long, val runID: String, val toolCallID: String?) {
+    private inner class OwnedSession(val controlID: String, val nativeEpoch: Long, val runID: String,
+                                     val toolCallID: String?, val stdio: Boolean = false) {
         /** G07.1 terminal04: bounded host-side phase composition for THIS
          *  dispatch (diagnostic only; admission/lease rules are untouched).
          *  Published exactly once from whichever observer sees the terminal. */
@@ -128,6 +130,13 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 throw failure
             }
         }
+
+        suspend fun poll(payload: JSONObject): JSONObject = pollWithSettlement(
+            settlement = settlementLock,
+            isSettled = { settledProof != null },
+            live = { exchange("shell.poll", payload) },
+            retired = { readTerminalPoll(payload, JSONObject(checkNotNull(settledProof))) },
+        )
 
         suspend fun requestStop() {
             val stopStage = if (sessionID == null) Stage.PUMP_STOP_REQUEST else Stage.PUMP_STOP_SESSION
@@ -320,13 +329,61 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
     }
 
     private suspend fun handle(claim: Long, acceptedEpoch: Long) {
+        var observedOperation = "unknown"
         try {
             check(epoch.get() == acceptedEpoch && LinuxShellNative.isLive(claim) == 1)
             val descriptor = objectBytes(checkNotNull(LinuxShellNative.describe(claim)))
             val payload = objectBytes(checkNotNull(LinuxShellNative.payload(claim)))
             val operation = descriptor.getString("operation")
+            observedOperation = when (operation) {
+                "shell.start", "shell.poll", "shell.input", "shell.resize", "shell.cancel" -> operation
+                else -> "other"
+            }
             if (operation == "host.jobOwnership") {
                 complete(claim, 0, jobOwnership(claim, payload, acceptedEpoch)); return
+            }
+            if (operation == "host.environmentControl") {
+                // C01 truthful environment lifecycle. The owner reports the
+                // REAL LocalRuntimeSetupHost phase and runtime status, and a
+                // stop only through Main's existing root stop/drain gate.
+                // No install/start/stop is invented here.
+                complete(claim, 0, C01LinuxEnvironmentOwner.handle(payload)); return
+            }
+            if (operation == "host.serviceCapability") {
+                // Capability probe of the ACTUAL peer generation. v3 is the
+                // only contract that adds the two service roles and the owned
+                // readiness operation; an older helper stays exec-compatible
+                // but services are honestly unavailable.
+                complete(claim, 0, serviceCapability()); return
+            }
+            if (operation == "host.servicePortProbe") {
+                complete(claim, 0, servicePortProbe(payload)); return
+            }
+            if (operation == "host.serviceReadiness") {
+                val sessionID = payload.optString("sessionID")
+                val port = payload.optInt("port", 0)
+                val owner = work.values.firstOrNull { it.sessionID == sessionID }
+                if (owner == null || port !in 1024..65535) {
+                    complete(claim, 0, JSONObject().put("state", "starting").put("port", port)
+                        .put("owned", false).put("detail", "sessionNotLive")); return
+                }
+                val reply = owner.exchange("service.readiness",
+                    JSONObject().put("sessionID", sessionID).put("port", port))
+                complete(claim, 0, reply); return
+            }
+            if (operation == "host.stdioStart") {
+                check(!admissionClosed.get())
+                // The caller's accepted epoch is part of the trusted open
+                // request only. It is re-proved here and stripped before the
+                // runtime payload (whose closed field set has no epoch).
+                require(payload.getLong("epoch") == acceptedEpoch)
+                payload.remove("epoch")
+                startSession(claim, payload, acceptedEpoch, stdio = true); return
+            }
+            if (operation == "host.stdioPoll" || operation == "host.stdioWrite" ||
+                operation == "host.stdioStdinEof" || operation == "host.stdioClose"
+            ) {
+                handleStdio(claim, operation, payload, acceptedEpoch); return
             }
             if (operation == "host.shellSettlement") {
                 complete(claim, 0, settlement(payload, acceptedEpoch)); return
@@ -406,14 +463,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             if (owner == null && operation == "shell.poll") {
                 val terminal = synchronized(terminals) { terminals.values.firstOrNull { it.epoch == acceptedEpoch && it.sessionID == sessionID } }
                 checkNotNull(terminal)
-                val client = RuntimeConnection(context)
-                try {
-                    client.connect().get(15, TimeUnit.SECONDS)
-                    val response = result(client.exchange(operation, payload))
-                    require(response.getString("sessionID") == sessionID)
-                    copyWorkspaceProof(response, JSONObject(terminal.proof))
-                    complete(claim, 0, response)
-                } finally { client.close() }
+                complete(claim, 0, readTerminalPoll(payload, JSONObject(terminal.proof)))
                 return
             }
             if (owner == null && operation == "shell.input" &&
@@ -444,7 +494,11 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 return
             }
             checkNotNull(owner)
-            val response = if (operation == "shell.cancel") {
+            val response = if (operation == "shell.poll") {
+                // The watcher may settle this owner after the map lookup.
+                // Share its settlement lock before selecting a connection.
+                owner.poll(payload)
+            } else if (operation == "shell.cancel") {
                 owner.requestStop(); JSONObject().put("state", "stop_requested")
             } else {
                 val first = owner.exchange(operation, payload)
@@ -463,10 +517,153 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 copyWorkspaceProof(response, proof)
             }
             complete(claim, 0, response)
-        } catch (_: Exception) { complete(claim, 1, JSONObject().put("code", "runtime_unavailable")) }
+        } catch (failure: Exception) {
+            // Closed operation and exception class only; never payloads,
+            // commands, paths, IDs or exception messages.
+            runCatching { android.util.Log.i("FloeLinuxStart",
+                "PUMP_CONTROL_REFUSED op=$observedOperation type=${failure.javaClass.simpleName.take(80)}") }
+            complete(claim, 1, JSONObject().put("code", "runtime_unavailable"))
+        }
     }
 
-    private suspend fun startSession(claim: Long, payload: JSONObject, acceptedEpoch: Long) {
+    private suspend fun readTerminalPoll(payload: JSONObject, proof: JSONObject): JSONObject {
+        val sessionID = payload.getString("sessionID")
+        require(proof.getString("sessionID") == sessionID)
+        val client = RuntimeConnection(context)
+        try {
+            client.connect().get(15, TimeUnit.SECONDS)
+            val response = result(client.exchange("shell.poll", payload))
+            require(response.getString("sessionID") == sessionID)
+            copyWorkspaceProof(response, proof)
+            return response
+        } finally { client.close() }
+    }
+
+    /**
+     * C01 separated-stdio transport operations for ONE owned session.
+     *
+     * The session is addressed by the engine lease id returned by
+     * `stdio.start`; ownership stays in [work] until the runtime's REAL
+     * `leaseReleased` terminal, so a late write/read can never address a
+     * different session. When the session is already terminal, a recorded
+     * terminal receipt answers read-only with an explicit closed envelope;
+     * no bytes, no fake EOF and no replay are fabricated.
+     */
+    private suspend fun handleStdio(claim: Long, operation: String, payload: JSONObject,
+                                    acceptedEpoch: Long) {
+        val sessionID = payload.optString("sessionID")
+        require(sessionID.isNotEmpty()) { "stdio session address missing" }
+        val owner = work.values.firstOrNull { it.sessionID == sessionID }
+        if (owner == null) {
+            val terminal = synchronized(terminals) {
+                terminals.values.lastOrNull {
+                    it.epoch == acceptedEpoch && it.sessionID == sessionID
+                }
+            }
+            checkNotNull(terminal) { "unknown stdio session" }
+            val proof = JSONObject(terminal.proof)
+            val reply = JSONObject().put("sessionID", sessionID).put("state", "released")
+                .put("leaseReleased", true)
+            for (key in listOf("cancelled", "stopReason", "exitCode", "termSig", "waitErrno",
+                               "workspaceStatus", "workspaceKey", "workspaceOwner",
+                               "workspaceRecoveryRef", "workspaceRecovery")) {
+                if (proof.has(key)) reply.put(key, proof.get(key))
+            }
+            when (operation) {
+                "host.stdioPoll" -> reply
+                    .put("stdoutBase64", "").put("stdoutCursor", 0L).put("stdoutGapBytes", 0L)
+                    .put("stdoutMore", false).put("stdoutDroppedBytes", 0L).put("stdoutEof", true)
+                    .put("stderrBase64", "").put("stderrCursor", 0L).put("stderrGapBytes", 0L)
+                    .put("stderrMore", false).put("stderrDroppedBytes", 0L).put("stderrEof", true)
+                "host.stdioWrite" -> reply.put("acceptedBytes", 0).put("partial", false)
+                    .put("errno", 9 /* EBADF: the owned pipe is gone */)
+                "host.stdioStdinEof" -> reply.put("acceptedBytes", 0)
+                    .put("stdinEof", "rejected").put("reason", "sessionReleased")
+                else -> reply // close: nothing left to stop
+            }
+            complete(claim, 0, reply)
+            return
+        }
+        when (operation) {
+            "host.stdioPoll" -> {
+                val response = owner.exchange("stdio.poll", payload)
+                if (response.optBoolean("leaseReleased")) {
+                    owner.latency.mark(LinuxTerminalLatency.Phase.SETTLE)
+                    owner.latency.publish(
+                        if (response.optBoolean("cancelled")) LinuxTerminalLatency.TERMINAL_CANCELLED
+                        else LinuxTerminalLatency.TERMINAL_EXITED)
+                    val proof = owner.finish(terminalProof(response))
+                    copyWorkspaceProof(response, proof)
+                    // The engine's real terminal page is authoritative; keep
+                    // the terminal EOF facts the channel uses to distinguish
+                    // EOF from a timeout.
+                    response.put("stdoutEof", true).put("stderrEof", true)
+                }
+                complete(claim, 0, response)
+            }
+            "host.stdioWrite" -> {
+                val first = owner.exchange("stdio.write", payload)
+                complete(claim, 0, awaitReceipt(owner, first))
+            }
+            "host.stdioStdinEof" -> {
+                val first = owner.exchange("stdio.stdinEof", payload)
+                complete(claim, 0, awaitReceipt(owner, first))
+            }
+            "host.stdioClose" -> {
+                // A stop is a REQUEST: the owner keeps its lease/foreground
+                // until the runtime proves the real release.
+                owner.requestStop()
+                complete(claim, 0, JSONObject().put("state", "stop_requested"))
+            }
+            else -> error("Invalid stdio operation")
+        }
+    }
+
+    /** C01 capability probe: exact live peer contract, never a cached host flag. */
+    private suspend fun serviceCapability(): JSONObject {
+        val current = epoch.get()
+        if (current <= 0) return JSONObject().put("contractVersion", "")
+            .put("serviceRoleAvailable", false).put("detail", "engineUnbound")
+        return try {
+            val client = RuntimeConnection(context)
+            try {
+                client.connect().get(10, TimeUnit.SECONDS)
+                val status = result(client.exchange("status"))
+                val contract = status.optString("workloadContractVersion")
+                val available = C01ManagedServiceOwner.contractSupportsServices(contract)
+                val stdio = status.optString("stdioContractVersion")
+                val stdioAvailable = C01ManagedServiceOwner.contractSupportsStdio(stdio)
+                JSONObject()
+                    .put("contractVersion", contract.take(64))
+                    .put("serviceRoleAvailable", available)
+                    .put("stdioContractVersion", stdio.take(64))
+                    .put("stdioRoleAvailable", stdioAvailable)
+                    .put("detail", when {
+                        available && stdioAvailable -> "v3 service roles and separated stdio advertised"
+                        available -> "v3 service roles advertised; separated stdio unavailable"
+                        else -> "service roles unavailable in this component"
+                    })
+            } finally { client.close() }
+        } catch (_: Exception) {
+            JSONObject().put("contractVersion", "")
+                .put("serviceRoleAvailable", false).put("detail", "capabilityUnreachable")
+        }
+    }
+
+    /**
+     * Pre-start loopback probe. It does not prove ownership (the post-start
+     * `service.readiness` does); it only refuses a port that already answers
+     * or cannot be bound. Fail-closed on any exception.
+     */
+    private fun servicePortProbe(payload: JSONObject): JSONObject {
+        val port = payload.optInt("port", 0)
+        if (port !in 1024..65535) return JSONObject().put("inUse", true).put("detail", "invalidPort")
+        val (inUse, detail) = C01ManagedServiceOwner.probeLoopback(port)
+        return JSONObject().put("inUse", inUse).put("detail", detail)
+    }
+
+    private suspend fun startSession(claim: Long, payload: JSONObject, acceptedEpoch: Long,
+                                     stdio: Boolean = false) {
         val runID = UUID.fromString(payload.getString("runID")).toString()
         val host = payload.remove("host") as? JSONObject
         val callID = host?.optString("toolCallID")?.takeIf { it.isNotEmpty() }
@@ -479,7 +676,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         val operationID = host?.optString("operationID")?.takeIf { it.isNotEmpty() }
         require(operationID == null || operationID.length <= 64)
         require(callID == null || operationID == null)
-        val owned = OwnedSession(UUID.randomUUID().toString(), acceptedEpoch, runID, callID)
+        val owned = OwnedSession(UUID.randomUUID().toString(), acceptedEpoch, runID, callID, stdio)
         var possiblyAdmitted = false
         var handedToWatcher = false
         try {
@@ -515,7 +712,8 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             // A transport failure may follow accepted dispatch. Never replay it.
             possiblyAdmitted = true
             RuntimeExecutionTrace.mark(Stage.PUMP_DISPATCH)
-            val response = owned.exchange("shell.start", payload, owned.controlID)
+            val response = owned.exchange(if (stdio) "stdio.start" else "shell.start",
+                payload, owned.controlID)
             owned.latency.mark(LinuxTerminalLatency.Phase.DISPATCH)
             RuntimeExecutionTrace.mark(Stage.PUMP_REQUEST_ACCEPTED)
             val started = awaitReceipt(owned, response) {
@@ -523,6 +721,16 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             }
             owned.latency.mark(LinuxTerminalLatency.Phase.RECEIPT)
             RuntimeExecutionTrace.mark(Stage.PUMP_RECEIPT_RETURNED)
+            if (stdio &&
+                started.optString("stdioContractVersion") != C01ManagedServiceOwner.STDIO_CONTRACT
+            ) {
+                // The peer admitted a start but did not attest the exact
+                // separated-stdio contract: never hand this back as a channel.
+                owned.requestStop()
+                handedToWatcher = true
+                scope.launch(Dispatchers.IO) { watch(owned, failedStartClaim = claim) }
+                return
+            }
             owned.sessionID = started.getString("sessionID")
             owned.latency.mark(LinuxTerminalLatency.Phase.READY)
             RuntimeExecutionTrace.mark(Stage.PUMP_SESSION_READY)
@@ -545,7 +753,10 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             if (!possiblyAdmitted) owned.latency.publish(LinuxTerminalLatency.TERMINAL_FAILED)
             if (!possiblyAdmitted) {
                 if (work.containsKey(owned.controlID)) owned.finish(JSONObject().put("state", "quiescent"))
-                complete(claim, 1, JSONObject().put("code", "runtime_not_started"))
+                val code = (failure as? AdmissionRefused)?.code?.takeIf {
+                    it in setOf("environment_transaction_busy", "environment_transaction_requires_idle")
+                } ?: "runtime_not_started"
+                complete(claim, 1, JSONObject().put("code", code))
             }
         } finally {
             if (!handedToWatcher && work.containsKey(owned.controlID)) {
@@ -585,8 +796,13 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                     }
                     val session = owned.sessionID
                     if (session != null) {
-                        val page = owned.exchange("shell.poll", JSONObject().put("sessionID", session)
-                            .put("cursor", 0).put("maxBytes", 1))
+                        val page = if (owned.stdio) {
+                            owned.exchange("stdio.poll", JSONObject().put("sessionID", session)
+                                .put("stdoutCursor", 0).put("stderrCursor", 0).put("maxBytes", 1))
+                        } else {
+                            owned.exchange("shell.poll", JSONObject().put("sessionID", session)
+                                .put("cursor", 0).put("maxBytes", 1))
+                        }
                         if (page.getBoolean("leaseReleased")) {
                             owned.latency.mark(LinuxTerminalLatency.Phase.SETTLE)
                             owned.latency.publish(
@@ -1309,6 +1525,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
          *  `LinuxShellMailbox` when its task's workspace facts do not exist
          *  yet. Not a model route, not a new Core ABI entry, not a tool. */
         internal const val TERMINAL_PREFLIGHT_OPERATION = "host.terminalWorkspacePreflight"
+        internal const val MANAGED_SERVICE_CONTRACT = "floe-multi-workload-v3"
 
         /** G05-R3: the pure READ of this pump's own first-use ownership table,
          *  over the SAME original mailbox. It exists because a completed claim
@@ -1677,6 +1894,9 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         // The OPTIONAL merged recovery projection rides the same terminal
         // proof channel (never a second registry); absence is preserved.
         proof.optJSONObject("workspaceRecovery")?.let { target.put("workspaceRecovery", it) }
+        target.remove("environmentTransaction")
+        sanitizeEnvironmentTransactionReceipt(proof.optJSONObject("environmentTransaction"))
+            ?.let { target.put("environmentTransaction", it) }
     }
 
     private fun terminalProof(page: JSONObject): JSONObject = JSONObject().put("state", "released").also { proof ->
@@ -1685,6 +1905,8 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                            "workspaceRecoveryRef", "workspaceRecovery")) {
             if (page.has(key)) proof.put(key, page.get(key))
         }
+        sanitizeEnvironmentTransactionReceipt(page.optJSONObject("environmentTransaction"))
+            ?.let { proof.put("environmentTransaction", it) }
     }
 
     private fun matches(runID: String, callID: String?, sessionID: String?, query: JSONObject): Boolean {
@@ -1745,7 +1967,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         return JSONObject(Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString())
     }
     private fun result(envelope: JSONObject): JSONObject {
-        if (!envelope.getBoolean("ok")) throw AdmissionRefused()
+        if (!envelope.getBoolean("ok")) throw AdmissionRefused(envelope.optString("code", "runtime_not_started"))
         return envelope.getJSONObject("result")
     }
 }

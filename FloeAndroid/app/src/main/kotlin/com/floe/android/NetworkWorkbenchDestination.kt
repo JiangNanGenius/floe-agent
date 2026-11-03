@@ -15,9 +15,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import com.floe.android.core.networkcapture.CaptureMode
 import com.floe.android.design.*
 import com.floe.android.feature.network.*
 import com.floe.android.host.RuntimeHost
+import com.floe.android.host.capture.CaptureStartPreparation
+import com.floe.android.host.capture.RawExportPreparation
 import com.floe.android.safgateway.*
 
 private data class PendingPcapExport(
@@ -31,10 +34,15 @@ private data class PendingCoverageExport(
     val format: CoverageExportFormatUi,
 )
 
+private data class PendingRawExport(
+    val preparation: RawExportPreparation,
+)
+
 /** Permission callbacks grant access only; they never replay a diagnostic. */
 @Composable
 internal fun NetworkWorkbenchDestination(
     host: RuntimeHost?, compact: Boolean, showSidebarToggle: Boolean, onNavigate: () -> Unit,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     if (host == null) {
         FloeUnavailableView(FloeIcons.Antenna, stringResource(R.string.network_workbench), stringResource(R.string.projects_runtime_pending))
@@ -44,6 +52,35 @@ internal fun NetworkWorkbenchDestination(
     val state by controller.state.collectAsState()
     val artifactController = host.networkArtifact
     val artifactState by artifactController.state.collectAsState()
+    val captureController = host.capture
+    val captureState by captureController.state.collectAsState()
+    val rawCaptureState by captureController.rawState.collectAsState()
+    val captureAvailability = captureController.rootAvailability()
+    var pendingCaptureConsent by remember { mutableStateOf<String?>(null) }
+    val captureConsentLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val sessionId = pendingCaptureConsent
+        pendingCaptureConsent = null
+        if (sessionId != null) {
+            captureController.onConsentResult(
+                sessionId,
+                result.resultCode == Activity.RESULT_OK,
+            )
+        }
+    }
+    fun startCapture(mode: String, detailed: Boolean, minutes: Int) {
+        val prepared = if (mode == CaptureMode.ROOT.wire) {
+            captureController.requestRootStart(detailed, minutes)
+        } else {
+            captureController.requestVpnStart(detailed, minutes)
+        }
+        if (prepared is CaptureStartPreparation.ConsentRequired) {
+            pendingCaptureConsent = prepared.sessionId
+            runCatching { captureConsentLauncher.launch(prepared.intent) }
+                .onFailure { pendingCaptureConsent = null }
+        }
+    }
     val context = LocalContext.current
     val asked = remember { mutableSetOf<String>() }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
@@ -87,6 +124,41 @@ internal fun NetworkWorkbenchDestination(
                 artifactController.exportPcapToUri(uri, pending.analysisID, pending.query, pending.format)
             }
         }
+    }
+    var pendingRawExport by remember { mutableStateOf<PendingRawExport?>(null) }
+    val rawExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val pending = pendingRawExport
+        pendingRawExport = null
+        if (pending == null) return@rememberLauncherForActivityResult
+        if (result.resultCode != Activity.RESULT_OK) {
+            captureController.onRawExportPickerCancelled(pending.preparation.requestId)
+            return@rememberLauncherForActivityResult
+        }
+        val uri = SafPickerIntents.resultUriString(result.data)?.let(Uri::parse)
+        val flags = SafPickerIntents.resultFlags(result.data)
+        if (uri == null || flags and SafGrantFlagBits.GRANT_WRITE == 0) {
+            captureController.onRawExportPickerCancelled(pending.preparation.requestId)
+            return@rememberLauncherForActivityResult
+        }
+        captureController.onRawExportPicked(pending.preparation.requestId, uri)
+    }
+    fun exportRawCapture(sessionId: String) {
+        val prepared = captureController.prepareRawExport(sessionId) ?: return
+        pendingRawExport = PendingRawExport(prepared)
+        val request = PickRequestSpec(
+            requestKey = "network-raw-capture-${prepared.requestId}",
+            kind = PickKind.CREATE_DOCUMENT,
+            mimeTypes = listOf("application/vnd.tcpdump.pcap"),
+            suggestedName = prepared.suggestedName,
+            initialDirectory = null,
+        )
+        runCatching { rawExportLauncher.launch(SafPickerIntents.from(request)) }
+            .onFailure {
+                pendingRawExport = null
+                captureController.onRawExportPickerCancelled(prepared.requestId)
+            }
     }
     val floorplanPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) artifactController.saveFloorplan(uri)
@@ -133,7 +205,12 @@ internal fun NetworkWorkbenchDestination(
     }
     LaunchedEffect(controller) { controller.enter() }
     LaunchedEffect(artifactController) { artifactController.enter() }
+    LaunchedEffect(captureController) {
+        captureController.enter()
+        captureController.refreshRawCaptures()
+    }
     NetworkWorkbench(
+        sheetNavigation = sheetNavigation,
         state = state, compact = compact,
         onExecute = controller::execute, onStop = controller::stop,
         onPermission = permissionAction,
@@ -151,6 +228,9 @@ internal fun NetworkWorkbenchDestination(
             NetworkArtifactWorkbench(
                 state = artifactState,
                 compact = compact,
+                captureState = captureState,
+                captureAvailability = captureAvailability,
+                rawCaptureState = rawCaptureState,
                 callbacks = NetworkArtifactCallbacks(
                     onPickPcap = ::pickPcap,
                     onSelectPcap = artifactController::selectPcap,
@@ -171,6 +251,15 @@ internal fun NetworkWorkbenchDestination(
                     onSetCoverageAgentReadable = artifactController::setCoverageAgentReadable,
                     onPermission = permissionAction,
                     onCancelActive = artifactController::cancelActiveWork,
+                    onCaptureStart = ::startCapture,
+                    onCaptureStop = captureController::stop,
+                    onOpenCaptureAnalysis = { analysisID ->
+                        artifactController.refreshForExternalCapture()
+                        artifactController.selectPcap(analysisID)
+                    },
+                    onRefreshRawCaptures = captureController::refreshRawCaptures,
+                    onExportRawCapture = ::exportRawCapture,
+                    onCancelRawExport = captureController::cancelRawExport,
                 ),
                 modifier = panelModifier,
             )

@@ -30,6 +30,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -70,11 +71,25 @@ fun McpServerEditorPage(
     val inFlight = projected?.saveInFlight == true || slot.saveDispatched
     val networkAvailable = projected?.networkActionsAvailable == true
     val saveError = projected?.saveError
-    // ⇄ disabled(displayName.empty || endpointText.empty) at the toolbar;
-    // everything else is answered by the host's Swift validation on dispatch.
-    val saveEnabled = projected != null && networkAvailable && !inFlight &&
-        draft.displayName.isNotBlank() && draft.endpointText.isNotEmpty()
+    val isStdio = draft.transportKind == McpTransportKindUi.STDIO
+    // A saved stdio definition needs no network/LLM subscription to persist.
+    // An HTTP save still requires the host's admitted network action.
+    val transportReady = if (isStdio) {
+        draft.stdioCommand.isNotBlank()
+    } else {
+        draft.endpointText.isNotEmpty()
+    }
+    val targetComplete = draft.stdioSelection?.let {
+        !it.rootIdentity.isNullOrBlank() && !it.environmentId.isNullOrBlank() && !it.taskId.isNullOrBlank()
+    } ?: true
+    val saveEnabled = projected != null && (!isStdio || targetComplete) &&
+        (isStdio || networkAvailable) && !inFlight &&
+        draft.displayName.isNotBlank() && transportReady
+    LaunchedEffect(identity.editorId, isStdio) {
+        if (isStdio) holder.requestMcpStdioChoices(identity, draft.stdioSelection?.projectId)
+    }
     var authMenuOpen by remember(identity.editorId) { mutableStateOf(false) }
+    var transportMenuOpen by remember(identity.editorId) { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -117,7 +132,7 @@ fun McpServerEditorPage(
             // that plainly instead of pretending the form can commit.
             if (projected == null) {
                 IntegrationMetaLine(stringResource(R.string.integration_waiting_host))
-            } else if (!networkAvailable) {
+            } else if (!networkAvailable && !isStdio) {
                 IntegrationMetaLine(
                     projected.networkActionsUnavailableReason
                         ?: stringResource(R.string.integration_network_unavailable),
@@ -142,20 +157,73 @@ fun McpServerEditorPage(
                     value = draft.displayName,
                     onValueChange = { holder.setMcpDisplayName(identity, it) },
                 )
-                FloeFormTextField(
-                    label = stringResource(R.string.mcp_endpoint_field),
-                    value = draft.endpointText,
-                    onValueChange = { holder.setMcpEndpoint(identity, it) },
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Uri,
-                        autoCorrectEnabled = false,
+                FloeFormChoiceField(
+                    label = stringResource(R.string.mcp_transport_field),
+                    options = listOf(
+                        FloeChoiceOption(
+                            McpTransportKindUi.STREAMABLE_HTTP.swiftRaw,
+                            stringResource(R.string.mcp_transport_http),
+                        ),
+                        FloeChoiceOption(
+                            McpTransportKindUi.STDIO.swiftRaw,
+                            stringResource(R.string.mcp_transport_stdio),
+                        ),
                     ),
-                    isError = McpFormPreflight.looksInvalid(draft)
-                        ?.let {
-                            it == McpPreflightFinding.ENDPOINT_REQUIRED ||
-                                it == McpPreflightFinding.ENDPOINT_UNPARSEABLE
-                        } == true,
+                    selectedKey = draft.transportKind.swiftRaw,
+                    expanded = transportMenuOpen,
+                    onExpandedChange = { transportMenuOpen = it },
+                    onSelect = { key ->
+                        val next = if (key == McpTransportKindUi.STDIO.swiftRaw) {
+                            McpTransportKindUi.STDIO
+                        } else {
+                            McpTransportKindUi.STREAMABLE_HTTP
+                        }
+                        holder.setMcpTransport(identity, next)
+                    },
                 )
+                if (isStdio) {
+                    FloeFormTextField(
+                        label = stringResource(R.string.mcp_command_field),
+                        value = draft.stdioCommand,
+                        onValueChange = { holder.setMcpCommand(identity, it) },
+                        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
+                        isError = McpFormPreflight.looksInvalid(draft) ==
+                            McpPreflightFinding.COMMAND_REQUIRED,
+                    )
+                    FloeFormTextField(
+                        label = stringResource(R.string.mcp_arguments_field),
+                        value = draft.stdioArgumentsText,
+                        onValueChange = { holder.setMcpArguments(identity, it) },
+                        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
+                    )
+                    IntegrationMetaLine(stringResource(R.string.mcp_arguments_hint))
+                    FloeFormTextField(
+                        label = stringResource(R.string.mcp_working_directory_field),
+                        value = draft.stdioWorkingDirectory,
+                        onValueChange = { holder.setMcpWorkingDirectory(identity, it) },
+                        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
+                        isError = McpFormPreflight.looksInvalid(draft) ==
+                            McpPreflightFinding.WORKING_DIRECTORY_INVALID,
+                    )
+                    IntegrationMetaLine(stringResource(R.string.mcp_working_directory_hint))
+                    McpStdioBindingFields(identity, draft,
+                        projected?.stdioChoices ?: McpStdioChoicesUi(), holder)
+                } else {
+                    FloeFormTextField(
+                        label = stringResource(R.string.mcp_endpoint_field),
+                        value = draft.endpointText,
+                        onValueChange = { holder.setMcpEndpoint(identity, it) },
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Uri,
+                            autoCorrectEnabled = false,
+                        ),
+                        isError = McpFormPreflight.looksInvalid(draft)
+                            ?.let {
+                                it == McpPreflightFinding.ENDPOINT_REQUIRED ||
+                                    it == McpPreflightFinding.ENDPOINT_UNPARSEABLE
+                            } == true,
+                    )
+                }
                 FloeSwitchRow(
                     title = stringResource(R.string.mcp_enabled_field),
                     checked = draft.enabled,
@@ -167,8 +235,33 @@ fun McpServerEditorPage(
                     onCheckedChange = { holder.setMcpAllowInCanvas(identity, it) },
                 )
             }
-            IntegrationSectionFooter(stringResource(R.string.mcp_server_footer))
+            IntegrationSectionFooter(
+                if (isStdio) {
+                    stringResource(R.string.mcp_stdio_footer)
+                } else {
+                    stringResource(R.string.mcp_server_footer)
+                },
+            )
+            if (isStdio) {
+                FloeSettingsSectionCard(
+                    title = stringResource(R.string.mcp_stdio_binding_section),
+                ) {
+                    val bound = seed.stdioBinding?.state ==
+                        McpStdioBindingStateUi.BOUND
+                    FloeStatusLine(
+                        icon = if (bound) FloeIcons.ShieldCheck else FloeIcons.InfoCircle,
+                        text = if (bound) {
+                            stringResource(R.string.mcp_stdio_binding_bound)
+                        } else {
+                            stringResource(R.string.mcp_stdio_binding_unbound)
+                        },
+                        color = Floe.colors.secondaryLabel,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    )
+                }
+            }
 
+            if (!isStdio) {
             /* ---------------------------- authentication ---------------------------- */
             FloeSettingsSectionCard(title = stringResource(R.string.mcp_auth_section)) {
                 val stored = projected?.credentialStored ?: seed.credentialStored
@@ -235,6 +328,7 @@ fun McpServerEditorPage(
                     checked = draft.allowInsecureHttp,
                     onCheckedChange = { holder.setMcpAllowInsecureHttp(identity, it) },
                 )
+            }
             }
 
             /* -------------------------------- tools -------------------------------- */
@@ -341,4 +435,66 @@ private fun preflightMessage(finding: McpPreflightFinding): String = when (findi
         stringResource(R.string.mcp_insecure_blocked_hint)
     McpPreflightFinding.HEADER_NAME_INVALID ->
         stringResource(R.string.mcp_header_name_invalid)
+    McpPreflightFinding.COMMAND_REQUIRED ->
+        stringResource(R.string.mcp_command_required)
+    McpPreflightFinding.WORKING_DIRECTORY_INVALID ->
+        stringResource(R.string.mcp_working_directory_invalid)
+}
+
+
+@Composable
+private fun SectionScope.McpStdioBindingFields(
+    identity: McpEditorIdentity,
+    draft: McpDraftSnapshot,
+    choices: McpStdioChoicesUi,
+    holder: IntegrationsFlowHolder,
+) {
+    var projectsOpen by remember(identity.editorId) { mutableStateOf(false) }
+    var environmentsOpen by remember(identity.editorId, choices.projectId) { mutableStateOf(false) }
+    var tasksOpen by remember(identity.editorId, choices.projectId) { mutableStateOf(false) }
+    val selection = draft.stdioSelection?.takeIf { it.projectId == choices.projectId }
+    FloeFormChoiceField(
+        label = stringResource(R.string.mcp_setup_project),
+        options = choices.projects.map { FloeChoiceOption(it.id, it.label) },
+        selectedKey = choices.projectId ?: "",
+        expanded = projectsOpen,
+        onExpandedChange = { projectsOpen = it },
+        onSelect = { projectId ->
+            projectsOpen = false
+            holder.setMcpStdioSelection(identity, McpStdioSelectionUi(projectId, null))
+            holder.requestMcpStdioChoices(identity, projectId)
+        },
+    )
+    if (choices.loading) IntegrationMetaLine(stringResource(R.string.mcp_stdio_loading))
+    if (choices.failed) IntegrationIssueLine(stringResource(R.string.mcp_stdio_choices_failed))
+    if (choices.projectId != null && !choices.loading && !choices.failed) {
+        FloeFormChoiceField(
+            label = stringResource(R.string.mcp_setup_environment),
+            options = choices.environments.map { FloeChoiceOption(it.id, it.label) },
+            selectedKey = selection?.environmentId ?: "",
+            expanded = environmentsOpen,
+            onExpandedChange = { environmentsOpen = it },
+            onSelect = { environmentId ->
+                environmentsOpen = false
+                holder.setMcpStdioSelection(identity, McpStdioSelectionUi(
+                    choices.projectId, choices.rootIdentity, environmentId, selection?.taskId))
+            },
+        )
+        FloeFormChoiceField(
+            label = stringResource(R.string.mcp_stdio_task),
+            options = choices.tasks.map { FloeChoiceOption(it.id,
+                it.label.ifBlank { stringResource(R.string.mcp_stdio_untitled_task) }) },
+            selectedKey = selection?.taskId ?: "",
+            expanded = tasksOpen,
+            onExpandedChange = { tasksOpen = it },
+            onSelect = { taskId ->
+                tasksOpen = false
+                holder.setMcpStdioSelection(identity, McpStdioSelectionUi(
+                    choices.projectId, choices.rootIdentity, selection?.environmentId, taskId))
+            },
+        )
+        if (choices.environments.isEmpty()) IntegrationMetaLine(stringResource(R.string.mcp_setup_empty_env))
+        if (choices.tasks.isEmpty()) IntegrationMetaLine(stringResource(R.string.mcp_stdio_empty_tasks))
+        IntegrationMetaLine(stringResource(R.string.mcp_stdio_task_hint))
+    }
 }

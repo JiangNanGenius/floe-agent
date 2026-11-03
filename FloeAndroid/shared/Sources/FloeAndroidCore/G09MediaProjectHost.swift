@@ -18,6 +18,9 @@
 //   byte-for-byte and the project becomes read-only until explicitly
 //   repaired; it is never normalized by an ordinary save.
 import Foundation
+#if canImport(Android)
+import Android
+#endif
 import FloeCore
 import FloeModels
 import FloePersistence
@@ -596,53 +599,74 @@ public actor G09MediaProjectHost {
     // MARK: - Mutations
 
     public func apply(_ request: G09MediaApplyRequest) async throws -> Loaded {
-        let opID = request.opID
+        try await applyShared(
+            projectID: request.projectID,
+            expectedRevision: request.expectedRevision,
+            sessionToken: request.sessionToken,
+            storage: request.storage, origin: request.origin,
+            opID: request.opID,
+            commands: request.commands.map { $0.sharedCommand() })
+    }
+
+    /// G09-R2 additive entry point used by the typed video command decoder.
+    ///
+    /// It runs the SAME durable transaction as `apply(_:)`: one revision CAS,
+    /// one undo step and one receipt per command batch. Only the command
+    /// representation differs (already-decoded `MediaEditCommand` values from
+    /// `G09R2VideoCommandWire.sharedCommand()`); no second edit engine, store
+    /// or receipt format exists.
+    public func applyShared(
+        projectID: UUID,
+        expectedRevision: Int64,
+        sessionToken: String,
+        storage: G09StorageLayerDTO?,
+        origin: G09CreativeOriginDTO?,
+        opID: String,
+        commands: [MediaEditCommand]
+    ) async throws -> Loaded {
         guard G09CreativeWire.safeOperationID(opID) else {
             throw G09CreativeError.invalidPayload("invalidOperationID")
         }
-        let commandData = try G09CreativeWire.encoder().encode(
-            request.commands.map { $0.sharedCommand() })
+        let commandData = try G09CreativeWire.encoder().encode(commands)
         let intentFingerprint = fingerprint(
-            "apply", projectID: request.projectID,
-            expectedRevision: request.expectedRevision,
+            "apply", projectID: projectID,
+            expectedRevision: expectedRevision,
             extra: FloeDigest.sha256Hex(commandData))
         if let intent = try? readIntent(opID) {
-            guard intent.projectID == request.projectID,
+            guard intent.projectID == projectID,
                   intent.kind == "apply",
                   intent.fingerprint == intentFingerprint else {
                 throw G09CreativeError.invalidPayload("intentMismatch")
             }
             let current = try await load(
-                id: request.projectID, requested: request.storage,
-                origin: request.origin)
+                id: projectID, requested: storage, origin: origin)
             if let replayed = try replayCommittedIntent(intent, current: current) {
                 return replayed
             }
         }
         if let receipt = try? readReceipt(opID) {
-            guard receipt.projectID == request.projectID else {
+            guard receipt.projectID == projectID else {
                 throw G09CreativeError.invalidPayload("receiptProjectMismatch")
             }
             // Known committed outcome: never re-apply. Return the CURRENT
             // durable state so a later edit is also represented truthfully.
-            return try await load(id: request.projectID, requested: request.storage,
-                                  origin: request.origin)
+            return try await load(id: projectID, requested: storage, origin: origin)
         }
-        let loaded = try await load(id: request.projectID, requested: request.storage)
-        _ = try await validateOrigin(request.origin, projectID: request.projectID,
+        let loaded = try await load(
+            id: projectID, requested: storage, origin: origin)
+        _ = try await validateOrigin(origin, projectID: projectID,
                                      existing: loaded.project)
         guard loaded.writable else { throw G09CreativeError.provenanceMismatch }
-        guard loaded.project.revision == request.expectedRevision else {
+        guard loaded.project.revision == expectedRevision else {
             throw G09CreativeError.revisionConflict
         }
-        guard !request.commands.isEmpty,
-              request.commands.count <= G09CreativeLimits.mediaCommands else {
+        guard !commands.isEmpty,
+              commands.count <= G09CreativeLimits.mediaCommands else {
             throw G09CreativeError.invalidPayload("invalidCommandCount")
         }
         var project = loaded.project
         do {
-            try MediaTransactions.apply(
-                request.commands.map { $0.sharedCommand() }, to: &project)
+            try MediaTransactions.apply(commands, to: &project)
         } catch {
             throw G09CreativeError.map(error)
         }
@@ -650,12 +674,12 @@ public actor G09MediaProjectHost {
         let intent = G09MediaCommitIntent(
             opID: opID, projectID: project.id, kind: "apply",
             fingerprint: intentFingerprint,
-            expectedRevision: request.expectedRevision,
+            expectedRevision: expectedRevision,
             resultRevision: project.revision,
             resultDigest: resultDigest)
         try writeIntent(intent)
         do {
-            _ = try await store.save(project, expectedRevision: request.expectedRevision)
+            _ = try await store.save(project, expectedRevision: expectedRevision)
         } catch {
             throw G09CreativeError.map(error)
         }
@@ -663,8 +687,99 @@ public actor G09MediaProjectHost {
         markIntentCommitted(intent)
         try? writeReceipt(G09MediaWriteReceipt(
             opID: opID, projectID: project.id,
-            sessionDigest: G09CreativeAssetHost.sessionDigest(request.sessionToken),
-            expectedRevision: request.expectedRevision,
+            sessionDigest: G09CreativeAssetHost.sessionDigest(sessionToken),
+            expectedRevision: expectedRevision,
+            revision: project.revision,
+            canUndo: MediaTransactions.canUndo(project),
+            canRedo: MediaTransactions.canRedo(project)))
+        return Loaded(project: project, storage: loaded.storage,
+                      writable: true, warnings: loaded.warnings)
+    }
+
+    /// Persists the EXACT project value produced by one authorized proposal
+    /// apply. The command sequence is deliberately NOT replayed here: applying
+    /// it again would mint new UUID/Date identities for commands such as
+    /// add_image_layer/add_caption and would not persist the project the user
+    /// authorized. The caller (the media.project host) has already bound the
+    /// exact proposal and applied it through the portable gate; this method
+    /// owns only the durable intent/receipt and the real CAS store write.
+    public func commitApplied(
+        _ project: MediaProject,
+        expectedRevision: Int64,
+        sessionToken: String,
+        storage: G09StorageLayerDTO,
+        origin: G09CreativeOriginDTO?,
+        opID: String
+    ) async throws -> Loaded {
+        guard G09CreativeWire.safeOperationID(opID) else {
+            throw G09CreativeError.invalidPayload("invalidOperationID")
+        }
+        guard let resultDigest = canonicalDigest(project) else {
+            throw G09CreativeError.corruptProject
+        }
+        let intentFingerprint = fingerprint(
+            "apply-exact", projectID: project.id,
+            expectedRevision: expectedRevision, extra: resultDigest)
+        if let receipt = try? readReceipt(opID) {
+            guard receipt.projectID == project.id,
+                  receipt.expectedRevision == expectedRevision,
+                  receipt.revision == project.revision else {
+                throw G09CreativeError.invalidPayload("receiptProjectMismatch")
+            }
+            let current = try await load(
+                id: project.id, requested: storage, origin: origin)
+            guard canonicalDigest(current.project) == resultDigest else {
+                throw G09CreativeError.outcomeUnknown
+            }
+            return current
+        }
+        if let intent = try? readIntent(opID) {
+            guard intent.projectID == project.id,
+                  intent.kind == "apply-exact",
+                  intent.fingerprint == intentFingerprint else {
+                throw G09CreativeError.invalidPayload("intentMismatch")
+            }
+            let current = try await load(
+                id: project.id, requested: storage, origin: origin)
+            if let replayed = try replayCommittedIntent(intent, current: current) {
+                return replayed
+            }
+        }
+        let loaded = try await load(
+            id: project.id, requested: storage, origin: origin)
+        _ = try await validateOrigin(origin, projectID: project.id,
+                                     existing: loaded.project)
+        guard loaded.writable else { throw G09CreativeError.provenanceMismatch }
+        guard loaded.project.revision == expectedRevision else {
+            throw G09CreativeError.revisionConflict
+        }
+        guard project.revision == expectedRevision + 1 else {
+            if project.revision == expectedRevision {
+                // The authorized command sequence was a no-op (for example a
+                // repeated identical slider commit): no durable receipt is
+                // written and the existing project is returned unchanged.
+                return loaded
+            }
+            throw G09CreativeError.invalidPayload("appliedRevisionMismatch")
+        }
+        let intent = G09MediaCommitIntent(
+            opID: opID, projectID: project.id, kind: "apply-exact",
+            fingerprint: intentFingerprint,
+            expectedRevision: expectedRevision,
+            resultRevision: project.revision,
+            resultDigest: resultDigest)
+        try writeIntent(intent)
+        do {
+            _ = try await store.save(project, expectedRevision: expectedRevision)
+        } catch {
+            throw G09CreativeError.map(error)
+        }
+        try faultAfterCommit?()
+        markIntentCommitted(intent)
+        try? writeReceipt(G09MediaWriteReceipt(
+            opID: opID, projectID: project.id,
+            sessionDigest: G09CreativeAssetHost.sessionDigest(sessionToken),
+            expectedRevision: expectedRevision,
             revision: project.revision,
             canUndo: MediaTransactions.canUndo(project),
             canRedo: MediaTransactions.canRedo(project)))
@@ -709,7 +824,9 @@ public actor G09MediaProjectHost {
             return try await load(id: request.projectID, requested: request.storage,
                                   origin: request.origin)
         }
-        let loaded = try await load(id: request.projectID, requested: request.storage)
+        let loaded = try await load(
+            id: request.projectID, requested: request.storage,
+            origin: request.origin)
         _ = try await validateOrigin(request.origin, projectID: request.projectID,
                                      existing: loaded.project)
         guard loaded.writable else { throw G09CreativeError.provenanceMismatch }
@@ -774,7 +891,9 @@ public actor G09MediaProjectHost {
                 return replayed
             }
         }
-        let loaded = try await load(id: request.projectID, requested: request.storage)
+        let loaded = try await load(
+            id: request.projectID, requested: request.storage,
+            origin: request.origin)
         _ = try await validateOrigin(request.origin, projectID: request.projectID,
                                      existing: loaded.project)
         guard loaded.writable else { throw G09CreativeError.provenanceMismatch }
@@ -856,7 +975,9 @@ public actor G09MediaProjectHost {
                 throw G09CreativeError.outcomeUnknown
             }
         }
-        let loaded = try await load(id: request.projectID, requested: request.storage)
+        let loaded = try await load(
+            id: request.projectID, requested: request.storage,
+            origin: request.origin)
         _ = try await validateOrigin(request.origin, projectID: request.projectID,
                                      existing: loaded.project)
         guard loaded.writable else { throw G09CreativeError.provenanceMismatch }
@@ -892,6 +1013,27 @@ public actor G09MediaProjectHost {
 
     public func importAsset(_ request: G09MediaAssetImportRequest,
                             staging: URL) async throws -> G09MediaAssetReceiptDTO {
+        try await importAssetShared(
+            request, staging: staging,
+            maximumBytes: Int64(G09CreativeLimits.assetBytes))
+    }
+
+    /// G09-R2 additive large-asset import: the SAME durable intent/CAS/receipt
+    /// path as `importAsset`, with the per-kind R2 ceiling supplied by the
+    /// native large-import service. R1 keeps its unchanged 64 MiB cap.
+    public func importAssetLarge(_ request: G09MediaAssetImportRequest,
+                                 staging: URL,
+                                 maximumBytes: Int64) async throws
+        -> G09MediaAssetReceiptDTO {
+        guard maximumBytes > 0 else { throw G09CreativeError.assetTooLarge }
+        return try await importAssetShared(
+            request, staging: staging, maximumBytes: maximumBytes)
+    }
+
+    private func importAssetShared(_ request: G09MediaAssetImportRequest,
+                                   staging: URL,
+                                   maximumBytes: Int64) async throws
+        -> G09MediaAssetReceiptDTO {
         guard G09CreativeWire.safeOperationID(request.opID) else {
             throw G09CreativeError.invalidPayload("invalidOperationID")
         }
@@ -929,7 +1071,9 @@ public actor G09MediaProjectHost {
                 revision: receipt.revision, canUndo: receipt.canUndo,
                 canRedo: receipt.canRedo, opID: receipt.opID, idempotent: true)
         }
-        let loaded = try await load(id: request.projectID, requested: request.storage)
+        let loaded = try await load(
+            id: request.projectID, requested: request.storage,
+            origin: request.origin)
         _ = try await validateOrigin(request.origin, projectID: request.projectID,
                                      existing: loaded.project)
         guard loaded.writable else { throw G09CreativeError.provenanceMismatch }
@@ -937,7 +1081,7 @@ public actor G09MediaProjectHost {
             throw G09CreativeError.revisionConflict
         }
         guard request.byteCount > 0 else { throw G09CreativeError.assetEmpty }
-        guard request.byteCount <= G09CreativeLimits.assetBytes else {
+        guard request.byteCount <= maximumBytes else {
             throw G09CreativeError.assetTooLarge
         }
         guard G09CreativeAssetHost.validDigest(request.sha256),
@@ -1035,7 +1179,9 @@ public actor G09MediaProjectHost {
                 return replayed
             }
         }
-        let loaded = try await load(id: request.projectID, requested: request.storage)
+        let loaded = try await load(
+            id: request.projectID, requested: request.storage,
+            origin: request.origin)
         _ = try await validateOrigin(request.origin, projectID: request.projectID,
                                      existing: loaded.project)
         guard loaded.writable else { throw G09CreativeError.provenanceMismatch }

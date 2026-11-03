@@ -258,6 +258,14 @@ public struct RunDomainComponents: Sendable {
     /// hosts that never supply an owned root. It is never model-supplied and
     /// never a temporary/HOME fallback.
     public var artifactRootURL: URL?
+    /// G09-R2 (additive, default nil): resolves the READ-ONLY task-context
+    /// notes for the run's system message — the media projects the user
+    /// explicitly connected to this exact task. The notes are reference data,
+    /// never permission: the ceiling, runtime authority and native binding
+    /// CAS are unchanged. nil keeps every previous launch byte-identical.
+    public var mediaTaskContext: (@Sendable (UUID) async -> [String])?
+    /// The generation's original execution target domain, shared with settings and shell routing.
+    public var executionTargets: C02ExecutionTargetProduction.Components?
 
     public init(context: RunIngressContext,
                 durable: RunPersistenceBundle,
@@ -282,7 +290,9 @@ public struct RunDomainComponents: Sendable {
                 settings: (any SettingsStore)? = nil,
                 notesRuntime: (any NotesRunRuntimeProviding)? = nil,
                 scheduleCompletion: (any G073ScheduleCompletionRecording)? = nil,
-                artifactRootURL: URL? = nil) {
+                artifactRootURL: URL? = nil,
+                mediaTaskContext: (@Sendable (UUID) async -> [String])? = nil,
+                executionTargets: C02ExecutionTargetProduction.Components? = nil) {
         self.context = context
         self.durable = durable
         self.checkpoints = checkpoints
@@ -305,6 +315,8 @@ public struct RunDomainComponents: Sendable {
         self.notesRuntime = notesRuntime
         self.scheduleCompletion = scheduleCompletion
         self.artifactRootURL = artifactRootURL
+        self.mediaTaskContext = mediaTaskContext
+        self.executionTargets = executionTargets
     }
 }
 
@@ -1091,6 +1103,21 @@ public actor FacadeRunDomain {
         let effectiveConversation = conversationID
             ?? scheduledLaunch?.conversationID ?? query.conversationID
         let runID = scheduledLaunch?.runID ?? UUID()
+        // C02 task continuity: a storage-paused task admits no new work
+        // unless the trusted continuity coordinator authorized this exact
+        // resume (retry only). No coordinator installed => unchanged path.
+        if let decision = await C02TaskContinuityRuntimeHost.admissionDecision(
+            taskID: effectiveConversation,
+            runID: scheduledLaunch?.runID,
+            operation: .launch) {
+            switch decision {
+            case .paused:
+                return RunDomainReply(.rejected(RunDomainError(
+                    .persistenceUnavailable, .storeReadFailed)))
+            case .resumeAuthorized:
+                break
+            }
+        }
         // Frozen BEFORE the first await: execution identity (bundle),
         // conversation scope, minted runID, scoped fence token.
         let launchToken = issueFence(effectiveConversation)
@@ -1706,8 +1733,33 @@ public actor FacadeRunDomain {
         //    run keeps living under this service owner independent of any
         //    view.
         let service: ConversationRunService
+        var notesTaskInputs: C08NotesTaskLaunchCommittedResult?
         var assemblyPhase: RunDomainError.Phase? = .historyLoad
         do {
+            if bundle.identity == .ordinary,
+               prepared.run.goal.contains("Attached from Notes (selection "),
+               let root = AndroidRuntimeBootstrap.notesBinding(epoch: epoch, ownerToken: nil),
+               try C08NotesTaskLaunchFileReceiptStore().pending(
+                   forConversation: prepared.conversation.id,
+                   receiptRoot: C08NotesTaskLaunch.receiptRoot(for: root.artifactStoreURL),
+                   now: Date()) != nil {
+                guard let lease = owners[runID]?.ownedTokens[RuntimeOwnedWorkKind.run.rawValue] else {
+                    throw C08NotesTaskLaunchError(.ownerAdmissionRefused).runError
+                }
+                do {
+                    notesTaskInputs = try await C08NotesTaskLaunch.stagePendingCommittedLaunch(
+                        conversationID: prepared.conversation.id,
+                        runID: prepared.run.id,
+                        goal: prepared.run.goal,
+                        ownerLease: lease,
+                        cancellation: C08NotesTaskLaunchCancellation { [weak self] in
+                            guard let self else { return true }
+                            return await self.notesTaskLaunchCancelled(runID, launchToken)
+                        })
+                } catch let error as C08NotesTaskLaunchError {
+                    throw error.runError
+                }
+            }
             let history = try await loadRunHistory(
                 conversationID: prepared.conversation.id,
                 excludingRun: prepared.run.id,
@@ -1775,6 +1827,10 @@ public actor FacadeRunDomain {
         }
         register(handed)
         launchTaskAttach(prepared: prepared, service: service, domain: self)
+        if let notesTaskInputs {
+            _ = C08NotesTaskLaunch.completeCommittedLaunch(
+                receiptID: notesTaskInputs.receiptID, notesEpoch: epoch)
+        }
         return RunDomainReply(.mutationAccepted(detail: [
             "launched": "true",
             "runID": prepared.run.id.uuidString,
@@ -2037,6 +2093,13 @@ public actor FacadeRunDomain {
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.staleRevision, .revisionAbsent)))
         }
+        // Native maintenance work has a real durable header and the same
+        // conversation-owned operation lease as other native workspace work.
+        // The authoritative owner/state/revision checks above still apply.
+        if owners[query.runID] == nil,
+           requestG04NativeRunStop(runID: query.runID, conversationID: query.conversationID) {
+            return RunDomainReply(.mutationAccepted(detail: ["cancel": "stopping"]))
+        }
         // post-run stop wiring (Main review 2026-10-21): for an ordinary
         // COMPLETED goal-mode run, the ORIGINAL post-run review/continuation
         // lane is REAL owned work that outlives the service retirement as a
@@ -2083,6 +2146,7 @@ public actor FacadeRunDomain {
             // process's work this facade must not pretend to own.
             return RunDomainReply(.rejected(RunDomainError(.notFound, .runMissing)))
         }
+        _ = requestG04NativeRunStop(runID: query.runID, conversationID: query.conversationID)
         switch ownership.phase {
         case .admitting:
             // C0: the launch re-checks this flag before prepare; provable
@@ -2144,6 +2208,22 @@ public actor FacadeRunDomain {
             epoch: epoch, conversationID: query.conversationID) {
             return await retryTemporary(query: query, route: route,
                                         receipt: receipt, envelope: envelope)
+        }
+        // C02 task continuity: while a storage pause is active, only an
+        // explicit continuity resume may pass this gate. A plain Continue
+        // click is refused before any model/provider work so the UI shows
+        // the pause state instead of silently spending a new turn.
+        if let decision = await C02TaskContinuityRuntimeHost.admissionDecision(
+            taskID: query.conversationID,
+            runID: query.runID,
+            operation: .resume) {
+            switch decision {
+            case .paused:
+                return RunDomainReply(.rejected(RunDomainError(
+                    .persistenceUnavailable, .storeReadFailed)))
+            case .resumeAuthorized:
+                break
+            }
         }
         // A per-conversation delete guard refuses EVERY new run admission
         // (retry included) BEFORE the live-owner duplicate check: the fence
@@ -3740,7 +3820,22 @@ public actor FacadeRunDomain {
         return ownership.cancelRequested
     }
 
+    private func notesTaskLaunchCancelled(_ runID: UUID, _ token: LaunchEpochFence.Token) -> Bool {
+        shouldAbortBeforeEffects(runID) || !fenceIsValid(token)
+    }
+
     private func refuseLaunch(runID: UUID, error: RunDomainError) -> RunDomainReply {
+        // C02 task continuity: a proven store refusal records a durable,
+        // nonsecret pause marker before the owner is released. The original
+        // error/reply bytes are unchanged. Best-effort only: this path must
+        // never block or mask the real refusal.
+        if error.code == .persistenceUnavailable {
+            let taskID = owners[runID]?.conversationID
+            Task { @Sendable in
+                _ = await C02TaskContinuityRuntimeHost.notePersistenceUnavailable(
+                    taskID: taskID, runID: runID)
+            }
+        }
         if var ownership = owners[runID] {
             if let token = ownership.ownedTokens.removeValue(
                 forKey: RuntimeOwnedWorkKind.run.rawValue) {
@@ -3783,6 +3878,7 @@ public actor FacadeRunDomain {
     /// epoch re-registers nothing.
     func retire(runID: UUID, terminalSucceeded: Bool, feedTerminal: Bool) async {
         guard let ownership = owners[runID] else { return }
+        _ = requestG04NativeRunStop(runID: runID, conversationID: ownership.conversationID)
         await tools.retireDelegate(runID: runID)
         if let token = ownership.consumerToken {
             components.events.detachConsumer(token)

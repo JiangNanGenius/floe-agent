@@ -11,12 +11,11 @@
 // * MCPServerConfiguration (+Authentication +validate()) — the ORIGINAL
 //   Codable config shape and rules (scheme/host, no URL-embedded
 //   credentials, allowInsecureHTTP gate, RFC-token custom header names vs
-//   the MCP reserved set, timeoutSeconds clamp 5...120). NO transport or
-//   auth kind is invented; stdio/SSH/Linux subprocess transports were never
-//   part of this client (Streamable HTTP POST + bounded SSE response
-//   parsing only) and remain declared G03 dependencies with honest
-//   NOT_IMPLEMENTED projections — never silently-dropped native
-//   functionality, never an Android host subprocess fallback.
+//   the MCP reserved set, timeoutSeconds clamp 5...120). The original HTTP
+//   rules are unchanged. The additive C02 extension adds a `.stdio`
+//   discriminator + secret-free `StdioBinding`; its live byte pipe is a
+//   C01-owned capability and is never a host subprocess/PTY. Without that
+//   port a stdio row fails typed `transportUnavailable` before any effect.
 // * MCPRemoteClient — the actor itself: era negotiation
 //   (2026-07-28 stateless-preferred → legacy 2025-11-25 initialize +
 //   Mcp-Session-Id), Accept/MCP-Protocol-Version/Mcp-Method/Mcp-Name/
@@ -98,11 +97,22 @@ public struct SkillsMcpRouteUnavailable: SkillsMcpRouteContextProviding {
 /// admit. Nothing in this package exercises network or keys.
 public protocol MCPTransportAdmitting: Sendable {
     var admitsMCPNetwork: Bool { get }
+    /// True only when the C01-owned separated stdio pipe lane is qualified.
+    /// Kept separate from HTTP/SSE admission: a closed network gate must not
+    /// disable a local pipe, and an injected pipe must not admit the network.
+    var admitsMCPStdio: Bool { get }
+    func refreshMCPStdioAdmission() async -> Bool
+}
+
+public extension MCPTransportAdmitting {
+    var admitsMCPStdio: Bool { false }
+    func refreshMCPStdioAdmission() async -> Bool { admitsMCPStdio }
 }
 
 public struct MCPTransportAdmissionClosed: MCPTransportAdmitting {
     public init() {}
     public var admitsMCPNetwork: Bool { false }
+    public var admitsMCPStdio: Bool { false }
 }
 
 /// The ORIGINAL client construction seam. Production binds
@@ -117,18 +127,45 @@ public struct MCPTransportAdmissionClosed: MCPTransportAdmitting {
 /// transport path).
 public protocol MCPClientMaking: Sendable {
     func make(configuration: MCPServerConfiguration,
-              credential: String?) throws -> MCPRemoteClient
+              credential: String?) async throws -> any MCPClientTransporting
+}
+
+/// The C01 separated-pipe client constructor. Kept in the ORIGINAL service
+/// module so `OriginalMCPClientFactory` can select it for a stdio row without
+/// importing C02; the implementation (C02MCPSetupStdioClientFactory) owns the
+/// adapter and receives the C01 channel provider from Main's composition.
+public protocol MCPStdioClientMaking: Sendable {
+    func makeClient(configuration: MCPServerConfiguration,
+                    credential: String?) async throws -> any MCPClientTransporting
 }
 
 public struct OriginalMCPClientFactory: MCPClientMaking {
-    public init() {}
+    private let stdio: (any MCPStdioClientMaking)?
+
+    /// `stdio` is nil until the C01 lane is qualified. The HTTP path is
+    /// byte-identical to the original construction; a stdio row without a
+    /// maker fails closed with a typed transportUnavailable.
+    public init(stdio: (any MCPStdioClientMaking)? = nil) {
+        self.stdio = stdio
+    }
+
     public func make(configuration: MCPServerConfiguration,
-                     credential: String?) throws -> MCPRemoteClient {
+                     credential: String?) async throws -> any MCPClientTransporting {
         // The ORIGINAL init already runs configuration.validate() FIRST
         // (MCPRemoteToolSource.swift:230-246); re-asserting here keeps the
         // typed wire mapping honest before the actor hop (defense in depth).
         try configuration.validate()
-        return try MCPRemoteClient(configuration: configuration, credential: credential)
+        switch configuration.transport {
+        case .streamableHTTP:
+            return try MCPRemoteClient(configuration: configuration, credential: credential)
+        case .stdio:
+            guard let stdio else {
+                throw MCPClientError.transportUnavailable(
+                    "The Linux separated stdio pipe is not available in this build.")
+            }
+            return try await stdio.makeClient(configuration: configuration,
+                                              credential: credential)
+        }
     }
 }
 
@@ -163,7 +200,7 @@ public enum MCPServerStateProjection: Sendable, Equatable {
 
 struct MCPServerConnection {
     var generation: UInt64 = 0
-    var client: MCPRemoteClient?
+    var client: (any MCPClientTransporting)?
     var tools: [MCPDiscoveredTool] = []
     var state: MCPServerStateProjection = .inactive
     /// The config-hash this connection was established at; a config change
@@ -515,7 +552,29 @@ public actor MCPDomain {
             var row: [String: Any] = [
                 "id": server.id.uuidString,
                 "displayName": server.displayName,
-                "endpoint": server.endpoint.absoluteString,
+                "endpoint": server.endpoint?.absoluteString ?? NSNull(),
+                "transport": server.transport.rawValue,
+                "stdio": server.stdioBinding.map { binding in
+                    [
+                        "projectID": binding.projectID.uuidString,
+                        "environmentID": binding.environmentID,
+                        "taskID": binding.taskID?.uuidString ?? NSNull(),
+                        "revision": String(binding.revision),
+                        "command": binding.command,
+                        "arguments": binding.arguments,
+                        "workingDirectory": binding.workingDirectory,
+                    ] as [String: Any]
+                } ?? NSNull(),
+                "stdioDefinition": server.resolvedStdioDefinition.map { definition in
+                    [
+                        "command": definition.command,
+                        "arguments": definition.arguments,
+                        "workingDirectory": definition.workingDirectory,
+                    ] as [String: Any]
+                } ?? NSNull(),
+                "stdioBindingState": server.transport == .stdio
+                    ? (server.stdioBinding == nil ? "unbound" : "bound")
+                    : NSNull(),
                 "enabled": server.enabled,
                 "allowInCanvas": server.allowInCanvas,
                 "allowInsecureHTTP": server.allowInsecureHTTP,
@@ -557,12 +616,15 @@ public actor MCPDomain {
             "servers": slice,
             "hasMore": nextIndex < rows.count,
             "nextCursor": nextIndex < rows.count ? String(nextIndex) : NSNull(),
-            "transports": Self.transportsInventory(admitsNetwork: transportAdmission.admitsMCPNetwork),
+            "transports": Self.transportsInventory(
+                admitsNetwork: transportAdmission.admitsMCPNetwork,
+                admitsStdio: transportAdmission.admitsMCPStdio),
             "gatewayRegistered": gateway.isRegistered,
         ]
     }
 
-    static func transportsInventory(admitsNetwork: Bool) -> sending [[String: Any]] {
+    static func transportsInventory(admitsNetwork: Bool,
+                                    admitsStdio: Bool) -> sending [[String: Any]] {
         [
             ["transport": "streamableHTTP2026-07-28",
              "availability": admitsNetwork ? "AVAILABLE" : "NEEDS_CONFIGURATION",
@@ -573,9 +635,9 @@ public actor MCPDomain {
             ["transport": "sseResponseParsing",
              "availability": admitsNetwork ? "AVAILABLE" : "NEEDS_CONFIGURATION",
              "note": "text/event-stream response bodies (bounded)"],
-            ["transport": "stdioHostSubprocess",
-             "availability": "NOT_IMPLEMENTED",
-             "note": "G03 resolved environment/jobs owned; never an Android host subprocess"],
+            ["transport": "stdioSeparatedPipe",
+             "availability": admitsStdio ? "AVAILABLE" : "NEEDS_CONFIGURATION",
+             "note": "C01-owned stdin/stdout/stderr byte pipe; no host subprocess or PTY"],
             ["transport": "sshRemote",
              "availability": "NOT_IMPLEMENTED",
              "note": "G03 remote-host environment owned"],
@@ -655,7 +717,10 @@ public actor MCPDomain {
     struct MCPSaveCandidate {
         let id: UUID
         let displayName: String
-        let endpoint: URL
+        let endpoint: URL?
+        let transport: MCPServerConfiguration.Transport
+        let stdioDefinition: MCPServerConfiguration.StdioDefinition?
+        let stdioBinding: MCPServerConfiguration.StdioBinding?
         let enabled: Bool
         let allowInCanvas: Bool
         let allowInsecureHTTP: Bool
@@ -666,16 +731,16 @@ public actor MCPDomain {
         let createIntent: Bool
 
         static let allowedKeys: Set<String> = [
-            "id", "displayName", "endpoint", "enabled", "allowInCanvas",
-            "allowInsecureHTTP", "authentication", "credentialHeaderName",
-            "timeoutSeconds", "disabledRemoteToolNames", "createIntent",
+            "id", "displayName", "endpoint", "transport", "stdio",
+            "enabled", "allowInCanvas", "allowInsecureHTTP", "authentication",
+            "credentialHeaderName", "timeoutSeconds", "disabledRemoteToolNames",
+            "createIntent",
         ]
 
         static func parse(_ dictionary: [String: Any]) throws -> MCPSaveCandidate {
             try ConfigJSON.closed(dictionary,
                                   allowed: allowedKeys,
-                                  required: ["id", "displayName", "endpoint",
-                                             "authentication"],
+                                  required: ["id", "displayName", "authentication"],
                                   context: "mcpCandidate")
             guard let idString = dictionary["id"] as? String,
                   let id = UUID(uuidString: idString) else {
@@ -685,15 +750,137 @@ public actor MCPDomain {
                   !displayName.isEmpty, displayName.utf8.count <= 256 else {
                 throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.displayName")
             }
-            guard let endpointString = dictionary["endpoint"] as? String,
-                  endpointString.utf8.count <= 2_048,
-                  let endpoint = URL(string: endpointString) else {
-                throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.endpoint")
+            let transportRaw = (dictionary["transport"] as? String)
+                ?? MCPServerConfiguration.Transport.streamableHTTP.rawValue
+            guard let transport = MCPServerConfiguration.Transport(rawValue: transportRaw) else {
+                throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.transport")
             }
             guard let authRaw = dictionary["authentication"] as? String,
                   let authentication = MCPServerConfiguration.Authentication(rawValue: authRaw)
             else {
                 throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.authentication")
+            }
+            let endpoint: URL?
+            let stdioDefinition: MCPServerConfiguration.StdioDefinition?
+            let stdioBinding: MCPServerConfiguration.StdioBinding?
+            switch transport {
+            case .streamableHTTP:
+                guard let endpointString = dictionary["endpoint"] as? String,
+                      endpointString.utf8.count <= 2_048,
+                      let parsedEndpoint = URL(string: endpointString) else {
+                    throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.endpoint")
+                }
+                guard dictionary["stdio"] == nil else {
+                    throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.stdio")
+                }
+                endpoint = parsedEndpoint
+                stdioDefinition = nil
+                stdioBinding = nil
+            case .stdio:
+                guard dictionary["endpoint"] == nil else {
+                    throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.endpoint")
+                }
+                guard authentication == .none else {
+                    throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.stdioAuthentication")
+                }
+                guard let raw = dictionary["stdio"] as? [String: Any] else {
+                    throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.stdio")
+                }
+                // The SAME closed object carries either the full historical
+                // binding (all identity keys) or a rootless definition (only
+                // command/arguments/workingDirectory). A partial identity is
+                // never accepted: no dummy project/root/task values.
+                try ConfigJSON.closed(raw,
+                                      allowed: ["projectID", "environmentID", "rootIdentity",
+                                                "taskID", "revision", "command", "arguments",
+                                                "workingDirectory"],
+                                      required: ["command"],
+                                      context: "mcpStdio")
+                guard let command = raw["command"] as? String else {
+                    throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.stdioCommand")
+                }
+                let arguments: [String]
+                if let rawArguments = raw["arguments"] as? [String] {
+                    arguments = rawArguments
+                } else if raw["arguments"] == nil {
+                    arguments = []
+                } else {
+                    throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.stdioArguments")
+                }
+                let workingDirectory: String
+                if let rawDirectory = raw["workingDirectory"] as? String {
+                    workingDirectory = rawDirectory
+                } else if raw["workingDirectory"] == nil {
+                    workingDirectory = ""
+                } else {
+                    throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.stdioWorkingDirectory")
+                }
+                let definition = MCPServerConfiguration.StdioDefinition(
+                    command: command, arguments: arguments,
+                    workingDirectory: workingDirectory)
+                do {
+                    try definition.validate()
+                } catch {
+                    throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.stdioShape")
+                }
+                let identityKeys = ["projectID", "environmentID", "rootIdentity",
+                                    "taskID", "revision"]
+                let suppliedIdentity = identityKeys.filter { raw[$0] != nil }
+                if suppliedIdentity.isEmpty {
+                    endpoint = nil
+                    stdioDefinition = definition
+                    stdioBinding = nil
+                } else {
+                    guard suppliedIdentity.contains("projectID"),
+                          suppliedIdentity.contains("environmentID"),
+                          suppliedIdentity.contains("rootIdentity"),
+                          let projectString = raw["projectID"] as? String,
+                          let projectID = UUID(uuidString: projectString),
+                          projectID.uuidString.lowercased() == projectString.lowercased(),
+                          let environmentID = raw["environmentID"] as? String,
+                          let rootIdentity = raw["rootIdentity"] as? String else {
+                        throw ConfigDomainError(code: .invalidEnvelope,
+                                                reason: "mcpCandidate.stdioIdentity")
+                    }
+                    var taskID: UUID?
+                    if let taskString = raw["taskID"] as? String {
+                        guard let parsed = UUID(uuidString: taskString) else {
+                            throw ConfigDomainError(code: .invalidEnvelope,
+                                                    reason: "mcpCandidate.stdioTask")
+                        }
+                        taskID = parsed
+                    } else if raw["taskID"] != nil, !(raw["taskID"] is NSNull) {
+                        throw ConfigDomainError(code: .invalidEnvelope,
+                                                reason: "mcpCandidate.stdioTask")
+                    }
+                    let revision: UInt64
+                    if let number = raw["revision"] as? Int, number >= 0 {
+                        revision = UInt64(number)
+                    } else if raw["revision"] == nil {
+                        revision = 0
+                    } else {
+                        throw ConfigDomainError(code: .invalidEnvelope,
+                                                reason: "mcpCandidate.stdioRevision")
+                    }
+                    let binding = MCPServerConfiguration.StdioBinding(
+                        projectID: projectID,
+                        environmentID: environmentID,
+                        rootIdentity: rootIdentity,
+                        taskID: taskID,
+                        revision: revision,
+                        command: command,
+                        arguments: arguments,
+                        workingDirectory: workingDirectory)
+                    do {
+                        try binding.validate()
+                    } catch {
+                        throw ConfigDomainError(code: .invalidEnvelope,
+                                                reason: "mcpCandidate.stdioShape")
+                    }
+                    endpoint = nil
+                    stdioDefinition = definition
+                    stdioBinding = binding
+                }
             }
             let enabled = (dictionary["enabled"] as? Bool) ?? true
             let allowInCanvas = (dictionary["allowInCanvas"] as? Bool) ?? false
@@ -709,6 +896,9 @@ public actor MCPDomain {
             }
             let createIntent = (dictionary["createIntent"] as? Bool) ?? false
             return MCPSaveCandidate(id: id, displayName: displayName, endpoint: endpoint,
+                                    transport: transport,
+                                    stdioDefinition: stdioDefinition,
+                                    stdioBinding: stdioBinding,
                                     enabled: enabled, allowInCanvas: allowInCanvas,
                                     allowInsecureHTTP: allowInsecureHTTP,
                                     authentication: authentication,
@@ -720,6 +910,9 @@ public actor MCPDomain {
 
         func makeConfiguration() -> MCPServerConfiguration {
             MCPServerConfiguration(id: id, displayName: displayName, endpoint: endpoint,
+                                   transport: transport,
+                                   stdioDefinition: stdioDefinition,
+                                   stdioBinding: stdioBinding,
                                    enabled: enabled, allowInCanvas: allowInCanvas,
                                    allowInsecureHTTP: allowInsecureHTTP,
                                    authentication: authentication,
@@ -832,13 +1025,45 @@ public actor MCPDomain {
                                       leaseBaseRevision: SaveIntentBaseRevision?,
                                       envelopeRevision: ConfigRevision?,
                                       binding: FacadeRootGeneration) async -> sending [String: Any] {
-        let configuration = candidate.makeConfiguration()
-        // ORIGINAL validate() BEFORE any durable/secret effect.
-        do { try configuration.validate() } catch {
+        var configuration = candidate.makeConfiguration()
+        // A saved-but-unbound stdio definition is valid user configuration.
+        // The operational binding is added below only when the definition
+        // itself is unchanged; an identity is never invented here.
+        do { try configuration.validateSavedDefinition() } catch {
             return Self.rejection(Self.mapConfigurationValidation(error))
         }
         let existingIndex = servers.firstIndex { $0.id == candidate.id }
         let existing = existingIndex.map { servers[$0] }
+        if configuration.transport == .stdio,
+           configuration.stdioBinding == nil,
+           let existing,
+           existing.transport == .stdio,
+           let preserved = existing.stdioBinding,
+           existing.resolvedStdioDefinition == configuration.resolvedStdioDefinition {
+            configuration.stdioBinding = preserved
+        }
+        if configuration.stdioBinding != nil {
+            do { try configuration.validate() } catch {
+                return Self.rejection(Self.mapConfigurationValidation(error))
+            }
+        }
+        if let stdio = candidate.stdioBinding, stdio != existing?.stdioBinding {
+            guard let taskID = stdio.taskID,
+                  let workspace = await LinuxWorkspaceAuthority.resolveWorkspace(conversationID: taskID),
+                  workspace.workspaceID == stdio.projectID,
+                  C02MCPSetupWorkspaceStager.projectRootIdentity(workspace.rootURL) == stdio.rootIdentity.lowercased(),
+                  let rows = try? await C02RuntimeEnvironmentCatalog.read(
+                    workspaceRoot: workspace.rootURL, epoch: binding.epoch),
+                  rows.contains(where: { row in
+                      row.id == stdio.environmentID && row.state == "active" && !row.requiresRebuild &&
+                      row.executionBackend == "linuxPRoot" &&
+                      (row.kind == "project" || (row.kind == "session" &&
+                       row.ownerID?.lowercased() == taskID.uuidString.lowercased()))
+                  }) else {
+                return Self.rejection(ConfigDomainError(code: .invalidEnvelope,
+                    reason: "mcpStdioBindingChanged"))
+            }
+        }
         let currentHash = existing.map { MCPServerConfigHash.digest(of: $0) }
         // Identity/creation gates (frozen matrix semantics).
         switch (existing != nil, candidate.createIntent) {
@@ -914,6 +1139,9 @@ public actor MCPDomain {
             // Keep would otherwise point the row at a different endpoint
             // while silently retaining the old secret.
             let sameConnection = existing.endpoint == configuration.endpoint
+                && existing.transport == configuration.transport
+                && existing.stdioDefinition == configuration.stdioDefinition
+                && existing.stdioBinding == configuration.stdioBinding
                 && existing.authentication == configuration.authentication
                 && existing.credentialHeaderName == configuration.credentialHeaderName
                 && existing.allowInsecureHTTP == configuration.allowInsecureHTTP
@@ -1019,7 +1247,17 @@ public actor MCPDomain {
         // :445-454). A save NEVER claims a connected state: connect runs
         // through its own fenced worker with an honest terminal.
         var connectResult: [String: Any]
-        if configuration.enabled {
+        if configuration.enabled && configuration.requiresStdioBinding {
+            // Saved successfully, but there is no C01 project/environment/
+            // root binding yet. Keep the row visible and return a typed
+            // connect sub-result instead of pretending a live session.
+            await disconnectInternal(serverID: candidate.id, binding: binding)
+            connectResult = [
+                "connection": MCPServerStateProjection.inactive.wireObject,
+                "errorCode": "needsConfiguration",
+                "reason": "mcpStdioBindingRequired",
+            ]
+        } else if configuration.enabled {
             connectResult = await connectInternal(serverID: candidate.id,
                                                   binding: binding, force: true)
         } else {
@@ -1222,6 +1460,46 @@ public actor MCPDomain {
 
     // MARK: mcp.connect — connect/refresh/setEnabled/setToolEnabled
 
+    /// Run-scoped discovery for user-enabled local servers. Reuse only a
+    /// client whose real pipe still belongs to this exact run; otherwise use
+    /// the original connection lifecycle to create the replacement. Foreign
+    /// and unavailable namespaces are removed from this run's tool ceiling.
+    public func prepareStdioForRun(taskID: UUID, runID: UUID, workspaceRoot: URL?,
+                                   allowStart: Bool) async -> [String] {
+        guard let generation = try? requireBinding() else {
+            return servers.filter { $0.transport == .stdio }.map { $0.namespacePrefix + "_" }
+        }
+        do { try await loadServers() } catch {
+            return servers.filter { $0.transport == .stdio }.map { $0.namespacePrefix + "_" }
+        }
+        var excluded: [String] = []
+        var admitted = Set<UUID>()
+        let candidates = servers.filter { $0.transport == .stdio }
+        for server in candidates {
+            guard server.enabled, server.stdioBinding?.taskID == taskID, allowStart,
+                  let workspaceRoot else {
+                excluded.append(server.namespacePrefix + "_"); continue
+            }
+            let context = ToolContext(runID: runID, workspaceRootURL: workspaceRoot,
+                cancellation: CancellationToken(), conversationID: taskID)
+            if let client = connections[server.id]?.client as? any MCPExecutionContextValidating,
+               (try? await client.validateInvocation(context: context)) != nil {
+                admitted.insert(server.id)
+                continue
+            }
+            _ = await connectInternal(serverID: server.id, binding: generation, force: false)
+            if let connection = connections[server.id], case .ready = connection.state {
+                admitted.insert(server.id)
+            } else { excluded.append(server.namespacePrefix + "_") }
+        }
+        // Re-read after async discovery: a newly added or rebound foreign
+        // server must not appear just because it missed the initial snapshot.
+        excluded += servers.filter { $0.transport == .stdio &&
+            (!admitted.contains($0.id) || !$0.enabled || $0.stdioBinding?.taskID != taskID)
+        }.map { $0.namespacePrefix + "_" }
+        return Array(Set(excluded))
+    }
+
     public func connect(serverID: UUID) async -> sending [String: Any] {
         let binding: FacadeRootGeneration
         do { binding = try requireBinding() } catch { return Self.rejection(error) }
@@ -1236,11 +1514,38 @@ public actor MCPDomain {
     /// retained honestly (config/draft untouched).
     private func connectInternal(serverID: UUID, binding: FacadeRootGeneration,
                                  force: Bool) async -> sending [String: Any] {
-        guard transportAdmission.admitsMCPNetwork else {
-            return Self.rejection(MCPDomainRefusal.transportClosed)
-        }
         guard let server = servers.first(where: { $0.id == serverID }) else {
             return Self.rejection(ConfigDomainError(code: .notFound, reason: "mcpServerMissing"))
+        }
+        if server.transport == .stdio {
+            guard let binding = server.stdioBinding else {
+                let hash = MCPServerConfigHash.digest(of: server)
+                var connection = connections[serverID] ?? MCPServerConnection()
+                connection.state = .failed(reason: "mcpStdioBindingRequired",
+                                           revision: hash)
+                connections[serverID] = connection
+                return Self.rejection(ConfigDomainError(
+                    code: .needsConfiguration,
+                    reason: "mcpStdioBindingRequired"))
+            }
+            // The binding must belong to THIS saved command. A stale binding
+            // from an earlier edit can never be executed.
+            do {
+                try server.validate()
+            } catch {
+                return Self.rejection(Self.mapConfigurationValidation(error))
+            }
+            _ = binding
+        }
+        switch server.transport {
+        case .streamableHTTP:
+            guard transportAdmission.admitsMCPNetwork else {
+                return Self.rejection(MCPDomainRefusal.transportClosed)
+            }
+        case .stdio:
+            guard await transportAdmission.refreshMCPStdioAdmission() else {
+                return Self.rejection(MCPDomainRefusal.transportClosed)
+            }
         }
         if !server.enabled && !force {
             return Self.rejection(ConfigDomainError(code: .needsConfiguration,
@@ -1269,14 +1574,15 @@ public actor MCPDomain {
         connection.boundConfigHash = hash
         connections[serverID] = connection
         let previousClient = connection.client
-        let remote: MCPRemoteClient
+        let remote: any MCPClientTransporting
         do {
-            remote = try clientFactory.make(configuration: server, credential: credential)
+            remote = try await clientFactory.make(configuration: server,
+                                                  credential: credential)
         } catch {
             var failed = connections[serverID] ?? connection
             failed.state = .failed(reason: Self.safeReason(error), revision: hash)
             connections[serverID] = failed
-            await previousClient?.disconnect()
+            await previousClient?.disconnectTransport()
             return Self.rejection(Self.mapConfigurationValidation(error))
         }
         let ownerID = FacadeToolWorkCoordinator.mcpRefreshOwnerID(serverID,
@@ -1287,7 +1593,7 @@ public actor MCPDomain {
         case .success(let started):
             worker = started
         case .failure:
-            await remote.disconnect()
+            await remote.disconnectTransport()
             var failed = connections[serverID] ?? connection
             failed.state = .failed(reason: "refreshAlreadyActive", revision: hash)
             connections[serverID] = failed
@@ -1307,8 +1613,8 @@ public actor MCPDomain {
     /// The awaited refresh body, called only while the refresh worker is
     /// registered. Every early exit has already settled the client state.
     private func runRefresh(serverID: UUID, server: MCPServerConfiguration,
-                            remote: MCPRemoteClient,
-                            previousClient: MCPRemoteClient?,
+                            remote: any MCPClientTransporting,
+                            previousClient: (any MCPClientTransporting)?,
                             connection: MCPServerConnection,
                             generation: UInt64, hash: String) async -> sending [String: Any] {
         let discovered: [MCPDiscoveredTool]
@@ -1320,8 +1626,8 @@ public actor MCPDomain {
             // client (no half-open session survives), retain the typed
             // error; the saved config/draft is untouched (retry keeps it).
             MCPRemoteToolSource.unregister(configuration: server, registry: registry)
-            await remote.disconnect()
-            await previousClient?.disconnect()
+            await remote.disconnectTransport()
+            await previousClient?.disconnectTransport()
             let reason = Self.safeReason(error)
             var failed = connections[serverID] ?? connection
             failed.state = .failed(reason: reason, revision: hash)
@@ -1337,7 +1643,7 @@ public actor MCPDomain {
         guard let current = connections[serverID], current.generation == generation,
               let live = servers.first(where: { $0.id == serverID }),
               MCPServerConfigHash.digest(of: live) == hash else {
-            await remote.disconnect()
+            await remote.disconnectTransport()
             return Self.rejection(ConfigDomainError(code: .runtimeUnavailable,
                                                     reason: "mcpRefreshSuperseded"))
         }
@@ -1345,7 +1651,7 @@ public actor MCPDomain {
         MCPRemoteToolSource.register(configuration: live, client: remote,
                                      tools: tools, registry: registry)
         if let previousClient, !(previousClient === remote) {
-            await previousClient.disconnect()
+            await previousClient.disconnectTransport()
         }
         var ready = connections[serverID] ?? connection
         ready.client = remote
@@ -1478,7 +1784,7 @@ public actor MCPDomain {
         // (scoped; other servers' connections are untouched).
         _ = await toolWork.cancelWorkers(ownerPrefix: "mcp-refresh:\(serverID.uuidString):",
                                          epoch: binding.epoch)
-        await previous?.disconnect()
+        await previous?.disconnectTransport()
     }
 
     /// cancelRefresh ⇄ the binding-map mcpRefresh fence: generation EXACTLY
@@ -1926,6 +2232,7 @@ public actor MCPDomain {
             case .httpError, .remoteError, .invalidResponse: return .transportUnavailable
             case .responseTooLarge: return .payloadTooLarge
             case .disconnected, .cancelled, .timedOut: return .runtimeUnavailable
+            case .transportUnavailable: return .transportUnavailable
             }
         }
         if error is CancellationError { return .runtimeUnavailable }
@@ -1952,6 +2259,8 @@ public actor MCPDomain {
                 return text.isEmpty ? "timedOut" : "timedOut.\(text)"
             case .invalidResponse:
                 return "invalidResponse"
+            case .transportUnavailable:
+                return "transportUnavailable"
             }
         }
         if let floe = error as? FloeError, case .invalidConfiguration = floe {

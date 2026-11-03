@@ -7,6 +7,18 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <application>
+        <!-- C06 Full-only root capture foreground owner. It is absent from the
+             Play source set; the main host starts it only when the Full root
+             backend is present. It contains no root implementation itself. -->
+        <service
+            android:name="com.floe.android.host.capture.root.RootPacketCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="true">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="user-initiated root packet capture that streams a pinned helper's native capture" />
+        </service>
         <receiver android:name="com.floe.android.host.linux.RuntimeInstallReceiver" android:exported="false" />
         <!-- App self-update (same-package Full APK from the repository's
              Android release). Distinct receiver extras/state from the

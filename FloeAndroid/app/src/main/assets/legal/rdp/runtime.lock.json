@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "abi": "arm64-v8a",
+  "androidAPI": 28,
+  "ndk": "30.0.16248370",
+  "freerdp": {
+    "version": "3.31.1",
+    "tag": "3.31.1",
+    "source": "https://github.com/FreeRDP/FreeRDP/releases/download/3.31.1/freerdp-3.31.1.tar.gz",
+    "sha256": "4a2629026896cb4e26fb8ed2d6ca6aa4ab89ca95528dfbae2550c2f6bc866991",
+    "license": "Apache-2.0",
+    "licenseFile": "licenses/rdp/FreeRDP-LICENSE"
+  },
+  "openssl": {
+    "version": "4.0.1",
+    "tag": "openssl-4.0.1",
+    "source": "https://github.com/openssl/openssl/releases/download/openssl-4.0.1/openssl-4.0.1.tar.gz",
+    "sha256": "2db3f3a0d6ea4b59e1f094ace2c8cd536dffb87cdc39084c5afa1e6f7f37dd09",
+    "license": "Apache-2.0",
+    "licenseFile": "licenses/rdp/OpenSSL-LICENSE"
+  },
+  "build": {
+    "freerdpTargets": ["freerdp", "winpr"],
+    "shared": false,
+    "positionIndependentCode": true,
+    "client": false,
+    "server": false,
+    "channels": false,
+    "x11": false,
+    "wayland": false,
+    "ffmpeg": false,
+    "swscale": false,
+    "cups": false,
+    "pulse": false,
+    "alsa": false,
+    "pcsc": false,
+    "fuse": false,
+    "uriparser": false,
+    "cjson": false,
+    "opus": false,
+    "png": false,
+    "jpeg": false,
+    "webp": false,
+    "openssl": true,
+    "mbedtls": false
+  },
+  "qualification": "source-pinned; Android ARM64 build not run in the C05 source lane"
+}

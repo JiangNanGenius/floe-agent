@@ -52,6 +52,7 @@ import com.floe.android.design.IconGlyph
 import com.floe.android.feature.canvas.CanvasProjectSummary
 import com.floe.android.feature.canvas.CreativeAvailability
 import com.floe.android.feature.canvas.ui.api.CanvasPickedSource
+import com.floe.android.feature.canvas.ui.design.DesignSessionProvider
 import com.floe.android.feature.canvas.ui.state.CanvasWorkspaceSession
 import kotlinx.coroutines.launch
 
@@ -67,11 +68,22 @@ fun FloeCanvasLibrary(
     session: CanvasWorkspaceSession,
     pickImage: suspend () -> CanvasPickedSource?,
     modifier: Modifier = Modifier,
+    /**
+     * App-injected design workflow sessions. Null keeps this factory
+     * source-compatible for non-App hosts and simply omits the compact Design
+     * entry; the integrated App always supplies the real provider.
+     */
+    designSessions: DesignSessionProvider? = null,
 ) {
     LaunchedEffect(session) { session.start() }
     val editor = session.editor
     if (editor != null) {
-        CanvasEditorCover(session = session, editor = editor, pickImage = pickImage)
+        CanvasEditorCover(
+            session = session,
+            editor = editor,
+            pickImage = pickImage,
+            designSessions = designSessions,
+        )
         return
     }
     CanvasLibraryContent(session = session, pickImage = pickImage, modifier = modifier)

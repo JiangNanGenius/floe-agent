@@ -51,6 +51,12 @@ extension G02InstalledComposition {
         registeredHandlerKeys.append(contentsOf:
             G073TaskScheduleBindings.install(epoch: gen.epoch,
                                              registry: gen.registry))
+        // C01: six append-only applicationConfiguration/projects commands.
+        // The keys enter the SAME registeredHandlerKeys retirement path.
+        registeredHandlerKeys.append(contentsOf:
+            C01ProjectBindings.install(epoch: gen.epoch,
+                                       library: projectLibrary,
+                                       registry: gen.registry))
         return registeredHandlerKeys
     }
 

@@ -74,6 +74,42 @@ public actor SQLiteSettingsStore: SettingsStore {
         }
     }
 
+    /// Atomically writes `json` for `key` ONLY when the row's current raw
+    /// value is exactly `expectedValue` (`nil` means the row must be absent).
+    /// The comparison and the conditional write run in ONE existing writer
+    /// transaction of the same `app_settings` table, so two concurrent
+    /// callers with the same expected value produce exactly one winner. A
+    /// mismatch writes nothing and returns `false`. This adds no table, DDL,
+    /// migration, second store or cache.
+    public func compareAndSetValue(
+        _ json: String,
+        forKey key: String,
+        expectedValue: String?
+    ) async throws -> Bool {
+        try await database.writer { db in
+            let now = PersistenceCodec.encode(Date())
+            if let expectedValue {
+                try db.execute(
+                    sql: """
+                        UPDATE app_settings
+                        SET value_json = ?, updated_at = ?
+                        WHERE key = ? AND value_json = ?
+                        """,
+                    arguments: [json, now, key, expectedValue])
+                return db.changesCount == 1
+            }
+            // Expected-absent: INSERT OR IGNORE leaves an existing row
+            // untouched and reports zero changes instead of overwriting it.
+            try db.execute(
+                sql: """
+                    INSERT OR IGNORE INTO app_settings (key, value_json, updated_at)
+                    VALUES (?, ?, ?)
+                    """,
+                arguments: [key, json, now])
+            return db.changesCount == 1
+        }
+    }
+
     public func removeValue(forKey key: String) async throws {
         try await database.writer { db in
             try db.execute(

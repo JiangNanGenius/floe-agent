@@ -614,6 +614,35 @@ class CanvasEditorController internal constructor(
         }
     }
 
+    /**
+     * Authoritative Canvas reload after a design adoption committed a normal
+     * Canvas patch. This is the SAME host open the normal patch pipeline uses:
+     * it keeps the current document/selection and the UI undo stack, so the
+     * design sheet never owns a second Canvas store or a competing selection.
+     * Any failure leaves the committed receipt visible to the design sheet and
+     * marks the editor for an explicit safe reload.
+     */
+    suspend fun refreshEnvelopeAfterDesignAdoption(): Boolean {
+        return operationMutex.withLock {
+            if (retired) return@withLock false
+            busy = true
+            try {
+                refreshLocked(clearHistory = false)
+                needsReload = false
+                failure = null
+                true
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                failure = CanvasFailures.from(error)
+                needsReload = true
+                false
+            } finally {
+                busy = false
+            }
+        }
+    }
+
     /** Token-scoped retirement; waits for an in-flight patch to settle. */
     suspend fun retire(): Boolean {
         operationMutex.withLock {

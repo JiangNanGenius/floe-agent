@@ -79,6 +79,36 @@ class NotesExportPlannerTest {
     }
 
     @Test
+    fun subsetOrderAndPageCountFollowTheCallerSelection() {
+        // The renderer must compose a requested subset in the caller's order
+        // (page 2 then page 1), not sort it back into source order.
+        val plan = NotesExportPlanner.plan(
+            sha,
+            geometry(),
+            listOf(PdfPageId(1), PdfPageId(0)),
+            emptyList(),
+            NotesExportQuality.HIGH,
+        ) as NotesExportPlanResult.Ready
+        assertEquals(2, plan.plan.pages.size)
+        assertEquals(842, plan.plan.pages[0].outputWidthPt)
+        assertEquals(595, plan.plan.pages[0].outputHeightPt)
+        assertEquals(612, plan.plan.pages[1].outputWidthPt)
+        assertEquals(792, plan.plan.pages[1].outputHeightPt)
+    }
+
+    @Test
+    fun emptyPageSelectionIsRefusedBeforeRendering() {
+        val refused = NotesExportPlanner.plan(
+            sha,
+            geometry(),
+            emptyList(),
+            emptyList(),
+            NotesExportQuality.HIGH,
+        ) as NotesExportPlanResult.Refused
+        assertEquals(NotesExportRefusal.EMPTY_PAGE_SELECTION, refused.refusal)
+    }
+
+    @Test
     fun missingGeometryOrSourceMismatchIsRefused() {
         assertEquals(
             NotesExportRefusal.NO_PAGE_GEOMETRY,

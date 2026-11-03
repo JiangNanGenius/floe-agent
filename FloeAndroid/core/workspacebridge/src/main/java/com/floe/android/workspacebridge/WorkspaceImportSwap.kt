@@ -97,6 +97,8 @@ class WorkspaceImportSwap(
          *  written before these facts existed — legacy restore/acknowledge
          *  paths parse and act on those unchanged. */
         val preserved: List<SwappedCopy> = emptyList(),
+        val retainedExisting: Int = 0,
+        val createdBytes: Long = 0,
     )
 
     /** Applies every staged entry atomically. `shouldCancel` is checked
@@ -181,6 +183,44 @@ class WorkspaceImportSwap(
         }
         ops.fsyncDirectory(destination)
         return SwapOutcome(created, replacedSynced, preservedUnsynced, unchanged, conflicts, preservedFacts.toList())
+    }
+
+    /** New task inputs while another session owns the live tree. Existing
+     * entries are never renamed, chmod'ed or deleted, even after cancellation.
+     * These journal actions deliberately do not participate in reverse restore:
+     * a live process may already have changed a newly delivered input. */
+    fun applyMissingOnly(entries: List<StagedEntry>, shouldCancel: () -> Boolean): SwapOutcome {
+        var created = 0
+        var retained = 0
+        var bytes = 0L
+        val conflicts = mutableListOf<String>()
+        val ordered = entries.sortedWith(compareBy({ if (it.kind == "directory") 0 else 1 }, { it.path }))
+        for ((index, entry) in ordered.withIndex()) {
+            if (shouldCancel()) throw WorkspaceSwapException("inputImportCancelled")
+            val before = ops.kindNoFollow(destination, entry.path)
+            if (before != SwapKind.MISSING) {
+                if (before == SwapKind.UNREADABLE) conflicts.add(entry.path) else retained += 1
+                continue
+            }
+            val installed = when (entry.kind) {
+                "directory" -> ops.createNewDirectory(destination, entry.path)
+                "file" -> ops.installNewFile(File(stageRoot, entry.path), destination, entry.path)
+                "symlink" -> entry.linkTarget?.let { ops.createNewSymlink(destination, entry.path, it) } ?: false
+                else -> false
+            }
+            if (installed) {
+                created += 1
+                if (entry.kind == "file") bytes += entry.size
+                appendJournal(swapRecord(index, entry, "newInputCreated", null))
+            } else if (ops.kindNoFollow(destination, entry.path) in
+                setOf(SwapKind.FILE, SwapKind.DIRECTORY, SwapKind.SYMLINK)) {
+                retained += 1 // A concurrent guest won atomic creation.
+            } else {
+                conflicts.add(entry.path)
+            }
+        }
+        ops.fsyncDirectory(destination)
+        return SwapOutcome(created, 0, 0, 0, conflicts, retainedExisting = retained, createdBytes = bytes)
     }
 
     private fun swapFile(index: Int, entry: StagedEntry, target: File): Pair<String, SwappedCopy?> {

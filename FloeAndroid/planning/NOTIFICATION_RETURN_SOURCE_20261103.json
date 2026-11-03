@@ -1,0 +1,44 @@
+{
+  "sourceBase": "057eca9ba9e935eb5856adfd44f28d23ba6f5e7f",
+  "operation": "NTF-VIEW-STOP",
+  "implementation": [
+    "Actual live export registry resolves opaque notification identity to captured project/storage/origin/epoch. No Intent path/project authority.",
+    "Original media-return coordinator handles generation and export in one ordered, superseding one-shot queue.",
+    "Shell uses original temporary-chat fence; export ownership is rechecked after async navigation and at feature handoff.",
+    "Aggregate run notification opens existing task center without inventing a task association; stop fences unchanged."
+  ],
+  "compile": {
+    "fullPlayKotlin": "passed"
+  },
+  "jvm": {
+    "tests": 33,
+    "failures": 0,
+    "skipped": 0,
+    "coverage": [
+      "shared media return and supersession, Activity redelivery and unknown identity",
+      "aggregate return validation, expiry and stale dismissal",
+      "original foreground owner semantics"
+    ]
+  },
+  "deviceVerified": false,
+  "newAPK": false,
+  "remaining": [
+    "Actual foreground notification taps and media full-window reopen on final APK",
+    "Actual stale/changed-root and refused temporary fence behavior on device"
+  ],
+  "sourceHashes": {
+    "core/runlifecycle/src/main/kotlin/com/floe/android/runlifecycle/RunNotificationReturn.kt": "5c1529d2dc6c80643121b07b682dd156898365d1e2d4edbfc3a415c8025262f2",
+    "core/runlifecycle/src/main/kotlin/com/floe/android/runlifecycle/RunForegroundService.kt": "7b2dbbe36705b52c3ed78986e55b99c1ceffab273420a50a4c7da805847dcc58",
+    "core/workbenchmedia/src/main/kotlin/com/floe/android/core/workbenchmedia/export/MediaExportReturns.kt": "ce0e9beec4c01ba56c6cc95c9b7f147e5e58ea1eb43269917b91f5427e0e7b69",
+    "core/workbenchmedia/src/main/kotlin/com/floe/android/core/workbenchmedia/export/ExportRuntime.kt": "b06c71b367f4cca709df005fcf9a33feff5cf4f19e545c9ca0cec8a303ca6c34",
+    "core/workbenchmedia/src/main/kotlin/com/floe/android/core/workbenchmedia/service/MediaExportService.kt": "46bbbd98b6c7e249ddaa8d26395f88a6752b2a07057b03f56150e9f9f3e8d075",
+    "app/src/main/kotlin/com/floe/android/MainActivity.kt": "f463ec6553d49a9e6d07d23cafda765cac432ca368f6455902fa6062438800fa",
+    "app/src/main/kotlin/com/floe/android/FloeShell.kt": "4fd17e6b3834e074265ea2bd83e992a85e3367924614dc65a2b6614f29922c7e",
+    "app/src/main/kotlin/com/floe/android/CreativeDestination.kt": "2d414471c99274a25df26c2ded11f221263a468a7bb14de968390492c5289dfd",
+    "app/src/main/kotlin/com/floe/android/host/creative/GenerationReturnNavigation.kt": "a579dbd96b415e8ffdde84390fde6504ab40d1723a6ccee69fe133c387c8d852",
+    "app/src/main/kotlin/com/floe/android/host/notification/OwnedNotificationNavigation.kt": "0b85c1e6b6414aff315ab5caea4a42dd07fbcc2856ad4853b1cc521b08b24cbb",
+    "app/src/main/kotlin/com/floe/android/host/notification/MediaExportReturnResolver.kt": "a53aeed57a8f6af2ff2b57458bd1380bdfb9d17700ebaf0f019f338213bf5646",
+    "app/src/test/kotlin/com/floe/android/host/creative/GenerationReturnNavigationTest.kt": "62573ce4b70ce0a0f00cc39d4ac7b5b7e4180bdaad994d9b08a7d27ead454a17",
+    "app/src/test/kotlin/com/floe/android/host/notification/OwnedNotificationNavigationTest.kt": "cb67002dfb5d4a415c71c20314c95ca7dc1db71defe5e0f6a4b15e876dd85831"
+  }
+}

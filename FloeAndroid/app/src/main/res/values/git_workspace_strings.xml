@@ -33,6 +33,8 @@
     <string name="git_workspace_remote_url">Repository HTTPS URL</string>
     <string name="git_workspace_discard_confirmation">Discard the working and staged changes for this path? A recovery copy is kept when available. Save unsaved editor changes first.</string>
     <string name="git_workspace_push_confirmation">Push committed changes to the configured remote repository?</string>
+    <string name="git_workspace_push_rejected">The server rejected the push. Check the remote branch, access permissions, or repository rules before trying again.</string>
+    <string name="git_workspace_push_unreported">The push result could not be confirmed. Check the branch on the remote before trying again.</string>
     <string name="git_workspace_abort_confirmation">Abort the current merge and restore its previous working state? Save unsaved editor changes first.</string>
     <string name="git_workspace_action_caption">This action applies to the selected task’s workspace.</string>
     <string name="git_workspace_actions">Cloud runs</string>

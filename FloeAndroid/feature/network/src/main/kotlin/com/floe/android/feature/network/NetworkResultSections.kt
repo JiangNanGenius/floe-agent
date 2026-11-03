@@ -77,6 +77,23 @@ object NetworkResultSections {
         "observations.countRequested",
     )
 
+    /**
+     * Traceroute leads with the measured answer: where the route actually
+     * stopped, the observed hop budget and the real per-hop rows (kept in
+     * the flattened detail). Timed-out hops stay visible as actual rows.
+     */
+    private val TRACE_KEYS = listOf(
+        "observations.resolvedAddress",
+        "observations.family",
+        "observations.reachedTarget",
+        "observations.maxHops",
+        "observations.probesPerHop",
+        "observations.probeTimeoutMs",
+        "observations.elapsedMs",
+        "observations.hops",
+        "observations.budgetExhausted",
+    )
+
     private val TCP_KEYS = listOf(
         "observations.connected",
         "observations.connectTimeMs",
@@ -157,6 +174,7 @@ object NetworkResultSections {
         NetworkPage.SPEED.method to SPEED_KEYS,
         NetworkPage.DNS.method to DNS_KEYS,
         NetworkPage.PING.method to PING_KEYS,
+        NetworkPage.TRACE.method to TRACE_KEYS,
         NetworkPage.TCP.method to TCP_KEYS,
         NetworkPage.HTTPS.method to HTTPS_KEYS,
     )

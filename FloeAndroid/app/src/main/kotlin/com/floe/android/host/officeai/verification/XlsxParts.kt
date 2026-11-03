@@ -19,7 +19,12 @@ internal object XlsxParts {
     private const val REL_TYPE_PREFIX =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
 
-    internal data class SheetTarget(val partName: String?, val refusalCode: String?)
+    internal data class SheetTarget(
+        val partName: String?,
+        val refusalCode: String?,
+        /** Declared <sheet name>; null when the workbook omits it. */
+        val name: String? = null,
+    )
 
     internal sealed class WorkbookPlan {
         data class Ready(
@@ -59,18 +64,19 @@ internal object XlsxParts {
         val sheets = ArrayList<SheetTarget>()
         for (sheetsElement in sheetsNodes) {
             for (sheet in DomUtil.childElements(sheetsElement, S_NS, "sheet")) {
+                val sheetName = sheet.getAttribute("name").takeIf { it.isNotEmpty() }
                 val relId = sheet.getAttributeNS(R_NS, "id")
                 if (relId.isEmpty()) {
-                    sheets.add(SheetTarget(null, VerificationCodes.RELATION_UNRESOLVED))
+                    sheets.add(SheetTarget(null, VerificationCodes.RELATION_UNRESOLVED, sheetName))
                     continue
                 }
                 val relationship = rels[relId]
                 if (relationship == null) {
-                    sheets.add(SheetTarget(null, VerificationCodes.RELATION_UNRESOLVED))
+                    sheets.add(SheetTarget(null, VerificationCodes.RELATION_UNRESOLVED, sheetName))
                     continue
                 }
                 if (relationship.external) {
-                    sheets.add(SheetTarget(null, VerificationCodes.RELATION_UNRESOLVED))
+                    sheets.add(SheetTarget(null, VerificationCodes.RELATION_UNRESOLVED, sheetName))
                     continue
                 }
                 when (relationship.type) {
@@ -78,16 +84,20 @@ internal object XlsxParts {
                         val path = OpcRelPaths.resolve("xl/", relationship.target)
                         sheets.add(
                             if (path == null) {
-                                SheetTarget(null, VerificationCodes.RELATION_UNRESOLVED)
+                                SheetTarget(null, VerificationCodes.RELATION_UNRESOLVED, sheetName)
                             } else {
-                                SheetTarget(path, null)
+                                SheetTarget(path, null, sheetName)
                             },
                         )
                     }
                     REL_TYPE_PREFIX + "chartsheet" -> {
-                        sheets.add(SheetTarget(null, VerificationCodes.TARGET_NOT_WORKSHEET))
+                        sheets.add(
+                            SheetTarget(null, VerificationCodes.TARGET_NOT_WORKSHEET, sheetName),
+                        )
                     }
-                    else -> sheets.add(SheetTarget(null, VerificationCodes.TARGET_NOT_WORKSHEET))
+                    else -> sheets.add(
+                        SheetTarget(null, VerificationCodes.TARGET_NOT_WORKSHEET, sheetName),
+                    )
                 }
             }
         }

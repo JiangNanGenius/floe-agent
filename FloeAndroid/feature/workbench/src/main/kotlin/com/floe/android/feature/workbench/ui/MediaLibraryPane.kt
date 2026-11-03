@@ -72,11 +72,17 @@ fun FloeMediaLibrary(
     pickImage: suspend () -> MediaPickedSource?,
     pickVideo: suspend () -> MediaPickedSource?,
     modifier: Modifier = Modifier,
+    mediaPicker: com.floe.android.feature.workbench.ui.r2.WorkbenchMediaPicker? = null,
 ) {
     LaunchedEffect(session) { session.start() }
     val editor = session.editor
     if (editor != null) {
-        MediaEditorCover(session = session, editor = editor, pickImage = pickImage)
+        MediaEditorCover(
+            session = session,
+            editor = editor,
+            pickImage = pickImage,
+            mediaPicker = mediaPicker,
+        )
         return
     }
     MediaLibraryContent(

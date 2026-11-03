@@ -32,6 +32,7 @@ interface IFloeSystemService {
     Bundle packageQuery(in Bundle request);
     Bundle networkDiagnostics(in Bundle request);
     Bundle managePackage(in Bundle request);
+    Bundle packetCapture(in Bundle request);
 
     void cancel(String requestId);
     void stopOwnedService(in Bundle request);

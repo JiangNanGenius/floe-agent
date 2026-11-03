@@ -1,0 +1,264 @@
+{
+  "schema": "floe.vendor-upstream.v1",
+  "project": "NetBare-Android",
+  "upstreamUrl": "https://github.com/MegatronKing/NetBare-Android",
+  "revision": "df5b417ea663763932cabf1ef52f15b09ddc2e16",
+  "revisionDate": "2020-03-02T21:49:37+08:00",
+  "licenseFile": "LICENSE",
+  "licenseFileSha256": "970c5b6a8b4e037101f28255965a75287afb671d761b55e73616ed3efcb77ff1",
+  "licenseObservation": "Repository LICENSE is MIT (Copyright 2019 Megatron King). Upstream source file headers still carry GPLv3 text; both notices are retained and the exact source is vendored inside this repository to preserve source availability. This conflict is flagged to Main and not reinterpreted.",
+  "subset": "Only the IPv4 TCP/UDP NIO forwarding path (ip/net/proxy/tunnel/gateway value and forwarding classes) is present. HTTP/SSL injection, UID dumper, sample app, service/base classes, JCenter/support/Guava/BouncyCastle dependencies and prebuilt JNI are excluded.",
+  "excluded": [
+    "netbare-injector",
+    "netbare-sample",
+    "netbare-core ssl/http/gateway-injection classes",
+    "gradle wrapper/sample assets",
+    ".git"
+  ],
+  "localPatches": [
+    "Removed android.support annotations and UidDumper dependency from SessionProvider/forwarders (UID attribution is not used for authorization).",
+    "Removed SSL whitelist exception handling from TcpProxyServer; no TLS MITM is present.",
+    "TcpProxyServer binds preferred non-ephemeral proxy ports 25222-25225 before port 0 to avoid source-port misclassification.",
+    "TcpProxyServer/UdpProxyServer close their selector/channel and provide a real stopAndJoin proof.",
+    "ProxyServerForwarder gained releaseAndJoin; Tcp/Udp forwarders implement it.",
+    "TcpVATunnel/UdpVATunnel use the upstream base VirtualGateway for direct forwarding instead of NetBareVirtualGateway injection policy.",
+    "SessionTunnelFlow javadoc/import no longer references the excluded NetBareConfig.",
+    "Merged UDP selector wake/close and existing tunnel cleanup into the single stopServer override (integrated Java compilation correction)."
+  ],
+  "files": [
+    {
+      "vendoredPath": "LICENSE",
+      "upstreamPath": "LICENSE",
+      "sha256": "970c5b6a8b4e037101f28255965a75287afb671d761b55e73616ed3efcb77ff1",
+      "bytes": 1086
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/NetBareLog.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/NetBareLog.java",
+      "sha256": "130af3b24b03466742604bbe0deab152d8bba97ac82585b803fc03497abf10f4",
+      "bytes": 4515
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/NetBareUtils.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/NetBareUtils.java",
+      "sha256": "21a6c27a2055159ad1927018168063e73863a8b9cff806286b3b0e974c5b9cb8",
+      "bytes": 4625
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/NetBareXLog.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/NetBareXLog.java",
+      "sha256": "4ca7542a967d051a7083611c280bbf85e320afa0e6a4ac241048be1a710e9579",
+      "bytes": 5489
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/gateway/Request.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/gateway/Request.java",
+      "sha256": "999f0b09fa684a54323537970d1a9442179e10df0f642e1196a200884e7ce3c1",
+      "bytes": 1504
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/gateway/Response.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/gateway/Response.java",
+      "sha256": "2ab608c67c6903c68269251b501b0381be3d92d570143bee831e3e511f9be19c",
+      "bytes": 1485
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/gateway/SessionTunnelFlow.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/gateway/SessionTunnelFlow.java",
+      "sha256": "c58ad0c07385d4138f6879dcc3e3bc91ecb43af4e579a91868755d02f249212d",
+      "bytes": 2727
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/gateway/TunnelFlow.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/gateway/TunnelFlow.java",
+      "sha256": "5181d6729905014fa6fae293dd3466710f29fd14409f38c7e88e027e4c4ce256",
+      "bytes": 1324
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/gateway/VirtualGateway.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/gateway/VirtualGateway.java",
+      "sha256": "e1adbacfd70df426a8695ba5dc86c449b2c551e186ca8a078699562a54406279",
+      "bytes": 3275
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/ip/Header.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/ip/Header.java",
+      "sha256": "0681851a5279091c3aac44ef56f6cb10bd27adafe2f627794c7a97bdc60258a9",
+      "bytes": 2392
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/ip/IcmpHeader.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/ip/IcmpHeader.java",
+      "sha256": "36cbb64af40755f2b1d3fc5c401bcc934208e5c8ee3233e62c157a81ab9c6f00",
+      "bytes": 3296
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/ip/IpHeader.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/ip/IpHeader.java",
+      "sha256": "a4c447314c004d1cd74da7de5574fb824048f7004947dd76d703cea4b0105719",
+      "bytes": 4384
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/ip/Protocol.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/ip/Protocol.java",
+      "sha256": "4a4074192fc481a646ecd58c83d431ba04eaf4a9f5f712efa55708c7161900c6",
+      "bytes": 1744
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/ip/TcpHeader.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/ip/TcpHeader.java",
+      "sha256": "28062c16a772eb00c2cc844c956aca0b75068a183bdb327f153b6d830f56d223",
+      "bytes": 5779
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/ip/UdpHeader.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/ip/UdpHeader.java",
+      "sha256": "63ca6aa493ff0f5303371f72ea8fe2062d2686e472607d2edfeb8505a8fb66d8",
+      "bytes": 4566
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/net/Session.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/net/Session.java",
+      "sha256": "f9f680fe88857f36a2e5e6b6b9d61579e4fa174fc36f5f18987af640cadd6baa",
+      "bytes": 2343
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/net/SessionProvider.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/net/SessionProvider.java",
+      "sha256": "ad53467fc08cd2ee420022cb0952fc3fa946cadeb8dfb67fd86f2cb0113fc2d7",
+      "bytes": 2784
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/proxy/BaseProxyServer.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/proxy/BaseProxyServer.java",
+      "sha256": "bf4b4585323126f56eee11b30c5b1d0227b7e66ff6cadfaf57e6135d3ad401a3",
+      "bytes": 2744
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/proxy/IcmpProxyServerForwarder.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/proxy/IcmpProxyServerForwarder.java",
+      "sha256": "84c28c47e2ab4d36c66a97e5f6b1d1b8f10eacf7287f0978d58e20f994429c1c",
+      "bytes": 1764
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/proxy/ProxyServer.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/proxy/ProxyServer.java",
+      "sha256": "90d81fad16407e1fcdd537cda37c6dc24054842851676fb3c8669fe23050ce99",
+      "bytes": 2031
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/proxy/ProxyServerForwarder.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/proxy/ProxyServerForwarder.java",
+      "sha256": "c44db5490dc7109a6b2d4fd3d0f8f71a430f017573d50a0497a6920c8a5d5aec",
+      "bytes": 1822
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/proxy/TcpProxyServer.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/proxy/TcpProxyServer.java",
+      "sha256": "bef425cfebb56968dd05fb9158342c846c5562ba7c4b00accc6f7542aeb2ec07",
+      "bytes": 9860
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/proxy/TcpProxyServerForwarder.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/proxy/TcpProxyServerForwarder.java",
+      "sha256": "07946aad8fd7fe1e82c3107c0085eba0ea136a504ba70e737b4f15c8c468967e",
+      "bytes": 5040
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/proxy/UdpProxyServer.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/proxy/UdpProxyServer.java",
+      "sha256": "aa536357ddf3dbc1828e871b937ec8130ed51f1de3acdab3266c1eeca4ccc466",
+      "bytes": 6655
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/proxy/UdpProxyServerForwarder.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/proxy/UdpProxyServerForwarder.java",
+      "sha256": "163a53c561916a7d9d5ba7a64808523a83654b8430e811886806fdb2ef04bffe",
+      "bytes": 3466
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/tunnel/ConnectionShutdownException.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/tunnel/ConnectionShutdownException.java",
+      "sha256": "bfa89a4156ff8776163c6cceb0030e6797c574bcb264ca51d0fc8b6496bc498b",
+      "bytes": 1384
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/tunnel/NioCallback.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/tunnel/NioCallback.java",
+      "sha256": "a781cbadc942dcb839bc984be4c8a727bf2b7673dc86640f7546e7b9090a0cc0",
+      "bytes": 1772
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/tunnel/NioTunnel.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/tunnel/NioTunnel.java",
+      "sha256": "83cd63bfbb97cddb09159f2c5334150f2b5422b74c9d14a4b032381457566564",
+      "bytes": 5561
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/tunnel/TcpProxyTunnel.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/tunnel/TcpProxyTunnel.java",
+      "sha256": "ae8cdbdbca70e0b5dea97cc6b9a78a2d9dc8379f6e33da15f0a06de442d9f6a6",
+      "bytes": 2345
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/tunnel/TcpRemoteTunnel.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/tunnel/TcpRemoteTunnel.java",
+      "sha256": "858c305151461c5534bd0c3dd7321fce67f09de358f86bccc3fac99f995b8a5d",
+      "bytes": 2641
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/tunnel/TcpTunnel.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/tunnel/TcpTunnel.java",
+      "sha256": "463b2c78bb27a9c06f45cc12a8727929ec4af9188182f183871d67593747e59b",
+      "bytes": 2650
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/tunnel/TcpVATunnel.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/tunnel/TcpVATunnel.java",
+      "sha256": "0dea485a224bd3e7b47856f9565312101c68537c1f329bbcb51e062c15a9b836",
+      "bytes": 5156
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/tunnel/Tunnel.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/tunnel/Tunnel.java",
+      "sha256": "743cc437e8b02086105fcb6c88bc77a7da9f3f5bebbd825a4145c360e5735080",
+      "bytes": 1252
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/tunnel/UdpRemoteTunnel.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/tunnel/UdpRemoteTunnel.java",
+      "sha256": "c06cef69551a610da251cb8322cb5e403d2907debf425e59b437bba7655c6d9d",
+      "bytes": 2497
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/tunnel/UdpTunnel.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/tunnel/UdpTunnel.java",
+      "sha256": "db60d5c5d75e7e3e28f14538ddd61ed1da239c0ddd7074c4eae3833159423753",
+      "bytes": 2283
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/tunnel/UdpVATunnel.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/tunnel/UdpVATunnel.java",
+      "sha256": "a680760c448d2789803906e5bbee5d96b48b124101bbddd44081a508b31cac03",
+      "bytes": 6213
+    },
+    {
+      "vendoredPath": "src/main/java/com/github/megatronking/netbare/tunnel/VirtualGatewayTunnel.java",
+      "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/tunnel/VirtualGatewayTunnel.java",
+      "sha256": "308a3dc7dd3885123bd400babf691ddf2bf00e2bf04b791a231d9bfdbd22bdbc",
+      "bytes": 1660
+    }
+  ],
+  "localFiles": [
+    {
+      "path": "README.md",
+      "sha256": "2d965de1149254634617764aa28336e1fdc50f270aa85ec16dbf6b109a4d09d5",
+      "bytes": 874
+    },
+    {
+      "path": "build.gradle.kts",
+      "sha256": "188e5c1410da54e88ff9a94303bc8e6e9034e8f5d040bf89d3bd5bcfe17e1956",
+      "bytes": 830
+    }
+  ]
+}

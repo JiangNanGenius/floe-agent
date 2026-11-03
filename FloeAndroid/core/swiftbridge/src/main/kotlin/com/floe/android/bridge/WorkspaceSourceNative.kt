@@ -54,14 +54,29 @@ object WorkspaceSourceNative {
 
     /** Freeze one native working copy for chunked egress. mode: "save"
      * (journal ladder) | "export" (non-destructive send). Positive =
-     * ticket; negative = typed status. */
+     * ticket; negative = typed status. Unchanged generic entry: its
+     * provider-copy ceiling stays 1 GiB for every Office/Notes caller. */
     external fun egressOpen(
         epoch: Long, mode: String, taskID: String, workspaceID: String,
         logicalPath: String, sourceID: String,
     ): Long
 
-    /** {ok, mode, sha256, bytes, logicalPath, recoveryID, [sourceID,
-     * sourceRevision, recordedSHA256]} */
+    /** G09-R2 CLOSED media-purpose egress open (additive). `kind` must be
+     * exactly "image" | "audio" | "video" and must equal the logical path's
+     * own final extension; native applies image 128 MiB / audio 1 GiB /
+     * video 8 GiB and streams the pinned source body (no second snapshot).
+     * Positive = ticket whose info/read/close use the SAME functions below;
+     * negative = typed status. On an older installed Core the symbol is
+     * missing and Kotlin raises UnsatisfiedLinkError/LinkageError — the App
+     * maps that to the honest asset-staging-unavailable refusal instead of
+     * pretending the 8 GiB channel exists. */
+    external fun egressOpenMedia(
+        epoch: Long, kind: String, taskID: String, workspaceID: String,
+        logicalPath: String,
+    ): Long
+
+    /** {ok, mode, sha256, bytes, logicalPath, [mediaKind | recoveryID,
+     * sourceID, sourceRevision, recordedSHA256]} */
     external fun egressInfo(ticket: Long, reply: ByteArray): Int
 
     /** Copy snapshot bytes at [offset] into [target] (<= 64 KiB array).
@@ -108,6 +123,26 @@ object WorkspaceSourceNative {
     external fun reconcileStaged(
         epoch: Long, taskID: String, workspaceID: String, recoveryID: String,
         stageTicket: Long, reply: ByteArray,
+    ): Int
+
+    /** ---- Manual workspace original save (OFC-SAVE-REOPEN; additive) ----
+     *
+     * One bounded LOCAL workspace-CAS hop for the exact owned document: the
+     * trusted host passes the App-reverified working-copy path plus the
+     * open-time baseline digest; native re-verifies the source body, acquires
+     * the ORIGINAL write lease and runs `replaceBinaryFile` (the same CAS
+     * the Core model path uses). A post-commit error is classified by the
+     * ACTUAL original readback, never "throw means untouched". Reply body:
+     *   {"ok":1,"local":"committed","committedSHA256":..,"committedBytes":..}
+     *   {"ok":0,"local":"conflict"|"refused"|"cancelled"|"unknown","detail":..}
+     * Returns the copied reply length (>= 0) or a typed negative status.
+     * On an older installed Core the symbol is missing and Kotlin raises
+     * UnsatisfiedLinkError/LinkageError — the App maps that to the honest
+     * unknown/retained refusal instead of pretending the commit ran. */
+    external fun saveOriginal(
+        epoch: Long, taskID: String, workspaceID: String, logicalPath: String,
+        expectedOriginalSHA256: String, expectedSourceSHA256: String,
+        expectedSourceBytes: Long, sourcePath: String, reply: ByteArray,
     ): Int
 
     /** Typed counters JSON only (no paths, bytes, identities). */

@@ -847,6 +847,19 @@ public enum MediaEditCommandApplier {
             throw MediaCommandError.validation("mask supports at most 512 strokes")
         }
         for stroke in mask.strokes {
+            // Region strokes (selection cut/restore) carry a complete vector
+            // selection and intentionally have no freehand points. They are
+            // rasterized by the same selection pipeline as the displayed
+            // marching ants; requiring two points here would make a cut
+            // irreversible-only by rejecting every later mask edit.
+            if let region = stroke.region {
+                try validateSelection(region)
+                guard stroke.points.isEmpty else {
+                    throw MediaCommandError.validation(
+                        "a region mask stroke must not also carry freehand points")
+                }
+                continue
+            }
             guard (2...512).contains(stroke.points.count) else {
                 throw MediaCommandError.validation("mask stroke needs 2...512 points")
             }

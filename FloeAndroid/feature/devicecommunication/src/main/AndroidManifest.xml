@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Presentation module: no permission, component or receiver. The App host
+     owns BLE/USB permission effects and the USB PendingIntent receiver. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

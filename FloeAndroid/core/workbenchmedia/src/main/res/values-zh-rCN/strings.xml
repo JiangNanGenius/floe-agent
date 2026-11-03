@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="media_export_channel_name">媒体导出</string>
+    <string name="media_export_channel_description">显示媒体预览和导出任务的进度，并允许取消</string>
+    <string name="media_export_title">媒体导出</string>
+    <string name="media_export_cancel">取消</string>
+    <string name="media_export_state_queued">等待中</string>
+    <string name="media_export_state_running">正在导出</string>
+    <string name="media_export_state_verifying">正在校验</string>
+    <string name="media_export_state_completed">已完成</string>
+    <string name="media_export_state_cancelled">已取消</string>
+    <string name="media_export_state_failed">失败</string>
+    <string name="media_export_state_interrupted">已中断</string>
+    <string name="media_export_state_timeout">已超时</string>
+</resources>

@@ -395,7 +395,7 @@ private fun InstallContent(controller: AppUpdateController, ui: AppUpdateUiState
                     onClick = {
                         controller.consumeSystemIntent()?.let { intent ->
                             if (!launchSystemIntent(context, intent)) {
-                                controller.onConfirmationUnavailable()
+                                controller.onConfirmationUnavailable((ui.install as AppInstallState.Confirming).sessionID)
                             }
                         }
                     },

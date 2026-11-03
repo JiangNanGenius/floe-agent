@@ -1,0 +1,29 @@
+<resources>
+    <string name="storage_data_management">Data management</string>
+    <string name="storage_title">Storage</string>
+    <string name="storage_usage_and_cleanup">Usage and cleanup</string>
+    <string name="storage_usage">Space used</string>
+    <string name="storage_refresh">Refresh</string>
+    <string name="storage_app_installed">App installation</string>
+    <string name="storage_app_data">App data</string>
+    <string name="storage_app_cache">App cache</string>
+    <string name="storage_runtime_base">Linux base system</string>
+    <string name="storage_runtime_environments">Environments and software</string>
+    <string name="storage_runtime_workspaces">Linux workspace files</string>
+    <string name="storage_runtime_installer">Linux installation files</string>
+    <string name="storage_runtime_cache">Linux cache</string>
+    <string name="storage_runtime_other">Other Linux data</string>
+    <string name="storage_unknown">Unknown</string>
+    <string name="storage_partial_size">At least %1$s</string>
+    <string name="storage_runtime_busy">Linux is in use. Refresh after the task finishes to measure its storage.</string>
+    <string name="storage_runtime_unknown">Linux storage is not available to read. App storage is shown separately.</string>
+    <string name="storage_measurement_note">Measured file space. Shared files are counted once; a bounded or unreadable scan is shown as partial or unknown.</string>
+    <string name="storage_cleanup">Unused temporary files</string>
+    <string name="storage_preserved">Documents, recovery copies, installed environments and verified installation archives are kept.</string>
+    <string name="storage_clean_unused">Clean unused temporary files</string>
+    <string name="storage_nothing_to_clean">No unused temporary files were removed.</string>
+    <string name="storage_cleaned_size">Removed %1$s of unused temporary files.</string>
+    <string name="storage_cleanup_busy">Cleanup was deferred because Linux is in use or its idle state could not be confirmed.</string>
+    <string name="storage_cleanup_retained">Files were kept because their complete size or ownership could not be confirmed.</string>
+    <string name="storage_cleanup_unknown">The cleanup result could not be confirmed. Refresh storage before trying again.</string>
+</resources>

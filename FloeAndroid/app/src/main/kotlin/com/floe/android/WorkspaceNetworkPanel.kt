@@ -21,6 +21,7 @@ import com.floe.android.design.*
 import com.floe.android.host.LocalNetworkAccessBroker
 import com.floe.android.host.NetworkWorkspaceHostController
 import com.floe.android.host.RuntimeHost
+import com.floe.android.feature.sftp.SftpBrowserPage
 
 /**
  * G04-R1 reusable Network storage panel (WebDAV + SMB) for one ordinary
@@ -66,6 +67,8 @@ internal fun WorkspaceNetworkPanel(
 
     var editing by remember(lane) { mutableStateOf<NetworkMountDraftModel?>(null) }
     var browseMount by remember(lane) { mutableStateOf<NetworkMountRow?>(null) }
+    var sftpVisible by remember(lane) { mutableStateOf(false) }
+    val sftpState by host.c05Sftp.state.collectAsState()
     var confirming by remember(lane) { mutableStateOf<NetworkMountRow?>(null) }
     var forgetCredential by remember(lane) { mutableStateOf(true) }
 
@@ -88,6 +91,12 @@ internal fun WorkspaceNetworkPanel(
             FloeText(stringResource(R.string.network_workspace_runtime_unavailable),
                 style = Floe.typography.body, color = Floe.colors.secondaryLabel)
         }
+        FloeCapsuleButton(
+            stringResource(com.floe.android.feature.sftp.R.string.sftp_title),
+            onClick = { sftpVisible = true },
+            enabled = !state.busy,
+            modifier = Modifier.fillMaxWidth(),
+        )
 
         // mounts
         FloeDivider()
@@ -187,6 +196,40 @@ internal fun WorkspaceNetworkPanel(
         if (state.busy) FloeActivityIndicator()
     }
 
+    if (sftpVisible) {
+        FloeActionSheet(
+            visible = true,
+            onDismiss = {
+                sftpVisible = false
+                host.c05Sftp.close()
+            },
+            maxCardWidth = 900.dp,
+        ) {
+            LaunchedEffect(Unit) { host.c05Sftp.open(taskID) }
+            SftpBrowserPage(
+                state = sftpState,
+                compact = false,
+                onClose = {
+                    sftpVisible = false
+                    host.c05Sftp.close()
+                },
+                onSelectHost = host.c05Sftp::selectHost,
+                onLoadPath = host.c05Sftp::loadPath,
+                onOpenEntry = host.c05Sftp::openDirectory,
+                onGoUp = host.c05Sftp::goUp,
+                onRefresh = host.c05Sftp::refresh,
+                onDownload = host.c05Sftp::download,
+                onConfirmDownload = host.c05Sftp::confirmDownload,
+                onCancelPending = host.c05Sftp::cancelPendingDownload,
+                onUpload = host.c05Sftp::upload,
+                onCancelTransfer = host.c05Sftp::cancelTransfer,
+                onApproveChallenge = host.c05Sftp::approveChallenge,
+                onDismissError = host.c05Sftp::dismissError,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 420.dp, max = 620.dp),
+            )
+        }
+    }
+
     // ---- add / edit sheet ----
     val draft = editing
     if (draft != null) {
@@ -196,9 +239,19 @@ internal fun WorkspaceNetworkPanel(
                 FloeText(stringResource(if (draft.mountID == null) R.string.network_workspace_add
                                         else R.string.network_workspace_edit),
                     style = Floe.typography.toolbarTitle, color = Floe.colors.label)
-                FloeSegmented(options = listOf("WebDAV", "SMB"),
-                    selectedIndex = if (draft.transport == "smb") 1 else 0,
-                    onSelect = { index -> editing = draft.copy(transport = if (index == 1) "smb" else "webdav") })
+                FloeSegmented(options = listOf("WebDAV", "SMB", "SFTP"),
+                    selectedIndex = when (draft.transport) {
+                        "smb" -> 1
+                        "sftp" -> 2
+                        else -> 0
+                    },
+                    onSelect = { index ->
+                        editing = draft.copy(transport = when (index) {
+                            1 -> "smb"
+                            2 -> "sftp"
+                            else -> "webdav"
+                        })
+                    })
                 FloePlainFormField(stringResource(R.string.network_workspace_name), draft.name,
                     { editing = draft.copy(name = it) }, enabled = !state.busy)
                 FloePlainFormField(stringResource(R.string.network_workspace_endpoint), draft.endpoint,
@@ -207,6 +260,13 @@ internal fun WorkspaceNetworkPanel(
                     { editing = draft.copy(rootPath = it) }, enabled = !state.busy, monospaced = true)
                 FloePlainFormField(stringResource(R.string.network_workspace_username), draft.username,
                     { editing = draft.copy(username = it) }, enabled = !state.busy)
+                if (draft.transport == "sftp") {
+                    FloeText(
+                        stringResource(com.floe.android.feature.sftp.R.string.sftp_mount_hint),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
                 if (draft.password != null || draft.mountID != null) {
                     FloePlainFormField(stringResource(R.string.network_workspace_password),
                         draft.password ?: "", { editing = draft.copy(password = it) },
@@ -470,8 +530,11 @@ private fun networkBytesText(bytes: Long): String = when {
 }
 
 private fun networkTransportLabel(context: android.content.Context, transport: String): String =
-    context.getString(if (transport == "smb") R.string.network_workspace_transport_smb
-                      else R.string.network_workspace_transport_webdav)
+    context.getString(when (transport) {
+        "smb" -> R.string.network_workspace_transport_smb
+        "sftp" -> com.floe.android.feature.sftp.R.string.sftp_transport_label
+        else -> R.string.network_workspace_transport_webdav
+    })
 
 private fun networkStatusLabel(context: android.content.Context, status: String): String =
     context.getString(when (status) {

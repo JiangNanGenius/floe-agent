@@ -1,0 +1,38 @@
+{
+  "id": "misans",
+  "displayName": "MiSans（小米）",
+  "category": "sans",
+  "version": "2021-12",
+  "prerelease": false,
+  "note": null,
+  "license": {
+    "name": "MiSans 字体许可（全社会免费商用）",
+    "textUrl": "https://hyperos.mi.com/font"
+  },
+  "upstream": {
+    "homepage": "https://hyperos.mi.com/font"
+  },
+  "languages": [
+    "zh-Hans",
+    "en",
+    "num"
+  ],
+  "fetchedAt": "2026-09-10T04:44:43Z",
+  "files": [
+    {
+      "fileName": "MiSans-Medium.ttf",
+      "bytes": 7876052,
+      "sha256": "93528275ee67039c1daeb2ef700625bcf72abab2d3f97e1b6afae6273b579fc1"
+    },
+    {
+      "fileName": "MiSans-Regular.ttf",
+      "bytes": 7924400,
+      "sha256": "7172aa1b5c703780ee12df3fe4c50481dde01f3b125a045a398000a88d032ae5"
+    },
+    {
+      "fileName": "MiSans-Bold.ttf",
+      "bytes": 7804780,
+      "sha256": "250fb5c8d4657f103e332b0b948a995e45f2c159beb8d0528424e2d32ae421be"
+    }
+  ]
+}

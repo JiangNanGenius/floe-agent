@@ -2,6 +2,7 @@
 package com.floe.android.core.notesmedia.pdf
 
 import com.floe.android.core.notesmedia.source.VerifiedMediaSnapshot
+import com.floe.android.core.officeengine.pdf.OfficePdfTextContract
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -179,6 +180,73 @@ class IsolatedPdfTextBackend(
                 truncated = unscanned > 0 || anyPageTruncated,
             )
         }
+    }
+
+    /**
+     * One-page extraction for selection. It uses the same transport and the
+     * same identity fences as the search scan, but never consults an OCR
+     * index: the user is selecting source text, not recognized text.
+     */
+    override suspend fun pageText(
+        source: VerifiedMediaSnapshot,
+        pageCount: Int,
+        page: PdfPageId,
+        isCancelled: () -> Boolean,
+    ): PdfPageTextOutcome {
+        if (isCancelled()) {
+            return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.CANCELLED, id)
+        }
+        if (page.pageIndex !in 0 until pageCount) {
+            return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.PAGE_OUT_OF_RANGE, id)
+        }
+        val secret = try {
+            password?.borrowSecret()
+        } catch (_: IllegalStateException) {
+            return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.BACKEND_FAILED, id)
+        }
+        val result = try {
+            transport.pageText(source, page, secret)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.BACKEND_FAILED, id)
+        }
+        if (isCancelled()) {
+            return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.CANCELLED, id)
+        }
+        return when (result) {
+            is PdfPageTextResult.Failed -> PdfPageTextOutcome.Unavailable(
+                mapPageTextFailure(result.failure),
+                id,
+            )
+            is PdfPageTextResult.Page -> {
+                val payload = result.page
+                if (payload.pageCount != pageCount || payload.pageIndex != page.pageIndex) {
+                    return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.BACKEND_FAILED, id)
+                }
+                if (payload.sourceBytes != source.byteCount) {
+                    return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.SOURCE_CHANGED, id)
+                }
+                if (!OfficePdfTextContract.accept(payload, page.pageIndex, source.byteCount)) {
+                    return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.BACKEND_FAILED, id)
+                }
+                val sanitized = OfficePdfTextContract.sanitize(payload)
+                    ?: return PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.BACKEND_FAILED, id)
+                PdfPageTextOutcome.Ready(sanitized)
+            }
+        }
+    }
+
+    private fun mapPageTextFailure(failure: PdfMediaFailure): PdfTextUnavailableReason = when (failure) {
+        PdfMediaFailure.TEXT_UNSUPPORTED -> PdfTextUnavailableReason.NATIVE_TEXT_UNSUPPORTED
+        PdfMediaFailure.CANCELLED -> PdfTextUnavailableReason.CANCELLED
+        PdfMediaFailure.PASSWORD_PROTECTED -> PdfTextUnavailableReason.ENCRYPTED
+        PdfMediaFailure.PASSWORD_REJECTED -> PdfTextUnavailableReason.PASSWORD_REJECTED
+        PdfMediaFailure.PASSWORD_UNSUPPORTED -> PdfTextUnavailableReason.PASSWORD_UNSUPPORTED
+        PdfMediaFailure.SOURCE_CHANGED -> PdfTextUnavailableReason.SOURCE_CHANGED
+        PdfMediaFailure.PAGE_OUT_OF_RANGE -> PdfTextUnavailableReason.PAGE_OUT_OF_RANGE
+        PdfMediaFailure.SESSION_CLOSED -> PdfTextUnavailableReason.SESSION_CLOSED
+        else -> PdfTextUnavailableReason.BACKEND_FAILED
     }
 
     private fun mapFailure(

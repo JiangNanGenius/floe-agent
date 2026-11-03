@@ -262,6 +262,36 @@ data class PcapAnalysisUi(
     val cancelled: Boolean,
 )
 
+/** A retained App-private raw PCAP; export is always explicit and user-picked. */
+data class RawCaptureItemUi(
+    val sessionId: String,
+    val mode: String,
+    val createdAtMillis: Long,
+    val bytes: Long,
+    val sha256: String,
+    val partial: Boolean,
+    val endReason: String? = null,
+)
+
+data class RawCaptureExportReceiptUi(
+    val sessionId: String,
+    val bytes: Long,
+    val sha256: String,
+    val partial: Boolean,
+    val exportedAtMillis: Long,
+    val displayName: String,
+)
+
+data class RawCaptureLibraryUiState(
+    val captures: List<RawCaptureItemUi> = emptyList(),
+    val loading: Boolean = false,
+    val exporting: Boolean = false,
+    val exportingSessionId: String? = null,
+    val exported: RawCaptureExportReceiptUi? = null,
+    val failure: NetworkArtifactFailure? = null,
+    val invalid: Int = 0,
+)
+
 data class PcapArtifactState(
     val analyses: List<PcapAnalysisItemUi> = emptyList(),
     val selectedID: String? = null,

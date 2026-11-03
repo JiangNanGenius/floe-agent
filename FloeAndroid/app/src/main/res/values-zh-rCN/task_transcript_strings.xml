@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="task_transcript_export_failed">任务导出失败，请重试或清理存储空间。</string>
+</resources>

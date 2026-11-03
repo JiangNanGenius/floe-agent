@@ -617,6 +617,11 @@ interface ConversationUiCallbacks {
     fun restoreConversation(conversationId: String): Boolean
     fun deleteConversation(conversationId: String): Boolean
 
+    /** ⇄ setConversationPinned(id:pinned:) — durable schema-v50 row column
+     * through the existing conversation metadata CAS. False means the host
+     * could not dispatch; a real refusal arrives through [applyActionError]. */
+    fun setConversationPinned(conversationId: String, pinned: Boolean): Boolean
+
     /** Existing native conversation.rename CAS; no optimistic title change. */
     fun renameConversation(conversationId: String, title: String, requestToken: Long): Boolean = false
 
@@ -669,6 +674,11 @@ interface ConversationUiCallbacks {
      * projects the capability as usable; no local synthesis is implied. */
     fun speakMessageText(session: ConversationSessionToken, text: String): Boolean
     fun stopSpeaking(session: ConversationSessionToken)
+
+    /** C03 short interactive dictation. Default false keeps every existing
+     * fixture honest; the real App host admits only the exact session. */
+    fun startVoiceInput(session: ConversationSessionToken): Boolean = false
+    fun stopVoiceInput(session: ConversationSessionToken) {}
 
     /** ⇄ onSaveToNotes (embedded surfaces): host decides availability. */
     fun saveMessageToNotes(session: ConversationSessionToken, text: String): Boolean

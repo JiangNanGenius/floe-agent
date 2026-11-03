@@ -16,6 +16,7 @@ package com.floe.android.feature.conversation
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +28,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -40,17 +42,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
+import com.floe.android.design.CupertinoMenuEntry
 import com.floe.android.design.FloeActivityIndicator
+import com.floe.android.design.FloeChipMenu
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloeText
 import com.floe.android.design.IconGlyph
+import com.floe.android.feature.toolresults.ToolResultDetailSection
 import androidx.compose.ui.graphics.vector.ImageVector
 import kotlinx.coroutines.delay
 
@@ -132,13 +138,15 @@ fun ConversationTimelineRow(
     holder: ConversationFlowHolder,
     modifier: Modifier = Modifier,
     searchHighlightQuery: String? = null,
+    onAttachmentDesign: ((AttachmentDesignRequest) -> Unit)? = null,
 ) {
     when (row) {
         is TimelineRowUi.EarlierEvents -> EarlierEventsRow(row, holder, modifier)
         is TimelineRowUi.UserMessage ->
-            UserMessageRow(row.message, holder, modifier, searchHighlightQuery)
+            UserMessageRow(
+                row.message, holder, modifier, searchHighlightQuery, onAttachmentDesign)
         is TimelineRowUi.AssistantMessage ->
-            AssistantRow(row, holder, modifier, searchHighlightQuery)
+            AssistantRow(row, holder, modifier, searchHighlightQuery, onAttachmentDesign)
         is TimelineRowUi.Event -> EventRow(row.event, holder, modifier)
         is TimelineRowUi.StepGroup -> StepGroupRow(row, holder, modifier)
         is TimelineRowUi.RunOutputGroup -> RunOutputGroupRow(row, holder, modifier)
@@ -187,6 +195,7 @@ private fun UserMessageRow(
     holder: ConversationFlowHolder,
     modifier: Modifier,
     searchHighlightQuery: String? = null,
+    onAttachmentDesign: ((AttachmentDesignRequest) -> Unit)? = null,
 ) {
     val colors = Floe.colors
     val userRole = stringResource(R.string.role_user)
@@ -220,6 +229,21 @@ private fun UserMessageRow(
                         holder.openMessageAttachment(
                             AttachmentOpenRequest(holder.conversationId, message.id, it)
                         )
+                    }
+                },
+                onDesign = onAttachmentDesign?.let { action ->
+                    { chip ->
+                        chip.attachmentId?.let { attachmentId ->
+                            action(
+                                AttachmentDesignRequest(
+                                    conversationId = holder.conversationId,
+                                    messageId = message.id,
+                                    attachmentId = attachmentId,
+                                    displayName = chip.name,
+                                    isImage = chip.isImage,
+                                ),
+                            )
+                        }
                     }
                 },
             )
@@ -330,13 +354,20 @@ private fun highlightedVisibleText(
 }
 
 /** ⇄ AttachmentChipRow: ONE reusable attachment surface (user trailing,
- * assistant leading); images keep the image glyph. */
+ * assistant leading); images keep the image glyph.
+ *
+ * Tap still opens the exact persisted attachment. The compact ellipsis (and a
+ * long press, for discoverability on tablets) opens the SAME contextual menu
+ * with the optional generic Design action. The feature never knows a design
+ * target/owner: it emits the real conversation/message/attachment identity and
+ * the App decides whether this session/target is eligible. */
 @Composable
 internal fun AttachmentChipRow(
     chips: List<AttachmentChipUi>,
     alignEnd: Boolean,
     onOpen: ((AttachmentChipUi) -> Unit)?,
     modifier: Modifier = Modifier,
+    onDesign: ((AttachmentChipUi) -> Unit)? = null,
 ) {
     if (chips.isEmpty()) return
     Column(
@@ -346,16 +377,37 @@ internal fun AttachmentChipRow(
     ) {
         chips.forEach { chip ->
             val description = stringResource(R.string.attachment_open_named, chip.name)
-            Box(
-                modifier = Modifier
-                    .heightIn(min = FloeLayout.MinimumTarget)
-                    .clip(RoundedCornerShape(percent = 50))
-                    .background(Floe.colors.accent.copy(alpha = 0.10f))
-                    .then(if (onOpen != null) Modifier.clickable { onOpen(chip) } else Modifier)
-                    .semantics { contentDescription = description }
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-            ) {
+            val openLabel = stringResource(R.string.attachment_menu_open)
+            val designLabel = stringResource(R.string.attachment_design_action)
+            val moreLabel = stringResource(R.string.attachment_more_actions, chip.name)
+            val hasMenu = onOpen != null || onDesign != null
+            var menuExpanded by remember(chip.id) { mutableStateOf(false) }
+            Box {
                 Row(
+                    modifier = Modifier
+                        .heightIn(min = FloeLayout.MinimumTarget)
+                        .clip(RoundedCornerShape(percent = 50))
+                        .background(Floe.colors.accent.copy(alpha = 0.10f))
+                        .then(
+                            if (hasMenu) {
+                                Modifier.combinedClickable(
+                                    role = Role.Button,
+                                    onClick = {
+                                        if (onOpen != null) onOpen(chip) else menuExpanded = true
+                                    },
+                                    onLongClick = { menuExpanded = true },
+                                )
+                            } else {
+                                Modifier
+                            },
+                        )
+                        .semantics { contentDescription = description }
+                        .padding(
+                            start = 12.dp,
+                            end = if (hasMenu) 4.dp else 12.dp,
+                            top = 8.dp,
+                            bottom = 8.dp,
+                        ),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -372,6 +424,43 @@ internal fun AttachmentChipRow(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.width(maxOf(0.dp, 220.dp)),
                     )
+                    if (hasMenu) {
+                        Box(
+                            modifier = Modifier
+                                .heightIn(min = FloeLayout.MinimumTarget)
+                                .widthIn(min = 36.dp)
+                                .clickable(role = Role.Button) { menuExpanded = true }
+                                .semantics { contentDescription = moreLabel },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            IconGlyph(FloeIcons.Ellipsis, Floe.colors.secondaryLabel, 16.dp)
+                        }
+                    }
+                }
+                FloeChipMenu(
+                    expanded = menuExpanded,
+                    onDismiss = { menuExpanded = false },
+                ) {
+                    if (onOpen != null) {
+                        CupertinoMenuEntry(
+                            title = openLabel,
+                            selected = false,
+                            onClick = {
+                                menuExpanded = false
+                                onOpen(chip)
+                            },
+                        )
+                    }
+                    if (onDesign != null) {
+                        CupertinoMenuEntry(
+                            title = designLabel,
+                            selected = false,
+                            onClick = {
+                                menuExpanded = false
+                                onDesign(chip)
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -391,6 +480,7 @@ private fun AssistantRow(
     holder: ConversationFlowHolder,
     modifier: Modifier,
     searchHighlightQuery: String? = null,
+    onAttachmentDesign: ((AttachmentDesignRequest) -> Unit)? = null,
 ) {
     val copyLabel = stringResource(R.string.action_copy)
     val readAloudLabel = stringResource(R.string.action_read_aloud)
@@ -425,6 +515,23 @@ private fun AssistantRow(
                     }
                 }
             },
+            onDesign = onAttachmentDesign?.let { action ->
+                { chip ->
+                    row.attachedMessageId?.let { messageId ->
+                        chip.attachmentId?.let { attachmentId ->
+                            action(
+                                AttachmentDesignRequest(
+                                    conversationId = holder.conversationId,
+                                    messageId = messageId,
+                                    attachmentId = attachmentId,
+                                    displayName = chip.name,
+                                    isImage = chip.isImage,
+                                ),
+                            )
+                        }
+                    }
+                }
+            },
         )
         Row(
             modifier = Modifier.padding(horizontal = 4.dp),
@@ -444,7 +551,7 @@ private fun AssistantRow(
             ) {
                 FloeText(copyLabel, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
             }
-            if (holder.snapshot.value?.voiceAvailable == true) {
+            if (holder.snapshot.value?.voiceOutputAvailable == true) {
                 Box(
                     modifier = Modifier
                         .heightIn(min = FloeLayout.MinimumTarget)
@@ -627,6 +734,17 @@ internal fun ToolRow(
             modifier = Modifier,
             onOpenArtifactPreview = { artifactId -> holder.openRichArtifactPreview(artifactId) },
         ) {
+            // C02: bounded readback of this call's actually captured result.
+            // The recorded summary above stays unchanged; a missing/legacy
+            // capture is reported honestly by the pane, never reconstructed.
+            if (status != "pending" && status != "running") {
+                ToolResultDetailSection(
+                    taskId = holder.conversationId,
+                    callId = tool.callId,
+                    temporary = holder.snapshot.value?.isTemporary == true,
+                    runId = event.runId,
+                )
+            }
             // Below-fold extras that the iOS card places inside details.
             if (childRun != null) {
                 DelegateCardRow(

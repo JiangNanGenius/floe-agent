@@ -1,0 +1,54 @@
+{
+  "component": "C06 system services",
+  "newThirdPartyArtifacts": [
+    {
+      "group": "androidx.health.connect",
+      "artifact": "connect-client",
+      "version": "1.1.0",
+      "packaging": "aar",
+      "license": "Apache-2.0",
+      "source": "https://android.googlesource.com/platform/frameworks/support",
+      "release": "https://developer.android.com/jetpack/androidx/releases/health-connect#1.1.0",
+      "retrieved": "2026-11-02",
+      "repository": "https://dl.google.com/android/maven2/androidx/health/connect/connect-client/1.1.0/",
+      "sha256": {
+        "connect-client-1.1.0.aar": "ce1601af0ef671ec6a76b0f29d2af22acc578e408c7107d08ea23067d3822593",
+        "connect-client-1.1.0.module": "5ebbc6bb5b06963427c069505334fc339890f88c84823de9834b666f320966b4",
+        "connect-client-1.1.0.pom": "29d1c55bfd1e744f26698814342bd7610a8b44fb63e3db869c1bef20182a1f32"
+      }
+    },
+    {
+      "group": "androidx.health.connect",
+      "artifact": "connect-client-proto",
+      "version": "1.1.0",
+      "packaging": "jar",
+      "license": "Apache-2.0",
+      "retrieved": "2026-11-02",
+      "sha256": {
+        "connect-client-proto-1.1.0.jar": "291137e68e47521ae996e6c0fac3d6437f794274f10b0e4d4616763225b1d218",
+        "connect-client-proto-1.1.0.module": "d57dd99d2cd7e1a5212b73fe53961900aeaddaa2741099c4aca2a22c90a0f45c",
+        "connect-client-proto-1.1.0.pom": "384a15625c3b76c8c565d3d9865e7d0360fc18a4b577d454710e2974d75e19db"
+      }
+    },
+    {
+      "group": "androidx.health.connect",
+      "artifact": "connect-client-external-protobuf",
+      "version": "1.1.0",
+      "packaging": "jar",
+      "license": "Apache-2.0",
+      "retrieved": "2026-11-02",
+      "sha256": {
+        "connect-client-external-protobuf-1.1.0.jar": "6f5418471228a80f16ba7de9c3e8f8c42c58238c0f49fd70d4b43ab187fce502",
+        "connect-client-external-protobuf-1.1.0.module": "1f8c3d87346654130e405254d382b4867dcfbc8e6859d297b5c32c454906045f",
+        "connect-client-external-protobuf-1.1.0.pom": "862bcf73ea715ca980c34f65ef0c89c8f398e394e85f240fff4a902c5d5209d8"
+      }
+    }
+  ],
+  "notes": [
+    "The exact stable 1.1.0 release is used. 1.2.0 is alpha-only and is not consumed.",
+    "connect-client 1.1.0 declares minCompileSdk=36 and minAndroidGradlePluginVersion=8.9.1; this project uses compileSdk 37 and AGP 9.4.0.",
+    "Transitive androidx/kotlin/guava artifacts are resolved by Gradle from the existing verified dependency graph; Main owns verification-metadata and lockfile regeneration.",
+    "The AAR-bundled Apache-2.0 text is byte-identical to licenses/androidx-workmanager/LICENSE.txt and is retained at licenses/systemservices/LICENSE.txt.",
+    "No Health Connect write, background-read, history or medical-data permission is requested."
+  ]
+}

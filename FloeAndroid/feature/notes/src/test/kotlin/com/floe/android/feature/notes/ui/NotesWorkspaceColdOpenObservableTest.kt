@@ -27,6 +27,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -172,6 +173,64 @@ class NotesWorkspaceColdOpenObservableTest {
         } finally {
             scope.cancel()
         }
+    }
+
+    @Test
+    fun createdDocumentWithoutOpenSessionRefreshesTheLibrary() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val native = GatedLibraryService(document())
+        try {
+            val controller = NotesWorkspaceController(
+                service = native.service,
+                ports = unavailableNotesHostPorts(InMemoryNotesPresentationStore(), InMemoryNotesRecoveryStore()),
+                scope = scope, generation = { 0L }, fenced = { false },
+            )
+            assertNull(controller.session(documentID))
+            val handle = NotesWorkspaceController::class.java.getDeclaredMethod("handleEvents", NotesEventBatch::class.java)
+            handle.isAccessible = true
+            handle.invoke(controller, NotesEventBatch(1, 1, listOf(
+                com.floe.android.feature.notes.NotesEvent(1, "document.created", documentID, 1),
+            ), false, false))
+            // The original defect never requested this refresh because there
+            // was no document session; releaseLibrary would fail at that point.
+            native.releaseLibrary()
+            assertTrue(controller.library.documents.any { it.id == documentID })
+            assertNull(controller.session(documentID))
+        } finally { scope.cancel() }
+    }
+
+    @Test
+    fun dismissingDocumentPreservesLibraryAndReusesOwnedEditorSession() = runBlocking {
+        val presentation = InMemoryNotesPresentationStore()
+        presentation.saveWorkspace(NotesWorkspacePreferences(
+            openDocumentIDs = listOf(documentID), activeDocumentID = documentID,
+        ))
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val native = GatedLibraryService(document())
+        try {
+            val controller = NotesWorkspaceController(
+                service = native.service,
+                ports = unavailableNotesHostPorts(presentation, InMemoryNotesRecoveryStore()),
+                scope = scope, generation = { 0L }, fenced = { false },
+            )
+            controller.start()
+            native.releaseLibrary()
+            val editor = controller.activeSession
+            assertNotNull(editor)
+            val library = controller.library
+            library.applyGrid(false)
+            library.applyFilter(com.floe.android.feature.notes.ui.presentation.NotesLibraryFilter.ALL)
+
+            assertTrue(controller.goBack())
+            assertNull(controller.activeSession)
+            assertSame(library, controller.library)
+            assertTrue(!library.grid)
+            assertTrue(library.filter == com.floe.android.feature.notes.ui.presentation.NotesLibraryFilter.ALL)
+            assertTrue(controller.tabs.contains(documentID))
+
+            controller.openDocument(documentID, null)
+            assertSame("Closing presentation must not discard editor state", editor, controller.activeSession)
+        } finally { scope.cancel() }
     }
 
     private fun summaryOf(document: NoteDocument) = GatedLibraryService.summaryOf(document)

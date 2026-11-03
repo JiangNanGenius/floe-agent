@@ -1,0 +1,437 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0EAF290B51C5E87DB7F3F0A7 /* CanaryViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34E835ECF9BD5B90EEF35C57 /* CanaryViewController.swift */; };
+		2E1791BA79A4B2A32FB6F674 /* CanaryCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 680656B0117CAA8EBF853C0C /* CanaryCoordinator.swift */; };
+		53F8D0279947471C176C4CFD /* TestFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAF32AAD2AF8651781AB3736 /* TestFiles.swift */; };
+		5D273141FE5D35BCEF10CC4B /* CanaryFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 099DC21A3152FAE9D8238BC6 /* CanaryFiles.swift */; };
+		8024BB7AA5D886D766BB718C /* ExceptionCatcher.m in Sources */ = {isa = PBXBuildFile; fileRef = E035217AFB62663FD3AB9BE2 /* ExceptionCatcher.m */; };
+		A6268E98706BDCBBE992B294 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E03E6D9E3A9A30C86BB76C4 /* AppDelegate.swift */; };
+		B89CD6D22A0B9219C3F9D7A3 /* BootstrapCanaryUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A9A88350D4B56AED2195F3A /* BootstrapCanaryUITests.swift */; };
+		D8D945FD42117CF8512186FD /* BootstrapShim.m in Sources */ = {isa = PBXBuildFile; fileRef = 81B1CD57CDEA5C84BD28DF95 /* BootstrapShim.m */; };
+		DDC084ADA7DDB34AFDD1327C /* CanaryHeartbeat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97ABD4D968677A05C7F8EC67 /* CanaryHeartbeat.swift */; };
+		EAC867D95ECDA38776A28AD6 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E8E69C0B6E0E058BC30990 /* SceneDelegate.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		099DC21A3152FAE9D8238BC6 /* CanaryFiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanaryFiles.swift; sourceTree = "<group>"; };
+		14913E9040BCFBADA2C64AB2 /* BootstrapCanary.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = BootstrapCanary.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1E03E6D9E3A9A30C86BB76C4 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		34E835ECF9BD5B90EEF35C57 /* CanaryViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanaryViewController.swift; sourceTree = "<group>"; };
+		3A9A88350D4B56AED2195F3A /* BootstrapCanaryUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BootstrapCanaryUITests.swift; sourceTree = "<group>"; };
+		46C885A1A36FED7A76313AA1 /* BootstrapCanaryUITests-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "BootstrapCanaryUITests-Bridging-Header.h"; sourceTree = "<group>"; };
+		680656B0117CAA8EBF853C0C /* CanaryCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanaryCoordinator.swift; sourceTree = "<group>"; };
+		81B1CD57CDEA5C84BD28DF95 /* BootstrapShim.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = BootstrapShim.m; sourceTree = "<group>"; };
+		939B27283877BB23FC7D02AF /* BootstrapShim.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BootstrapShim.h; sourceTree = "<group>"; };
+		97ABD4D968677A05C7F8EC67 /* CanaryHeartbeat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanaryHeartbeat.swift; sourceTree = "<group>"; };
+		988BE62F7022BB3A5F2F7BC0 /* BootstrapCanary-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "BootstrapCanary-Bridging-Header.h"; sourceTree = "<group>"; };
+		D3E8E69C0B6E0E058BC30990 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
+		E035217AFB62663FD3AB9BE2 /* ExceptionCatcher.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ExceptionCatcher.m; sourceTree = "<group>"; };
+		E6695E37C3F5865253F5AEE1 /* ExceptionCatcher.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ExceptionCatcher.h; sourceTree = "<group>"; };
+		EC28C0BA9DCE0470E5FEDD9D /* BootstrapCanaryUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = BootstrapCanaryUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		FAF32AAD2AF8651781AB3736 /* TestFiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestFiles.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		3ECBEAAF75AA0A9558C5C779 /* BootstrapCanary */ = {
+			isa = PBXGroup;
+			children = (
+				1E03E6D9E3A9A30C86BB76C4 /* AppDelegate.swift */,
+				988BE62F7022BB3A5F2F7BC0 /* BootstrapCanary-Bridging-Header.h */,
+				939B27283877BB23FC7D02AF /* BootstrapShim.h */,
+				81B1CD57CDEA5C84BD28DF95 /* BootstrapShim.m */,
+				680656B0117CAA8EBF853C0C /* CanaryCoordinator.swift */,
+				099DC21A3152FAE9D8238BC6 /* CanaryFiles.swift */,
+				34E835ECF9BD5B90EEF35C57 /* CanaryViewController.swift */,
+				D3E8E69C0B6E0E058BC30990 /* SceneDelegate.swift */,
+			);
+			path = BootstrapCanary;
+			sourceTree = "<group>";
+		};
+		4FEC4A7D8EB4BD780EDFD8C8 = {
+			isa = PBXGroup;
+			children = (
+				3ECBEAAF75AA0A9558C5C779 /* BootstrapCanary */,
+				82F5D3CC41E4992209CA78AC /* BootstrapCanaryUITests */,
+				A5DC19120FC19CD96B277E0B /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		82F5D3CC41E4992209CA78AC /* BootstrapCanaryUITests */ = {
+			isa = PBXGroup;
+			children = (
+				46C885A1A36FED7A76313AA1 /* BootstrapCanaryUITests-Bridging-Header.h */,
+				3A9A88350D4B56AED2195F3A /* BootstrapCanaryUITests.swift */,
+				97ABD4D968677A05C7F8EC67 /* CanaryHeartbeat.swift */,
+				E6695E37C3F5865253F5AEE1 /* ExceptionCatcher.h */,
+				E035217AFB62663FD3AB9BE2 /* ExceptionCatcher.m */,
+				FAF32AAD2AF8651781AB3736 /* TestFiles.swift */,
+			);
+			path = BootstrapCanaryUITests;
+			sourceTree = "<group>";
+		};
+		A5DC19120FC19CD96B277E0B /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				14913E9040BCFBADA2C64AB2 /* BootstrapCanary.app */,
+				EC28C0BA9DCE0470E5FEDD9D /* BootstrapCanaryUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		5823DA2CA75990F0388DE63F /* BootstrapCanaryUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DCF7D4B5373587483B58817A /* Build configuration list for PBXNativeTarget "BootstrapCanaryUITests" */;
+			buildPhases = (
+				B153C81557F599B32773F206 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BootstrapCanaryUITests;
+			packageProductDependencies = (
+			);
+			productName = BootstrapCanaryUITests;
+			productReference = EC28C0BA9DCE0470E5FEDD9D /* BootstrapCanaryUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		A8EE163A3E7A34253325179C /* BootstrapCanary */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 68C296E613DD7F83A0541D65 /* Build configuration list for PBXNativeTarget "BootstrapCanary" */;
+			buildPhases = (
+				116F248CD3DC920A45F267F2 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BootstrapCanary;
+			packageProductDependencies = (
+			);
+			productName = BootstrapCanary;
+			productReference = 14913E9040BCFBADA2C64AB2 /* BootstrapCanary.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		DF98BA0038D1B5EE5A42E4CB /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					5823DA2CA75990F0388DE63F = {
+						DevelopmentTeam = "";
+					};
+					A8EE163A3E7A34253325179C = {
+						DevelopmentTeam = "";
+					};
+				};
+			};
+			buildConfigurationList = A6974A59D33B8E0A6C94E2FF /* Build configuration list for PBXProject "BootstrapCanary" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 4FEC4A7D8EB4BD780EDFD8C8;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = A5DC19120FC19CD96B277E0B /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A8EE163A3E7A34253325179C /* BootstrapCanary */,
+				5823DA2CA75990F0388DE63F /* BootstrapCanaryUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		116F248CD3DC920A45F267F2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A6268E98706BDCBBE992B294 /* AppDelegate.swift in Sources */,
+				D8D945FD42117CF8512186FD /* BootstrapShim.m in Sources */,
+				2E1791BA79A4B2A32FB6F674 /* CanaryCoordinator.swift in Sources */,
+				5D273141FE5D35BCEF10CC4B /* CanaryFiles.swift in Sources */,
+				0EAF290B51C5E87DB7F3F0A7 /* CanaryViewController.swift in Sources */,
+				EAC867D95ECDA38776A28AD6 /* SceneDelegate.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B153C81557F599B32773F206 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B89CD6D22A0B9219C3F9D7A3 /* BootstrapCanaryUITests.swift in Sources */,
+				DDC084ADA7DDB34AFDD1327C /* CanaryHeartbeat.swift in Sources */,
+				8024BB7AA5D886D766BB718C /* ExceptionCatcher.m in Sources */,
+				53F8D0279947471C176C4CFD /* TestFiles.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		054A6DCC6A230E3397601978 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BootstrapCanary/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks /System/Developer/Library/Frameworks /System/Developer/Library/PrivateFrameworks /System/Developer/usr/lib /Developer/Library/Frameworks /Developer/Library/PrivateFrameworks /Developer/usr/lib /private/preboot/Cryptexes/OS/System/Developer/Library/Frameworks /private/preboot/Cryptexes/OS/System/Developer/Library/PrivateFrameworks /private/preboot/Cryptexes/OS/System/Developer/usr/lib";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.iosbridge;
+				PRODUCT_NAME = BootstrapCanary;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "BootstrapCanary/BootstrapCanary-Bridging-Header.h";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		16BEE120E4705F8218564C92 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "";
+				FRAMEWORK_SEARCH_PATHS = "$(inherited) $(PLATFORM_DIR)/Developer/Library/Frameworks $(PLATFORM_DIR)/Developer/Library/PrivateFrameworks";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BootstrapCanaryUITests/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @loader_path/../../Frameworks /System/Developer/Library/Frameworks /System/Developer/Library/PrivateFrameworks /System/Developer/usr/lib /Developer/Library/Frameworks /Developer/Library/PrivateFrameworks /Developer/usr/lib /private/preboot/Cryptexes/OS/System/Developer/Library/Frameworks /private/preboot/Cryptexes/OS/System/Developer/Library/PrivateFrameworks /private/preboot/Cryptexes/OS/System/Developer/usr/lib";
+				OTHER_LDFLAGS = "$(inherited) -framework XCTest -framework XCUIAutomation";
+				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.iosbridge;
+				PRODUCT_NAME = BootstrapCanaryUITests;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "BootstrapCanaryUITests/BootstrapCanaryUITests-Bridging-Header.h";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "";
+				TEST_TARGET_NAME = "";
+				WRAPPER_EXTENSION = xctest;
+			};
+			name = Debug;
+		};
+		172B10CED8CF8361E511ACF9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BootstrapCanary/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks /System/Developer/Library/Frameworks /System/Developer/Library/PrivateFrameworks /System/Developer/usr/lib /Developer/Library/Frameworks /Developer/Library/PrivateFrameworks /Developer/usr/lib /private/preboot/Cryptexes/OS/System/Developer/Library/Frameworks /private/preboot/Cryptexes/OS/System/Developer/Library/PrivateFrameworks /private/preboot/Cryptexes/OS/System/Developer/usr/lib";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.iosbridge;
+				PRODUCT_NAME = BootstrapCanary;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "BootstrapCanary/BootstrapCanary-Bridging-Header.h";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		33CB0C338EFF83AD2C79A98C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "";
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		50BFA69B53ACBBBF55E22661 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "";
+				FRAMEWORK_SEARCH_PATHS = "$(inherited) $(PLATFORM_DIR)/Developer/Library/Frameworks $(PLATFORM_DIR)/Developer/Library/PrivateFrameworks";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BootstrapCanaryUITests/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @loader_path/../../Frameworks /System/Developer/Library/Frameworks /System/Developer/Library/PrivateFrameworks /System/Developer/usr/lib /Developer/Library/Frameworks /Developer/Library/PrivateFrameworks /Developer/usr/lib /private/preboot/Cryptexes/OS/System/Developer/Library/Frameworks /private/preboot/Cryptexes/OS/System/Developer/Library/PrivateFrameworks /private/preboot/Cryptexes/OS/System/Developer/usr/lib";
+				OTHER_LDFLAGS = "$(inherited) -framework XCTest -framework XCUIAutomation";
+				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.iosbridge;
+				PRODUCT_NAME = BootstrapCanaryUITests;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "BootstrapCanaryUITests/BootstrapCanaryUITests-Bridging-Header.h";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "";
+				TEST_TARGET_NAME = "";
+				WRAPPER_EXTENSION = xctest;
+			};
+			name = Release;
+		};
+		BBAB26030A4754549A2D77B3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "";
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		68C296E613DD7F83A0541D65 /* Build configuration list for PBXNativeTarget "BootstrapCanary" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				054A6DCC6A230E3397601978 /* Debug */,
+				172B10CED8CF8361E511ACF9 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		A6974A59D33B8E0A6C94E2FF /* Build configuration list for PBXProject "BootstrapCanary" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BBAB26030A4754549A2D77B3 /* Debug */,
+				33CB0C338EFF83AD2C79A98C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		DCF7D4B5373587483B58817A /* Build configuration list for PBXNativeTarget "BootstrapCanaryUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				16BEE120E4705F8218564C92 /* Debug */,
+				50BFA69B53ACBBBF55E22661 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = DF98BA0038D1B5EE5A42E4CB /* Project object */;
+}

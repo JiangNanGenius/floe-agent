@@ -419,6 +419,10 @@ android {
             rootProject.file("core/officeengine/payload-pins.json")) as Map<*, *>
         val officeLibraries = officePins["libraries"] as Map<*, *>
         jniLibs.keepDebugSymbols += officeLibraries.keys.map { "**/$it" }
+        // The Full root capture helper is an executable PIE staged as a jniLib.
+        // AGP must not strip/rewrite those exact bytes: RootCaptureHelper binds
+        // the installed SHA-256 to the packaged manifest.
+        jniLibs.keepDebugSymbols += "**/libfloecapture_helper.so"
         // Product-packaging boundary for the Swift SDK runtime staging: the
         // four test-only Swift runtime libraries are staged inside
         // core/swiftbridge jniLibs for host qualification and are byte-pinned
@@ -450,6 +454,53 @@ androidComponents.onVariants { variant ->
         "full" -> variant.packaging.jniLibs.useLegacyPackaging.set(true)
         "play" -> variant.packaging.jniLibs.useLegacyPackaging.set(false)
         else -> error("unexpected app distribution flavor: $distribution")
+    }
+}
+
+// Production only: a Full release must not package a missing or mismatched
+// root helper. The source lane does not run this task; Main's native batch
+// builds the pinned ELF and this gate verifies the exact bytes before merge.
+val verifyRootCaptureHelper = tasks.register("verifyRootCaptureHelper") {
+    val binary = file("src/full/jniLibs/arm64-v8a/libfloecapture_helper.so")
+    val manifest = file("src/full/assets/root-capture/helper.json")
+    doLast {
+        if (!binary.isFile || !manifest.isFile) {
+            throw GradleException(
+                "Full root capture helper is missing; run scripts/root-capture/build-helper.sh --stage",
+            )
+        }
+        val metadata = groovy.json.JsonSlurper().parse(manifest) as Map<*, *>
+        val schema = metadata["schema"] as? String
+        val guard = metadata["guard"] as? Map<*, *>
+        val guardHashes = listOf("sourceSha256", "headerSha256", "patchSha256")
+            .map { guard?.get(it) as? String }
+        if (schema != "floe.root-capture-helper.v2" || guard == null ||
+            guard["schema"] != "floe.capture-guard.v1" || guard["abi"] != "arm64-v8a" ||
+            guardHashes.any { it == null || !it.matches(Regex("^[0-9a-f]{64}$")) }
+        ) {
+            throw GradleException(
+                "Full root capture helper is not the guarded v2 artifact; " +
+                    "rebuild and restage with scripts/root-capture/build-helper.sh --stage",
+            )
+        }
+        val expected = metadata["sha256"] as? String
+        val size = (metadata["sizeBytes"] as? Number)?.toLong()
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(binary.readBytes()).joinToString("") { "%02x".format(it) }
+        if (expected == null || size == null || digest != expected || binary.length() != size) {
+            throw GradleException("Full root capture helper does not match its digest manifest")
+        }
+    }
+}
+androidComponents.onVariants { variant ->
+    val distribution = variant.productFlavors
+        .singleOrNull { it.first == "distribution" }?.second ?: return@onVariants
+    if (distribution != "full" || variant.buildType != "release") return@onVariants
+    val name = variant.name.replaceFirstChar { it.uppercase() }
+    listOf("merge${name}JniLibFolders", "merge${name}Assets").forEach { taskName ->
+        tasks.matching { it.name == taskName }.configureEach {
+            dependsOn(verifyRootCaptureHelper)
+        }
     }
 }
 
@@ -487,6 +538,9 @@ dependencies {
     implementation(project(":core:network"))
     implementation(project(":core:networkmonitor"))
     implementation(project(":core:pcap"))
+    implementation(project(":core:networkcapture"))
+    // C05 real device engine (TCP/Telnet/BLE GATT/USB serial) and screens.
+    implementation(project(":core:devicecommunication"))
     implementation(libs.androidx.work.runtime)
     // Preserve the already-locked concurrent-futures KTX 1.2.0 line:
     // androidx.test:core 1.7.0 (androidTest) references SuspendToFutureAdapter,
@@ -494,10 +548,39 @@ dependencies {
     // consistent resolution otherwise downgrades the androidTest runtime to 1.1.0.
     implementation("androidx.concurrent:concurrent-futures-ktx:1.2.0")
     implementation(project(":feature:network"))
+    implementation(project(":feature:remote"))
+    implementation(project(":feature:sftp"))
+    implementation(project(":feature:rdp"))
+    implementation(project(":feature:desktopassist"))
+    implementation(project(":feature:mail"))
+    implementation(project(":feature:devicecommunication"))
+    // C06 system-calendar provider access and Calendar/Todo presentation.
+    implementation(project(":core:calendar"))
+    implementation(project(":feature:calendar"))
+    // C06 system services: real platform clients and the read-only capability
+    // screen. Health Connect resolves through the exact 1.1.0 pin in
+    // :core:systemservices; the destination also launches its permission
+    // contract, so the same exact client is kept on the App classpath.
+    implementation(project(":core:systemservices"))
+    implementation(project(":feature:systemservices"))
+    implementation("androidx.health.connect:connect-client:1.1.0")
+    // C07 backup/restore and document-package presentation; the App-owned
+    // data-exchange controller owns SAF and the trusted bridge.
+    implementation(project(":feature:dataexchange"))
+    // C07 App-entry presentation (share chooser, setup guide, feedback).
+    implementation(project(":feature:entryflow"))
+    // C02 per-task execution target sheet; the App-owned controller owns the
+    // trusted bridge and the Swift domain owns pinning/migration/CAS.
+    implementation(project(":feature:executiontarget"))
+    // C02 retained result paging inside the existing tool card; the App host
+    // owns the `floe.results/20` client and the Swift domain owns bytes.
+    implementation(project(":feature:toolresults"))
+    implementation(project(":feature:taskcontinuity"))
     implementation(project(":core:credentials"))
     implementation(project(":core:designsystem"))
     implementation(project(":core:swiftbridge"))
     implementation(project(":core:runtimeipc"))
+    implementation(project(":core:fonts"))
     implementation(project(":core:workspacebridge"))
     implementation(project(":core:runlifecycle"))
     // G02 App host binding: the real provider/conversation/integrations
@@ -515,6 +598,10 @@ dependencies {
     implementation(project(":feature:canvas"))
     implementation(project(":feature:workbench"))
     implementation(project(":core:notesmedia"))
+    // G09-R2 media platform: real Media3 playback/composition/export and the
+    // bounded render-ticket consumer. The module manifest merges the bounded
+    // mediaProcessing/dataSync service and its normal FGS permissions.
+    implementation(project(":core:workbenchmedia"))
     implementation(project(":feature:notes"))
     // G04 service/presentation modules; owner-bound host adapters gate use.
     implementation(project(":core:safgateway"))
@@ -541,4 +628,9 @@ dependencies {
     testImplementation("org.json:json:20240303")
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.androidx.test.runner)
+}
+
+// Bound the unified JVM suite while allowing its 48 MiB ink-limit fixtures.
+tasks.withType<Test>().configureEach {
+    maxHeapSize = "1g"
 }

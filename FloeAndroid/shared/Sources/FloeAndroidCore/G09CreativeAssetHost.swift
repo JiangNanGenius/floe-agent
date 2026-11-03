@@ -12,6 +12,9 @@
 // Physical reclamation is deferred: this package never deletes Materials
 // bytes. Reference operations only change durable reference counts.
 import Foundation
+#if canImport(Android)
+import Android
+#endif
 import Crypto
 import FloeCore
 import FloePersistence
@@ -20,6 +23,67 @@ import Darwin
 #elseif canImport(Glibc)
 import Glibc
 #endif
+
+/// Verified, read-only local bytes for one canonical creative asset. Produced
+/// ONLY by `G09CreativeAssetHost.verifiedLocalBytes` after the real on-disk
+/// file size, containment and digest checks pass. This is the design owner's
+/// material read; it never mutates the asset or its reference count.
+public struct G09CreativeVerifiedLocalBytes: Sendable, Equatable {
+    public let assetID: UUID
+    public let data: Data
+    public let format: String
+    public let displayName: String
+    public let contentSHA256: String
+    public let byteCount: Int64
+
+    public init(
+        assetID: UUID, data: Data, format: String, displayName: String,
+        contentSHA256: String, byteCount: Int64
+    ) {
+        self.assetID = assetID
+        self.data = data
+        self.format = format
+        self.displayName = displayName
+        self.contentSHA256 = contentSHA256
+        self.byteCount = byteCount
+    }
+}
+
+/// Result of a source-create ingest that also reports whether this call
+/// created the canonical row or merged into an existing content-hash row. The
+/// bytes are always the SAME content-addressed row; `deduplicated` is audit
+/// data for the caller, never a second storage authority.
+public struct G09CreativeIngestOutcome: Sendable, Equatable {
+    public let reference: CanvasAssetReference
+    public let deduplicated: Bool
+
+    public init(reference: CanvasAssetReference, deduplicated: Bool) {
+        self.reference = reference
+        self.deduplicated = deduplicated
+    }
+}
+
+/// Verified creative-library asset created by design-result publication.
+public struct G09CreativePublishedDesignAsset: Sendable, Equatable {
+    public let assetID: UUID
+    public let contentSHA256: String
+    public let format: String
+    public let displayName: String
+    public let byteCount: Int64
+    public let relativePath: String
+
+    public init(
+        assetID: UUID, contentSHA256: String, format: String,
+        displayName: String, byteCount: Int64, relativePath: String
+    ) {
+        self.assetID = assetID
+        self.contentSHA256 = contentSHA256
+        self.format = format
+        self.displayName = displayName
+        self.byteCount = byteCount
+        self.relativePath = relativePath
+    }
+}
 
 public actor G09CreativeAssetHost {
     private let root: RuntimeStorageRoot
@@ -112,12 +176,210 @@ public actor G09CreativeAssetHost {
         staging: URL, fileName: String, mimeType: String?,
         byteCount: Int64, sha256: String, candidateID: UUID
     ) async throws -> CanvasAssetReference {
+        (try await ingestForSourceCreateReportingMerge(
+            staging: staging, fileName: fileName, mimeType: mimeType,
+            byteCount: byteCount, sha256: sha256, candidateID: candidateID)
+        ).reference
+    }
+
+    /// Same verified source-create ingest, also reporting whether this call
+    /// created the canonical row. Bounded and content-addressed exactly like
+    /// the ordinary import; the caller must use the returned canonical id.
+    public func ingestForSourceCreateReportingMerge(
+        staging: URL, fileName: String, mimeType: String?,
+        byteCount: Int64, sha256: String, candidateID: UUID
+    ) async throws -> G09CreativeIngestOutcome {
         let digest = try Self.verifiedStagingDigest(
             staging, byteCount: byteCount, sha256: sha256)
         let ingested = try await ingestVerified(
             staging: staging, digest: digest, fileName: fileName,
             mimeType: mimeType, byteCount: byteCount, candidateID: candidateID)
-        return ingested.reference
+        return G09CreativeIngestOutcome(
+            reference: ingested.reference, deduplicated: ingested.deduplicated)
+    }
+
+    /// Publishes one verified adopted design result into the EXISTING
+    /// content-addressed creative library. The caller has already verified the
+    /// payload digest; this method re-checks it, writes only under
+    /// `<acceptedRoot>/FloeAgent/Materials`, resolves the canonical row by
+    /// content hash (identical bytes are ONE row) and returns only after the
+    /// row AND the real contained bytes are read back and hash-verified.
+    ///
+    /// A losing candidate id never owns the durable file: when the content
+    /// merge resolves to a different canonical id, the bytes are ensured at
+    /// the CANONICAL id path and the row's path is repaired. The original
+    /// source asset/file is never modified or deleted. Physical reclamation
+    /// stays deferred like every other Materials write.
+    public func publishDesignResult(
+        candidateID: UUID,
+        bytes: Data,
+        format rawFormat: String,
+        displayName: String,
+        kind: MediaKind,
+        mimeType: String?,
+        tags: [String]
+    ) async throws -> G09CreativePublishedDesignAsset {
+        let format = rawFormat.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !format.isEmpty, format.utf8.count <= 16,
+              format.unicodeScalars.allSatisfy({
+                CharacterSet.alphanumerics.contains($0)
+              }) else {
+            throw G09CreativeError.assetReferenceInvalid
+        }
+        guard !bytes.isEmpty else { throw G09CreativeError.assetEmpty }
+        guard Int64(bytes.count) <= G09CreativeLimits.assetBytes else {
+            throw G09CreativeError.assetTooLarge
+        }
+        let digest = FloeDigest.sha256Hex(bytes)
+        let safeName = Self.safeDisplayName(displayName)
+        let safeStem = (safeName as NSString).deletingPathExtension
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseName = safeStem.isEmpty ? "asset" : safeStem
+        let candidateRelative =
+            "\(candidateID.uuidString)-design-\(baseName).\(format)"
+        guard let candidateURL = materialsURL(relativePath: candidateRelative) else {
+            throw G09CreativeError.assetReferenceInvalid
+        }
+
+        var canonical: CreativeAssetRecord
+        let existingRecord = (try? await store.asset(contentHash: digest)) ?? nil
+        if let existingRecord {
+            canonical = existingRecord
+        } else {
+            try writeVerifiedFile(bytes, to: candidateURL, digest: digest)
+            let candidate = CreativeAssetRecord(
+                id: candidateID, contentHash: digest, kind: kind,
+                displayName: safeName, mimeType: mimeType,
+                localRelativePath: candidateRelative,
+                byteCount: Int64(bytes.count), tags: tags,
+                referenceCount: 0, createdAt: Date(), updatedAt: Date())
+            do {
+                canonical = try await store.saveResolvingCanonical(candidate)
+            } catch {
+                // The row was not created, so this exact file is unreferenced.
+                try? fileManager.removeItem(at: candidateURL)
+                throw G09CreativeError.storageUnavailable
+            }
+        }
+        guard canonical.contentHash.caseInsensitiveCompare(digest)
+            == .orderedSame else {
+            throw G09CreativeError.assetDigestMismatch
+        }
+
+        let storedRelative = canonical.localRelativePath.flatMap {
+            $0.isEmpty ? nil : $0
+        }
+        let cleanStored = storedRelative.flatMap(Self.canonicalAssetRelativePath)
+        let canonicalRelative: String
+        if let cleanStored, !cleanStored.isEmpty,
+           !(cleanStored as NSString).pathExtension.isEmpty {
+            canonicalRelative = cleanStored
+        } else {
+            let canonicalName = Self.safeDisplayName(
+                canonical.displayName.isEmpty ? safeName : canonical.displayName)
+            let canonicalStem = (canonicalName as NSString)
+                .deletingPathExtension
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let canonicalBase = canonicalStem.isEmpty ? "asset" : canonicalStem
+            canonicalRelative =
+                "\(canonical.id.uuidString)-design-\(canonicalBase).\(format)"
+        }
+        guard let canonicalURL = materialsURL(relativePath: canonicalRelative) else {
+            throw G09CreativeError.assetReferenceInvalid
+        }
+
+        // Ensure EXACTLY the verified bytes live at the canonical row path.
+        // An existing correct file is reused; a missing/partial/corrupt file
+        // is repaired atomically and verified again. The row is kept so a
+        // retry can finish.
+        try ensureVerifiedBytes(bytes, at: canonicalURL, digest: digest)
+
+        if cleanStored != canonicalRelative {
+            var repaired = canonical
+            repaired.localRelativePath = canonicalRelative
+            repaired.updatedAt = Date()
+            do {
+                try await store.save(repaired)
+            } catch {
+                throw G09CreativeError.storageUnavailable
+            }
+            canonical = repaired
+        }
+
+        // Remove ONLY the losing candidate copy this call created, and only
+        // when the canonical row does not point at it. A foreign canonical
+        // asset is never deleted.
+        if canonicalURL.path != candidateURL.path,
+           FileManager.default.fileExists(atPath: candidateURL.path),
+           canonical.id != candidateID {
+            try? fileManager.removeItem(at: candidateURL)
+        }
+
+        guard let readback = try? await store.asset(id: canonical.id),
+              readback.contentHash.caseInsensitiveCompare(digest)
+                == .orderedSame else {
+            throw G09CreativeError.assetDigestMismatch
+        }
+        let fileDigest = try verifiedFileDigest(
+            canonicalURL, expectedByteCount: bytes.count)
+        guard fileDigest.caseInsensitiveCompare(digest) == .orderedSame else {
+            throw G09CreativeError.assetDigestMismatch
+        }
+        return G09CreativePublishedDesignAsset(
+            assetID: readback.id,
+            contentSHA256: digest,
+            format: format,
+            displayName: readback.displayName.isEmpty
+                ? safeName : readback.displayName,
+            byteCount: Int64(bytes.count),
+            relativePath: canonicalRelative)
+    }
+
+    /// Writes the payload atomically and verifies the read-back bytes.
+    private func writeVerifiedFile(
+        _ bytes: Data, to url: URL, digest: String
+    ) throws {
+        do {
+            try G09R2DesignFileIO.writeAtomically(bytes, to: url)
+        } catch {
+            throw G09CreativeError.writeFailed
+        }
+        let actual = try verifiedFileDigest(
+            url, expectedByteCount: bytes.count)
+        guard actual.caseInsensitiveCompare(digest) == .orderedSame else {
+            throw G09CreativeError.assetDigestMismatch
+        }
+    }
+
+    private func ensureVerifiedBytes(
+        _ bytes: Data, at url: URL, digest: String
+    ) throws {
+        if let actual = try? verifiedFileDigest(
+            url, expectedByteCount: bytes.count),
+           actual.caseInsensitiveCompare(digest) == .orderedSame {
+            return
+        }
+        try writeVerifiedFile(bytes, to: url, digest: digest)
+    }
+
+    /// Bounded read-back digest: the REAL file must be a regular file of the
+    /// exact expected size, then the streamed SHA-256 must match.
+    private func verifiedFileDigest(
+        _ url: URL, expectedByteCount: Int
+    ) throws -> String {
+        guard expectedByteCount >= 0,
+              let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              (attributes[.type] as? FileAttributeType) == .typeRegular,
+              let size = (attributes[.size] as? NSNumber)?.int64Value,
+              size == Int64(expectedByteCount) else {
+            throw G09CreativeError.assetDigestMismatch
+        }
+        do {
+            return try FloeDigest.sha256Hex(ofFileAt: url)
+        } catch {
+            throw G09CreativeError.assetStagingUnavailable
+        }
     }
 
     /// Current canonical reference for an existing asset row, or nil when the
@@ -305,6 +567,72 @@ public actor G09CreativeAssetHost {
 
     public func record(id: UUID) async -> CreativeAssetRecord? {
         try? await store.asset(id: id)
+    }
+
+    /// Reads one canonical asset's local bytes for the DESIGN owner.
+    ///
+    /// Authority is the existing `CreativeAssetStore` row plus the actual
+    /// contained file under `<acceptedRoot>/FloeAgent/Materials`:
+    ///  * the recorded relative path must be a safe, contained relative path;
+    ///  * the real on-disk file size is capped BEFORE any read (a stale row
+    ///    byteCount is never accepted as the cap);
+    ///  * the read is bounded again and its SHA-256 must equal the row hash;
+    ///  * the format comes from the actual file extension, never a guess.
+    ///
+    /// The method is read-only: it never mutates the row, reference count or
+    /// bytes. Cloud-only rows (no local path) are a typed miss, not a fabricated
+    /// download.
+    public func verifiedLocalBytes(
+        id: UUID,
+        maximumBytes: Int64 = G09R2CreativeLimits.designSourceBytes
+    ) async throws -> G09CreativeVerifiedLocalBytes {
+        guard maximumBytes > 0 else {
+            throw G09CreativeError.invalidPayload("invalidAssetByteCap")
+        }
+        guard let record = try? await store.asset(id: id) else {
+            throw G09CreativeError.assetMissing
+        }
+        guard let rawRelative = record.localRelativePath, !rawRelative.isEmpty else {
+            throw G09CreativeError.assetMissing
+        }
+        guard let relative = Self.canonicalAssetRelativePath(rawRelative),
+              let url = materialsURL(relativePath: relative) else {
+            throw G09CreativeError.assetReferenceInvalid
+        }
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              (attributes[.type] as? FileAttributeType) == .typeRegular,
+              let fileSize = (attributes[.size] as? NSNumber)?.int64Value else {
+            throw G09CreativeError.assetMissing
+        }
+        guard fileSize > 0 else { throw G09CreativeError.assetEmpty }
+        guard fileSize <= maximumBytes else {
+            throw G09CreativeError.assetTooLarge
+        }
+        let data: Data
+        do {
+            data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        } catch {
+            throw G09CreativeError.assetStagingUnavailable
+        }
+        guard !data.isEmpty else { throw G09CreativeError.assetEmpty }
+        guard Int64(data.count) <= maximumBytes else {
+            throw G09CreativeError.assetTooLarge
+        }
+        let digest = FloeDigest.sha256Hex(data)
+        guard digest.caseInsensitiveCompare(record.contentHash) == .orderedSame else {
+            throw G09CreativeError.assetDigestMismatch
+        }
+        let format = (relative as NSString).pathExtension.lowercased()
+        guard !format.isEmpty else {
+            throw G09CreativeError.assetReferenceInvalid
+        }
+        return G09CreativeVerifiedLocalBytes(
+            assetID: record.id,
+            data: data,
+            format: format,
+            displayName: record.displayName,
+            contentSHA256: digest,
+            byteCount: Int64(data.count))
     }
 
     public func applyReferenceOp(opID: String, assetID: UUID, delta: Int) async throws {

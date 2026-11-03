@@ -111,6 +111,9 @@
     <string name="secure_credentials_hint">Saved securely; this task can reference them.</string>
     <string name="secure_credentials_card">Secure credentials card</string>
     <string name="attachment_open_named">Open attachment %1$s</string>
+    <string name="attachment_menu_open">Open</string>
+    <string name="attachment_design_action">Design</string>
+    <string name="attachment_more_actions">More actions for %1$s</string>
     <string name="attachment_remove">Remove attachment %1$s</string>
     <string name="attachment_importing">Importing…</string>
     <string name="attachment_progress">Importing %1$d%%</string>
@@ -285,6 +288,9 @@
     <string name="history_filter_tasks">Tasks</string>
     <string name="history_filter_archive">Archived</string>
     <string name="history_archive_action">Archive</string>
+    <string name="history_pin_action">Pin</string>
+    <string name="history_unpin_action">Unpin</string>
+    <string name="history_pinned_badge">Pinned</string>
     <string name="history_restore_action">Restore</string>
     <string name="history_delete_forever">Delete permanently</string>
     <string name="history_delete_confirm_title">Delete task</string>
@@ -387,4 +393,7 @@
     <string name="user_question_multiple">Choose one or more</string>
     <string name="user_question_optional">Optional: Floe can keep working while you decide.</string>
     <string name="user_question_waiting">Waiting for your answer</string>
+    <string name="history_results_cleanup_pending">Task deleted. Some saved results are still being cleaned up.</string>
+    <string name="history_results_cleanup_failed">Task deleted. Some saved results could not be removed.</string>
+    <string name="menu_execution_target">Execution location</string>
 </resources>

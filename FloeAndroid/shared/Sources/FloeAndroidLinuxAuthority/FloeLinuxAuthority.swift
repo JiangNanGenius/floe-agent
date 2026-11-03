@@ -89,17 +89,21 @@ public actor FloeLinuxAuthority {
 
     private enum TerminalKind: Equatable { case released, abandoned }
 
-    /// G07.3A bounded role ceilings (enforced in this ONE authority).
-    /// Approved default: TWO interactive tabs + ONE execution slot, where the
-    /// Agent command and a language/run session SHARE that one execution slot.
-    /// Total live leases are therefore <= 3 (never 4).
-    static let maximumConcurrentLeases = 3
+    /// G07.3A / C01 bounded role ceilings (enforced in this ONE authority).
+    /// v3 default: TWO interactive tabs + ONE execution slot (the Agent
+    /// command and a language/run session SHARE it) + TWO managed-service
+    /// slots. Services are separate from the manual/exec pool so a live dev
+    /// server never blocks ordinary exec.shell. Total live leases <= 5.
+    static let maximumConcurrentLeases = 5
     static let maximumInteractiveLeases = 2
     static let maximumExecutionLeases = 1
     /// Per-role individual ceilings; Agent and Run are combined by
     /// `maximumExecutionLeases` (a role keeps its own admission identity).
     static let maximumAgentLeases = 1
     static let maximumRunLeases = 1
+    /// C01: at most two service-owned workloads. `service.readiness` and the
+    /// runtime's own lease are the only readiness/release truth.
+    static let maximumServiceLeases = 2
 
     private var configuration: Configuration?
     private var leases: [String: LeaseEntry] = [:]
@@ -236,7 +240,8 @@ public actor FloeLinuxAuthority {
                 bytes: record.bytes,
                 packageCount: record.packageCount,
                 parentID: record.parentID,
-                templateID: record.templateID
+                templateID: record.templateID,
+                layerFormat: record.layerFormat
             )
         }
         return LinuxAuthorityEnvironmentList(baseRevision: baseRevision, environments: metadata)
@@ -277,7 +282,7 @@ public actor FloeLinuxAuthority {
         if let raw = request.leaseRole {
             guard let parsed = LinuxAuthorityLeaseRole(rawValue: raw) else {
                 throw LinuxAuthorityError(code: .invalidIdentifier,
-                                          message: "leaseRole must be one of interactive|agent|run")
+                                          message: "leaseRole must be one of interactive|agent|run|service")
             }
             role = parsed
         } else {
@@ -312,6 +317,13 @@ public actor FloeLinuxAuthority {
             guard liveForRole < (role == .agent ? Self.maximumAgentLeases : Self.maximumRunLeases) else {
                 throw LinuxAuthorityError(code: .leaseBusy,
                                           message: "the \(role.rawValue) execution workload is already live or being admitted")
+            }
+        case .service:
+            // C01 managed services are their own bounded pool. They never
+            // consume the interactive or shared execution slots above.
+            guard liveForRole < Self.maximumServiceLeases else {
+                throw LinuxAuthorityError(code: .leaseBusy,
+                                          message: "both managed-service slots are already live or being admitted")
             }
         }
         acquireInFlight += 1

@@ -15,12 +15,23 @@ struct G04WorkspaceOwnedOperation: Sendable {
     let conversationID: UUID
     let token: RuntimeOwnedWorkToken
     let cancellation: CancellationToken
+    /// Optional real native-maintenance run header. Ordinary terminal/file
+    /// operations remain run-less. The run control route proves the durable
+    /// record before it may cancel this exact operation.
+    let nativeRunID: UUID?
+
+    init(operationID: UUID, conversationID: UUID, token: RuntimeOwnedWorkToken,
+         cancellation: CancellationToken, nativeRunID: UUID? = nil) {
+        self.operationID = operationID; self.conversationID = conversationID
+        self.token = token; self.cancellation = cancellation; self.nativeRunID = nativeRunID
+    }
 }
 
 extension FacadeRunDomain {
     /// Same actor step as deletion/global admission fences. This is real
     /// conversation-owned work, not a fabricated model Run or P8 feed.
-    func beginG04WorkspaceOperation(conversationID: UUID, expectedEpoch: UInt64)
+    func beginG04WorkspaceOperation(conversationID: UUID, expectedEpoch: UInt64,
+                                    nativeRunID: UUID? = nil)
         -> G04WorkspaceOwnedOperation? {
         guard expectedEpoch == epoch, !retirementFenced, globalFence == nil,
               deleteGuards[conversationID] == nil else { return nil }
@@ -30,7 +41,7 @@ extension FacadeRunDomain {
             epoch: epoch, kind: .conversation, ownerID: ownerID) else { return nil }
         let operation = G04WorkspaceOwnedOperation(operationID: operationID,
                                                    conversationID: conversationID, token: token,
-                                                   cancellation: CancellationToken())
+                                                   cancellation: CancellationToken(), nativeRunID: nativeRunID)
         workspaceOperationLeases[conversationID, default: [:]][token.receipt] = operation
         return operation
     }
@@ -52,6 +63,14 @@ extension FacadeRunDomain {
         if workspaceOperationLeases[operation.conversationID]?.isEmpty == true {
             workspaceOperationLeases[operation.conversationID] = nil
         }
+    }
+
+    func requestG04NativeRunStop(runID: UUID, conversationID: UUID) -> Bool {
+        let operations = workspaceOperationLeases[conversationID]?.values.filter {
+            $0.nativeRunID == runID && RuntimeOwnedWorkRegistry.shared.isAttached($0.token)
+        } ?? []
+        for operation in operations { operation.cancellation.cancel() }
+        return !operations.isEmpty // Request only; owners retain their tokens.
     }
 
     func cancelG04WorkspaceOperations(conversationID: UUID? = nil) {
@@ -119,14 +138,38 @@ public struct G04LiveWorkspaceAccess: G04WorkspaceAccessPort {
         }
     }
 
-    /// The existing private-task path, for a caller explicitly selecting
-    /// that write layer. Managed project/SAF resolvers must be wired from
-    /// their ORIGINAL records; this never guesses the first project.
-    public static func privateTaskService(_ owner: G04WorkspaceOwner, cancellation: CancellationToken) async throws -> WorkspaceFileService {
+    /// The ONE normalized managed-root resolver shared by the workspace
+    /// editor, source coordinator and draft recovery. `LinuxWorkspaceAuthority`
+    /// already validates the persisted kind/path/non-following layout; this
+    /// only proves the owner still equals that exact binding. A missing
+    /// project leaf resolves to nil and is never recreated here.
+    public static func managedService(_ owner: G04WorkspaceOwner,
+                                      cancellation: CancellationToken) async throws
+        -> WorkspaceFileService {
         try cancellation.throwIfCancelled()
-        guard let binding = await LinuxWorkspaceAuthority.resolveWorkspace(conversationID: owner.taskID),
-              binding.workspaceID == owner.workspaceID else { throw G04DocumentError.ownerChanged }
+        guard let binding = await LinuxWorkspaceAuthority.resolveWorkspace(
+            conversationID: owner.taskID),
+              binding.workspaceID == owner.workspaceID else {
+            throw G04DocumentError.ownerChanged
+        }
         try cancellation.throwIfCancelled()
         return WorkspaceFileService(guard: WorkspacePathGuard(rootURL: binding.rootURL))
+    }
+
+    /// Explicit private-task-only path retained for callers that must not
+    /// accept a managed project root (legacy network workspace lane). A
+    /// project-bound task is typed `ownerChanged` here.
+    public static func privateTaskService(_ owner: G04WorkspaceOwner,
+                                          cancellation: CancellationToken) async throws
+        -> WorkspaceFileService {
+        try cancellation.throwIfCancelled()
+        guard let composition = G02RuntimeComposition.shared.installedComposition,
+              let record = try? await composition.cluster.workspaceStore
+                .workspace(id: owner.workspaceID),
+              record.kind == .privateTask else {
+            throw G04DocumentError.ownerChanged
+        }
+        try cancellation.throwIfCancelled()
+        return try await managedService(owner, cancellation: cancellation)
     }
 }

@@ -320,7 +320,11 @@ extension FacadeRunDomain {
         guard before.runtimeUidBoundaryVerified, before.engineConnected,
               before.mailboxEpochBound, before.rootfsQualified,
               before.singleWorkloadContractAcknowledged else { return }
-        if before.workspaceMappingSynced && before.leaseAuthorityQualified { return }
+        if before.workspaceMappingSynced && before.leaseAuthorityQualified,
+           let targets = components.executionTargets,
+           (try? await targets.domain.hasUsableLocalEnvironment(taskID: conversationID)) == true {
+            return
+        }
         var request: [String: Any] = [
             "runID": runID.uuidString,
             "conversationID": conversationID.uuidString,
@@ -424,10 +428,27 @@ extension FacadeRunDomain {
         // pair returns instantly, so non-Linux chat is never delayed and a
         // refused/unsettled preflight simply keeps this run's Linux discovery
         // honestly unqualified — never a failed run, never assumed success.
-        if !temporary, !isNotes {
+        let savedExecutionTarget: C02ExecutionTarget?
+        if !temporary, !isNotes, let targets = components.executionTargets {
+            savedExecutionTarget = try? await targets.domain.executionTarget(taskID: conversationID)
+        } else {
+            savedExecutionTarget = nil
+        }
+        if !temporary, !isNotes, savedExecutionTarget?.kind != .ssh {
             await linuxWorkspaceFirstUsePreflight(runID: runID,
                                                   conversationID: conversationID,
-                                                  environmentID: environmentID)
+                                                  environmentID: savedExecutionTarget?.kind == .localLinux
+                                                    ? savedExecutionTarget?.environmentID : environmentID)
+        }
+        // Bind only an existing, verified task environment. Failure narrows
+        // executable discovery; it does not prevent ordinary text chat.
+        let resolvedExecutionTarget: C02ResolvedExecutionTarget?
+        if !temporary, !isNotes, let targets = components.executionTargets,
+           savedExecutionTarget != nil || RuntimeFacadeLinuxBindings.shared.isCapabilityQualified {
+            resolvedExecutionTarget = try? await targets.domain.resolveUsingExistingEnvironment(
+                taskID: conversationID, runID: runID, preferredEnvironmentID: environmentID)
+        } else {
+            resolvedExecutionTarget = nil
         }
         // The persisted task policy row was committed by the ORIGINAL
         // prepare (or an earlier turn); the service policy is rebuilt from
@@ -458,11 +479,38 @@ extension FacadeRunDomain {
         // allowlist (RunToolAssembly owns the intersection; the runtime
         // STILL re-validates every main/child call for temporary runs).
         let modeRaw = RunLaunchMode(rawValue: mode.rawValue) ?? .chat
-        let ceiling = toolAssembly.allowedToolNames(
+        var ceiling = toolAssembly.allowedToolNames(
             taskPolicy: taskPolicy,
             hostCeiling: hostToolCeiling,
             mode: modeRaw,
             temporary: temporary)
+        if !temporary, !isNotes, components.executionTargets != nil, resolvedExecutionTarget == nil {
+            // Every shell route needs the same pinned execution target. Leaving
+            // shell.* visible here would bypass the missing-target ceiling.
+            let executableNames: Set<String> = ["exec.shell", "jobs.submit",
+                "shell.open", "shell.exchange", "shell.signal", "shell.close"]
+            let available = ceiling ?? Set(components.registry.allDescriptors.map(\.name))
+            ceiling = available.subtracting(executableNames)
+        } else if resolvedExecutionTarget?.target.kind == .ssh {
+            // Interactive shell sessions are local PRoot sessions; the SSH
+            // target owns exec.shell through its existing remote router.
+            let localSessions: Set<String> = ["shell.open", "shell.exchange", "shell.signal", "shell.close"]
+            let available = ceiling ?? Set(components.registry.allDescriptors.map(\.name))
+            ceiling = available.subtracting(localSessions)
+        }
+        if !temporary, !isNotes,
+           let installed = G02RuntimeComposition.shared.installedComposition, installed.epoch == epoch {
+            let root = await LinuxWorkspaceAuthority.trustedWorkspaceRoot(
+                runID: runID, conversationID: conversationID)
+            let hidden = await installed.mcpDomain.prepareStdioForRun(
+                taskID: conversationID, runID: runID, workspaceRoot: root,
+                allowStart: modeRaw != .plan && ceiling?.isEmpty != true &&
+                    RuntimeFacadeLinuxBindings.shared.isCapabilityQualified)
+            if !hidden.isEmpty {
+                let offered = ceiling ?? Set(components.registry.allDescriptors.map(\.name))
+                ceiling = Set(offered.filter { name in !hidden.contains(where: { name.hasPrefix($0) }) })
+            }
+        }
         let toolsEnabled = ceiling.map { !$0.isEmpty } ?? true
         // The ORIGINAL provider adapter: the host/test factory override when
         // injected, otherwise the ORIGINAL ProviderAdapterFactory coverage
@@ -526,7 +574,8 @@ extension FacadeRunDomain {
             ceiling: ceiling,
             toolsEnabled: toolsEnabled,
             temporary: temporary,
-            environmentID: environmentID)
+            environmentID: resolvedExecutionTarget?.target.kind == .localLinux
+                ? resolvedExecutionTarget?.target.environmentID : environmentID)
         if !temporary, !isNotes {
             // Original persisted conversation/workspace ownership selects this
             // root. No App-root, first-project or temporary-directory fallback.
@@ -560,6 +609,19 @@ extension FacadeRunDomain {
         let discoveryStore = (temporary || isNotes) ? nil : bundle.discovery
         let personalizationProvider =
             (temporary || isNotes) ? nil : components.personalizationProvider
+        // G09-R2 model context: the media projects the user explicitly
+        // connected to THIS task, read from the durable native association.
+        // Reference data only — the native binding/runtime authority still
+        // authorizes every call. Temporary/Notes runs never receive it, and an
+        // unbound provider or read failure simply yields no note.
+        let mediaTaskContext: [String]
+        if temporary || isNotes {
+            mediaTaskContext = []
+        } else if let provider = components.mediaTaskContext {
+            mediaTaskContext = await provider(conversationID)
+        } else {
+            mediaTaskContext = []
+        }
         let service = ConversationRunService(
             configuration: configuration,
             adapter: adapter,
@@ -584,8 +646,12 @@ extension FacadeRunDomain {
                 // nothing) and nothing else: no workspace, plan, goal, memory,
                 // profile, listing or project instructions.
                 workspaceName: (temporary || isNotes) ? nil : workspaceName,
+                executionTarget: resolvedExecutionTarget.map {
+                    "\($0.target.kind.rawValue):\($0.target.environmentID) revision=\($0.target.revision)"
+                },
                 availableToolNames: ceiling,
-                skillInstructions: isNotes ? notes?.contextText : nil),
+                skillInstructions: isNotes ? notes?.contextText : nil,
+                taskResources: mediaTaskContext),
             personalizationProvider: personalizationProvider,
             resourceAccessCleanup: nil,
             artifactRootURL: components.artifactRootURL)
