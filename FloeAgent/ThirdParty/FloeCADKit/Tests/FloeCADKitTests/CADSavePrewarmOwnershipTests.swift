@@ -215,6 +215,70 @@ final class CADSavePrewarmOwnershipTests: XCTestCase {
                        savedBytes)
     }
 
+    /// Deterministic counterpart of the retained real-MLX fixture. It checks
+    /// the native edit/save/Undo boundary without spending another inference
+    /// pass merely to discover whether the original archive was preserved.
+    func testSavedReopenedHoleEditUndoRedoKeepsExactCanonicalModelIdentity() async throws {
+        let source = try await makeDocument(name: "Canonical hole history")
+        func command(_ object: [String: Any]) throws -> [String: Any] {
+            let result = source.executeJSON(try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
+            XCTAssertTrue(result.isOK, result.message ?? "Native fixture command failed")
+            return try XCTUnwrap(try JSONSerialization.jsonObject(with: result.payload) as? [String: Any])
+        }
+        let plateSketch = try XCTUnwrap(try command(["op": "sketch.create", "args": ["name": "Fixture plate"]])["sketchID"] as? String)
+        _ = try command(["op": "sketch.addEntities", "args": ["sketchID": plateSketch,
+            "entities": [["kind": "rect", "min": [0, 0], "max": [80, 50]]]]])
+        let plate = try command(["op": "feature.extrude", "args": ["sketchID": plateSketch,
+            "seedPoint": [40, 25], "distance": 10]])
+        let bodyID = try XCTUnwrap((plate["producedBodyIDs"] as? [String])?.first
+            ?? (plate["changedBodyIDs"] as? [String])?.first)
+        let holeSketch = try XCTUnwrap(try command(["op": "sketch.create", "args": ["name": "Fixture hole"]])["sketchID"] as? String)
+        _ = try command(["op": "sketch.addEntities", "args": ["sketchID": holeSketch,
+            "entities": [["kind": "circle", "center": [40, 25], "radius": 3]]]])
+        _ = try command(["op": "feature.extrude", "args": ["sketchID": holeSketch,
+            "seedPoint": [40, 25], "distance": 40, "symmetric": true,
+            "boolean": "subtract", "booleanTargets": [bodyID]]])
+        let initial = await source.save()
+        XCTAssertTrue(initial.succeeded, initial.error ?? "")
+        let url = source.url
+        source.close(); documents.removeAll { $0 === source }
+
+        let opened = try await FloeCADDocument.open(at: url)
+        documents.append(opened)
+        let baseline = opened.modelSHA256
+        XCTAssertFalse(baseline.isEmpty)
+        let sketch = try XCTUnwrap(opened.session.document.sketches.first { $0.id.raw.uuidString == holeSketch })
+        let entityID = try XCTUnwrap(sketch.entities.first?.id)
+        let parameter = CADParameterService(document: opened)
+        let edited = parameter.handle(action: "updateSketchEntity", args: ["sketch_id": holeSketch,
+            "entity_id": entityID.uuidString, "expected_radius": 3, "radius": 4])
+        XCTAssertEqual(edited["ok"] as? Bool, true, "\(edited)")
+        let editSave = await opened.save()
+        XCTAssertTrue(editSave.succeeded, editSave.error ?? "")
+        let editedIdentity = opened.modelSHA256
+        XCTAssertNotEqual(editedIdentity, baseline)
+        XCTAssertEqual(try volume(XCTUnwrap(opened.session.document.bodies.first)), 39_497.345_175, accuracy: 1)
+        opened.session.undo()
+        let undoSave = await opened.save()
+        XCTAssertTrue(undoSave.succeeded, undoSave.error ?? "")
+        XCTAssertEqual(opened.modelSHA256, baseline, "Undo must preserve the original persisted BRep bytes, not just equivalent geometry")
+        XCTAssertEqual(try volume(XCTUnwrap(opened.session.document.bodies.first)), 39_717.256_661, accuracy: 1)
+        opened.session.redo()
+        let redoSave = await opened.save()
+        XCTAssertTrue(redoSave.succeeded, redoSave.error ?? "")
+        XCTAssertEqual(opened.modelSHA256, editedIdentity)
+        opened.session.undo()
+        let finalSave = await opened.save()
+        XCTAssertTrue(finalSave.succeeded, finalSave.error ?? "")
+        XCTAssertEqual(opened.modelSHA256, baseline)
+        opened.close(); documents.removeAll { $0 === opened }
+        let cold = try await FloeCADDocument.open(at: url)
+        documents.append(cold)
+        XCTAssertEqual(cold.modelSHA256, baseline)
+        XCTAssertEqual(cold.session.document.bodies.first?.id.raw.uuidString, bodyID)
+        XCTAssertEqual(try volume(XCTUnwrap(cold.session.document.bodies.first)), 39_717.256_661, accuracy: 1)
+    }
+
     func testCloseDuringDetachedPrewarmRefusesLateCommit() async throws {
         let document = try await makeDocument(name: "Closed prewarm")
         _ = try addAnalyticBox(document)

@@ -38,12 +38,18 @@ private final class RecordingEngine: LocalModelTextEngine, @unchecked Sendable {
     private var _receivedInstructions = ""
     private var _receivedPrompt = ""
     private var _generationCount = 0
+    private var _receivedPrompts: [String] = []
+    private var _receivedInstructionsHistory: [String] = []
+    private var _receivedMaxTokensHistory: [Int] = []
 
     var shutdownCount: Int { lock.withLock { _shutdownCount } }
     var receivedTools: [ToolSchemaDescriptor] { lock.withLock { _receivedTools } }
     var receivedInstructions: String { lock.withLock { _receivedInstructions } }
     var receivedPrompt: String { lock.withLock { _receivedPrompt } }
     var generationCount: Int { lock.withLock { _generationCount } }
+    var receivedPrompts: [String] { lock.withLock { _receivedPrompts } }
+    var receivedInstructionsHistory: [String] { lock.withLock { _receivedInstructionsHistory } }
+    var receivedMaxTokensHistory: [Int] { lock.withLock { _receivedMaxTokensHistory } }
 
     static func text(_ value: String) -> Behavior {
         { _ in
@@ -75,6 +81,9 @@ private final class RecordingEngine: LocalModelTextEngine, @unchecked Sendable {
             _receivedPrompt = prompt
             _receivedTools = tools
             _generationCount += 1
+            _receivedPrompts.append(prompt)
+            _receivedInstructionsHistory.append(instructions)
+            _receivedMaxTokensHistory.append(maxTokens)
         }
         return try behavior(self)
     }
@@ -85,7 +94,7 @@ private final class RecordingEngine: LocalModelTextEngine, @unchecked Sendable {
 }
 
 /// Thread-safe flag for the arbiter closures, which are `@Sendable`.
-private final class TestFlag: @unchecked Sendable {
+private final class LocalMultiTurnTestFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var value = false
     var isSet: Bool { lock.withLock { value } }
@@ -153,13 +162,14 @@ private struct LocalRuntimeHarness {
 @available(macOS 15.4, iOS 26.0, *)
 private func localModel(
     remoteModelID: String,
-    contextTokens: Int = 8_192
+    contextTokens: Int = 8_192,
+    maxOutputTokens: Int = 1_024
 ) -> ModelProfile {
     ModelProfile(
         providerID: LocalProviderAdapter.providerProfile.id,
         remoteModelID: remoteModelID,
         displayName: "Synthetic local",
-        limits: .init(contextTokens: contextTokens, maxOutputTokens: 1_024),
+        limits: .init(contextTokens: contextTokens, maxOutputTokens: maxOutputTokens),
         capabilities: [.text, .tools]
     )
 }
@@ -472,6 +482,154 @@ struct LocalSequentialToolCallsTests {
         }
         #expect(completions == [.toolUse])
         #expect(engine.receivedPrompt.contains("读取 a.md 和 b.md"))
+    }
+}
+
+
+// MARK: - Malformed ordered batch admission (actual X34 r13 regression)
+
+private let malformedCADParametersLine = #"{"tool_call":{"arguments":{"action":"parameters","path":"x34-supplied-mlx-9B1925A4.floecad","payload":"{\"action\":\"updateSketchEntity\",\"entity_id\":\"C34AD752-27B7-4498-8425-325D00E329C3\",\"expected_radius\":3,\"radius\":4,\"sketch_id\":\"4216E5E9-89DF-467D-B5F2-3968066BCFC5\"}}","name":"cad.document"}}"#
+private let validCADParametersLine = #"{"tool_call":{"name":"cad.document","arguments":{"action":"parameters","path":"x34-supplied-mlx-9B1925A4.floecad","payload":"{\"action\":\"updateSketchEntity\",\"entity_id\":\"C34AD752-27B7-4498-8425-325D00E329C3\",\"expected_radius\":3,\"radius\":4,\"sketch_id\":\"4216E5E9-89DF-467D-B5F2-3968066BCFC5\"}"}}}"#
+private let validCADMeasureLine = #"{"tool_call":{"arguments":{"action":"measure","handles":["body:C4BD40C7-289A-4D48-8293-54EE65E64FBB"],"kind":"body","path":"x34-supplied-mlx-9B1925A4.floecad"},"name":"cad.document"}}"#
+private let malformedBatchCADSchema = ToolSchemaDescriptor(
+    name: "cad.document", description: "Edit or measure the current CAD document",
+    parametersJSON: #"{"type":"object","properties":{"action":{"type":"string"},"path":{"type":"string"},"payload":{"type":"string"},"handles":{"type":"array","items":{"type":"string"}},"kind":{"type":"string"}},"required":["action","path"]}"#
+)
+
+@Suite("Local malformed ordered tool batches")
+struct LocalMalformedOrderedToolBatchTests {
+    @Test("The actual malformed edit and valid measure reject either order", arguments: [true, false])
+    @available(macOS 15.4, iOS 26.0, *)
+    func malformedLineRejectsWholeBatch(badFirst: Bool) throws {
+        let lines = badFirst ? [malformedCADParametersLine, validCADMeasureLine]
+            : [validCADMeasureLine, malformedCADParametersLine]
+        do {
+            _ = try LocalProviderAdapter.toolCalls(
+                from: lines.joined(separator: "\n"), offeredToolNames: ["cad.document"])
+            Issue.record("A partial ordered batch was admitted")
+        } catch let error as LocalProviderAdapter.ToolBatchParseError {
+            #expect(error == .malformedLine(badFirst ? 1 : 2))
+        }
+    }
+
+    @Test("A broken line beyond the execution cap still rejects the batch")
+    @available(macOS 15.4, iOS 26.0, *)
+    func malformedLineAfterCapRejectsBatch() throws {
+        let output = (Array(repeating: validCADMeasureLine,
+                            count: LocalProviderAdapter.maximumSequentialToolCalls)
+                      + [malformedCADParametersLine]).joined(separator: "\n")
+        do {
+            _ = try LocalProviderAdapter.toolCalls(from: output, offeredToolNames: ["cad.document"])
+            Issue.record("The execution cap bypassed whole-batch syntax admission")
+        } catch let error as LocalProviderAdapter.ToolBatchParseError {
+            #expect(error == .malformedLine(LocalProviderAdapter.maximumSequentialToolCalls + 1))
+        }
+    }
+
+    @Test("A complete legal edit/measure batch retains payload and order")
+    @available(macOS 15.4, iOS 26.0, *)
+    func validCADBatchPreservesOrder() throws {
+        let calls = try LocalProviderAdapter.toolCalls(
+            from: [validCADParametersLine, validCADMeasureLine].joined(separator: "\n"),
+            offeredToolNames: ["cad.document"])
+        let args = try calls.map {
+            try #require(JSONSerialization.jsonObject(with: $0.argumentsJSON) as? [String: Any])
+        }
+        #expect(args.compactMap { $0["action"] as? String } == ["parameters", "measure"])
+        let encoded = try #require(args.first?["payload"] as? String)
+        let payload = try #require(JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [String: Any])
+        #expect(payload["entity_id"] as? String == "C34AD752-27B7-4498-8425-325D00E329C3")
+        #expect(payload["radius"] as? Int == 4)
+    }
+
+    @Test("Prose and embedded fenced samples remain inert")
+    @available(macOS 15.4, iOS 26.0, *)
+    func proseAndFencedSamplesStayNonExecutable() throws {
+        let example = "Example only:\n```json\n" + malformedCADParametersLine
+            + "\n" + validCADParametersLine + "\n```\nDo not execute this example."
+        #expect(try LocalProviderAdapter.toolCalls(
+            from: example, offeredToolNames: ["cad.document"]).isEmpty)
+        let real = try LocalProviderAdapter.toolCalls(
+            from: example + "\n" + validCADMeasureLine, offeredToolNames: ["cad.document"])
+        #expect(real.count == 1)
+        let call = try #require(real.first)
+        let args = try #require(JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any])
+        #expect(args["action"] as? String == "measure")
+    }
+
+    @Test("One repair retains the full request, schemas, budget and action order")
+    @available(macOS 15.4, iOS 26.0, *)
+    func repairKeepsFullRequestSchemasAndOrder() async throws {
+        let malformed = [malformedCADParametersLine, validCADMeasureLine].joined(separator: "\n")
+        let repaired = [validCADParametersLine, validCADMeasureLine].joined(separator: "\n")
+        let engine = RecordingEngine(behavior: { engine in
+            try RecordingEngine.text(engine.generationCount == 1 ? malformed : repaired)(engine)
+        })
+        let harness = try LocalRuntimeHarness(engine: engine)
+        defer { harness.cleanUp() }
+        // Exceeds the old compact repair's 4096-character user-message clipping.
+        let current = "Edit the same hole, then measure it. "
+            + String(repeating: "Keep the original document and feature IDs. ", count: 110)
+            + "END: radius=4; measure only AFTER editing; do not ask for confirmation."
+        let request = ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: localModel(remoteModelID: "qwen3.5-4b-mlx4", contextTokens: 32_768, maxOutputTokens: 1536),
+            messages: [(role: "system", content: "Preserve permission, revision and ownership checks."),
+                       (role: "user", content: current)],
+            toolSchemas: [malformedBatchCADSchema, readFileSchema],
+            allToolNames: ["cad.document", readFileSchema.name])
+        var emitted: [ToolCall] = []
+        for try await event in harness.adapter().stream(request: request, credentials: ProviderCredentials()) {
+            if case .toolRequest(let call) = event { emitted.append(call) }
+        }
+        #expect(engine.generationCount == 2)
+        let prompts = engine.receivedPrompts
+        #expect(prompts.count == 2)
+        #expect(prompts.allSatisfy { $0.contains(current) })
+        let initial = try #require(prompts.first)
+        let repair = try #require(prompts.last)
+        #expect(repair.hasPrefix(initial))
+        let instructions = engine.receivedInstructionsHistory
+        #expect(instructions.count == 2)
+        #expect(instructions.first == instructions.last)
+        #expect(engine.receivedMaxTokensHistory == [1536, 1536])
+        let actions = try emitted.map {
+            (try #require(JSONSerialization.jsonObject(with: $0.argumentsJSON) as? [String: Any]))["action"] as? String
+        }
+        #expect(actions == ["parameters", "measure"])
+    }
+
+    @Test("A second malformed response fails with zero calls and no third generation", arguments: [true, false])
+    @available(macOS 15.4, iOS 26.0, *)
+    func secondMalformedBatchFailsClosed(badFirst: Bool) async throws {
+        let lines = badFirst ? [malformedCADParametersLine, validCADMeasureLine]
+            : [validCADMeasureLine, malformedCADParametersLine]
+        let engine = RecordingEngine(behavior: RecordingEngine.text(lines.joined(separator: "\n")))
+        let harness = try LocalRuntimeHarness(engine: engine)
+        defer { harness.cleanUp() }
+        let request = ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: localModel(remoteModelID: "qwen3.5-4b-mlx4"),
+            messages: [(role: "user", content: "Use cad.document to edit the hole and then measure.")],
+            toolSchemas: [malformedBatchCADSchema], allToolNames: ["cad.document"])
+        var emitted = 0
+        var failed = false
+        do {
+            for try await event in harness.adapter().stream(request: request, credentials: ProviderCredentials()) {
+                if case .toolRequest = event { emitted += 1 }
+            }
+        } catch { failed = true }
+        #expect(failed)
+        #expect(emitted == 0)
+        #expect(engine.generationCount == 2)
+    }
+
+    @Test("A complete batch repair is refused when prompt plus output cannot fit")
+    @available(macOS 15.4, iOS 26.0, *)
+    func completeBatchRepairRespectsWindow() {
+        #expect(!LocalProviderAdapter.PromptBuild.batchRepairFitsContext(
+            instructions: "rules", prompt: String(repeating: "request ", count: 1000),
+            nativeSchemas: [], contextTokens: 1024, outputTokens: 1024))
     }
 }
 
@@ -822,7 +980,7 @@ struct LocalHeavyRuntimeAdmissionTests {
     @available(macOS 15.4, iOS 26.0, *)
     func declinedConflictDoesNotLoad() async throws {
         let arbiter = HeavyRuntimeArbiter()
-        let stopped = TestFlag()
+        let stopped = LocalMultiTurnTestFlag()
         arbiter.configure(
             activityProbe: {
                 HeavyRuntimeArbiter.LinuxActivity(guestEnvironmentIDs: ["env-1"])
@@ -857,7 +1015,7 @@ struct LocalHeavyRuntimeAdmissionTests {
     @available(macOS 15.4, iOS 26.0, *)
     func confirmedConflictStopsThenRuns() async throws {
         let arbiter = HeavyRuntimeArbiter()
-        let stopped = TestFlag()
+        let stopped = LocalMultiTurnTestFlag()
         arbiter.configure(
             activityProbe: {
                 stopped.isSet

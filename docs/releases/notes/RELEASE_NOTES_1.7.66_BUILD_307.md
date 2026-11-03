@@ -1,0 +1,23 @@
+# Floe Agent 1.7.66（307）
+
+> 候选文案；实际验证与发布状态以交付记录为准。
+
+## 简体中文
+
+- 增强原生 3D 编辑，完善草图尺寸、曲面与放样、壳体、装配和工程图。
+- 完善材质、UV、表面绘制与遮挡烘焙，改进保存、撤销和导出的一致性。
+- 优化 iPad 与紧凑布局下的工具栏、编辑面板和 Office 界面。
+- 完善助手的连续编辑、真实视图检查，以及工具结果和错误回收。
+- 更新火山套餐模型目录和月之暗面服务配置，保持不同计费渠道独立。
+- 扩充技能商店内容，完善依赖准备、版本和运行位置管理。
+- 修复 Mac 挂起恢复的存储处理，并支持连接 Floe Bridge 1.1。
+
+## English
+
+- Expanded native 3D editing with improved sketch dimensions, surfaces, lofts, shells, assemblies and drawings.
+- Improved materials, UVs, surface painting and occlusion baking, including consistent saving, undo and export.
+- Refined iPad and compact toolbars, editing panels and Office layouts.
+- Improved continued assistant edits, actual viewport inspection and tool-result recovery.
+- Updated Volcengine plan model listings and Moonshot service setup while keeping billing channels separate.
+- Expanded Skill Hub content and improved dependency, version and execution-location management.
+- Repaired storage handling during Mac suspension and added support for Floe Bridge 1.1.

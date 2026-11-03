@@ -1280,6 +1280,7 @@ targets:
       - path: Tests/FloeLocalModelsTests/LocalModelCatalogTests.swift
       - path: Tests/FloeLocalModelsTests/LocalPromptHarnessTests.swift
       - path: Tests/FloeLocalModelsTests/LocalSearchRepairRegressionTests.swift
+      - path: Tests/FloeLocalModelsTests/LocalMultiTurnToolTests.swift
       - path: Tests/FloeAgentRuntimeTests/SubagentExecutionTests.swift
       - path: Tests/FloeAgentRuntimeTests/SubagentSafetyTests.swift
       - path: Tests/FloeToolsTests/CADMaterialMutationTargetTests.swift

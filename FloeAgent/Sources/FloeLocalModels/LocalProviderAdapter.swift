@@ -1905,11 +1905,20 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         return
                     }
                     var channels = Self.splitReasoning(from: completion.text)
-                    var parsedToolCalls = try Self.fallbackToolCalls(
-                        from: channels.answer,
-                        modelRemoteID: request.model.remoteModelID,
-                        selectedTools: promptBuild.fallbackTools
-                    )
+                    var hasMalformedToolBatch = false
+                    var parsedToolCalls: [ToolCall]
+                    do {
+                        parsedToolCalls = try Self.fallbackToolCalls(
+                            from: channels.answer,
+                            modelRemoteID: request.model.remoteModelID,
+                            selectedTools: promptBuild.fallbackTools
+                        )
+                    } catch is ToolBatchParseError {
+                        // Parse the whole response before yielding any request:
+                        // a broken batch cannot execute a surviving prefix/suffix.
+                        hasMalformedToolBatch = true
+                        parsedToolCalls = []
+                    }
                     // Device evidence is only that the repair parsed 0 — not
                     // that the model emitted a valid JSON call after prose, so
                     // no prose+JSON suffix salvage is attempted (quoted
@@ -1926,8 +1935,9 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     let parsedCallsCarryRequiredArguments = Self.toolCallsSatisfyRequiredArguments(
                         parsedToolCalls, offered: promptBuild.fallbackTools
                     )
-                    if (parsedToolCalls.isEmpty || !parsedCallsCarryRequiredArguments),
-                       promptBuild.requiresToolCall,
+                    if (hasMalformedToolBatch
+                        || ((parsedToolCalls.isEmpty || !parsedCallsCarryRequiredArguments)
+                            && promptBuild.requiresToolCall)),
                        request.model.remoteModelID != AppleFoundationModelIdentity.remoteModelID {
                         // Diagnose the gap before repair so a rejected-name
                         // envelope (e.g. the `bochaWeb` provider enum emitted
@@ -1941,7 +1951,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                             parsedCalls: parsedToolCalls,
                             offeredNames: Set(promptBuild.fallbackTools.map(\.name))
                         )
-                        let repairReason: String
+                        var repairReason: String
                         var correctiveName: String?
                         switch gapReason {
                         case .missingInvocation:
@@ -1973,6 +1983,10 @@ public struct LocalProviderAdapter: ProviderAdapter {
                                 correctiveName = promptBuild.primaryRepairTool?.name
                             }
                         }
+                        if hasMalformedToolBatch {
+                            repairReason = "malformedBatch"
+                            correctiveName = nil
+                        }
                         FloeLogger(category: .providers).warning(
                             "localToolInvocationRepairStarted model=\(request.model.remoteModelID) reason=\(repairReason) outputCharacters=\(channels.answer.count) selectedTools=\(promptBuild.selectedToolCount)"
                         )
@@ -1991,32 +2005,48 @@ public struct LocalProviderAdapter: ProviderAdapter {
                             promptBuild.fallbackTools.first { $0.name == canonical }
                         } ?? promptBuild.primaryRepairTool
                         let repairDirective: String = {
+                            if hasMalformedToolBatch {
+                                return "No calls from the previous malformed JSON batch were executed. Re-emit the COMPLETE ordered batch requested in the current USER message, using only the offered tool definitions and original authorized parameters. Do not omit an earlier action, reorder actions, invent arguments, or claim execution. Emit at most \(Self.maximumSequentialToolCalls) calls in the documented form; no prose."
+                            }
                             guard let correctiveName else {
                                 return "Emit the call now using the offered tool in the documented form; no prose."
                             }
                             return "The previous call used a name that is not an offered tool. Re-emit the call now using exactly the offered tool name \(correctiveName) in the documented form; keep the same intent and arguments; no prose and no other name."
                         }()
-                        let repairPrompt = Self.repairPrompt(
-                            for: request,
-                            directive: repairDirective
-                        )
-                        if let repairTool,
-                           let repairInstructions = PromptBuild.minimalRepairInstructions(
-                               tool: repairTool,
-                               usesNativeToolSchemas: usesNative,
-                               extraSafety: promptBuild.preservedRuntimeInstructions
-                           ),
-                           PromptBuild.repairFitsContext(
-                               instructions: repairInstructions, prompt: repairPrompt,
-                               tool: repairTool, usesNativeToolSchemas: usesNative,
-                               contextTokens: request.model.limits.contextTokens
-                           ) {
-                            let repairSchemas: [ToolSchemaDescriptor]
-                            if usesNative {
-                                repairSchemas = [repairTool]
-                            } else {
-                                repairSchemas = []
-                            }
+                        // Preserve the entire original batch request, receipts,
+                        // admitted definitions and order. Other gaps retain
+                        // the existing minimal single-tool repair.
+                        let repairPrompt = hasMalformedToolBatch
+                            ? prompt + "\n\n" + repairDirective
+                            : Self.repairPrompt(for: request, directive: repairDirective)
+                        let repairInstructions: String? = hasMalformedToolBatch
+                            ? promptBuild.systemInstructions
+                            : PromptBuild.minimalRepairInstructions(
+                                tool: repairTool,
+                                usesNativeToolSchemas: usesNative,
+                                extraSafety: promptBuild.preservedRuntimeInstructions
+                            )
+                        let repairSchemas = hasMalformedToolBatch
+                            ? promptBuild.nativeToolSchemas
+                            : (usesNative ? repairTool.map { [$0] } ?? [] : [])
+                        let repairMaxTokens = hasMalformedToolBatch
+                            ? max(64, request.model.limits.configuredMaxOutputTokens ?? 1024)
+                            : 256
+                        if let repairInstructions,
+                           (hasMalformedToolBatch
+                            ? PromptBuild.batchRepairFitsContext(
+                                instructions: repairInstructions, prompt: repairPrompt,
+                                nativeSchemas: repairSchemas,
+                                contextTokens: request.model.limits.contextTokens,
+                                outputTokens: repairMaxTokens
+                            )
+                            : repairTool.map {
+                                PromptBuild.repairFitsContext(
+                                    instructions: repairInstructions, prompt: repairPrompt,
+                                    tool: $0, usesNativeToolSchemas: usesNative,
+                                    contextTokens: request.model.limits.contextTokens
+                                )
+                            } ?? false) {
                             watchdogState.notePhase("toolInvocationRepair")
                             let repair = try await runtime.completeMeasured(
                                 modelID: request.model.remoteModelID,
@@ -2024,7 +2054,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                                 prompt: repairPrompt,
                                 images: [],
                                 tools: repairSchemas,
-                                maxTokens: 256,
+                                maxTokens: repairMaxTokens,
                                 ownerRunID: ownerRunID
                             )
                             let mainRate = completion.tokensPerSecond
@@ -2051,11 +2081,16 @@ public struct LocalProviderAdapter: ProviderAdapter {
                                 repair: (repair.tokensPerSecond, repair.outputTokens)
                             )
                             channels = Self.splitReasoning(from: repair.text)
-                            parsedToolCalls = try Self.fallbackToolCalls(
-                                from: channels.answer,
-                                modelRemoteID: request.model.remoteModelID,
-                                selectedTools: promptBuild.fallbackTools
-                            )
+                            do {
+                                parsedToolCalls = try Self.fallbackToolCalls(
+                                    from: channels.answer,
+                                    modelRemoteID: request.model.remoteModelID,
+                                    selectedTools: promptBuild.fallbackTools
+                                )
+                            } catch is ToolBatchParseError {
+                                hasMalformedToolBatch = true
+                                parsedToolCalls = []
+                            }
                             FloeLogger(category: .providers).info(
                                 "localToolInvocationRepairFinished model=\(request.model.remoteModelID) parsed=\(parsedToolCalls.count) outputCharacters=\(channels.answer.count)"
                             )
@@ -2112,7 +2147,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         )
                         continuation.yield(.completed(.init(stopReason: .toolUse)))
                     } else {
-                        if promptBuild.requiresToolCall {
+                        if promptBuild.requiresToolCall || hasMalformedToolBatch {
                             FloeLogger(category: .providers).warning(
                                 "localStreamEnded model=\(request.model.remoteModelID) reason=missingToolInvocation streamedCharacters=\(displayBuffer?.emitted.count ?? 0) outputCharacters=\(completion.text.count) selectedTools=\(promptBuild.selectedToolCount)"
                             )
@@ -2453,6 +2488,21 @@ public struct LocalProviderAdapter: ProviderAdapter {
             // remains the final admission decision.
             let budget = max(0, contextTokens - 256)
             return estimated <= budget
+        }
+
+        /// Keep the original batch contract whole. The engine's actual
+        /// prepared-token guard remains the final admission decision.
+        static func batchRepairFitsContext(
+            instructions: String, prompt: String,
+            nativeSchemas: [ToolSchemaDescriptor],
+            contextTokens: Int, outputTokens: Int
+        ) -> Bool {
+            let schemaTokens = nativeSchemas.reduce(0) {
+                $0 + LocalPromptPressure.heuristicTokens(in: $1.name + $1.description + $1.parametersJSON)
+            }
+            let estimated = LocalPromptPressure.heuristicTokens(in: instructions)
+                + LocalPromptPressure.heuristicTokens(in: prompt) + schemaTokens
+            return estimated <= max(0, contextTokens - outputTokens)
         }
 
         /// Required top-level argument keys declared by a tool schema, or an
@@ -4278,6 +4328,12 @@ public struct LocalProviderAdapter: ProviderAdapter {
         try toolCalls(from: output, offeredToolNames: offeredToolNames).first
     }
 
+    /// Syntax failure in an explicit raw tool_call line. Carries no model text.
+    /// The complete response is parsed before any request can be emitted.
+    enum ToolBatchParseError: Error, Equatable, Sendable {
+        case malformedLine(Int)
+    }
+
     /// Build 222: one turn may carry several sequential calls. The bounded
     /// protocols are, in order of precedence:
     ///
@@ -4287,8 +4343,9 @@ public struct LocalProviderAdapter: ProviderAdapter {
     ///  4. consecutive one-object-per-line JSON objects.
     ///
     /// Every element still passes the same name normalization and argument
-    /// validation as a single call; malformed elements are skipped, and the
-    /// result is capped at `maximumSequentialToolCalls` in document order so
+    /// validation as a single call. Valid unknown names are still skipped.
+    /// A syntax-broken explicit raw tool_call line rejects the entire line
+    /// batch, so an earlier action cannot silently disappear. The result is capped at `maximumSequentialToolCalls` in document order so
     /// the harness can execute them sequentially.
     static func toolCalls(
         from output: String,
@@ -4324,11 +4381,11 @@ public struct LocalProviderAdapter: ProviderAdapter {
         // Lines inside a ``` fence are skipped: the bounded channel is a raw
         // object per line, never a fenced block, so a fenced sample/quoted
         // example cannot become a phantom call.
-        let lines = trimmed.split(separator: "\n", omittingEmptySubsequences: true)
+        let lines = trimmed.split(separator: "\n", omittingEmptySubsequences: false)
         guard lines.count > 1 else { return [] }
         var calls: [ToolCall] = []
         var insideFence = false
-        for line in lines {
+        for (lineIndex, line) in lines.enumerated() {
             let text = line.trimmingCharacters(in: .whitespacesAndNewlines)
             let fenceMarker = text.hasPrefix("```")
             if fenceMarker {
@@ -4338,11 +4395,19 @@ public struct LocalProviderAdapter: ProviderAdapter {
             guard !insideFence else { continue }
             guard let candidate = strictJSONObject(text),
                   let data = candidate.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data),
-                  let call = try decodeToolCall(object, offered: offeredToolNames)
-            else { continue }
-            calls.append(call)
-            if calls.count >= maximumSequentialToolCalls { break }
+                  let object = try? JSONSerialization.jsonObject(with: data)
+            else {
+                // Match only the explicit top-level control-channel marker.
+                // Prose, unrelated JSON and fenced examples remain inert.
+                if text.range(of: #"^\{\s*"tool_call"\s*:"#, options: .regularExpression) != nil {
+                    throw ToolBatchParseError.malformedLine(lineIndex + 1)
+                }
+                continue
+            }
+            guard let call = try decodeToolCall(object, offered: offeredToolNames) else { continue }
+            if calls.count < maximumSequentialToolCalls { calls.append(call) }
+            // Validate lines beyond the execution cap too: a later broken
+            // control line invalidates this entire response.
         }
         return calls
     }

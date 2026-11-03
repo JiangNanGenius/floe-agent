@@ -7564,10 +7564,18 @@
       "package": "experience",
       "implementation": {
         "stage": "F",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "verified_original_scope",
+        "source_changes": [
+          "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/CADTexturePaint.swift",
+          "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADTexturePaintService.swift",
+          "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/WorkbenchUI/CADTexturePaintView.swift"
+        ],
+        "verification": [
+          "docs/qualification/cad-texture-final-20261103/README.md"
+        ],
+        "limitations": [
+          "Whole-body flattened color texture and mesh-geometry AO; no texture layer stack, normal bake or high/low transfer claim."
+        ]
       },
       "alignment_review": {
         "disposition": "planned",
@@ -7595,8 +7603,16 @@
         "acceptance_pending": "局部绘制→撤销→烘焙→重开与交换格式一致。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "source": "ac420afb805cd676238e9c12066a37085a274f9b",
+        "record": "docs/qualification/cad-texture-final-20261103/README.md",
+        "source_changes": [
+          "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/CADTexturePaint.swift",
+          "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADTexturePaintService.swift",
+          "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/WorkbenchUI/CADTexturePaintView.swift"
+        ],
+        "original_criterion_unchanged": true,
+        "physical_device_claim": false
       },
       "verification_plan": {
         "priority": "P2",
@@ -10257,8 +10273,8 @@
       "actual_OBJ": "真实OBJ/MTL/PNG显示、缺失贴图及仅资源变化后的旧帧拒绝通过。",
       "scope": "本地实际渲染与资源来源；不冒充原生可编辑BRep，也不代替真实LLM视觉连续编辑。"
     },
-    "accepted_original_criteria": 102,
-    "pending_original_criteria": 4,
+    "accepted_original_criteria": 103,
+    "pending_original_criteria": 3,
     "device_acceptance": "iPad通过的功能复用验收，iPhone仅确认界面；不使用用户手机。",
     "latest_native_batch": {
       "source": "582810ed58f8d3d63e23967909b74898af502c60",
@@ -10635,6 +10651,13 @@
       "wholeSelectedBatch": "19 passed,3 basic-machining failures,0 skipped",
       "liveLLMClaim": false,
       "physicalDeviceClaim": false
+    },
+    "texture_paint_bake_final": {
+      "source": "ac420afb805cd676238e9c12066a37085a274f9b",
+      "original_ui_passed": 1,
+      "native_selected_passed": 6,
+      "record": "docs/qualification/cad-texture-final-20261103/README.md",
+      "prior_failures_retained": true
     }
   },
   "verification_strategy": {
