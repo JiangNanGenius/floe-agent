@@ -1,6 +1,6 @@
 {
   "CAD_NOTICES.txt": "00b1c813ace4f93a2b1fa90dd55440c8059ef681a85269c58d0cc523647544e0",
-  "CAD_SOURCES.json": "3332fa8fe4661ee3af554b06f5570a5f29faf8ea245c5c1f877b1aad3d263c7f",
+  "CAD_SOURCES.json": "1d2bc95573c2a20eb6c167d98ba543d20c25e444ca2f10de3147646dd0c63ae3",
   "DECODER_BOM.json": "c2229eeb540a99ddce47dc38ba280477b171a8782e0911157f91a4a630a2f67c",
   "MiSans-Regular.ttf": "7172aa1b5c703780ee12df3fe4c50481dde01f3b125a045a398000a88d032ae5",
   "OCCT_LGPL_EXCEPTION.txt": "04580a884ea6cea294402649ff7b5cbb167d47462d1340a4ed33e550db10a81b",
@@ -23,7 +23,7 @@
   "dxf.js": "7aad4c4119eb487d6100d023f418b9fc524e3665df6737ec2d45233270d6386e",
   "dxf.js.LEGAL.txt": "c45cd04eba4a946eda2325041fe74d9dad5249835d308f2e7b58768bd36e52f9",
   "floe_cad_engine.js": "3e77f1ad40adfc7c2ed1b6199dd4d9391eaf5bf6d98fbcb3fa30d8d4f561a91b",
-  "floe_cad_engine_bg.wasm": "014616a57c23d5555cabaca76643a8ace73d0ffc4525d6dbec13bca86706837d",
+  "floe_cad_engine_bg.wasm": "7bb0feff03ede2020788ec3155f373accca6fec4486f697884448326f8c1428e",
   "gerber-to-svg.min.js": "8f16104893ab462f0bc1513ac2c6508fce59fcb10fab648848dddcfa7aafb76c",
   "gerber-to-svg.min.js.LICENSE.txt": "a41d4ce5d77ff2e5a5c511d8287e8752530ceb955fd04c1f48855a8d9796708a",
   "gerber-worker.js": "c34ebdcca12d59a0339cbe962d459edb6fbd118ab5e965f30ae3502d1d3c270b",

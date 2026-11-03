@@ -673,6 +673,122 @@ struct CadWebEngineSessionTests {
             throw error
         }
         await session.shutdown(); await reopened.shutdown()
+        try await withVisibleDrawing(bytes: sample) { _, web, _ in
+            let result = try await web.callAsyncJavaScript(#"""
+            const panel=document.getElementById('cadPanel');
+            document.getElementById('cadEdit').click();
+            if(panel.hidden)throw Error('The actual editor panel did not open');
+            const entities=document.getElementById('cadEntities'),rows=[];
+            for(const kind of ['Spline','Hatch','Insert']){
+              const option=[...entities.options].find(o=>o.text.startsWith(kind+' ·'));
+              if(!option||!option.text.endsWith(' · Read only'))throw Error(kind+' has no visible read-only label');
+              entities.value=option.value;entities.dispatchEvent(new Event('change'));
+              const message=document.getElementById('cadMessage').textContent;
+              if(!/read only/i.test(message))throw Error(kind+' has no actionable read-only status');
+              const fields=panel.querySelector('.cadFields');
+              if(fields.children.length)throw Error(kind+' incorrectly exposes editable fields');
+              rows.push({kind,option:option.text,message,fields:fields.children.length});
+            }
+            await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+            return JSON.stringify(rows);
+            """#, arguments: [:], in: nil, contentWorld: .page)
+            Attachment.record(try #require(result as? String), named: "e20-actual-editor-readonly.json")
+            let snapshot = try await web.takeSnapshot(configuration: nil)
+            let png = try #require(snapshot.pngData())
+            Attachment.record(Array(png), named: "e20-actual-editor-readonly.png")
+        }
+    }
+
+    @Test func recoveryExportUsesNativePickerAndTeardownResolvesReply() async throws {
+        let sample = try sampleDXF()
+        let temporary = FileManager.default.temporaryDirectory
+        let before = Set(try FileManager.default.contentsOfDirectory(at: temporary, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("FloeCADRecovery-") })
+        try await withVisibleDrawing(bytes: sample) { session, web, controller in
+            _ = try await web.evaluateJavaScript(#"""
+            document.getElementById('cadEdit').click();
+            const button=[...document.querySelectorAll('#cadPanel button')].find(b=>b.textContent==='Export recovery draft');
+            if(!button)throw Error('Recovery action missing');
+            window.floeRecoveryWitness=0;
+            void Promise.resolve(button.onclick()).then(()=>window.floeRecoveryWitness++);
+            """#)
+            var picker: UIDocumentPickerViewController?
+            for _ in 0..<100 {
+                if let actual = controller.presentedViewController as? UIDocumentPickerViewController {
+                    picker = actual; break
+                }
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+            let actualPicker = try #require(picker)
+            #expect(actualPicker.delegate === session.coordinator)
+            let folders = Set(try FileManager.default.contentsOfDirectory(at: temporary, includingPropertiesForKeys: nil)
+                .filter { $0.lastPathComponent.hasPrefix("FloeCADRecovery-") }).subtracting(before)
+            #expect(folders.count == 1)
+            let folder = try #require(folders.first)
+            let draft = try Data(contentsOf: folder.appendingPathComponent("Drawing.floe-cad-draft.json"))
+            let recovery = try #require(JSONSerialization.jsonObject(with: draft) as? [String: Any])
+            #expect(recovery["sourceSHA256"] as? String == FloeDigest.sha256Hex(sample))
+            #expect(recovery["sourceBase64"] as? String == sample.base64EncodedString())
+            #expect(recovery["schema"] as? String == "floe-cad-recovery")
+            #expect(recovery["format"] as? String == "dxf")
+            // Real native picker creation and the production lifetime owner:
+            // teardown cancels its outstanding reply and removes staging.
+            // This does not claim an external Files provider saved a copy.
+            session.tearDown()
+            #expect(!FileManager.default.fileExists(atPath: folder.path))
+            #expect(session.web == nil)
+            #expect(session.coordinator == nil)
+            var completions = 0
+            for _ in 0..<100 {
+                completions = (try? await web.evaluateJavaScript("window.floeRecoveryWitness")) as? Int ?? 0
+                if completions == 1 { break }
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            #expect(completions == 1, "Teardown must resolve the original page's pending export exactly once")
+            session.tearDown()
+            #expect(!FileManager.default.fileExists(atPath: folder.path))
+            #expect((try await web.evaluateJavaScript("window.floeRecoveryWitness")) as? Int == 1)
+        }
+    }
+
+    private func withVisibleDrawing(
+        bytes: Data,
+        action: (EngineeringWebSession, WKWebView, UIViewController) async throws -> Void
+    ) async throws {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .filter { $0.activationState == .foregroundActive }
+        #expect(scenes.count == 1)
+        let scene = try #require(scenes.first)
+        let package = try EngineeringPreviewPackage.single(name: "QualifiedDrawing.dxf", bytes: bytes)
+        let session = EngineeringWebSession()
+        let web = session.attach(package: package, error: .constant(nil), onReview: nil,
+            onSave: { _, _ in throw FloeError.internalError("This read-only witness must not replace source bytes") },
+            onDirty: nil, dark: false, locale: "en")
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        window.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.normal.rawValue + 1)
+        let controller = UIViewController()
+        window.rootViewController = controller
+        window.isHidden = false
+        controller.view.addSubview(web)
+        web.frame = controller.view.bounds
+        web.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        defer {
+            session.tearDown()
+            controller.presentedViewController?.dismiss(animated: false)
+            web.removeFromSuperview()
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+        var ready = false
+        for _ in 0..<300 {
+            let result = try? await web.evaluateJavaScript("window.floeEngineeringResult?.ok === true && !!document.getElementById('cadPanel')")
+            if result as? Bool == true { ready = true; break }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        #expect(ready, "The actual App engineering preview must finish loading")
+        guard ready else { throw FloeError.internalError("Engineering drawing did not load") }
+        try await action(session, web, controller)
     }
 
     @Test func queryRejectsDoubleEncodedRequest() async throws {

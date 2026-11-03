@@ -141,15 +141,28 @@ final class CADTextureImportUITests: XCTestCase {
         let picker = any(identifier)
         XCTAssertTrue(revealInImportSheet(picker), "The native picker must remain reachable: \(identifier)")
         picker.tap()
-        let deadline = Date().addingTimeInterval(8)
-        while Date() < deadline {
-            let candidates = app.buttons.matching(NSPredicate(format: "label == %@", label)).allElementsBoundByIndex
-                + app.menuItems.matching(NSPredicate(format: "label == %@", label)).allElementsBoundByIndex
-                + app.staticTexts.matching(NSPredicate(format: "label == %@", label)).allElementsBoundByIndex
-            if let option = candidates.first(where: { $0.isHittable }) { option.tap(); return }
+        let options = app.buttons.matching(NSPredicate(format: "label == %@", label))
+        let option = options.firstMatch
+        XCTAssertTrue(option.waitForExistence(timeout: 8), "The native menu must offer \(label)")
+        // A native menu can expose its accessibility elements before its
+        // spring placement finishes. Tap its settled actual row, then wait
+        // for both selection readback and dismissal before the next picker.
+        var previous = CGRect.null
+        var stable = 0
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline, stable < 2 {
+            let current = option.frame
+            stable = option.isHittable && current == previous ? stable + 1 : 0
+            previous = current
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         }
-        XCTFail("The real import picker must offer \(label): \(app.debugDescription)")
+        XCTAssertEqual(stable, 2, "The native menu row must finish positioning")
+        option.tap()
+        let selected = NSPredicate { _, _ in
+            picker.exists && picker.label.contains(label) && !option.exists
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: selected, object: picker)], timeout: 8),
+                       .completed, "The actual picker must show \(label) after selection, got \(picker.label)")
     }
 
     private func expandImportSheet() {

@@ -1,5 +1,5 @@
 {
-  "sourceSHA": "9b0a31997fa3a92b4da76d450a10d5a05b1c9607",
+  "sourceSHA": "0f7e9e93469dd056fcf375ede18132b8077f0f1b",
   "sourceState": "base commit plus exact wrapperSourceSHA256 and vendorSourceTreeSHA256 inputs",
   "packages": [
     {
@@ -383,10 +383,10 @@
     "src/fixtures/e21-oblique-closed-bulge.dxf": "f20cdc6e1bf0557cfe0c2f23cec1c3d9648ba3504ac0dbc6706f205d39abcad3",
     "src/fixtures/e22-native-dimassoc.dxf": "a17130feada22a1243a97632adc9fd03762f7ca54462c3e084927b89740d959f",
     "src/geometry.rs": "d094d72b43a1c2c8fbe893848ba18a2309551b7a124ceda6376a937d61d69f58",
-    "src/lib.rs": "2c35741a6895d5a4853333d0a5eed50330f5f61508c7296ef34184e008f27c0f",
+    "src/lib.rs": "913f1697fc73753fc960698a05c484427518fb53423c8be4db6835e74a353c5a",
     "src/polyline_edit.rs": "04008dbb0a5ffddba2419cfb6c28af3405177c6166fbba14eef0acfdeb201ecf",
     "src/polyline_edit_tests.rs": "2f60fea08ab7afc794c99d2bd2bed28c1196612059ff04a7e37f490ebe1620d1",
-    "src/tests.rs": "61d20a8c7fabfdffcc97997971446a6137a316b295884e6dfb23c87b1a363e80",
+    "src/tests.rs": "7bf12832556a3002fafc300b2452acf82ee7d690a29631227f50dafa0514f307",
     "vendor/ACADRUST_PATCHES.json": "de4c72bb962f7bdc3d81e5176bf33cbf92d5d7fc624482846d1fe9decc019301"
   },
   "vendorSourceTreeSHA256": "c942d32264e954c0bfda5be875af6ec9a64a151a37e2611ffe7833252dd4ea4c",

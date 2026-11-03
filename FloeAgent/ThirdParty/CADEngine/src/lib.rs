@@ -298,6 +298,8 @@ fn verify(document: &CadDocument, reopened: &CadDocument) -> Result<(), String> 
     strip_table_handles(&mut before);
     strip_table_handles(&mut after);
     if !equivalent(&before, &after) {
+        #[cfg(test)]
+        eprintln!("Layers before: {before}\nLayers after: {after}");
         return Err("CAD round-trip changed layers".into());
     }
     // Preserve nongraphical content too: annotations may rely on styles,
@@ -1103,7 +1105,10 @@ impl CadSession {
                     return Err(format!("CAD layer '{name}' already exists"));
                 }
                 let color = match color {
-                    None => Color::ByLayer,
+                    // A layer supplies its entities' inherited colour. It
+                    // cannot itself inherit ByLayer (the DXF writer resolves
+                    // that invalid layer colour to white). Match Layer::new.
+                    None => Color::WHITE,
                     Some(index) => aci_color(index)?,
                 };
                 let line_type = match line_type {

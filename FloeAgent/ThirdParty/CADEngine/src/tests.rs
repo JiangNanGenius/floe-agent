@@ -453,6 +453,19 @@ fn locked_layer_blocks_modify_and_delete() {
 }
 
 #[test]
+fn layer_default_color_round_trips_in_both_formats() {
+    for format in ["dxf", "dwg"] {
+        let mut session = session(DxfVersion::AC1032, format);
+        edit_ok(&mut session, json!({"operation":"addLayer","name":"DefaultColour"}));
+        let layer = session.document.layers.get("DefaultColour").unwrap();
+        assert_eq!(layer.color, Color::WHITE);
+        let output = session.save().unwrap_or_else(|error| panic!("{format}: {error}"));
+        let reopened = CadSession::new(&output, format).unwrap();
+        assert_eq!(reopened.document.layers.get("DefaultColour").unwrap().color, Color::WHITE);
+    }
+}
+
+#[test]
 fn layer_create_rename_delete_rules() {
     let mut session = session(DxfVersion::AC1032, "dxf");
     edit_ok(&mut session, json!({"operation":"addLayer","name":"Walls","color":1,"lineType":"Continuous","lineWeight":50}));
