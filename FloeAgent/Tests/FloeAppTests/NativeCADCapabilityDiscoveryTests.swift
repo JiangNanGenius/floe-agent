@@ -89,7 +89,8 @@ struct NativeCADCapabilityDiscoveryTests {
         #expect(topic.contains("legacy"));#expect(topic.contains("Guides"));#expect(topic.contains("refused"))
         var page=0,assembled=""
         while true {
-            let row=try #require(CadDocumentHelp.page(.init(topic:"loft-surfaces",page:page,pageSize:1000)))
+            let candidate = try CadDocumentHelp.page(.init(topic:"loft-surfaces",page:page,pageSize:1000))
+            let row = try #require(candidate)
             assembled += row.text
             guard let next=row.nextPage else { break };page=next
         }
