@@ -1,0 +1,35 @@
+700 31 1 0
+16 Autodesk AutoCAD 20 ASM 232.6.0.65535 NT 24 Wed Sep  9 17:32:36 2026
+1 9.999999999999999547e-07 1.000000000000000036e-10
+body $-1 -1 $-1 $1 $-1 $-1 #
+lump $-1 -1 $-1 $-1 $2 $0 #
+shell $-1 -1 $-1 $-1 $-1 $3 $-1 $1 #
+face $4 -1 $-1 $-1 $5 $2 $-1 $6 forward double out #
+color-adesk-attrib $-1 -1 $-1 $-1 $3 256 #
+loop $-1 -1 $-1 $-1 $7 $3 #
+plane-surface $-1 -1 $-1 46.02026033152376527 37.76126951283181654 0 0 0 1 1 0 0 forward_v I I I I #
+coedge $-1 -1 $-1 $8 $9 $-1 $10 forward $5 $-1 #
+coedge $-1 -1 $-1 $11 $7 $-1 $12 forward $5 $-1 #
+coedge $-1 -1 $-1 $7 $11 $-1 $13 forward $5 $-1 #
+edge $14 -1 $-1 $15 0 $16 55 $7 $17 forward @7 unknown #
+coedge $-1 -1 $-1 $9 $8 $-1 $18 forward $5 $-1 #
+edge $19 -1 $-1 $16 0 $20 41.23105625617660763 $8 $21 forward @7 unknown #
+edge $22 -1 $-1 $23 0 $15 35 $9 $24 forward @7 unknown #
+color-adesk-attrib $-1 -1 $-1 $-1 $10 256 #
+vertex $-1 -1 $-1 $10 $25 #
+vertex $-1 -1 $-1 $10 $26 #
+straight-curve $-1 -1 $-1 20 20 0 1 0 0 F 0 F 55 #
+edge $27 -1 $-1 $20 0 $23 45.2769256906870865 $11 $28 forward @7 unknown #
+color-adesk-attrib $-1 -1 $-1 $-1 $12 256 #
+vertex $-1 -1 $-1 $12 $29 #
+straight-curve $-1 -1 $-1 75 20 0 -0.2425356250363329691 0.9701425001453318764 0 F 0 F 41.23105625617660763 #
+color-adesk-attrib $-1 -1 $-1 $-1 $13 256 #
+vertex $-1 -1 $-1 $18 $30 #
+straight-curve $-1 -1 $-1 20 55 0 0 -1 0 F 0 F 35 #
+point $-1 -1 $-1 20 20 0 #
+point $-1 -1 $-1 75 20 0 #
+color-adesk-attrib $-1 -1 $-1 $-1 $18 256 #
+straight-curve $-1 -1 $-1 65 60 0 -0.9938837346736187905 -0.1104315260748465338 0 F 0 F 45.2769256906870865 #
+point $-1 -1 $-1 65 60 0 #
+point $-1 -1 $-1 20 55 0 #
+End-of-ACIS-data

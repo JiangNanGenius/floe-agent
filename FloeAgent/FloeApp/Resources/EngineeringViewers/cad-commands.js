@@ -356,3 +356,28 @@ export function formatCheck(result, zh) {
   return (zh ? '零长度 %d · 重复 %d · 开放轮廓 %d · 悬挂端点 %d' : 'zero-length %d · duplicates %d · open contours %d · dangling %d')
     .replace('%d', zero).replace('%d', duplicates).replace('%d', open).replace('%d', dangling);
 }
+
+/** Unwrap a native dimension's tagged subtype without treating it as geometry. */
+export function dimensionDetails(row) {
+  const image = row?.entity ?? row?.image ?? {};
+  const value = image.Dimension;
+  const kind = value && Object.keys(value)[0];
+  return kind ? { kind, body: value[kind], base: value[kind].base } : null;
+}
+export function supportsOperation(row, operation) {
+  return Array.isArray(row?.operations) ? row.operations.includes(operation) :
+    row?.editable === true && !['Dimension','Leader'].includes(Object.keys(row?.entity ?? {})[0]) &&
+    ['move','delete','setText','setRadius'].includes(operation);
+}
+export function buildDimensionUpdate(handle, values) {
+  if (!handle) throw new Error('Select a dimension');
+  const request = { operation: 'updateDimension', handle };
+  if (values.text !== undefined) request.text = String(values.text);
+  for (const field of ['textPosition','linePosition']) {
+    if (values[field] !== undefined) request[field] = point(values[field], field);
+  }
+  if (values.textRotationDegrees !== undefined)
+    request.textRotationDegrees = finite(Number(values.textRotationDegrees), 'text angle');
+  if (Object.keys(request).length === 2) throw new Error('Choose a dimension setting');
+  return request;
+}

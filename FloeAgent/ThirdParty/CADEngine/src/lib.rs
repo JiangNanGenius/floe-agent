@@ -19,6 +19,9 @@
 //! proxy graphics and 3D edits are retained and reported as unsupported.
 //! LWPolyline trim/offset works in its OCS; other OCS edits remain unsupported.
 mod geometry;
+mod annotation_edit;
+#[cfg(test)]
+mod annotation_edit_tests;
 mod polyline_edit;
 #[cfg(test)]
 mod polyline_edit_tests;
@@ -139,16 +142,17 @@ fn unit_name(document: &CadDocument) -> String {
 /// must gate UI controls on these fields instead of assuming capabilities.
 fn capabilities() -> Value {
     json!({
-        "version": 2,
+        "version": 3,
         "coordinateUnits": "unitless drawing units; trim pick and offset side are WCS [x,y,z] on the target plane; serialized circle/arc/polyline coordinates remain OCS",
         "operations": [
             "addLine", "addCircle", "addArc", "addLwPolyline", "addText", "addLeader",
-            "addDimension", "move", "copy", "rotate", "scale", "mirror", "setText",
+            "addDimension", "updateDimension", "updateLeader", "setLineEndpoints", "move", "copy", "rotate", "scale", "mirror", "setText",
             "setRadius", "setLayer", "setColor", "setLineWeight", "delete",
             "trim", "extend", "offset", "addStroke", "addLayer", "updateLayer",
             "renameLayer", "deleteLayer", "batch"
         ],
-        "editableEntityTypes": ["Line", "Circle", "Arc", "LwPolyline", "Text"],
+        "editableEntityTypes": ["Line", "Circle", "Arc", "LwPolyline", "Text", "Dimension", "Leader"],
+        "annotationEditing": {"dimensionKinds": ["linear", "aligned"], "updateDimension": ["text", "textPosition", "linePosition (linear/aligned only)", "textRotationDegrees"], "updateLeader": "unattached leader points", "associations": "native DIMASSOC direct endpoint/midpoint/center references for linear/aligned dimensions; unsupported affected relationships rejected atomically", "cachedGraphics": "anonymous cache reference invalidated; original block and contents retained"},
         "entityCreation": {
             "line": true, "circle": true, "arc": true,
             "lwPolyline": {"pointCount": {"min": 2, "max": MAX_POLYLINE_POINTS}, "closed": true, "rectangle": "closed 4-point LWPolyline"},
@@ -424,6 +428,9 @@ enum Edit {
     Scale { handle: String, center: [f64; 3], factor: f64 },
     Mirror { handle: String, axis: [[f64; 3]; 2] },
     SetText { handle: String, text: String },
+    UpdateDimension { handle: String, #[serde(flatten)] change: annotation_edit::DimensionAnnotationEdit },
+    UpdateLeader { handle: String, points: Vec<[f64; 3]> },
+    SetLineEndpoints { handle: String, start: [f64; 3], end: [f64; 3] },
     SetRadius { handle: String, radius: f64 },
     SetLayer { handle: String, layer: String },
     SetColor { handle: String, color: Option<i32> },
@@ -542,6 +549,30 @@ fn editable(entity: &EntityType) -> bool {
         entity,
         EntityType::Line(_) | EntityType::Circle(_) | EntityType::Arc(_) | EntityType::LwPolyline(_) | EntityType::Text(_)
     )
+}
+
+/// Exact per-entity UI/tool operations; annotation support never enables generic transforms.
+fn entity_operations(document: &CadDocument, e: &EntityType) -> Vec<&'static str> {
+    if blocking_diagnostics(document) || !model_space(document,e) || document.layers.get(&e.common().layer).is_some_and(|l| l.is_locked()) { return vec![]; }
+    match e {
+        EntityType::Dimension(_) if annotation_edit::prepare_dimension(document,e.common().handle).is_ok() => vec!["updateDimension"],
+        EntityType::Leader(d) if annotation_edit::leader_editable(d) => vec!["updateLeader"],
+        _ if editable(e) => {
+            let mut operations=vec!["move","copy","rotate","scale","mirror","delete","setLayer","setColor","setLineWeight"];
+            if matches!(e,EntityType::Line(_)) { operations.push("setLineEndpoints"); }
+            if matches!(e,EntityType::Text(_)) { operations.push("setText"); }
+            if matches!(e,EntityType::Circle(_) | EntityType::Arc(_)) { operations.push("setRadius"); }
+            operations
+        }
+        _ => vec![],
+    }
+}
+fn read_only_reason(document: &CadDocument,e: &EntityType) -> Option<&'static str> {
+    if blocking_diagnostics(document) { Some("readDiagnostics") }
+    else if !model_space(document,e) { Some("layoutOrBlock") }
+    else if document.layers.get(&e.common().layer).is_some_and(|l| l.is_locked()) { Some("lockedLayer") }
+    else if entity_operations(document,e).is_empty() { Some("unsupportedEntityOrRelationship") }
+    else { None }
 }
 
 /// +Z extrusion on the Z=0 XY plane. Every geometry routine here reasons in
@@ -703,7 +734,9 @@ impl CadSession {
                 let bounds = e.as_entity().bounding_box();
                 json!({
                     "handle": format!("{:X}", common.handle),
-                    "editable": editable(e),
+                    "editable": !entity_operations(&self.document,e).is_empty(),
+                    "operations": entity_operations(&self.document,e),
+                    "readOnlyReason": read_only_reason(&self.document,e),
                     "layer": common.layer,
                     "bounds": {
                         "min": [bounds.min.x, bounds.min.y, bounds.min.z],
@@ -780,6 +813,7 @@ impl CadSession {
         let mut next = self.document.clone();
         let mut created = Vec::new();
         Self::apply(&mut next, edit, 0, &mut created, &self.format)?;
+        annotation_edit::synchronize(&self.document, &mut next, &self.format)?;
         if self.undo.len() == HISTORY {
             self.undo.remove(0);
         }
@@ -870,6 +904,9 @@ impl CadSession {
                 if !editable(&source) {
                     return Err("Copying this entity is not supported".into());
                 }
+                if !source.common().reactors.is_empty() || source.common().xdictionary_handle.is_some() || document.objects.values().any(|o| matches!(o, acadrust::objects::ObjectType::Associative(a) if a.references_handle(source.common().handle))) {
+                    return Err("Copying geometry with attached relationships is unavailable".into());
+                }
                 let mut copy = source;
                 copy.as_entity_mut().translate(delta);
                 if !finite_entity(&copy) {
@@ -920,6 +957,17 @@ impl CadSession {
                 entity.apply_mirror(&Transform::from_mirror_line(a, b));
                 if !finite_entity(entity) {
                     return Err("CAD transform produced invalid geometry".into());
+                }
+            }
+            Edit::UpdateDimension { handle: id, change } => annotation_edit::update_dimension(document, handle(&id)?, change, format)?,
+            Edit::UpdateLeader { handle: id, points } => annotation_edit::update_leader(document, handle(&id)?, points, format)?,
+            Edit::SetLineEndpoints { handle: id, start, end } => {
+                if !planar(Self::read_only(document,&id)?) { return Err("Select a line on the drawing plane".into()); }
+                let a = planar_vector(start)?; let b = planar_vector(end)?;
+                if a.distance(&b) <= 1e-9 { return Err("A line needs two distinct points".into()); }
+                match Self::mutable(document,&id)? {
+                    EntityType::Line(v) if v.normal.distance(&Vector3::UNIT_Z) <= PLANE_EPSILON => { v.start=a; v.end=b; }
+                    _ => return Err("Select a line on the drawing plane".into()),
                 }
             }
             Edit::SetText { handle: id, text } => match Self::mutable(document, &id)? {
@@ -1351,7 +1399,9 @@ impl CadSession {
                     "handle": format!("{:X}", common.handle),
                     "type": entity_kind(e),
                     "layer": common.layer,
-                    "editable": editable(e),
+                    "editable": !entity_operations(&self.document,e).is_empty(),
+                    "operations": entity_operations(&self.document,e),
+                    "readOnlyReason": read_only_reason(&self.document,e),
                     "bounds": {"min": [bounds.min.x, bounds.min.y], "max": [bounds.max.x, bounds.max.y]},
                     "image": entity_image(e)
                 })
@@ -1790,7 +1840,9 @@ impl CadSession {
             "layer": entity.common().layer,
             "point": point,
             "bounds": {"min": [bounds.min.x, bounds.min.y], "max": [bounds.max.x, bounds.max.y]},
-            "editable": editable(entity)
+            "editable": !entity_operations(&self.document,entity).is_empty(),
+            "operations": entity_operations(&self.document,entity),
+            "readOnlyReason": read_only_reason(&self.document,entity)
         }))
         .map_err(|e| e.to_string())
     }

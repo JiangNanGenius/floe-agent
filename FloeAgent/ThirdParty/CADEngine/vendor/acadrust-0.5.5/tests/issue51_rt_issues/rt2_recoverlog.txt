@@ -1,0 +1,256 @@
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C84)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: ACDBASSOC2DCONSTRAINTGROUP
+Value: (9AE)
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(CBF)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(6EE)
+Value: Can't restore AcDbAssocDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(CB6)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(9AF)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C9E)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C9C)
+Value: Can't restore AcDbAssocDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(6FD)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C9F)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(D00)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(9B0)
+Value: Can't restore AcDbAssocDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(9B7)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(6F1)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(9B3)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C12)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(CB0)
+Value: Can't restore AcDbAssocDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(D46)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: MATERIAL
+Value: (98)
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(CA1)
+Value: Can't restore AcDbAssocVariable from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(D04)
+Value: Can't restore AcDbAssocVariable from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C91)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(CB5)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C4B)
+Value: Can't restore AcDbAssocDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C8F)
+Value: Can't restore AcDbAssocDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(707)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: ACDBASSOC2DCONSTRAINTGROUP
+Value: (6F0)
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(D05)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(706)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C4F)
+Value: Can't restore AcDbAssocVariable from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(9B8)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C5F)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(6ED)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(CBE)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C81)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(9B9)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C85)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(D43)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C34)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(D42)
+Value: Can't restore AcDbAssocVariable from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(9B4)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C89)
+Value: Can't restore AcDbAssocDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C53)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C82)
+Value: Can't restore AcDbAssocDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(6FE)
+Value: Can't restore AcDbAssocDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C88)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(D01)
+Value: Can't restore AcDbAssocDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C37)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Audit recovered Database.
+Name: AcDbPolyline(6DA)
+Value: XData handle (DA06000000000000)
+Validation: Invalid
+Replaced by: Set to Null
+
+Name: AcDbPolyline(9AA)
+Value: XData handle (AA09000000000000)
+Validation: Invalid
+Replaced by: Set to Null
+
+405 objects audited
+Total errors found during audit 84, fixed 84

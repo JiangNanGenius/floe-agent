@@ -10,6 +10,7 @@ import {
  boundsInWindow, buildBatch, buildCreate, buildDelete, buildLayerRequest,
  buildOffset, buildQuery, buildSetLayer, buildTransform, buildTrimExtend,
  entityAnchor, entityKind, formatCheck, formatMeasure, selectSnapCandidate,
+ dimensionDetails, supportsOperation, buildDimensionUpdate,
 } from './cad-commands.js';
 
 export function createCadEngine(){
@@ -400,7 +401,9 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
   const previous=selected;
   entities.replaceChildren();const placeholder=new Option(say('选择图元以修改','Select an entity'), '');entities.append(placeholder);
   for(const row of info.entities){const kind=Object.keys(row.entity)[0],body=row.entity[kind];
-   const option=new Option(`${kind} · ${body.common?.layer??''} · ${row.handle}`,row.handle);option.disabled=!row.editable;entities.append(option);
+   const common=dimensionDetails(row)?.base?.common??body.common;
+   const suffix=row.editable?'':say(' · 只读',' · Read only');
+   const option=new Option(`${kind} · ${common?.layer??''} · ${row.handle}${suffix}`,row.handle);entities.append(option);
   }
   if(selected&&!info.entities.some(row=>row.handle===selected)){selected='';selection.delete(previous);}
   entities.value=selected;undo.disabled=busy||(!info.canUndo&&!externalUndo);redo.disabled=busy||!info.canRedo;save.disabled=busy||!dirty;
@@ -453,8 +456,23 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
   try{const bytes=await engine.call('save');let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
    await window.webkit.messageHandlers.floeEngineering.postMessage({operation:'save',base64:btoa(binary)});
    dirty=false;onDirty(false);note(say('已保存，原版已保留','Saved; previous version retained'));
-  }catch(e){note(e.message,true);}finally{busy=false;update();}
+  }catch(e){note(say('未保存；原图纸未改动，可导出恢复草稿。','Not saved; the original drawing is unchanged. You can export a recovery draft.')+' '+e.message,true);}finally{busy=false;update();}
  }
+ const recoveryButton=button(controls,say('导出恢复草稿','Export recovery draft'),async()=>{
+  if(busy)return;busy=true;update();
+  try{const text=await engine.call('recovery');const result=await window.webkit.messageHandlers.floeEngineering.postMessage({operation:'export-cad-recovery',text});
+   note(result.exported?say('恢复草稿已导出。原图纸未改动。','Recovery draft exported. The drawing is unchanged.'):say('已取消导出；草稿仍保留。','Export cancelled; the draft is retained.'));
+  }catch(e){note(say('恢复草稿未导出：','Recovery draft was not exported: ')+e.message,true);}finally{busy=false;update();}
+ });
+ const recoveryInput=document.createElement('input');recoveryInput.type='file';recoveryInput.accept='.json';recoveryInput.hidden=true;controls.append(recoveryInput);
+ button(controls,say('打开恢复草稿','Open recovery draft'),()=>{if(!busy)recoveryInput.click();});
+ recoveryInput.onchange=async()=>{
+  const file=recoveryInput.files?.[0];recoveryInput.value='';if(!file||busy)return;
+  if(file.size>16*1024*1024){note(say('恢复草稿过大。','Recovery draft is too large.'),true);return;}
+  busy=true;update();try{const next=await engine.call('restoreRecovery',{text:await file.text()});info=next.info;selected='';selection.clear();await render(next.dxf);dirty=true;onDirty(true);await refreshLayers();
+   note(say('已恢复草稿。保存前仍会检查原图纸。','Draft restored. Saving still validates the original drawing.'));
+  }catch(e){note(say('无法恢复草稿：','Unable to restore draft: ')+e.message,true);}finally{busy=false;update();}
+ };
  // ------------------------------------------- drawing assistant locate/overlay
  const diffCanvas=document.createElement('canvas');diffCanvas.className='cadDiffOverlay';diffCanvas.setAttribute('aria-hidden','true');
  let diffEntries=[],diffHighlight=null,diffReady=false;
@@ -520,16 +538,41 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
    return !!point;
   }catch{return false;}
  }
- function reset(){fields.replaceChildren();} function action(label,build){button(tools,label,()=>{try{void mutate('edit',build());}catch(e){note(e.message,true);}});}
+ function reset(){fields.replaceChildren();tools.replaceChildren();} function action(label,build){button(tools,label,()=>{try{void mutate('edit',build());}catch(e){note(e.message,true);}});}
  entities.onchange=()=>{
   selected=entities.value;reset();const row=info.entities.find(e=>e.handle===selected);if(!row)return;
   const kind=Object.keys(row.entity)[0],body=row.entity[kind];
-  const dx=numberField('ΔX'),dy=numberField('ΔY');
-  action(say('移动','Move'),()=>({operation:'move',handle:selected,delta:[dx(),dy(),0]}));
-  if(kind==='Circle'){const radius=numberField(say('半径','Radius'),body.radius);action(say('修改半径','Set radius'),()=>({operation:'setRadius',handle:selected,radius:radius()}));}
-  if(kind==='Arc'){const radius=numberField(say('半径','Radius'),body.radius);action(say('修改半径','Set radius'),()=>({operation:'setRadius',handle:selected,radius:radius()}));}
-  if(kind==='Text'){const value=textField(say('文字','Text'),body.value);action(say('修改文字','Set text'),()=>({operation:'setText',handle:selected,text:value()}));}
-  action(say('删除选中图元','Delete selected entity'),()=>({operation:'delete',handle:selected}));
+  if(!row.editable){
+   const reasons={readDiagnostics:say('此图纸有未解决的读取问题，暂时只读。','This drawing has unresolved reading issues and is read only.'),lockedLayer:say('此图层已锁定。','This layer is locked.'),layoutOrBlock:say('布局和块内图元为只读。','Layout and block content is read only.')};
+   note(reasons[row.readOnlyReason]??say('此图元暂不支持编辑，保存时会保留。','This entity is read only and retained when saving.'));
+  }
+  if(supportsOperation(row,'move')){
+   const dx=numberField('ΔX',0,fields),dy=numberField('ΔY',0,fields);
+   action(say('移动','Move'),()=>({operation:'move',handle:selected,delta:[dx(),dy(),0]}));
+  }
+  if(supportsOperation(row,'setLineEndpoints')){
+   const ax=numberField(say('起点 X','Start X'),body.start.x,fields),ay=numberField(say('起点 Y','Start Y'),body.start.y,fields);
+   const bx=numberField(say('终点 X','End X'),body.end.x,fields),by=numberField(say('终点 Y','End Y'),body.end.y,fields);
+   action(say('修改端点','Set endpoints'),()=>({operation:'setLineEndpoints',handle:selected,start:[ax(),ay(),0],end:[bx(),by(),0]}));
+  }
+  if(supportsOperation(row,'setRadius')){const radius=numberField(say('半径','Radius'),body.radius,fields);action(say('修改半径','Set radius'),()=>({operation:'setRadius',handle:selected,radius:radius()}));}
+  if(supportsOperation(row,'setText')){const value=textField(say('文字','Text'),body.value,fields);action(say('修改文字','Set text'),()=>({operation:'setText',handle:selected,text:value()}));}
+  if(supportsOperation(row,'updateDimension')){
+   const detail=dimensionDetails(row),base=detail.base;
+   const value=textField(say('尺寸文字（留空显示测量值）','Dimension text (empty for measurement)'),base.text,fields);
+   const x=numberField(say('文字 X','Text X'),base.text_middle_point.x,fields),y=numberField(say('文字 Y','Text Y'),base.text_middle_point.y,fields);
+   const angle=numberField(say('文字角度','Text angle'),base.text_rotation*180/Math.PI,fields);
+   action(say('更新尺寸文字和位置','Update dimension text and position'),()=>buildDimensionUpdate(selected,{text:value(),textPosition:[x(),y()],textRotationDegrees:angle()}));
+   if(['Linear','Aligned'].includes(detail.kind)){
+    const lx=numberField(say('尺寸线 X','Dimension line X'),detail.body.definition_point.x,fields),ly=numberField(say('尺寸线 Y','Dimension line Y'),detail.body.definition_point.y,fields);
+    action(say('移动尺寸线','Move dimension line'),()=>buildDimensionUpdate(selected,{linePosition:[lx(),ly()]}));
+   }
+  }
+  if(supportsOperation(row,'updateLeader')){
+   const value=textField(say('引线顶点（x,y; x,y）','Leader points (x,y; x,y)'),body.vertices.map(v=>`${v.x},${v.y}`).join('; '),fields);
+   action(say('更新引线','Update leader'),()=>({operation:'updateLeader',handle:selected,points:value().split(';').map(v=>{const p=v.split(',').map(Number);if(p.length!==2||!p.every(Number.isFinite))throw Error(say('请输入有效坐标','Enter valid points'));return [...p,0];})}));
+  }
+  if(supportsOperation(row,'delete'))action(say('删除选中图元','Delete selected entity'),()=>({operation:'delete',handle:selected}));
   const anchor=entityAnchor(row);
   if(anchor){const origin=viewer.GetOrigin(),bounds=viewer.GetBounds();viewer.SetView({x:anchor.x-origin.x,y:anchor.y-origin.y},Math.max(10,(bounds.maxX-bounds.minX)*.5));viewer.Render();}
  };

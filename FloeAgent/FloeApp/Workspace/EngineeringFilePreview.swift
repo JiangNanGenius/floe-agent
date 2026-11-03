@@ -1069,6 +1069,7 @@ final class CadLiveDraftRegistry {
         startup?.cancel(); watchdog?.cancel()
         for id in Array(pageCalls.keys) { finishPageCall(id, value: nil) }
         server?.stop(); server = nil
+        coordinator?.cancelRecoveryExport()
         web?.stopLoading(); web?.navigationDelegate = nil
         web?.configuration.userContentController.removeScriptMessageHandler(forName: "floeEngineering", contentWorld: .page)
         web = nil; coordinator = nil; generation = nil
@@ -1263,7 +1264,7 @@ struct EngineeringWebView: UIViewRepresentable {
         }
     }
 
-    @MainActor final class Coordinator: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDelegate {
+    @MainActor final class Coordinator: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDelegate, UIDocumentPickerDelegate {
         let package: EngineeringPreviewPackage
         var error: Binding<String?>
         var onReview: ((EngineeringReviewCapture) -> Void)?
@@ -1284,6 +1285,79 @@ struct EngineeringWebView: UIViewRepresentable {
         var delivered = false
         var navigationRecovery: Task<Void, Never>?
         var recoveryPolicy = EngineeringNavigationRecovery()
+
+        private var recoveryExportURL: URL?
+        private var recoveryExportReply: (@MainActor @Sendable (Any?, String?) -> Void)?
+        private weak var recoveryPicker: UIDocumentPickerViewController?
+
+        func cancelRecoveryExport() {
+            recoveryPicker?.dismiss(animated: false)
+            finishRecoveryExport(exported: false)
+        }
+
+        private func finishRecoveryExport(exported: Bool) {
+            let reply = recoveryExportReply
+            recoveryExportReply = nil
+            recoveryPicker = nil
+            if let url = recoveryExportURL { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+            recoveryExportURL = nil
+            reply?(["exported": exported], nil)
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard controller === recoveryPicker else { return }
+            finishRecoveryExport(exported: !urls.isEmpty)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            guard controller === recoveryPicker else { return }
+            finishRecoveryExport(exported: false)
+        }
+
+        private func exportRecovery(_ text: String,
+                                    reply: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
+            // A distinct JSON document, never routed through onSave or renamed
+            // to DWG/DXF. The journal embeds exact source bytes for replay.
+            guard recoveryExportReply == nil, let web,
+                  let data = text.data(using: .utf8), data.count <= 16 * 1024 * 1024,
+                  let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  value["schema"] as? String == "floe-cad-recovery", value["version"] as? Int == 1,
+                  let format = value["format"] as? String, ["dwg", "dxf"].contains(format),
+                  format == (package.name as NSString).pathExtension.lowercased(),
+                  let source64 = value["sourceBase64"] as? String, source64.utf8.count <= 14 * 1024 * 1024,
+                  let source = Data(base64Encoded: source64), !source.isEmpty, source.count <= 10 * 1024 * 1024,
+                  let sourceSHA = value["sourceSHA256"] as? String, FloeDigest.sha256Hex(source) == sourceSHA,
+                  let events = value["events"] as? [[String: Any]], events.count <= 4096 else {
+                reply(nil, CocoaError(.fileReadCorruptFile).localizedDescription); return
+            }
+            // Resolve the controller hosting this exact preview and scene.
+            var responder: UIResponder? = web
+            var presenter: UIViewController?
+            while let current = responder {
+                if let controller = current as? UIViewController { presenter = controller; break }
+                responder = current.next
+            }
+            guard var presenter, presenter.viewIfLoaded?.window != nil else {
+                reply(nil, CocoaError(.userCancelled).localizedDescription); return
+            }
+            while let presented = presenter.presentedViewController {
+                guard !presented.isBeingDismissed else { reply(nil, CocoaError(.userCancelled).localizedDescription); return }
+                presenter = presented
+            }
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FloeCADRecovery-" + UUID().uuidString, isDirectory: true)
+            let output = folder.appendingPathComponent("Drawing.floe-cad-draft.json")
+            do {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                try data.write(to: output, options: .atomic)
+                let picker = UIDocumentPickerViewController(forExporting: [output], asCopy: true)
+                picker.delegate = self
+                recoveryExportURL = output; recoveryExportReply = reply; recoveryPicker = picker
+                presenter.present(picker, animated: true)
+            } catch {
+                try? FileManager.default.removeItem(at: folder)
+                reply(nil, error.localizedDescription)
+            }
+        }
 
         init(package: EngineeringPreviewPackage, error: Binding<String?>,
              onReview: ((EngineeringReviewCapture) -> Void)?,
@@ -1345,6 +1419,11 @@ struct EngineeringWebView: UIViewRepresentable {
                 dirty = false
                 onDirty?(false)
                 replyHandler([:], nil)
+                return
+            }
+            if operation == "export-cad-recovery", completed, onSave != nil,
+               let text = body["text"] as? String {
+                exportRecovery(text, reply: replyHandler)
                 return
             }
             if operation == "save", completed, !saving, let onSave,

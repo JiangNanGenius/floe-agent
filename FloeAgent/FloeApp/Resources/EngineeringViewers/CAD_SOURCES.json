@@ -1,12 +1,17 @@
 {
-  "sourceSHA": "327a31fe497ed694a1e2ce9a9139e8c2c586116b",
+  "sourceSHA": "9b0a31997fa3a92b4da76d450a10d5a05b1c9607",
+  "sourceState": "base commit plus exact wrapperSourceSHA256 and vendorSourceTreeSHA256 inputs",
   "packages": [
     {
       "name": "acadrust",
       "version": "0.5.5",
       "license": "MPL-2.0",
       "source": "https://crates.io/api/v1/crates/acadrust/0.5.5/download",
-      "sha256": "6298485f7afd00af7880f285f01ab387143a1fbb20c42f9048830c95b19dda5d"
+      "sha256": "6298485f7afd00af7880f285f01ab387143a1fbb20c42f9048830c95b19dda5d",
+      "localPatchSHA256": {
+        "src/io/dwg/dwg_stream_writers/object_writer/objects.rs": "e5d87445cafbc0fd5440a8185b70a96df572fdabd638825262b6f50543845e70",
+        ".gitignore": "916086eeed86b9f82142974d02d371a529588d46c0be6d781ee69d32706d7561"
+      }
     },
     {
       "name": "adler2",
@@ -365,5 +370,29 @@
       "source": "https://crates.io/api/v1/crates/zmij/1.0.23/download",
       "sha256": "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
     }
-  ]
+  ],
+  "wrapperSourceSHA256": {
+    "Cargo.lock": "4b140e64f9d1f334a50c6a12fdc2d805908773868f6dfb56b3d0ff4aacde7867",
+    "Cargo.toml": "f040e8ec7f39e0c8163f89b5c5e4f840592968dc53aef309d7943656a232ab97",
+    "collect_licenses.py": "daf11594964f63d7803382295e88f6fd3adc16131c6e1755636daef0a0c49862",
+    "rust-toolchain.toml": "80fc642e46ba9b00f4cd0c1860c17c1e593b76ccb151caa6c7d6f9b202680409",
+    "src/annotation_edit.rs": "5a2c89d42b48a477ad30700c2db65fac91f9d4b9aec0b642544c79ce502716bb",
+    "src/annotation_edit_tests.rs": "5efda9c00c83c220dcd879e4701e2d0b37dc90745e70ccd718fbe7fe81ebbd80",
+    "src/fixtures/e20-mixed-reference.dxf": "14817e7bd178bd73ef0e0bc0d71af659530e66cf0744a87deb97a4a5a2a44355",
+    "src/fixtures/e21-oblique-closed-bulge.dxf": "f20cdc6e1bf0557cfe0c2f23cec1c3d9648ba3504ac0dbc6706f205d39abcad3",
+    "src/fixtures/e22-native-dimassoc.dxf": "a17130feada22a1243a97632adc9fd03762f7ca54462c3e084927b89740d959f",
+    "src/geometry.rs": "d094d72b43a1c2c8fbe893848ba18a2309551b7a124ceda6376a937d61d69f58",
+    "src/lib.rs": "2c35741a6895d5a4853333d0a5eed50330f5f61508c7296ef34184e008f27c0f",
+    "src/polyline_edit.rs": "04008dbb0a5ffddba2419cfb6c28af3405177c6166fbba14eef0acfdeb201ecf",
+    "src/polyline_edit_tests.rs": "2f60fea08ab7afc794c99d2bd2bed28c1196612059ff04a7e37f490ebe1620d1",
+    "src/tests.rs": "61d20a8c7fabfdffcc97997971446a6137a316b295884e6dfb23c87b1a363e80",
+    "vendor/ACADRUST_PATCHES.json": "f9d641a4250ba6ef4850adfd2b40dea851fabd2e92b3052cc25f3d094aea44f4"
+  },
+  "vendorSourceTreeSHA256": "46b40bfb8a90fea034b6195bf32a49b09fe93b90acf134086bd0ff99684256b0",
+  "build": {
+    "rust": "rustc 1.98.1",
+    "wasmBindgen": "0.2.126",
+    "target": "wasm32-unknown-unknown",
+    "maxLinearMemoryBytes": 402653184
+  }
 }

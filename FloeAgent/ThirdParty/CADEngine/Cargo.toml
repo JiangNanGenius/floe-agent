@@ -23,3 +23,7 @@ lto = true
 codegen-units = 1
 panic = "abort"
 
+
+# Exact 0.5.5 source, with documented lossless-write fixes only.
+[patch.crates-io]
+acadrust = { path = "vendor/acadrust-0.5.5" }

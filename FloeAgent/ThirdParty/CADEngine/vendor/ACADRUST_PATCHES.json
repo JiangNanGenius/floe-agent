@@ -1,0 +1,25 @@
+{
+  "upstream": {
+    "name": "acadrust",
+    "version": "0.5.5",
+    "crateSHA256": "6298485f7afd00af7880f285f01ab387143a1fbb20c42f9048830c95b19dda5d",
+    "source": "https://crates.io/api/v1/crates/acadrust/0.5.5/download",
+    "license": "MPL-2.0"
+  },
+  "patches": [
+    {
+      "file": "src/io/dwg/dwg_stream_writers/object_writer/objects.rs",
+      "changes": [
+        "Retain explicit NULL dictionary entries when writing same schema.",
+        "Retain explicit inherited NULL text style in stored modern table cell styles."
+      ],
+      "formatting": "Patched source file uses LF line endings; other upstream files are unchanged."
+    },
+    {
+      "file": ".gitignore",
+      "changes": [
+        "Packaging only: retain the upstream Cargo.lock and small native surface fixture in the vendored source tree."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,256 @@
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C4F)
+Value: Can't restore AcDbAssocVariable from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: MATERIAL
+Value: (97)
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C5F)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C8E)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(CBE)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: MATERIAL
+Value: (98)
+Validation: Invalid
+Replaced by: Skip
+
+Name: ACDB_DYNAMICBLOCKPURGEPREVENTER_VERSION
+Value: (70A)
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C56)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: ACDBASSOC2DCONSTRAINTGROUP
+Value: (777)
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(9B4)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C34)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(CAF)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C35)
+Value: Can't restore AcDbAssocDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: ACDBASSOC2DCONSTRAINTGROUP
+Value: (9AE)
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C31)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(CA3)
+Value: Can't restore AcDbAssocDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(9B9)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(9B2)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(CBF)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(D06)
+Value: Can't restore AcDbAssocDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C91)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(9B5)
+Value: Can't restore AcDbAssocDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(CA5)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(D01)
+Value: Can't restore AcDbAssocDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(9B3)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(9B7)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(9AF)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C82)
+Value: Can't restore AcDbAssocDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(CA1)
+Value: Can't restore AcDbAssocVariable from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(C88)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(706)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(CB5)
+Value: Can't restore AcDbAssocGeomDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(D04)
+Value: Can't restore AcDbAssocVariable from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbProxyObject(D05)
+Value: Can't restore AcDbAssocValueDependency from Proxy
+Validation: Invalid
+Replaced by: Skip
+
+Name: AcDbRegAppTable(9)
+Value: RegApp ACAD has invalid index 1
+Validation: Not 0
+Replaced by: Set to 0
+
+Audit recovered Database.
+Name: AcDbLayerTableRecord(10)
+Value: PlotStyleName Id (F)
+Validation: Invalid
+Replaced by: Set to Null
+
+Name: AcDbLayerTableRecord(1B4)
+Value: PlotStyleName Id (F)
+Validation: Invalid
+Replaced by: Set to Null
+
+Name: AcDbLayerTableRecord(21D)
+Value: PlotStyleName Id (F)
+Validation: Invalid
+Replaced by: Set to Null
+
+Name: AcDbLayerTableRecord(480)
+Value: PlotStyleName Id (F)
+Validation: Invalid
+Replaced by: Set to Null
+
+Name: AcDbLayerTableRecord(481)
+Value: PlotStyleName Id (F)
+Validation: Invalid
+Replaced by: Set to Null
+
+Name: AcDbLayerTableRecord(482)
+Value: PlotStyleName Id (F)
+Validation: Invalid
+Replaced by: Set to Null
+
+Name: AcDbLayerTableRecord(483)
+Value: PlotStyleName Id (F)
+Validation: Invalid
+Replaced by: Set to Null
+
+Name: AcDbLayerTableRecord(484)
+Value: PlotStyleName Id (F)
+Validation: Invalid
+Replaced by: Set to Null
+
+Name: AcDbLayerTableRecord(485)
+Value: PlotStyleName Id (F)
+Validation: Invalid
+Replaced by: Set to Null
+
+Name: AcDbLayerTableRecord(486)
+Value: PlotStyleName Id (F)
+Validation: Invalid
+Replaced by: Set to Null
+
+Name: AcDbLayerTableRecord(508)
+Value: PlotStyleName Id (F)
+Validation: Invalid
+Replaced by: Set to Null
+
+Name: AcDbLayerTableRecord(76A)
+Value: PlotStyleName Id (F)
+Validation: Invalid
+Replaced by: Set to Null
+
+Name: AcDbDictionary(6DC)
+Value: Entry object AcDbDynamicBlockPurgePreventer(70A)
+Validation: Invalid
+Replaced by: Removed
+
+Name: AcDbPolyline(6DA)
+Value: XData handle (DA06000000000000)
+Validation: Invalid
+Replaced by: Set to Null
+
+Name: AcDbPolyline(9AA)
+Value: XData handle (AA09000000000000)
+Validation: Invalid
+Replaced by: Set to Null
+
+412 objects audited
+Total errors found during audit 99, fixed 99

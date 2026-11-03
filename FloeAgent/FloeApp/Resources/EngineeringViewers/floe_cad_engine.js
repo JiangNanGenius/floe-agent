@@ -1,5 +1,3 @@
-/* @ts-self-types="./floe_cad_engine.d.ts" */
-
 export class CadSession {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;

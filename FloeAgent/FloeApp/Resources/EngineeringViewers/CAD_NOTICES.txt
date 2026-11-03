@@ -10817,3 +10817,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
+
+## Floe local acadrust patches
+
+The pinned MPL-2.0 acadrust 0.5.5 source is retained under CADEngine/vendor. Local DWG writer patches preserve explicit NULL dictionary entries and inherited NULL text styles in stored modern table cell styles. See vendor/ACADRUST_PATCHES.json for exact upstream provenance and patch scope.

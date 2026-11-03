@@ -87,3 +87,63 @@ This crate is connected through the bundled worker and scoped native save/review
 nor same-library round-trip tests establish AutoCAD compatibility. External
 fixtures, browser interactions, binary conflict protection and full-App checks
 are required before documenting editable formats or uploading a release.
+
+## Existing annotations and mixed drawings (capabilities v3)
+
+`inspect` and entity queries return each row's exact `operations` and a
+`readOnlyReason`. The editor lists unsupported entities with a read-only label;
+block/layout content and locked layers are not offered as editable geometry.
+
+- `updateDimension {handle,text?,textPosition?,linePosition?,textRotationDegrees?}`
+  updates existing **Linear/Aligned** dimensions in place. Empty text restores
+  the measured value. Line/text positions are WCS XY points; angles are degrees.
+  Other dimension kinds and custom named display blocks remain read only for
+  updates. Existing creation operations are unchanged.
+- `setLineEndpoints {handle,start,end}` updates a model-space XY line. At the
+  same atomic commit, native `DIMASSOC` direct endpoint/midpoint/center references
+  update the same dimension and association handles. Chained, external,
+  intersection, ambiguous/stale or unsupported affected relationships refuse
+  the whole edit. No Floe-only association metadata is invented.
+- `updateLeader {handle,points}` edits 2...256 vertices of an unattached leader.
+  Leaders with an annotation/context/reactor remain read only.
+- An updated dimension drops its anonymous display-cache **reference**, while
+  retaining the original block and all its contents. The bundled viewer can
+  regenerate linear/aligned display geometry. This is why other existing
+  dimension kinds are not advertised for editing.
+- Geometry, dimensions and native association objects share the existing clone
+  transaction, undo snapshot and strict same-format save/read-back gate.
+
+`cad-recovery.js` and the worker preserve the exact opened source bytes plus a
+bounded edit/undo/redo journal (SHA-256, 4096 events / 2 MiB log, 16 MiB export).
+**Export recovery draft** uses a separate `.floe-cad-draft.json` file and system
+file picker; it never routes through native CAD Save. **Open recovery draft**
+validates the original bytes/hash and replays on a separate candidate before
+replacing the current draft. A recovery file must match the original drawing
+currently open. It is not a DWG/DXF file and does not bypass save validation.
+Picker completion/cancellation and native App presentation still require App QA.
+
+The complete pinned acadrust 0.5.5 crate is retained under `vendor/` with its
+MPL-2.0 notice. `vendor/ACADRUST_PATCHES.json` records the immutable upstream
+archive digest and two narrow DWG writer fixes: retaining explicit NULL
+Dictionary entries and inherited NULL modern-table text-style references.
+The verifier and its tolerances are unchanged. `collect_licenses.py` records
+both upstream provenance and exact local source-tree hashes in the bundled
+`CAD_SOURCES.json`; pass metadata filtered to `wasm32-unknown-unknown`.
+
+Component checks:
+
+```sh
+cargo test --locked
+node FloeAgent/scripts/test_cad_commands.mjs
+node FloeAgent/scripts/test_cad_ink.mjs
+node FloeAgent/scripts/test_cad_annotations.mjs
+node FloeAgent/scripts/test_cad_compatibility.mjs --input /path/sample.dwg --output /path/evidence
+```
+
+The external-corpus probe exits 2 for a recorded refused save, while retaining
+an exact-source recovery file and checking the input SHA is unchanged. It is
+not a blanket compatibility pass. The explicit ignored native external-fixture
+probe requires `FLOE_CAD_COMPAT_INPUT` / `FLOE_CAD_FIXTURE_OUTPUT` and is run with
+`cargo test annotation_external_fixture_strict_gate -- --ignored`.
+The checked-in E20/E22 fixtures are synthetic engine controls, not real-world
+corpus or App/independent-CAD acceptance evidence.

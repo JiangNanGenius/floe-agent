@@ -564,6 +564,46 @@ struct CadDocumentToolTests {
         #expect(operationsJSON.contains("\"axis\":[[0,0,0],[1,0,0]]"))
     }
 
+    @Test("2D annotation updates reach the host with canonical drawing-plane vectors")
+    func proposeNormalizesDrawingAnnotationUpdates() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        _ = try await execute(tool, #"""
+        {"action":"propose","path":"plate.dwg","operations":[
+          {"operation":"setLineEndpoints","handle":"35","start":[0,0],"end":{"x":20,"y":0}},
+          {"operation":"updateDimension","handle":"36","text":"Length <>","textPosition":{"x":10,"y":8},"linePosition":[0,7],"textRotationDegrees":15},
+          {"operation":"updateLeader","handle":"37","points":[[1,1],{"x":4,"y":5},[8,5,0]]}]}
+        """#)
+        let json = await host.appliedOperationsJSON ?? ""
+        #expect(json.contains("\"start\":[0,0,0]"))
+        #expect(json.contains("\"end\":[20,0,0]"))
+        #expect(json.contains("\"textPosition\":[10,8,0]"))
+        #expect(json.contains("\"linePosition\":[0,7,0]"))
+        #expect(json.contains("\"points\":[[1,1,0],[4,5,0],[8,5,0]]"))
+        let decoded = try JSONDecoder().decode([CadEditOperation].self, from: Data(json.utf8))
+        #expect(decoded.compactMap(\.operation) == ["setLineEndpoints", "updateDimension", "updateLeader"])
+    }
+
+    @Test("2D annotation updates refuse non-planar points before the host")
+    func proposeRejectsNonPlanarAnnotationUpdates() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        for operation in [
+            #"{"operation":"setLineEndpoints","handle":"35","start":[0,0,1],"end":[10,0]}"#,
+            #"{"operation":"updateDimension","handle":"36","textPosition":[10,5,1]}"#,
+            #"{"operation":"updateDimension","handle":"36","linePosition":[0,5,1]}"#,
+            #"{"operation":"updateLeader","handle":"37","points":[[0,0],[1,2,3]]}"#
+        ] {
+            do {
+                _ = try await execute(tool, "{\"action\":\"propose\",\"path\":\"plate.dwg\",\"operations\":[" + operation + "]}")
+                Issue.record("A non-planar annotation update reached the host")
+            } catch let error as FloeError {
+                #expect(error.reason.contains("z must be 0"))
+            }
+        }
+        #expect(await host.appliedOperationsJSON == nil)
+    }
+
     @Test("propose rejects a malformed vector with a structured message before the engine")
     func proposeRejectsMalformedVectors() async throws {
         let host = FakeCadHost()

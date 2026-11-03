@@ -353,7 +353,7 @@ fn inspect_declares_add_stroke_capabilities() {
     let session = session(DxfVersion::AC1032, "dxf");
     let metadata: Value = serde_json::from_str(&session.inspect(0, 1).unwrap()).unwrap();
     let stroke = &metadata["capabilities"]["addStroke"];
-    assert_eq!(metadata["capabilities"]["version"].as_u64(), Some(2));
+    assert_eq!(metadata["capabilities"]["version"].as_u64(), Some(3));
     assert_eq!(stroke["pointCount"]["min"].as_u64(), Some(MIN_STROKE_POINTS as u64));
     assert_eq!(stroke["pointCount"]["max"].as_u64(), Some(MAX_STROKE_POINTS as u64));
     assert_eq!(stroke["layer"], ANNOTATION_LAYER);
