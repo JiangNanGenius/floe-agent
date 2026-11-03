@@ -388,6 +388,7 @@ nonisolated enum FeatureKind: Codable, Sendable {
     case baseSolid(source: NativeBodySource)
     /// Authored polygon cage; render mesh is a derived, separately evaluated output.
     case polygonCage(definition: CADPolygonMeshDefinition, placement: Transform3D)
+    case mechanical(definition: CADMechanicalDefinition, placement: Transform3D)
     case extrude(
         profile: ProfileRef,
         plane: PlaneRef,
@@ -556,7 +557,7 @@ nonisolated extension FeatureNode {
         case let .split(_, cutter):
             addPlane(cutter.plane)
             if let profile = cutter.profile { ids.insert(profile.sketchID) }
-        case .primitive, .baseSolid, .polygonCage, .thread, .boolean, .transform, .pushPull, .moveFace,
+        case .primitive, .baseSolid, .polygonCage, .mechanical, .thread, .boolean, .transform, .pushPull, .moveFace,
              .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .advancedBlend, .shell, .regionShell,
              .deleteFace, .replaceFace:
             break
@@ -578,7 +579,7 @@ nonisolated extension FeatureNode {
              let .hole(_, _, plane, _), let .mirror(_, plane, _):
             add(plane)
         case let .split(_, cutter): add(cutter.plane)
-        case .primitive, .baseSolid, .polygonCage, .thread, .loft, .surface, .boolean, .transform, .pattern, .pushPull, .moveFace,
+        case .primitive, .baseSolid, .polygonCage, .mechanical, .thread, .loft, .surface, .boolean, .transform, .pattern, .pushPull, .moveFace,
              .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .advancedBlend, .shell, .regionShell,
              .deleteFace, .replaceFace:
             break
@@ -615,7 +616,7 @@ nonisolated extension FeatureNode {
     /// the memo is only as correct as this enumeration.
     var consumedBodyIDs: [BodyID] {
         switch kind {
-        case .primitive, .baseSolid, .polygonCage:
+        case .primitive, .baseSolid, .polygonCage, .mechanical:
             return []
         case let .surface(definition):
             return definition.sources.map(\.bodyID)
@@ -951,7 +952,10 @@ nonisolated extension FeatureGraph {
             // falsely matches — it re-runs every replay, exactly as before.
             f.combine(UInt64.random(in: .min ... .max))
         }
-        if case .thread = node.kind {
+        let needsVariableFingerprint: Bool = {
+            switch node.kind { case .thread, .mechanical: return true; default: return false }
+        }()
+        if needsVariableFingerprint {
             for key in variables.keys.sorted() {
                 f.combine(Data(key.utf8)); f.combine(EvalFingerprint.hash(variables[key]))
             }
@@ -994,6 +998,34 @@ nonisolated extension FeatureGraph {
                 yAxis: inverseRotation.act(operationPlane.yAxis))
         } else { localOperationPlane = nil }
         switch node.kind {
+        case let .mechanical(definition, placement):
+            do {
+                let resolved = try definition.resolved(variables: state.threadVariables)
+                guard node.outputBodyIDs.count == resolved.outputCount, Set(node.outputBodyIDs).count == resolved.outputCount else {
+                    throw CADMechanicalFailure.invalid("The manufacturing output identities are invalid.")
+                }
+                let outputs = try CADMechanicalKernel.build(resolved, placement: placement)
+                for (id, output) in zip(node.outputBodyIDs, outputs) {
+                    let m = OCCTKernel.renderMesh(from: output.handle)
+                    let render = RenderMesh(positions: m.positions, normals: m.normals, indices: m.indices)
+                    guard !render.positions.isEmpty, !render.indices.isEmpty else {
+                        throw CADMechanicalFailure.invalid("The exact manufacturing solid cannot be displayed.")
+                    }
+                    var body = Body(id: id, name: node.name + " · " + output.suffix,
+                        transform: output.placement, primitive: nil, render: render, revision: nextRevision())
+                    body.brep = output.handle; body.euclid = EuclidBridge.euclidMesh(from: render)
+                    let names = ElementNaming.extrudeNames(creator: node.id, ancestry: output.history,
+                        outer: output.outer, holes: output.holes)
+                    guard names.count == OCCTKernel.faceInfo(output.handle).count,
+                          Set(names.values).count == names.count else {
+                        throw CADMechanicalFailure.invalid("The manufacturing boundary identities are incomplete.")
+                    }
+                    let table = ElementNaming.attach(names,
+                        to: state.naming.faceTable(for: body, createdBy: node.id, scheme: .generic),
+                        channel: OCCTKernel.renderMeshFaceChannel(from: output.handle), body: body)
+                    state.put(body, table: table); state.kernelNames[id] = names
+                }
+            } catch { state.errors[node.id] = .kernelFailure(error.localizedDescription) }
         case let .polygonCage(definition, placement):
             guard let id = node.outputBodyIDs.first, node.outputBodyIDs.count == 1 else {
                 state.errors[node.id] = .brokenRef("A polygon cage must own one body."); return

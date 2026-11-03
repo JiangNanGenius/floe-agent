@@ -943,15 +943,24 @@ extension CADDrawingMultiViewAssociativityTests {
     private func retainProjectionEdges(_ edges: [CADHiddenLineEdge], name: String,
                                        normal: SIMD3<Double>, xAxis: SIMD3<Double>) throws {
         func point(_ p: SIMD2<Double>) -> [Double] { [p.x, p.y] }
+        func encoded(_ curve: CADHiddenLineEdge.Curve) -> [String: Any] {
+            switch curve {
+            case let .line(a, b): return ["kind": "line", "a": point(a), "b": point(b)]
+            case let .circle(c, r): return ["kind": "circle", "center": point(c), "radius": r]
+            case let .arc(c, r, a, b): return ["kind": "arc", "center": point(c), "radius": r, "angles": [a, b]]
+            case let .polyline(points): return ["kind": "polyline", "points": points.map(point)]
+            }
+        }
         let rows = edges.map { edge -> [String: Any] in
-            var row: [String: Any] = ["sourceIndex": edge.sourceIndex,
-                "layer": edge.hidden ? "hidden" : edge.outline ? "outline" : "edges"]
-            switch edge.curve {
-            case let .line(a, b): row["kind"] = "line"; row["a"] = point(a); row["b"] = point(b)
-            case let .circle(center, radius): row["kind"] = "circle"; row["center"] = point(center); row["radius"] = radius
-            case let .arc(center, radius, start, end):
-                row["kind"] = "arc"; row["center"] = point(center); row["radius"] = radius; row["angles"] = [start, end]
-            case let .polyline(points): row["kind"] = "polyline"; row["points"] = points.map(point)
+            var row = encoded(edge.curve)
+            row["sourceIndex"] = edge.sourceIndex
+            row["layer"] = edge.hidden ? "hidden" : edge.outline ? "outline" : "edges"
+            row["sourceEdges"] = edge.sourceEdges.map { source -> [String: Any] in
+                var span = encoded(source.curve)
+                span["sourceIndex"] = source.sourceIndex
+                span["nativeEdgeIndex"] = source.nativeEdgeIndex
+                span["nativeCurveType"] = source.nativeCurveType
+                return span
             }
             return row
         }
@@ -960,6 +969,49 @@ extension CADDrawingMultiViewAssociativityTests {
             "xAxis": [xAxis.x, xAxis.y, xAxis.z], "entities": rows], options: [.prettyPrinted, .sortedKeys])
         let attachment = XCTAttachment(data: bytes, uniformTypeIdentifier: "public.json")
         attachment.name = name+"-floe-exact-edges.json"; attachment.lifetime = .keepAlways; add(attachment)
+    }
+
+    /// Analytic one-to-one witness. These coordinates are prescribed by the
+    /// unchanged solids/view frames, not fitted to the current projection.
+    private func assertExactHLRCurves(_ actual: [CADHiddenLineEdge],
+                                     _ expected: [(Bool, CADHiddenLineEdge.Curve)],
+                                     file: StaticString = #filePath, line: UInt = #line) {
+        func near(_ a: SIMD2<Double>, _ b: SIMD2<Double>) -> Bool {
+            simd_length(a - b) <= 1e-6
+        }
+        func same(_ a: CADHiddenLineEdge.Curve, _ b: CADHiddenLineEdge.Curve) -> Bool {
+            switch (a, b) {
+            case let (.line(a0, a1), .line(b0, b1)):
+                return (near(a0, b0) && near(a1, b1)) || (near(a0, b1) && near(a1, b0))
+            case let (.circle(a0, ar), .circle(b0, br)):
+                return near(a0, b0) && abs(ar - br) <= 1e-6
+            default: return false // no polyline-to-line relaxation
+            }
+        }
+        XCTAssertEqual(actual.count, expected.count, file: file, line: line)
+        var consumed = Set<Int>()
+        for (hidden, curve) in expected {
+            guard let index = actual.indices.first(where: {
+                !consumed.contains($0) && actual[$0].hidden == hidden && same(actual[$0].curve, curve)
+            }) else {
+                XCTFail("Missing analytic HLR curve with hidden=\(hidden)", file: file, line: line)
+                continue
+            }
+            consumed.insert(index)
+        }
+        XCTAssertEqual(consumed.count, actual.count, "Unexpected/duplicate/non-analytic output curve",
+                       file: file, line: line)
+        let raw = actual.flatMap(\.sourceEdges).map(\.nativeEdgeIndex)
+        XCTAssertEqual(Set(raw).count, raw.count, "An original native edge was bound twice", file: file, line: line)
+        XCTAssertEqual(raw.sorted(), Array(0..<raw.count), "An original native edge lost ownership", file: file, line: line)
+    }
+
+    private func expectedHLRRectangle(_ x0: Double, _ x1: Double, _ y0: Double, _ y1: Double,
+                                      hidden: Bool) -> [(Bool, CADHiddenLineEdge.Curve)] {
+        [(hidden, .line(SIMD2(x0, y0), SIMD2(x0, y1))),
+         (hidden, .line(SIMD2(x1, y0), SIMD2(x1, y1))),
+         (hidden, .line(SIMD2(x0, y0), SIMD2(x1, y0))),
+         (hidden, .line(SIMD2(x0, y1), SIMD2(x1, y1)))]
     }
 
     func testExactHLRMutualOcclusionHiddenStyleAndReopen() async throws {
@@ -971,25 +1023,61 @@ extension CADDrawingMultiViewAssociativityTests {
         let alone = try XCTUnwrap(OCCTKernel.hiddenLineProjection([small],
             normal: SIMD3(0, 0, 1), xAxis: SIMD3(1, 0, 0)))
         XCTAssertTrue(alone.contains { !$0.hidden })
+        assertExactHLRCurves(alone,
+            expectedHLRRectangle(-5, 5, 0, 4, hidden: false)
+                + expectedHLRRectangle(-5, 5, 0, 4, hidden: true))
         let together = try XCTUnwrap(OCCTKernel.hiddenLineProjection([small, cover],
             normal: SIMD3(0, 0, 1), xAxis: SIMD3(1, 0, 0)))
         XCTAssertTrue(together.contains { $0.sourceIndex == 0 && $0.hidden })
         XCTAssertFalse(together.contains { $0.sourceIndex == 0 && !$0.hidden },
                        "A larger nearer B-rep must hide the OTHER body's edges")
         XCTAssertTrue(together.contains { $0.sourceIndex == 1 && !$0.hidden })
+        assertExactHLRCurves(together,
+            expectedHLRRectangle(-20, 20, 0, 4, hidden: false)
+                + expectedHLRRectangle(-20, 20, 0, 4, hidden: true)
+                + [(true, .line(SIMD2(-5, 0), SIMD2(-5, 4))),
+                   (true, .line(SIMD2(5, 0), SIMD2(5, 4)))])
+        XCTAssertEqual(together.flatMap(\.sourceEdges).count, 16,
+                       "Normalization retains all 16 native source records, while drawing only 10 curves")
+        let absorbed = together.filter { Set($0.sourceEdges.map(\.sourceIndex)) == Set([0, 1]) }
+        XCTAssertEqual(absorbed.count, 2, "Both long hidden horizontals retain the covered smaller-body spans")
+        for edge in absorbed {
+            for source in edge.sourceEdges where source.sourceIndex == 0 {
+                guard case let .line(a, b) = source.curve else { return XCTFail("Small source must stay analytic") }
+                XCTAssertEqual(min(a.x, b.x), -5, accuracy: 1e-6)
+                XCTAssertEqual(max(a.x, b.x), 5, accuracy: 1e-6,
+                               "The smaller instance owns its short span, never the full cover edge")
+            }
+        }
         try retainProjectionEdges(alone, name: "box-alone", normal: SIMD3(0,0,1), xAxis: SIMD3(1,0,0))
         try retainProjectionEdges(together, name: "mutual-occlusion", normal: SIMD3(0,0,1), xAxis: SIMD3(1,0,0))
         let sphere = try XCTUnwrap(OCCTKernel.primitiveShape(.sphere(radius: 20), placement: .identity))
-        try retainProjectionEdges(try XCTUnwrap(OCCTKernel.hiddenLineProjection([sphere], normal: SIMD3(0,0,1), xAxis: SIMD3(1,0,0))),
-                                  name: "sphere", normal: SIMD3(0,0,1), xAxis: SIMD3(1,0,0))
+        let sphereEdges = try XCTUnwrap(OCCTKernel.hiddenLineProjection([sphere], normal: SIMD3(0,0,1), xAxis: SIMD3(1,0,0)))
+        assertExactHLRCurves(sphereEdges, [(false, .circle(SIMD2(0, 20), 20))])
+        try retainProjectionEdges(sphereEdges, name: "sphere", normal: SIMD3(0,0,1), xAxis: SIMD3(1,0,0))
 
         let document = try await makeDocument("E12-HLR")
         let fixture = try makePlateWithHole(document)
         let actualBody = try XCTUnwrap(document.session.document.bodies.first { $0.id.raw.uuidString == fixture.bodyID })
         let actualBRep = try XCTUnwrap(actualBody.brep.flatMap { OCCTKernel.transformed($0, by: actualBody.transform) })
         for (name,normal) in [("bore-side",SIMD3<Double>(0,0,1)),("bore-circle",SIMD3<Double>(0,1,0))] {
-            try retainProjectionEdges(try XCTUnwrap(OCCTKernel.hiddenLineProjection([actualBRep], normal: normal, xAxis: SIMD3(1,0,0))),
-                                      name: name, normal: normal, xAxis: SIMD3(1,0,0))
+            let exact = try XCTUnwrap(OCCTKernel.hiddenLineProjection([actualBRep], normal: normal, xAxis: SIMD3(1,0,0)))
+            if name == "bore-side" {
+                assertExactHLRCurves(exact,
+                    expectedHLRRectangle(0, 100, 0, 10, hidden: false)
+                        + expectedHLRRectangle(0, 100, 0, 10, hidden: true)
+                        + [(true, .line(SIMD2(45, 0), SIMD2(45, 10))),
+                           (true, .line(SIMD2(55, 0), SIMD2(55, 10)))])
+                XCTAssertEqual(exact.flatMap(\.sourceEdges).count, 14)
+                XCTAssertEqual(exact.flatMap(\.sourceEdges).filter { $0.nativeCurveType == 6 }.count, 4,
+                               "The four original edge-on B-splines remain traceable after the control-hull proof")
+            } else {
+                assertExactHLRCurves(exact,
+                    expectedHLRRectangle(0, 100, 0, 60, hidden: false)
+                        + expectedHLRRectangle(0, 100, 0, 60, hidden: true)
+                        + [(false, .circle(SIMD2(50, 30), 5)), (true, .circle(SIMD2(50, 30), 5))])
+            }
+            try retainProjectionEdges(exact, name: name, normal: normal, xAxis: SIMD3(1,0,0))
         }
         let service = CADDrawingService(document: document)
         let created = service.handle(action: "addPage", args: [

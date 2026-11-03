@@ -50,11 +50,20 @@ final class CADReadOnlyServiceTests: XCTestCase {
             refused(material.handle(action: action, args: [:]))
         }
         let parameters = CADParameterService(document: document)
-        for action in CADParameterService.actions where action != "list" && !CADThreadService.reads.contains(action) {
+        for action in CADParameterService.actions where action != "list" && !CADThreadService.reads.contains(action) && !CADLoftSurfaceService.reads.contains(action) && !CADMechanicalService.reads.contains(action) {
             refused(parameters.handle(action: action, args: [:]))
         }
         for action in CADThreadService.reads {
             XCTAssertEqual(parameters.handle(action: action, args: [:])["ok"] as? Bool, true)
+        }
+        XCTAssertEqual(parameters.handle(action: "surface.catalog", args: [:])["ok"] as? Bool, true)
+        XCTAssertEqual(parameters.handle(action: "mechanical.catalog", args: [:])["ok"] as? Bool, true)
+        for action in CADMechanicalService.reads where action != "mechanical.catalog" {
+            XCTAssertNotEqual(parameters.handle(action: action, args: [:])["error"] as? String, "read_only")
+        }
+        for action in CADLoftSurfaceService.reads where action != "surface.catalog" {
+            XCTAssertNotEqual(parameters.handle(action: action, args: [:])["error"] as? String, "read_only",
+                              "Read-only geometry queries retain their normal argument validation")
         }
         let assembly = CADAssemblyService(document: document)
         for action in CADServiceOperations.mutatingAssemblyActions {

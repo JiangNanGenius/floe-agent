@@ -315,6 +315,8 @@ public enum CadNativeEditActions {
         "variable.create", "variable.update", "variable.delete",
         "feature.setExpression",
         "thread.catalog", "thread.sources", "thread.create", "thread.update",
+        "mechanical.catalog", "mechanical.inspect", "mechanical.update",
+        "sheetMetal.create", "sheetMetal.update", "weldment.create", "weldment.update", "weldment.cutList",
         "datum.offsetPlane.create", "datum.offsetPlane.update", "datum.offsetPlane.delete",
         "datum.anglePlane.create", "datum.anglePlane.update", "datum.anglePlane.delete",
         "datum.threePointPlane.create", "datum.threePointPlane.update",
@@ -1503,7 +1505,7 @@ public enum CadServiceOperationCatalog: Sendable {
                   examples: [#"{"id":"<script uuid>"}"#]),
     ]
 
-    private static let meshOperations: [Operation] = [
+    private static let polygonMeshOperations: [Operation] = [
         Operation(kind: "mesh", action: "topology.create", mutating: true,
                   summary: "Create a polygon box with persistent vertex, edge and polygon-face identities.",
                   arguments: [arg("width", "number"), arg("height", "number"), arg("depth", "number")], examples: []),
@@ -1516,12 +1518,12 @@ public enum CadServiceOperationCatalog: Sendable {
         Operation(kind: "mesh", action: "topology.extrude", mutating: true,
                   summary: "Extrude a named control face outward; refuse self-overlap and preserve the original on failure.",
                   arguments: [arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("faceID", "uuid", required: true), arg("distance", "number", required: true)], examples: []),
-        Operation(kind: "mesh", action: "topology.inset", mutating: true,
-                  summary: "Inset a convex planar control polygon with exact edge distance; refuse collapsing edges.",
-                  arguments: [arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("faceID", "uuid", required: true), arg("distance", "number", required: true)], examples: []),
         Operation(kind: "mesh", action: "topology.loopCut", mutating: true,
                   summary: "Split the full quad edge ring by stable edge identity; triangles and poles refuse atomically.",
                   arguments: [arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("edgeID", "uuid", required: true), arg("fraction", "number")], examples: []),
+        Operation(kind: "mesh", action: "topology.inset", mutating: true,
+                  summary: "Inset a convex planar control polygon with exact edge distance; refuse collapsing edges.",
+                  arguments: [arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("faceID", "uuid", required: true), arg("distance", "number", required: true)], examples: []),
         Operation(kind: "mesh", action: "topology.weld", mutating: true,
                   summary: "Weld selected nearby vertices to the first ID; reject broken manifold fans, reversed faces and opened closed cages.",
                   arguments: [arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("vertexIDs", "[uuid]", required: true), arg("tolerance", "number", required: true)], examples: []),
@@ -1537,6 +1539,9 @@ public enum CadServiceOperationCatalog: Sendable {
         Operation(kind: "mesh", action: "modifier.remove", mutating: true,
                   summary: "Remove one modifier without changing the control cage.",
                   arguments: [arg("bodyID", "uuid", required: true), arg("cageDigest", "sha256", required: true), arg("modifierID", "uuid", required: true)], examples: []),
+    ]
+
+    private static let meshOperations: [Operation] = [
         Operation(kind: "mesh", action: "combine", mutating: true,
                   summary: "Combine bodies into one new body.",
                   arguments: [arg("bodyIDs", "[uuid]", required: true, note: "alias bodyID; <= 32 bodies"),
@@ -1585,7 +1590,7 @@ public enum CadServiceOperationCatalog: Sendable {
                   summary: "Boundary/closure report for one or more bodies.",
                   arguments: [arg("bodyIDs", "[uuid]", note: "alias bodyID")],
                   examples: [#"{"bodyID":"<body uuid>"}"#]),
-    ]
+    ] + polygonMeshOperations
 
     /// Every known workbench operation, grouped by kind in declaration order.
     public static let operations: [Operation] =

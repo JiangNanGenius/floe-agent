@@ -73,7 +73,7 @@ nonisolated enum ProjectMergeKit {
             || guest.datumPoints.contains { $0.definition != nil }
             || guest.features.nodes.contains {
                 if $0.kind.operationPlaneReference != nil { return true }
-                switch $0.kind { case .baseSolid, .polygonCage: return true; default: return false }
+                switch $0.kind { case .baseSolid, .polygonCage, .mechanical: return true; default: return false }
             }
         let hostAssociative = host.planes.contains { $0.definition != nil }
             || host.sketches.contains { $0.support != nil || $0.hasExternalReferences }
@@ -81,7 +81,7 @@ nonisolated enum ProjectMergeKit {
             || host.datumPoints.contains { $0.definition != nil }
             || host.features.nodes.contains {
                 if $0.kind.operationPlaneReference != nil { return true }
-                switch $0.kind { case .baseSolid, .polygonCage: return true; default: return false }
+                switch $0.kind { case .baseSolid, .polygonCage, .mechanical: return true; default: return false }
             }
         // One ordered rollback prefix cannot represent two independently
         // active histories. In particular, adding the guest count to a host
@@ -294,12 +294,12 @@ nonisolated enum ProjectMergeKit {
             // operation vocabulary, including a later boolean that bakes it.
             // This path activates only for the new source kind; old projects
             // retain their existing remapping behavior.
-            if guest.features.nodes.contains(where: { switch $0.kind { case .baseSolid, .polygonCage: return true; default: return false } }) {
+            if guest.features.nodes.contains(where: { switch $0.kind { case .baseSolid, .polygonCage, .mechanical: return true; default: return false } }) {
                 var local: Set<BodyID> = []
                 for node in guest.features.nodes where !node.suppressed {
                     localFramesBefore[node.id] = local
                     switch node.kind {
-                    case .baseSolid, .polygonCage:
+                    case .baseSolid, .polygonCage, .mechanical:
                         local.formUnion(node.outputBodyIDs)
                     case .primitive, .surface, .mirror:
                         local.subtract(node.outputBodyIDs)
@@ -727,6 +727,9 @@ nonisolated enum ProjectMergeKit {
             case .thread, .surface:
                 // Unreachable: insert rejects threaded guests before mapping.
                 return kind
+            case let .mechanical(definition, placement):
+                var moved = placement; moved.translation += t
+                return .mechanical(definition: definition, placement: moved)
             case let .polygonCage(definition, placement):
                 var moved = placement; moved.translation += t
                 return .polygonCage(definition: definition, placement: moved)

@@ -39,7 +39,7 @@ public final class CADParameterService {
         "variable.create", "variable.update", "variable.delete",
         "feature.setExpression",
         "undo", "redo",
-    ] + CADDatumService.actions + CADSketchCurveService.actions + CADThreadService.actions + CADLoftSurfaceService.actions
+    ] + CADDatumService.actions + CADSketchCurveService.actions + CADThreadService.actions + CADLoftSurfaceService.actions + CADMechanicalService.actions
 
     /// Sketch-entity kinds with a real typed geometry edit. Polygon remains
     /// query-only until its side/rotation semantics are promoted with the same
@@ -68,6 +68,9 @@ public final class CADParameterService {
         }
         if CADLoftSurfaceService.actions.contains(action) {
             return CADLoftSurfaceService(document:document).handle(action:action,args:args)
+        }
+        if CADMechanicalService.actions.contains(action) {
+            return CADMechanicalService(document: document).handle(action: action, args: args)
         }
         if CADThreadService.actions.contains(action) {
             return CADThreadService(document: document).handle(action: action, args: args)
@@ -302,6 +305,10 @@ public final class CADParameterService {
         guard let changes = args["changes"] as? [String: Any], !changes.isEmpty else {
             return Self.fail("missing_changes",
                              "update needs changes: an object of parameter -> value (units per the feature descriptor).")
+        }
+        if case .mechanical = node.kind {
+            var fields = args; fields["feature_id"] = featureID.raw.uuidString; fields.removeValue(forKey: "id")
+            return CADMechanicalService(document: document).handle(action: "mechanical.update", args: fields)
         }
         if case .thread = node.kind {
             var fields = args; fields["feature_id"] = featureID.raw.uuidString
@@ -4520,7 +4527,7 @@ public final class CADParameterService {
             return [face.body.bodyID]
         case let .pattern(body, spec): return spec.featureSeed == nil ? [] : [body.bodyID]
         case let .surface(definition): return definition.operation == .loft ? [] : definition.sources.prefix(1).map(\.bodyID)
-        case .primitive, .baseSolid, .polygonCage, .mirror:
+        case .primitive, .baseSolid, .polygonCage, .mechanical, .mirror:
             return []
         }
     }
@@ -4972,6 +4979,12 @@ public final class CADParameterService {
             kindName = "surface"
             add("definition", "unitless", (try? JSONSerialization.jsonObject(with:JSONEncoder().encode(definition))) ?? NSNull(),
                 editable:false,note:"Use surface.update for one atomic feature edit.")
+        case let .mechanical(definition, _):
+            kindName = definition.operation.rawValue
+            for slot in definition.expressions {
+                add(slot.name, slot.unit, slot.expr.value)
+            }
+            add("manufacturing", "unitless", CADMechanicalService.describe(definition), editable: false)
         case let .polygonCage(definition, _):
             kindName = "polygonCage"
             add("control_vertex_count", "unitless", definition.cage.vertices.count, editable: false)
@@ -5356,7 +5369,7 @@ public final class CADParameterService {
              let .fillet(body, _, _), let .advancedBlend(body, _, _), let .shell(body, _, _), let .regionShell(body, _, _),
              let .deleteFace(body, _):
             return [body]
-        case .primitive, .baseSolid, .polygonCage,
+        case .primitive, .baseSolid, .polygonCage, .mechanical,
              .pushPull, .moveFace, .scaleFace, .rotateFace, .draftFace, .replaceFace:
             return []
         }
@@ -5452,6 +5465,20 @@ public final class CADParameterService {
         }
 
         switch kind {
+        case let .mechanical(original, placement):
+            let allowed = original.expressions.map(\.name)
+            guard changes.keys.allSatisfy({ allowed.contains($0) }) else { return unknown(allowed) }
+            var definition = original
+            for key in changes.keys {
+                guard let n = value(key), let changed = definition.replacing(key, with: Expr(value: n)) else {
+                    return fail(key, "Use a finite manufacturing dimension.")
+                }
+                definition = changed
+            }
+            if requireChange && definition == original { return unknown(allowed) }
+            do { try definition.validate() }
+            catch { return fail("manufacturing", error.localizedDescription) }
+            return .success(.mechanical(definition: definition, placement: placement))
         case let .thread(target, old):
             let allowed = ["diameter", "pitch", "effective_length", "hand", "ends", "representation"]
             guard !changes.keys.contains(where: { !allowed.contains($0) }) else { return unknown(allowed) }

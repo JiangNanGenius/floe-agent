@@ -75,8 +75,15 @@ nonisolated enum CADPolygonMeshKernel {
             else {
                 // Derived Catmull-Clark quads can be non-planar; authoring
                 // polygons remain planar. Only final patches use this split.
-                guard vertices.count == 4, let a = Euclid.Polygon([vertices[0],vertices[1],vertices[2]]),
-                      let b = Euclid.Polygon([vertices[0],vertices[2],vertices[3]]) else { throw CADPolygonFailure.invalid("A derived patch cannot be triangulated.") }
+                guard vertices.count == 4 else { throw CADPolygonFailure.invalid("A derived patch cannot be triangulated.") }
+                // Select the same geometric diagonal after winding reversal.
+                // Always splitting indices 0/2 changes a non-planar patch's
+                // surface (and volume) when Mirror reverses its loop.
+                let p = vertices.map { SIMD3($0.position.x,$0.position.y,$0.position.z) }
+                let triangles = simd_length_squared(p[0] - p[2]) <= simd_length_squared(p[1] - p[3])
+                    ? [[0,1,2],[0,2,3]] : [[0,1,3],[1,2,3]]
+                guard let a = Euclid.Polygon(triangles[0].map { vertices[$0] }),
+                      let b = Euclid.Polygon(triangles[1].map { vertices[$0] }) else { throw CADPolygonFailure.invalid("A derived patch cannot be triangulated.") }
                 parts = [a,b]
             }
             guard !parts.isEmpty else { throw CADPolygonFailure.invalid("A polygon could not be displayed.") }

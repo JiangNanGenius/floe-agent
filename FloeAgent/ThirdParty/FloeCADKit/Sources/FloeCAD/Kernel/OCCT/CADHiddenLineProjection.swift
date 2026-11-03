@@ -11,10 +11,20 @@ nonisolated struct CADHiddenLineEdge {
         case arc(SIMD2<Double>, Double, Double, Double)
         case polyline([SIMD2<Double>])
     }
+    /// The retained cover's primary source. sourceEdges retains every source
+    /// span, including shorter spans absorbed from other assembly instances.
     var sourceIndex: Int
+    var sourceEdges: [CADHiddenLineSourceEdge]
     var hidden: Bool
     var outline: Bool
     var curve: Curve
+}
+
+nonisolated struct CADHiddenLineSourceEdge {
+    var nativeEdgeIndex: Int
+    var nativeCurveType: Int
+    var sourceIndex: Int
+    var curve: CADHiddenLineEdge.Curve
 }
 
 extension OCCTKernel {
@@ -30,17 +40,16 @@ extension OCCTKernel {
         guard let result = OCCTBridge.hiddenLineProjection(shapes: handles.map(\.shape),
                                                            frame: data, deflection: deflection),
               let object = try? JSONSerialization.jsonObject(with: result) as? [String: Any],
-              object["version"] as? Int == 1,
+              object["version"] as? Int == 2,
+              object["normalization"] as? String == "occt-curve-containment-v1",
               object["method"] as? String == "occt-brep-hlr",
-              let rows = object["edges"] as? [[String: Any]], rows.count <= 50000 else { return nil }
+              let rows = object["edges"] as? [[String: Any]], rows.count <= 50000,
+              let raw = object["sourceEdges"] as? [[String: Any]], raw.count <= 50000 else { return nil }
         func point(_ value: Any?) -> SIMD2<Double>? {
             guard let p = value as? [Double], p.count == 2, p.allSatisfy(\.isFinite) else { return nil }
             return SIMD2(p[0], p[1])
         }
-        var edges: [CADHiddenLineEdge] = []
-        for row in rows {
-            guard let source = row["sourceIndex"] as? Int, handles.indices.contains(source),
-                  let hidden = row["hidden"] as? Bool else { return nil }
+        func decodeCurve(_ row: [String: Any]) -> CADHiddenLineEdge.Curve? {
             let curve: CADHiddenLineEdge.Curve
             switch row["kind"] as? String {
             case "line", "polyline":
@@ -62,9 +71,40 @@ extension OCCTKernel {
                 }
             default: return nil
             }
-            edges.append(CADHiddenLineEdge(sourceIndex: source, hidden: hidden,
-                                           outline: row["role"] as? String == "outline", curve: curve))
+            return curve
         }
+        var sourceEdges: [CADHiddenLineSourceEdge] = []
+        for (index, row) in raw.enumerated() {
+            guard let source = row["sourceIndex"] as? Int, handles.indices.contains(source),
+                  let type = row["nativeCurveType"] as? Int, (0...8).contains(type),
+                  row["hidden"] is Bool, let edgeClass = row["edgeClass"] as? Int, (0...2).contains(edgeClass),
+                  let role = row["role"] as? String,
+                  ["edges", "outline"].contains(role), let curve = decodeCurve(row) else { return nil }
+            sourceEdges.append(CADHiddenLineSourceEdge(nativeEdgeIndex: index, nativeCurveType: type,
+                                                       sourceIndex: source, curve: curve))
+        }
+        var edges: [CADHiddenLineEdge] = []
+        var consumed = Set<Int>()
+        for row in rows {
+            guard let source = row["sourceIndex"] as? Int, handles.indices.contains(source),
+                  let hidden = row["hidden"] as? Bool, let role = row["role"] as? String,
+                  ["edges", "outline"].contains(role), let curve = decodeCurve(row),
+                  let indices = row["sourceEdgeIndices"] as? [Int], !indices.isEmpty else { return nil }
+            var contributions: [CADHiddenLineSourceEdge] = []
+            for index in indices {
+                guard sourceEdges.indices.contains(index), consumed.insert(index).inserted,
+                      raw[index]["hidden"] as? Bool == hidden,
+                      raw[index]["role"] as? String == role,
+                      raw[index]["edgeClass"] as? Int == row["edgeClass"] as? Int else { return nil }
+                contributions.append(sourceEdges[index])
+            }
+            guard contributions.contains(where: { $0.sourceIndex == source }) else { return nil }
+            edges.append(CADHiddenLineEdge(sourceIndex: source, sourceEdges: contributions,
+                                           hidden: hidden, outline: role == "outline", curve: curve))
+        }
+        // Every raw native HLR edge must appear in exactly one retained
+        // cover's ownership ledger. Missing/doubled provenance fails closed.
+        guard consumed.count == raw.count else { return nil }
         if handles.contains(where: \.containsSolid), edges.isEmpty { return nil }
         return edges
     }

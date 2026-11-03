@@ -15,6 +15,7 @@
 #import "OCCTBridge.h"
 
 #include <vector>
+#include <tuple>
 #include <algorithm>
 #include <csignal>
 #include <memory>
@@ -178,6 +179,10 @@
 #include <Message_ProgressScope.hxx>
 #include <TopTools_FormatVersion.hxx>
 #include <functional>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <memory>
 #include <map>
 #include <array>
 #include <BRepCheck_Result.hxx>
@@ -278,13 +283,29 @@ struct OS3DSignalScope {
     static constexpr int signals[] = {SIGHUP, SIGINT, SIGQUIT, SIGILL, SIGTRAP, SIGABRT,
                                       SIGFPE, SIGBUS, SIGSEGV, SIGSYS, SIGPIPE, SIGTERM};
     static constexpr int count = sizeof(signals) / sizeof(signals[0]);
-    struct sigaction saved[count];
+    // Signal dispositions are process-wide, while OCCT error handlers are
+    // thread-local. Keep one installation until the LAST concurrent scope
+    // exits; never hold this mutex while a kernel operation is running.
+    inline static std::mutex ownershipMutex;
+    inline static unsigned owners = 0;
+    inline static struct sigaction saved[count]{};
     OS3DSignalScope() {
-        for (int i = 0; i < count; i++) sigaction(signals[i], nullptr, &saved[i]);
-        OSD::SetSignal(OSD_SignalMode_Set, Standard_False);
+        std::lock_guard<std::mutex> lock(ownershipMutex);
+        if (owners == 0) {
+            for (int i = 0; i < count; i++) sigaction(signals[i], nullptr, &saved[i]);
+            OSD::SetSignal(OSD_SignalMode_Set, Standard_False);
+        }
+        ++owners;
     }
+    OS3DSignalScope(const OS3DSignalScope&) = delete;
+    OS3DSignalScope& operator=(const OS3DSignalScope&) = delete;
     ~OS3DSignalScope() {
-        for (int i = 0; i < count; i++) sigaction(signals[i], &saved[i], nullptr);
+        {
+            std::lock_guard<std::mutex> lock(ownershipMutex);
+            if (--owners == 0) {
+                for (int i = 0; i < count; i++) sigaction(signals[i], &saved[i], nullptr);
+            }
+        }
         // The jump out of the handler may have left the faulting signal
         // blocked on this thread; a blocked synchronous signal is fatal.
         sigset_t set;
@@ -700,6 +721,49 @@ static NSData *OS3DBoxFaceIndices(
 @end
 
 @implementation OCCTBridge
+
++ (NSDictionary<NSString *, id> *)signalGuardOverlapDiagnostics {
+    struct sigaction original[OS3DSignalScope::count], installed[OS3DSignalScope::count];
+    for (int i = 0; i < OS3DSignalScope::count; ++i)
+        sigaction(OS3DSignalScope::signals[i], nullptr, &original[i]);
+    auto first = std::make_unique<OS3DSignalScope>();
+    for (int i = 0; i < OS3DSignalScope::count; ++i)
+        sigaction(OS3DSignalScope::signals[i], nullptr, &installed[i]);
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool entered = false, release = false;
+    std::thread worker([&] {
+        OS3DSignalScope second;
+        std::unique_lock<std::mutex> lock(mutex);
+        entered = true; condition.notify_one();
+        condition.wait(lock, [&] { return release; });
+    });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        condition.wait(lock, [&] { return entered; });
+    }
+    auto sameHandler = [](const struct sigaction& lhs, const struct sigaction& rhs) {
+        if ((lhs.sa_flags & SA_SIGINFO) != (rhs.sa_flags & SA_SIGINFO)) return false;
+        return (lhs.sa_flags & SA_SIGINFO) ? lhs.sa_sigaction == rhs.sa_sigaction : lhs.sa_handler == rhs.sa_handler;
+    };
+    first.reset();
+    bool retained = true;
+    for (int i = 0; i < OS3DSignalScope::count; ++i) {
+        struct sigaction active;
+        sigaction(OS3DSignalScope::signals[i], nullptr, &active);
+        retained = retained && sameHandler(active, installed[i]);
+    }
+    { std::lock_guard<std::mutex> lock(mutex); release = true; }
+    condition.notify_one(); worker.join();
+    bool restored = true;
+    for (int i = 0; i < OS3DSignalScope::count; ++i) {
+        struct sigaction active;
+        sigaction(OS3DSignalScope::signals[i], nullptr, &active);
+        restored = restored && sameHandler(active, original[i]);
+    }
+    return @{ @"guardAfterFirstExit": @(retained), @"restoredAfterLastExit": @(restored) };
+}
+
 
 + (NSString *)occtVersion {
     return @OCC_VERSION_COMPLETE;
@@ -3951,6 +4015,150 @@ static bool OS3DInteriorFaceSample(const TopoDS_Face &face, gp_Pnt &point, gp_Di
 }
 
 
+// HLR exposes topological source edges, not a unique set of drawing curves.
+// Keep that full ledger while removing geometric containment within ONE
+// visibility/category. This is the same product boundary as TechDraw's
+// addGeomFromCompound/removeOverlapEdges, implemented with the bundled OCCT
+// boolean API (no FreeCAD source is linked or copied).
+struct OS3DHLRProjectedEdge {
+    TopoDS_Edge edge;
+    NSUInteger sourceIndex;
+    bool hidden;
+    int role;
+    int nativeCurveType;
+    std::vector<size_t> sourceEdges;
+    Bnd_Box bounds;
+    double xyz[6]{};
+    double sizeSquared = 0;
+    int curveType = 0;
+    bool retained = true;
+};
+
+// A projected circle viewed edge-on can arrive from HLR as a degree-one
+// B-spline. Only a full trimmed positive-weight control-hull proof permits
+// replacing it by a line: every pole lies on AND between its endpoints.
+// Continuity then proves that its image is exactly that segment, within
+// OCCT's geometric confusion tolerance. No sampled-point line fitting.
+static TopoDS_Edge OS3DHLRRankOneCurve(const TopoDS_Edge &edge) {
+    BRepAdaptor_Curve curve(edge);
+    if (curve.GetType() != GeomAbs_BSplineCurve && curve.GetType() != GeomAbs_BezierCurve)
+        return edge;
+    Handle(Geom_BSplineCurve) spline;
+    if (curve.GetType() == GeomAbs_BSplineCurve)
+        spline = Handle(Geom_BSplineCurve)::DownCast(curve.BSpline()->Copy());
+    else
+        spline = GeomConvert::CurveToBSplineCurve(curve.Bezier());
+    if (spline.IsNull()) return edge;
+    const double first = curve.FirstParameter(), last = curve.LastParameter();
+    if (!std::isfinite(first) || !std::isfinite(last) || last <= first) return edge;
+    spline->Segment(first, last);
+    const gp_Pnt a = curve.Value(first), b = curve.Value(last);
+    gp_Vec span(a, b);
+    const double length = span.Magnitude(), tolerance = Precision::Confusion();
+    if (!std::isfinite(length) || length <= tolerance) return edge;
+    span /= length;
+    for (int pole = 1; pole <= spline->NbPoles(); ++pole) {
+        const double weight = spline->Weight(pole);
+        const gp_Pnt p = spline->Pole(pole);
+        if (!std::isfinite(weight) || weight <= 0 || !std::isfinite(p.X())
+            || !std::isfinite(p.Y()) || !std::isfinite(p.Z())) return edge;
+        const gp_Vec delta(a, p);
+        const double t = delta.Dot(span);
+        if (delta.Crossed(span).Magnitude() > tolerance || t < -tolerance
+            || t > length + tolerance) return edge;
+    }
+    BRepBuilderAPI_MakeEdge line(a, b);
+    if (!line.IsDone()) throw Standard_Failure("HLR rank-one edge construction failed");
+    TopoDS_Edge result = line.Edge();
+    result.Orientation(edge.Orientation());
+    return result;
+}
+
+// Strict set containment of entire trimmed B-rep curves. Endpoint equality
+// alone would incorrectly merge an arc and its chord, or two different
+// splines. A common edge AND an empty edge difference are required. A mere
+// intersection vertex, uncertain/failed boolean or budget expiry never
+// authorizes deleting a curve. Partial overlaps are retained conservatively.
+static bool OS3DHLRCoveredBy(const TopoDS_Edge &candidate, const TopoDS_Edge &cover,
+                            OS3DDeadlineProgress *deadline,
+                            const Handle(Message_ProgressIndicator) &progress) {
+    TopTools_ListOfShape arguments, tools;
+    arguments.Append(candidate); tools.Append(cover);
+    BRepAlgoAPI_Common common;
+    common.SetArguments(arguments); common.SetTools(tools);
+    common.SetNonDestructive(Standard_True); common.SetRunParallel(Standard_False);
+    common.SetFuzzyValue(0.0);
+    common.Build(progress->Start());
+    if (deadline->Fired() || !common.IsDone() || common.HasErrors() || common.HasWarnings())
+        throw Standard_Failure("HLR curve common refused");
+    if (common.Shape().IsNull() || !TopExp_Explorer(common.Shape(), TopAbs_EDGE).More()) return false;
+    BRepAlgoAPI_Cut remainder;
+    remainder.SetArguments(arguments); remainder.SetTools(tools);
+    remainder.SetNonDestructive(Standard_True); remainder.SetRunParallel(Standard_False);
+    remainder.SetFuzzyValue(0.0);
+    remainder.Build(progress->Start());
+    if (deadline->Fired() || !remainder.IsDone() || remainder.HasErrors() || remainder.HasWarnings())
+        throw Standard_Failure("HLR curve difference refused");
+    if (remainder.Shape().IsNull()) throw Standard_Failure("HLR null curve difference");
+    return !TopExp_Explorer(remainder.Shape(), TopAbs_EDGE).More();
+}
+
+static void OS3DHLRNormalize(std::vector<OS3DHLRProjectedEdge> &edges,
+                            OS3DDeadlineProgress *deadline,
+                            const Handle(Message_ProgressIndicator) &progress) {
+    // Bucket by actual HLR class, never merge sharp and Rg1 categories or
+    // visible and hidden ink. Circle and trimmed circle use the same curve
+    // type; differing supports are still decided by exact Common/Cut.
+    std::map<std::tuple<bool, int, int>, std::vector<size_t>> buckets;
+    for (size_t i = 0; i < edges.size(); ++i) {
+        if (deadline->Fired()) throw Standard_Failure("HLR bounds deadline exceeded");
+        auto &edge = edges[i];
+        BRepBndLib::AddOptimal(edge.edge, edge.bounds, Standard_False, Standard_False);
+        if (edge.bounds.IsVoid()) throw Standard_Failure("HLR empty projected bounds");
+        edge.bounds.Get(edge.xyz[0], edge.xyz[1], edge.xyz[2],
+                        edge.xyz[3], edge.xyz[4], edge.xyz[5]);
+        for (double x : edge.xyz)
+            if (!std::isfinite(x)) throw Standard_Failure("HLR infinite projected bounds");
+        for (int k = 0; k < 3; ++k) {
+            const double span = edge.xyz[k + 3] - edge.xyz[k];
+            edge.sizeSquared += span * span;
+        }
+        if (!std::isfinite(edge.sizeSquared)) throw Standard_Failure("HLR projected bounds overflow");
+        edge.curveType = (int)BRepAdaptor_Curve(edge.edge).GetType();
+        buckets[{edge.hidden, edge.role, edge.curveType}].push_back(i);
+    }
+    size_t candidateChecks = 0, booleanPairs = 0;
+    for (auto &bucket : buckets) {
+        auto &indices = bucket.second;
+        std::stable_sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
+            return edges[a].sizeSquared > edges[b].sizeSquared;
+        });
+        std::vector<size_t> covers;
+        for (size_t i : indices) {
+            for (size_t j : covers) {
+                if (deadline->Fired() || ++candidateChecks > 2000000)
+                    throw Standard_Failure("HLR containment candidate budget exceeded");
+                bool mayContain = true;
+                for (int k = 0; k < 3; ++k) {
+                    if (edges[i].xyz[k] < edges[j].xyz[k] - Precision::Confusion()
+                        || edges[i].xyz[k + 3] > edges[j].xyz[k + 3] + Precision::Confusion())
+                        mayContain = false;
+                }
+                if (!mayContain) continue;
+                if (++booleanPairs > 25000)
+                    throw Standard_Failure("HLR containment boolean budget exceeded");
+                if (!OS3DHLRCoveredBy(edges[i].edge, edges[j].edge, deadline, progress)) continue;
+                edges[j].sourceEdges.insert(edges[j].sourceEdges.end(),
+                    edges[i].sourceEdges.begin(), edges[i].sourceEdges.end());
+                edges[i].retained = false;
+                break;
+            }
+            if (edges[i].retained) covers.push_back(i);
+        }
+    }
+}
+
+
 + (nullable NSData *)hiddenLineProjectionOfShapes:(NSArray<OCCTShape *> *)shapes
                                            frame:(NSData *)frame
                                       deflection:(double)deflection {
@@ -3991,15 +4199,7 @@ static bool OS3DInteriorFaceSample(const TopoDS_Face &face, gp_Pnt &point, gp_Di
         algo->Hide();
         if (deadline->Fired()) return nil;
         HLRBRep_HLRToShape result(algo);
-        NSMutableArray *rows = [NSMutableArray array];
-        size_t totalPoints = 0;
-        const auto point = [](const gp_Pnt &q) -> NSArray * {
-            if (!std::isfinite(q.X()) || !std::isfinite(q.Y()))
-                throw Standard_Failure("non-finite projected curve");
-            return @[@(q.X()), @(q.Y())];
-        };
-        // Sharp edges + true apparent contours + tangent discontinuities.
-        // RgN seams and isoparametrics would add artificial surface lines.
+        std::vector<OS3DHLRProjectedEdge> projected;
         const HLRBRep_TypeOfResultingEdge kinds[] = {
             HLRBRep_Sharp, HLRBRep_OutLine, HLRBRep_Rg1Line
         };
@@ -4010,59 +4210,93 @@ static bool OS3DInteriorFaceSample(const TopoDS_Face &face, gp_Pnt &point, gp_Di
                     TopoDS_Shape edges = result.CompoundOfEdges(copies[index],
                         kinds[role], hidden == 0, Standard_False);
                     if (edges.IsNull()) continue;
-                    // HLRToShape emits p-curves in projector XY. Materialize
-                    // those curves, never the source render triangulation.
                     if (!BRepLib::BuildCurves3d(edges)) return nil;
                     for (TopExp_Explorer ex(edges, TopAbs_EDGE); ex.More(); ex.Next()) {
-                        if (deadline->Fired() || rows.count >= 50000) return nil;
-                        BRepAdaptor_Curve curve(TopoDS::Edge(ex.Current()));
-                        double first = curve.FirstParameter(), last = curve.LastParameter();
-                        if (!std::isfinite(first) || !std::isfinite(last)) return nil;
-                        NSMutableDictionary *row = [@{
-                            @"sourceIndex": @(index), @"hidden": @(hidden != 0),
-                            @"role": role == 1 ? @"outline" : @"edges"
-                        } mutableCopy];
-                        if (curve.GetType() == GeomAbs_Line) {
-                            row[@"kind"] = @"line";
-                            row[@"points"] = @[point(curve.Value(first)), point(curve.Value(last))];
-                            totalPoints += 2;
-                        } else if (curve.GetType() == GeomAbs_Circle) {
-                            const gp_Circ circle = curve.Circle();
-                            const gp_Pnt center = circle.Location();
-                            row[@"center"] = point(center);
-                            row[@"radius"] = @(circle.Radius());
-                            const double tau = 2.0 * M_PI;
-                            if (std::abs(last - first) >= tau - 1e-8) {
-                                row[@"kind"] = @"circle";
-                            } else {
-                                auto angle = [&](double t) {
-                                    gp_Pnt q = curve.Value(t);
-                                    return std::atan2(q.Y() - center.Y(), q.X() - center.X());
-                                };
-                                auto positive = [&](double a) { a = std::fmod(a, tau); return a < 0 ? a + tau : a; };
-                                double a = angle(first), b = angle(last), mid = angle((first + last) / 2);
-                                if (positive(mid - a) > positive(b - a) + 1e-9) std::swap(a, b);
-                                row[@"kind"] = @"arc";
-                                row[@"angles"] = @[@(a), @(a + positive(b - a))];
-                            }
-                            totalPoints += 3;
-                        } else {
-                            GCPnts_UniformDeflection disc(curve, deflection, first, last);
-                            if (!disc.IsDone() || disc.NbPoints() < 2 || disc.NbPoints() > 100000) return nil;
-                            NSMutableArray *points = [NSMutableArray arrayWithCapacity:disc.NbPoints()];
-                            for (Standard_Integer n = 1; n <= disc.NbPoints(); ++n) [points addObject:point(disc.Value(n))];
-                            row[@"kind"] = @"polyline";
-                            row[@"points"] = points;
-                            totalPoints += disc.NbPoints();
-                        }
-                        if (totalPoints > 1000000) return nil;
-                        [rows addObject:row];
+                        if (deadline->Fired() || projected.size() >= 50000) return nil;
+                        const TopoDS_Edge edge = TopoDS::Edge(ex.Current());
+                        const int nativeType = (int)BRepAdaptor_Curve(edge).GetType();
+                        OS3DHLRProjectedEdge record;
+                        record.edge = OS3DHLRRankOneCurve(edge);
+                        record.sourceIndex = index; record.hidden = hidden != 0;
+                        record.role = role; record.nativeCurveType = nativeType;
+                        record.sourceEdges.push_back(projected.size());
+                        projected.push_back(std::move(record));
                     }
                 }
             }
         }
+        size_t totalPoints = 0;
+        const auto point = [](const gp_Pnt &q) -> NSArray * {
+            if (!std::isfinite(q.X()) || !std::isfinite(q.Y()))
+                throw Standard_Failure("non-finite projected curve");
+            return @[@(q.X()), @(q.Y())];
+        };
+        const auto encode = [&](const OS3DHLRProjectedEdge &record) -> NSMutableDictionary * {
+            if (deadline->Fired()) throw Standard_Failure("HLR serialization deadline exceeded");
+            BRepAdaptor_Curve curve(record.edge);
+            double first = curve.FirstParameter(), last = curve.LastParameter();
+            if (!std::isfinite(first) || !std::isfinite(last)) throw Standard_Failure("HLR curve serialization refused");
+            NSMutableDictionary *row = [@{
+                @"sourceIndex": @(record.sourceIndex), @"hidden": @(record.hidden),
+                @"nativeCurveType": @(record.nativeCurveType), @"edgeClass": @(record.role),
+                @"role": record.role == 1 ? @"outline" : @"edges"
+            } mutableCopy];
+            if (curve.GetType() == GeomAbs_Line) {
+                row[@"kind"] = @"line";
+                row[@"points"] = @[point(curve.Value(first)), point(curve.Value(last))];
+                totalPoints += 2;
+            } else if (curve.GetType() == GeomAbs_Circle) {
+                const gp_Circ circle = curve.Circle();
+                const gp_Pnt center = circle.Location();
+                row[@"center"] = point(center);
+                row[@"radius"] = @(circle.Radius());
+                const double tau = 2.0 * M_PI;
+                if (std::abs(last - first) >= tau - 1e-8) {
+                    row[@"kind"] = @"circle";
+                } else {
+                    auto angle = [&](double t) {
+                        gp_Pnt q = curve.Value(t);
+                        return std::atan2(q.Y() - center.Y(), q.X() - center.X());
+                    };
+                    auto positive = [&](double a) { a = std::fmod(a, tau); return a < 0 ? a + tau : a; };
+                    double a = angle(first), b = angle(last), mid = angle((first + last) / 2);
+                    if (positive(mid - a) > positive(b - a) + 1e-9) std::swap(a, b);
+                    row[@"kind"] = @"arc";
+                    row[@"angles"] = @[@(a), @(a + positive(b - a))];
+                }
+                totalPoints += 3;
+            } else {
+                GCPnts_UniformDeflection disc(curve, deflection, first, last);
+                if (!disc.IsDone() || disc.NbPoints() < 2 || disc.NbPoints() > 100000) throw Standard_Failure("HLR curve serialization refused");
+                NSMutableArray *points = [NSMutableArray arrayWithCapacity:disc.NbPoints()];
+                for (Standard_Integer n = 1; n <= disc.NbPoints(); ++n) [points addObject:point(disc.Value(n))];
+                row[@"kind"] = @"polyline";
+                row[@"points"] = points;
+                totalPoints += disc.NbPoints();
+            }
+            if (totalPoints > 1000000) throw Standard_Failure("HLR curve serialization refused");
+            return row;
+        };
+        // sourceEdges is a lossless ownership ledger of every HLR record,
+        // including curves absorbed into a longer drawing edge. Its curve is
+        // the exact rank-one image when the control-hull proof succeeded.
+        NSMutableArray *sourceEdges = [NSMutableArray arrayWithCapacity:projected.size()];
+        for (const auto &edge : projected) [sourceEdges addObject:encode(edge)];
+        OS3DHLRNormalize(projected, deadline, progress);
+        NSMutableArray *rows = [NSMutableArray array];
+        for (size_t index = 0; index < projected.size(); ++index) {
+            auto &edge = projected[index];
+            if (!edge.retained) continue;
+            std::sort(edge.sourceEdges.begin(), edge.sourceEdges.end());
+            NSMutableArray *indices = [NSMutableArray arrayWithCapacity:edge.sourceEdges.size()];
+            for (size_t raw : edge.sourceEdges) [indices addObject:@(raw)];
+            NSMutableDictionary *row = [sourceEdges[index] mutableCopy];
+            row[@"sourceEdgeIndices"] = indices;
+            [rows addObject:row];
+        }
         return [NSJSONSerialization dataWithJSONObject:@{
-            @"version": @1, @"method": @"occt-brep-hlr", @"curveDeflectionMM": @(deflection), @"edges": rows
+            @"version": @2, @"method": @"occt-brep-hlr", @"curveDeflectionMM": @(deflection),
+            @"normalization": @"occt-curve-containment-v1", @"sourceEdges": sourceEdges, @"edges": rows
         } options:0 error:nil];
     } catch (...) { return nil; }
 }
@@ -4702,35 +4936,33 @@ static std::vector<TopoDS_Shape> OS3DImagesThrough(const Handle(BRepTools_Histor
     return out;
 }
 
-// OS3DCollectMakerHistory for a maker that ran on a split copy of `input`
-// (OS3DSplitAtC0). Rows still name the input's own faces and edges: a piece
-// is modified from its source, and whatever the maker made of a piece is
-// credited to the source.
-static void OS3DCollectMakerHistoryThrough(BRepBuilderAPI_MakeShape &builder,
-                                           const TopoDS_Shape &input,
-                                           const Handle(BRepTools_History) &split,
-                                           std::vector<OS3DHistEdge> &edges) {
+// Offset makers may modify pcurves/SameParameter flags even when they fail.
+// Every shell attempt owns its geometry. Translate its history back through
+// BRepBuilderAPI_Copy's explicit source map, never copied face-map ordinals.
+static void OS3DCollectShellHistory(BRepBuilderAPI_MakeShape *builder,
+                                    const TopoDS_Shape &source,
+                                    BRepBuilderAPI_Copy &copy,
+                                    const Handle(BRepTools_History) &split,
+                                    std::vector<OS3DHistEdge> &edges) {
     const struct { TopAbs_ShapeEnum type; int32_t kind; } kinds[] = {
         {TopAbs_FACE, 0}, {TopAbs_EDGE, 1}};
-    for (const auto &k : kinds) {
-        TopTools_IndexedMapOfShape map;
-        TopExp::MapShapes(input, k.type, map);
-        for (Standard_Integer i = 1; i <= map.Extent(); ++i) {
-            for (const TopoDS_Shape &piece : OS3DImagesThrough(split, map(i))) {
-                if (!piece.IsSame(map(i))) {
-                    edges.push_back({piece, 0, k.kind, (int32_t)i, 1});
-                }
+    for (const auto &kind : kinds) {
+        TopTools_IndexedMapOfShape roots; TopExp::MapShapes(source, kind.type, roots);
+        for (Standard_Integer i = 1; i <= roots.Extent(); ++i) {
+            const TopoDS_Shape copied = copy.ModifiedShape(roots(i));
+            if (copied.IsNull()) continue;
+            for (const TopoDS_Shape &piece : OS3DImagesThrough(split, copied)) {
+                // Includes genuine same-face survival through the owned copy;
+                // OS3DFillHistory's final-shape gate discards removed faces.
+                edges.push_back({piece, 0, kind.kind, (int32_t)i, 1});
+                if (builder == nullptr) continue;
                 for (int32_t relation : {1, 2}) {
                     try {
                         const TopTools_ListOfShape &list = relation == 1
-                            ? builder.Modified(piece) : builder.Generated(piece);
-                        for (TopTools_ListIteratorOfListOfShape it(list);
-                             it.More(); it.Next()) {
-                            edges.push_back({it.Value(), 0, k.kind, (int32_t)i, relation});
-                        }
-                    } catch (...) {
-                        // No history for this piece.
-                    }
+                            ? builder->Modified(piece) : builder->Generated(piece);
+                        for (TopTools_ListIteratorOfListOfShape it(list); it.More(); it.Next())
+                            edges.push_back({it.Value(), 0, kind.kind, (int32_t)i, relation});
+                    } catch (...) { /* this source produced no such relation */ }
                 }
             }
         }
@@ -4890,12 +5122,19 @@ static void OS3DCollectMakerHistoryThrough(BRepBuilderAPI_MakeShape &builder,
         // boolean results were normalized can still carry a one-solid
         // COMPOUND — unwrap it here so the op stays in contract.
         int inputSolids = 0;
-        TopoDS_Shape input = OS3DExtractSingleSolid(shape->_shape, inputSolids);
-        if (input.IsNull()) input = shape->_shape;
+        TopoDS_Shape sourceInput = OS3DExtractSingleSolid(shape->_shape, inputSolids);
+        if (sourceInput.IsNull()) sourceInput = shape->_shape;
+        BRepBuilderAPI_Copy inputCopy(sourceInput, Standard_True, Standard_False);
+        if (!inputCopy.IsDone() || inputCopy.Shape().IsNull()) {
+            OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"shell could not obtain an independent input");
+            return nil;
+        }
+        const TopoDS_Shape input = inputCopy.Shape();
 
         // Faces to open: those with a sample within tolerance of a picked point.
         // Empty selection => fully-enclosed hollow.
         TopTools_ListOfShape openFaces;
+        TopTools_ListOfShape sourceOpenFaces;
         // Signed: positive hollows INWARD (the wall lies inside the original
         // surface), negative grows OUTWARD (the original surface becomes the
         // cavity) — the tutorial move for a profile whose grooves are tighter
@@ -4908,8 +5147,16 @@ static void OS3DCollectMakerHistoryThrough(BRepBuilderAPI_MakeShape &builder,
             // top also opened the bottom.
             TopTools_IndexedMapOfShape faceMap;
             TopExp::MapShapes(input, TopAbs_FACE, faceMap);
-            for (Standard_Integer i : OS3DNearestFaces(faceMap, pts, count, tolerance)) {
-                openFaces.Append(TopoDS::Face(faceMap(i)));
+            const auto chosen = OS3DNearestFaces(faceMap, pts, count, tolerance);
+            for (Standard_Integer i : chosen) openFaces.Append(TopoDS::Face(faceMap(i)));
+            TopTools_IndexedMapOfShape sourceFaces; TopExp::MapShapes(sourceInput, TopAbs_FACE, sourceFaces);
+            for (Standard_Integer i = 1; i <= sourceFaces.Extent(); ++i) {
+                const TopoDS_Shape copied = inputCopy.ModifiedShape(sourceFaces(i));
+                if (chosen.count(faceMap.FindIndex(copied)) != 0) sourceOpenFaces.Append(sourceFaces(i));
+            }
+            if (sourceOpenFaces.Extent() != openFaces.Extent()) {
+                OS3DSetStatus(status, OCCTOpCodeNoTargetMatched, @"shell opening lost its copied source identity");
+                return nil;
             }
             // The caller ASKED for openings but nothing matched. Falling
             // through to the fully-enclosed branch silently sealed the body:
@@ -4987,18 +5234,33 @@ static void OS3DCollectMakerHistoryThrough(BRepBuilderAPI_MakeShape &builder,
                 return nil;
             }
             built = cut.Shape();
+            if (history != nil) OS3DCollectShellHistory(nullptr, sourceInput, inputCopy,
+                Handle(BRepTools_History)(), histEdges);
         } else {
             BRepOffsetAPI_MakeThickSolid mk;
-            mk.MakeThickSolidByJoin(input, openFaces, offset, 1.0e-3);
+            bool primaryThrew = false;
+            NSString *primaryException = @"";
+            try {
+                mk.MakeThickSolidByJoin(input, openFaces, offset, 1.0e-3);
+            } catch (Standard_Failure &failure) {
+                primaryThrew = true;
+                const char *message = failure.GetMessageString();
+                primaryException = message != nullptr && message[0] != 0 ? @(message) : @"OCCT exception without a message";
+            } catch (...) {
+                primaryThrew = true; primaryException = @"native exception";
+            }
             // Arc joins are OCCT's default and the robust choice on analytic
             // walls; a B-spline wall (a revolved traced profile) can fail
             // them and still offset with INTERSECTION joins. Try those
             // before refusing.
             BRepOffsetAPI_MakeThickSolid mkIntersection;
-            BRepOffsetAPI_MakeThickSolid *made = mk.IsDone() ? &mk : nullptr;
+            BRepBuilderAPI_Copy intersectionCopy;
+            BRepOffsetAPI_MakeThickSolid *made = !primaryThrew && mk.IsDone() && !mk.Shape().IsNull() ? &mk : nullptr;
+            BRepBuilderAPI_Copy *madeCopy = &inputCopy;
             int code = -1;
             if (made == nullptr) {
                 try { code = (int)mk.MakeOffset().Error(); } catch (...) {}
+                if (primaryThrew && code == (int)BRepOffset_NoError) code = -2;
             }
             // A fillet's B-spline faces refuse every join (C0Geometry): split
             // the body where they are C0 and retry with arc joins. Intersection
@@ -5006,7 +5268,7 @@ static void OS3DCollectMakerHistoryThrough(BRepBuilderAPI_MakeShape &builder,
             BRepOffsetAPI_MakeThickSolid mkSplit;
             TopoDS_Shape split;
             Handle(BRepTools_History) splitHistory;
-            NSString *retryNote = @"";
+            NSString *retryNote = primaryThrew ? [@", arc join: " stringByAppendingString:primaryException] : @"";
             if (made == nullptr && code == (int)BRepOffset_C0Geometry) {
                 split = OS3DSplitAtC0(input, splitHistory);
                 if (!split.IsNull()) {
@@ -5021,7 +5283,7 @@ static void OS3DCollectMakerHistoryThrough(BRepBuilderAPI_MakeShape &builder,
                     // split had already removed (18.23, 2026-09-17).
                     try {
                         mkSplit.MakeThickSolidByJoin(split, splitOpenFaces, offset, 1.0e-3);
-                        if (mkSplit.IsDone()) {
+                        if (mkSplit.IsDone() && !mkSplit.Shape().IsNull()) {
                             made = &mkSplit;
                         } else {
                             code = (int)mkSplit.MakeOffset().Error();
@@ -5039,14 +5301,34 @@ static void OS3DCollectMakerHistoryThrough(BRepBuilderAPI_MakeShape &builder,
                     }
                 }
             }
-            if (made == nullptr && split.IsNull()) {
-                try {
-                    mkIntersection.MakeThickSolidByJoin(
-                        input, openFaces, offset, 1.0e-3, BRepOffset_Skin,
-                        Standard_True, Standard_False, GeomAbs_Intersection);
-                    if (mkIntersection.IsDone()) made = &mkIntersection;
-                } catch (...) {
-                    made = nullptr;
+            if (made == nullptr) {
+                // A throwing first Arc join is still an unsuccessful attempt,
+                // not permission to bypass the exact Intersection fallback.
+                // Prefer OCCT's recommended adjacent-pair intersections, then
+                // retain the previously supported all-parallels attempt.
+                for (Standard_Boolean allParallels : {Standard_False, Standard_True}) {
+                    try {
+                        intersectionCopy.Perform(sourceInput, Standard_True, Standard_False);
+                        if (!intersectionCopy.IsDone() || intersectionCopy.Shape().IsNull()) continue;
+                        TopTools_ListOfShape copiedOpenFaces;
+                        for (TopTools_ListIteratorOfListOfShape it(sourceOpenFaces); it.More(); it.Next())
+                            copiedOpenFaces.Append(intersectionCopy.ModifiedShape(it.Value()));
+                        mkIntersection.MakeThickSolidByJoin(
+                            intersectionCopy.Shape(), copiedOpenFaces, offset, 1.0e-3, BRepOffset_Skin,
+                            allParallels, Standard_False, GeomAbs_Intersection);
+                        if (mkIntersection.IsDone() && !mkIntersection.Shape().IsNull()) {
+                            made = &mkIntersection; madeCopy = &intersectionCopy; break;
+                        }
+                        code = (int)mkIntersection.MakeOffset().Error();
+                        retryNote = allParallels ? @", after all-parallels intersection join" : @", after adjacent intersection join";
+                    } catch (Standard_Failure &failure) {
+                        code = -2;
+                        const char *message = failure.GetMessageString();
+                        NSString *detail = message != nullptr && message[0] != 0 ? @(message) : @"OCCT exception without a message";
+                        retryNote = [@", intersection join: " stringByAppendingString:detail];
+                    } catch (...) {
+                        code = -2; retryNote = @", intersection join: native exception";
+                    }
                 }
             }
             if (made == nullptr) {
@@ -5059,7 +5341,7 @@ static void OS3DCollectMakerHistoryThrough(BRepBuilderAPI_MakeShape &builder,
                     "UserBreak", "MixedConnectivity"};
                 const char *name = (code >= 0 && code < 11) ? kOffsetErrors[code] : "?";
                 OS3DSetStatus(status, OCCTOpCodeKernelRefused, code == -2
-                    ? [NSString stringWithFormat:@"the wall thickness is out of range for this shape (OCCT offset threw after splitting its C0 faces%@)", retryNote]
+                    ? [NSString stringWithFormat:@"the wall thickness is out of range for this shape (OCCT offset exception%@)", retryNote]
                     : [NSString stringWithFormat:@"the wall thickness is out of range for this shape (OCCT offset: %s%@)", name, retryNote]);
                 return nil;
             }
@@ -5067,11 +5349,8 @@ static void OS3DCollectMakerHistoryThrough(BRepBuilderAPI_MakeShape &builder,
             if (made == &mkSplit) OS3DSetSameRangeOnNewEdges(built, input);
             // Harvest before the maker dies with this scope.
             if (history != nil) {
-                if (made == &mkSplit) {
-                    OS3DCollectMakerHistoryThrough(*made, input, splitHistory, histEdges);
-                } else {
-                    OS3DCollectMakerHistory(*made, {input}, histEdges);
-                }
+                OS3DCollectShellHistory(made, sourceInput, *madeCopy,
+                    made == &mkSplit ? splitHistory : Handle(BRepTools_History)(), histEdges);
             }
         }
 
@@ -5107,7 +5386,7 @@ static void OS3DCollectMakerHistoryThrough(BRepBuilderAPI_MakeShape &builder,
         // inherit via the survival pass and the new inner faces stay
         // honestly unnamed.
         if (history != nil) {
-            OS3DFillHistory(history, histEdges, {input},
+            OS3DFillHistory(history, histEdges, {sourceInput},
                             Handle(BRepTools_History)(), valid,
                             /*truncatedByHeal*/ !valid.IsSame(result));
         }
@@ -5115,8 +5394,9 @@ static void OS3DCollectMakerHistoryThrough(BRepBuilderAPI_MakeShape &builder,
         out->_shape = valid;
         return out;
     } catch (Standard_Failure &e) {
+        const char *message = e.GetMessageString();
         OS3DSetStatus(status, OCCTOpCodeKernelRefused,
-                      [NSString stringWithFormat:@"%s", e.GetMessageString()]);
+            message != nullptr && message[0] != 0 ? @(message) : @"shell native exception without a message");
         return nil;
     } catch (...) {
         OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"kernel exception");
@@ -6083,9 +6363,16 @@ static bool OS3DSurfaceTrimDomain(const TopoDS_Face &face,double &u0,double &u1,
 
 static OCCTShape *OS3DSurfaceResult(const TopoDS_Shape &shape, bool solid,
                                    double tolerance, OCCTOpStatus *status) {
-    if (shape.IsNull() || !OS3DIsValid(shape) || OS3DFaceCount(shape) == 0
-        || OS3DMaxTolerance(shape) > tolerance * 10) {
-        OS3DSetStatus(status, OCCTOpCodeInvalidResult, @"The exact surface result failed geometry or tolerance validation.");
+    if (shape.IsNull()) {
+        OS3DSetStatus(status,OCCTOpCodeInvalidResult,@"The surface builder returned an empty shape.");return nil;
+    }
+    const bool valid=OS3DIsValid(shape);
+    const NSInteger faceCount=OS3DFaceCount(shape);
+    const double maxTolerance=OS3DMaxTolerance(shape);
+    if (!valid || faceCount == 0 || !std::isfinite(maxTolerance) || maxTolerance > tolerance*10) {
+        OS3DSetStatus(status,OCCTOpCodeInvalidResult,[NSString stringWithFormat:
+            @"Surface validation failed: valid=%d, faces=%ld, max_tolerance=%.12g mm, allowed=%.12g mm.",
+            valid,(long)faceCount,maxTolerance,tolerance*10]);
         return nil;
     }
     // BRep bounds must be finite. Do not allow the underlying infinite support
@@ -6312,7 +6599,7 @@ static OCCTShape *OS3DSurfaceResult(const TopoDS_Shape &shape, bool solid,
                 // Reuse the established fully-enclosed shell construction:
                 // offset then non-destructive cut. ByJoin with no closing
                 // faces is not accepted as proof that a wall was created.
-                Message_ProgressScope phases(deadline->Start(),"Closed surface thickness",2);
+                Message_ProgressScope phases(deadline->Start(),"Closed surface thickness",3);
                 BRepOffsetAPI_MakeOffsetShape offset;
                 OS3D_GUARDED(status,"closed surface offset",offset.PerformByJoin(base,p[0],tolerance,
                     BRepOffset_Skin,Standard_False,Standard_False,GeomAbs_Arc,Standard_False,phases.Next()));
@@ -6335,6 +6622,22 @@ static OCCTShape *OS3DSurfaceResult(const TopoDS_Shape &shape, bool solid,
                 OS3D_GUARDED(status,"closed surface wall",cut.Build(phases.Next()));
                 if (deadline->Fired() || !cut.IsDone() || cut.HasErrors()) return nil;
                 built=cut.Shape();
+                if (!OS3DIsValid(built)) {
+                    // The mature boolean path performs a validity repair before
+                    // accepting native Cut output. Do the same on an OWNED copy
+                    // here, with a strict budget tied to the authored tolerance.
+                    // This never raises the result acceptance threshold or
+                    // clamps a bad edge tolerance down to hide its residual.
+                    BRepBuilderAPI_Copy copy(built,Standard_True,Standard_False);
+                    if (!copy.IsDone() || copy.Shape().IsNull()) return nil;
+                    Handle(ShapeFix_Shape) fixer=new ShapeFix_Shape(copy.Shape());
+                    fixer->SetPrecision(tolerance);
+                    fixer->SetMinTolerance(Precision::Confusion());
+                    fixer->SetMaxTolerance(tolerance*10);
+                    OS3D_GUARDED(status,"closed surface wall validity repair",fixer->Perform(phases.Next()));
+                    if (deadline->Fired() || fixer->Shape().IsNull()) return nil;
+                    built=fixer->Shape();
+                }
             } else {
                 // The public Simple method has no progress range. The same
                 // shipped OCCT engine offers explicit Thickening on its
@@ -6360,7 +6663,11 @@ static OCCTShape *OS3DSurfaceResult(const TopoDS_Shape &shape, bool solid,
             }
         } else return nil;
         if (deadline->Fired()) return nil;
-        return OS3DSurfaceResult(result,solidResult,tolerance,status);
+        OCCTShape *out=OS3DSurfaceResult(result,solidResult,tolerance,status);
+        if (out == nil && status.detail.length) {
+            status.detail=[NSString stringWithFormat:@"surface %@: %@",operation,status.detail];
+        }
+        return out;
     } catch (Standard_Failure &failure) {
         OS3DSetStatus(status,OCCTOpCodeKernelRefused,OS3DCrashMessage("surface operation",failure.GetMessageString()));return nil;
     } catch (...) { return nil; }

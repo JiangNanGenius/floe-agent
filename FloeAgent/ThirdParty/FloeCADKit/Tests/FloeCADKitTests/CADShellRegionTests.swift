@@ -122,6 +122,33 @@ final class CADShellRegionTests: XCTestCase {
         XCTAssertEqual(OCCTKernel.serialize(try handle(document, body)), raw)
         document.session.redo(); try assertGeometry(handle(document, body))
     }
+    func testUniformAttemptsAndEditorPreviewNeverMutateSharedInputBRep() async throws {
+        let (document, id) = try await fixture()
+        let source = try handle(document, id)
+        let input = try XCTUnwrap(OCCTKernel.serialize(source))
+        let opening = try XCTUnwrap(OCCTKernel.faceSample(source, index: faces(source).top))
+        let success = try OCCTKernel.shellResultWithAncestry(source, openingAt: [opening],
+            thickness: 1, tolerance: OCCTKernel.matchTolerance(for: source)).get()
+        XCTAssertLessThan(OCCTKernel.volume(success.handle), 24_000)
+        XCTAssertFalse(success.ancestry.rows.isEmpty)
+        // BRepTools VERSION_2 ASCII is deterministic native topology/geometry,
+        // not JSON dictionary order. Keep exact bytes AND geometric evidence.
+        XCTAssertEqual(OCCTKernel.serialize(source), input)
+        let refused = OCCTKernel.shellResultWithAncestry(source, openingAt: [opening],
+            thickness: 1_000, tolerance: OCCTKernel.matchTolerance(for: source))
+        if case let .failure(error) = refused { XCTAssertFalse(error.message.isEmpty) }
+        else { XCTFail("An oversized wall must be refused") }
+        XCTAssertEqual(OCCTKernel.serialize(source), input)
+        XCTAssertEqual(OCCTKernel.volume(source), 24_000, accuracy: 1e-6)
+        let originalRender = try XCTUnwrap(document.session.document.body(with: id)?.render)
+        let model = document.viewModel(); model.selectItemBody(id); model.beginShell()
+        XCTAssertEqual(OCCTKernel.serialize(source), input, "The initial closed-hollow preview owns its native input.")
+        model.handle(.tap(ray: Ray(origin: SIMD3(0, 60, 0), direction: SIMD3(0, -1, 0))))
+        XCTAssertEqual(OCCTKernel.serialize(source), input)
+        model.cancelShell()
+        XCTAssertEqual(document.session.document.body(with: id)?.render, originalRender)
+    }
+
     func testEditorWallPickingUsesWholeNamedFaceAndHistoryRetainsRegionIDs() async throws {
         let (document, body) = try await fixture()
         let model = document.viewModel()
@@ -131,9 +158,16 @@ final class CADShellRegionTests: XCTestCase {
         model.shellPickingRegions = true; model.shellRegionThickness = 3
         model.handle(.tap(ray: Ray(origin: SIMD3(80, 10, 0), direction: SIMD3(-1, 0, 0))))
         XCTAssertEqual(model.shellWallRegions.count, 1)
+        let right = try XCTUnwrap(model.shellWallRegions.first?.face.native)
+        XCTAssertEqual(right.signature.normal.x, 1, accuracy: 1e-8)
+        XCTAssertEqual(right.triangles.count, 2)
         model.shellRegionThickness = 2
         model.handle(.tap(ray: Ray(origin: SIMD3(0, -40, 0), direction: SIMD3(0, 1, 0))))
         XCTAssertEqual(model.shellWallRegions.count, 2)
+        let bottom = try XCTUnwrap(model.shellWallRegions.last?.face.native)
+        XCTAssertEqual(bottom.signature.normal.y, -1, accuracy: 1e-8)
+        XCTAssertEqual(bottom.triangles.count, 2)
+        XCTAssertNotEqual(right.index, bottom.index)
         XCTAssertTrue(model.canCommitShell)
         let undoCount = document.session.undoStack.undoCommands.count
         model.commitShell()
@@ -201,6 +235,17 @@ final class CADShellRegionTests: XCTestCase {
         XCTAssertEqual(simd_distance(native.point, SIMD3(0, 10, 0)), 10, accuracy: 1e-6)
         XCTAssertTrue(model.canCommitShell)
         model.cancelShell()
+        let original = try handle(f.document, f.body)
+        let inputBytes = try XCTUnwrap(OCCTKernel.serialize(original))
+        let exactAttempt = OCCTKernel.shellResultWithAncestry(original, openingAt: [native.point],
+            thickness: 1, tolerance: OCCTKernel.matchTolerance(for: original))
+        switch exactAttempt {
+        case let .success(result):
+            assertSphericalOpening(result.handle, thickness: 1)
+            XCTAssertFalse(result.ancestry.rows.isEmpty)
+        case let .failure(error): XCTFail("Spherical native opening: \(error.message)")
+        }
+        XCTAssertEqual(OCCTKernel.serialize(original), inputBytes)
         let count = f.document.session.undoStack.undoCommands.count
         let response = CADCommandExecutor(viewModel: model).run(.shell(body: f.body, thickness: 1, openFaces: [f.curved]))
         XCTAssertEqual(response.status, 200, String(data: response.body, encoding: .utf8) ?? "")

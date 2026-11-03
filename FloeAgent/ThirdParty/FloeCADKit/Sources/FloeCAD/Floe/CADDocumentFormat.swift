@@ -75,6 +75,7 @@ nonisolated enum CADDocumentFormat {
     static let advancedBlendVersion = 7
     static let regionalShellVersion = 7
     static let polygonMeshVersion = 7
+    static let specialistMechanicalVersion = 7
     /// Coordinated package floor for a document that actually stores
     /// user-named versions. Ordinary documents keep their existing schema
     /// floor; only a package that gains a checkpoint is raised to this floor.
@@ -173,6 +174,9 @@ nonisolated enum CADDocumentFormat {
         }) { required = max(required,loftSurfaceVersion) }
         if document.features.nodes.contains(where: { if case .polygonCage = $0.kind { return true }; return false }) {
             required = max(required, polygonMeshVersion)
+        }
+        if document.features.nodes.contains(where: { if case .mechanical = $0.kind { return true }; return false }) {
+            required = max(required, specialistMechanicalVersion)
         }
         required = max(required, sceneLightingIntent(document.sceneSettingsData).version)
         if document.features.nodes.contains(where: {
@@ -722,6 +726,13 @@ nonisolated enum CADDocumentFormat {
         let encoder = JSONEncoder()
         for node in document.features.nodes {
             switch node.kind {
+            case let .mechanical(definition, placement):
+                try definition.validate(); try CADMechanicalDefinition.validatePlacement(placement)
+                guard node.outputBodyIDs.count == definition.outputCount,
+                      Set(node.outputBodyIDs).count == definition.outputCount else {
+                    throw CADDocumentFormatError.malformedAssociation("specialist-output-identities")
+                }
+                _ = try encoder.encode(node.kind)
             case let .loft(sections,_,definition):
                 try definition?.requireSupported(sectionCount:sections.count)
                 _ = try encoder.encode(node.kind)
@@ -1129,6 +1140,46 @@ nonisolated enum CADDocumentFormat {
                     default: throw CADDocumentFormatError.malformedAssociation("loft-surface-definition")
                     }
                 } catch { throw CADDocumentFormatError.malformedAssociation("loft-surface-definition") }
+            }
+            if let mechanical = object["mechanical"] as? [String: Any] {
+                result.requiredVersion = max(result.requiredVersion, specialistMechanicalVersion)
+                guard let definition = mechanical["definition"] as? [String: Any],
+                      let version = jsonIntegerValue(definition["version"]), version > 0 else {
+                    throw CADDocumentFormatError.malformedAssociation("specialist-mechanical")
+                }
+                let sheetKeys: Set<String> = ["flangeA","flangeB","width","thickness","innerRadius","bendDegrees","kFactor"]
+                let memberKeys: Set<String> = ["id","innerBoundaryID","profile","width","depth","wall","length","material","placement"]
+                func unknownFrame(_ raw: Any?) -> Bool {
+                    (raw as? [String: Any]).map { !Set($0.keys).isSubset(of: ["translation","rotation","scale"]) } == true
+                }
+                func unknownExpressions(_ row: [String: Any], _ keys: Set<String>) -> Bool {
+                    keys.contains { key in
+                        (row[key] as? [String: Any]).map { !Set($0.keys).isSubset(of: ["value","formula"]) } == true
+                    }
+                }
+                let sheet = definition["sheet"] as? [String: Any]
+                let members = definition["members"] as? [[String: Any]]
+                let future = version > CADMechanicalDefinition.supportedVersion
+                    || !Set(mechanical.keys).isSubset(of: ["definition","placement"])
+                    || unknownFrame(mechanical["placement"])
+                    || !Set(definition.keys).isSubset(of: ["version","id","operation","sheet","members"])
+                    || (definition["operation"] as? String).map { CADMechanicalDefinition.Operation(rawValue: $0) == nil } == true
+                    || sheet.map { !Set($0.keys).isSubset(of: sheetKeys) || unknownExpressions($0, sheetKeys) } == true
+                    || members?.contains { row in
+                        !Set(row.keys).isSubset(of: memberKeys) || unknownFrame(row["placement"])
+                            || unknownExpressions(row, ["width","depth","wall","length"])
+                            || (row["profile"] as? String).map { CADWeldmentMember.Stock(rawValue: $0) == nil } == true
+                    } == true
+                if future { result.opaqueFeatures.insert(row.featureID) }
+                else {
+                    do {
+                        let decoded = try JSONDecoder().decode(FeatureKind.self, from: row.kind)
+                        guard case let .mechanical(definition, placement) = decoded else {
+                            throw CADMechanicalFailure.invalid("Invalid specialist feature.")
+                        }
+                        try definition.validate(); try CADMechanicalDefinition.validatePlacement(placement)
+                    } catch { throw CADDocumentFormatError.malformedAssociation("specialist-mechanical") }
+                }
             }
             if let mesh = object["polygonCage"] as? [String: Any] {
                 result.requiredVersion = max(result.requiredVersion, polygonMeshVersion)

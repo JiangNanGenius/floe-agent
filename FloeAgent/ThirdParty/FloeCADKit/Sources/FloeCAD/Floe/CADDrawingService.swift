@@ -4223,6 +4223,7 @@ public final class CADDrawingService {
             // section/circle work run on the placed transform.
             placed.brep = source.brep
             placed.surfaceBRep = source.surfaceBRep
+            placed.material = source.material
             result.sources.append(ProjectionSource(instanceID: instance.id,
                                                    name: instance.name,
                                                    body: placed))
@@ -4539,18 +4540,27 @@ public final class CADDrawingService {
         }
         var entities: [ProjectedEntity] = []
         var groups: [UUID: [ProjectedEntity]] = [:]
-        for edge in edges where !edge.hidden || view.showHiddenLines {
+        func converted(_ curve: CADHiddenLineEdge.Curve, layer: String) -> ProjectedEntity {
             let shape: ProjectedEntity.Shape
-            switch edge.curve {
+            switch curve {
             case let .line(a, b): shape = .line(a, b)
             case let .circle(c, r): shape = .circle(center: c, radius: r)
             case let .arc(c, r, a, b): shape = .arc(center: c, radius: r, startAngle: a, endAngle: b)
             case let .polyline(points): shape = .polyline(points: points, closed: false)
             }
-            let entity = ProjectedEntity(shape: shape, layer: edge.hidden ? "hidden"
-                : (edge.outline ? "outline" : "edges")).scaled(by: view.scale)
-            entities.append(entity)
-            if let id = sources[edge.sourceIndex].instanceID { groups[id, default: []].append(entity) }
+            return ProjectedEntity(shape: shape, layer: layer).scaled(by: view.scale)
+        }
+        for edge in edges where !edge.hidden || view.showHiddenLines {
+            let layer = edge.hidden ? "hidden" : (edge.outline ? "outline" : "edges")
+            entities.append(converted(edge.curve, layer: layer))
+            // A short source span can be absorbed into a different instance's
+            // longer drawing edge. Preserve its OWN span for instance bounds,
+            // anchors and balloon placement, never substitute the full cover.
+            for contribution in edge.sourceEdges {
+                if let id = sources[contribution.sourceIndex].instanceID {
+                    groups[id, default: []].append(converted(contribution.curve, layer: layer))
+                }
+            }
         }
         if cancellation?.isCancelled == true { var r = header; r.outputBlocked = true; r.projectionComplete = false; return r }
         var result = Self.completedProjection(header: header, view: view,

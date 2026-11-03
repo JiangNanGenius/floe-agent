@@ -350,6 +350,7 @@ struct CADWorkbenchToolsPanel: View {
                         Text(FloeCADStrings.label("cad.workbench.panel.drawing", "Drawings")).tag(1)
                         Text(FloeCADStrings.label("cad.workbench.panel.script", "ShapeScript")).tag(2)
                         Text(FloeCADStrings.label("cad.workbench.panel.mesh", "Mesh")).tag(3)
+                        Text(FloeCADStrings.label("cad.mechanical.tab", "Parts")).tag(4)
                     }
                     .pickerStyle(.segmented)
                     .frame(maxWidth: .infinity)
@@ -360,7 +361,8 @@ struct CADWorkbenchToolsPanel: View {
                     case 0: CADAssemblyPanelView(document: document, viewModel: viewModel)
                     case 1: CADDrawingPanelView(document: document, viewModel: viewModel)
                     case 2: CADScriptPanelView(document: document)
-                    default: CADMeshPanelView(document: document, viewModel: viewModel)
+                    case 3: CADMeshPanelView(document: document, viewModel: viewModel)
+                    default: CADMechanicalPanel(document: document, viewModel: viewModel)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

@@ -139,6 +139,7 @@ struct HistoryPanelView: View {
         guard let node = viewModel.session.document.features.node(id) else { return "gearshape" }
         switch node.kind {
         case .primitive, .baseSolid, .polygonCage: return "cube"
+        case .mechanical: return "square.stack.3d.up"
         case .extrude: return "square.stack.3d.up"
         case .draftExtrude: return "square.stack.3d.up.trianglebadge.exclamationmark"
         case .boolean: return "circle.lefthalf.filled"

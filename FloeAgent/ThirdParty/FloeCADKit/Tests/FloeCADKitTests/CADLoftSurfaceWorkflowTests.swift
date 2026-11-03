@@ -1,12 +1,21 @@
 import Foundation
 import XCTest
 import simd
+import OCCTShim
 @testable import FloeCAD
 
 /// Source-only packet tests. These are expected assertions, not executed
 /// qualification evidence. Root owns OCCT relink/App/native/UI acceptance.
 @MainActor
 final class CADLoftSurfaceWorkflowTests: XCTestCase {
+    func testOverlappingNativeScopesRetainHandlersUntilLastOwnerExits() {
+        let report = OCCTBridge.signalGuardOverlapDiagnostics()
+        XCTAssertEqual(report["guardAfterFirstExit"] as? Bool, true,
+                       "One finishing kernel must not remove the other thread's active crash guard")
+        XCTAssertEqual(report["restoredAfterLastExit"] as? Bool, true,
+                       "The last owner must restore the original process signal handlers")
+    }
+
     private var directory: URL!
     private var documents: [FloeCADDocument] = []
     override func setUp() async throws {
@@ -37,7 +46,7 @@ final class CADLoftSurfaceWorkflowTests: XCTestCase {
     private func create(_ definition: CADSurfaceDefinition, on doc: FloeCADDocument) throws -> (FeatureID,BodyID) {
         let depth=doc.session.undoStack.undoCommands.count
         let reply=CADParameterService(document:doc).handle(action:"surface.create",args:["definition":try json(definition)])
-        XCTAssertEqual(reply["ok"] as? Bool,true,"\(reply)")
+        XCTAssertEqual(reply["ok"] as? Bool,true,"surface.\(definition.operation.rawValue): \(reply)")
         XCTAssertEqual(doc.session.undoStack.undoCommands.count,depth+1)
         let raw=try XCTUnwrap(UUID(uuidString:try XCTUnwrap(reply["feature_id"] as? String)))
         let feature=try XCTUnwrap(doc.session.document.features.node(FeatureID(raw:raw)))
@@ -90,7 +99,11 @@ final class CADLoftSurfaceWorkflowTests: XCTestCase {
         let node=FeatureNode(name:"Ring",kind:.loft(sections:sections,
             boolean:BooleanIntent(op:.newBody,resolvedTargets:[]),definition:LoftDefinition()),outputBodyIDs:[body])
         XCTAssertTrue(doc.session.performAssociativeTransaction([AppendFeatureCommand(node:node)],title:"Loft"))
-        let original=try JSONEncoder().encode(try XCTUnwrap(doc.session.document.features.node(node.id)).kind)
+        let original=try XCTUnwrap(JSONSerialization.jsonObject(with:
+            JSONEncoder().encode(try XCTUnwrap(doc.session.document.features.node(node.id)).kind)) as? NSDictionary)
+        let originalOutputs=try XCTUnwrap(doc.session.document.features.node(node.id)).outputBodyIDs
+        let originalSketches=doc.session.document.sketches,originalBodyIDs=doc.session.document.bodies.map(\.id)
+        let redoDepth=doc.session.undoStack.redoCommands.count
         let volume=OCCTKernel.volume(try shape(doc,body,solid:true)), depth=doc.session.undoStack.undoCommands.count
         let guide=SweepPathDefinition(segments:[.init(sketchID:sections[0].sketchID,entityID:UUID())])
         let definitions=[LoftDefinition(guides:[guide]),LoftDefinition(start:.init(tangent:PointWrapper(SIMD3(0,0,1)),
@@ -105,7 +118,13 @@ final class CADLoftSurfaceWorkflowTests: XCTestCase {
             "feature_id":node.id.raw.uuidString,"changes":["sections":try json(missing)]])
         XCTAssertEqual(bad["ok"] as? Bool,false,"\(bad)")
         XCTAssertEqual(doc.session.undoStack.undoCommands.count,depth)
-        XCTAssertEqual(try JSONEncoder().encode(try XCTUnwrap(doc.session.document.features.node(node.id)).kind),original)
+        let retained=try XCTUnwrap(doc.session.document.features.node(node.id))
+        let retainedObject=try XCTUnwrap(JSONSerialization.jsonObject(with:JSONEncoder().encode(retained.kind)) as? NSDictionary)
+        XCTAssertEqual(retainedObject,original,"Compare the full JSON tree; synthesized enum dictionaries have no stable encoding key order.")
+        XCTAssertEqual(retained.outputBodyIDs,originalOutputs)
+        XCTAssertEqual(doc.session.document.bodies.map(\.id),originalBodyIDs)
+        XCTAssertEqual(doc.session.document.sketches,originalSketches)
+        XCTAssertEqual(doc.session.undoStack.redoCommands.count,redoDepth)
         XCTAssertEqual(OCCTKernel.volume(try shape(doc,body,solid:true)),volume,accuracy:1e-9)
     }
     private func domain(_ handle: BRepHandle) throws -> (Int,Double,Double,Double,Double) {
@@ -190,8 +209,14 @@ final class CADLoftSurfaceWorkflowTests: XCTestCase {
         XCTAssertEqual(OCCTKernel.surfaceDiagnostics(closed)["faces"] as? Int,6)
         XCTAssertFalse(closed.containsSolid,"A closed shell is still a surface until the explicit solid operation.")
         let (thick,_)=try create(CADSurfaceDefinition(operation:.thicken,sources:[.init(producer:patched,bodyID:body)],thickness:1),on:doc)
-        healthy(try shape(doc,body,solid:true),solids:1)
-        XCTAssertGreaterThan(OCCTKernel.volume(try shape(doc,body,solid:true)),0)
+        let wall=try shape(doc,body,solid:true)
+        healthy(wall,solids:1)
+        XCTAssertGreaterThan(OCCTKernel.volume(wall),0)
+        // Positive Arc offset of the SAME 20×10×30 box: six face slabs,
+        // twelve quarter-cylinder edges and eight eighth-sphere corners.
+        // The original 6000 mm³ solid must be the cavity, not the material.
+        XCTAssertEqual(OCCTKernel.volume(wall),2200 + 60*Double.pi + 4*Double.pi/3,accuracy:1e-3)
+        XCTAssertEqual(OCCTKernel.healthReport(for:wall).counts["shells"],2)
         doc.session.undo(); XCTAssertNil(doc.session.document.features.node(thick)); XCTAssertNotNil(try shape(doc,body,solid:false))
         doc.session.undo(); XCTAssertNil(doc.session.document.features.node(patched))
         XCTAssertEqual(OCCTKernel.surfaceDiagnostics(try shape(doc,body,solid:false))["closed"] as? Bool,false)

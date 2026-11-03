@@ -6219,15 +6219,30 @@ final class EditorViewModel {
 
     nonisolated static func shellNativeFace(in body: Body, triangle: Int, table: FaceTable?) -> ResolvedFace? {
         guard let table, table.nativeBodyID == body.id, table.nativeMeshRevision == body.meshRevision,
-              let channel = table.nativeFaceChannel, channel.count == body.render.triangleCount,
-              channel.indices.contains(triangle), let brep = body.brep else { return nil }
-        let index = Int(channel[triangle])
-        guard let name = table.nativeFaceNames?[index], name.isStableFaceIdentity,
+              let brep = body.brep else { return nil }
+        let index: Int, triangles: [Int]
+        if let channel = table.nativeFaceChannel, channel.count == body.render.triangleCount,
+           channel.indices.contains(triangle) {
+            index = Int(channel[triangle])
+            triangles = channel.indices.filter { channel[$0] == UInt32(index) }
+        } else {
+            // Box primitives deliberately keep their Euclid display buffers.
+            // Their exact author-owned box roles already map to OCCT faces;
+            // equal triangle counts must never be used as a native channel.
+            guard case .box? = body.primitive else { return nil }
+            let entries = table.entries.filter { $0.triangles.contains(triangle) }
+            guard entries.count == 1, let entry = entries.first, let name = entry.elementName,
+                  case .primitiveFace(.boxFace) = name.source,
+                  table.entries.filter({ $0.elementName == name }).count == 1 else { return nil }
+            let matches = (table.nativeFaceNames ?? [:]).filter { $0.value == name }
+            guard matches.count == 1, let face = matches.first?.key else { return nil }
+            index = face; triangles = entry.triangles
+        }
+        guard !triangles.isEmpty, let name = table.nativeFaceNames?[index], name.isStableFaceIdentity,
               let signature = OCCTKernel.faceInfo(brep).first(where: { $0.index == index })?.signature,
               let point = OCCTKernel.faceSample(brep, index: index) else { return nil }
         return ResolvedFace(confidence: 1,
-            native: .init(index: index, signature: signature,
-                triangles: channel.indices.filter { channel[$0] == UInt32(index) }, point: point),
+            native: .init(index: index, signature: signature, triangles: triangles, point: point),
             elementName: name, identityProof: .recordedQualifiedName)
     }
 
@@ -6293,9 +6308,14 @@ final class EditorViewModel {
                 guard let owner = shellEditBodyRef ?? featureNode(owning: source.id).map({ BodyRef(producer: $0.id, bodyID: source.id) }),
                       let kind = shellFeatureKind(source: source, bodyRef: owner),
                       let parameters = kind.shellParameters, let definition = parameters.regions,
-                      let table = shellEditFaceTable ?? session.lastFaceTables[source.id],
-                      table.nativeBodyID == source.id, table.nativeMeshRevision == source.meshRevision,
-                      let names = table.nativeFaceNames ?? session.lastKernelNames[source.id] else { return nil }
+                      let captured = shellEditFaceTable ?? session.lastFaceTables[source.id] else { return nil }
+                // The untouched primitive's table has exact box roles but no
+                // native stamp/channel until prepared. Use the same authority
+                // as picking and replay before checking native generations.
+                let table = CADFaceNamingSnapshot.prepare(captured, for: source,
+                    names: shellEditingFeature == nil ? session.lastKernelNames[source.id] : captured.nativeFaceNames)
+                guard table.nativeBodyID == source.id, table.nativeMeshRevision == source.meshRevision,
+                      let names = table.nativeFaceNames else { return nil }
                 func index(_ ref: FaceRef) -> Int? {
                     guard let name = ref.elementName else { return nil }
                     let hits = names.filter { $0.value == name }
@@ -21076,6 +21096,8 @@ final class EditorViewModel {
             return spec.displayName
         case let .surface(definition):
             return CADLoftSurfaceService.surfaceTitle(definition.operation)
+        case let .mechanical(definition, _):
+            return CADMechanicalService.title(definition)
         case .polygonCage:
             return FloeCADStrings.text("cad.mesh.cage", "Polygon cage")
         case .baseSolid:

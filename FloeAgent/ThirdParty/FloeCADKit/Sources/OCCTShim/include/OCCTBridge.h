@@ -170,6 +170,8 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 @end
 
 @interface OCCTBridge : NSObject
+// Native qualification: observes overlapping scopes without raising a signal.
++ (NSDictionary<NSString *, id> *)signalGuardOverlapDiagnostics;
 
 /// OCCT version string (e.g. "7.8.1") — proves the library linked and runs.
 + (NSString *)occtVersion;

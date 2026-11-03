@@ -1254,7 +1254,7 @@ final class DocumentSession {
 
     private static func hasAssociations(_ document: DesignDocument) -> Bool {
         document.features.nodes.contains {
-            switch $0.kind { case .thread, .loft, .surface: return true; default: return false }
+            switch $0.kind { case .thread, .loft, .surface, .mechanical: return true; default: return false }
         }
             || document.planes.contains { $0.definition != nil }
             || document.sketches.contains { $0.support != nil || !$0.curveOffsetLinks.isEmpty }
@@ -1488,6 +1488,8 @@ final class DocumentSession {
                 + definition.regions.map { FeatureExpressionSlot(name: $0.parameterKey, unit: "mm", expr: $0.thickness) }
         case let .shell(_, _, thickness):
             return [FeatureExpressionSlot(name: "thickness", unit: "mm", expr: thickness)]
+        case let .mechanical(definition, _):
+            return definition.expressions
         case let .thread(_, spec):
             return [FeatureExpressionSlot(name: "pitch", unit: "mm", expr: spec.pitch),
                     FeatureExpressionSlot(name: "effective_length", unit: "mm", expr: spec.effectiveLength)]
@@ -1534,6 +1536,9 @@ final class DocumentSession {
     static func replacingExpression(in kind: FeatureKind, named name: String,
                                     with expr: Expr) -> FeatureKind? {
         switch kind {
+        case let .mechanical(definition, placement):
+            guard let changed = definition.replacing(name, with: expr) else { return nil }
+            return .mechanical(definition: changed, placement: placement)
         case let .extrude(profile, plane, distance, symmetric, boolean, extras, termination):
             guard name == "distance", termination == nil else { return nil }
             return .extrude(profile: profile, plane: plane, distance: expr,
