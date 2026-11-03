@@ -2428,6 +2428,14 @@ internal object ProviderWire {
                                     setOf(ModelCapabilityUi.VIDEO_GENERATION)
                             },
                             verifiedVision = role != ProviderServiceRoleUi.CONVERSATION,
+                            // Same generic limits as every staged row: the
+                            // closed native save validation requires
+                            // contextTokens > 0 for ALL selected models, so
+                            // the data-class 0 default refused every staged
+                            // official media save as invalidEnvelope
+                            // (modelLimitsInvalid) before any effect.
+                            contextTokens = 128_000,
+                            maxOutputTokens = 8_192,
                         ),
                     )
                 }

@@ -96,17 +96,18 @@ public struct VideoProviderAdapterFactory: Sendable {
     public init() {}
     public func adapter(for provider: ProviderProfile) -> (any VideoProviderAdapter)? {
         // Token Plan video runs on the documented native DashScope task API.
-        // Agent Plan video is intentionally not enabled in this round, even
-        // for a legacy profile that stored the plan endpoint under another
-        // kind: no plan video entry is offered.
-        if let billing = ProviderBillingEndpoint.resolve(provider.baseURL) {
-            switch billing {
-            case .volcengineAgentPlan:
-                return nil
-            case .alibabaTokenPlan:
-                return AlibabaVideoAdapter()
-            }
+        if ProviderBillingEndpoint.resolve(provider.baseURL) == .alibabaTokenPlan {
+            return AlibabaVideoAdapter()
         }
+        // A Volcengine Ark provider keeps its native video adapter on BOTH
+        // billing routes (iOS parity: the factory routes by kind only). The
+        // task path is built relative to the configured base URL
+        // (contents/generations/tasks), and the Agent Plan API mirrors the
+        // PAYG path suffix under /api/plan/v3 — the same pattern the image
+        // plan route documents; a real plan entitlement/API limitation
+        // surfaces as the ordinary provider error, never as a missing
+        // adapter. A non-Ark kind pointing at the plan host is still not
+        // promoted to a native protocol it does not own.
         return switch provider.kind {
         case .googleGemini: GoogleVideoAdapter()
         case .volcengineArk: VolcengineVideoAdapter()
