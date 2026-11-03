@@ -12,4 +12,6 @@
     <string name="fonts_remove">Remove font</string>
     <string name="fonts_remove_note">Projects using this font will need it imported again. Open documents keep their current font until closed.</string>
     <string name="fonts_sample">%1$s · Aa 0123 字体预览</string>
+    <string name="fonts_refresh">Refresh</string>
+    <string name="fonts_uncertain">The result is not confirmed yet. Refresh the font library to check.</string>
 </resources>

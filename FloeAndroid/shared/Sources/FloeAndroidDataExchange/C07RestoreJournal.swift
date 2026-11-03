@@ -246,6 +246,12 @@ public struct C07NoteImportReceipt: Sendable, Equatable {
 /// All live mutations a restore may perform. Implementations own the trusted
 /// root and must never accept a caller path. Each method is idempotent or is
 /// paired with a journal marker that makes retry safe.
+public struct C07ResourceRollbackIntent: Sendable {
+    public let planURL: URL
+    public let planSHA256: String
+    public init(planURL: URL, planSHA256: String) { self.planURL = planURL; self.planSHA256 = planSHA256 }
+}
+
 public protocol C07RestoreSink: Sendable {
     func createProject(markerName: String, origin: C07ProjectOrigin) async throws -> UUID
     func renameProject(id: UUID, to finalName: String) async throws
@@ -267,6 +273,14 @@ public protocol C07RestoreSink: Sendable {
     func insertSettingIfAbsent(key: String, json: String) async throws -> Bool
     func removeSettingIfExact(key: String, json: String) async throws
 
+    /// Validate device-specific global resources before ANY live project or
+    /// note insertion. Defaults preserve old sinks/packages without resources.
+    func prepareResourceRollback(_ staged: C07StagedOwnedData, restoreID: UUID,
+                                 journalRoot: URL) async throws -> C07ResourceRollbackIntent?
+    func preflightOwnedResources(_ staged: C07StagedOwnedData, restoreID: UUID) async throws
+    /// Last resource publication remains inside the existing restore journal.
+    func finalizeOwnedResources(_ prepared: C07PreparedOwnedData) async throws -> Int
+    func rollbackOwnedResources(_ staged: C07StagedOwnedData?, restoreID: UUID) async throws
     /// Plans the full owned-data graph (new identities, artifact roots and
     /// attachment paths) and writes the durable rollback plan BEFORE any
     /// live mutation. Read-only with respect to live storage.
@@ -289,11 +303,20 @@ public protocol C07RestoreSink: Sendable {
     func rollbackOwnedData(planURL: URL, planSHA256: String) async throws
 }
 
+public extension C07RestoreSink {
+    func prepareResourceRollback(_ staged: C07StagedOwnedData, restoreID: UUID,
+                                 journalRoot: URL) async throws -> C07ResourceRollbackIntent? { nil }
+    func preflightOwnedResources(_ staged: C07StagedOwnedData, restoreID: UUID) async throws {}
+    func finalizeOwnedResources(_ prepared: C07PreparedOwnedData) async throws -> Int { 0 }
+    func rollbackOwnedResources(_ staged: C07StagedOwnedData?, restoreID: UUID) async throws {}
+}
+
 // MARK: - Engine
 
 public struct C07RestoreReceipt: Sendable, Equatable {
     public var restoreID: UUID
     public var projectsRestored: Int
+    public var managedFontsRestored: Int = 0
     public var projectsSkipped: Int
     public var notebooksRestored: Int
     public var noteDocumentsRestored: Int
@@ -356,6 +379,16 @@ public enum C07RestoreEngine {
             var settingsSkipped = 0
             var ownedReceipt: C07OwnedDataCommitReceipt?
             var artifactReceipt: C07ArtifactCommitReceipt?
+            var preparedResources: C07PreparedOwnedData?
+            var managedFontsRestored = 0
+            if let owned = plan.ownedData {
+                if let intent = try await sink.prepareResourceRollback(owned,
+                    restoreID: journal.restoreID, journalRoot: journalRoot) {
+                    try journal.append(kind: .dataIntent, operation: .data,
+                        planFile: intent.planURL.lastPathComponent, planSHA256: intent.planSHA256)
+                }
+                try await sink.preflightOwnedResources(owned, restoreID: journal.restoreID)
+            }
 
             let totalOps = plan.projects.count + plan.manifest.notes.notebooks.count
                 + plan.notes.count + plan.settingsValues.count
@@ -410,6 +443,7 @@ public enum C07RestoreEngine {
                     kind: .dataIntent, operation: .data,
                     planFile: prepared.planURL.lastPathComponent,
                     planSHA256: prepared.planSHA256)
+                preparedResources = prepared
                 let artifacts = try await sink.commitArtifacts(prepared)
                 artifactReceipt = artifacts
                 try journal.append(
@@ -491,11 +525,15 @@ public enum C07RestoreEngine {
                 progress?(completedOps, totalOps)
             }
 
+            if let preparedResources {
+                managedFontsRestored = try await sink.finalizeOwnedResources(preparedResources)
+            }
             try journal.append(kind: .complete)
             journal.close()
             return C07RestoreReceipt(
                 restoreID: journal.restoreID,
                 projectsRestored: projectsRestored,
+                managedFontsRestored: managedFontsRestored,
                 projectsSkipped: projectsSkipped,
                 notebooksRestored: notebooksRestored,
                 noteDocumentsRestored: noteDocumentsRestored,
@@ -538,6 +576,7 @@ public enum C07RestoreEngine {
             let errorCode = (error as? C07DataExchangeError)?.code ?? "internal"
             try? journal.append(kind: .failed, error: errorCode)
             do {
+                try await sink.rollbackOwnedResources(plan.ownedData, restoreID: journal.restoreID)
                 _ = try await C07RestoreRollback.rollback(
                     records: journalSnapshot(journal), sink: sink,
                     journalRoot: journalRoot)

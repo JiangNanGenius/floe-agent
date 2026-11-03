@@ -527,7 +527,7 @@ class FloeApplication : Application() {
             // remain the lifecycle authority.
             // Drain the actual queued UI edits before native Root admission
             // is fenced; a timeout/refused recovery retains the owner.
-            (runtimeHost?.workspaceEditors?.prepareForRootStop() != false) &&
+            val drained = (runtimeHost?.workspaceEditors?.prepareForRootStop() != false) &&
                 (workspaceTerminal.boundNativeEpoch == 0L || workspaceTerminal.stopAndJoin(workspaceTerminal.boundNativeEpoch, 5_000)) &&
                 linuxShell.stopAndDrain(linuxShell.boundNativeEpoch) &&
                 (linuxCleanup.boundNativeEpoch == 0L ||
@@ -567,6 +567,9 @@ class FloeApplication : Application() {
                 // native Root epoch retires.
                 (runtimeHost?.prepareC06SystemServicesForRootStop() != false) &&
                 (runtimeHost?.prepareC07DataExchangeForRootStop() != false) &&
+                // C07 rollback may still need the font mailbox. Retire it
+                // only after every actual data-exchange operation settled.
+                (runtimeHost?.prepareFontsForRootStop() != false) &&
                 // C05 devices: close every App/tool TCP/Telnet/BLE/USB
                 // session and stop the trusted device tool mailbox before
                 // the native Root epoch retires.
@@ -576,6 +579,8 @@ class FloeApplication : Application() {
                 (runtimeHost?.preparePlatformForRootStop() != false) &&
                 // The network lane remains the LAST drain clause.
                 (runtimeHost?.prepareNetworkForRootStop() != false)
+            if (!drained) runtimeHost?.resumeFontsAfterRefusedStop()
+            drained
         }
         runtimeCoordinator.start()
         // G02 App host binding: data-only creation; commands stay off-main.

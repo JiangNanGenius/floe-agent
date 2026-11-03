@@ -20,9 +20,23 @@ public enum BridgeV16 {
     public static let modelTools = false
 }
 
+/// The original root work registry holds the database until a timed-out
+/// asynchronous bridge body physically ends, not merely until JNI returns.
+private final class C07RequestLease: Sendable {
+    let token: RuntimeOwnedWorkToken
+    init(epoch: UInt64) throws {
+        guard case .attached(let token) = RuntimeOwnedWorkRegistry.shared.attach(
+            epoch: epoch, kind: .tool, ownerID: "c07.rpc." + UUID().uuidString) else {
+            throw C07DataExchangeError.invalidScope("runtimeUnavailable")
+        }
+        self.token = token
+    }
+    deinit { RuntimeOwnedWorkRegistry.shared.detach(token) }
+}
+
 public enum C07DataExchangeBridge {
     private static let operations: Set<String> = [
-        "handshake", "c07.capabilities",
+        "handshake", "c07.capabilities", "c07.root.drain",
         "c07.backup.begin",
         "c07.job.status", "c07.job.read", "c07.job.close", "c07.job.cancel",
         "c07.restore.stageBegin", "c07.restore.stageAppend",
@@ -47,11 +61,13 @@ public enum C07DataExchangeBridge {
 
     private static func block<T: Sendable>(
         seconds: Double,
+        retaining lease: C07RequestLease? = nil,
         _ body: @escaping @Sendable () async throws -> T
     ) -> Result<T, Error> {
         let box = ResultBox<T>()
         let semaphore = DispatchSemaphore(value: 0)
-        let task = Task {
+        let task = Task { [lease] in
+            defer { withExtendedLifetime(lease) {} }
             do { box.set(.success(try await body())) }
             catch { box.set(.failure(error)) }
             semaphore.signal()
@@ -116,6 +132,17 @@ public enum C07DataExchangeBridge {
             }
             let owner = try C07ExchangeOwner.parse(object["owner"])
             let domain = C07DataExchangeDomain.shared
+            if operation == "c07.root.drain" {
+                // Cancellation/physical-count query stays available while
+                // new root admission is fenced. It grants no file authority.
+                let pending = try Self.block(seconds: 10) { await domain.drain(epoch: owner.nativeEpoch) }.get()
+                return reply(["drained": pending == 0, "pending": pending])
+            }
+            let lease = try C07RequestLease(epoch: owner.nativeEpoch)
+            func block<T: Sendable>(seconds: Double,
+                _ body: @escaping @Sendable () async throws -> T) -> Result<T, Error> {
+                Self.block(seconds: seconds, retaining: lease, body)
+            }
 
             switch operation {
             case "c07.capabilities":
@@ -123,7 +150,7 @@ public enum C07DataExchangeBridge {
 
             case "c07.backup.begin":
                 let context = try block(seconds: 10) {
-                    try await domain.makeContext(owner: owner)
+                    try await domain.makeContext(owner: owner, retainedWork: lease.token)
                 }.get()
                 let includeRetained = c07Bool(object["includeRetainedProjects"]) ?? true
                 let officeDrafts = try C08OfficeDraftCaptureRequest.parse(
@@ -139,7 +166,7 @@ public enum C07DataExchangeBridge {
             case "c07.job.status":
                 let jobID = try c07UUID(object["jobID"])
                 let status = try block(seconds: 10) {
-                    try await domain.status(jobID: jobID)
+                    try await domain.status(jobID: jobID, epoch: owner.nativeEpoch)
                 }.get()
                 return reply(statusJSON(status))
 
@@ -148,7 +175,7 @@ public enum C07DataExchangeBridge {
                 let offset = try c07Int64(object["offset"])
                 let maxBytes = c07Int(object["maxBytes"]) ?? C07DataExchangeWire.maximumChunkBytes
                 let read = try block(seconds: 15) {
-                    try await domain.read(jobID: jobID, offset: offset, maxBytes: maxBytes)
+                    try await domain.read(jobID: jobID, offset: offset, maxBytes: maxBytes, epoch: owner.nativeEpoch)
                 }.get()
                 return reply([
                     "jobID": jobID.uuidString,
@@ -161,21 +188,27 @@ public enum C07DataExchangeBridge {
 
             case "c07.job.close":
                 let jobID = try c07UUID(object["jobID"])
-                _ = try block(seconds: 10) {
-                    await domain.closeJob(jobID: jobID)
+                let state = try block(seconds: 10) {
+                    guard await domain.closeJob(jobID: jobID, epoch: owner.nativeEpoch) else {
+                        throw C07DataExchangeError.invalidScope("jobEpoch")
+                    }
+                    return await domain.stopState(jobID: jobID)
                 }.get()
-                return reply(["jobID": jobID.uuidString, "closed": true])
+                return reply(["jobID": jobID.uuidString, "closed": state.closed, "closeRequested": true])
 
             case "c07.job.cancel":
                 let jobID = try c07UUID(object["jobID"])
-                _ = try block(seconds: 10) {
-                    await domain.cancel(jobID: jobID)
+                let state = try block(seconds: 10) {
+                    guard await domain.cancel(jobID: jobID, epoch: owner.nativeEpoch) else {
+                        throw C07DataExchangeError.invalidScope("jobEpoch")
+                    }
+                    return await domain.stopState(jobID: jobID)
                 }.get()
-                return reply(["jobID": jobID.uuidString, "cancelled": true])
+                return reply(["jobID": jobID.uuidString, "cancelled": state.cancelled, "cancelRequested": true])
 
             case "c07.restore.stageBegin":
                 let context = try block(seconds: 10) {
-                    try await domain.makeContext(owner: owner)
+                    try await domain.makeContext(owner: owner, retainedWork: lease.token)
                 }.get()
                 let byteCount = try c07Int64(object["byteCount"])
                 let stageID = try block(seconds: 10) {
@@ -195,7 +228,7 @@ public enum C07DataExchangeBridge {
                     throw C07DataExchangeError.invalidScope("stageChunk")
                 }
                 let result = try block(seconds: 20) {
-                    try await domain.stageAppend(stageID: stageID, data: data)
+                    try await domain.stageAppend(stageID: stageID, data: data, epoch: owner.nativeEpoch)
                 }.get()
                 return reply([
                     "stageID": stageID.uuidString,
@@ -206,20 +239,22 @@ public enum C07DataExchangeBridge {
             case "c07.restore.stageCommit":
                 let stageID = try c07UUID(object["stageID"])
                 _ = try block(seconds: 20) {
-                    try await domain.stageCommit(stageID: stageID)
+                    try await domain.stageCommit(stageID: stageID, epoch: owner.nativeEpoch)
                 }.get()
                 return reply(["stageID": stageID.uuidString, "committed": true])
 
             case "c07.restore.stageAbort":
                 let stageID = try c07UUID(object["stageID"])
                 _ = try block(seconds: 10) {
-                    await domain.stageAbort(stageID: stageID)
+                    guard await domain.stageAbort(stageID: stageID, epoch: owner.nativeEpoch) else {
+                        throw C07DataExchangeError.invalidScope("stageEpoch")
+                    }
                 }.get()
                 return reply(["stageID": stageID.uuidString, "aborted": true])
 
             case "c07.restore.inspect":
                 let context = try block(seconds: 10) {
-                    try await domain.makeContext(owner: owner)
+                    try await domain.makeContext(owner: owner, retainedWork: lease.token)
                 }.get()
                 let stageID = try c07UUID(object["stageID"])
                 let kind = c07String(object["kind"], maxBytes: 16) ?? "backup"
@@ -246,7 +281,7 @@ public enum C07DataExchangeBridge {
 
             case "c07.restore.commit":
                 let context = try block(seconds: 10) {
-                    try await domain.makeContext(owner: owner)
+                    try await domain.makeContext(owner: owner, retainedWork: lease.token)
                 }.get()
                 let jobID = try c07UUID(object["jobID"])
                 let started = try block(seconds: 10) {
@@ -263,7 +298,7 @@ public enum C07DataExchangeBridge {
 
             case "c07.restore.pending":
                 let context = try block(seconds: 10) {
-                    try await domain.makeContext(owner: owner)
+                    try await domain.makeContext(owner: owner, retainedWork: lease.token)
                 }.get()
                 let pending = try block(seconds: 10) {
                     await domain.recoveryPending(context: context)
@@ -272,10 +307,10 @@ public enum C07DataExchangeBridge {
 
             case "c07.restore.recover":
                 let context = try block(seconds: 10) {
-                    try await domain.makeContext(owner: owner)
+                    try await domain.makeContext(owner: owner, retainedWork: lease.token)
                 }.get()
                 let report = try block(seconds: 180) {
-                    await domain.recover(context: context)
+                    try await domain.recover(context: context)
                 }.get()
                 return reply([
                     "recovered": report.recoveredJournals,
@@ -284,14 +319,14 @@ public enum C07DataExchangeBridge {
                 ])
 
             case "c07.document.exportTask":
-                let context = try block(seconds: 10) { try await domain.makeContext(owner: owner) }.get()
+                let context = try block(seconds: 10) { try await domain.makeContext(owner: owner, retainedWork: lease.token) }.get()
                 let conversationID = try c07UUID(object["conversationID"])
                 let job = block(seconds: 10) { await domain.startTaskExport(context: context, conversationID: conversationID) }
                 return reply(["jobID": try job.get().uuidString])
 
             case "c07.document.exportCanvas":
                 let context = try block(seconds: 10) {
-                    try await domain.makeContext(owner: owner)
+                    try await domain.makeContext(owner: owner, retainedWork: lease.token)
                 }.get()
                 let canvasID = try c07UUID(object["canvasID"])
                 let job = block(seconds: 10) {
@@ -302,14 +337,14 @@ public enum C07DataExchangeBridge {
 
             case "c07.document.canvases":
                 let context = try block(seconds: 10) {
-                    try await domain.makeContext(owner: owner)
+                    try await domain.makeContext(owner: owner, retainedWork: lease.token)
                 }.get()
                 let canvases = c07ListCanvases(context: context)
                 return reply(["canvases": canvases])
 
             case "c07.document.exportNote":
                 let context = try block(seconds: 10) {
-                    try await domain.makeContext(owner: owner)
+                    try await domain.makeContext(owner: owner, retainedWork: lease.token)
                 }.get()
                 let documentID = try c07UUID(object["documentID"])
                 let revision = c07Int(object["expectedRevision"]) ?? 0
@@ -390,7 +425,7 @@ public enum C07DataExchangeBridge {
                 ["id": $0.id, "reason": $0.reason]
             },
             "operations": [
-                "c07.backup.begin", "c07.job.status", "c07.job.read",
+                "c07.root.drain", "c07.backup.begin", "c07.job.status", "c07.job.read",
                 "c07.job.close", "c07.job.cancel",
                 "c07.restore.stageBegin", "c07.restore.stageAppend",
                 "c07.restore.stageCommit", "c07.restore.stageAbort",
@@ -550,6 +585,7 @@ public enum C07DataExchangeBridge {
         if let count = status.restoredOfficeDrafts {
             receipt["officeDrafts"] = count
         }
+        if let count = status.restoredManagedFonts { receipt["managedFonts"] = count }
         if let partial = status.partial { receipt["partial"] = partial }
         if !receipt.isEmpty { value["receipt"] = receipt }
         return value

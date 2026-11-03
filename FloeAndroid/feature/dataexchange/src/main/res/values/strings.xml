@@ -182,4 +182,5 @@
     <string name="dataexchange_office_kind_verified">verified save</string>
     <string name="dataexchange_office_open">Open</string>
     <string name="dataexchange_excluded_office_state">Old Office recovery journals, live sessions, destination links/grants and pending save actions (only document content is restored)</string>
+    <string name="c07_restored_fonts">Fonts restored: %1$d</string>
 </resources>

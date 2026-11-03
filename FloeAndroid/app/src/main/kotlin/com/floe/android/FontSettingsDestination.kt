@@ -59,6 +59,7 @@ private fun FontSettingsDestination(host: FontSettingsHost, onDismiss: () -> Uni
                 FloeCapsuleAction(stringResource(R.string.fonts_import), {
                     picker.launch(arrayOf("font/*", "application/x-font-ttf", "application/x-font-opentype", "application/octet-stream"))
                 }, enabled = !state.busy)
+                FloeCapsuleAction(stringResource(R.string.fonts_refresh), host::refresh, enabled = !state.busy)
                 if (state.busy) FloeActivityIndicator()
             }
             FloeText(stringResource(R.string.fonts_scope), style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
@@ -68,6 +69,7 @@ private fun FontSettingsDestination(host: FontSettingsHost, onDismiss: () -> Uni
                     "installed" -> R.string.fonts_installed
                     "removed" -> R.string.fonts_removed
                     "missing" -> R.string.fonts_missing
+                    "uncertain" -> R.string.fonts_uncertain
                     else -> R.string.fonts_failed
                 }), style = Floe.typography.metadata)
             }

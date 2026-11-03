@@ -118,6 +118,7 @@ public data class DataExchangeReceiptUi(
     val skills: Int = 0,
     val modelPreferences: Int = 0,
     val officeDrafts: Int = 0,
+    val managedFonts: Int = 0,
     val partial: Boolean = false,
 ) {
     val isEmpty: Boolean
@@ -127,7 +128,7 @@ public data class DataExchangeReceiptUi(
             toolResults == 0 && appArtifacts == 0 && captureFiles == 0 &&
             configSections == 0 && mcpDefinitions == 0 && memoryEntries == 0 &&
             memoryCandidates == 0 && personalizationDocuments == 0 &&
-            checklistRevisions == 0 && skills == 0 && officeDrafts == 0
+            checklistRevisions == 0 && skills == 0 && officeDrafts == 0 && managedFonts == 0
 }
 
 public data class DataExchangeUiState(

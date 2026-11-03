@@ -26,23 +26,24 @@ class ManagedFontStore(context: Context) {
     data class Entry(val id: String, val bytes: Long, val faces: List<Face>) {
         fun reference(face: Face): String = "floe-font:$id:${face.index}"
     }
-    private val root = File(context.applicationContext.filesDir, "ManagedFontsV1")
+    internal val filesRoot = context.applicationContext.filesDir
+    internal val root = File(filesRoot, "ManagedFontsV1")
     private val catalog get() = AtomicFile(File(root, "catalog.json"))
 
-    private fun ensureDirectory(dir: File) {
+    internal fun ensureDirectory(dir: File) {
         if (!dir.exists()) check(dir.mkdir()) { "Cannot create font library" }
         require(OsConstants.S_ISDIR(Os.lstat(dir.path).st_mode)) { "Unsafe font library directory" }
     }
-    private fun <T> locked(block: () -> T): T = synchronized(processLock) {
+    internal fun <T> locked(block: () -> T): T = synchronized(processLock) {
         ensureDirectory(root)
         val lock = File(root, "catalog.lock")
         if (lock.exists()) regular(lock)
         RandomAccessFile(lock, "rw").use { f -> f.channel.lock().use { block() } }
     }
-    private fun regular(file: File) {
+    internal fun regular(file: File) {
         require(OsConstants.S_ISREG(Os.lstat(file.path).st_mode)) { "Unsafe font file" }
     }
-    private fun digest(file: File): String = file.inputStream().use { input ->
+    internal fun digest(file: File): String = file.inputStream().use { input ->
         val md = MessageDigest.getInstance("SHA-256")
         val buffer = ByteArray(65536)
         while (true) {
@@ -52,13 +53,17 @@ class ManagedFontStore(context: Context) {
         }
         md.digest().joinToString("") { "%02x".format(it) }
     }
-    private fun read(): List<Entry> {
+    internal fun read(): List<Entry> {
         val file = File(root, "catalog.json")
         // AtomicFile may have a previous committed backup after a crash.
         if (!file.exists() && !File(root, "catalog.json.bak").exists()) return emptyList()
         if (file.exists()) regular(file)
         File(root, "catalog.json.bak").takeIf { it.exists() }?.let(::regular)
         val data = catalog.openRead().use { it.readBytesBounded(262144) }
+        return parseCatalog(data)
+    }
+    internal fun parseCatalog(data: ByteArray): List<Entry> {
+        require(data.size <= 262144) { "Font catalogue too large" }
         val json = JSONObject(String(data, Charsets.UTF_8))
         require(json.getInt("schema") == 1) { "Unsupported font library" }
         val array = json.getJSONArray("fonts")
@@ -81,19 +86,40 @@ class ManagedFontStore(context: Context) {
             })
         }
     }
-    private fun commit(entries: List<Entry>) {
+    internal fun document(entries: List<Entry>, revision: Long): ByteArray {
         val values = JSONArray()
         entries.forEach { entry ->
             val faces = JSONArray()
             entry.faces.forEach { faces.put(JSONObject().put("index", it.index).put("name", it.name).put("aliases", JSONArray(it.aliases))) }
             values.put(JSONObject().put("id", entry.id).put("bytes", entry.bytes).put("faces", faces))
         }
-        val bytes = JSONObject().put("schema", 1).put("fonts", values).toString().toByteArray()
+        val bytes = JSONObject().put("schema", 1).put("revision", revision).put("fonts", values).toString().toByteArray()
         require(bytes.size <= 262144) { "Font catalogue too large" }
+        return bytes
+    }
+    internal fun rawCatalog(): ByteArray {
+        read() // Includes no-follow/regular-file and bounded format checks.
+        return if (!File(root, "catalog.json").exists()) document(emptyList(), 0)
+            else catalog.openRead().use { it.readBytesBounded(262144) }
+    }
+    internal fun syncDirectory(directory: File) {
+        val fd = Os.open(directory.path, OsConstants.O_RDONLY or OsConstants.O_NONBLOCK or
+            OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC, 0)
+        try { require(OsConstants.S_ISDIR(Os.fstat(fd).st_mode)); Os.fsync(fd) } finally { Os.close(fd) }
+    }
+    internal fun commit(entries: List<Entry>) {
+        val revision = JSONObject(String(rawCatalog(), Charsets.UTF_8)).optLong("revision", 0)
+        require(revision >= 0 && revision < Long.MAX_VALUE)
+        val bytes = document(entries, revision + 1)
         val output = catalog.startWrite()
         try { output.write(bytes); catalog.finishWrite(output) }
         catch (e: Throwable) { catalog.failWrite(output); throw e }
+        // A post-rename durability failure cannot call failWrite on the
+        // already committed stream or pretend that publication did not occur.
+        try { syncDirectory(root) } catch (e: Exception) { throw FontCommitUncertain(e) }
     }
+    internal fun restoreCatalog(entries: List<Entry>) = commit(entries)
+
     fun list(): List<Entry> = locked { read() }
 
     /** Caller owns the granted source stream. It is consumed and closed here. */
@@ -154,7 +180,7 @@ class ManagedFontStore(context: Context) {
             true
         }
     }
-    private fun verifiedPayload(entry: Entry): File = File(root, "${entry.id}.ttf").also {
+    internal fun verifiedPayload(entry: Entry): File = File(root, "${entry.id}.ttf").also {
         regular(it)
         require(it.length() == entry.bytes && digest(it) == entry.id) { "Font payload changed" }
     }
@@ -226,3 +252,5 @@ object ManagedFontTypeface {
         return Typeface.create(name ?: "sans-serif", Typeface.NORMAL)
     }
 }
+
+class FontCommitUncertain(cause: Throwable) : java.io.IOException("Font operation outcome requires verification", cause)

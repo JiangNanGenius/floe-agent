@@ -424,6 +424,10 @@ public fun DataExchangeSettingsPage(
                                 color = Floe.colors.secondaryLabel,
                             )
                         }
+                        if (receipt.managedFonts > 0) {
+                            FloeText(stringResource(R.string.c07_restored_fonts, receipt.managedFonts),
+                                style = Floe.typography.metadata)
+                        }
                         if (receipt.officeDrafts > 0) {
                             FloeText(
                                 stringResource(R.string.dataexchange_result_office,

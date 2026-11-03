@@ -1091,7 +1091,7 @@ public enum C07OwnedDataClosure {
                       conversations.contains(id) else {
                     throw C07DataExchangeError.referenceMissing("privateTaskOwner")
                 }
-            case .environmentCheckpoint, .mailReceipt, .appArtifact,
+            case .environmentCheckpoint, .mailReceipt, .appArtifact, .managedFont,
                  .captureFile, .configuration:
                 break
             case .canvasCADDraft, .canvasCADRevision, .canvasNativeCAD:

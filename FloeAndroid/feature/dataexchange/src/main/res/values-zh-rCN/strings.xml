@@ -182,4 +182,5 @@
     <string name="dataexchange_office_kind_verified">已验证保存</string>
     <string name="dataexchange_office_open">打开</string>
     <string name="dataexchange_excluded_office_state">旧 Office 恢复日志、实时会话、目标链接/授权与待处理保存操作（仅恢复文档内容）</string>
+    <string name="c07_restored_fonts">已恢复字体：%1$d</string>
 </resources>

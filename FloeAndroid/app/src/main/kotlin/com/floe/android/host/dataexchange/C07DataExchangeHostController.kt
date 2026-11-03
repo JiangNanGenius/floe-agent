@@ -704,6 +704,25 @@ internal class C07DataExchangeHostController(
         refresh()
     }
 
+    /** Keep the font/DB root alive through actual native work and rollback. */
+    suspend fun prepareForRootStop(): Boolean = withContext(NonCancellable + ioDispatcher) {
+        val captured = runCatching { owner() }.getOrNull()
+            ?: return@withContext activeWork?.isActive != true
+        cancelRequested = true
+        val running = activeWork
+        running?.cancel()
+        val deadline = android.os.SystemClock.elapsedRealtime() + 5_000
+        var drained = false
+        while (android.os.SystemClock.elapsedRealtime() < deadline) {
+            drained = runCatching { client.drain(captured) }.getOrDefault(false)
+            if (drained && running?.isCompleted != false) break
+            delay(100)
+        }
+        if (!drained || running?.isCompleted == false) return@withContext false
+        onRootStopped()
+        true
+    }
+
     fun onRootStopped() {
         activeDestinationUri?.let { deleteDestination(it) }
         activeDestinationUri = null
@@ -1089,6 +1108,7 @@ internal class C07DataExchangeHostController(
             skills = skills,
             modelPreferences = modelPreferences,
             officeDrafts = officeDrafts,
+            managedFonts = managedFonts,
             partial = partial,
         )
 

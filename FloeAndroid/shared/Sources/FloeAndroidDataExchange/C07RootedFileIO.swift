@@ -625,7 +625,7 @@ public enum C07RootedFileIO {
             guard statResult == 0,
                   current.st_dev == opened.st_dev,
                   current.st_ino == opened.st_ino,
-                  current.st_size == opened.st_size else {
+                  Int64(current.st_size) == count else {
                 throw C07DataExchangeError.storageUnavailable(
                     "destinationReplaced")
             }
@@ -733,7 +733,7 @@ public enum C07RootedFileIO {
         guard statResult == 0,
               current.st_dev == opened.st_dev,
               current.st_ino == opened.st_ino,
-              current.st_size == opened.st_size else {
+              Int64(current.st_size) == Int64(data.count) else {
             throw C07DataExchangeError.storageUnavailable("destinationReplaced")
         }
         return (digest, Int64(data.count))

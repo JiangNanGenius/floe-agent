@@ -16,12 +16,14 @@ public final class FontHostMailbox: @unchecked Sendable {
         let epoch: UInt64
         let request: Data
         let cancellation: CancellationToken
+        let recoveryWork: RuntimeOwnedWorkToken?
         let deadline = Date().addingTimeInterval(30)
         var claimed = false
         var cancelled = false
         var result: Data?
-        init(epoch: UInt64, request: Data, cancellation: CancellationToken) {
+        init(epoch: UInt64, request: Data, cancellation: CancellationToken, recoveryWork: RuntimeOwnedWorkToken?) {
             self.epoch = epoch; self.request = request; self.cancellation = cancellation
+            self.recoveryWork = recoveryWork
         }
     }
     private let lock = NSLock()
@@ -44,10 +46,13 @@ public final class FontHostMailbox: @unchecked Sendable {
         Data("{\"ok\":false,\"error\":\"\(code)\"}".utf8)
     }
     public func submit(epoch expected: UInt64, request: Data,
-                       cancellation: CancellationToken) async throws -> Data {
+                       cancellation: CancellationToken,
+                       recoveryWork: RuntimeOwnedWorkToken? = nil) async throws -> Data {
         try cancellation.throwIfCancelled()
         guard request.count <= 4096 else { throw FloeError.validationFailed("Font request too large") }
-        let ticket = Ticket(epoch: expected, request: request, cancellation: cancellation)
+        let cleanup = ((try? JSONSerialization.jsonObject(with: request)) as? [String: Any])?["method"] as? String
+        let retained = ["snapshot.rollback", "snapshot.complete"].contains(cleanup ?? "") ? recoveryWork : nil
+        let ticket = Ticket(epoch: expected, request: request, cancellation: cancellation, recoveryWork: retained)
         let admitted = lock.withLock {
             guard epoch == expected, accepting, tickets.count < 8 else { return false }
             tickets[ticket.id] = ticket; queue.append(ticket.id); return true
@@ -80,7 +85,14 @@ public final class FontHostMailbox: @unchecked Sendable {
     private func bind(_ expected: UInt64) -> Bool {
         guard expected > 0, rootIsCurrent(expected) else { return false }
         return lock.withLock {
-            if epoch == expected { return accepting }
+            if epoch == expected {
+                // A later drain gate can retain this exact accepted root.
+                // Re-arm admission only after all claimed operations settled;
+                // existing cancellation and result receipts stay intact.
+                guard !tickets.values.contains(where: { $0.claimed && $0.result == nil }) else { return false }
+                accepting = true
+                return true
+            }
             guard expected > epoch, tickets.isEmpty else { return false }
             epoch = expected; accepting = true; queue.removeAll()
             retired.removeAll(); retiredOrder.removeAll(); return true
@@ -114,11 +126,15 @@ public final class FontHostMailbox: @unchecked Sendable {
         }
     }
     private func canCommit(_ expected: UInt64, id: String) -> Bool {
-        guard rootIsCurrent(expected) else { return false }
         return lock.withLock {
             guard epoch == expected, accepting, let ticket = tickets[id], ticket.claimed,
                   ticket.result == nil else { return false }
-            return !ticket.cancelled && !ticket.cancellation.isCancelled && Date() < ticket.deadline
+            let retainedCleanup = ticket.recoveryWork.map {
+                $0.epoch == expected && $0.kind == .tool && $0.ownerID.hasPrefix("c07.")
+                    && RuntimeOwnedWorkRegistry.shared.isAttached($0)
+            } ?? false
+            return (rootIsCurrent(expected) || retainedCleanup) && !ticket.cancelled
+                && !ticket.cancellation.isCancelled && Date() < ticket.deadline
         }
     }
     private func settle(_ expected: UInt64, id: String, result: Data) -> Bool {

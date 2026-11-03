@@ -769,12 +769,15 @@ class RuntimeHost internal constructor(
      * native job. Staged files are app-private; the durable restore journal
      * remains for the next generation's explicit recovery action.
      */
-    internal suspend fun prepareC07DataExchangeForRootStop(): Boolean {
-        if (c07DataExchangeDelegate.isInitialized()) {
-            c07DataExchange.onRootStopped()
-        }
-        return true
+    internal suspend fun prepareC07DataExchangeForRootStop(): Boolean =
+        if (c07DataExchangeDelegate.isInitialized()) c07DataExchange.prepareForRootStop() else true
+
+    internal suspend fun prepareFontsForRootStop(): Boolean = fontTools.stopAndJoin()
+
+    internal fun resumeFontsAfterRefusedStop() {
+        if (nativeRootEpoch()?.let { it > 0L } == true) fontTools.resumeAfterRefusedStop()
     }
+
 
     internal var workspaceSourceHost: WorkspaceSourceHostController? = null
     /** D04 owned run-output lane (list / verified Save Copy / Office egress
@@ -904,7 +907,8 @@ class RuntimeHost internal constructor(
      * RB-1 owner stop. The host never cancels another owner's work.
      */
     suspend fun stop() {
-        if (!fontTools.stopAndJoin()) return
+        if (!prepareC07DataExchangeForRootStop()) return
+        if (!prepareFontsForRootStop()) return
         // C03 voice owns real microphone/TTS/cloud operations; fence and join
         // them before the native root retires.
         if (::voice.isInitialized && !voice.prepareForRootStop()) return
@@ -1123,6 +1127,7 @@ class RuntimeHost internal constructor(
                 }
                 // C07 only reacts if the settings surface already created
                 // the controller; no backup/restore work starts implicitly.
+                fontTools.start()
                 if (c07DataExchangeDelegate.isInitialized()) {
                     c07DataExchange.onOwnedStoreReady()
                 }

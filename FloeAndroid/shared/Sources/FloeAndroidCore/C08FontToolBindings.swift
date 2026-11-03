@@ -94,8 +94,10 @@ public struct FontInstallTool: AgentTool {
         let inputID = UUID().uuidString.lowercased()
         let dataDir = URL(fileURLWithPath: root.path).deletingLastPathComponent().deletingLastPathComponent()
         let directory = dataDir.appendingPathComponent("files/FontIncomingV1/" + inputID, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        var created = false
+        defer { if created { try? FileManager.default.removeItem(at: directory) } }
         let receipt = try C07RootedFileIO.withExclusiveDirectory(at: directory) { owned in
+            created = true
             if let bytes {
                 return try C07RootedFileIO.writeFile(bytes, destinationRoot: directory,
                     destinationRelativePath: "font.bin", destinationDirectory: owned)

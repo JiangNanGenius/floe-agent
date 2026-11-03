@@ -82,6 +82,7 @@ public struct C07ExchangeOwner: Sendable, Equatable {
 
 struct C07DataExchangeContext: Sendable {
     let epoch: UInt64
+    var retainedWorkToken: RuntimeOwnedWorkToken? = nil
     let rootPath: String
     let artifactRoot: URL
     let dataRoot: URL
@@ -868,6 +869,7 @@ public struct C07JobStatus: Sendable, Equatable {
     public var restoredSkills: Int? = nil
     public var restoredModelPreferences: Int? = nil
     public var restoredOfficeDrafts: Int? = nil
+    public var restoredManagedFonts: Int? = nil
     public var canCommit: Bool
 }
 
@@ -888,6 +890,9 @@ public actor C07DataExchangeDomain {
         var id: UUID
         var kind: String
         var phase: Phase
+        var epoch: UInt64 = 0
+        var cancelRequested = false
+        var closeRequested = false
         var doneBytes: Int64 = 0
         var totalBytes: Int64 = 0
         var errorCode: String?
@@ -904,6 +909,7 @@ public actor C07DataExchangeDomain {
     }
 
     private struct UploadStage {
+        var token: RuntimeOwnedWorkToken
         var id: UUID
         var expected: Int64
         var received: Int64
@@ -915,11 +921,68 @@ public actor C07DataExchangeDomain {
     private var jobs: [UUID: Job] = [:]
     private var uploads: [UUID: UploadStage] = [:]
     private var preparedRoots = Set<String>()
+    private struct OwnedJobWork: Sendable {
+        let jobID: UUID
+        let epoch: UInt64
+        let task: Task<Void, Never>
+        let token: RuntimeOwnedWorkToken
+        let committing: Bool
+    }
+    private var ownedJobWork: [String: OwnedJobWork] = [:]
+    private var recoveryInProgress = false
+
+    /// One exact token per physical stage. Inspection and commit may share a
+    /// job ID, but an older completion cannot retire its newer stage.
+    private func startOwnedTask(context: C07DataExchangeContext, jobID: UUID,
+        body: @escaping @Sendable (C07DataExchangeContext) async -> Void) {
+        guard var job = jobs[jobID], !job.cancelRequested else { return }
+        if Task.isCancelled {
+            job.phase = .cancelled; job.cancelRequested = true; jobs[jobID] = job; return
+        }
+        job.epoch = context.epoch
+        jobs[jobID] = job
+        guard case .attached(let token) = RuntimeOwnedWorkRegistry.shared.attach(
+            epoch: context.epoch, kind: .tool, ownerID: "c07.job." + UUID().uuidString) else {
+            jobs[jobID]?.phase = .failed
+            jobs[jobID]?.errorCode = "runtimeUnavailable"
+            return
+        }
+        var retained = context
+        retained.retainedWorkToken = token
+        let frozen = retained
+        let task = Task.detached(priority: .userInitiated) { await body(frozen) }
+        ownedJobWork[token.receipt] = OwnedJobWork(jobID: jobID, epoch: context.epoch, task: task, token: token, committing: job.phase == .committing)
+        jobs[jobID]?.task = task
+        Task.detached { [weak self] in
+            await task.value
+            if let self { await self.didPhysicallySettle(token.receipt) }
+            else { RuntimeOwnedWorkRegistry.shared.detach(token) }
+        }
+    }
+    private func didPhysicallySettle(_ receipt: String) {
+        guard let work = ownedJobWork.removeValue(forKey: receipt) else { return }
+        if !ownedJobWork.values.contains(where: { $0.jobID == work.jobID }) {
+            if jobs[work.jobID]?.closeRequested == true { finalizeClose(work.jobID) }
+            else if jobs[work.jobID]?.cancelRequested == true,
+                    jobs[work.jobID]?.receipt == nil,
+                    jobs[work.jobID]?.phase != .failed {
+                jobs[work.jobID]?.phase = .cancelled
+            }
+        }
+        // Detach only after all owned file cleanup also physically returned.
+        RuntimeOwnedWorkRegistry.shared.detach(work.token)
+    }
+    func drain(epoch: UInt64) -> Int {
+        for id in jobs.values.filter({ $0.epoch == epoch }).map(\.id) { closeJob(jobID: id, epoch: epoch) }
+        for id in uploads.values.filter({ $0.token.epoch == epoch }).map(\.id) { stageAbort(stageID: id) }
+        return RuntimeOwnedWorkRegistry.shared.count(for: epoch, ownerPrefix: "c07.")
+    }
 
     // MARK: Context / preparation
 
-    func makeContext(owner: C07ExchangeOwner) throws -> C07DataExchangeContext {
-        let context = try C07DataExchangeContext.make(owner: owner)
+    func makeContext(owner: C07ExchangeOwner, retainedWork: RuntimeOwnedWorkToken? = nil) throws -> C07DataExchangeContext {
+        var context = try C07DataExchangeContext.make(owner: owner)
+        context.retainedWorkToken = retainedWork
         if preparedRoots.insert(context.dataRoot.path).inserted {
             do { try prepare(context) }
             catch {
@@ -963,7 +1026,7 @@ public actor C07DataExchangeDomain {
         let destination = context.exportsRoot.appendingPathComponent(
             "\(id.uuidString).\(C07DataExchangeLimits.backupExtension)")
         jobs[id] = Job(id: id, kind: "backup", phase: .building)
-        let task = Task.detached(priority: .userInitiated) { [weak self] in
+        startOwnedTask(context: context, jobID: id) { [weak self] context in
             guard let self else { return }
             do {
                 try C07FileSystem.ensureDirectory(work)
@@ -973,13 +1036,13 @@ public actor C07DataExchangeDomain {
                         includeRetainedProjects: includeRetainedProjects,
                         officeDrafts: officeDrafts
                     ) { done, total in
-                        Task { await self.updateProgress(id, done: done, total: total) }
+                        Task { await self.updateProgress(id, workReceipt: context.retainedWorkToken?.receipt, done: done, total: total) }
                     }
                 let built = try await C07BackupBuilder.build(
                     source: source, destination: destination,
                     stagingRoot: work.appendingPathComponent("staging", isDirectory: true)
                 ) { done, total in
-                    Task { await self.updateProgress(id, done: done, total: total) }
+                    Task { await self.updateProgress(id, workReceipt: context.retainedWorkToken?.receipt, done: done, total: total) }
                 }
                 C07FileSystem.removeIfPresent(work)
                 await self.finishFileJob(
@@ -1000,7 +1063,6 @@ public actor C07DataExchangeDomain {
                 await self.finishFailure(id, code: "internal")
             }
         }
-        jobs[id]?.task = task
         return id
     }
 
@@ -1012,7 +1074,7 @@ public actor C07DataExchangeDomain {
         let destination = context.exportsRoot.appendingPathComponent(
             "\(id.uuidString).\(C07DataExchangeLimits.notesExtension)")
         jobs[id] = Job(id: id, kind: "noteExport", phase: .building)
-        let task = Task.detached(priority: .userInitiated) { [weak self] in
+        startOwnedTask(context: context, jobID: id) { [weak self] context in
             guard let self else { return }
             do {
                 try C07FileSystem.ensureDirectory(work)
@@ -1033,7 +1095,6 @@ public actor C07DataExchangeDomain {
                 await self.finishFailure(id, code: code)
             }
         }
-        jobs[id]?.task = task
         return id
     }
 
@@ -1041,7 +1102,7 @@ public actor C07DataExchangeDomain {
         let id = UUID()
         let destination = context.exportsRoot.appendingPathComponent("\(id.uuidString).jsonl")
         jobs[id] = Job(id: id, kind: "taskExport", phase: .building)
-        jobs[id]?.task = Task.detached(priority: .userInitiated) { [weak self] in
+        startOwnedTask(context: context, jobID: id) { [weak self] context in
             guard let self else { return }
             do {
                 try await C08TaskTranscript.export(database: context.database, conversationID: conversationID, to: destination)
@@ -1062,6 +1123,12 @@ public actor C07DataExchangeDomain {
         guard byteCount > 0, byteCount <= C07DataExchangeWire.maximumStageBytes else {
             throw C07DataExchangeError.invalidScope("stageSize")
         }
+        guard case .attached(let token) = RuntimeOwnedWorkRegistry.shared.attach(
+            epoch: context.epoch, kind: .tool, ownerID: "c07.upload." + UUID().uuidString) else {
+            throw C07DataExchangeError.invalidScope("runtimeUnavailable")
+        }
+        var retained = false
+        defer { if !retained { RuntimeOwnedWorkRegistry.shared.detach(token) } }
         try C07FileSystem.ensureDirectory(context.incomingRoot)
         let id = UUID()
         let url = context.incomingRoot.appendingPathComponent("\(id.uuidString).upload")
@@ -1075,15 +1142,17 @@ public actor C07DataExchangeDomain {
             throw C07DataExchangeError.storageUnavailable("stageOpen")
         }
         uploads[id] = UploadStage(
-            id: id, expected: byteCount, received: 0,
+            token: token, id: id, expected: byteCount, received: 0,
             url: url, handle: handle, committed: false)
+        retained = true
         return id
     }
 
-    func stageAppend(stageID: UUID, data: Data) throws -> C07StageAppendResult {
+    func stageAppend(stageID: UUID, data: Data, epoch: UInt64? = nil) throws -> C07StageAppendResult {
         guard var stage = uploads[stageID] else {
             throw C07DataExchangeError.notFound
         }
+        if let epoch, stage.token.epoch != epoch { throw C07DataExchangeError.invalidScope("stageEpoch") }
         guard !stage.committed, !data.isEmpty,
               data.count <= C07DataExchangeWire.maximumChunkBytes else {
             throw C07DataExchangeError.invalidScope("stageChunk")
@@ -1098,10 +1167,12 @@ public actor C07DataExchangeDomain {
         return C07StageAppendResult(receivedBytes: stage.received, totalBytes: stage.expected)
     }
 
-    func stageCommit(stageID: UUID) throws -> URL {
+    func stageCommit(stageID: UUID, epoch: UInt64? = nil) throws -> URL {
         guard var stage = uploads[stageID] else {
             throw C07DataExchangeError.notFound
         }
+        if let epoch, stage.token.epoch != epoch { throw C07DataExchangeError.invalidScope("stageEpoch") }
+        if stage.committed { return stage.url }
         guard stage.received == stage.expected else {
             throw C07DataExchangeError.restoreIncomplete
         }
@@ -1109,13 +1180,19 @@ public actor C07DataExchangeDomain {
         catch { throw C07DataExchangeError.storageUnavailable("stageCommit") }
         stage.committed = true
         uploads[stageID] = stage
+        RuntimeOwnedWorkRegistry.shared.detach(stage.token)
         return stage.url
     }
 
-    func stageAbort(stageID: UUID) {
-        guard let stage = uploads.removeValue(forKey: stageID) else { return }
+    @discardableResult
+    func stageAbort(stageID: UUID, epoch: UInt64? = nil) -> Bool {
+        guard let stage = uploads[stageID] else { return true }
+        if let epoch, stage.token.epoch != epoch { return false }
+        uploads.removeValue(forKey: stageID)
         try? stage.handle.close()
         C07FileSystem.removeIfPresent(stage.url)
+        RuntimeOwnedWorkRegistry.shared.detach(stage.token)
+        return true
     }
 
     // MARK: Restore inspect / commit
@@ -1126,14 +1203,14 @@ public actor C07DataExchangeDomain {
         guard let stage = uploads[stageID] else {
             throw C07DataExchangeError.notFound
         }
-        guard stage.committed else {
+        guard stage.token.epoch == context.epoch, stage.committed else {
             throw C07DataExchangeError.restoreIncomplete
         }
         let uploadURL = stage.url
         let id = UUID()
         jobs[id] = Job(id: id, kind: "restore", phase: .inspecting,
                        uploadStageID: stageID)
-        let task = Task.detached(priority: .userInitiated) { [weak self] in
+        startOwnedTask(context: context, jobID: id) { [weak self] context in
             guard let self else { return }
             do {
                 let plan = try await C07BackupReader.inspect(
@@ -1141,7 +1218,7 @@ public actor C07DataExchangeDomain {
                     stagingRoot: context.stagingRoot,
                     currentAppSchemaVersion: currentAppSchemaVersion
                 ) { done, total in
-                    Task { await self.updateProgress(id, done: done, total: total) }
+                    Task { await self.updateProgress(id, workReceipt: context.retainedWorkToken?.receipt, done: done, total: total) }
                 }
                 await self.finishInspection(id, plan: plan)
             } catch let error as C07DataExchangeError {
@@ -1151,7 +1228,6 @@ public actor C07DataExchangeDomain {
                 await self.finishFailure(id, code: "internal")
             }
         }
-        jobs[id]?.task = task
         return id
     }
 
@@ -1164,7 +1240,7 @@ public actor C07DataExchangeDomain {
         guard let stage = uploads[stageID] else {
             throw C07DataExchangeError.notFound
         }
-        guard stage.committed else {
+        guard stage.token.epoch == context.epoch, stage.committed else {
             throw C07DataExchangeError.restoreIncomplete
         }
         let uploadURL = stage.url
@@ -1173,7 +1249,7 @@ public actor C07DataExchangeDomain {
             "note-import-\(id.uuidString)", isDirectory: true)
         jobs[id] = Job(id: id, kind: "noteImport", phase: .inspecting,
                        uploadStageID: stageID)
-        let task = Task.detached(priority: .userInitiated) { [weak self] in
+        startOwnedTask(context: context, jobID: id) { [weak self] context in
             guard let self else { return }
             do {
                 let parsed = try C07NotesPackage.parse(
@@ -1211,7 +1287,6 @@ public actor C07DataExchangeDomain {
                 await self.finishFailure(id, code: "internal")
             }
         }
-        jobs[id]?.task = task
         return id
     }
 
@@ -1222,13 +1297,18 @@ public actor C07DataExchangeDomain {
               let plan = job.plan else {
             throw C07DataExchangeError.notFound
         }
-        if job.receipt != nil { return jobID }
-        let sink = C07LiveRestoreSink(
-            context: context, notes: C07NotesSink(root: context.notesRoot))
+        guard job.epoch == context.epoch else { throw C07DataExchangeError.invalidScope("jobEpoch") }
+        if job.cancelRequested { throw C07DataExchangeError.cancelled }
+        if recoveryInProgress { throw C07DataExchangeError.restoreBusy }
+        if ownedJobWork.values.contains(where: { work in
+            work.jobID != jobID && work.committing
+        }) { throw C07DataExchangeError.restoreBusy }
+        if job.receipt != nil || job.phase == .committing { return jobID }
         job.phase = .committing
         jobs[jobID] = job
-        let task = Task.detached(priority: .userInitiated) { [weak self] in
+        startOwnedTask(context: context, jobID: jobID) { [weak self] context in
             guard let self else { return }
+            let sink = C07LiveRestoreSink(context: context, notes: C07NotesSink(root: context.notesRoot))
             let recovery = await C07RestoreRecovery.recover(
                 journalRoot: context.journalRoot, sink: sink)
             if recovery.failedJournals > 0 {
@@ -1241,8 +1321,14 @@ public actor C07DataExchangeDomain {
                 let receipt = try await C07RestoreEngine.commit(
                     plan: plan, sink: sink, journalRoot: context.journalRoot
                 ) { done, total in
-                    Task { await self.updateProgress(jobID, done: Int64(done),
+                    Task { await self.updateProgress(jobID, workReceipt: context.retainedWorkToken?.receipt, done: Int64(done),
                                                      total: Int64(total)) }
+                }
+                if plan.ownedData?.artifacts.contains(where: { $0.record.role == .managedFont }) == true {
+                    // Only temporary font links are retired after the durable
+                    // complete record. Cleanup failure retains recovery bytes;
+                    // it cannot turn a proven restore into a false failure.
+                    try? await C07ManagedFontExchange.complete(context: context, restoreID: receipt.restoreID)
                 }
                 await self.finishCommit(jobID, receipt: receipt)
             } catch {
@@ -1251,18 +1337,19 @@ public actor C07DataExchangeDomain {
                                          reason: error.localizedDescription)
             }
         }
-        jobs[jobID]?.task = task
         return jobID
     }
 
     // MARK: Job access
 
-    func status(jobID: UUID) throws -> C07JobStatus {
+    func status(jobID: UUID, epoch: UInt64? = nil) throws -> C07JobStatus {
         guard let job = jobs[jobID] else { throw C07DataExchangeError.notFound }
+        if let epoch, job.epoch != epoch { throw C07DataExchangeError.invalidScope("jobEpoch") }
         return C07JobStatus(
             jobID: job.id,
             kind: job.kind,
-            phase: job.phase.rawValue,
+            phase: job.cancelRequested && ownedJobWork.values.contains(where: { $0.jobID == jobID })
+                ? "stopping" : job.phase.rawValue,
             doneBytes: job.doneBytes,
             totalBytes: job.totalBytes,
             errorCode: job.errorCode,
@@ -1356,14 +1443,16 @@ public actor C07DataExchangeDomain {
             restoredSkills: job.receipt?.skillsRestored,
             restoredModelPreferences: job.receipt?.modelPreferencesRestored,
             restoredOfficeDrafts: job.receipt?.officeDraftsRestored,
+            restoredManagedFonts: job.receipt?.managedFontsRestored,
             canCommit: ((job.kind == "restore" || job.kind == "noteImport")
-                && job.phase == .ready && job.plan != nil))
+                && !job.cancelRequested && job.phase == .ready && job.plan != nil))
     }
 
-    func read(jobID: UUID, offset: Int64, maxBytes: Int) throws
+    func read(jobID: UUID, offset: Int64, maxBytes: Int, epoch: UInt64? = nil) throws
         -> C07JobReadResult
     {
-        guard let job = jobs[jobID], let url = job.fileURL,
+        guard let job = jobs[jobID], !job.cancelRequested,
+              epoch == nil || job.epoch == epoch, let url = job.fileURL,
               job.phase == .ready || job.phase == .complete else {
             throw C07DataExchangeError.notFound
         }
@@ -1398,29 +1487,47 @@ public actor C07DataExchangeDomain {
         }
     }
 
-    func closeJob(jobID: UUID) {
-        guard var job = jobs[jobID] else { return }
-        job.task?.cancel()
+    struct StopState: Sendable { let closed: Bool; let cancelled: Bool }
+    func stopState(jobID: UUID) -> StopState {
+        StopState(closed: jobs[jobID] == nil && !ownedJobWork.values.contains { $0.jobID == jobID },
+                  cancelled: jobs[jobID]?.phase == .cancelled)
+    }
+    @discardableResult
+    func closeJob(jobID: UUID, epoch: UInt64? = nil) -> Bool {
+        guard var job = jobs[jobID] else { return true }
+        if let epoch, job.epoch != epoch { return false }
+        job.cancelRequested = true; job.closeRequested = true; jobs[jobID] = job
+        let work = ownedJobWork.values.filter { $0.jobID == jobID }
+        work.forEach { $0.task.cancel() }
+        if work.isEmpty { finalizeClose(jobID) }
+        return true
+    }
+    private func finalizeClose(_ id: UUID) {
+        guard let job = jobs.removeValue(forKey: id) else { return }
         if let file = job.fileURL { C07FileSystem.removeIfPresent(file) }
         if let root = job.planRoot { C07FileSystem.removeIfPresent(root) }
         if let stageID = job.uploadStageID { stageAbort(stageID: stageID) }
-        job.phase = .cancelled
-        jobs.removeValue(forKey: jobID)
     }
-
-    func cancel(jobID: UUID) {
-        guard var job = jobs[jobID] else { return }
-        job.task?.cancel()
-        if let file = job.fileURL { C07FileSystem.removeIfPresent(file) }
-        job.phase = .cancelled
+    @discardableResult
+    func cancel(jobID: UUID, epoch: UInt64? = nil) -> Bool {
+        guard var job = jobs[jobID] else { return true }
+        if let epoch, job.epoch != epoch { return false }
+        job.cancelRequested = true
+        let work = ownedJobWork.values.filter { $0.jobID == jobID }
+        work.forEach { $0.task.cancel() }
+        if work.isEmpty, job.receipt == nil { job.phase = .cancelled }
         jobs[jobID] = job
+        return true
     }
 
     func recoveryPending(context: C07DataExchangeContext) -> Int {
         C07RestoreRecovery.pendingCount(journalRoot: context.journalRoot)
     }
 
-    func recover(context: C07DataExchangeContext) async -> C07RecoveryReport {
+    func recover(context: C07DataExchangeContext) async throws -> C07RecoveryReport {
+        guard !recoveryInProgress, !ownedJobWork.values.contains(where: \.committing) else { throw C07DataExchangeError.restoreBusy }
+        recoveryInProgress = true
+        defer { recoveryInProgress = false }
         let sink = C07LiveRestoreSink(
             context: context, notes: C07NotesSink(root: context.notesRoot))
         return await C07RestoreRecovery.recover(
@@ -1429,8 +1536,11 @@ public actor C07DataExchangeDomain {
 
     // MARK: Job transitions
 
-    private func updateProgress(_ id: UUID, done: Int64, total: Int64) {
-        guard var job = jobs[id] else { return }
+    private func updateProgress(_ id: UUID, workReceipt: String?, done: Int64, total: Int64) {
+        guard let workReceipt, let work = ownedJobWork[workReceipt], work.jobID == id,
+              var job = jobs[id], !job.cancelRequested,
+              work.committing == (job.phase == .committing),
+              job.phase != .ready, job.phase != .complete, job.phase != .failed else { return }
         job.doneBytes = max(0, done)
         job.totalBytes = max(0, total)
         jobs[id] = job
@@ -1439,7 +1549,7 @@ public actor C07DataExchangeDomain {
     private func finishFileJob(_ id: UUID, url: URL, bytes: Int64, sha: String,
                                warnings: [String],
                                manifest: C07BackupManifest?) {
-        guard var job = jobs[id], job.phase != .cancelled else {
+        guard var job = jobs[id], !job.cancelRequested, job.phase != .cancelled else {
             C07FileSystem.removeIfPresent(url)
             return
         }
@@ -1568,6 +1678,20 @@ struct C07OwnedDataSource {
         warnings.append(contentsOf: try captureUserCaptureFiles(
             context: context, collector: &collector, omissions: &omissions,
             counts: &counts))
+
+        let fontSnapshot = try await C07ManagedFontExchange.snapshot(context: context)
+        defer { try? FileManager.default.removeItem(at: fontSnapshot.directory) }
+        _ = try collector.appendFile(sourceRoot: fontSnapshot.directory,
+            source: fontSnapshot.directory.appendingPathComponent("catalog.json"),
+            role: .managedFont, ownerID: nil, containerID: nil, logicalPath: "catalog.json",
+            expectedSHA256: fontSnapshot.catalogSHA256, expectedByteCount: nil)
+        for record in fontSnapshot.records {
+            let name = record.id + ".ttf"
+            _ = try collector.appendFile(sourceRoot: fontSnapshot.directory,
+                source: fontSnapshot.directory.appendingPathComponent(name), role: .managedFont,
+                ownerID: nil, containerID: nil, logicalPath: name,
+                expectedSHA256: record.id, expectedByteCount: record.bytes)
+        }
 
         var configs: [C07SourceConfigSection] = []
         warnings.append(contentsOf: try await captureConfigurations(
@@ -1825,13 +1949,7 @@ struct C07OwnedDataSource {
     }
 
     private static func dbValue(_ value: DatabaseValue) -> C07DBValue {
-        switch value.storage {
-        case .null: return .null
-        case .int64(let integer): return .int(integer)
-        case .double(let real): return .double(real)
-        case .string(let text): return .string(text)
-        case .blob(let data): return .data(data)
-        }
+        C07DatabaseValueCodec.value(value)
     }
 
     private static func updateCounts(table: String, rows: Int,
@@ -3500,6 +3618,8 @@ extension C07LiveRestoreSink {
         // restored into read-only recovery roots, never into a live library.
         for artifact in staged.artifacts {
             switch artifact.record.role {
+            case .managedFont:
+                break // Prepared/adopted by the App font resource adapter.
             case .appArtifact:
                 let rewritten = C07IDRewrite.rewritePath(
                     artifact.record.logicalPath, mapping: mapping)
@@ -3873,10 +3993,14 @@ extension C07LiveRestoreSink {
             }
         }
 
+        let managedFontCount = try await C07ManagedFontExchange.prepare(
+            context: context, staged: staged, restoreID: restoreID, alreadyPrepared: true)
+
         let plan = C07OwnedDataRestorePlanFile(
             restoreID: restoreID,
             idMap: mapping,
             artifactRoots: artifactRoots,
+            managedFontCount: managedFontCount,
             attachmentPaths: attachmentPaths,
             workspaceIDs: createdWorkspaceIDs,
             environmentIDs: environmentIDs.isEmpty ? nil : environmentIDs,
@@ -4633,6 +4757,7 @@ extension C07LiveRestoreSink {
         let outcome: (C07OwnedDataCommitReceipt, [String])
         outcome = try await context.database.writer {
             db -> (C07OwnedDataCommitReceipt, [String]) in
+            let previousPreferencesInWriter = try C07ModelPreferenceRollback.capture(db)
             var warnings = plan.warnings
             var receipt = C07OwnedDataCommitReceipt()
             // 0. MCP definitions: fresh IDs, disabled, unbound. This is the
@@ -4947,6 +5072,8 @@ extension C07LiveRestoreSink {
                 // executable tool; a historical pin is never authorization.
                 warnings.append("restoredTasksRequireTargetSelection")
             }
+            try C07ModelPreferenceRollback.record(before: previousPreferencesInWriter,
+                restoreID: plan.restoreID, db: db)
             return (receipt, warnings)
         }
         var receipt = outcome.0
@@ -4990,6 +5117,40 @@ extension C07LiveRestoreSink {
 
     // MARK: Rollback
 
+    func prepareResourceRollback(_ staged: C07StagedOwnedData, restoreID: UUID,
+                                 journalRoot: URL) async throws -> C07ResourceRollbackIntent? {
+        guard staged.artifacts.contains(where: { $0.record.role == .managedFont }) else { return nil }
+        guard journalRoot.standardizedFileURL == context.journalRoot.standardizedFileURL else {
+            throw C07DataExchangeError.invalidScope("resourceJournalRoot")
+        }
+        // The resource-only plan is durable before OS validation or a host
+        // snapshot exists. It has no DB identities or user artifact roots.
+        let plan = C07OwnedDataRestorePlanFile(restoreID: restoreID, idMap: C07IDMap(),
+            artifactRoots: [], managedFontCount: 0, attachmentPaths: [:], workspaceIDs: [],
+            counts: C07OwnedDataCounts(), warnings: [])
+        let bytes = try plan.encoded()
+        let name = "font-resource-" + restoreID.uuidString + ".plan.json"
+        let result = try C07RootedFileIO.writeFile(bytes, destinationRoot: journalRoot,
+            destinationRelativePath: name)
+        return C07ResourceRollbackIntent(planURL: journalRoot.appendingPathComponent(name), planSHA256: result.sha256)
+    }
+    func preflightOwnedResources(_ staged: C07StagedOwnedData, restoreID: UUID) async throws {
+        _ = try await C07ManagedFontExchange.prepare(context: context, staged: staged, restoreID: restoreID)
+    }
+    func finalizeOwnedResources(_ prepared: C07PreparedOwnedData) async throws -> Int {
+        try await C07ManagedFontExchange.finalize(context: context, plan: prepared.plan)
+        return prepared.plan.managedFontCount ?? 0
+    }
+    func rollbackOwnedResources(_ staged: C07StagedOwnedData?, restoreID: UUID) async throws {
+        guard staged?.artifacts.contains(where: { $0.record.role == .managedFont }) == true else { return }
+        let ownedContext = context
+        // Recovery must not inherit the cancelled operation's Task flag.
+        try await Task.detached {
+            _ = try await C07ManagedFontExchange.request(context: ownedContext,
+                method: "snapshot.rollback", exchangeID: restoreID, allowMissing: true)
+        }.value
+    }
+
     func rollbackOwnedData(planURL: URL, planSHA256: String) async throws {
         let data: Data
         do { data = try Data(contentsOf: planURL) }
@@ -5000,6 +5161,12 @@ extension C07LiveRestoreSink {
         let plan: C07OwnedDataRestorePlanFile
         do { plan = try C07OwnedDataRestorePlanFile.decode(data) }
         catch { throw C07DataExchangeError.rollbackFailed("planDecode") }
+
+        try await context.database.reader { db in
+            try C07ModelPreferenceRollback.validate(restoreID: plan.restoreID,
+                legacyCount: plan.counts.modelPreferences ?? 0, db: db)
+        }
+        try await C07ManagedFontExchange.rollback(context: context, plan: plan)
 
         let map = plan.idMap
         let conversations = map.allNewIDs(.conversation)
@@ -5017,6 +5184,8 @@ extension C07LiveRestoreSink {
         let skills = map.allNewIDs(.skill)
 
         try await context.database.writer { db in
+            try C07ModelPreferenceRollback.rollback(restoreID: plan.restoreID,
+                legacyCount: plan.counts.modelPreferences ?? 0, db: db)
             for chunk in conversations.chunked(max: 400) {
                 try c07DeleteWhereIn(db, table: "workspace_conversations",
                                      column: "conversation_id", values: chunk)
@@ -5111,19 +5280,8 @@ extension C07LiveRestoreSink {
                                          column: "id", values: chunk)
                 }
             }
-            // Adapter merges: restore the exact pre-restore singleton
-            // preferences, or remove the row this restore created.
-            if try db.tableExists("model_preferences") {
-                if let previous = plan.previousModelPreferences {
-                    try db.execute(
-                        sql: "DELETE FROM model_preferences WHERE id = 'default'")
-                    try C07UserDataAdapters.insert(
-                        "model_preferences", previous, into: db)
-                } else if (plan.counts.modelPreferences ?? 0) > 0 {
-                    try db.execute(
-                        sql: "DELETE FROM model_preferences WHERE id = 'default'")
-                }
-            }
+            // The singleton merge was reversed above from the exact writer
+            // receipt with a current-row CAS, never the stale plan snapshot.
             if try db.tableExists("personalization_update_cursors"),
                let keys = plan.personalizationCursorKeys {
                 for raw in keys {
@@ -5328,7 +5486,7 @@ extension C07DataExchangeDomain {
         let destination = context.exportsRoot.appendingPathComponent(
             "\(id.uuidString).\(C07DocumentPackageLimits.canvasExtension)")
         jobs[id] = Job(id: id, kind: "canvasExport", phase: .building)
-        let task = Task.detached(priority: .userInitiated) { [weak self] in
+        startOwnedTask(context: context, jobID: id) { [weak self] context in
             guard let self else { return }
             do {
                 try C07FileSystem.ensureDirectory(work)
@@ -5356,7 +5514,6 @@ extension C07DataExchangeDomain {
                 await self.finishFailure(id, code: "internal")
             }
         }
-        jobs[id]?.task = task
         return id
     }
 
@@ -5371,7 +5528,7 @@ extension C07DataExchangeDomain {
             "canvas-import-\(id.uuidString)", isDirectory: true)
         jobs[id] = Job(id: id, kind: "canvasImport", phase: .inspecting,
                        uploadStageID: stageID)
-        let task = Task.detached(priority: .userInitiated) { [weak self] in
+        startOwnedTask(context: context, jobID: id) { [weak self] context in
             guard let self else { return }
             do {
                 let staged = try C07CanvasPackage.inspect(
@@ -5389,7 +5546,6 @@ extension C07DataExchangeDomain {
                 await self.finishFailure(id, code: "internal")
             }
         }
-        jobs[id]?.task = task
         return id
     }
 
@@ -5405,7 +5561,7 @@ extension C07DataExchangeDomain {
             "document-import-\(id.uuidString)", isDirectory: true)
         jobs[id] = Job(id: id, kind: "documentImport", phase: .inspecting,
                        uploadStageID: stageID)
-        let task = Task.detached(priority: .userInitiated) { [weak self] in
+        startOwnedTask(context: context, jobID: id) { [weak self] context in
             guard let self else { return }
             do {
                 try C07FileSystem.ensureDirectory(planRoot)
@@ -5472,7 +5628,6 @@ extension C07DataExchangeDomain {
                 await self.finishFailure(id, code: "internal")
             }
         }
-        jobs[id]?.task = task
         return id
     }
 }

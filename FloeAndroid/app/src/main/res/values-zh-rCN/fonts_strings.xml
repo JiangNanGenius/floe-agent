@@ -12,4 +12,6 @@
     <string name="fonts_remove">移除字体</string>
     <string name="fonts_remove_note">使用此字体的项目需要重新导入字体。已打开的文档会保留当前字体，直到关闭。</string>
     <string name="fonts_sample">%1$s · Aa 0123 字体预览</string>
+    <string name="fonts_refresh">刷新</string>
+    <string name="fonts_uncertain">结果暂未确认。请刷新字体库查看。</string>
 </resources>

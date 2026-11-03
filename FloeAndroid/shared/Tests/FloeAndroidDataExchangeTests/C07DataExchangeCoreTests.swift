@@ -52,6 +52,7 @@ final class C07DataExchangeCoreTests: XCTestCase {
             var notes: [UUID] = []
             var settings: [String: String] = [:]
             var failWrite = false
+            var failResourcePreflight = false
             var existingSettings: Set<String> = []
         }
         private let lock = NSLock()
@@ -65,96 +66,98 @@ final class C07DataExchangeCoreTests: XCTestCase {
         func setFailWrite(_ value: Bool) {
             lock.lock(); storage.failWrite = value; lock.unlock()
         }
+        func setFailResourcePreflight() {
+            lock.withLock { storage.failResourcePreflight = true }
+        }
+        func prepareResourceRollback(_ staged: C07StagedOwnedData, restoreID: UUID,
+                                     journalRoot: URL) async throws -> C07ResourceRollbackIntent? {
+            guard state.failResourcePreflight else { return nil }
+            let plan = C07OwnedDataRestorePlanFile(restoreID: restoreID, idMap: C07IDMap(),
+                artifactRoots: [], attachmentPaths: [:], workspaceIDs: [], counts: C07OwnedDataCounts(), warnings: [])
+            let written = try C07DurablePlan.write(plan, root: journalRoot)
+            return C07ResourceRollbackIntent(planURL: written.url, planSHA256: written.sha256)
+        }
+        func preflightOwnedResources(_ staged: C07StagedOwnedData, restoreID: UUID) async throws {
+            let fail = lock.withLock { storage.calls.append("resourcePreflight"); return storage.failResourcePreflight }
+            if fail { throw C07DataExchangeError.invalidManifest("deviceFontInvalid") }
+        }
+        func rollbackOwnedResources(_ staged: C07StagedOwnedData?, restoreID: UUID) async throws {
+            if staged != nil { lock.withLock { storage.calls.append("rollbackResources") } }
+        }
+
         func setExistingSetting(_ key: String) {
             lock.lock(); storage.existingSettings.insert(key); lock.unlock()
         }
 
         func createProject(markerName: String, origin: C07ProjectOrigin) async throws -> UUID {
-            lock.lock(); defer { lock.unlock() }
-            let id = UUID()
-            storage.calls.append("createProject:\(origin.rawValue)")
-            storage.projects[markerName] = id
-            storage.projectMarkers.append(markerName)
-            return id
-        }
-
-        func renameProject(id: UUID, to finalName: String) async throws {
-            lock.lock(); storage.calls.append("renameProject:\(finalName)"); lock.unlock()
-        }
-
-        func writeProjectFiles(projectID: UUID,
-                               directories: [String],
-                               files: [C07StagedProjectFile]) async throws {
-            lock.lock()
-            let fail = storage.failWrite
-            if !fail {
-                storage.calls.append("writeProjectFiles:\(files.count)")
+            lock.withLock {
+                let id = UUID()
+                storage.calls.append("createProject:\(origin.rawValue)")
+                storage.projects[markerName] = id
+                storage.projectMarkers.append(markerName)
+                return id
             }
-            lock.unlock()
+        }
+        func renameProject(id: UUID, to finalName: String) async throws {
+            lock.withLock { storage.calls.append("renameProject:\(finalName)") }
+        }
+        func writeProjectFiles(projectID: UUID, directories: [String], files: [C07StagedProjectFile]) async throws {
+            let fail = lock.withLock {
+                let fail = storage.failWrite
+                if !fail { storage.calls.append("writeProjectFiles:\(files.count)") }
+                return fail
+            }
             if fail { throw C07DataExchangeError.storageUnavailable("seededWriteFailure") }
         }
-
         func deleteProject(id: UUID) async throws {
-            lock.lock(); storage.calls.append("deleteProject"); lock.unlock()
+            lock.withLock { storage.calls.append("deleteProject") }
         }
-
         func deleteProjects(markedName: String) async throws -> Int {
-            lock.lock(); storage.calls.append("deleteProjects:\(markedName)")
-            let count = storage.projects.removeValue(forKey: markedName) == nil ? 0 : 1
-            lock.unlock()
-            return count
+            lock.withLock {
+                storage.calls.append("deleteProjects:\(markedName)")
+                return storage.projects.removeValue(forKey: markedName) == nil ? 0 : 1
+            }
         }
-
         func createNotebook(markerTitle: String) async throws -> UUID {
-            lock.lock(); defer { lock.unlock() }
-            let id = UUID()
-            storage.calls.append("createNotebook")
-            storage.notebooks[id] = markerTitle
-            return id
+            lock.withLock {
+                let id = UUID(); storage.calls.append("createNotebook")
+                storage.notebooks[id] = markerTitle; return id
+            }
         }
-
         func renameNotebook(id: UUID, to finalTitle: String) async throws {
-            lock.lock(); storage.calls.append("renameNotebook:\(finalTitle)"); lock.unlock()
+            lock.withLock { storage.calls.append("renameNotebook:\(finalTitle)") }
         }
-
         func deleteEmptyNotebook(id: UUID) async throws {
-            lock.lock(); storage.calls.append("deleteEmptyNotebook"); lock.unlock()
+            lock.withLock { storage.calls.append("deleteEmptyNotebook") }
         }
-
         func deleteEmptyNotebooks(markedTitle: String) async throws -> Int {
-            lock.lock(); storage.calls.append("deleteEmptyNotebooks:\(markedTitle)"); lock.unlock()
-            return 0
+            lock.withLock { storage.calls.append("deleteEmptyNotebooks:\(markedTitle)"); return 0 }
         }
-
-        func importNoteArchive(_ archive: C07ParsedNoteArchive,
-                               notebookID: UUID?) async throws -> C07NoteImportReceipt {
-            lock.lock(); defer { lock.unlock() }
-            storage.calls.append("importNoteArchive:\(archive.documents.count)")
-            storage.notes.append(contentsOf: archive.newDocumentIDs)
-            return C07NoteImportReceipt(documentIDs: archive.newDocumentIDs,
-                                        resourceCount: archive.resources.count)
+        func importNoteArchive(_ archive: C07ParsedNoteArchive, notebookID: UUID?) async throws -> C07NoteImportReceipt {
+            lock.withLock {
+                storage.calls.append("importNoteArchive:\(archive.documents.count)")
+                storage.notes.append(contentsOf: archive.newDocumentIDs)
+                return C07NoteImportReceipt(documentIDs: archive.newDocumentIDs, resourceCount: archive.resources.count)
+            }
         }
-
         func removeNotes(documentIDs: [UUID]) async throws {
-            lock.lock()
-            storage.calls.append("removeNotes:\(documentIDs.count)")
-            storage.notes.removeAll { documentIDs.contains($0) }
-            lock.unlock()
+            lock.withLock {
+                storage.calls.append("removeNotes:\(documentIDs.count)")
+                storage.notes.removeAll { documentIDs.contains($0) }
+            }
         }
-
         func insertSettingIfAbsent(key: String, json: String) async throws -> Bool {
-            lock.lock(); defer { lock.unlock() }
-            storage.calls.append("insertSetting:\(key)")
-            if storage.existingSettings.contains(key) { return false }
-            storage.settings[key] = json
-            return true
+            lock.withLock {
+                storage.calls.append("insertSetting:\(key)")
+                if storage.existingSettings.contains(key) { return false }
+                storage.settings[key] = json; return true
+            }
         }
-
         func removeSettingIfExact(key: String, json: String) async throws {
-            lock.lock()
-            storage.calls.append("removeSetting:\(key)")
-            if storage.settings[key] == json { storage.settings.removeValue(forKey: key) }
-            lock.unlock()
+            lock.withLock {
+                storage.calls.append("removeSetting:\(key)")
+                if storage.settings[key] == json { storage.settings.removeValue(forKey: key) }
+            }
         }
 
         func prepareOwnedData(_ staged: C07StagedOwnedData,
@@ -175,7 +178,9 @@ final class C07DataExchangeCoreTests: XCTestCase {
             throw C07DataExchangeError.unsupportedFeature("testSinkData")
         }
 
-        func rollbackOwnedData(planURL: URL, planSHA256: String) async throws {}
+        func rollbackOwnedData(planURL: URL, planSHA256: String) async throws {
+            lock.withLock { storage.calls.append("rollbackOwnedData") }
+        }
     }
 
     // MARK: - Helpers
@@ -302,6 +307,33 @@ final class C07DataExchangeCoreTests: XCTestCase {
         XCTAssertTrue(sink.state.calls.isEmpty)
     }
 
+    func testInvalidDeviceResourceRejectsBeforeAnyLiveProjectWrite() async throws {
+        let fixture = try Fixture()
+        let (source, _) = try await buildSource(fixture: fixture, projectID: UUID(), includeNotes: false)
+        let destination = fixture.destination("resource-preflight.floebackup")
+        _ = try await C07BackupBuilder.build(source: source, destination: destination,
+            stagingRoot: fixture.root.appendingPathComponent("build"))
+        var plan = try await C07BackupReader.inspect(archiveURL: destination,
+            stagingRoot: fixture.root.appendingPathComponent("inspect"), currentAppSchemaVersion: 51)
+        let manifest = C07OwnedDataManifest(sourceAppSchemaVersion: 51, tables: [],
+            workspaceCount: 0, workspaceByteCount: 2, workspaceSHA256: C07Digest.sha256(Data("[]".utf8)),
+            counts: C07OwnedDataCounts(), excluded: C07ScopePolicy.excluded, linuxCheckpointPort: "unavailable")
+        plan.ownedData = C07StagedOwnedData(manifest: manifest, manifestSHA256: String(repeating: "a", count: 64),
+            tables: [], workspaces: [], artifacts: [], totalBytes: 0)
+        let sink = FakeSink(); sink.setFailResourcePreflight()
+        do {
+            _ = try await C07RestoreEngine.commit(plan: plan, sink: sink,
+                journalRoot: fixture.root.appendingPathComponent("journal"))
+            XCTFail("Device resource validation must reject the restore")
+        } catch {
+            XCTAssertTrue(sink.state.projects.isEmpty)
+            XCTAssertFalse(sink.state.calls.contains { $0.hasPrefix("createProject") })
+            XCTAssertTrue(sink.state.calls.contains("resourcePreflight"))
+            XCTAssertTrue(sink.state.calls.contains("rollbackResources"))
+            XCTAssertTrue(sink.state.calls.contains("rollbackOwnedData"), "Resource intent must be journaled before a failed device validation")
+        }
+    }
+
     func testRetainedProjectRestoresThroughNewExplicitOwnership() async throws {
         let fixture = try Fixture()
         let projectID = UUID()
@@ -389,6 +421,9 @@ final class C07DataExchangeCoreTests: XCTestCase {
         XCTAssertEqual(Set(safe.keys), Set(["ui.theme", "editor.fontSize", "notes.view.zoom"]))
         XCTAssertFalse(C07SettingsPolicy.isAllowedKey("provider.apiKey"))
         XCTAssertFalse(C07SettingsPolicy.isAllowedKey("session.cookie"))
+        XCTAssertTrue(C07SettingsPolicy.sanitize([
+            "ui.layout": "{\"nested\":[{\"apiKey\":\"synthetic-secret\"}]}"
+        ]).isEmpty)
     }
 
     func testScopeDeclaresExcludedSecretsAndDatabase() throws {

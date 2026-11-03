@@ -810,20 +810,26 @@ public enum C07SettingsPolicy {
         return allowedPrefixes.contains(where: { lower.hasPrefix($0) })
     }
 
+    private static func containsSecretKeys(_ value: Any, depth: Int) -> Bool {
+        guard depth <= 16 else { return true }
+        if let object = value as? [String: Any] {
+            return object.contains { key, child in
+                let lower = key.lowercased()
+                return forbiddenFragments.contains(where: { lower.contains($0) })
+                    || containsSecretKeys(child, depth: depth + 1)
+            }
+        }
+        if let array = value as? [Any] { return array.contains { containsSecretKeys($0, depth: depth + 1) } }
+        return false
+    }
+
     public static func sanitize(_ values: [String: String]) -> [String: String] {
         var result: [String: String] = [:]
         for (key, value) in values where isAllowedKey(key) {
             guard value.utf8.count <= 65_536 else { continue }
             guard let data = value.data(using: .utf8),
-                  (try? JSONSerialization.jsonObject(with: data)) != nil else { continue }
-            // An object whose own keys look secret is not a safe preference.
-            if let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-               object.keys.contains(where: { key in
-                   let lower = key.lowercased()
-                   return forbiddenFragments.contains(where: { lower.contains($0) })
-               }) {
-                continue
-            }
+                  let parsed = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]),
+                  !containsSecretKeys(parsed, depth: 0) else { continue }
             result[key] = value
         }
         return result

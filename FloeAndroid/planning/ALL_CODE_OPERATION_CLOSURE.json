@@ -6,7 +6,7 @@
     "fixedIOSDonor": "a59b4d4005f616c611df67fab7620e9853c525b9"
   },
   "status": "Live source closure index; original IDs/statuses retained; scope replacement and source/runtime acceptance are separate",
-  "sourceCheckpoint": "d84d2aa73a524c3284a083367ce9965c21571b8d",
+  "sourceCheckpoint": "5bdf1f680d375d3d728ca10d210a825f65c448c5",
   "operationCount": 183,
   "noNewReleaseBeforeClosure": true,
   "operations": [
@@ -3415,13 +3415,14 @@
       "originalOperation": "Font management plus diagnostic export",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "partial source implementation after d84d2aa7; manual font management and owned model tools connected, font backup/restore pending",
-      "qualification": "Full/Play Kotlin and ARM64 Swift6 object compilation passed;11 earlier parser/Office config checks passed; no font APK/runtime pass.",
+      "codeReview": "Font manual settings, media/Office consumption, original model tools and C07 snapshot/atomic journaled restore are source connected; final operation/device reconciliation remains open.",
+      "qualification": "Full/Play Kotlin and Swift6 ARM64 object compilation passed; 45 actual-source host tests passed across IO/restore/roles/SQLite; prior 11 parser/Office checks retained. No font APK/runtime pass.",
       "previousCodeReviews": [
         "pending per-operation UI/service/runtime-storage/failure reconciliation",
-        "implementation-gap-confirmed at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; current Settings UI/source inspection"
+        "implementation-gap-confirmed at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; current Settings UI/source inspection",
+        "partial source implementation after d84d2aa7; manual font management and owned model tools connected, font backup/restore pending"
       ],
-      "remainingImplementation": "Connect font-library snapshots and validated atomic restore to existing C07 journal/rollback; actual final APK font/Office/media and tool behavior pending."
+      "remainingImplementation": "No known font backup code gap after this batch; final managed font/Office/media/model and backup/restore App behavior, diagnostic flow and Root retirement remain to verify."
     },
     {
       "id": "SET-CAPABILITY-STATUS",
@@ -5675,6 +5676,14 @@
       "implementation": "manual Settings, real platform/media/Office consumption and original model tool code connected",
       "remaining": "C07 font backup/restore and final native/APK/device acceptance",
       "proof": "planning/FONT_TOOLS_SOURCE_COMPONENT_20261103.json"
+    },
+    "managedFontBackup20261103": {
+      "implementation": "Active-only immutable capture, actual Android admission, durable adoption/rollback with concurrent-edit preservation, physical Root work lifetime and actual writer-state model preference rollback",
+      "proof": "planning/FONT_BACKUP_CLOSURE_20261103.md",
+      "compiled": true,
+      "hostTests": 45,
+      "deviceVerified": false,
+      "newAPK": false
     }
   },
   "implementationBatches": {

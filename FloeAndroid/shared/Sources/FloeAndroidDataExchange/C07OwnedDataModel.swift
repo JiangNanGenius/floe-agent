@@ -1523,6 +1523,9 @@ public enum C07ArtifactRole: String, Codable, Sendable, CaseIterable {
     /// `JobDownloads`, ...). The logical path keeps the namespace-relative
     /// path verbatim.
     case appArtifact
+    /// Global App-managed font catalogue and exact digest-named payloads.
+    /// Typeface validation and adoption stay with the App font resource adapter.
+    case managedFont
     /// A user-owned capture file outside the artifact root (packet captures
     /// and their App-owned analysis). Restored into a read-only recovery
     /// area, never into a live capture library.
@@ -1548,6 +1551,7 @@ public enum C07ArtifactRole: String, Codable, Sendable, CaseIterable {
         case .mailReceipt: return "\(C07OwnedDataLimits.artifactDirectory)/mail-receipts"
         case .environmentCheckpoint: return "\(C07OwnedDataLimits.artifactDirectory)/environments"
         case .appArtifact: return "\(C07OwnedDataLimits.artifactDirectory)/app"
+        case .managedFont: return "\(C07OwnedDataLimits.artifactDirectory)/fonts"
         case .captureFile: return "\(C07OwnedDataLimits.artifactDirectory)/captures"
         case .configuration: return "\(C07OwnedDataLimits.artifactDirectory)/config"
         case .canvasCADDraft: return "\(C07OwnedDataLimits.artifactDirectory)/canvas-cad-drafts"
@@ -1624,6 +1628,13 @@ public enum C07ArtifactPath {
                 throw C07DataExchangeError.unsafePath(logicalPath)
             }
             return "\(root)/\(ownerID.uuidString)/\(logical)"
+        case .managedFont:
+            guard ownerID == nil, containerID == nil,
+                  logical == "catalog.json" || (logical.utf8.count == 68 && logical.hasSuffix(".ttf")
+                    && logical.dropLast(4).utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })) else {
+                throw C07DataExchangeError.unsafePath(logicalPath)
+            }
+            return "\(root)/\(logical)"
         case .appArtifact, .captureFile, .configuration:
             guard ownerID == nil, containerID == nil else {
                 throw C07DataExchangeError.unsafePath(logicalPath)
@@ -2260,6 +2271,9 @@ public struct C07OwnedDataRestorePlanFile: Codable, Sendable, Equatable {
     public var planVersion: Int
     public var idMap: C07IDMap
     public var artifactRoots: [String]
+    /// Optional for older journals; identifies a prepared App font transaction
+    /// by this plan's own restoreID, never an archive-supplied host path.
+    public var managedFontCount: Int?
     public var attachmentPaths: [String: String]
     public var workspaceIDs: [String]
     public var environmentIDs: [UUID]?
@@ -2294,6 +2308,7 @@ public struct C07OwnedDataRestorePlanFile: Codable, Sendable, Equatable {
     public init(restoreID: UUID, planVersion: Int = 1,
                 idMap: C07IDMap,
                 artifactRoots: [String],
+                managedFontCount: Int? = nil,
                 attachmentPaths: [String: String],
                 workspaceIDs: [String],
                 environmentIDs: [UUID]? = nil,
@@ -2314,6 +2329,7 @@ public struct C07OwnedDataRestorePlanFile: Codable, Sendable, Equatable {
         self.planVersion = planVersion
         self.idMap = idMap
         self.artifactRoots = artifactRoots
+        self.managedFontCount = managedFontCount
         self.attachmentPaths = attachmentPaths
         self.workspaceIDs = workspaceIDs
         self.environmentIDs = environmentIDs

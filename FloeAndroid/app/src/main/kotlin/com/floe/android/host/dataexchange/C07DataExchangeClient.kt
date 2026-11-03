@@ -123,6 +123,7 @@ internal data class C07Receipt(
     val skills: Int = 0,
     val modelPreferences: Int = 0,
     val officeDrafts: Int = 0,
+    val managedFonts: Int = 0,
     val partial: Boolean = false,
 )
 
@@ -304,6 +305,7 @@ internal class C07DataExchangeClient(
                     skills = it.optInt("skills", 0),
                     modelPreferences = it.optInt("modelPreferences", 0),
                     officeDrafts = it.optInt("officeDrafts", 0),
+                    managedFonts = it.optInt("managedFonts", 0).also { count -> require(count in 0..256) },
                     partial = it.optBoolean("partial", false),
                 )
             },
@@ -323,6 +325,14 @@ internal class C07DataExchangeClient(
             totalBytes = response.optLong("totalBytes", 0L),
             eof = response.optBoolean("eof", true),
         )
+    }
+
+    /** Negative drain gate: a cancel acknowledgement never proves settlement. */
+    fun drain(owner: C07ExchangeOwner): Boolean {
+        val value = exchange("c07.root.drain", owner) {}
+        val pending = value.getInt("pending")
+        require(pending in 0..256)
+        return value.getBoolean("drained") && pending == 0
     }
 
     fun close(owner: C07ExchangeOwner, jobID: String) {

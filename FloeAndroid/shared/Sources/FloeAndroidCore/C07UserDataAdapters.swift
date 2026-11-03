@@ -70,13 +70,7 @@ public enum C07UserDataAdapters {
     ]
 
     static func dbValue(_ value: DatabaseValue) -> C07DBValue {
-        switch value.storage {
-        case .null: return .null
-        case .int64(let integer): return .int(integer)
-        case .double(let real): return .double(real)
-        case .string(let text): return .string(text)
-        case .blob(let data): return .data(data)
-        }
+        C07DatabaseValueCodec.value(value)
     }
 
     static func insert(

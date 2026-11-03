@@ -26,6 +26,9 @@ internal class FontSettingsHost(context: Context, private val scope: CoroutineSc
                 val result = operation()
                 mutable.value = State(entries = store.list(), outcome = result)
             } catch (e: CancellationException) { throw e }
+            catch (_: com.floe.android.core.fonts.FontCommitUncertain) {
+                mutable.value = mutable.value.copy(busy = false, outcome = "uncertain")
+            }
             catch (_: Exception) { mutable.value = mutable.value.copy(busy = false, outcome = "failed") }
             finally { working.set(false); mutable.value = mutable.value.copy(busy = false) }
         }

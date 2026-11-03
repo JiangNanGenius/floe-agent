@@ -1474,6 +1474,12 @@ public final class RuntimeOwnedWorkRegistry: @unchecked Sendable {
         return entries.values.filter { $0.epoch == epoch }.count
     }
 
+    /// Component drain is a negative gate only; it never detaches or grants
+    /// authority. Actual retirement still checks every exact owned token.
+    public func count(for epoch: UInt64, ownerPrefix: String) -> Int {
+        lock.withLock { entries.values.filter { $0.epoch == epoch && $0.ownerID.hasPrefix(ownerPrefix) }.count }
+    }
+
     public func countsByKind(for epoch: UInt64) -> [String: Int] {
         lock.lock()
         defer { lock.unlock() }
