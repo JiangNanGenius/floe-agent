@@ -108,12 +108,13 @@ public enum WireTranslator {
             return [.completed(AgentEvent.CompletionInfo(stopReason: .maxTokens))]
         case .failed(let message):
             return [.error(AgentEvent.NormalizedError(
-                kind: .server,
+                kind: isContextOverflow(message: message ?? "") ? .contextOverflow : .server,
                 providerMessage: message ?? "response.failed"
             ))]
         case .error(let message, let code):
             return [.error(AgentEvent.NormalizedError(
-                kind: code == "rate_limit_exceeded" ? .rateLimited : .server,
+                kind: code == "rate_limit_exceeded" ? .rateLimited
+                    : isContextOverflow(code: code, message: message ?? "") ? .contextOverflow : .server,
                 providerMessage: message ?? code ?? "unknown error"
             ))]
         case .unknown(let type):
@@ -279,7 +280,8 @@ public enum WireTranslator {
             switch type {
             case "rate_limit_error": kind = .rateLimited
             case "authentication_error", "permission_error": kind = .auth
-            case "invalid_request_error": kind = .malformed
+            case "invalid_request_error":
+                kind = isContextOverflow(message: message) ? .contextOverflow : .malformed
             case "overloaded_error", "api_error": kind = .server
             default: kind = .server
             }
@@ -292,6 +294,37 @@ public enum WireTranslator {
 
     // MARK: - HTTP status normalization
 
+    /// Provider-specific rejection details are normalized here so the runtime
+    /// can use its single bounded overflow recovery for HTTP and SSE alike.
+    /// Output-cap validation, auth and quota errors are not context overflow.
+    private static func isContextOverflow(code: String? = nil, message: String) -> Bool {
+        let codes: Set<String> = [
+            "context_length_exceeded", "context_window_exceeded",
+            "max_context_length_exceeded", "prompt_too_long", "input_too_long"
+        ]
+        if let code, codes.contains(code.lowercased()) { return true }
+        let text = message.lowercased()
+        return text.contains("maximum context length")
+            || text.contains("context length exceeded")
+            || text.contains("context window exceeded")
+            || text.contains("exceeds the context window")
+            || text.contains("exceeded the context window")
+            || text.contains("prompt is too long")
+            || text.contains("input is too long")
+    }
+
+    private static func isHTTPContextOverflow(_ body: String) -> Bool {
+        let bounded = String(body.prefix(65_536))
+        if let object = try? JSONSerialization.jsonObject(with: Data(bounded.utf8)) as? [String: Any] {
+            let error = object["error"] as? [String: Any] ?? object
+            if isContextOverflow(code: error["code"] as? String, message: error["message"] as? String ?? "")
+                || isContextOverflow(code: error["type"] as? String, message: "") {
+                return true
+            }
+        }
+        return isContextOverflow(message: bounded)
+    }
+
     /// Maps a non-2xx HTTP status onto a normalized error event.
     /// Auth failures (401/403) surface the provider's original message so the
     /// user sees "api key invalid" instead of a bare HTTP status.
@@ -302,7 +335,9 @@ public enum WireTranslator {
             kind = .auth
         case 429:
             kind = .rateLimited
-        case 400, 404, 422:
+        case 400, 413, 422:
+            kind = isHTTPContextOverflow(body) ? .contextOverflow : .malformed
+        case 404:
             kind = .malformed
         default:
             kind = status >= 500 ? .server : .malformed

@@ -240,6 +240,37 @@ public protocol ContextSummarizer: Sendable {
     func summarize(messages: [ConversationMessage], maximumCharacters: Int) async throws -> String
 }
 
+/// One history projection is used by manual compaction and fresh user turns.
+/// Restoration happens before the assembler's count/byte selection.
+public protocol ConversationContextCompactionStore: Sendable {
+    func applyingCompactions(_ messages: [ConversationMessage], conversationID: UUID) async throws -> [ConversationMessage]
+}
+
+public enum ContextHistorySnapshot {
+    public static let manualPrefix = "[Manual context snapshot]\n"
+    public static let automaticPrefix = "[Automatic context snapshot]\n"
+    public static let noticePrefix = "[Context compaction notice]"
+
+    public static func isSummary(_ message: ConversationMessage) -> Bool {
+        message.role == "system" && (
+            message.content.hasPrefix(noticePrefix)
+                || message.content.hasPrefix(manualPrefix + noticePrefix)
+                || message.content.hasPrefix(automaticPrefix + noticePrefix)
+        )
+    }
+
+    static func body(_ message: ConversationMessage) -> String {
+        guard let range = message.content.range(of: "Historical summary:") else { return message.content }
+        return String(message.content[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func sourceIDs(_ messages: [ConversationMessage]) -> [UUID] {
+        var seen: Set<UUID> = []
+        return messages.flatMap { [$0.id] + ($0.contextSourceMessageIDs ?? []) }
+            .filter { seen.insert($0).inserted }
+    }
+}
+
 /// Trusted compaction instructions and the historical data they summarize.
 public struct ContextSummaryRequest: Sendable {
     public let instructions: String
@@ -594,6 +625,7 @@ public struct DeterministicContextSummarizer: ContextSummarizer {
         messages: [ConversationMessage],
         maximumCharacters: Int
     ) async throws -> String {
+        try Task.checkCancellation()
         guard maximumCharacters > 0, !messages.isEmpty else { return "" }
 
         // Continuation-sensitive information is grouped instead of producing
@@ -601,12 +633,20 @@ public struct DeterministicContextSummarizer: ContextSummarizer {
         // rendered once under one global character budget, so a later section
         // is never prefix-dropped merely because earlier sections repeated
         // the same content.
-        let userMessages = messages.filter { $0.role == "user" }
-        let assistantMessages = messages.filter { $0.role == "assistant" }
-        let toolMessages = messages.filter { $0.role == "tool" || $0.role == "function" }
+        // Merge the last continuation record into new evidence. Our own
+        // deterministic record is flattened by its stable message IDs, rather
+        // than nested/truncated again on every compaction. Semantic records
+        // remain explicit historical state even when outside the recent tail.
+        let history = Self.continuationHistory(messages)
+        let userMessages = history.filter { $0.role == "user" }
+        let assistantMessages = history.filter { $0.role == "assistant" }
+        let toolMessages = history.filter { $0.role == "tool" || $0.role == "function" }
+        let earlierState = history.filter { $0.role == "system" }
+        let userRequests = (userMessages.first.map { [$0] } ?? []) + userMessages.suffix(20)
         let rawSections: [(String, ArraySlice<ConversationMessage>)] = [
-            ("Immediate continuation context", messages.suffix(12)),
-            ("User requests and corrections", userMessages.suffix(20)),
+            ("Prior continuation state", earlierState[...]),
+            ("User requests and corrections", userRequests[...]),
+            ("Immediate continuation context", history.suffix(12)),
             ("Prior decisions and conclusions", assistantMessages.suffix(16)),
             ("Tool evidence, outcomes, and failures", toolMessages.suffix(20))
         ]
@@ -624,15 +664,29 @@ public struct DeterministicContextSummarizer: ContextSummarizer {
                 sections.append((title, lines))
             }
         }
-        let header = "# Structured continuation state"
+        var header = "# Structured continuation state"
         guard !sections.isEmpty else { return String(header.prefix(maximumCharacters)) }
 
-        let fixedCharacters = sections.reduce(header.count) { total, section in
-            total
-                + "\n\n## \(section.title)".count
-                + section.lines.reduce(0) { $0 + 1 + $1.prefix.count }
+        func fixedCharacters() -> Int {
+            sections.reduce(header.count) { total, section in
+                total + "\n\n## \(section.title)".count
+                    + section.lines.reduce(0) { $0 + 1 + $1.prefix.count }
+            }
         }
-        let contentBudget = max(0, maximumCharacters - fixedCharacters)
+        // Never accept a record consisting only of headings and UUIDs. At
+        // small budgets keep fewer sourced facts with actual text and say
+        // that additional detail remains in the saved history.
+        var omitted = false
+        while fixedCharacters() > maximumCharacters / 2,
+              sections.reduce(0, { $0 + $1.lines.count }) > 1 {
+            if !omitted {
+                header += "\n[Additional history omitted; originals remain saved.]"
+                omitted = true
+            }
+            sections[sections.count - 1].lines.removeLast()
+            if sections[sections.count - 1].lines.isEmpty { sections.removeLast() }
+        }
+        let contentBudget = max(0, maximumCharacters - fixedCharacters())
         let needs = sections.flatMap { section in section.lines.map { $0.text.count } }
         let allocations = CompactionTranscript.allocate(needs: needs, budget: contentBudget)
 
@@ -651,6 +705,42 @@ public struct DeterministicContextSummarizer: ContextSummarizer {
         return output.count <= maximumCharacters
             ? output
             : String(output.prefix(maximumCharacters))
+    }
+
+    private static func continuationHistory(_ messages: [ConversationMessage]) -> [ConversationMessage] {
+        var result: [ConversationMessage] = []
+        var indices: [UUID: Int] = [:]
+        for message in messages {
+            let entries: [ConversationMessage]
+            if ContextHistorySnapshot.isSummary(message) {
+                let body = ContextHistorySnapshot.body(message)
+                let recovered = body.hasPrefix("# Structured continuation state")
+                    ? body.split(separator: "\n").compactMap { line -> ConversationMessage? in
+                        guard line.hasPrefix("- ["), let closing = line.firstIndex(of: "]"),
+                              let id = UUID(uuidString: String(line[line.index(line.startIndex, offsetBy: 3)..<closing])) else { return nil }
+                        let rest = line[line.index(after: closing)...].trimmingCharacters(in: .whitespaces)
+                        guard let divider = rest.range(of: ": ") else { return nil }
+                        let role = String(rest[..<divider.lowerBound])
+                        guard ["user", "assistant", "tool", "function", "system"].contains(role) else { return nil }
+                        return ConversationMessage(id: id, role: role, content: String(rest[divider.upperBound...]))
+                    } : []
+                if recovered.isEmpty {
+                    var copy = message
+                    copy.content = body
+                    entries = [copy]
+                } else {
+                    entries = recovered
+                }
+            } else { entries = [message] }
+            for entry in entries {
+                if let index = indices[entry.id] { result[index] = entry }
+                else {
+                    indices[entry.id] = result.count
+                    result.append(entry)
+                }
+            }
+        }
+        return result
     }
 }
 
@@ -745,6 +835,7 @@ public actor HybridContextEngine: ContextEngine {
     }
 
     public func prepareContext(for request: ContextRequest) async throws -> PreparedContext {
+        try Task.checkCancellation()
         let estimated = effectiveEstimate(for: request.messages, budget: request.budget)
         let ratio = Double(estimated) / Double(request.budget.availableInputTokens)
         guard ratio >= request.budget.triggerRatio else {
@@ -763,6 +854,8 @@ public actor HybridContextEngine: ContextEngine {
                 compaction: result.record,
                 isEmergencyCompaction: ratio >= request.budget.emergencyRatio
             )
+        } catch let error as CancellationError {
+            throw error
         } catch {
             consecutiveFailures += 1
             if consecutiveFailures >= 3 {
@@ -773,6 +866,7 @@ public actor HybridContextEngine: ContextEngine {
     }
 
     public func compact(_ request: CompactionRequest) async throws -> CompactionResult {
+        try Task.checkCancellation()
         let input = request.context.messages
         let budget = request.context.budget
         let before = effectiveEstimate(for: input, budget: budget)
@@ -791,8 +885,7 @@ public actor HybridContextEngine: ContextEngine {
         // Previous summaries are replaceable history, not permanent system
         // instructions; otherwise repeated /compact calls accumulate summaries.
         func isRootSystem(_ message: ConversationMessage) -> Bool {
-            message.role == "system" && !message.content.hasPrefix("[Context compaction notice]")
-                && !message.content.hasPrefix("[Manual context snapshot]\n[Context compaction notice]")
+            message.role == "system" && !ContextHistorySnapshot.isSummary(message)
         }
         let systemMessages = input.filter(isRootSystem)
         var protected = input.filter { protectedIDs.contains($0.id) && !isRootSystem($0) }
@@ -830,6 +923,8 @@ public actor HybridContextEngine: ContextEngine {
         }
 
         let usableTokens = budget.availableInputTokens
+        let sourceIDs = ContextHistorySnapshot.sourceIDs(candidates)
+        let compactionID = UUID()
         let targetTokens = Int(Double(usableTokens) * budget.targetRatio)
         let fixedTokens = estimator.estimate(systemMessages + protected)
         // The notice is a fixed cost of every compaction. On a small local
@@ -878,7 +973,8 @@ public actor HybridContextEngine: ContextEngine {
             if let summary, !summary.isEmpty {
                 content += "\n\nHistorical summary:\n\(summary)"
             }
-            return ConversationMessage(role: "system", content: content)
+            return ConversationMessage(id: compactionID, role: "system", content: content,
+                contextSourceMessageIDs: sourceIDs)
         }
 
         let noticeReserve = estimator.estimate([noticeMessage(summary: nil, droppedWithoutSummary: 0)])
@@ -998,8 +1094,9 @@ public actor HybridContextEngine: ContextEngine {
         }
         let output = accepted.output
         let after = accepted.tokens
-        let sourceIDs = candidates.map(\.id)
+        try Task.checkCancellation()
         let record = ContextCompactionRecord(
+            id: compactionID,
             sourceMessageIDs: sourceIDs,
             sourceDigest: Self.stableDigest(of: candidates),
             beforeEstimatedTokens: before,

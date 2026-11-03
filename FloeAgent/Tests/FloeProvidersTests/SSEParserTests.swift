@@ -737,3 +737,59 @@ struct ChatUsageDedupeTests {
         #expect(reports.map(\.outputTokens) == [175, 176])
     }
 }
+
+@Suite("FloeProviders.ContextOverflowNormalization")
+struct ContextOverflowNormalizationTests {
+    @Test("Only explicit context rejections enter overflow recovery", arguments: [
+        #"{"error":{"code":"context_length_exceeded","message":"requested 9000 tokens"}}"#,
+        #"{"error":{"type":"invalid_request_error","message":"prompt is too long: 9000 tokens > 8192 maximum"}}"#,
+        "Maximum context length is 8192 tokens; requested 9000"
+    ])
+    func httpOverflow(body: String) throws {
+        guard case .error(let error) = WireTranslator.httpError(status: 400, body: body) else {
+            Issue.record("Expected a provider rejection"); return
+        }
+        #expect(error.kind == .contextOverflow)
+        #expect(error.httpStatus == 400)
+    }
+
+    @Test("Auth, quota and unrelated request validation keep their classifications")
+    func unrelatedErrorsArePreserved() {
+        let cases: [(Int, String, AgentEvent.NormalizedError.Kind)] = [
+            (401, "maximum context length", .auth),
+            (403, "prompt is too long", .auth),
+            (429, "maximum context length", .rateLimited),
+            (400, "max_tokens must be positive", .malformed),
+            (400, "invalid tool schema", .malformed),
+            (404, "model unavailable", .malformed),
+            (500, "server unavailable", .server)
+        ]
+        for (status, body, expected) in cases {
+            guard case .error(let error) = WireTranslator.httpError(status: status, body: body) else {
+                Issue.record("Expected error for status \(status)"); continue
+            }
+            #expect(error.kind == expected)
+        }
+    }
+
+    @Test("Responses and Anthropic streaming errors use the same overflow route")
+    func streamingOverflow() {
+        let responses: [OpenAIResponsesStreamEvent] = [
+            .error(message: "request too large", code: "context_length_exceeded"),
+            .failed(message: "maximum context length is 8192 tokens")
+        ]
+        var anthropic = WireTranslator.AnthropicAggregator()
+        let events = responses.flatMap { WireTranslator.translate($0) }
+            + WireTranslator.translate(AnthropicStreamEvent.error(type: "invalid_request_error",
+                message: "prompt is too long: 9000 tokens > 8192 maximum"), aggregator: &anthropic)
+        #expect(events.count == 3)
+        for event in events {
+            guard case .error(let error) = event else { Issue.record("Expected error"); continue }
+            #expect(error.kind == .contextOverflow)
+        }
+        let quota = WireTranslator.translate(OpenAIResponsesStreamEvent.error(
+            message: "quota exhausted", code: "rate_limit_exceeded"))
+        guard case .error(let error) = quota.first else { Issue.record("Expected quota error"); return }
+        #expect(error.kind == .rateLimited)
+    }
+}

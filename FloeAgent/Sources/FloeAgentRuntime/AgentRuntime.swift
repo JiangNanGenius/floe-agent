@@ -1366,8 +1366,7 @@ public actor FloeAgentRuntime {
                 // app-generated continuation context. They were previously
                 // dropped at this boundary, which made a compacted or
                 // tool-heavy task look brand new to the next run.
-                || message.content.hasPrefix("[Context compaction notice]")
-                || message.content.hasPrefix("[Manual context snapshot]")
+                || ContextHistorySnapshot.isSummary(message)
                 || message.content.hasPrefix(Self.priorToolEvidencePrefix)
         })
     }
@@ -2449,9 +2448,7 @@ public actor FloeAgentRuntime {
                 }
                 if let compaction = prepared.compaction,
                    !compaction.sourceMessageIDs.isEmpty {
-                    let summary = prepared.messages.first(where: {
-                        $0.role == "system" && $0.content.contains("Historical summary:")
-                    })?.content ?? ""
+                    let summary = prepared.messages.first(where: ContextHistorySnapshot.isSummary)?.content ?? ""
                     // Treat compaction as a transaction. The provider must
                     // never receive a rewritten history that failed durable
                     // persistence, otherwise resume can silently diverge.
@@ -2459,7 +2456,7 @@ public actor FloeAgentRuntime {
                         try await intelligenceStore.saveCompaction(
                             runID: runID,
                             record: compaction,
-                            summary: summary
+                            summary: ContextHistorySnapshot.automaticPrefix + summary
                         )
                     }
                     messages = prepared.messages
@@ -7343,16 +7340,12 @@ public actor FloeAgentRuntime {
                 )
                 return
             }
-            let summary = result.messages.first(where: {
-                $0.role == "system" && $0.content.contains("Historical summary:")
-            })?.content ?? result.messages.first(where: {
-                $0.role == "system" && $0.content.hasPrefix("[Context compaction notice]")
-            })?.content ?? ""
+            let summary = result.messages.first(where: ContextHistorySnapshot.isSummary)?.content ?? ""
             if let intelligenceStore {
                 try await intelligenceStore.saveCompaction(
                     runID: runID,
                     record: result.record,
-                    summary: summary
+                    summary: ContextHistorySnapshot.automaticPrefix + summary
                 )
             }
             messages = result.messages

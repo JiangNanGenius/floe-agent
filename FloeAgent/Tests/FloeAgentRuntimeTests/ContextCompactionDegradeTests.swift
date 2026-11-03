@@ -648,3 +648,83 @@ struct ContextCompactionDegradeTests {
         }
     }
 }
+
+@Suite("FloeAgentRuntime.ContextCompactionClosure")
+struct ContextCompactionClosureTests {
+    private func turns(_ count: Int, phase: Int) -> [ConversationMessage] {
+        (0..<count).map { index in ConversationMessage(
+            role: index.isMultiple(of: 2) ? "user" : "assistant",
+            content: "phase\(phase)-turn\(index) " + String(repeating: "ordinary evidence ", count: 28)) }
+    }
+
+    @Test("Three fallback compactions carry the previous objective and full coverage forward")
+    func rollingFallback() async throws {
+        let objective = "PRIMARY_OBJECTIVE_REF_7391"
+        let root = ConversationMessage(role: "user", content: "Overall objective: deliver \(objective), preserving the existing installation.")
+        var history = [root] + turns(20, phase: 0)
+        let budget = ContextBudget(contextWindowTokens: 8_192, reservedOutputTokens: 512,
+            triggerRatio: 0.58, targetRatio: 0.38, protectedTailTokens: 650)
+        let engine = HybridContextEngine()
+        var previousSummaryID: UUID?
+        for phase in 0..<3 {
+            if phase > 0 { history += turns(36, phase: phase) }
+            let latest = try #require(history.last { $0.role == "user" })
+            let result = try await engine.compact(CompactionRequest(context: ContextRequest(
+                messages: history, budget: budget, protection: ContextProtection(messageIDs: [latest.id])), force: true))
+            let summary = try #require(result.messages.first(where: ContextHistorySnapshot.isSummary))
+            #expect(summary.content.contains(objective), "phase \(phase) must keep the original objective")
+            #expect(summary.id == result.record.id)
+            #expect(summary.contextSourceMessageIDs?.contains(root.id) == true)
+            #expect(result.record.sourceMessageIDs.contains(root.id))
+            #expect(result.messages.contains { $0.id == latest.id && $0.content == latest.content })
+            #expect(result.estimatedTokens <= budget.availableInputTokens)
+            if let previousSummaryID { #expect(result.record.sourceMessageIDs.contains(previousSummaryID)) }
+            previousSummaryID = summary.id
+            history = result.messages
+        }
+    }
+
+    @Test("A model-written previous snapshot remains input to deterministic fallback")
+    func semanticSnapshotSurvivesFallback() async throws {
+        let fact = "ORIGINAL_PLAN_REFERENCE_A1"
+        let previous = ConversationMessage(role: "system", content: """
+        [Context compaction notice]
+        Historical summary:
+        ## Goal
+        Complete \(fact).
+        ## Instructions
+        Preserve the existing installation.
+        ## Progress
+        The current artifact was verified.
+        ## Remaining work
+        Complete acceptance.
+        ## Exact references
+        \(fact)
+        """, contextSourceMessageIDs: [UUID()])
+        let summary = try await DeterministicContextSummarizer().summarize(
+            messages: [previous] + turns(30, phase: 1), maximumCharacters: 8_000)
+        #expect(summary.contains("Prior continuation state"))
+        #expect(summary.contains(fact))
+    }
+
+    @Test("Summary coverage round-trips through checkpoints and old messages decode without it")
+    func coverageCodable() throws {
+        let id = UUID(), covered = [UUID(), UUID()]
+        let old = ConversationMessage(id: id, role: "user", content: "legacy")
+        let oldBytes = try JSONEncoder().encode(old)
+        #expect(!String(decoding: oldBytes, as: UTF8.self).contains("contextSourceMessageIDs"))
+        #expect(try JSONDecoder().decode(ConversationMessage.self, from: oldBytes).contextSourceMessageIDs == nil)
+        let snapshot = ConversationMessage(role: "system", content: "[Context compaction notice]", contextSourceMessageIDs: covered)
+        #expect(try JSONDecoder().decode(ConversationMessage.self, from: JSONEncoder().encode(snapshot)) == snapshot)
+    }
+
+    @Test("A cancelled compaction cannot return a replacement context")
+    func cancelledCompaction() async throws {
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await HybridContextEngine().compact(CompactionRequest(
+                context: ContextRequest(messages: turns(30, phase: 0), budget: ContextBudget(contextWindowTokens: 8_192)), force: true))
+        }
+        await #expect(throws: CancellationError.self) { _ = try await task.value }
+    }
+}

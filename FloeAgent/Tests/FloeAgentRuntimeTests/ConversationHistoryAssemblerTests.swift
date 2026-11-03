@@ -168,3 +168,186 @@ struct ConversationHistoryAssemblerTests {
         ).isEmpty)
     }
 }
+
+@Suite("FloeAgentRuntime.ContextHistoryRecovery", .serialized)
+struct ContextHistoryRecoveryTests {
+    private struct Fixture {
+        let database: DatabaseManager
+        let conversations: SQLiteConversationStore
+        let intelligence: SQLiteIntelligenceStore
+        let conversationID: UUID
+        let runID: UUID
+    }
+
+    private func fixture(database: DatabaseManager? = nil) async throws -> Fixture {
+        let db = try database ?? DatabaseManager.inMemory()
+        try await db.migrate()
+        let conversations = SQLiteConversationStore(database: db)
+        let runs = SQLiteRunStore(database: db)
+        let conversationID = UUID(), runID = UUID()
+        try await conversations.saveConversation(.init(id: conversationID, title: "Context recovery",
+            createdAt: Date(), updatedAt: Date()))
+        try await runs.saveRun(.init(id: runID, conversationID: conversationID,
+            state: "completed", goal: "Continue the existing task", startedAt: Date()))
+        return Fixture(database: db, conversations: conversations,
+            intelligence: SQLiteIntelligenceStore(database: db), conversationID: conversationID, runID: runID)
+    }
+
+    private func append(_ contents: [String], to fixture: Fixture) async throws -> [PersistedMessage] {
+        var rows: [PersistedMessage] = []
+        for (index, content) in contents.enumerated() {
+            let row = PersistedMessage(id: UUID(), conversationID: fixture.conversationID,
+                role: index.isMultiple(of: 2) ? "user" : "assistant", content: content,
+                createdAt: Date(timeIntervalSince1970: Double(index)))
+            try await fixture.conversations.appendMessage(row)
+            rows.append(row)
+        }
+        return rows
+    }
+
+    @Test("Count and byte omissions all enter the sourced historical summary")
+    func byteBoundaryHasNoUncoveredGap() async throws {
+        let fixture = try await fixture()
+        var contents = Array(repeating: String(repeating: "x", count: 8_192), count: 80)
+        contents[15] = "BYTE_LIMIT_REQUIRED_CORRECTION " + contents[15]
+        let rows = try await append(contents, to: fixture)
+        let history = try await ConversationHistoryAssembler(store: fixture.conversations)
+            .build(conversationID: fixture.conversationID)
+        let summary = try #require(history.first(where: ContextHistorySnapshot.isSummary))
+        let accounted = Set(history.flatMap { [$0.id] + ($0.contextSourceMessageIDs ?? []) })
+        #expect(rows.allSatisfy { accounted.contains($0.id) })
+        #expect(summary.content.contains("BYTE_LIMIT_REQUIRED_CORRECTION"))
+        #expect(history.reduce(0, { $0 + $1.content.utf8.count }) <= 512 * 1_024)
+        #expect(try await fixture.conversations.messages(conversationID: fixture.conversationID).count == 80)
+    }
+
+    @Test("Hundreds of source IDs cannot displace the historical prose")
+    func identifierListHasIndependentBudget() async throws {
+        let fixture = try await fixture()
+        let rows = try await append((0..<600).map { "past-evidence-\($0)" }, to: fixture)
+        let history = try await ConversationHistoryAssembler(store: fixture.conversations)
+            .build(conversationID: fixture.conversationID)
+        let summary = try #require(history.first(where: ContextHistorySnapshot.isSummary))
+        #expect(summary.content.utf8.count <= 16_000)
+        #expect(summary.content.contains("past-evidence-0"))
+        #expect(summary.content.contains("past-evidence-479"))
+        #expect(summary.contextSourceMessageIDs?.count == 480)
+        #expect(Set(summary.contextSourceMessageIDs ?? []) == Set(rows.prefix(480).map(\.id)))
+        #expect(summary.content.contains("sourceMessageCount=480"))
+    }
+
+    @Test("Automatic snapshots restore before limits and a newer snapshot replaces their full coverage")
+    func automaticSnapshotsAcrossNewRuns() async throws {
+        let fixture = try await fixture()
+        let rows = try await append((0..<200).map { "original-turn-\($0)" }, to: fixture)
+        let first = ContextCompactionRecord(sourceMessageIDs: rows.prefix(160).map(\.id),
+            sourceDigest: "first", beforeEstimatedTokens: 4_000, afterEstimatedTokens: 400)
+        let firstText = ContextHistorySnapshot.automaticPrefix + "[Context compaction notice]\nHistorical summary:\nOriginal objective ORIGINAL_WORK_743; preserve the existing installation."
+        try await fixture.intelligence.saveCompaction(runID: fixture.runID, record: first, summary: firstText)
+        let firstHistory = try await ConversationHistoryAssembler(store: fixture.conversations,
+            compactionStore: SQLiteIntelligenceStore(database: fixture.database)).build(conversationID: fixture.conversationID)
+        #expect(firstHistory.count == 41)
+        #expect(firstHistory.first?.id == first.id)
+        #expect(firstHistory.first?.content.contains("ORIGINAL_WORK_743") == true)
+        #expect(!firstHistory.contains { $0.content == "original-turn-159" })
+        #expect(firstHistory.contains { $0.id == rows[160].id })
+        let second = ContextCompactionRecord(sourceMessageIDs: [first.id] + rows[160..<180].map(\.id),
+            sourceDigest: "second", beforeEstimatedTokens: 2_000, afterEstimatedTokens: 300)
+        try await fixture.intelligence.saveCompaction(runID: fixture.runID, record: second,
+            summary: ContextHistorySnapshot.automaticPrefix + "[Context compaction notice]\nHistorical summary:\nORIGINAL_WORK_743; newer correction CORRECTION_951.")
+        let secondHistory = try await ConversationHistoryAssembler(store: fixture.conversations,
+            compactionStore: SQLiteIntelligenceStore(database: fixture.database)).build(conversationID: fixture.conversationID)
+        #expect(secondHistory.count == 21)
+        #expect(secondHistory.filter(ContextHistorySnapshot.isSummary).map(\.id) == [second.id])
+        #expect(secondHistory[0].content.contains("CORRECTION_951"))
+        #expect(Set(rows.prefix(180).map(\.id)).isSubset(of: Set(secondHistory[0].contextSourceMessageIDs ?? [])))
+        #expect(try await fixture.conversations.messages(conversationID: fixture.conversationID).count == 200)
+    }
+
+    @Test("A legacy manual summary and an automatic successor remain idempotent")
+    func manualAutomaticLineage() async throws {
+        let fixture = try await fixture()
+        let rows = try await append(["old requirement", "new correction"], to: fixture)
+        let manual = ContextCompactionRecord(sourceMessageIDs: [rows[0].id], sourceDigest: "manual",
+            beforeEstimatedTokens: 100, afterEstimatedTokens: 50)
+        try await fixture.intelligence.saveCompaction(runID: fixture.runID, record: manual,
+            summary: ContextHistorySnapshot.manualPrefix + "[Context compaction notice]\nHistorical summary: manual")
+        let automatic = ContextCompactionRecord(sourceMessageIDs: [manual.id], sourceDigest: "auto",
+            beforeEstimatedTokens: 50, afterEstimatedTokens: 30)
+        try await fixture.intelligence.saveCompaction(runID: fixture.runID, record: automatic,
+            summary: ContextHistorySnapshot.automaticPrefix + "[Context compaction notice]\nHistorical summary: merged")
+        let raw = rows.map { ConversationMessage(id: $0.id, role: $0.role, content: $0.content) }
+        let restored = try await fixture.intelligence.applyingCompactions(raw, conversationID: fixture.conversationID)
+        let again = try await fixture.intelligence.applyingCompactions(restored, conversationID: fixture.conversationID)
+        #expect(restored.map(\.content) == again.map(\.content))
+        #expect(restored.map(\.contextSourceMessageIDs) == again.map(\.contextSourceMessageIDs))
+        #expect(restored.map(\.id) == [automatic.id, rows[1].id])
+        #expect(restored[0].contextSourceMessageIDs?.contains(rows[0].id) == true)
+    }
+
+    @Test("A cancelled durable save leaves the previous checkpoint selected")
+    func cancelledSaveKeepsPriorSnapshot() async throws {
+        let fixture = try await fixture()
+        let rows = try await append(["original"], to: fixture)
+        let first = ContextCompactionRecord(sourceMessageIDs: [rows[0].id], sourceDigest: "first",
+            beforeEstimatedTokens: 100, afterEstimatedTokens: 40)
+        try await fixture.intelligence.saveCompaction(runID: fixture.runID, record: first,
+            summary: ContextHistorySnapshot.automaticPrefix + "[Context compaction notice]\nHistorical summary: committed")
+        let rejected = ContextCompactionRecord(sourceMessageIDs: [first.id], sourceDigest: "cancelled",
+            beforeEstimatedTokens: 40, afterEstimatedTokens: 20)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await fixture.intelligence.saveCompaction(runID: fixture.runID, record: rejected,
+                summary: ContextHistorySnapshot.automaticPrefix + "[Context compaction notice]\nHistorical summary: must not commit")
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        let restored = try await fixture.intelligence.applyingCompactions([], conversationID: fixture.conversationID)
+        #expect(restored.map(\.id) == [first.id])
+    }
+}
+
+extension ContextHistoryRecoveryTests {
+    @Test("A fresh database manager rebuilds the committed automatic checkpoint from disk")
+    func diskSnapshotRecovery() async throws {
+        let parent = ProcessInfo.processInfo.environment["FLOE_CONTEXT_TEST_ROOT"]
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.temporaryDirectory
+        let root = parent.appendingPathComponent("context-reopen-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("history.sqlite")
+        func writeInitial() async throws -> (UUID, UUID) {
+            let fixture = try await fixture(database: DatabaseManager(path: path))
+            let rows = try await append(["original objective", "completed evidence", "latest correction"], to: fixture)
+            let record = ContextCompactionRecord(sourceMessageIDs: rows.prefix(2).map(\.id),
+                sourceDigest: "disk", beforeEstimatedTokens: 100, afterEstimatedTokens: 40)
+            try await fixture.intelligence.saveCompaction(runID: fixture.runID, record: record,
+                summary: ContextHistorySnapshot.automaticPrefix + "[Context compaction notice]\nHistorical summary:\nDISK_OBJECTIVE_637 and completed evidence.")
+            return (fixture.conversationID, record.id)
+        }
+        let (conversationID, summaryID) = try await writeInitial()
+        let reopened = try DatabaseManager(path: path)
+        try await reopened.migrate()
+        let conversations = SQLiteConversationStore(database: reopened)
+        let history = try await ConversationHistoryAssembler(store: conversations,
+            compactionStore: SQLiteIntelligenceStore(database: reopened)).build(conversationID: conversationID)
+        #expect(history.count == 2)
+        #expect(history.first?.id == summaryID)
+        #expect(history.first?.content.contains("DISK_OBJECTIVE_637") == true)
+        #expect(history.last?.content == "latest correction")
+        #expect(try await conversations.messages(conversationID: conversationID).count == 3)
+    }
+
+    @Test("A snapshot from another conversation cannot change this history")
+    func snapshotOwnership() async throws {
+        let fixture = try await fixture()
+        let rows = try await append(["own objective", "own correction"], to: fixture)
+        let record = ContextCompactionRecord(sourceMessageIDs: [rows[0].id], sourceDigest: "owner",
+            beforeEstimatedTokens: 100, afterEstimatedTokens: 40)
+        try await fixture.intelligence.saveCompaction(runID: fixture.runID, record: record,
+            summary: ContextHistorySnapshot.automaticPrefix + "[Context compaction notice]\nHistorical summary: owner only")
+        let raw = rows.map { ConversationMessage(id: $0.id, role: $0.role, content: $0.content) }
+        let other = try await fixture.intelligence.applyingCompactions(raw, conversationID: UUID())
+        #expect(other == raw)
+    }
+}

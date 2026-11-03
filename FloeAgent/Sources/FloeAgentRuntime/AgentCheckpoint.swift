@@ -417,6 +417,10 @@ public struct ConversationMessage: Sendable, Codable, Hashable, Identifiable {
     public var images: [ConversationImagePart]
     /// Provider protocol continuity, not tool-state or authorization input.
     public var reasoningContent: String?
+    /// App-generated summary coverage. Kept in checkpoints, never serialized
+    /// into provider text. This lets a later summary replace the underlying
+    /// durable messages even when an earlier summary had a synthetic ID.
+    public var contextSourceMessageIDs: [UUID]?
 
     public init(
         id: UUID = UUID(),
@@ -424,7 +428,8 @@ public struct ConversationMessage: Sendable, Codable, Hashable, Identifiable {
         content: String,
         createdAt: Date = Date(),
         images: [ConversationImagePart] = [],
-        reasoningContent: String? = nil
+        reasoningContent: String? = nil,
+        contextSourceMessageIDs: [UUID]? = nil
     ) {
         self.id = id
         self.role = role
@@ -432,9 +437,10 @@ public struct ConversationMessage: Sendable, Codable, Hashable, Identifiable {
         self.createdAt = createdAt
         self.images = images
         self.reasoningContent = reasoningContent
+        self.contextSourceMessageIDs = contextSourceMessageIDs
     }
 
-    private enum CodingKeys: String, CodingKey { case id, role, content, createdAt, images, reasoningContent }
+    private enum CodingKeys: String, CodingKey { case id, role, content, createdAt, images, reasoningContent, contextSourceMessageIDs }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -444,6 +450,7 @@ public struct ConversationMessage: Sendable, Codable, Hashable, Identifiable {
         createdAt = try values.decode(Date.self, forKey: .createdAt)
         images = try values.decodeIfPresent([ConversationImagePart].self, forKey: .images) ?? []
         reasoningContent = try values.decodeIfPresent(String.self, forKey: .reasoningContent)
+        contextSourceMessageIDs = try values.decodeIfPresent([UUID].self, forKey: .contextSourceMessageIDs)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -454,6 +461,7 @@ public struct ConversationMessage: Sendable, Codable, Hashable, Identifiable {
         try values.encode(createdAt, forKey: .createdAt)
         if !images.isEmpty { try values.encode(images, forKey: .images) }
         try values.encodeIfPresent(reasoningContent, forKey: .reasoningContent)
+        try values.encodeIfPresent(contextSourceMessageIDs, forKey: .contextSourceMessageIDs)
     }
 }
 

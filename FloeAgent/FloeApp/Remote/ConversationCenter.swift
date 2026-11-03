@@ -845,24 +845,27 @@ final class ConversationCenter: ObservableObject {
         guard let run = try await environment.runStore.runs(conversationID: conversationID).first else {
             return FloeL10n.l("remote.conversation_center.there_is_currently_no_history_to")
         }
-        let raw = try await ConversationHistoryAssembler(store: environment.conversationStore).build(conversationID: conversationID)
-        let history = try await environment.intelligenceStore.applyingCompactions(raw, conversationID: conversationID)
+        let history = try await ConversationHistoryAssembler(store: environment.conversationStore,
+            compactionStore: environment.intelligenceStore).build(conversationID: conversationID)
         let window = providerAndModel(modelID: modelID)?.1.limits.contextTokens ?? 32_768
         let engine: any ContextEngine = providerAndModel(modelID: modelID)
             .map { makeContextEngine(provider: $0.0, model: $0.1) } ?? HybridContextEngine()
         let result = try await engine.compact(CompactionRequest(
-            context: ContextRequest(messages: history, budget: ContextBudget(contextWindowTokens: window)), force: true))
+            context: ContextRequest(messages: history, budget: ContextBudget(contextWindowTokens: window),
+                protection: ContextProtection(messageIDs: Set(history.last(where: { $0.role == "user" }).map { [$0.id] } ?? []))), force: true))
         try Task.checkCancellation()
-        let current = try await ConversationHistoryAssembler(store: environment.conversationStore).build(conversationID: conversationID)
-        guard raw.map({ $0.role + ":" + $0.content }) == current.map({ $0.role + ":" + $0.content }),
+        let current = try await ConversationHistoryAssembler(store: environment.conversationStore,
+            compactionStore: environment.intelligenceStore).build(conversationID: conversationID)
+        guard history.map({ $0.role + ":" + $0.content }) == current.map({ $0.role + ":" + $0.content }),
               !activeRuns.values.contains(where: { $0.conversationID == conversationID }) else {
             throw FloeError.validationFailed(FloeL10n.l("remote.conversation_center.the_history_changed_during_compaction_so"))
         }
         guard !result.record.sourceMessageIDs.isEmpty,
-              let summary = result.messages.first(where: { $0.content.contains("Historical summary:") })?.content else {
+              let summary = result.messages.first(where: ContextHistorySnapshot.isSummary)?.content else {
             return FloeL10n.l("remote.conversation_center.the_history_is_short_enough_no")
         }
-        try await environment.intelligenceStore.saveCompaction(runID: run.id, record: result.record, summary: "[Manual context snapshot]\n" + summary)
+        try await environment.intelligenceStore.saveCompaction(runID: run.id, record: result.record,
+            summary: ContextHistorySnapshot.manualPrefix + summary)
         return FloeL10n.l("remote.conversation_center.context_compacted_about_tokens_the_full", result.record.beforeEstimatedTokens, result.record.afterEstimatedTokens)
     }
 
@@ -1262,9 +1265,18 @@ final class ConversationCenter: ObservableObject {
                 )
                 var text = ""
                 for try await event in adapter.stream(request: request, credentials: credentials) {
-                    if case .textDelta(let delta) = event {
+                    switch event {
+                    case .textDelta(let delta):
                         text += delta.text
-                        if text.utf8.count > 32_000 { break }
+                        if text.utf8.count > 32_000 {
+                            throw FloeError.validationFailed("Context summary exceeded its text budget")
+                        }
+                    case .error(let error):
+                        if error.kind == .cancelled { throw CancellationError() }
+                        throw FloeError.validationFailed("Context summary failed: \(error.providerMessage)")
+                    case .completed(let info) where info.stopReason == .maxTokens:
+                        throw FloeError.validationFailed("Context summary reached its output limit")
+                    default: break
                     }
                 }
                 return text
@@ -3597,9 +3609,6 @@ final class ConversationCenter: ObservableObject {
             )
         }
         let model = resolvedModel
-        let conversationHistory = isTemporary
-            ? conversationHistory
-            : (try? await environment.intelligenceStore.applyingCompactions(conversationHistory, conversationID: conversationID)) ?? conversationHistory
         let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
         let conversationRecord = try? await conversationStore.conversation(id: conversationID)
         let isNotesAssistant = conversationRecord?.purpose == .notes
@@ -6189,9 +6198,18 @@ final class ConversationCenter: ObservableObject {
                 )
                 return .failure(error)
             }
-            let assembled = (try? await ConversationHistoryAssembler(
-                store: self.conversationStore(for: conversationID)
-            ).build(conversationID: conversationID)) ?? []
+            let assembled: [ConversationMessage]
+            do {
+                assembled = try await ConversationHistoryAssembler(
+                    store: self.conversationStore(for: conversationID),
+                    compactionStore: isTemporary ? nil : self.environment.intelligenceStore
+                ).build(conversationID: conversationID)
+            } catch {
+                await self.finishDeferredLaunchFailure(
+                    runID: runID, conversationID: conversationID, error: error
+                )
+                return .failure(error)
+            }
             // Settled tool evidence is durable in the run event thread but not
             // part of `assembled`; recover a bounded projection so a new run
             // does not forget completed tool work. Temporary runs start fresh
@@ -7698,7 +7716,8 @@ final class ConversationCenter: ObservableObject {
             throw FloeError.validationFailed(message)
         }
         let assembled = try await ConversationHistoryAssembler(
-            store: routedConversationStore
+            store: routedConversationStore,
+            compactionStore: isTemporaryConversation(record.conversationID) ? nil : environment.intelligenceStore
         ).build(conversationID: record.conversationID)
         let current = assembled.last(where: { $0.role == "user" })
         let history = current.map { item in assembled.filter { $0.id != item.id } } ?? assembled

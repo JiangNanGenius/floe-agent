@@ -129,7 +129,7 @@ public extension DurableMemoryStore {
 /// One durable implementation for plans, goals, bounded memory and explicit
 /// cross-conversation history access. The runtime owns semantic types while
 /// the shared DatabaseManager preserves serialized writes and foreign keys.
-public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, DurableMemoryStore, ConversationHistoryReader {
+public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, DurableMemoryStore, ConversationHistoryReader, ConversationContextCompactionStore {
     private struct ConversationTimelineCursor: Codable {
         var createdAt: String
         var sequence: Int
@@ -167,12 +167,17 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
             try Row.fetchAll(db, sql: """
                 SELECT c.id, c.source_message_ids_json, c.summary
                 FROM context_compactions c JOIN runs r ON r.id = c.run_id
-                WHERE r.conversation_id = ? AND c.summary LIKE '[Manual context snapshot]%' ORDER BY c.created_at, c.rowid
-                """, arguments: [conversationID.uuidString]).map { row -> [String: String] in
+                WHERE r.conversation_id = ? AND (c.summary LIKE ? OR c.summary LIKE ?)
+                ORDER BY c.created_at, c.rowid
+                """, arguments: [conversationID.uuidString,
+                    ContextHistorySnapshot.manualPrefix + "%",
+                    ContextHistorySnapshot.automaticPrefix + "%"]
+                ).map { row -> [String: String] in
                     ["id": row["id"], "source_message_ids_json": row["source_message_ids_json"], "summary": row["summary"]]
                 }
         }
         var result = messages
+        var coverageBySummary: [UUID: Set<UUID>] = [:]
         for row in rows {
             let idText = row["id"] ?? ""
             let sourceJSON = row["source_message_ids_json"] ?? "[]"
@@ -180,9 +185,14 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
             guard let id = UUID(uuidString: idText),
                   let sources = try? JSONDecoder().decode([UUID].self, from: Data(sourceJSON.utf8)),
                   !sources.isEmpty, !summary.isEmpty else { continue }
-            let replaced = Set(sources)
+            // Older manual snapshots can point only to their predecessor's
+            // summary ID. Resolve that lineage while all rows are available.
+            var replaced = Set(sources)
+            for source in sources { replaced.formUnion(coverageBySummary[source] ?? []) }
+            coverageBySummary[id] = replaced
             result.removeAll { replaced.contains($0.id) || $0.id == id }
-            result.insert(ConversationMessage(id: id, role: "system", content: summary), at: 0)
+            result.insert(ConversationMessage(id: id, role: "system", content: summary,
+                contextSourceMessageIDs: replaced.sorted { $0.uuidString < $1.uuidString }), at: 0)
         }
         return result
     }

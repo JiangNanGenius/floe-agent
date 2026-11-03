@@ -10,6 +10,8 @@ import Testing
 @testable import FloeTools
 @testable import FloeCore
 import FloeTestSupport
+import FloePersistence
+import GRDB
 
 final class MockAuditSink: AuditSink, @unchecked Sendable {
     private let storage = AsyncLock<[AuditEntry]>([])
@@ -2572,4 +2574,82 @@ private struct HangingAdapter: ProviderAdapter {
     }
 
     func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
+}
+
+@Suite("FloeAgentRuntime.CloudContextOverflowRecovery", .serialized)
+struct CloudContextOverflowRecoveryTests {
+    @Test("HTTP classification reaches one real forced compaction", arguments: [false, true])
+    func boundedCloudOverflow(rejectAgain: Bool) async throws {
+        try await exercise(rejectAgain: rejectAgain, rejectPersistence: false)
+    }
+
+    @Test("A rejected forced snapshot commit cannot install history or dispatch")
+    func failedCommitDoesNotDispatch() async throws {
+        try await exercise(rejectAgain: false, rejectPersistence: true)
+    }
+
+    private func exercise(rejectAgain: Bool, rejectPersistence: Bool) async throws {
+        let db = try DatabaseManager.inMemory()
+        try await db.migrate()
+        let conversationID = UUID(), runID = UUID()
+        let conversations = SQLiteConversationStore(database: db)
+        try await conversations.saveConversation(.init(id: conversationID, title: "Overflow",
+            createdAt: Date(), updatedAt: Date()))
+        try await SQLiteRunStore(database: db).saveRun(.init(id: runID, conversationID: conversationID,
+            state: "running", goal: "Continue the existing task", startedAt: Date()))
+        if rejectPersistence {
+            try await db.writer { db in
+                try db.execute(sql: "CREATE TRIGGER context_fixture_reject BEFORE INSERT ON context_compactions BEGIN SELECT RAISE(ABORT, 'forced snapshot failure'); END")
+            }
+        }
+        let seed = (0..<48).map { index in ConversationMessage(
+            role: index.isMultiple(of: 2) ? "user" : "assistant",
+            content: "Historical turn \(index): " + String(repeating: "previous evidence ", count: 100)) }
+        for message in seed {
+            try await conversations.appendMessage(.init(id: message.id, conversationID: conversationID,
+                role: message.role, content: message.content, createdAt: message.createdAt))
+        }
+        let rejection = WireTranslator.httpError(status: 400,
+            body: #"{"error":{"code":"context_length_exceeded","message":"maximum context length exceeded"}}"#)
+        let adapter = MockAdapter()
+        adapter.script = [
+            [rejection],
+            rejectAgain ? [rejection] : [.textDelta(.init(text: "The existing task is complete.")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let provider = TestFixtures.localhostProvider()
+        var model = TestFixtures.testModel(providerID: provider.id)
+        model.limits = ModelLimits(contextTokens: 65_536, maxOutputTokens: 1_024)
+        model.capabilities = [.text]
+        let sink = MockSink(), executor = MockExecutor()
+        let runtime = FloeAgentRuntime(configuration: .init(conversationID: conversationID,
+                provider: provider, model: model, toolsEnabled: false,
+                verifyFinalAnswer: false, forceInitialCompaction: rejectPersistence),
+            adapter: adapter, policy: HumanApprovalPolicy(), executor: executor,
+            checkpointStore: MockCheckpointStore(), intelligenceStore: SQLiteIntelligenceStore(database: db),
+            contextEngine: HybridContextEngine(), sink: sink, runID: runID)
+        await runtime.seedConversationHistory(seed)
+        try await runtime.start(goal: "Continue the existing task without repeating prior work.")
+        let rows = try await db.reader { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM context_compactions") ?? 0 }
+        if rejectPersistence {
+            #expect(adapter.requests.isEmpty)
+            #expect(rows == 0)
+            guard case .failed(let failure) = await runtime.state else { Issue.record("Expected recoverable persistence failure"); return }
+            #expect(failure.isRecoverable)
+        } else {
+            #expect(adapter.requests.count == 2)
+            #expect(rows == 1)
+            #expect(sink.transitions.filter { $0 == "compacting" }.count == 1)
+            #expect(!adapter.requests[0].messages.contains { $0.content.hasPrefix(ContextHistorySnapshot.noticePrefix) })
+            #expect(adapter.requests[1].messages.contains { $0.content.hasPrefix(ContextHistorySnapshot.noticePrefix) })
+            let restored = try await SQLiteIntelligenceStore(database: db).applyingCompactions(seed, conversationID: conversationID)
+            #expect(restored.contains { $0.content.hasPrefix(ContextHistorySnapshot.automaticPrefix) })
+            if rejectAgain {
+                guard case .failed(let failure) = await runtime.state else { Issue.record("Expected bounded overflow failure"); return }
+                #expect(failure.isRecoverable)
+                #expect(failure.message.contains("still exceeds"))
+            } else { #expect(await runtime.state.name == "completed") }
+        }
+        #expect(executor.executedCalls.isEmpty)
+        #expect(try await conversations.messages(conversationID: conversationID).map(\.id) == seed.map(\.id))
+    }
 }
