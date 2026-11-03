@@ -347,6 +347,49 @@ final class EnvironmentOwnershipTests: XCTestCase {
         }
     }
 
+    /// A task's pinned dependency environment follows that task after an
+    /// authorized workspace move; this does not grant another task or a
+    /// direct project selection access to the former workspace.
+    func testPinnedSessionSurvivesAuthorizedWorkspaceMoveWithoutForeignAccess() async throws {
+        let owner = UUID()
+        let record = try await registry.ensureSessionContainer(
+            conversationID: owner.uuidString,
+            workspaceID: workspaceID(for: workspaceRoot),
+            workspaceRootPath: workspaceRoot.path,
+            executionBackend: .linuxPRoot
+        )
+        let current = scratch.appendingPathComponent("new-workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: current, withIntermediateDirectories: true)
+        let context = makeContext(workspace: current, environmentID: record.id, conversationID: owner)
+        let holder = try await LinuxExecutionLeaseResolver.acquireHolder(
+            context, coordinator: coordinator, registry: registry, selectedBackend: .linuxPRoot
+        )
+        let descriptor = await holder.descriptor
+        XCTAssertEqual(descriptor.environmentID, record.id)
+        XCTAssertEqual(descriptor.workspaceRootURL,
+                       current.resolvingSymlinksInPath().standardizedFileURL)
+        await holder.markProcessQuiesced()
+        _ = try await holder.release()
+
+        var foreign = context
+        foreign.conversationID = UUID()
+        var unowned = context
+        unowned.conversationID = nil
+        var project = context
+        project.environmentID = record.parentID
+        for rejected in [foreign, unowned, project] {
+            do {
+                let unexpected = try await coordinator.acquire(rejected)
+                await unexpected.finish()
+                XCTFail("Expected foreign, unowned or direct-project ownership refusal")
+            } catch let error as FloeError {
+                guard case .validationFailed = error else {
+                    return XCTFail("Expected ownership validation failure, got \(error)")
+                }
+            }
+        }
+    }
+
     // MARK: - Lease retention until process quiescence
 
     func testHolderRefusesReleaseBeforeQuiescence() async throws {
