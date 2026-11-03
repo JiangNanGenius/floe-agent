@@ -13,7 +13,8 @@ public struct VerifiedToolImageArtifact: Sendable {
     public static let maximumStoredImageBytes = 24 * 1_024 * 1_024
     public static let namespaces: Set<String> = [
         "BrowserArtifacts", "GeneratedImages", "VNCArtifacts",
-        "CADViewportArtifacts", "CADAnimationFrames", "EngineeringObservations"
+        "CADViewportArtifacts", "CADAnimationFrames", "EngineeringObservations",
+        "ImageInspectionArtifacts"
     ]
 
     public let reference: ToolArtifactReference

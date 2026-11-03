@@ -14,6 +14,7 @@ import FloeTools
 import FloeWorkspace
 import FloeSecurity
 import FloeSync
+import FloeImages
 
 /// Provider-backed semantic image understanding for text-only primary models.
 ///
@@ -116,7 +117,8 @@ struct RemoteImageInspectTool: AgentTool {
         )
         do {
             try context.cancellation.throwIfCancelled()
-            let source = try resolve(path: path, expectedSHA256: args.sha256, context: context)
+            let source = try Self.resolve(path: path, expectedSHA256: args.sha256, context: context,
+                                          artifactRootProvider: artifactRootProvider)
             FloeLogger(category: .tools).info(
                 "imageInspectResolved run=\(context.runID.uuidString) source=\(sourceID) bytes=\(source.data.count)"
             )
@@ -172,10 +174,11 @@ struct RemoteImageInspectTool: AgentTool {
         }
     }
 
-    private func resolve(
+    fileprivate static func resolve(
         path: String,
         expectedSHA256: String?,
-        context: ToolContext
+        context: ToolContext,
+        artifactRootProvider: @Sendable () -> URL?
     ) throws -> (data: Data, url: URL) {
         let url: URL
         let usesArtifactStore: Bool
@@ -341,13 +344,151 @@ struct RemoteImageInspectTool: AgentTool {
         value.count == 64 && value.allSatisfy { $0.isHexDigit }
     }
 
-    private static func applicationSupportRoot() -> URL? {
+    fileprivate static func applicationSupportRoot() -> URL? {
         try? FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
             create: false
         ).appendingPathComponent("FloeAgent", isDirectory: true)
+    }
+}
+
+/// A local observation, delivered as real pixels to the current vision route.
+/// It never edits the source or starts another provider inference.
+struct LocalImageViewTool: AgentTool {
+    struct Region: Decodable, Sendable {
+        var x: Double
+        var y: Double
+        var width: Double
+        var height: Double
+    }
+
+    struct Arguments: Decodable, Sendable {
+        var path: String
+        var sha256: String? = nil
+        var region: Region? = nil
+        var maxDimension: Int? = nil
+    }
+
+    static let name = "image.view"
+    static let toolDescription = "View an image or a chosen region using the current model's visual input. Local, read-only: no second AI model or paid request. Returns a real lossless image attachment, source dimensions, exact crop pixels and scale. Use an overview first, then request a region from the ORIGINAL path for small text, CAD details or charts. region uses normalized 0...1 coordinates in the EXIF-oriented image, origin TOP LEFT. Cropping happens before resizing; maxDimension defaults to 2048 and never enlarges pixels. Tool-artifact paths require their producing sha256. A CAD capture remains tied to its captured revision; capture again after edits. Raster images only; render PDF pages first."
+    static let parametersJSON = #"""
+    {
+      "type":"object",
+      "properties":{
+        "path":{"type":"string","description":"Workspace-relative raster image, or retained tool image artifact path"},
+        "sha256":{"type":"string","description":"Digest from the producing result, required for retained tool artifacts"},
+        "region":{"type":"object","description":"Optional region of the ORIENTED ORIGINAL image; normalized coordinates, top-left origin","properties":{"x":{"type":"number","minimum":0,"maximum":1},"y":{"type":"number","minimum":0,"maximum":1},"width":{"type":"number","exclusiveMinimum":0,"maximum":1},"height":{"type":"number","exclusiveMinimum":0,"maximum":1}},"required":["x","y","width","height"],"additionalProperties":false},
+        "maxDimension":{"type":"integer","minimum":256,"maximum":4096,"description":"Maximum output side length; default 2048. No upscaling."}
+      },
+      "required":["path"],"additionalProperties":false
+    }
+    """#
+    static let riskLabels: Set<RiskLabel> = [.readsFiles]
+    static let isSideEffecting = false
+    static let toolEffect: ToolEffect = .readOnly
+
+    private let artifactRootProvider: @Sendable () -> URL?
+
+    init(artifactRootProvider: @escaping @Sendable () -> URL? = RemoteImageInspectTool.applicationSupportRoot) {
+        self.artifactRootProvider = artifactRootProvider
+    }
+
+    func validate(_ args: Arguments) throws {
+        let path = args.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, !path.hasPrefix("/"), !path.hasPrefix("~"),
+              !path.contains("\\"), !path.contains("\0"),
+              path.split(separator: "/", omittingEmptySubsequences: false)
+                .allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+              (256...4096).contains(args.maxDimension ?? 2048) else {
+            throw FloeError.validationFailed("Use a relative image path and maxDimension between 256 and 4096")
+        }
+        if let r = args.region {
+            guard [r.x, r.y, r.width, r.height].allSatisfy(\.isFinite),
+                  r.x >= 0, r.y >= 0, r.width > 0, r.height > 0,
+                  r.x + r.width <= 1, r.y + r.height <= 1 else {
+                throw FloeError.validationFailed("region must fit inside the original image's 0...1 bounds")
+            }
+        }
+    }
+
+    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try validate(args)
+        try context.cancellation.throwIfCancelled()
+        let path = args.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = try RemoteImageInspectTool.resolve(path: path, expectedSHA256: args.sha256,
+            context: context, artifactRootProvider: artifactRootProvider)
+        if let expected = args.sha256,
+           FloeDigest.sha256Hex(source.data) != expected.lowercased() {
+            throw FloeError.validationFailed("The source image changed; inspect its current digest before viewing it")
+        }
+        guard let decoder = CGImageSourceCreateWithData(source.data as CFData,
+                    [kCGImageSourceShouldCache: false] as CFDictionary),
+              let properties = CGImageSourceCopyPropertiesAtIndex(decoder, 0, nil) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+              width > 0, height > 0, width <= 32_768, height <= 32_768,
+              Int64(width) * Int64(height) <= 80_000_000,
+              let oriented = CGImageSourceCreateThumbnailAtIndex(decoder, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: max(width, height)
+              ] as CFDictionary) else {
+            throw FloeError.validationFailed("Use a supported raster image; render PDF pages before viewing them")
+        }
+        let r = args.region ?? Region(x: 0, y: 0, width: 1, height: 1)
+        let x = floor(r.x * Double(oriented.width)), y = floor(r.y * Double(oriented.height))
+        let right = min(Double(oriented.width), ceil((r.x + r.width) * Double(oriented.width)))
+        let bottom = min(Double(oriented.height), ceil((r.y + r.height) * Double(oriented.height)))
+        let rectangle = CGRect(x: x, y: y, width: right - x, height: bottom - y)
+        guard let cropped = oriented.cropping(to: rectangle) else {
+            throw FloeError.validationFailed("The requested image region contains no pixels")
+        }
+        let maximum = args.maxDimension ?? 2048
+        let viewed: CGImage
+        if max(cropped.width, cropped.height) > maximum {
+            viewed = try ImagePipeline().apply(.resize(width: maximum, height: maximum, preserveAspect: true), to: cropped)
+        } else { viewed = cropped }
+        let data = try ImageFileEncoder.encode(viewed, as: .png)
+        guard data.count <= ProviderImageEvidencePolicy.maximumImageBytes else {
+            throw FloeError.validationFailed("The region is too large to attach; choose a smaller region or maxDimension")
+        }
+        try context.cancellation.throwIfCancelled()
+        guard let root = artifactRootProvider()?.standardizedFileURL.resolvingSymlinksInPath() else {
+            throw FloeError.notFound("Floe image storage")
+        }
+        let digest = FloeDigest.sha256Hex(data)
+        let relative = "ImageInspectionArtifacts/\(context.runID.uuidString)/\(digest).png"
+        let destination = root.appendingPathComponent(relative)
+        guard destination.resolvingSymlinksInPath() == destination else {
+            throw FloeError.validationFailed("Image observation storage must not contain symbolic links")
+        }
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard destination.resolvingSymlinksInPath() == destination else {
+            throw FloeError.validationFailed("Image observation storage must not contain symbolic links")
+        }
+        if !FileManager.default.fileExists(atPath: destination.path) {
+            _ = try AtomicFileCommitter.commit(data, to: destination, policy: FileCommitPolicy(
+                maxBytes: ProviderImageEvidencePolicy.maximumImageBytes,
+                checkCancellation: { try context.cancellation.throwIfCancelled() }))
+        }
+        let artifact = ToolArtifactReference(id: UUID(), relativePath: relative, mimeType: "image/png",
+            byteCount: data.count, sha256: digest)
+        _ = try VerifiedToolImageArtifact.load(artifact, root: root)
+        try context.cancellation.throwIfCancelled()
+        let receipt: [String: Any] = [
+            "source": path, "sourceSHA256": FloeDigest.sha256Hex(source.data),
+            "sourcePixels": ["width": oriented.width, "height": oriented.height],
+            "regionPixels": ["x": Int(x), "y": Int(y), "width": cropped.width, "height": cropped.height],
+            "attachedPixels": ["width": viewed.width, "height": viewed.height],
+            "coordinates": "EXIF-oriented original, top-left origin; pixels",
+            "scaleX": Double(viewed.width) / Double(cropped.width),
+            "scaleY": Double(viewed.height) / Double(cropped.height),
+            "path": relative, "sha256": digest, "mimeType": "image/png"
+        ]
+        let summary = String(decoding: try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]), as: UTF8.self)
+        return ToolExecutionOutput(digesting: summary, exitStatus: 0, artifacts: [artifact])
     }
 }
 
@@ -1678,6 +1819,8 @@ enum PDFToolSupport {
 }
 
 func registerRemoteImageTools(center: FilesCenter, registry: ToolRunnerRegistry = .shared) {
+    ToolCatalog.register(LocalImageViewTool.self)
+    registry.register(LocalImageViewTool())
     ToolCatalog.register(RemoteImageInspectTool.self)
     registry.register(RemoteImageInspectTool(center: center))
     ToolCatalog.register(RemoteImageModelsTool.self)
