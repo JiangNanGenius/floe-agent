@@ -391,6 +391,10 @@ public nonisolated enum CADAssemblyConstraintKind: String, Codable, Sendable, Ca
     case distance
     /// Angle between A's axis and B's axis, degrees.
     case angle
+    /// One signed rotation about a coincident axis; optional bounds in degrees.
+    case hinge
+    /// One signed translation along an axis; optional bounds in millimetres.
+    case slider
 }
 
 /// A positioning constraint. Geometry references are stored in each instance's
@@ -416,6 +420,10 @@ public nonisolated struct CADAssemblyConstraint: Codable, Sendable, Equatable, I
     /// reported as a stale reference, never silently re-bound.
     public var sourceRevisionA: UInt64?
     public var sourceRevisionB: UInt64?
+    public var joint: CADAssemblyJoint?
+    var bindingA: CADAssemblyGeometryBinding? = nil
+    var bindingB: CADAssemblyGeometryBinding? = nil
+    var referenceFailure: String? = nil
 
     public init(id: UUID = UUID(),
                 kind: CADAssemblyConstraintKind,
@@ -428,7 +436,8 @@ public nonisolated struct CADAssemblyConstraint: Codable, Sendable, Equatable, I
                 value: Double? = nil,
                 isSuppressed: Bool = false,
                 sourceRevisionA: UInt64? = nil,
-                sourceRevisionB: UInt64? = nil) {
+                sourceRevisionB: UInt64? = nil,
+                joint: CADAssemblyJoint? = nil) {
         self.id = id
         self.kind = kind
         self.instanceA = instanceA
@@ -441,6 +450,7 @@ public nonisolated struct CADAssemblyConstraint: Codable, Sendable, Equatable, I
         self.isSuppressed = isSuppressed
         self.sourceRevisionA = sourceRevisionA
         self.sourceRevisionB = sourceRevisionB
+        self.joint = joint
     }
 }
 

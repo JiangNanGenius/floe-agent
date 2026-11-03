@@ -79,6 +79,7 @@ struct CADAssemblyReport {
         var sourceRevisionB: UInt64?
         var parentID: String?
         var scope: String?
+        var joint: CADAssemblyJoint? = nil
     }
     struct ExplodedView: Identifiable {
         var id: String
@@ -174,6 +175,10 @@ struct CADAssemblyReport {
                 if let value = row[key] as? Int, value >= 0 { return UInt64(value) }
                 return nil
             }
+            let joint: CADAssemblyJoint? = (row["joint"]).flatMap { raw in
+                guard let data = try? JSONSerialization.data(withJSONObject: raw) else { return nil }
+                return try? JSONDecoder().decode(CADAssemblyJoint.self, from: data)
+            }
             let pointA = vector("pointA") ?? .zero
             let directionA = vector("directionA") ?? SIMD3(0, 0, 1)
             return Constraint(
@@ -195,7 +200,8 @@ struct CADAssemblyReport {
                 sourceRevisionA: revision("sourceRevisionA"),
                 sourceRevisionB: revision("sourceRevisionB"),
                 parentID: row["parentID"] as? String,
-                scope: row["scope"] as? String)
+                scope: row["scope"] as? String,
+                joint: joint)
         }
         explodedViews = (reply["explodedViews"] as? [[String: Any]] ?? []).map { row in
             let direction = (row["direction"] as? [Double]) ?? [1, 1, 1]
@@ -247,6 +253,8 @@ func localizedConstraintKind(_ raw: String) -> String {
     case "planarAlign": fallback = "Planar align"
     case "distance": fallback = "Distance"
     case "angle": fallback = "Angle"
+    case "hinge": fallback = "Hinge"
+    case "slider": fallback = "Slider"
     default: fallback = raw
     }
     return FloeCADStrings.text(key, fallback)
@@ -735,7 +743,7 @@ struct CADAssemblyPanelView: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 if let value = constraint.value {
-                                    let unit = constraint.kind == "angle" ? "°" : " mm"
+                                    let unit = constraint.kind == "angle" || constraint.kind == "hinge" ? "°" : " mm"
                                     Text("· \(Self.valueFormatter.string(from: NSNumber(value: value)) ?? "\(value)")\(unit)")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
@@ -790,6 +798,7 @@ struct CADAssemblyPanelView: View {
                             }
                         }
                         .padding(.vertical, 2)
+                        .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("CADAssemblyConstraint-\(constraint.id)")
                     }
                 }
@@ -856,7 +865,7 @@ struct CADAssemblyPanelView: View {
     }
 
     private func canEditConstraint(_ constraint: CADAssemblyReport.Constraint) -> Bool {
-        if constraint.kind == "distance" || constraint.kind == "angle" { return true }
+        if constraint.kind == "distance" || constraint.kind == "angle" || constraint.kind == "hinge" || constraint.kind == "slider" { return true }
         guard constraint.kind == "coaxial" || constraint.kind == "planarAlign" else { return false }
         return report.instances.contains { instance in
             !instance.isSubassembly
@@ -1970,6 +1979,9 @@ struct CADAssemblyReferenceDraft {
     var label: String
     var sourceRevision: UInt64?
     var fence: [String: Any]?
+    var faceProof: [String: Any]?
+    var planeID: String?
+    var axisID: String?
 
     init?(reply: [String: Any], label: String) {
         guard reply["ok"] as? Bool == true,
@@ -1989,6 +2001,9 @@ struct CADAssemblyReferenceDraft {
             self.sourceRevision = nil
         }
         self.fence = reply["fence"] as? [String: Any]
+        self.faceProof = reply["face"] as? [String: Any]
+        self.planeID = reply["planeID"] as? String
+        self.axisID = reply["axisID"] as? String
     }
 
     var payload: [String: Any] {
@@ -1999,6 +2014,9 @@ struct CADAssemblyReferenceDraft {
         ]
         if let sourceRevision { object["source_revision"] = sourceRevision }
         if let fence { object["fence"] = fence }
+        if let faceProof { object["face"] = faceProof }
+        if let planeID { object["planeID"] = planeID }
+        if let axisID { object["axisID"] = axisID }
         return object
     }
 
@@ -2035,6 +2053,9 @@ private struct CADConstraintEditorSheet: View {
     @State private var pointBY: String
     @State private var pointBZ: String
     @State private var value: String
+    @State private var driveJoint: Bool
+    @State private var lowerLimit: String
+    @State private var upperLimit: String
     @State private var referenceA: CADAssemblyReferenceDraft?
     @State private var referenceB: CADAssemblyReferenceDraft?
     @State private var pickerRequest: CADReferencePickerRequest?
@@ -2055,6 +2076,9 @@ private struct CADConstraintEditorSheet: View {
         _instanceA = State(initialValue: editing?.instanceA ?? report.instances.first?.id)
         _instanceB = State(initialValue: editing?.instanceB)
         _value = State(initialValue: Self.numberString(editing?.value ?? 0))
+        _driveJoint = State(initialValue: editing?.value != nil)
+        _lowerLimit = State(initialValue: editing?.joint?.lowerLimit.map(Self.numberString) ?? "")
+        _upperLimit = State(initialValue: editing?.joint?.upperLimit.map(Self.numberString) ?? "")
         _pointAX = State(initialValue: Self.numberString(editing?.pointA.x ?? 0))
         _pointAY = State(initialValue: Self.numberString(editing?.pointA.y ?? 0))
         _pointAZ = State(initialValue: Self.numberString(editing?.pointA.z ?? 0))
@@ -2074,9 +2098,10 @@ private struct CADConstraintEditorSheet: View {
     private var isEditing: Bool { editing != nil }
     private var kindLabel: String { localizedConstraintKind(kind) }
     private var needsB: Bool { kind != "fixed" }
-    private var usesAxis: Bool { kind == "coaxial" || kind == "planarAlign" || kind == "angle" }
-    private var usesValue: Bool { kind == "distance" || kind == "angle" }
-    private var usesPoints: Bool { kind == "distance" || kind == "coaxial" || kind == "planarAlign" }
+    private var isJoint: Bool { kind == "hinge" || kind == "slider" }
+    private var usesAxis: Bool { kind == "coaxial" || kind == "planarAlign" || kind == "angle" || isJoint }
+    private var usesValue: Bool { kind == "distance" || kind == "angle" || (isJoint && driveJoint) }
+    private var usesPoints: Bool { kind == "distance" || kind == "coaxial" || kind == "planarAlign" || isJoint }
     private var effectiveInstanceA: String? { instanceA }
     private var effectiveInstanceB: String? { needsB ? instanceB : nil }
 
@@ -2087,6 +2112,19 @@ private struct CADConstraintEditorSheet: View {
             guard let number = Double(value), number.isFinite else { return false }
             if kind == "distance", number < 0 { return false }
             if kind == "angle", number < 0 || number > 180 { return false }
+        }
+        if isJoint {
+            let lo = lowerLimit.isEmpty ? nil : Double(lowerLimit)
+            let hi = upperLimit.isEmpty ? nil : Double(upperLimit)
+            if !lowerLimit.isEmpty && (lo == nil || lo?.isFinite != true) { return false }
+            if !upperLimit.isEmpty && (hi == nil || hi?.isFinite != true) { return false }
+            if let lo, let hi, lo > hi { return false }
+            if kind == "hinge", (lo.map { abs($0) > 180 } ?? false) || (hi.map { abs($0) > 180 } ?? false) { return false }
+            if driveJoint, let number = Double(value) {
+                if kind == "hinge", abs(number) > 180 { return false }
+                if let lo, number < lo { return false }
+                if let hi, number > hi { return false }
+            }
         }
         if !isEditing, usesPoints {
             if referenceA == nil, useNumericPointsA {
@@ -2113,6 +2151,8 @@ private struct CADConstraintEditorSheet: View {
                         Text(localizedConstraintKind("planarAlign")).tag("planarAlign")
                         Text(localizedConstraintKind("distance")).tag("distance")
                         Text(localizedConstraintKind("angle")).tag("angle")
+                        Text(localizedConstraintKind("hinge")).tag("hinge")
+                        Text(localizedConstraintKind("slider")).tag("slider")
                     }
                     .disabled(isEditing)
                     .accessibilityIdentifier("CADConstraintKind")
@@ -2199,16 +2239,35 @@ private struct CADConstraintEditorSheet: View {
                     }
                 }
 
+                if isJoint {
+                    Section(FloeCADStrings.text("cad.joint.travel", "Travel")) {
+                        Toggle(FloeCADStrings.text("cad.joint.drive", "Drive joint"), isOn: $driveJoint)
+                            .accessibilityIdentifier("CADJointDrive")
+                        CADPanelNumberField(title: FloeCADStrings.text("cad.joint.lower", "Lower limit"),
+                                            text: $lowerLimit, allowsEmpty: true, unit: kind == "hinge" ? "°" : "mm", identifier: "CADJointLowerLimit")
+                        CADPanelNumberField(title: FloeCADStrings.text("cad.joint.upper", "Upper limit"),
+                                            text: $upperLimit, allowsEmpty: true, unit: kind == "hinge" ? "°" : "mm", identifier: "CADJointUpperLimit")
+                    }
+                }
                 if usesValue {
-                    Section(kind == "angle"
-                            ? FloeCADStrings.text("cad.workbench.assembly.angleDegrees", "Angle (degrees, 0–180)")
+                    Section(kind == "hinge"
+                            ? FloeCADStrings.text("cad.joint.angle", "Angle (degrees, −180–180)")
+                            : kind == "angle" ? FloeCADStrings.text("cad.workbench.assembly.angleDegrees", "Angle (degrees, 0–180)")
                             : FloeCADStrings.text("cad.workbench.assembly.distanceMM", "Distance (mm)")) {
-                        CADPanelNumberField(title: kind == "angle" ? "°" : "mm",
+                        CADPanelNumberField(title: kind == "angle" || kind == "hinge" ? "°" : "mm",
                                             text: $value,
                                             identifier: "CADConstraintValue")
                     }
                 }
 
+                if isJoint, let editing {
+                    Section {
+                        NavigationLink(FloeCADStrings.text("cad.joint.motion", "Check motion")) {
+                            CADAssemblyMotionStudyView(document: document, constraint: editing, report: report)
+                        }
+                        .accessibilityIdentifier("CADJointMotionStudy")
+                    }
+                }
                 if let captureMessage {
                     Section {
                         Text(captureMessage).font(.caption).foregroundStyle(.secondary)
@@ -2378,6 +2437,11 @@ private struct CADConstraintEditorSheet: View {
                 args["value"] = number
                 if let current = editing.value { args["expectedValue"] = current }
             }
+            if isJoint {
+                args["value"] = driveJoint ? (Double(value).map { $0 as Any } ?? NSNull()) : NSNull()
+                args["lowerLimit"] = Double(lowerLimit).map { $0 as Any } ?? NSNull()
+                args["upperLimit"] = Double(upperLimit).map { $0 as Any } ?? NSNull()
+            }
             if let referenceA { args["referenceA"] = referenceA.payload }
             if needsB, let referenceB { args["referenceB"] = referenceB.payload }
             busy = true
@@ -2431,6 +2495,10 @@ private struct CADConstraintEditorSheet: View {
             }
         }
         if usesValue, let number = Double(value) { args["value"] = number }
+        if isJoint {
+            args["lowerLimit"] = Double(lowerLimit).map { $0 as Any } ?? NSNull()
+            args["upperLimit"] = Double(upperLimit).map { $0 as Any } ?? NSNull()
+        }
         busy = true
         errorText = nil
         Task { @MainActor in
@@ -2464,6 +2532,7 @@ private struct CADReferencePickerView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var faces: [[String: Any]] = []
     @State private var edges: [[String: Any]] = []
+    @State private var datums: [[String: Any]] = []
     @State private var notes: [String] = []
     @State private var busy = false
     @State private var errorText: String?
@@ -2499,6 +2568,15 @@ private struct CADReferencePickerView: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("CADReferenceFace-\(row["index"] ?? 0)")
+                        }
+                    }
+                }
+                if !datums.isEmpty {
+                    Section(FloeCADStrings.text("cad.joint.datums", "Construction planes & axes")) {
+                        ForEach(Array(datums.enumerated()), id: \.offset) { _, row in
+                            Button { pickDatum(row) } label: { candidateLabel(row) }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("CADReferenceDatum-\(row["planeID"] ?? row["axisID"] ?? "")")
                         }
                     }
                 }
@@ -2581,11 +2659,22 @@ private struct CADReferencePickerView: View {
                                    args: ["instanceID": instanceID])
         faces = reply["faces"] as? [[String: Any]] ?? []
         edges = reply["edges"] as? [[String: Any]] ?? []
+        datums = reply["datums"] as? [[String: Any]] ?? []
         notes = reply["notes"] as? [String] ?? []
         if reply["ok"] as? Bool != true {
             errorText = reply["message"] as? String
         }
         busy = false
+    }
+
+    private func pickDatum(_ row: [String: Any]) {
+        var args: [String: Any] = ["instanceID": instanceID]
+        if let id = row["planeID"] { args["planeID"] = id }
+        if let id = row["axisID"] { args["axisID"] = id }
+        let reply = CADAssemblyService(document: document).handle(action: "reference", args: args)
+        if let draft = CADAssemblyReferenceDraft(reply: reply, label: row["label"] as? String ?? "") {
+            onPick(draft); dismiss()
+        } else { errorText = reply["message"] as? String }
     }
 
     private func pick(_ row: [String: Any], kind: String) {

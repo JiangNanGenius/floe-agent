@@ -135,9 +135,9 @@ public final class CADParameterService {
             "sketch_curve_edits": [
                 "actions": CADSketchCurveService.actions,
                 "fields": ["sketch_id", "entity_id", "boundary_id + pick:[x,y] (mm) for trim/extend", "distance (mm) + associative:true (default) for offset", "link_id for unlink"],
-                "targets": "line, arc, circle; ellipse only when exactly circular; spline only when exactly a two-point open line",
+                "targets": "line, arc, circle, general ellipse and multipoint spline; exact native intervals retain their basis",
                 "boundaries": "exact Line/Circle/Arc/Ellipse/fit spline, through OCCT",
-                "unsupported": "general ellipse/spline interval materialization and normal offsets; no polyline approximation",
+                "unsupported": "undefined source normals, collapse and self-intersection; no polyline approximation",
                 "identity": "first surviving fragment keeps source id; further fragments get explicit mapped ids",
                 "constraints": "trim/extend refuses attached constraints/links with their exact ids; none are dropped",
                 "offset_relation": "versioned source-id/target-id/distance; follows source and rejects collapse or unsupported source changes atomically",

@@ -371,6 +371,10 @@ final class CADMaterialDraftModel {
     private(set) var errorMessage: String?
     private(set) var statusMessage: String?
     private(set) var isApplying = false
+    private(set) var textureImportReview: CADTextureImport.Review?
+    private(set) var preparedTextureImport: CADTextureImport.Prepared?
+    private(set) var textureImportError: String?
+    private(set) var isImportingTextures = false
     /// Set when the frozen selection can no longer be applied (a body was
     /// removed, or a rebuilt face cannot be matched uniquely). Kept separate
     /// from `errorMessage` so periodic revalidation does not clear or invent a
@@ -388,6 +392,9 @@ final class CADMaterialDraftModel {
 
     @ObservationIgnored private var previewTask: Task<Void, Never>?
     @ObservationIgnored private var observationTask: Task<Void, Never>?
+    @ObservationIgnored private var textureImportTask: Task<Void, Never>?
+    @ObservationIgnored private var textureImportGeneration = UUID()
+    @ObservationIgnored private var textureImportBaseline: CADMaterialDefinition?
 
     init(document: FloeCADDocument,
          target: CADMaterialTarget,
@@ -435,6 +442,7 @@ final class CADMaterialDraftModel {
 
     var canApply: Bool {
         !target.isEmpty && !target.needsReselect && targetError == nil && !isApplying
+            && !isImportingTextures && textureImportReview == nil
     }
 
     func refreshLibraries() {
@@ -662,28 +670,172 @@ final class CADMaterialDraftModel {
     }
 
     func setTexture(slot: MaterialTextureSlot, data: Data, displayName: String?) {
-        guard data.count <= CADMaterialLimits.maximumTextureBytes,
-              MaterialImageSniffer.mimeType(of: data) != nil else {
-            errorMessage = FloeCADStrings.text(
-                "cad.material.error.image",
-                "Choose a PNG or JPEG image no larger than 8 MB.")
+        // Keep the existing synchronous internal API for already-qualified
+        // PNG/JPEG callers; it never silently converts. User file/photo import
+        // goes through the explicit review APIs below.
+        do {
+            guard !document.isClosed else { return }
+            let selection = CADTextureImport.Selection(
+                source: .init(name: displayName ?? slot.rawValue, bytes: data), slot: slot, choice: .original)
+            let prepared = try CADTextureImport.prepare([selection], existing: textureImportExisting(replacing: [slot]))
+            update { definition in
+                definition.textures.removeAll { $0.slot == slot }
+                definition.textures.append(contentsOf: prepared.textures)
+            }
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    // MARK: Explicit texture import
+
+    /// Also fences asynchronous Photos callbacks. The caller must carry this
+    /// identity through loading, errors and staging; cancellation is not just
+    /// a request to stop a codec which may already be completing.
+    @discardableResult
+    func beginTextureImport() -> UUID {
+        cancelTextureImport()
+        textureImportBaseline = draft
+        isImportingTextures = true
+        return textureImportGeneration
+    }
+
+    func isCurrentTextureImport(_ token: UUID) -> Bool {
+        token == textureImportGeneration && !document.isClosed && textureImportBaseline != nil
+    }
+
+    func cancelTextureImport() {
+        textureImportGeneration = UUID()
+        textureImportTask?.cancel()
+        textureImportTask = nil
+        textureImportReview = nil
+        preparedTextureImport = nil
+        textureImportBaseline = nil
+        textureImportError = nil
+        isImportingTextures = false
+    }
+
+    func failTextureImport(_ error: Error, token: UUID) {
+        guard isCurrentTextureImport(token) else { return }
+        isImportingTextures = false
+        if !(error is CancellationError) {
+            if textureImportReview == nil { errorMessage = error.localizedDescription }
+            else { textureImportError = error.localizedDescription }
+        }
+    }
+
+    func stageTextureImport(_ sources: [CADTextureImport.Source], startingAt slot: MaterialTextureSlot,
+                            token: UUID) {
+        guard isCurrentTextureImport(token) else { return }
+        do {
+            let descriptors = try CADTextureImport.validateSources(sources)
+            guard draft == textureImportBaseline else { throw CADTextureImport.Failure.staleImport }
+            textureImportReview = .init(id: token, sources: sources, descriptors: descriptors, startingSlot: slot)
+            isImportingTextures = false
+            errorMessage = nil
+        } catch { failTextureImport(error, token: token) }
+    }
+
+    func loadTextureFiles(_ urls: [URL], startingAt slot: MaterialTextureSlot) {
+        let token = beginTextureImport()
+        textureImportTask = Task { [weak self] in
+            let reader = Task.detached(priority: .userInitiated) { try CADTextureImport.readFiles(urls) }
+            do {
+                let sources = try await withTaskCancellationHandler(
+                    operation: { try await reader.value }, onCancel: { reader.cancel() })
+                try Task.checkCancellation()
+                self?.stageTextureImport(sources, startingAt: slot, token: token)
+            } catch { self?.failTextureImport(error, token: token) }
+        }
+    }
+
+    func estimateTextureImport(_ selections: [CADTextureImport.Selection]) throws -> CADTextureImport.Budget {
+        try CADTextureImport.budget(selections, existing: textureImportExisting(replacing: Set(selections.map(\.slot))))
+    }
+
+    func prepareTextureImport(_ selections: [CADTextureImport.Selection]) {
+        guard let review = textureImportReview, isCurrentTextureImport(review.id), !isImportingTextures else { return }
+        // Every selected source must still be the exact batch under review.
+        guard selections.count == review.sources.count,
+              selections.map(\.source) == review.sources else {
+            textureImportError = CADTextureImport.Failure.staleImport.localizedDescription
             return
         }
-        var texture = CADMaterialTexture(slot: slot, name: displayName, bytes: data)
-        if texture.sanitized() == nil {
-            errorMessage = FloeCADStrings.text("cad.material.error.image",
-                                               "That image could not be read.")
-            return
+        preparedTextureImport = nil
+        textureImportError = nil
+        isImportingTextures = true
+        let existing = textureImportExisting(replacing: Set(selections.map(\.slot)))
+        let token = review.id
+        textureImportTask = Task { [weak self] in
+            do {
+                let prepared = try await CADTextureImport.prepareAsync(selections, existing: existing)
+                try Task.checkCancellation()
+                guard let self, self.isCurrentTextureImport(token) else { return }
+                guard self.draft == self.textureImportBaseline else { throw CADTextureImport.Failure.staleImport }
+                self.preparedTextureImport = prepared
+                self.isImportingTextures = false
+            } catch { self?.failTextureImport(error, token: token) }
         }
-        if slot == .baseColor || slot == .emissive {
-            texture.colorSpace = .srgb
-        } else {
-            texture.colorSpace = .linear
+    }
+
+    func reviseTextureImport() {
+        guard !isImportingTextures else { return }
+        preparedTextureImport = nil
+        textureImportError = nil
+    }
+
+    @discardableResult
+    func acceptPreparedTextureImport() -> Bool {
+        guard let review = textureImportReview, let prepared = preparedTextureImport,
+              isCurrentTextureImport(review.id), !isImportingTextures else { return false }
+        do {
+            guard draft == textureImportBaseline else { throw CADTextureImport.Failure.staleImport }
+            let slots = Set(prepared.textures.map(\.slot))
+            // Re-read current applied resources: another editor may have added
+            // maps while conversion was running. Never accept a stale budget.
+            let liveBudget = try CADTextureImport.actualBudget(prepared.textures,
+                existing: textureImportExisting(replacing: slots))
+            guard liveBudget.fits else { throw CADTextureImport.Failure.memoryBudget }
+            var candidate = draft
+            candidate.textures.removeAll { slots.contains($0.slot) }
+            candidate.textures.append(contentsOf: prepared.textures)
+            var library = CADMaterialLibraryCodec.decode(document.session.document.materialLibraryData)
+            library.upsert(candidate)
+            guard library.entry(candidate.id) != nil, CADMaterialLibraryCodec.encode(library) != nil else {
+                errorMessage = FloeCADStrings.text("cad.material.error.library", "The material library could not be saved within its size limit.")
+                textureImportError = errorMessage
+                return false
+            }
+            update { $0 = candidate }
+            cancelTextureImport()
+            errorMessage = nil
+            return true
+        } catch {
+            textureImportError = error.localizedDescription
+            return false
         }
-        update { definition in
-            definition.textures.removeAll { $0.slot == slot }
-            definition.textures.append(texture)
+    }
+
+    /// Applied resources plus the resulting draft, excluding appearances this
+    /// exact target replaces. Library-only copies do not occupy GPU memory.
+    private func textureImportExisting(replacing slots: Set<MaterialTextureSlot>) -> [CADMaterialTexture] {
+        var textures = draft.textures.filter { !slots.contains($0.slot) }
+        for body in document.session.document.bodies {
+            let replacesBody = !target.isFaceTarget && target.bodyIDs.contains(body.id.raw)
+            if !replacesBody, let material = body.material {
+                textures.append(contentsOf: CADMaterialDefinition(spec: material).textures)
+            }
+            for binding in body.materialFaceBindings {
+                let replacesFace = target.isFaceTarget && target.faceBodyID == body.id.raw
+                    && (binding.key.signature == target.faceIdentity?.signature
+                        || binding.key.signature == target.faceIdentity?.resolvedSignature)
+                if !replacesFace {
+                    textures.append(contentsOf: CADMaterialDefinition(spec: binding.material).textures)
+                }
+            }
         }
+        return textures
     }
 
     func removeTexture(slot: MaterialTextureSlot) {
@@ -715,6 +867,7 @@ final class CADMaterialDraftModel {
     // MARK: Selection / library
 
     func select(_ definition: CADMaterialDefinition, origin: CADMaterialOrigin) {
+        cancelTextureImport()
         let copy = definition.sanitized
         draft = copy
         baseline = copy
@@ -756,6 +909,7 @@ final class CADMaterialDraftModel {
     // MARK: Apply / cancel
 
     func cancel() {
+        cancelTextureImport()
         previewTask?.cancel()
         draft = baseline
         previewSink?.endMaterialPreview()

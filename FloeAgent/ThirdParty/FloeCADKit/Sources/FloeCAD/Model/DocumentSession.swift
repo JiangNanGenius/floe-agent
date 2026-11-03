@@ -636,7 +636,15 @@ final class DocumentSession {
                 return
             }
         }
-        undoStack.perform(command, on: &document)
+        if !isRebuilding,
+           let assembly = try? CADAssembly.decode(from: document.assemblyData),
+           assembly.constraintsWithScope().contains(where: { $0.constraint.bindingA != nil || $0.constraint.bindingB != nil }) {
+            let refresh = RefreshCADAssemblyReferencesCommand(kernelNames: lastKernelNames,
+                requiredRevisions: lastNamingRevisions)
+            undoStack.perform(CompositeCommand(title: command.title, commands: [command, refresh]), on: &document)
+        } else {
+            undoStack.perform(command, on: &document)
+        }
         didChange()
     }
 
@@ -1112,7 +1120,8 @@ final class DocumentSession {
         let namingCommand = NamingCacheCommand(owner: self, before: namingBefore,
                                                after: namingAfter)
         perform(CompositeCommand(title: title,
-                                 commands: [namingCommand] + plan.commands))
+                                 commands: [namingCommand] + plan.commands
+                                    + [RefreshCADAssemblyReferencesCommand(kernelNames: plan.kernelNames)]))
         // AFTER the commands: ReplaceBodyCommand.apply re-mints meshRevision,
         // so revisions captured from the replay's bodies would mark every
         // replace-path rebuild stale and silently disable name minting (found

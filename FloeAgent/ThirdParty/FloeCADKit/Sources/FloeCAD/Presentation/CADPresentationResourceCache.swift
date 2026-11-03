@@ -21,14 +21,19 @@ import simd
 
 @MainActor
 final class CADPresentationResourceCache {
+    private let generateTexture: @MainActor (CGImage, TextureResource.CreateOptions) async throws -> TextureResource
     private var meshes: [String: MeshResource] = [:]
     private var meshOrder: [String] = []
     private var textures: [String: TextureResource] = [:]
     private var textureOrder: [String] = []
     private var textureBytes: Int = 0
+    private var textureCosts: [String: Int] = [:]
     private var environments: [String: EnvironmentResource] = [:]
     private var environmentOrder: [String] = []
     private var imageCache: [String: CGImage] = [:]
+    private var imageOrder: [String] = []
+    private var imageCosts: [String: Int] = [:]
+    private var imageBytes = 0
     private var failedImages: Set<String> = []
     private var environmentFailures: [String:String] = [:]
     private var environmentSourceBytes: [String:Data] = [:]
@@ -39,6 +44,14 @@ final class CADPresentationResourceCache {
     var meshCount: Int { meshes.count }
     var textureCount: Int { textures.count }
     var cachedTextureBytes: Int { textureBytes }
+    var cachedImageBytes: Int { imageBytes }
+    var cachedImageCount: Int { imageCache.count }
+
+    init(generateTexture: @escaping @MainActor (CGImage, TextureResource.CreateOptions) async throws -> TextureResource = {
+        try await TextureResource.generate(from: $0, options: $1)
+    }) {
+        self.generateTexture = generateTexture
+    }
 
     // MARK: Mesh
 
@@ -88,22 +101,40 @@ final class CADPresentationResourceCache {
                  orientation: MaterialTextureOrientation) async -> TextureResource? {
         guard !Task.isCancelled, !isDisposed else { return nil }
         let key = "\(image.id)-\(semanticName(semantic))-\(orientation.rawValue)"
-        if let cached = textures[key] { return cached }
+        if let cached = textures[key] {
+            textureOrder.removeAll { $0 == key }
+            textureOrder.append(key)
+            return cached
+        }
         guard !failedImages.contains(key) else { return nil }
         guard let cgImage = decode(image, orientation: orientation) else {
             failedImages.insert(key)
             return nil
         }
+        let cost = Self.textureCost(cgImage)
+        // Evict rebuildable cache references before upload. Live entities own
+        // their resources independently and keep rendering during eviction.
+        if cost <= Self.textureCacheLimit { trimTextures(additionalBytes: cost, additionalEntries: 1) }
         do {
             let options = TextureResource.CreateOptions(semantic: semantic)
-            let resource = try await TextureResource.generate(from: cgImage, options: options)
+            let resource = try await generateTexture(cgImage, options)
             // Cancellation is not a decode failure: never poison the failure
             // set or cache a resource for an abandoned build.
             guard !Task.isCancelled, !isDisposed else { return nil }
-            textures[key] = resource
-            textureOrder.append(key)
-            textureBytes += image.byteCount
-            trimTextures()
+            // A second build may have completed for this key while generate()
+            // suspended. Its pixels must not be counted or retained twice.
+            if let cached = textures[key] { return cached }
+            cacheImage(cgImage, key: "\(image.id)-\(orientation.rawValue)")
+            if cost <= Self.textureCacheLimit {
+                trimTextures(additionalBytes: cost, additionalEntries: 1)
+                textures[key] = resource
+                textureOrder.append(key)
+                textureCosts[key] = cost
+                textureBytes += cost
+            }
+            // Preserve support for older documents with one image larger than
+            // the cache ceiling: return the real resource without retaining a
+            // cold cache copy, rather than silently dropping its map.
             return resource
         } catch {
             if Task.isCancelled || isDisposed { return nil }
@@ -188,11 +219,15 @@ final class CADPresentationResourceCache {
         environments.removeAll()
         environmentOrder.removeAll()
         imageCache.removeAll()
+        imageOrder.removeAll()
+        imageCosts.removeAll()
+        imageBytes = 0
         failedImages.removeAll()
         environmentFailures.removeAll()
         environmentSourceBytes.removeAll()
         failedEnvironmentSourceBytes.removeAll()
         textureBytes = 0
+        textureCosts.removeAll()
         isDisposed = true
     }
 
@@ -206,9 +241,27 @@ final class CADPresentationResourceCache {
     private func decode(_ image: CADPresentationImage,
                         orientation: MaterialTextureOrientation) -> CGImage? {
         let key = "\(image.id)-\(orientation.rawValue)"
-        if let cached = imageCache[key] { return cached }
-        guard let source = CGImageSourceCreateWithData(image.bytes as CFData, nil),
-              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+        if let cached = imageCache[key] {
+            imageOrder.removeAll { $0 == key }
+            imageOrder.append(key)
+            return cached
+        }
+        // A small compressed file can have an enormous decoded bitmap. Check
+        // the header before asking ImageIO to allocate that bitmap.
+        guard image.bytes.count <= CADMaterialLimits.maximumTextureBytes,
+              let source = CGImageSourceCreateWithData(image.bytes as CFData,
+                [kCGImageSourceShouldCache: false] as CFDictionary),
+              CGImageSourceGetStatus(source) == .statusComplete,
+              CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+              width > 0, height > 0,
+              width <= CADImagePackingLimits.maximumDimension,
+              height <= CADImagePackingLimits.maximumDimension,
+              width <= CADImagePackingLimits.maximumPixelCount / height,
+              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              cgImage.width == width, cgImage.height == height else {
             return nil
         }
         let normalized: CGImage
@@ -219,7 +272,8 @@ final class CADPresentationResourceCache {
         case .bottomLeft:
             normalized = cgImage
         }
-        imageCache[key] = normalized
+        // Only a successful and uncancelled upload commits decoded images to
+        // the cache. Failure releases this temporary bitmap with the call.
         return normalized
     }
 
@@ -273,16 +327,39 @@ final class CADPresentationResourceCache {
         }
     }
 
-    private func trimTextures() {
-        while textureOrder.count > CADPresentationLimits.maximumCachedTextures
-                || textureBytes > CADPresentationLimits.maximumCachedTextureBytes {
+    private static var textureCacheLimit: Int {
+        min(CADPresentationLimits.maximumCachedTextureBytes, CADTextureImport.maximumResidentBytes)
+    }
+
+    private static func textureCost(_ image: CGImage) -> Int {
+        let bytesPerPixel = max(4, (image.bitsPerPixel + 7) / 8)
+        return CADTextureImport.mipmappedBytes(width: image.width, height: image.height) / 4 * bytesPerPixel
+    }
+
+    private func cacheImage(_ image: CGImage, key: String) {
+        guard imageCache[key] == nil else { return }
+        let cost = image.width * image.height * max(4, (image.bitsPerPixel + 7) / 8)
+        guard cost <= CADImagePackingLimits.maximumDecodedBytes else { return }
+        while imageBytes + cost > CADImagePackingLimits.maximumDecodedBytes
+                || imageOrder.count >= CADPresentationLimits.maximumCachedTextures {
+            guard let oldest = imageOrder.first else { break }
+            imageOrder.removeFirst()
+            imageCache.removeValue(forKey: oldest)
+            imageBytes -= imageCosts.removeValue(forKey: oldest) ?? 0
+        }
+        imageCache[key] = image
+        imageOrder.append(key)
+        imageCosts[key] = cost
+        imageBytes += cost
+    }
+
+    private func trimTextures(additionalBytes: Int = 0, additionalEntries: Int = 0) {
+        while textureOrder.count + additionalEntries > CADPresentationLimits.maximumCachedTextures
+                || textureBytes + additionalBytes > Self.textureCacheLimit {
             guard let key = textureOrder.first else { break }
             textureOrder.removeFirst()
             textures.removeValue(forKey: key)
-            // Byte accounting is approximated from the source images still
-            // referenced; exact per-texture byte sizes are not exposed by
-            // RealityKit. Recompute conservatively so the cap still holds.
-            textureBytes = max(0, textureBytes - (CADMaterialLimits.maximumTextureBytes / 8))
+            textureBytes -= textureCosts.removeValue(forKey: key) ?? 0
         }
     }
 

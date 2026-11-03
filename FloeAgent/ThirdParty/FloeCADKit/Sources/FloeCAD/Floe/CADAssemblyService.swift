@@ -242,7 +242,7 @@ public final class CADAssemblyService {
         "previewExplodedView", "resetExplodedView",
         "partMetadata", "setPartMetadata",
         "report", "instances", "dof", "interference", "interferencePlan",
-        "interferenceStatus", "cancelInterference",
+        "interferenceStatus", "cancelInterference", "motionStudy", "cancelMotionStudy",
         "hierarchy", "references", "referenceDiagnostics",
         "addSubassembly", "placePartReference", "moveInstance",
         "removePartReference", "makeIndependent",
@@ -277,6 +277,12 @@ public final class CADAssemblyService {
         case "interferencePlan": return interferencePlanAction(args)
         case "interferenceStatus": return interferenceStatusAction()
         case "cancelInterference": return cancelInterferenceAction()
+        case "cancelMotionStudy":
+            let run = Self.activeMotionStudies[ObjectIdentifier(document)]
+            if let run { run.cancelled = true; _ = cancelInterference() }
+            return ["ok": true, "mutated": false, "cancelRequested": run != nil]
+        case "motionStudy":
+            return fail("async_required", "Motion checks require the asynchronous document service.")
         case "interference":
             return fail("needs_async",
                         "Exact interference runs the kernel off the main actor; "
@@ -323,6 +329,7 @@ public final class CADAssemblyService {
             return fail("closed", "The CAD document is closed.")
         }
         if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "assembly", action: action) { return refusal }
+        if action == "motionStudy" { return await motionStudy(args) }
         guard action == "interference" else { return handle(action: action, args: args) }
         return await interferenceOffMain(args)
     }
@@ -358,6 +365,7 @@ public final class CADAssemblyService {
     /// worker before returning; a close never accepts those late results.
     static func cancelInterference(for document: FloeCADDocument) {
         activeInterferenceRuns[ObjectIdentifier(document)]?.cancel()
+        activeMotionStudies[ObjectIdentifier(document)]?.cancelled = true
     }
 
     /// Test-only seam called inside the detached exact-interference worker so
@@ -408,6 +416,7 @@ public final class CADAssemblyService {
         var bodyID: UUID?
         var fence: [String: Any]?
         var notes: [String] = []
+        var binding: CADAssemblyGeometryBinding? = nil
 
         var payload: [String: Any] {
             var object: [String: Any] = [
@@ -419,6 +428,13 @@ public final class CADAssemblyService {
             if let resolvedIndex { object["index"] = resolvedIndex }
             if let bodyID { object["body_id"] = bodyID.uuidString }
             if let fence { object["fence"] = fence }
+            if binding?.face != nil, let index = resolvedIndex, let bodyID,
+               let revision = sourceRevision {
+                object["face"] = ["index": index, "source_revision": revision,
+                                  "body_id": bodyID.uuidString]
+            }
+            if let id = binding?.planeID { object["planeID"] = id.uuidString }
+            if let id = binding?.axisID { object["axisID"] = id.uuidString }
             if !notes.isEmpty { object["notes"] = notes }
             return object
         }
@@ -482,11 +498,17 @@ public final class CADAssemblyService {
         return payload
     }
 
-    private func interferenceOffMain(_ args: [String: Any]) async -> [String: Any] {
+    private func interferenceOffMain(_ args: [String: Any], candidate: CADAssembly? = nil) async -> [String: Any] {
+        if candidate == nil, Self.activeMotionStudies[ObjectIdentifier(document)] != nil {
+            return fail("motion_busy", "Wait for the motion check to finish or cancel it.")
+        }
         let assembly: CADAssembly
-        switch loadAssembly() {
-        case .failure(let error): return fail(error.code, error.message)
-        case .success(let loaded): assembly = loaded
+        if let candidate { assembly = candidate }
+        else {
+            switch loadAssembly() {
+            case .failure(let error): return fail(error.code, error.message)
+            case .success(let loaded): assembly = loaded
+            }
         }
 
         let tolerance: Double
@@ -1609,10 +1631,12 @@ public final class CADAssemblyService {
                 }
                 if let value = constraint.value {
                     entry["value"] = value
-                    entry["valueUnit"] = constraint.kind == .angle ? "degrees" : "mm"
+                    entry["valueUnit"] = (constraint.kind == .angle || constraint.kind == .hinge) ? "degrees" : "mm"
                 }
                 let revisionState = constraintRevisionState(constraint, assembly: assembly)
-                entry["staleReference"] = revisionState.stale
+                entry["staleReference"] = revisionState.stale || constraint.referenceFailure != nil
+                if let reason = constraint.referenceFailure { entry["referenceIssue"] = reason }
+                if let joint = constraintPayload(constraint)["joint"] { entry["joint"] = joint }
                 if let a = constraint.sourceRevisionA { entry["sourceRevisionA"] = a }
                 if let b = constraint.sourceRevisionB { entry["sourceRevisionB"] = b }
                 if !revisionState.staleBodies.isEmpty {
@@ -1653,11 +1677,13 @@ public final class CADAssemblyService {
                     }
                     if let value = constraint.value {
                         entry["value"] = value
-                        entry["valueUnit"] = constraint.kind == .angle ? "degrees" : "mm"
+                        entry["valueUnit"] = (constraint.kind == .angle || constraint.kind == .hinge) ? "degrees" : "mm"
                     }
                     let revisionState = constraintRevisionState(constraint, assembly: assembly)
-                    entry["staleReference"] = revisionState.stale
-                    if let a = constraint.sourceRevisionA { entry["sourceRevisionA"] = a }
+                    entry["staleReference"] = revisionState.stale || constraint.referenceFailure != nil
+                if let reason = constraint.referenceFailure { entry["referenceIssue"] = reason }
+                    if let joint = constraintPayload(constraint)["joint"] { entry["joint"] = joint }
+                if let a = constraint.sourceRevisionA { entry["sourceRevisionA"] = a }
                     if let b = constraint.sourceRevisionB { entry["sourceRevisionB"] = b }
                     if !revisionState.staleBodies.isEmpty {
                         entry["staleReferenceBodies"] = revisionState.staleBodies
@@ -2075,6 +2101,11 @@ public final class CADAssemblyService {
             transform = parsed
         }
         updated.updateInstance(id) { $0.transform = transform }
+        if updated.constraintsWithScope().contains(where: { !$0.constraint.isSuppressed && $0.constraint.joint != nil }) {
+            let solved = solveCandidate(updated)
+            guard solved.solved else { return fail("joint_conflict", "The move conflicts with the assembly; nothing was changed.") }
+            updated = solved.assembly
+        }
         if let failure = persist(updated) { return failure }
         guard let instance = updated.instance(id) else {
             return fail("unknown_instance", "The instance disappeared while updating it.")
@@ -2111,6 +2142,14 @@ public final class CADAssemblyService {
                 "path": updated.instancePath(id)?.map(\.uuidString) ?? []]
     }
 
+    private func parseJointLimit(_ raw: Any?) -> Result<Double?, CADAssemblyServiceError> {
+        guard let raw, !(raw is NSNull) else { return .success(nil) }
+        guard let value = doubleValue(raw), value.isFinite else {
+            return .failure(CADAssemblyServiceError(code: "bad_joint_limit", message: "Enter a finite travel limit."))
+        }
+        return .success(value)
+    }
+
     // MARK: - Constraint actions
 
     private func addConstraintAction(_ args: [String: Any]) -> [String: Any] {
@@ -2124,7 +2163,7 @@ public final class CADAssemblyService {
         guard let kindRaw = args["kind"] as? String,
               let kind = CADAssemblyConstraintKind(rawValue: kindRaw) else {
             return fail("unknown_constraint_kind",
-                        "kind must be fixed, coaxial, planarAlign, distance or angle.")
+                        "kind must be fixed, coaxial, planarAlign, distance, angle, hinge or slider.")
         }
         var parentID: UUID?
         if let raw = args["parentID"] ?? args["parentInstanceID"], !(raw is NSNull) {
@@ -2235,7 +2274,7 @@ public final class CADAssemblyService {
                 case .success(let parsed): directionA = parsed ?? directionA
                 }
             }
-        case .coaxial, .planarAlign, .angle:
+        case .coaxial, .planarAlign, .angle, .hinge, .slider:
             if referenceA == nil {
                 guard let rawA = args["directionA"], !(rawA is NSNull) else {
                     return fail("missing_direction", "\(kind.rawValue) needs a directionA.")
@@ -2303,6 +2342,10 @@ public final class CADAssemblyService {
             guard let value, value >= 0, value <= 180 else {
                 return fail("bad_value", "angle value must be a finite number of degrees in [0, 180].")
             }
+        case .hinge:
+            if let value, abs(value) > 180 { return fail("bad_joint_value", "Hinge angle must be between -180 and 180 degrees.") }
+        case .slider:
+            break
         case .fixed, .coaxial, .planarAlign:
             break
         }
@@ -2312,7 +2355,7 @@ public final class CADAssemblyService {
         let sourceRevisionB = instanceBValue.flatMap { instance in
             referenceB?.sourceRevision ?? body(for: effectiveBodyID(instance))?.meshRevision
         }
-        let constraint = CADAssemblyConstraint(
+        var constraint = CADAssemblyConstraint(
             id: UUID(),
             kind: kind,
             instanceA: instanceA,
@@ -2326,12 +2369,39 @@ public final class CADAssemblyService {
             sourceRevisionA: sourceRevisionA,
             sourceRevisionB: sourceRevisionB
         )
+        constraint.bindingA = referenceA?.binding
+        constraint.bindingB = referenceB?.binding
+        if kind == .hinge || kind == .slider {
+            guard let other = instanceBValue else { return fail("missing_instance_b", "Select the second part.") }
+            let lower: Double?, upper: Double?
+            switch parseJointLimit(args["lowerLimit"]) {
+            case .failure(let error): return fail(error.code, error.message)
+            case .success(let value): lower = value
+            }
+            switch parseJointLimit(args["upperLimit"]) {
+            case .failure(let error): return fail(error.code, error.message)
+            case .success(let value): upper = value
+            }
+            constraint.joint = CADAssemblyJointMath.make(
+                a: instanceAValue.transform, b: other.transform,
+                axisA: directionA, axisB: directionB ?? SIMD3(0, 0, 1), lower: lower, upper: upper)
+            guard CADAssemblyJointMath.valid(constraint) else {
+                return fail("invalid_joint", "Check the joint axis, travel limits and drive value.")
+            }
+        }
         if let parentID {
             guard updated.updateInstance(parentID, { $0.constraints.append(constraint) }) else {
                 return fail("unknown_subassembly", "The owning subassembly disappeared while adding the constraint.")
             }
         } else {
             updated.constraints.append(constraint)
+        }
+        if constraint.joint != nil {
+            let solved = solveCandidate(updated)
+            guard solved.solved else {
+                return fail("joint_conflict", "The joint conflicts with the current assembly; nothing was changed.")
+            }
+            updated = solved.assembly
         }
         if let failure = persist(updated) { return failure }
 
@@ -2345,6 +2415,94 @@ public final class CADAssemblyService {
         return payload
     }
 
+
+    private final class MotionStudyRun { var cancelled = false }
+    private static var activeMotionStudies: [ObjectIdentifier: MotionStudyRun] = [:]
+
+    /// Read-only samples are solved from the preceding physical pose. Only
+    /// one authored joint is driven; every other placement comes from the
+    /// existing constraint solver. Exact interference owns serialized copies.
+    private func motionStudy(_ args: [String: Any]) async -> [String: Any] {
+        let key = ObjectIdentifier(document)
+        guard Self.activeMotionStudies[key] == nil, Self.activeInterferenceRuns[key] == nil else { return fail("motion_busy", "A motion or interference check is already running.") }
+        guard let id = uuidValue(args["id"]), let start = doubleValue(args["from"]),
+              let end = doubleValue(args["to"]), start.isFinite, end.isFinite,
+              let count = intValue(args["samples"] ?? 21), (2...121).contains(count) else {
+            return fail("bad_motion_range", "Choose a joint, finite start/end values and 2 to 121 samples.")
+        }
+        var candidate: CADAssembly
+        switch loadAssembly() {
+        case .failure(let error): return fail(error.code, error.message)
+        case .success(let loaded): candidate = loaded
+        }
+        guard let scoped = candidate.constraintsWithScope().first(where: { $0.constraint.id == id }),
+              let joint = scoped.constraint.joint, !scoped.constraint.isSuppressed else {
+            return fail("not_a_joint", "Choose an active hinge or slider.")
+        }
+        var check = scoped.constraint
+        for value in [start, end] {
+            check.value = value
+            guard CADAssemblyJointMath.valid(check) else { return fail("motion_out_of_range", "The requested motion exceeds the joint limits.") }
+        }
+        let token = CADAssemblyKernelRevisionToken(revision: document.store.revision, changeCount: document.session.changeCount)
+        let run = MotionStudyRun(); Self.activeMotionStudies[key] = run
+        defer { if Self.activeMotionStudies[key] === run { Self.activeMotionStudies[key] = nil } }
+        var frames: [[String: Any]] = []
+        var travel: [UUID: Double] = [:]
+        var angularTravel: [UUID: Double] = [:]
+        var previous = Dictionary(candidate.occurrences(includeHidden: true).map { ($0.instance.id, $0.worldTransform) }, uniquingKeysWith: { a, _ in a })
+        let inspect = boolValue(args["checkInterference"]) ?? true
+        for index in 0..<count {
+            guard !Task.isCancelled, !run.cancelled, !document.isClosed else { return fail("cancelled", "Motion check cancelled.") }
+            guard document.session.changeCount == token.changeCount, document.store.revision == token.revision else {
+                return fail("stale_motion", "The model changed during the motion check. Try again.")
+            }
+            let value = start + (end - start) * Double(index) / Double(count - 1)
+            var driven = scoped.constraint; driven.value = value
+            if let parent = scoped.parentID {
+                candidate.updateInstance(parent) { container in
+                    if let i = container.constraints.firstIndex(where: { $0.id == id }) { container.constraints[i] = driven }
+                }
+            } else if let i = candidate.constraints.firstIndex(where: { $0.id == id }) { candidate.constraints[i] = driven }
+            let solved = solveCandidate(candidate)
+            guard solved.solved else { return fail("motion_conflict", "The mechanism cannot reach a requested position; nothing was changed.") }
+            candidate = solved.assembly
+            var frame: [String: Any] = ["index": index, "value": value,
+                "instances": candidate.occurrences(includeHidden: true).map { occurrence -> [String: Any] in
+                    let transform = occurrence.worldTransform
+                    if let old = previous[occurrence.instance.id] {
+                        travel[occurrence.instance.id, default: 0] += simd_length(transform.position - old.position)
+                        let delta = CADAssemblyJointMath.rotation(transform) * CADAssemblyJointMath.rotation(old).inverse
+                        angularTravel[occurrence.instance.id, default: 0] += 2 * atan2(simd_length(delta.imag), abs(delta.real)) * 180 / .pi
+                    }
+                    previous[occurrence.instance.id] = transform
+                    return ["id": occurrence.instance.id.uuidString, "transform": transformPayload(transform)]
+                }]
+            if inspect {
+                var request: [String: Any] = [:]
+                if let ids = args["instanceIDs"] { request["instanceIDs"] = ids }
+                let result = await interferenceOffMain(request, candidate: candidate)
+                guard result["ok"] as? Bool == true else { return result }
+                frame["interference"] = result
+            }
+            frames.append(frame)
+            guard let bytes = try? JSONSerialization.data(withJSONObject: frames), bytes.count < Self.interferenceResultBudgetBytes else {
+                return fail("motion_result_too_large", "Use fewer samples or select fewer parts.")
+            }
+            await Task.yield()
+        }
+        guard !Task.isCancelled, !run.cancelled, !document.isClosed,
+              document.session.changeCount == token.changeCount, document.store.revision == token.revision else {
+            return fail("cancelled_or_stale", "The motion check was cancelled or the model changed.")
+        }
+        return ["ok": true, "mutated": false, "id": id.uuidString, "from": start, "to": end,
+                "unit": scoped.constraint.kind == .hinge ? "degrees" : "mm", "samples": count,
+                "limits": ["lower": joint.lowerLimit.map { $0 as Any } ?? NSNull(), "upper": joint.upperLimit.map { $0 as Any } ?? NSNull()],
+                "frames": frames, "travelMM": travel.map { ["instanceID": $0.key.uuidString, "distance": $0.value,
+                    "angleDegrees": angularTravel[$0.key] ?? 0] as [String: Any] },
+                "travelMethod": "Sum of translation and shortest rotation between solved samples, not a continuous-path integral",
+                "interferenceChecked": inspect, "complete": true]
+    }
 
     // MARK: - Constraint editing
 
@@ -2538,6 +2696,10 @@ public final class CADAssemblyService {
                 guard parsed >= 0, parsed <= 180 else {
                     return fail("bad_value", "angle value must be a finite number of degrees in [0, 180].")
                 }
+            case .hinge:
+                guard abs(parsed) <= 180 else { return fail("bad_joint_value", "Hinge angle must be between -180 and 180 degrees.") }
+            case .slider:
+                break
             case .fixed, .coaxial, .planarAlign:
                 return fail("unsupported_value",
                             "Only distance and angle constraints carry an editable value.")
@@ -2545,6 +2707,17 @@ public final class CADAssemblyService {
             constraint.value = parsed
         }
 
+        if constraint.joint != nil {
+            if args["value"] is NSNull { constraint.value = nil }
+            for key in ["lowerLimit", "upperLimit"] where args.keys.contains(key) {
+                switch parseJointLimit(args[key]) {
+                case .failure(let error): return fail(error.code, error.message)
+                case .success(let value):
+                    if key == "lowerLimit" { constraint.joint?.lowerLimit = value }
+                    else { constraint.joint?.upperLimit = value }
+                }
+            }
+        }
         let geometryKeys = ["pointA", "directionA", "pointB", "directionB",
                             "referenceA", "faceA", "edgeA", "referenceB", "faceB", "edgeB"]
         let hasGeometryInput = geometryKeys.contains { key in
@@ -2605,6 +2778,8 @@ public final class CADAssemblyService {
             constraint.pointA = referenceA.point
             constraint.directionA = referenceA.direction
             constraint.sourceRevisionA = referenceA.sourceRevision
+            constraint.bindingA = referenceA.binding
+            constraint.referenceFailure = nil
             geometryAChanged = true
         } else {
             if let raw = args["pointA"], !(raw is NSNull) {
@@ -2633,6 +2808,8 @@ public final class CADAssemblyService {
         if geometryAChanged, referenceA == nil,
            let source = body(for: effectiveBodyID(instanceAValue)) {
             constraint.sourceRevisionA = source.meshRevision
+            constraint.bindingA = nil
+            constraint.referenceFailure = nil
         }
 
         var geometryBChanged = false
@@ -2640,6 +2817,8 @@ public final class CADAssemblyService {
             constraint.pointB = referenceB.point
             constraint.directionB = referenceB.direction
             constraint.sourceRevisionB = referenceB.sourceRevision
+            constraint.bindingB = referenceB.binding
+            constraint.referenceFailure = nil
             geometryBChanged = true
         } else if let instanceBValue {
             if args.keys.contains("pointB") {
@@ -2660,7 +2839,7 @@ public final class CADAssemblyService {
             }
             if args.keys.contains("directionB") {
                 if args["directionB"] is NSNull {
-                    if kind == .coaxial || kind == .planarAlign || kind == .angle {
+                    if kind == .coaxial || kind == .planarAlign || kind == .angle || kind == .hinge || kind == .slider {
                         return fail("missing_direction",
                                     "\(kind.rawValue) needs a directionB; pass a non-zero vector.")
                     }
@@ -2681,9 +2860,17 @@ public final class CADAssemblyService {
             if geometryBChanged, referenceB == nil,
                let source = body(for: effectiveBodyID(instanceBValue)) {
                 constraint.sourceRevisionB = source.meshRevision
+                constraint.bindingB = nil
+                constraint.referenceFailure = nil
             }
         }
 
+        if (geometryAChanged || geometryBChanged), let joint = constraint.joint, let other = instanceBValue {
+            constraint.joint = CADAssemblyJointMath.make(
+                a: instanceAValue.transform, b: other.transform,
+                axisA: constraint.directionA, axisB: constraint.directionB ?? SIMD3(0, 0, 1),
+                lower: joint.lowerLimit, upper: joint.upperLimit)
+        }
         let scopeIndex = constraintScopeIndex(updated, parentID: parentID)
         guard CADAssemblySolver.constraintIsResolvable(constraint, in: scopeIndex) else {
             return fail("invalid_constraint",
@@ -2886,6 +3073,12 @@ public final class CADAssemblyService {
             return fail("unknown_body", "The instance's source body no longer resolves.")
         }
 
+        if args["planeID"] != nil || args["axisID"] != nil {
+            switch datumReference(args, source: source) {
+            case .failure(let error): return fail(error.code, error.message)
+            case .success(let reference): return referenceReply(instance: instance, reference: reference)
+            }
+        }
         if let rawFace = args["face"] as? [String: Any] {
             switch resolveKernelFaceReference(instance: instance, source: source, args: rawFace) {
             case .failure(let error): return fail(error.code, error.message)
@@ -2984,7 +3177,7 @@ public final class CADAssemblyService {
                 case .planar: kind = "planar"; radius = nil
                 case .cylindrical(let value): kind = "cylindrical"; radius = value
                 }
-                let point = source.transform.applying(to: face.centroid)
+                let point = source.transform.applying(to: kind == "cylindrical" ? (face.axisPoint ?? face.centroid) : face.centroid)
                 let direction = normalized(source.transform.rotation.act(face.normal))
                 var row: [String: Any] = [
                     "index": face.index,
@@ -3066,6 +3259,13 @@ public final class CADAssemblyService {
             "bodyID": source.id.raw.uuidString,
             "fence": fenceJSON(source: source),
             "faces": faces,
+            "datums": document.session.document.planes.enumerated().map { index, plane -> [String: Any] in
+                ["planeID": plane.id.raw.uuidString, "label": FloeCADStrings.format("cad.joint.planeName", "Plane %@", String(index + 1)),
+                 "point": Self.vectorPayload(plane.plane.origin), "direction": Self.vectorPayload(plane.plane.normal)]
+            } + document.session.document.axes.enumerated().map { index, axis -> [String: Any] in
+                ["axisID": axis.id.raw.uuidString, "label": FloeCADStrings.format("cad.joint.axisName", "Axis %@", String(index + 1)),
+                 "point": Self.vectorPayload(axis.origin), "direction": Self.vectorPayload(axis.direction)]
+            },
             "edges": edges,
             "faceCount": faces.count,
             "edgeCount": edges.count,
@@ -3200,6 +3400,16 @@ public final class CADAssemblyService {
             return .failure(CADAssemblyServiceError(
                 code: "bad_selection", message: "The selected face triangles no longer resolve."))
         }
+        if document.session.lastNamingRevisions[source.id] == source.meshRevision,
+           let channel = document.session.lastFaceTables[source.id]?.nativeFaceChannel,
+           channel.count == source.render.triangleCount, let first = triangles.first {
+            let indices = Set(triangles.map { Int(channel[$0]) })
+            if indices.count == 1 {
+                let nativeIndex = Int(channel[first])
+                return resolveKernelFaceReference(instance: CADAssemblyInstance(name: source.name, bodyID: source.id.raw),
+                    source: source, args: ["index": nativeIndex])
+            }
+        }
         if pick.curved, let seed = triangles.first,
            let cylinder = FaceTopology.cylindricalFace(in: source.render, seedTriangle: seed) {
             return .success(CADAssemblyReference(
@@ -3254,6 +3464,30 @@ public final class CADAssemblyService {
             bodyID: source.id.raw,
             fence: fenceJSON(source: source),
             notes: ["Planar face normal measured from \(used) live triangle(s)."]))
+    }
+
+    private func geometryBinding(source: Body, index: Int, signature: FaceSignature) -> CADAssemblyGeometryBinding? {
+        guard document.session.lastNamingRevisions[source.id] == source.meshRevision,
+              let name = document.session.lastKernelNames[source.id]?[index], name.isStableFaceIdentity,
+              let producer = document.session.document.features.nodes.first(where: { $0.outputBodyIDs.contains(source.id) })?.id else { return nil }
+        let face = FaceRef(body: BodyRef(producer: producer, bodyID: source.id), creator: name.creator,
+                           role: .derived(index: index), signature: signature, elementName: name)
+        return CADAssemblyGeometryBinding(bodyID: source.id.raw, face: face)
+    }
+
+    private func datumReference(_ args: [String: Any], source: Body) -> Result<CADAssemblyReference, CADAssemblyServiceError> {
+        let planeID = uuidValue(args["planeID"]), axisID = uuidValue(args["axisID"])
+        guard (planeID != nil) != (axisID != nil) else {
+            return .failure(CADAssemblyServiceError(code: "bad_datum_reference", message: "Choose one plane or axis."))
+        }
+        let binding = CADAssemblyGeometryBinding(bodyID: source.id.raw, planeID: planeID, axisID: axisID)
+        guard let resolved = CADAssemblyGeometryResolver.resolve(binding, source: source,
+            document: document.session.document, names: document.session.lastKernelNames[source.id] ?? [:]) else {
+            return .failure(CADAssemblyServiceError(code: "missing_datum_reference", message: "The plane or axis is unavailable. Select it again."))
+        }
+        return .success(CADAssemblyReference(point: resolved.point, direction: resolved.direction,
+            sourceRevision: source.meshRevision, sourceKind: planeID == nil ? "datum_axis" : "datum_plane",
+            resolvedIndex: nil, bodyID: source.id.raw, fence: fenceJSON(source: source), binding: binding))
     }
 
     private func resolveKernelFaceReference(instance: CADAssemblyInstance,
@@ -3336,15 +3570,22 @@ public final class CADAssemblyService {
         notes.append(kindName == "axis"
                      ? "Cylindrical face resolved to its kernel axis."
                      : "Planar face resolved to its kernel plane.")
+        let binding = geometryBinding(source: source, index: index, signature: signature)
+        let anchor: SIMD3<Double>
+        if case .cylindrical = signature.kind {
+            guard let axisPoint = face.axisPoint else { return .failure(CADAssemblyServiceError(code: "missing_axis", message: "The selected cylinder has no exact axis. Select it again.")) }
+            anchor = axisPoint
+        } else { anchor = face.centroid }
         return .success(CADAssemblyReference(
-            point: source.transform.applying(to: face.centroid),
+            point: source.transform.applying(to: anchor),
             direction: normalized(source.transform.rotation.act(face.normal)),
             sourceRevision: source.meshRevision,
             sourceKind: kindName,
             resolvedIndex: index,
             bodyID: source.id.raw,
             fence: fenceJSON(source: source),
-            notes: notes))
+            notes: notes,
+            binding: binding))
     }
 
     private func resolveKernelEdgeReference(instance: CADAssemblyInstance,
@@ -3437,6 +3678,16 @@ public final class CADAssemblyService {
             return nil
         }
         if let raw = args[key] as? [String: Any] {
+            if let face = raw["face"] as? [String: Any] {
+                guard let fence = raw["fence"] as? [String: Any] else {
+                    return .failure(CADAssemblyServiceError(code: "requery_required", message: "Select the face again."))
+                }
+                if let failure = validateReferenceFence(fence, source: source, label: label) { return .failure(failure) }
+                return resolveKernelFaceReference(instance: instance, source: source, args: face).map { Optional($0) }
+            }
+            if raw["planeID"] != nil || raw["axisID"] != nil {
+                return datumReference(raw, source: source).map { Optional($0) }
+            }
             guard raw["point"] != nil, raw["direction"] != nil else {
                 return .failure(CADAssemblyServiceError(
                     code: "bad_reference",
@@ -5172,7 +5423,16 @@ public final class CADAssemblyService {
 
     private func loadAssembly() -> Result<CADAssembly, CADAssemblyServiceError> {
         do {
-            return .success(try CADAssembly.decode(from: document.session.document.assemblyData))
+            let assembly = try CADAssembly.decode(from: document.session.document.assemblyData)
+            guard assembly.constraintsWithScope().allSatisfy({
+                ($0.constraint.joint?.version ?? 1) == 1
+                    && ($0.constraint.bindingA?.supported ?? true) && ($0.constraint.bindingB?.supported ?? true)
+            }) else {
+                return .failure(CADAssemblyServiceError(code: "unsupported_joint_version",
+                    message: "This assembly was saved by a newer version. Update Floe before editing it."))
+            }
+            return .success(CADAssemblyGeometryResolver.refresh(assembly,
+                document: document.session.document, kernelNames: document.session.lastKernelNames))
         } catch {
             return .failure(CADAssemblyServiceError(
                 code: "corrupt_assembly",
@@ -5293,6 +5553,9 @@ public final class CADAssemblyService {
             "directionA": Self.vectorPayload(constraint.directionA),
             "suppressed": constraint.isSuppressed,
         ]
+        if let issue = constraint.referenceFailure { payload["referenceIssue"] = issue }
+        if constraint.bindingA != nil { payload["associativeA"] = true }
+        if constraint.bindingB != nil { payload["associativeB"] = true }
         if let instanceB = constraint.instanceB { payload["instanceB"] = instanceB.uuidString }
         if let pointB = constraint.pointB { payload["pointB"] = Self.vectorPayload(pointB) }
         if let directionB = constraint.directionB {
@@ -5300,7 +5563,12 @@ public final class CADAssemblyService {
         }
         if let value = constraint.value {
             payload["value"] = value
-            payload["valueUnit"] = constraint.kind == .angle ? "degrees" : "mm"
+            payload["valueUnit"] = (constraint.kind == .angle || constraint.kind == .hinge) ? "degrees" : "mm"
+        }
+        if let joint = constraint.joint,
+           let data = try? JSONEncoder().encode(joint),
+           let object = try? JSONSerialization.jsonObject(with: data) {
+            payload["joint"] = object
         }
         if let sourceRevisionA = constraint.sourceRevisionA {
             payload["sourceRevisionA"] = sourceRevisionA
@@ -5440,7 +5708,7 @@ nonisolated struct CADAssemblyServiceError: Error {
 /// Deterministic, bounded iterative-projection solver over assembly
 /// constraints. Pure value math, no document access; the caller supplies the
 /// model scale for the relative tolerance (1e-6 × max(scale, 1)).
-private nonisolated enum CADAssemblySolver {
+nonisolated enum CADAssemblySolver {
     static let maxIterations = 64
 
     private struct Role {
@@ -5533,6 +5801,10 @@ private nonisolated enum CADAssemblySolver {
             switch constraint.kind {
             case .fixed:
                 return 0
+            case .hinge, .slider:
+                guard let a = index[constraint.instanceA], let bid = constraint.instanceB, let b = index[bid] else { return .infinity }
+                return CADAssemblyJointMath.residual(constraint, a: instances[a].transform,
+                                                     b: instances[b].transform, scale: modelScale)
             case .coaxial:
                 let movingPoint = worldPoint(role.movingPoint, role.movingIndex)
                 let fixedPoint = worldPoint(role.fixedPoint, role.fixedIndex)
@@ -5584,6 +5856,11 @@ private nonisolated enum CADAssemblySolver {
             switch constraint.kind {
             case .fixed:
                 return
+            case .hinge, .slider:
+                guard let a = index[constraint.instanceA], let bid = constraint.instanceB, let b = index[bid],
+                      let next = CADAssemblyJointMath.project(constraint, a: instances[a].transform,
+                                                             b: instances[b].transform, moveB: role.movingIndex == b) else { return }
+                instances[role.movingIndex].transform = next
             case .coaxial:
                 let fixedPoint = worldPoint(role.fixedPoint, role.fixedIndex)
                 let fixedDirection = worldDirection(role.fixedDirection, role.fixedIndex)
@@ -5883,6 +6160,23 @@ private nonisolated enum CADAssemblySolver {
                     result.append(r)
                 }
                 return result
+            case .hinge, .slider:
+                guard let b = constraint.instanceB,
+                      let axis = worldDirection(constraint.instanceA, constraint.directionA),
+                      let common = worldPoint(constraint.instanceA, constraint.pointA) else { return [] }
+                let basis = perpendicularBasis(axis)
+                var result: [[Double]] = []
+                let rotations = constraint.kind == .hinge && constraint.value == nil ? basis : basis + [axis]
+                for direction in rotations {
+                    result.append(add(rotationRow(b, axis: direction, sign: 1),
+                                      rotationRow(constraint.instanceA, axis: direction, sign: -1)))
+                }
+                let translations = constraint.kind == .slider && constraint.value == nil ? basis : basis + [axis]
+                for direction in translations {
+                    result.append(add(translationRow(b, direction: direction, point: common, sign: 1),
+                                      translationRow(constraint.instanceA, direction: direction, point: common, sign: -1)))
+                }
+                return result
             case .distance:
                 guard let b = constraint.instanceB,
                       let pointA = worldPoint(constraint.instanceA, constraint.pointA),
@@ -6096,11 +6390,17 @@ private nonisolated enum CADAssemblySolver {
 
     static func constraintIsResolvable(_ constraint: CADAssemblyConstraint,
                                        in index: [UUID: Int]) -> Bool {
-        guard index[constraint.instanceA] != nil, isFinite(constraint.pointA) else {
+        guard constraint.referenceFailure == nil,
+              index[constraint.instanceA] != nil, isFinite(constraint.pointA) else {
             return false
         }
         switch constraint.kind {
         case .fixed:
+            return true
+        case .hinge, .slider:
+            guard let instanceB = constraint.instanceB, instanceB != constraint.instanceA,
+                  index[instanceB] != nil, CADAssemblyJointMath.valid(constraint) else { return false }
+            if let pointB = constraint.pointB, !isFinite(pointB) { return false }
             return true
         case .distance:
             guard let instanceB = constraint.instanceB, index[instanceB] != nil,

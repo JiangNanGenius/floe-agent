@@ -139,6 +139,8 @@ enum CADQualificationFixture {
                 // X20 exercises the genuine first face pick on an unpainted
                 // source body. Keep the real holed B-rep but add no occurrence
                 // or face material, so the UI cannot pass via a painted group.
+            } else if ProcessInfo.processInfo.arguments.contains("--ui-test-cad-joints") {
+                try CADAssemblyJointUIFixture.prepare(document, bodyID: bodyID)
             } else if interferenceFixture {
                 let placements: [(name: String, x: Double)] = [
                     ("Plate A", 0.0),
@@ -735,7 +737,13 @@ struct CADWorkbenchFixtureHarness: View {
                 // chrome or CUA accepts a workbench that does not exist in
                 // the product. The editor sets its own inline navigation
                 // title (the document name), exactly as it does in-product.
-                if let datumMode,
+                if ProcessInfo.processInfo.arguments.contains(CADTextureImportUIFixture.argument) {
+                    ZStack(alignment: .topTrailing) {
+                        workbench(document)
+                        CADTextureImportReadbackPanel(document: document)
+                            .padding(.top, 6).padding(.trailing, 6)
+                    }
+                } else if let datumMode,
                    !ProcessInfo.processInfo.arguments.contains("--ui-test-cad-compact") {
                     ZStack(alignment: .topLeading) {
                         workbench(document)
@@ -743,6 +751,12 @@ struct CADWorkbenchFixtureHarness: View {
                                                        focus: datumMode.focus)
                             .padding(.top, 6)
                             .padding(.leading, 6)
+                    }
+                } else if ProcessInfo.processInfo.arguments.contains("--ui-test-cad-joints") {
+                    ZStack(alignment: .topTrailing) {
+                        workbench(document)
+                        CADAssemblyJointReadbackPanel(document: document)
+                            .padding(.top, 6).padding(.trailing, 6)
                     }
                 } else if ProcessInfo.processInfo.arguments.contains("--ui-test-cad-exact-curves") {
                     ZStack(alignment: .topTrailing) {
@@ -797,7 +811,11 @@ struct CADWorkbenchFixtureHarness: View {
             Self.installMeshPanelFlowProbeIfRequested()
             do {
                 let arguments = ProcessInfo.processInfo.arguments
-                if arguments.contains(CADDatumPlaneFormFixture.Mode.cleanupArgument) {
+                if arguments.contains(CADTextureImportUIFixture.argument) {
+                    document = try await CADTextureImportUIFixture.open(
+                        reset: arguments.contains(CADTextureImportUIFixture.resetArgument),
+                        reopen: arguments.contains(CADTextureImportUIFixture.reopenArgument))
+                } else if arguments.contains(CADDatumPlaneFormFixture.Mode.cleanupArgument) {
                     let removed = CADDatumPlaneFormFixture.removeAllFixtures()
                     datumCleanupStatus = removed ? "removed" : "removal_failed"
                 } else if arguments.contains("--ui-test-cad-projection") {

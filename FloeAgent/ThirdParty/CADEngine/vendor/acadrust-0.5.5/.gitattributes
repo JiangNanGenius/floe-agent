@@ -1,5 +1,5 @@
 # Auto detect text files and perform LF normalization
-* text=auto
+* -text
 
 # Versioned IFCCAD conformance data
 conformance/ifccad/**/*.json text eol=lf

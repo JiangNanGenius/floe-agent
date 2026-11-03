@@ -1178,7 +1178,7 @@ public enum CadServiceOperationCatalog: Sendable {
                   summary: "Add an assembly constraint between two instances (or ground one); "
                     + "live-picked face/edge references are verified against the current revision.",
                   arguments: [
-                      arg("kind", "string", required: true, note: "fixed | coaxial | planarAlign | distance | angle"),
+                      arg("kind", "string", required: true, note: "fixed | coaxial | planarAlign | distance | angle | hinge | slider"),
                       arg("instanceA", "uuid", required: true),
                       arg("instanceB", "uuid", note: "required for every kind except fixed"),
                       arg("parentID", "uuid", note: "optional subassembly instance; both instances must be its direct children; omitted = root scope"),
@@ -1189,9 +1189,11 @@ public enum CadServiceOperationCatalog: Sendable {
                       arg("faceB", "object", note: "{index, query_token? | signature?} kernel face for B"),
                       arg("edgeB", "object", note: "{index, query_token?} kernel edge for B"),
                       arg("pointA", "[x,y,z]"), arg("pointB", "[x,y,z]"),
-                      arg("directionA", "[x,y,z]", note: "required for coaxial/planarAlign/angle unless referenceA/faceA/edgeA is given"),
-                      arg("directionB", "[x,y,z]", note: "required for coaxial/planarAlign/angle unless referenceB/faceB/edgeB is given"),
-                      arg("value", "number", note: "distance in mm (>= 0) or angle in degrees [0, 180]"),
+                      arg("directionA", "[x,y,z]", note: "required for coaxial/planarAlign/angle/hinge/slider unless referenceA/faceA/edgeA is given"),
+                      arg("directionB", "[x,y,z]", note: "required for coaxial/planarAlign/angle/hinge/slider unless referenceB/faceB/edgeB is given"),
+                      arg("value", "number", note: "distance mm >=0; angle degrees 0...180; hinge signed degrees -180...180; slider signed mm. Omitted joint value is free inside limits."),
+                      arg("lowerLimit", "number", note: "optional joint lower travel limit in joint units"),
+                      arg("upperLimit", "number", note: "optional joint upper travel limit in joint units"),
                   ],
                   examples: [#"{"kind":"fixed","instanceA":"<instance uuid>"}"#,
                              #"{"kind":"distance","instanceA":"<instance uuid>","instanceB":"<instance uuid>","pointA":[0,0,0],"pointB":[0,0,0],"value":80}"#,
@@ -1205,7 +1207,9 @@ public enum CadServiceOperationCatalog: Sendable {
                     + "A fixed constraint has no editable value or geometry reference.",
                   arguments: [
                       arg("id", "uuid", required: true, note: "constraint id from report/dof"),
-                      arg("value", "number", note: "distance in mm (>= 0) or angle in degrees [0, 180]; only for distance/angle"),
+                      arg("value", "number | null", note: "distance/angle or signed hinge degrees/slider mm; null releases joint drive, retaining limits"),
+                      arg("lowerLimit", "number | null", note: "joint limit; null removes this bound"),
+                      arg("upperLimit", "number | null", note: "joint limit; null removes this bound"),
                       arg("expectedValue", "number", note: "optional CAS fence: refuse if the stored value differs"),
                       arg("pointA", "[x,y,z]", note: "replacement local reference point on A (mm)"),
                       arg("directionA", "[x,y,z]", note: "replacement local axis/normal on A (non-zero)"),
@@ -1260,6 +1264,8 @@ public enum CadServiceOperationCatalog: Sendable {
                     + "or the instance reference point; returns the exact revision fence.",
                   arguments: [
                       arg("instanceID", "uuid", required: true, note: "alias id"),
+                      arg("planeID", "uuid", note: "associate a construction plane instead of face/edge"),
+                      arg("axisID", "uuid", note: "associate a construction axis instead of face/edge"),
                       arg("useSelection", "boolean", note: "default false; capture the live workbench selection now"),
                       arg("face", "object", note: "{index, query_token?, signature?} kernel planar/cylindrical face"),
                       arg("edge", "object", note: "{index, query_token?} kernel edge"),
@@ -1383,6 +1389,16 @@ public enum CadServiceOperationCatalog: Sendable {
                   summary: "Request cancellation of the active interference check. The original "
                     + "caller receives cancelled only after the detached worker joins; no partial "
                     + "result is accepted.",
+                  arguments: [], examples: ["{}"]),
+        Operation(kind: "assembly", action: "motionStudy", mutating: false,
+                  summary: "Drive one existing hinge/slider over a range; solve other parts from actual constraints, measure travel and optionally check exact interference per sample. Read-only, cancellable; no keyframes or document changes.",
+                  arguments: [arg("id", "uuid", required: true), arg("from", "number", required: true),
+                              arg("to", "number", required: true), arg("samples", "integer", note: "2...121, default21"),
+                              arg("checkInterference", "boolean", note: "default true"),
+                              arg("instanceIDs", "[uuid]", note: "optional interference subset")],
+                  examples: [#"{"id":"<joint uuid>","from":-30,"to":60,"samples":21}"#]),
+        Operation(kind: "assembly", action: "cancelMotionStudy", mutating: false,
+                  summary: "Cancel the motion check and its worker. No partial result is accepted.",
                   arguments: [], examples: ["{}"]),
         Operation(kind: "assembly", action: "hierarchy", mutating: false,
                   summary: "Nested subassembly/instance tree, local constraints, stable BOM identities "

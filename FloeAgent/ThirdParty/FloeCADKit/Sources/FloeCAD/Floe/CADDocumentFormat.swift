@@ -101,6 +101,7 @@ nonisolated enum CADDocumentFormat {
     /// own feature constant/check to `requiredFormat` and `assess` below, and
     /// let `supportedVersion` be the maximum. Do not treat codable tolerance as
     /// compatibility; do not lower an existing floor.
+    static let assemblyJointVersion = 7
     static let partMetadataVersion = 5
     /// First drawing-JSON schema whose shared-sheet intent a pre-v4 build
     /// cannot represent. Frozen older readers decode away `sheetViews`,
@@ -135,6 +136,7 @@ nonisolated enum CADDocumentFormat {
         /// The drawing JSON is malformed, carries an unknown future record or
         /// is stamped with a future drawing schema. The bytes are preserved and
         /// the whole document opens read-only; no writer may overwrite them.
+        var opaqueAssembly = false
         var opaqueDrawings = false
         /// A future animation schema carries semantics this build cannot
         /// verify. Preserve the bytes and open the document view-only rather
@@ -146,7 +148,7 @@ nonisolated enum CADDocumentFormat {
         var isOpaqueReadOnly: Bool {
             !opaquePlanes.isEmpty || !opaqueSketches.isEmpty
                 || !opaqueAxes.isEmpty || !opaqueDatumPoints.isEmpty
-                || !opaqueFeatures.isEmpty || opaqueDrawings
+                || !opaqueFeatures.isEmpty || opaqueDrawings || opaqueAssembly
                 || opaqueAnimation || opaqueBodyAppearance || opaqueUVAuthoring || opaqueSceneAppearance
         }
     }
@@ -198,6 +200,7 @@ nonisolated enum CADDocumentFormat {
         if assemblyRequiresPartMetadataFormat(document.assemblyData) {
             required = max(required, partMetadataVersion)
         }
+        required = max(required, assemblyJointIntent(document.assemblyData).version)
         required = max(required, drawingRequiredVersion(document.drawingsData))
         if document.features.nodes.contains(where: {
             if case .hole = $0.kind { return true }
@@ -649,9 +652,46 @@ nonisolated enum CADDocumentFormat {
         return assembly.requiresPartMetadataFormat
     }
 
+    /// Inspect raw rows before decoding so future joint fields survive opaque.
+    static func assemblyJointIntent(_ data: Data?) -> (version: Int, opaque: Bool) {
+        guard let data else { return (legacyVersion, false) }
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return (legacyVersion, false) // Existing corrupt-assembly diagnostics remain authoritative.
+        }
+        var hasJoint = false, opaque = false
+        func inspect(_ scope: [String: Any]) {
+            for row in scope["constraints"] as? [[String: Any]] ?? [] {
+                let isJoint = ["hinge", "slider"].contains(row["kind"] as? String ?? "")
+                for key in ["bindingA", "bindingB"] where row[key] != nil {
+                    hasJoint = true
+                    guard let binding = row[key] as? [String: Any], binding["version"] as? Int == 1 else { opaque = true; continue }
+                }
+                guard row["joint"] != nil || isJoint else { continue }
+                hasJoint = true
+                guard let joint = row["joint"] as? [String: Any],
+                      let version = joint["version"] as? Int, version == 1 else { opaque = true; continue }
+            }
+            for instance in scope["instances"] as? [[String: Any]] ?? [] {
+                inspect(["constraints": instance["constraints"] ?? [], "instances": instance["children"] ?? []])
+            }
+        }
+        inspect(root)
+        if hasJoint && !opaque {
+            guard let decoded = try? CADAssembly.decode(from: data) else { return (assemblyJointVersion, true) }
+            opaque = decoded.constraintsWithScope().contains {
+                let c = $0.constraint
+                return (c.joint != nil && !CADAssemblyJointMath.valid(c))
+                    || (c.bindingA.map { !$0.supported } ?? false)
+                    || (c.bindingB.map { !$0.supported } ?? false)
+            }
+        }
+        return (hasJoint ? assemblyJointVersion : legacyVersion, opaque)
+    }
+
     /// Existing save diffs preserve unreadable legacy rows, but a new
     /// association must never be silently skipped by a try?-encode fallback.
     static func validateLiveAssociations(_ document: DesignDocument) throws {
+        if assemblyJointIntent(document.assemblyData).opaque { throw CADDocumentFormatError.opaqueAssociations }
         if faceNames(in: document).contains(where: { !$0.hasSupportedOperationIdentity }) {
             throw CADDocumentFormatError.opaqueAssociations
         }
@@ -790,6 +830,9 @@ nonisolated enum CADDocumentFormat {
         if assemblyRequiresPartMetadataFormat(assembly) {
             result.requiredVersion = max(result.requiredVersion, partMetadataVersion)
         }
+        let joints = assemblyJointIntent(assembly)
+        result.requiredVersion = max(result.requiredVersion, joints.version)
+        result.opaqueAssembly = joints.opaque
         let drawingIntent = drawingIntent(drawings)
         result.requiredVersion = max(result.requiredVersion, drawingIntent.version)
         if drawingIntent.opaque { result.opaqueDrawings = true }

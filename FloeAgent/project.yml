@@ -1298,6 +1298,7 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/ViewportRenderTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADViewOverlayTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialCoreTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADTextureImportTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSceneLightingTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialUVConsistencyTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADUVAuthoringTests.swift
@@ -1312,6 +1313,7 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADDrawingBOMTableExportTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyBOMExplodedClosureTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyConstraintEditingTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyJointClosureTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyInterferenceClosureTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADDrawingMultiViewAssociativityTests.swift

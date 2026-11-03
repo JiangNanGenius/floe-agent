@@ -20,6 +20,12 @@
       "changes": [
         "Packaging only: retain the upstream Cargo.lock and small native surface fixture in the vendored source tree."
       ]
+    },
+    {
+      "file": ".gitattributes",
+      "changes": [
+        "Packaging only: disable Git text normalization to preserve the exact vendored crate source bytes used for the qualified WASM, including upstream CRLF."
+      ]
     }
   ]
 }

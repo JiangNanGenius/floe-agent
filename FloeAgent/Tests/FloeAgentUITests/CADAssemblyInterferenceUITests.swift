@@ -29,6 +29,7 @@ final class CADAssemblyInterferenceUITests: XCTestCase {
             "--ui-test-cad-fixture",
             "--ui-test-cad-assembly-interference",
         ]
+        if name.contains("JointDrive") { app.launchArguments.append("--ui-test-cad-joints") }
         app.launch()
     }
 
@@ -162,6 +163,37 @@ final class CADAssemblyInterferenceUITests: XCTestCase {
     }
 
     // MARK: - Real workbench navigation
+
+    func testJointDriveUsesNativeEditorAndSavedMechanism() throws {
+        let state = app.staticTexts["CADJointState"]
+        XCTAssertTrue(state.waitForExistence(timeout:60))
+        XCTAssertTrue(state.label.contains("hinge=0"),state.label)
+        let id = try XCTUnwrap(state.label.split(separator:"|").first?.split(separator:"=").last).description
+        guard openCADTools() else { return }
+        expandSheet(named:"CAD Tools")
+        let edit = app.buttons["CADAssemblyConstraintEdit-" + id]
+        XCTAssertTrue(revealInAssemblyPanel(edit));edit.tap()
+        XCTAssertTrue(app.navigationBars["Edit constraint"].waitForExistence(timeout:10))
+        expandSheet(named:"Edit constraint")
+        let value = app.textFields["CADConstraintValue"]
+        if !value.isHittable { app.swipeUp() }
+        XCTAssertTrue(value.waitForExistence(timeout:5));value.tap()
+        let old = value.value as? String ?? "0"
+        value.typeText(String(repeating:XCUIKeyboardKey.delete.rawValue,count:old.count) + "90")
+        let confirm = app.buttons["CADConstraintConfirm"]
+        XCTAssertTrue(confirm.isEnabled);confirm.tap()
+        XCTAssertTrue(app.buttons["CADToolsSheetCloseButton"].waitForExistence(timeout:15))
+        app.buttons["CADToolsSheetCloseButton"].tap()
+        let changed = NSPredicate(format:"label CONTAINS %@", "hinge=90")
+        XCTAssertEqual(XCTWaiter.wait(for:[XCTNSPredicateExpectation(predicate:changed,object:state)],timeout:15),.completed)
+        XCTAssertTrue(state.label.contains("carrier=0.000,0.000,-150.000"),state.label)
+        snapshot("native-joint-drive-90")
+        app.terminate();app.launchArguments.append("--ui-test-cad-reopen");app.launch()
+        XCTAssertTrue(state.waitForExistence(timeout:60))
+        XCTAssertTrue(state.label.contains("hinge=90"),state.label)
+        XCTAssertTrue(state.label.contains("carrier=0.000,0.000,-150.000"),state.label)
+        snapshot("native-joint-reopened")
+    }
 
     private func openCADTools() -> Bool {
         var button = app.buttons["CADWorkbenchToolsButton"].firstMatch

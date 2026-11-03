@@ -9,10 +9,27 @@
 //
 
 #if canImport(SwiftUI) && canImport(UIKit) && canImport(PhotosUI)
+import CoreTransferable
 import PhotosUI
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+
+/// Request a file representation so Photos cannot materialize an unbounded
+/// Data blob before the import service checks its size. The temporary system
+/// file is copied with the same bounded reader as Files; no URL is persisted.
+private nonisolated struct CADTexturePhotoTransfer: Transferable {
+    let source: CADTextureImport.Source
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .image) { received in
+            guard let source = try CADTextureImport.readFiles([received.file]).first else {
+                throw CADTextureImport.Failure.invalidImage
+            }
+            return CADTexturePhotoTransfer(source: source)
+        }
+    }
+}
 
 // MARK: - Tabs
 
@@ -42,7 +59,9 @@ struct CADMaterialInspectorView: View {
     @State private var libraryTab: CADMaterialLibraryTab = .personal
     @State private var searchText = ""
     @State private var pendingTextureSlot: MaterialTextureSlot?
-    @State private var photoItem: PhotosPickerItem?
+    @State private var photoItems: [PhotosPickerItem] = []
+    @State private var photoLoadTask: Task<Void, Never>?
+    @State private var isVisible = false
     @State private var showPhotoPicker = false
     @State private var showTextureFileImporter = false
     @State private var showLibraryImporter = false
@@ -108,6 +127,7 @@ struct CADMaterialInspectorView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(FloeCADStrings.text("cad.ui.common.cancel", "Cancel")) {
+                        photoLoadTask?.cancel()
                         model.cancel()
                         dismiss()
                     }
@@ -131,16 +151,31 @@ struct CADMaterialInspectorView: View {
             }) { target in
                 CADUVEditorView(document: model.document, bodyID: target.bodyID)
             }
+            .onAppear {
+                isVisible = true
+                #if DEBUG
+                CADTextureImportUIFixture.stageIfRequested(model)
+                #endif
+            }
             .onDisappear {
+                isVisible = false
+                photoLoadTask?.cancel()
+                model.cancelTextureImport()
                 model.endPreviewOnly()
                 model.stopObserving()
             }
-            .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem,
-                          matching: .images)
+            .photosPicker(isPresented: $showPhotoPicker, selection: $photoItems,
+                          maxSelectionCount: MaterialTextureSlot.allCases.count, matching: .images,
+                          preferredItemEncoding: .current)
             .fileImporter(isPresented: $showTextureFileImporter,
                           allowedContentTypes: [.png, .jpeg, .image],
-                          allowsMultipleSelection: false) { result in
+                          allowsMultipleSelection: true) { result in
                 loadTextureFile(result)
+            }
+            .sheet(item: Binding(get: { model.textureImportReview }, set: { review in
+                if case nil = review { model.cancelTextureImport() }
+            })) { review in
+                CADTextureImportReviewView(model: model, review: review)
             }
             .fileImporter(isPresented: $showLibraryImporter,
                           allowedContentTypes: [.json, .data],
@@ -162,20 +197,8 @@ struct CADMaterialInspectorView: View {
                           defaultFilename: "Floe Materials") { _ in
                 exportedPack = nil
             }
-            .onChange(of: photoItem) { _, item in
-                guard let item, let slot = pendingTextureSlot else { return }
-                Task {
-                    if let data = try? await item.loadTransferable(type: Data.self) {
-                        model.setTexture(slot: slot, data: data,
-                                         displayName: item.itemIdentifier)
-                    } else {
-                        model.setExternalError(FloeCADStrings.text(
-                            "cad.material.error.image",
-                            "Choose a PNG or JPEG image no larger than 8 MB."))
-                    }
-                    photoItem = nil
-                    pendingTextureSlot = nil
-                }
+            .onChange(of: photoItems) { _, items in
+                loadTexturePhotos(items)
             }
             .alert(item: $pendingDeletion) { pending in
                 Alert(
@@ -326,6 +349,15 @@ struct CADMaterialInspectorView: View {
                       systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
             }
+            if model.isImportingTextures && model.textureImportReview == nil {
+                HStack {
+                    ProgressView(FloeCADStrings.text("cad.textureImport.loading", "Reading selected images…"))
+                    Button(FloeCADStrings.text("cad.ui.common.cancel", "Cancel")) {
+                        photoLoadTask?.cancel()
+                        model.cancelTextureImport()
+                    }
+                }
+            }
             Text(FloeCADStrings.text(
                 "cad.material.texture.presentNote",
                 "Full texture detail appears in Present."))
@@ -361,6 +393,9 @@ struct CADMaterialInspectorView: View {
             Spacer(minLength: 8)
             Menu {
                 Button {
+                    photoLoadTask?.cancel()
+                    model.cancelTextureImport()
+                    photoItems = []
                     pendingTextureSlot = slot
                     showPhotoPicker = true
                 } label: {
@@ -368,6 +403,9 @@ struct CADMaterialInspectorView: View {
                           systemImage: "photo.on.rectangle")
                 }
                 Button {
+                    photoLoadTask?.cancel()
+                    model.cancelTextureImport()
+                    photoItems = []
                     pendingTextureSlot = slot
                     showTextureFileImporter = true
                 } label: {
@@ -912,25 +950,50 @@ struct CADMaterialInspectorView: View {
     // MARK: File actions
 
     private func loadTextureFile(_ result: Result<[URL], Error>) {
-        guard let slot = pendingTextureSlot else { return }
+        guard isVisible, let slot = pendingTextureSlot else { return }
         defer { pendingTextureSlot = nil }
         switch result {
         case .success(let urls):
-            guard let url = urls.first else { return }
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            guard let data = try? Data(contentsOf: url) else {
-                model.setExternalError(FloeCADStrings.text(
-                    "cad.material.error.image",
-                    "Choose a PNG or JPEG image no larger than 8 MB."))
-                return
+            guard !urls.isEmpty else { return }
+            model.loadTextureFiles(urls, startingAt: slot)
+        case .failure(let error):
+            // Dismissing the system picker is ordinary cancellation.
+            model.cancelTextureImport()
+            if (error as NSError).code != NSUserCancelledError {
+                model.setExternalError(error.localizedDescription)
             }
-            model.setTexture(slot: slot, data: data,
-                             displayName: url.deletingPathExtension().lastPathComponent)
-        case .failure:
-            model.setExternalError(FloeCADStrings.text(
-                "cad.material.error.image",
-                "Choose a PNG or JPEG image no larger than 8 MB."))
+        }
+    }
+
+    private func loadTexturePhotos(_ items: [PhotosPickerItem]) {
+        guard isVisible, !items.isEmpty, let slot = pendingTextureSlot else { return }
+        photoLoadTask?.cancel()
+        let token = model.beginTextureImport()
+        photoLoadTask = Task {
+            do {
+                var sources: [CADTextureImport.Source] = []
+                var total = 0
+                for (offset, item) in items.enumerated() {
+                    try Task.checkCancellation()
+                    guard let transfer = try await item.loadTransferable(type: CADTexturePhotoTransfer.self) else {
+                        throw CADTextureImport.Failure.invalidImage
+                    }
+                    let bytes = transfer.source.bytes
+                    try Task.checkCancellation()
+                    guard model.isCurrentTextureImport(token) else { return }
+                    guard bytes.count <= CADTextureImport.maximumSourceBytes,
+                          bytes.count <= CADTextureImport.maximumBatchSourceBytes - total else {
+                        throw CADTextureImport.Failure.sourceTooLarge
+                    }
+                    total += bytes.count
+                    sources.append(.init(name: FloeCADStrings.format("cad.textureImport.photoName", "Photo %d", offset + 1), bytes: bytes))
+                }
+                model.stageTextureImport(sources, startingAt: slot, token: token)
+            } catch { model.failTextureImport(error, token: token) }
+            if model.isCurrentTextureImport(token) {
+                photoItems = []
+                pendingTextureSlot = nil
+            }
         }
     }
 
