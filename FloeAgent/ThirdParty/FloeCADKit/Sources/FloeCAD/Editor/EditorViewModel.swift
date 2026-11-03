@@ -4915,7 +4915,7 @@ final class EditorViewModel {
     /// any surface that takes over — palette tools, the Items panel, measure,
     /// sketching, import. Notably reverts the rotate preview, which mutates
     /// transforms outside the undo stack until committed.
-    private func cancelTransientPicks() {
+    func cancelTransientPicks() {
         endPolygonCageEditing()
         cancelSymmetryAxisPick()
         cancelRotateAxis()
