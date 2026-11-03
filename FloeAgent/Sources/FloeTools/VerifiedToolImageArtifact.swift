@@ -4,6 +4,7 @@ import FloeCore
 import FloeModels
 #if canImport(ImageIO)
 import ImageIO
+import CoreGraphics
 #endif
 
 /// Shared storage boundary for image artifacts shown in chat or sent to a
@@ -109,14 +110,19 @@ public struct VerifiedToolImageArtifact: Sendable {
         return Self(reference: reference, fileURL: candidate, mimeType: mime, data: bytes)
     }
 
-    /// Large original images remain shareable. Only the provider attachment
-    /// becomes a bounded, separately hashed JPEG preview, decoded by ImageIO
-    /// as a thumbnail rather than first allocating the full-size bitmap.
+    /// Original images remain shareable. Opaque CAD captures may use a smaller
+    /// same-size JPEG for transport; oversized images use a bounded thumbnail.
+    /// Either derived representation carries its own digest and geometry.
     public func providerDelivery(byteLimit: Int = ProviderImageEvidencePolicy.maximumImageBytes) throws -> Delivery {
         guard byteLimit > 0 else {
             throw FloeError.validationFailed("The visual evidence budget is exhausted.")
         }
         let originalGeometry = Self.pixelGeometry(in: data)
+#if canImport(ImageIO)
+        if let delivery = sameSizeCADDelivery(byteLimit: byteLimit, geometry: originalGeometry) {
+            return delivery
+        }
+#endif
         if data.count <= byteLimit {
             return Delivery(data: data, mimeType: mimeType, sourceSHA256: reference.sha256.lowercased(),
                             attachedSHA256: reference.sha256.lowercased(), isPreview: false,
@@ -150,4 +156,65 @@ public struct VerifiedToolImageArtifact: Sendable {
 #endif
         throw FloeError.validationFailed("The original image was retained, but no preview fits the visual evidence budget.")
     }
+
+#if canImport(ImageIO)
+    /// Limit this optimization to retained viewport captures, never user images,
+    /// QR codes, generated artwork or animation frames. A PNG with transparency
+    /// or orientation metadata keeps the original representation.
+    private func sameSizeCADDelivery(byteLimit: Int, geometry: PixelGeometry?) -> Delivery? {
+        guard reference.relativePath.hasPrefix("CADViewportArtifacts/"),
+              mimeType == "image/png", data.count >= 64 * 1_024,
+              let geometry, geometry.orientation == 1,
+              geometry.width <= 4_096, geometry.height <= 4_096,
+              geometry.width * geometry.height <= 4_194_304,
+              let source = CGImageSourceCreateWithData(data as CFData,
+                    [kCGImageSourceShouldCache: false] as CFDictionary),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              image.width == geometry.width, image.height == geometry.height,
+              Self.isOpaque(image) else { return nil }
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output, "public.jpeg" as CFString, 1, nil) else {
+            return nil
+        }
+        CGImageDestinationAddImage(destination, image, [
+            kCGImageDestinationLossyCompressionQuality: 0.90,
+            kCGImagePropertyOrientation: 1
+        ] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        let bytes = output as Data
+        guard !bytes.isEmpty, bytes.count < data.count, bytes.count <= byteLimit,
+              ProviderImageEvidencePolicy.sniffedMIME(bytes) == "image/jpeg",
+              Self.pixelGeometry(in: bytes) == geometry,
+              let verification = CGImageSourceCreateWithData(bytes as CFData, nil),
+              let decoded = CGImageSourceCreateImageAtIndex(verification, 0, nil),
+              decoded.width == image.width, decoded.height == image.height else { return nil }
+        return Delivery(data: bytes, mimeType: "image/jpeg",
+                        sourceSHA256: reference.sha256.lowercased(),
+                        attachedSHA256: FloeDigest.sha256Hex(bytes), isPreview: true,
+                        sourceGeometry: geometry, attachedGeometry: geometry)
+    }
+
+    private static func isOpaque(_ image: CGImage) -> Bool {
+        switch image.alphaInfo {
+        case .none, .noneSkipFirst, .noneSkipLast: return true
+        case .alphaOnly: return false
+        default: break
+        }
+        // ImageIO can report an alpha channel for an otherwise opaque CAD
+        // render. Check actual pixels instead of discarding that channel or
+        // inventing a background for genuinely transparent captures.
+        guard let context = CGContext(data: nil, width: image.width, height: image.height,
+                bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                    | CGBitmapInfo.byteOrder32Big.rawValue),
+              let pixels = context.data else { return false }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        let bytes = pixels.assumingMemoryBound(to: UInt8.self)
+        for offset in stride(from: 3, to: context.bytesPerRow * image.height, by: 4) {
+            if bytes[offset] != 255 { return false }
+        }
+        return true
+    }
+#endif
 }
