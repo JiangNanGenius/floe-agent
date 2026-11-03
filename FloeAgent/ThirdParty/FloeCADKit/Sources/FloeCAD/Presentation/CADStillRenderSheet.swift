@@ -39,9 +39,6 @@ struct CADStillRenderSheet: View {
                     Section {
                         Image(uiImage: image).resizable().scaledToFit()
                             .accessibilityIdentifier("CADStillRenderPreview")
-                        Button(FloeCADStrings.text("cad.render.save", "Save image"), systemImage: "square.and.arrow.up") {
-                            file = PNGFileDocument(data: result.png); exporting = true
-                        }.accessibilityIdentifier("CADStillRenderSave")
                     }
                 }
                 if let error { Section { Text(error).foregroundStyle(.red) } }
@@ -62,6 +59,13 @@ struct CADStillRenderSheet: View {
             .navigationTitle(FloeCADStrings.text("cad.render.title", "Render image"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    if let result {
+                        Button(FloeCADStrings.text("cad.render.save", "Save image"), systemImage: "square.and.arrow.up") {
+                            file = PNGFileDocument(data: result.png); exporting = true
+                        }.labelStyle(.iconOnly).accessibilityIdentifier("CADStillRenderSave")
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(FloeCADStrings.text("cad.ui.common.done", "Done")) { dismiss() }
                 }

@@ -135,6 +135,7 @@ struct CADTexturePaintView:View {
                     Button(FloeCADStrings.text("cad.paint.refresh","Refresh")) { Task { await model.refresh() } }.disabled(model.busy).accessibilityIdentifier("CADTexturePaintRefresh")
                     Button(FloeCADStrings.text("cad.uv.title","UV Editor")) { showUV=true }.disabled(model.busy).accessibilityIdentifier("CADTexturePaintOpenUV") }
             }
+            .accessibilityIdentifier("CADTexturePaintForm")
             .navigationTitle(text("title","Texture painting"))
             .toolbar {
                 ToolbarItem(placement:.confirmationAction) { Button(FloeCADStrings.text("cad.ui.common.done","Done")) { model.stop();dismiss() }.accessibilityIdentifier("CADTexturePaintDone") }

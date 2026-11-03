@@ -667,6 +667,10 @@ public final class FloeCADDocument {
             guard let self, !self.isClosed else { return nil }
             return self.revision
         }
+        model.guidedLoftActionHandler = { [weak self] action,args in
+            guard let self,!self.isClosed else { return ["ok":false,"mutated":false,"error":"closed"] }
+            return await CADParameterService(document:self).handleAsync(action:action,args:args)
+        }
         model.datumActionHandler = { [weak self] action, args in
             guard let self, !self.isClosed else { return ["ok": false, "error": "closed"] }
             return CADParameterService(document: self).handle(action: action, args: args)

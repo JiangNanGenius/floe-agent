@@ -136149,13 +136149,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "One straight bend or square-cut stock. Multiple bends, miters and gears are unavailable."
+            "value": "One straight bend, square-cut stock or a 20° external spur gear. Multiple bends, miters and other gear types are unavailable."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "支持单次直线折弯或直切型材。暂不支持多折弯、斜切和齿轮。"
+            "value": "支持单次直线折弯、直切型材或 20° 外啮合直齿轮。暂不支持多折弯、斜切和其他齿轮类型。"
           }
         }
       }
@@ -136326,6 +136326,410 @@
           "stringUnit": {
             "state": "translated",
             "value": "宽度（mm）"
+          }
+        }
+      }
+    },
+    "cad.loftSurface.guide": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guide"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导轨"
+          }
+        }
+      }
+    },
+    "cad.loftSurface.addGuideCurve": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add guide curve"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加导轨曲线"
+          }
+        }
+      }
+    },
+    "cad.loftSurface.guideHelp": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The guide must meet every section. Use up to eight parallel sections without inner loops. The surface is checked to a tolerance."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导轨须与每个截面相交。最多使用八个平行且无内环的截面，结果按容差检查。"
+          }
+        }
+      }
+    },
+    "cad.loftSurface.applyingGuide": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Building loft…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在生成放样…"
+          }
+        }
+      }
+    },
+    "cad.loftSurface.boundaryCondition": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Boundary condition"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "端部条件"
+          }
+        }
+      }
+    },
+    "cad.loftSurface.automaticBoundary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatic"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动"
+          }
+        }
+      }
+    },
+    "cad.loftSurface.boundaryDirection": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Direction"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "方向"
+          }
+        }
+      }
+    },
+    "cad.loftSurface.boundaryCurvature": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Direction and curvature"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "方向与曲率"
+          }
+        }
+      }
+    },
+    "cad.loftSurface.boundaryCurvatureVector": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Normal curvature (1/mm)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "法向曲率（1/mm）"
+          }
+        }
+      }
+    },
+    "cad.loftSurface.angularTolerance": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Angle tolerance (rad)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "角度容差（弧度）"
+          }
+        }
+      }
+    },
+    "cad.loftSurface.curvatureTolerance": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Curvature tolerance (1/mm)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "曲率容差（1/mm）"
+          }
+        }
+      }
+    },
+    "cad.loftSurface.boundaryHelp": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Directions follow section order. Curvature is perpendicular to the direction. Use two to four evenly spaced parallel sections."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "方向沿截面顺序，曲率垂直于方向。使用二至四个等距平行截面。"
+          }
+        }
+      }
+    },
+    "cad.loftSurface.startBoundary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "起点"
+          }
+        }
+      }
+    },
+    "cad.loftSurface.endBoundary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "End"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "终点"
+          }
+        }
+      }
+    },
+    "cad.mechanical.bore": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bore diameter (mm)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "轴孔直径（mm）"
+          }
+        }
+      }
+    },
+    "cad.mechanical.gearBody": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spur gear"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "直齿轮"
+          }
+        }
+      }
+    },
+    "cad.mechanical.gearGrade": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "B-Rep with approximated involute. 20° straight teeth."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "B-Rep 实体，渐开线采用受控近似。20° 直齿。"
+          }
+        }
+      }
+    },
+    "cad.mechanical.gearLimits": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Full-depth external gear, zero backlash and profile shift. Circular root transition; no cutter undercut or manufacturing quality grade."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全齿高外齿轮，零侧隙、零变位。采用圆弧齿根过渡，不包含刀具根切或制造精度等级。"
+          }
+        }
+      }
+    },
+    "cad.mechanical.gearPrecision": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Involute error limit (mm)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "渐开线误差限（mm）"
+          }
+        }
+      }
+    },
+    "cad.mechanical.gearSelect": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select gear"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择齿轮"
+          }
+        }
+      }
+    },
+    "cad.mechanical.gearTeethBody": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ teeth"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 齿"
+          }
+        }
+      }
+    },
+    "cad.mechanical.licenses": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Licenses"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开源许可"
+          }
+        }
+      }
+    },
+    "cad.mechanical.module": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Module (mm)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模数（mm）"
+          }
+        }
+      }
+    },
+    "cad.mechanical.teeth": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Teeth"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "齿数"
           }
         }
       }

@@ -10,8 +10,11 @@ import XCTest
     private func any(_ id:String)->XCUIElement { app.descendants(matching:.any).matching(identifier:id).firstMatch }
     private func reveal(_ id:String)->XCUIElement {
         let element=any(id)
-        for _ in 0..<5 where !element.exists || !element.isHittable { app.swipeUp() }
-        for _ in 0..<7 where !element.exists || !element.isHittable { app.swipeDown() }
+        let paintForm=any("CADTexturePaintForm"),materialForm=any("CADMaterialInspectorForm")
+        let form=paintForm.exists ? paintForm : materialForm
+        XCTAssertTrue(form.waitForExistence(timeout:10))
+        for _ in 0..<7 where !element.exists || !element.isHittable { form.swipeUp() }
+        for _ in 0..<9 where !element.exists || !element.isHittable { form.swipeDown() }
         XCTAssertTrue(element.waitForExistence(timeout:20),app.debugDescription)
         XCTAssertTrue(element.isHittable,app.debugDescription);return element
     }

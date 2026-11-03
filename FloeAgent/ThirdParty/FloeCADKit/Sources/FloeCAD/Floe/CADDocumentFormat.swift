@@ -1161,12 +1161,20 @@ nonisolated enum CADDocumentFormat {
                         (row[key] as? [String: Any]).map { !Set($0.keys).isSubset(of: ["value","formula"]) } == true
                     }
                 }
+                let gear=definition["gear"] as? [String:Any]
+                let futureGear=gear.map { g in
+                    !Set(g.keys).isSubset(of:["version","basis","module","teeth","width","boreDiameter","maximumDeviation"])
+                        || (jsonIntegerValue(g["version"]) ?? 0)>CADSpurGearSpec.supportedVersion
+                        || (g["basis"] as? String).map { CADSpurGearSpec.Basis(rawValue:$0)==nil } == true
+                        || unknownExpressions(g,["module","width","boreDiameter","maximumDeviation"])
+                } == true
                 let sheet = definition["sheet"] as? [String: Any]
                 let members = definition["members"] as? [[String: Any]]
                 let future = version > CADMechanicalDefinition.supportedVersion
+                    || futureGear
                     || !Set(mechanical.keys).isSubset(of: ["definition","placement"])
                     || unknownFrame(mechanical["placement"])
-                    || !Set(definition.keys).isSubset(of: ["version","id","operation","sheet","members"])
+                    || !Set(definition.keys).isSubset(of: ["version","id","operation","sheet","members","gear"])
                     || (definition["operation"] as? String).map { CADMechanicalDefinition.Operation(rawValue: $0) == nil } == true
                     || sheet.map { !Set($0.keys).isSubset(of: sheetKeys) || unknownExpressions($0, sheetKeys) } == true
                     || members?.contains { row in

@@ -7,13 +7,17 @@ import simd
 @MainActor
 final class CADMechanicalService {
     static let actions = ["mechanical.catalog","mechanical.inspect","sheetMetal.create","sheetMetal.update",
-                          "weldment.create","weldment.update","weldment.cutList","mechanical.update"]
-    static let reads: Set<String> = ["mechanical.catalog","mechanical.inspect","weldment.cutList"]
+                          "weldment.create","weldment.update","weldment.cutList","mechanical.update",
+                          "gear.catalog","gear.create","gear.update","gear.inspect"]
+    static let reads: Set<String> = ["mechanical.catalog","mechanical.inspect","weldment.cutList","gear.catalog","gear.inspect"]
     let document: FloeCADDocument
     init(document: FloeCADDocument) { self.document = document }
     static func title(_ definition: CADMechanicalDefinition) -> String {
-        definition.operation == .singleBendSheet ? FloeCADStrings.text("cad.mechanical.sheet","Single bend sheet")
-            : FloeCADStrings.text("cad.mechanical.weldment","Straight weldment")
+        switch definition.operation {
+        case .singleBendSheet: return FloeCADStrings.text("cad.mechanical.sheet","Single bend sheet")
+        case .straightWeldment: return FloeCADStrings.text("cad.mechanical.weldment","Straight weldment")
+        case .spurGear: return FloeCADStrings.text("cad.mechanical.gearBody","Spur gear")
+        }
     }
     func handle(action: String, args: [String:Any]) -> [String:Any] {
         if let refusal = CADServiceOperations.readOnlyRefusal(document:document,kind:"parameter",action:action) { return refusal }
@@ -24,19 +28,30 @@ final class CADMechanicalService {
                 }
             }
             switch action {
-            case "mechanical.catalog": return ["ok":true,"backend":"OCCT 7.8.1 analytic wires/prisms",
+            case "mechanical.catalog","gear.catalog": return ["ok":true,"backend":"OCCT 7.8.1 analytic wires/prisms",
                 "sheet_model":"one constant-width straight bend; tangent flange lengths",
                 "sheet_fields":["flange_a","flange_b","width","thickness","inner_radius","bend_degrees","k_factor"],
                 "k_factor_range":[0,0.5],"bend_degrees_range":[5,150],"stock_profiles":CADWeldmentMember.Stock.allCases.map(\.rawValue),
                 "member_limit":64,"cut_ends":"square","material_is_user_label":true,
                 "unsupported":["unfold arbitrary imported sheet","multiple bends","relief/corner design","springback",
-                               "automatic miter/notch","weld sizing","qualified gear generation"],
-                "gear_backend":"unavailable; no qualified native gear adapter is installed"]
+                               "automatic miter/notch","weld sizing","helical/internal gears","undercut/trochoid roots","ISO manufacturing quality certification"],
+                "gear_backend":CADSpurGearAttribution.backend,"gear_license":["Apache-2.0","MIT"],
+                "gear_fields":["module","teeth","width","bore_diameter","maximum_deviation"],
+                "gear_grade":"BRep with approximated involute; native cubic Bezier flanks, circular tip/root/bore",
+                "gear_deviation_scope":"involute flanks plus native tolerance; base-end transition separately bounded; exact constructed circular root",
+                "gear_pressure_degrees":20,"gear_teeth_range":[18,160],"gear_module_range":[0.5,20],
+                "gear_root":"cq_gears three-point circular transition; no generated cutter trochoid",
+                "gear_defaults":["module":2,"teeth":20,"width":8,"bore_diameter":10,"maximum_deviation":0.001]]
             case "mechanical.inspect": return try inspect(args)
+            case "gear.inspect":
+                let (_,definition,_)=try existing(args)
+                guard definition.gear != nil else { throw CADMechanicalFailure.invalid("Choose an existing spur gear feature.") }
+                return try inspect(args)
             case "weldment.cutList": return try cutList(args)
             case "sheetMetal.create": return try createSheet(args)
             case "weldment.create": return try createWeldment(args)
-            case "sheetMetal.update","weldment.update","mechanical.update": return try update(action,args)
+            case "gear.create": return try createGear(args)
+            case "sheetMetal.update","weldment.update","gear.update","mechanical.update": return try update(action,args)
             default: return fail("unknown_action","Unknown specialist mechanical action.")
             }
         } catch { return fail("invalid_mechanical",error.localizedDescription) }
@@ -70,6 +85,11 @@ final class CADMechanicalService {
         var definition = CADMechanicalDefinition(sheet:CADSheetMetalSpec())
         let fields = args.filter { !Self.envelope.contains($0.key) && $0.key != "placement" }
         definition = try changed(definition,fields)
+        return try append(definition,placement:frame(args["placement"]))
+    }
+    private func createGear(_ args: [String:Any]) throws -> [String:Any] {
+        let fields=args.filter { !Self.envelope.contains($0.key) && $0.key != "placement" }
+        let definition=try changed(CADMechanicalDefinition(gear:CADSpurGearSpec()),fields)
         return try append(definition,placement:frame(args["placement"]))
     }
     private func createWeldment(_ args: [String:Any]) throws -> [String:Any] {
@@ -109,7 +129,8 @@ final class CADMechanicalService {
         try checkKeys(args,Self.envelope.union(["feature_id","changes"]))
         let (node,before,placement) = try existing(args)
         guard action == "mechanical.update" || (action == "sheetMetal.update" && before.operation == .singleBendSheet)
-                || (action == "weldment.update" && before.operation == .straightWeldment),
+                || (action == "weldment.update" && before.operation == .straightWeldment)
+                || (action == "gear.update" && before.operation == .spurGear),
               let fields = args["changes"] as? [String:Any], !fields.isEmpty else {
             throw CADMechanicalFailure.invalid("Use the matching feature update and a changes object.")
         }
@@ -122,6 +143,20 @@ final class CADMechanicalService {
     }
     private func changed(_ initial: CADMechanicalDefinition, _ fields: [String:Any]) throws -> CADMechanicalDefinition {
         var definition = initial, remaining = fields
+        if var gear=definition.gear {
+            if let raw=remaining.removeValue(forKey:"teeth") {
+                guard let n=number(raw),let count=Int(exactly:n) else { throw CADMechanicalFailure.invalid("Use an integer spur tooth count.") }
+                gear.teeth=count
+            }
+            try checkKeys(remaining,Set(gear.expressions.map(\.name)))
+            for (key,raw) in remaining {
+                guard let changed=gear.replacing(key,with:try expression(raw)) else { throw CADMechanicalFailure.invalid("Unsupported gear field.") }
+                gear=changed
+            }
+            definition.gear=gear
+            _=try definition.resolved(variables:document.session.variableValues())
+            return definition
+        }
         if definition.operation == .straightWeldment,
            let raw = remaining.removeValue(forKey:"member_id") as? String {
             guard let id = UUID(uuidString:raw), let index = definition.members.firstIndex(where:{ $0.id == id }) else {
@@ -169,7 +204,18 @@ final class CADMechanicalService {
         var response: [String:Any] = ["operation":definition.operation.rawValue,"semantic_version":definition.version,
             "update_action":"mechanical.update","editable_fields":definition.expressions.map(\.name),
             "definition":(try? JSONSerialization.jsonObject(with:JSONEncoder().encode(definition))) ?? NSNull()]
-        if let s = definition.sheet {
+        if let gear=definition.gear {
+            response["grade"]="BRep with approximated involute"
+            response["analytic_involute"]=false
+            response["deviation_scope"]="involute flanks plus native tolerance; base-end displacement separately bounded; no generated cutter-root claim"
+            response["teeth"]=gear.teeth; response["pressure_degrees"]=20
+            response["pitch_diameter"]=2*gear.pitchRadius;response["base_diameter"]=2*gear.baseRadius
+            response["tip_diameter"]=2*gear.tipRadius;response["root_diameter"]=2*gear.rootRadius
+            response["maximum_deviation"]=gear.maximumDeviation.value
+            response["backend"]=CADSpurGearAttribution.backend
+            response["editable_fields"]=definition.expressions.map(\.name)+["teeth"]
+            response["root_transition"]="three-point circular; no generated undercut or cutter trochoid"
+        } else if let s = definition.sheet {
             response["flange_dimension_basis"] = "tangent"; response["bend_allowance"] = s.bendAllowance
             response["blank_length"] = s.blankLength; response["k_factor_is_user_input"] = true
             response["output_order"] = ["formed","flat"]
@@ -181,8 +227,33 @@ final class CADMechanicalService {
     }
     private func inspect(_ args: [String:Any]) throws -> [String:Any] {
         if args["feature_id"] != nil {
-            let (node,_,_) = try existing(args)
+            let (node,definition,placement) = try existing(args)
             var reply = describeReply(node,mutated:false)
+            if let gear=definition.gear {
+                let resolved=try definition.resolved(variables:document.session.variableValues())
+                guard let spec=resolved.gear,let id=node.outputBodyIDs.first,
+                      let body=document.session.document.body(with:id),let solid=body.brep else {
+                    throw CADMechanicalFailure.invalid("The gear has no current exact BRep.")
+                }
+                let graph=document.session.document.features
+                let active=graph.nodes.prefix(max(0,min(graph.rollbackIndex ?? graph.nodes.count,graph.nodes.count)))
+                let writer=document.session.lastBodyWriters[id] ?? active.last { !$0.suppressed && $0.outputBodyIDs.contains(id) }?.id
+                let rebuilt=try CADMechanicalKernel.build(resolved,placement:placement)
+                guard writer==node.id,let expected=rebuilt.first,body.transform==expected.placement else {
+                    throw CADMechanicalFailure.invalid("The gear has later edits. Restore its authored output to inspect this profile grade.")
+                }
+                let mesh=OCCTKernel.renderMesh(from:expected.handle)
+                guard body.render==RenderMesh(positions:mesh.positions,normals:mesh.normals,indices:mesh.indices) else {
+                    throw CADMechanicalFailure.invalid("The current gear does not match its authored profile.")
+                }
+                let actual=try OCCTKernel.spurGearMeasurements(solid,pitchRadius:spec.pitchRadius)
+                let certificate=try CADSpurGearProfile.build(spec,identity:resolved.id)
+                reply["measured_gear"]=actual.dictionary
+                reply["involute_error_upper_bound"]=certificate.flankErrorBound+actual.maxNativeTolerance
+                reply["base_transition_displacement"]=certificate.baseJoinDisplacement
+                reply["requested_maximum_deviation"]=gear.maximumDeviation.value
+                reply["flank_segments_per_side"]=certificate.flankSegments
+            }
             reply["bodies"] = try node.outputBodyIDs.map { id -> [String:Any] in
                 guard let body = document.session.document.body(with:id), let solid = body.brep else {
                     throw CADMechanicalFailure.invalid("A specialist output has no exact solid.")

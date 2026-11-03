@@ -9479,6 +9479,9 @@ final class EditorViewModel {
         /// Ordered loft sections (seeded with the armed profile; taps append).
         var loftProfiles: [(profile: Profile, holes: [Profile], plane: SketchPlane, sketchID: SketchID)] = []
         var loftRuled=false
+        var loftGuides:[SweepPathDefinition]=[]
+        var loftStart:LoftDefinition.BoundaryConstraint?
+        var loftEnd:LoftDefinition.BoundaryConstraint?
         /// Boolean badge: manual result override (auto = sample-point rules).
         var booleanOverride: BooleanOverride = .auto
         /// Symmetric sides: solid centered on the plane, total depth 2×.
@@ -11364,7 +11367,7 @@ final class EditorViewModel {
     /// Apply the sheet's local draft without touching history or saved bytes.
     /// The actual preview uses the same exact feature evaluator as commit.
     @discardableResult
-    func configureNativeLoftDraft(sections: [ProfileRef],ruled: Bool,expectedChangeCount: Int) -> Bool {
+    func configureNativeLoftDraft(sections: [ProfileRef],ruled: Bool,guides:[SweepPathDefinition]=[],start:LoftDefinition.BoundaryConstraint?=nil,end:LoftDefinition.BoundaryConstraint?=nil,expectedChangeCount: Int) -> Bool {
         guard session.changeCount == expectedChangeCount,var context=toolContext,case .loft=context.kind else { return false }
         let choices=loftSurfaceUISnapshot().closedSections
         var resolved: [(profile:Profile,holes:[Profile],plane:SketchPlane,sketchID:SketchID)]=[]
@@ -11374,7 +11377,7 @@ final class EditorViewModel {
             resolved.append((choice.profile,choice.holes,choice.plane,choice.reference.sketchID))
         }
         guard (2...64).contains(resolved.count) else { return false }
-        context.loftProfiles=resolved;context.loftRuled=ruled
+        context.loftProfiles=resolved;context.loftRuled=ruled;context.loftGuides=guides;context.loftStart=start;context.loftEnd=end
         context.profile=resolved[0].profile;context.holes=resolved[0].holes
         context.plane=resolved[0].plane;context.sketchID=resolved[0].sketchID
         rebuildToolPreview(&context)
@@ -15812,6 +15815,7 @@ final class EditorViewModel {
         }
     }
 
+    var guidedLoftActionHandler: (@MainActor (String,[String:Any]) async -> [String:Any])?
     var loftSurfaceEditor: CADLoftSurfaceEditorDestination?
     private let loftPreviewFeatureID=FeatureID()
 
@@ -19916,7 +19920,7 @@ final class EditorViewModel {
         }
         return FeatureNode(
             name: "Loft",
-            kind: .loft(sections: sections, boolean: boolean, definition:LoftDefinition(ruled:context.loftRuled)),
+            kind: .loft(sections: sections, boolean: boolean, definition:LoftDefinition(ruled:context.loftRuled,guides:context.loftGuides,start:context.loftStart,end:context.loftEnd)),
             outputBodyIDs: outputBodyIDs
         )
     }

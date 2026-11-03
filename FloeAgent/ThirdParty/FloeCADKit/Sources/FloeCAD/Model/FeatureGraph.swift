@@ -3365,23 +3365,59 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .kernelFailure("Exact loft construction is unavailable.")
             return
         }
-        let history = OCCTShapeHistory()
-        guard var solid = OCCTKernel.loftSolid(sections: sections.map { ($0.profile,$0.plane) },
-                ruled: definition.ruled, history: history), solid.containsSolid else {
-            state.errors[node.id] = .kernelFailure("The exact outer loft could not be built.")
-            return
-        }
-        var names = ElementNaming.extrudeNames(creator: node.id, ancestry: ShapeAncestry(history),
-            outer: sections[0].profile, holes: [])
-        for index in 0..<holeCount {
-            let holeHistory = OCCTShapeHistory()
-            guard let bore = OCCTKernel.loftSolid(sections: sections.map { ($0.holes[index],$0.plane) },
-                    ruled: definition.ruled, history: holeHistory) else {
-                state.errors[node.id] = .kernelFailure("An exact inner-loop loft could not be built.")
-                return
+        let solidInput: BRepHandle
+        let ancestry: ShapeAncestry
+        if let guide=definition.guides.first {
+            do {
+                for ref in sectionRefs {
+                    guard let source=state.sketch(ref.sketchID) else { throw LoftSurfaceError.invalid("Missing guided section.") }
+                    try CADGuidedLoftSnapshot.validateSource(ref,sketch:source)
+                }
+                let snapshot=try CADGuidedLoftSnapshot(sections:sections,guide:guide,sketch:{ state.sketch($0) })
+                guard let prepared=CADGuidedLoftStore.shared.replay(snapshot) else {
+                    throw LoftSurfaceError.invalid("The bounded guided loft could not be prepared. Apply loft.update asynchronously; main-thread native calculation is refused.")
+                }
+                solidInput=prepared.handle;ancestry=prepared.ancestry
+            } catch { state.errors[node.id] = .kernelFailure(error.localizedDescription);return }
+        } else if definition.hasEndpointConstraints {
+            do {
+                guard holeCount<=3 else { throw LoftSurfaceError.unsupported("Endpoint lofts allow at most three paired inner loops.") }
+                for ref in sectionRefs {
+                    guard let source=state.sketch(ref.sketchID) else { throw LoftSurfaceError.invalid("Missing endpoint section.") }
+                    try CADLoftEndpointSnapshot.validateSource(ref,sketch:source)
+                }
+                let snapshot=try CADLoftEndpointSnapshot(sections:sections.map { ($0.profile,$0.plane) },definition:definition)
+                guard let prepared=CADLoftEndpointStore.shared.replay(snapshot) else {
+                    throw LoftSurfaceError.invalid("Prepare endpoint constraints through loft.update asynchronously. No native calculation runs on main.")
+                }
+                solidInput=prepared.handle;ancestry=prepared.ancestry
+            } catch { state.errors[node.id] = .kernelFailure(error.localizedDescription);return }
+        } else {
+            let history=OCCTShapeHistory()
+            guard let handle=OCCTKernel.loftSolid(sections:sections.map { ($0.profile,$0.plane) },
+                ruled:definition.ruled,history:history),handle.containsSolid else {
+                state.errors[node.id] = .kernelFailure("The exact outer loft could not be built.");return
             }
-            let boreNames = ElementNaming.extrudeNames(creator: node.id, ancestry: ShapeAncestry(holeHistory),
-                outer: sections[0].holes[index], holes: [])
+            solidInput=handle;ancestry=ShapeAncestry(history)
+        }
+        var solid=solidInput
+        var names=ElementNaming.extrudeNames(creator:node.id,ancestry:ancestry,outer:sections[0].profile,holes:[])
+        for index in 0..<holeCount {
+            let bore:BRepHandle,boreAncestry:ShapeAncestry
+            if definition.hasEndpointConstraints {
+                do {
+                    let snapshot=try CADLoftEndpointSnapshot(sections:sections.map { ($0.holes[index],$0.plane) },definition:definition)
+                    guard let prepared=CADLoftEndpointStore.shared.replay(snapshot) else { throw LoftSurfaceError.invalid("The endpoint inner loop was not prepared or failed its constraints.") }
+                    bore=prepared.handle;boreAncestry=prepared.ancestry
+                } catch { state.errors[node.id] = .kernelFailure(error.localizedDescription);return }
+            } else {
+                let holeHistory=OCCTShapeHistory()
+                guard let exact=OCCTKernel.loftSolid(sections:sections.map { ($0.holes[index],$0.plane) },ruled:definition.ruled,history:holeHistory) else {
+                    state.errors[node.id] = .kernelFailure("An exact inner-loop loft could not be built.");return
+                }
+                bore=exact;boreAncestry=ShapeAncestry(holeHistory)
+            }
+            let boreNames=ElementNaming.extrudeNames(creator:node.id,ancestry:boreAncestry,outer:sections[0].holes[index],holes:[])
             switch OCCTKernel.booleanResultWithAncestry(solid,bore,op:OCCTKernel.booleanOp(.subtract)) {
             case let .success((outcome, ancestry)):
                 guard outcome.solidCount == 1 else {

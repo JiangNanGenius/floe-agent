@@ -47,15 +47,19 @@ nonisolated struct CADWeldmentMember: Codable, Equatable, Identifiable, Sendable
 
 nonisolated struct CADMechanicalDefinition: Codable, Equatable, Sendable {
     static let supportedVersion = 1
-    enum Operation: String, Codable, Hashable, Sendable { case singleBendSheet, straightWeldment }
+    enum Operation: String, Codable, Hashable, Sendable { case singleBendSheet, straightWeldment, spurGear }
     var version = Self.supportedVersion
     var id = UUID()
     var operation: Operation
     var sheet: CADSheetMetalSpec?
+    var gear: CADSpurGearSpec? = nil
     var members: [CADWeldmentMember]
     init(sheet: CADSheetMetalSpec) { operation = .singleBendSheet; self.sheet = sheet; members = [] }
     init(members: [CADWeldmentMember]) { operation = .straightWeldment; sheet = nil; self.members = members }
-    var outputCount: Int { operation == .singleBendSheet ? 2 : members.count }
+    init(gear: CADSpurGearSpec) { operation = .spurGear; sheet = nil; self.gear = gear; members = [] }
+    var outputCount: Int {
+        switch operation { case .singleBendSheet: return 2; case .straightWeldment: return members.count; case .spurGear: return 1 }
+    }
 
     static func validatePlacement(_ p: Transform3D) throws {
         let q = p.rotation.vector
@@ -70,14 +74,17 @@ nonisolated struct CADMechanicalDefinition: Codable, Equatable, Sendable {
         func dimension(_ x: Double) -> Bool { x >= 0.1 && x <= 10_000 }
         switch operation {
         case .singleBendSheet:
-            guard let s = sheet, members.isEmpty,
+            guard let s = sheet, gear == nil, members.isEmpty,
                   [s.flangeA.value,s.flangeB.value,s.width.value,s.thickness.value,s.innerRadius.value].allSatisfy(dimension),
                   (5...150).contains(s.bendDegrees.value), (0...0.5).contains(s.kFactor.value),
                   s.blankLength <= 20_000 else {
                 throw CADMechanicalFailure.invalid("Use one straight 5–150° bend, positive tangent flange lengths/radius/thickness, and K from 0 to 0.5.")
             }
+        case .spurGear:
+            guard sheet == nil, members.isEmpty, let gear else { throw CADMechanicalFailure.invalid("A gear feature must own exactly its spur definition.") }
+            try gear.validate()
         case .straightWeldment:
-            guard sheet == nil, (1...64).contains(members.count), Set(members.map(\.id)).count == members.count,
+            guard sheet == nil, gear == nil, (1...64).contains(members.count), Set(members.map(\.id)).count == members.count,
                   Set(members.flatMap { [$0.id,$0.innerBoundaryID] }).count == members.count * 2 else {
                 throw CADMechanicalFailure.invalid("Use 1–64 individually identified straight members.")
             }
@@ -100,6 +107,7 @@ nonisolated struct CADMechanicalDefinition: Codable, Equatable, Sendable {
     }
     // Shared with DocumentSession's existing variable fan-out and rename walker.
     var expressions: [DocumentSession.FeatureExpressionSlot] {
+        if let gear { return gear.expressions }
         func slot(_ name: String, _ e: Expr, _ unit: String = "mm") -> DocumentSession.FeatureExpressionSlot {
             DocumentSession.FeatureExpressionSlot(name:name,unit:unit,storedUnit:unit,expr:e)
         }
@@ -115,6 +123,10 @@ nonisolated struct CADMechanicalDefinition: Codable, Equatable, Sendable {
     }
     func replacing(_ name: String, with e: Expr) -> CADMechanicalDefinition? {
         var result = self
+        if let gear {
+            guard let changed = gear.replacing(name, with: e) else { return nil }
+            result.gear = changed; return result
+        }
         if var s = sheet {
             switch name {
             case "flange_a": s.flangeA = e

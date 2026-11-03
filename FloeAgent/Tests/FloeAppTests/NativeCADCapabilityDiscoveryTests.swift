@@ -86,7 +86,7 @@ struct NativeCADCapabilityDiscoveryTests {
         #expect(CadNativeEditActions.loftSurface.isSubset(of:CadNativeEditActions.parameters))
         #expect(CadNativeEditActions.loftSurface.isSubset(of:Set(CADParameterService.actions)))
         let topic=try #require(CadDocumentHelp.fullText(for:"loft-surfaces"))
-        #expect(topic.contains("legacy"));#expect(topic.contains("Guides"));#expect(topic.contains("refused"))
+        #expect(topic.contains("legacy"));#expect(topic.contains("One guide"));#expect(topic.contains("refused"))
         var page=0,assembled=""
         while true {
             let candidate = try CadDocumentHelp.page(.init(topic:"loft-surfaces",page:page,pageSize:1000))
@@ -111,6 +111,18 @@ struct NativeCADCapabilityDiscoveryTests {
                 let definition=try JSONDecoder().decode(LoftDefinition.self,
                     from:JSONSerialization.data(withJSONObject:try #require(payload["definition"])))
                 try definition.requireSupported(sectionCount:refs.count)
+            }
+            if action == "loft.update",let changes=payload["changes"] as? [String:Any],let raw=changes["definition"] {
+                let definition=try JSONDecoder().decode(LoftDefinition.self,from:JSONSerialization.data(withJSONObject:raw))
+                try definition.requireSupported(sectionCount:2)
+                if !definition.guides.isEmpty { #expect(definition.guides.count == 1);#expect(definition.guides[0].segments.count == 1) }
+                if definition.hasEndpointConstraints {
+                    #expect(definition.guides.isEmpty);#expect(!definition.ruled)
+                    #expect(definition.start?.tangent.point.z == 1)
+                    #expect(definition.start?.curvature?.point.x == 0.01)
+                    #expect(definition.end?.curvature?.point.x == 0)
+                    #expect(topic.contains("whole-boundary"));#expect(topic.contains("not an adjacent support-face G2"))
+                }
             }
             if action == "surface.create" || action == "surface.update" {
                 let data=try JSONSerialization.data(withJSONObject:try #require(payload["definition"]))

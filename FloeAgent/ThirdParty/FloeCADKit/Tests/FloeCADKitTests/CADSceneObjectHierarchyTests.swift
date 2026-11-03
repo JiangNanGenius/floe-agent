@@ -125,10 +125,18 @@ final class CADSceneObjectHierarchyTests: XCTestCase {
         let child = try XCTUnwrap(parent.children.first)
         XCTAssertEqual(after.instance(child.id)?.transform.position.x, 5, "Child local placement is never multiplied by the parent delta twice")
         XCTAssertEqual(try x(row(document, child.id), "world"), 22, accuracy: 1e-8)
-        XCTAssertEqual(try x(row(document, child.id), "geometry_world"), 25, accuracy: 1e-8)
-        XCTAssertEqual(document.session.document.body(with: bodyID)?.transform.translation.x, 3)
+        // Primitive placement is baked into its real mesh/BRep by the
+        // existing evaluator; Body.transform stays identity. A second +3
+        // matrix translation would double-apply that same geometry placement.
+        XCTAssertEqual(try x(row(document, child.id), "geometry_world"), 22, accuracy: 1e-8)
+        XCTAssertEqual(document.session.document.body(with: bodyID)?.transform.translation.x, 0)
         let rendered = try XCTUnwrap(document.sceneSnapshot(includeExplodedPreview: false).bodies.first { $0.id == child.id })
-        XCTAssertEqual(rendered.transform[12], 25, accuracy: 1e-8, "17 parent + 5 child + 3 definition, each exactly once")
+        XCTAssertEqual(rendered.transform[12], 22, accuracy: 1e-8)
+        let minX = try XCTUnwrap(rendered.mesh.positions.map(\.x).min())
+        let maxX = try XCTUnwrap(rendered.mesh.positions.map(\.x).max())
+        XCTAssertEqual(Double(minX + maxX) / 2, 3, accuracy: 1e-8, "Actual definition geometry retains its baked placement")
+        XCTAssertEqual(rendered.transform[12] + Double(minX + maxX) / 2, 25, accuracy: 1e-8,
+                       "17 parent + 5 child + 3 baked geometry, each exactly once")
         run(document, "object.reparent", ["id": bodyID.raw.uuidString, "parent_id": groupID])
         let beforeScene = document.session.document.sceneSettingsData, beforeAssembly = document.session.document.assemblyData
         let count = document.session.changeCount, undo = document.session.undoStack.undoCommands.count

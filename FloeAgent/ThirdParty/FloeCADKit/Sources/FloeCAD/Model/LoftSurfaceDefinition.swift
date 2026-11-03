@@ -11,8 +11,9 @@ nonisolated enum LoftSurfaceError: Error, LocalizedError {
 
 /// Extra semantic intent on the existing loft node. A nil definition preserves
 /// legacy smooth lofts; a real definition raises only its document to format 7.
-/// Guides/end conditions are explicit reservations, never passed to OCCT as
-/// global smoothing/continuity switches and never silently ignored.
+/// A single auxiliary guide uses native Contact with multiple real sections.
+/// Specified endpoint derivatives remain unsupported; global continuity is
+/// never substituted. Guided precision is reported separately as native tolerance.
 nonisolated struct LoftDefinition: Codable, Sendable {
     static let supportedVersion = 1
     var version: Int = 1
@@ -22,7 +23,9 @@ nonisolated struct LoftDefinition: Codable, Sendable {
     var end: BoundaryConstraint?
     nonisolated struct BoundaryConstraint: Codable, Sendable {
         var tangent: PointWrapper
-        /// Normal curvature vector in 1/mm; nil requests tangent only.
+        /// Longitudinal curve normal-curvature vector in 1/mm, perpendicular
+        /// to tangent; nil requests direction only. Both endpoint directions
+        /// follow increasing section order, not an outward cap normal.
         var curvature: PointWrapper?
         var angularTolerance: Double
         var curvatureTolerance: Double
@@ -61,13 +64,25 @@ nonisolated struct LoftDefinition: Codable, Sendable {
             }
         }
     }
+    var hasEndpointConstraints:Bool { start != nil || end != nil }
     func requireSupported(sectionCount: Int) throws {
         try validate(sectionCount: sectionCount)
-        guard guides.isEmpty else {
-            throw LoftSurfaceError.unsupported("Guide-constrained lofts are not available. No guide was ignored and nothing changed.")
+        if !guides.isEmpty {
+            guard guides.count == 1,(2...8).contains(sectionCount),guides[0].segments.count <= 8,!ruled else {
+                throw LoftSurfaceError.unsupported("Guided loft supports 2–8 sections and one ordered guide of at most 8 exact edges. Straight-between-sections cannot be combined with the guide.")
+            }
         }
-        guard start == nil, end == nil else {
-            throw LoftSurfaceError.unsupported("Specified end tangency and curvature are not available. Nothing changed.")
+        if hasEndpointConstraints {
+            guard guides.isEmpty,!ruled,(2...4).contains(sectionCount) else {
+                throw LoftSurfaceError.unsupported("Endpoint constraints support 2–4 compatible sections without a guide or straight-between-sections.")
+            }
+            for boundary in [start,end].compactMap({ $0 }) {
+                if let k=boundary.curvature?.point {
+                    guard abs(simd_dot(simd_normalize(boundary.tangent.point),k))<=1e-10*max(1,simd_length(k)) else {
+                        throw LoftSurfaceError.invalid("The normal-curvature vector must be perpendicular to the endpoint direction.")
+                    }
+                }
+            }
         }
     }
 }

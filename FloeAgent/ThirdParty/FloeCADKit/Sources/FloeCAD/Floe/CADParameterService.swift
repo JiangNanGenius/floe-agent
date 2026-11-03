@@ -60,6 +60,15 @@ public final class CADParameterService {
         self.document = document
     }
 
+    public func handleAsync(action:String,args:[String:Any]) async -> [String:Any] {
+        if let refusal=CADServiceOperations.readOnlyRefusal(document:document,kind:"parameter",action:action) { return refusal }
+        if let failure=revisionPinFailure(args) { return failure }
+        if CADLoftSurfaceService.actions.contains(action) {
+            return await CADLoftSurfaceService(document:document).handleAsync(action:action,args:args)
+        }
+        return handle(action:action,args:args)
+    }
+
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
         if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "parameter", action: action) { return refusal }
         if let failure = revisionPinFailure(args) { return failure }
@@ -5126,9 +5135,9 @@ public final class CADParameterService {
             kindName = "loft"
             add("section_count", "unitless", sections.count, editable: false)
             add("sections", "unitless", (try? JSONSerialization.jsonObject(with:JSONEncoder().encode(sections))) ?? NSNull(),
-                editable:false,note:"Use loft.update to replace or reorder the sections on this same feature.")
+                editable:false,note:"Use loft.update to replace/reorder sections or set definition.start/end {tangent:{point:[x,y,z]},curvature?:{point:[kx,ky,kz]},angularTolerance,curvatureTolerance}. Endpoint scope: 2–4 evenly spaced parallel sections; constant longitudinal direction/normal curvature, no guide/ruled combination; exact paired holes retained.")
             add("definition", "unitless", definition.flatMap { try? JSONSerialization.jsonObject(with:JSONEncoder().encode($0)) } ?? NSNull(),
-                editable:false,note:"Guide and specified end derivative constraints are not supported; they are refused.")
+                editable:false,note:"Use asynchronous loft.update for one bounded auxiliary guide; guided precision is native tolerance BRep. Specified endpoint derivative conditions remain refused.")
         case let .boolean(kind, _, tools):
             kindName = "boolean"
             add("boolean_kind", "unitless", String(describing: kind), editable: false)

@@ -335,7 +335,7 @@ nonisolated enum OCCTKernel {
     /// they cannot drift apart. Extrude, revolve, sweep and loft must all start
     /// from the SAME wires — a circle that stays round when extruded and goes
     /// faceted when revolved is exactly the inconsistency this avoids.
-    private static func packedProfile(_ profile: Profile, holes: [Profile])
+    static func packedProfile(_ profile: Profile, holes: [Profile])
         -> (loop: Data, conic: Data, holeLoops: [Data], holeConics: Data,
             segments: Data, holeSegments: [Data]) {
         let extrudeHoles = extrudeHoles(holes)
@@ -347,7 +347,7 @@ nonisolated enum OCCTKernel {
                 extrudeHoles.map { packSegments($0.segments) })
     }
 
-    private static func planeBasis(_ plane: SketchPlane) -> OCCTPlaneBasis {
+    static func planeBasis(_ plane: SketchPlane) -> OCCTPlaneBasis {
         let n = simd_normalize(simd_cross(plane.xAxis, plane.yAxis))
         return OCCTPlaneBasis(
             originX: plane.origin.x, originY: plane.origin.y, originZ: plane.origin.z,
@@ -1366,7 +1366,9 @@ nonisolated enum OCCTKernel {
     /// control points` (docs/SPLINE_PROFILE_DESIGN.md), so lines and arcs are
     /// byte-for-byte what they always were. Kind 4 carries an exact versioned
     /// curve record as `kind, recordDoubleCount, reversed/closed flags, record`;
-    /// no interval or normal offset is converted to fit points. Empty in, empty
+    /// no interval or normal offset is converted to fit points. Kind 5 carries
+    /// four explicit cubic Bezier poles, not Catmull-Rom interpolation points.
+    /// Empty in, empty
     /// out: an all-straight loop has no separate exact side channel.
     private static func packSegments(_ segments: [Profile.Segment]) -> Data {
         guard !segments.isEmpty else { return Data() }
@@ -1378,6 +1380,11 @@ nonisolated enum OCCTKernel {
                 flat.append(Double(record.count))
                 flat.append(Double((s.reversed ? 1 : 0) + (s.closed ? 2 : 0)))
                 flat.append(contentsOf: record)
+                continue
+            }
+            if let poles = s.bezierPoles {
+                flat.append(5); flat.append(Double(poles.count))
+                for p in poles { flat.append(p.x); flat.append(p.y) }
                 continue
             }
             if let points = s.controlPoints {

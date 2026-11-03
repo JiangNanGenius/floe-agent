@@ -35,6 +35,24 @@ nonisolated enum CADMechanicalKernel {
             }
             return Output(handle:solid,history:ShapeAncestry(history),outer:outer,holes:holes,placement:frame,suffix:suffix)
         }
+        if let gear = definition.gear {
+            let profile = try CADSpurGearProfile.build(gear, identity: definition.id)
+            let output = try prism(profile.outer, profile.holes, gear.width.value, placement,
+                FloeCADStrings.format("cad.mechanical.gearTeethBody", "%@ teeth", gear.teeth))
+            let actual = try OCCTKernel.spurGearMeasurements(output.handle, pitchRadius: gear.pitchRadius)
+            let error = profile.flankErrorBound + actual.maxNativeTolerance
+            guard actual.teeth == gear.teeth, actual.polynomialCapEdges == 2 * gear.teeth * profile.flankSegments,
+                  abs(actual.width-gear.width.value) < 1e-5,
+                  abs(actual.tipRadius-gear.tipRadius) < 1e-5, abs(actual.rootRadius-gear.rootRadius) < 1e-5,
+                  abs(actual.boreRadius-gear.boreDiameter.value/2) < 1e-5,
+                  abs(actual.meanPitchThickness-gear.pitchToothThickness) <= max(1e-5,3*gear.maximumDeviation.value),
+                  abs(actual.pressureDegrees-20) <= 0.2, actual.maxNativeTolerance <= 1e-5,
+                  error <= gear.maximumDeviation.value,
+                  profile.baseJoinDisplacement + actual.maxNativeTolerance <= gear.maximumDeviation.value else {
+                throw CADMechanicalFailure.invalid("The native gear failed its dimensions, pitch-circle teeth/pressure or bounded involute checks.")
+            }
+            return [output]
+        }
         if let s = definition.sheet {
             let r = s.innerRadius.value, t = s.thickness.value, a = s.flangeA.value, b = s.flangeB.value
             let theta = s.bendDegrees.value * .pi / 180, center = SIMD2<Double>(0,r)

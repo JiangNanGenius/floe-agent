@@ -58,6 +58,8 @@
 #include <BRepOffsetAPI_MakeOffsetShape.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <BRepAdaptor_Curve.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
+#include <IntCurvesFace_ShapeIntersector.hxx>
 #include <BRepAdaptor_Curve2d.hxx>
 #include <GeomAbs_CurveType.hxx>
 #include <BRepAlgoAPI_Section.hxx>
@@ -75,6 +77,10 @@
 #include <BRepBuilderAPI_MakeSolid.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <Geom_BSplineSurface.hxx>
+#include <BSplCLib.hxx>
+#include <BRepTools_WireExplorer.hxx>
+#include <TColgp_Array2OfPnt.hxx>
+#include <TColStd_Array2OfReal.hxx>
 #include <Geom_SurfaceOfLinearExtrusion.hxx>
 #include <Geom_SurfaceOfRevolution.hxx>
 #include <Geom_RectangularTrimmedSurface.hxx>
@@ -103,6 +109,9 @@
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepOffsetAPI_MakePipe.hxx>
 #include <BRepOffsetAPI_MakePipeShell.hxx>
+#include <GeomAPI_IntCS.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
+#include <BRepFill_TypeOfContact.hxx>
 #include <TopTools_DataMapOfShapeShape.hxx>
 #include <Geom_CylindricalSurface.hxx>
 #include <Geom2d_Line.hxx>
@@ -1352,6 +1361,18 @@ static TopoDS_Wire SegWire(NSData *segs, double z) {
             mw.Add(edge);
             if ((((int)flags) & 2) != 0) closedSpline = true;
             i += 3 + count;
+        } else if (kind == 5) {
+            if (i + 10 > total || p[i + 1] != 4) return TopoDS_Wire();
+            TColgp_Array1OfPnt poles(1, 4);
+            for (Standard_Integer k = 0; k < 4; ++k) {
+                const double x = p[i + 2 + 2*k], y = p[i + 3 + 2*k];
+                if (!std::isfinite(x) || !std::isfinite(y)) return TopoDS_Wire();
+                poles.SetValue(k + 1, gp_Pnt(x, y, z));
+            }
+            Handle(Geom_BezierCurve) curve = new Geom_BezierCurve(poles);
+            BRepBuilderAPI_MakeEdge edge(curve);
+            if (!edge.IsDone()) return TopoDS_Wire();
+            mw.Add(edge.Edge()); i += 10;
         } else return TopoDS_Wire();
         ++records;
     }
@@ -5019,15 +5040,21 @@ static OCCTShape *OS3DPlanarSupportShell(const TopoDS_Shape &source,
                                         double thickness, OCCTOpStatus *status,
                                         OCCTShapeHistory *history) {
     OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"planar-support shell is not applicable");
-    if (!std::isfinite(thickness) || thickness <= 1e-6 || openFaces.IsEmpty()) return nil;
+    if (!std::isfinite(thickness) || thickness <= 1e-6 || openFaces.IsEmpty()) {
+        OS3DSetStatus(status, OCCTOpCodeKernelRefused, [NSString stringWithFormat:@"support admission thickness=%.17g openings=%d", thickness, openFaces.Extent()]); return nil;
+    }
     try {
         TopTools_IndexedMapOfShape sourceFaces; TopExp::MapShapes(source, TopAbs_FACE, sourceFaces);
-        if (sourceFaces.Extent() < 2 || sourceFaces.Extent() > 64 || openFaces.Extent() > 16) return nil;
+        if (sourceFaces.Extent() < 2 || sourceFaces.Extent() > 64 || openFaces.Extent() > 16) {
+            OS3DSetStatus(status, OCCTOpCodeKernelRefused, [NSString stringWithFormat:@"support face budget source=%d openings=%d", sourceFaces.Extent(), openFaces.Extent()]); return nil;
+        }
         std::set<Standard_Integer> openings;
         for (TopTools_ListIteratorOfListOfShape it(openFaces); it.More(); it.Next()) {
             const Standard_Integer index = sourceFaces.FindIndex(it.Value());
             if (index <= 0 || !openings.insert(index).second
-                || BRepAdaptor_Surface(TopoDS::Face(it.Value())).GetType() == GeomAbs_Plane) return nil;
+                || BRepAdaptor_Surface(TopoDS::Face(it.Value())).GetType() == GeomAbs_Plane) {
+                OS3DSetStatus(status, OCCTOpCodeKernelRefused, [NSString stringWithFormat:@"support opening index=%d type=%d", index, (int)BRepAdaptor_Surface(TopoDS::Face(it.Value())).GetType()]); return nil;
+            }
         }
         struct Support { int32_t sourceFace; gp_Pnt origin; gp_Dir outward; };
         std::vector<Support> supports;
@@ -5036,7 +5063,9 @@ static OCCTShape *OS3DPlanarSupportShell(const TopoDS_Shape &source,
             const TopoDS_Face face = TopoDS::Face(sourceFaces(i));
             BRepAdaptor_Surface surface(face);
             if (surface.GetType() != GeomAbs_Plane
-                || (face.Orientation() != TopAbs_FORWARD && face.Orientation() != TopAbs_REVERSED)) return nil;
+                || (face.Orientation() != TopAbs_FORWARD && face.Orientation() != TopAbs_REVERSED)) {
+                OS3DSetStatus(status, OCCTOpCodeKernelRefused, [NSString stringWithFormat:@"support wall index=%d type=%d orientation=%d", i, (int)surface.GetType(), (int)face.Orientation()]); return nil;
+            }
             const gp_Pln plane = surface.Plane();
             gp_Dir normal = plane.Axis().Direction();
             if (face.Orientation() == TopAbs_REVERSED) normal.Reverse();
@@ -5048,7 +5077,9 @@ static OCCTShape *OS3DPlanarSupportShell(const TopoDS_Shape &source,
         const TopoDS_Shape owned = copy.Shape();
         const double before = OS3DVolume(owned), inputTolerance = OS3DMaxTolerance(owned);
         if (!std::isfinite(before) || before <= 0 || !std::isfinite(inputTolerance)
-            || inputTolerance > 1e-6 || !OS3DFiniteBounds(owned) || !BRepCheck_Analyzer(owned).IsValid()) return nil;
+            || inputTolerance > 1e-6 || !OS3DFiniteBounds(owned) || !BRepCheck_Analyzer(owned).IsValid()) {
+            OS3DSetStatus(status, OCCTOpCodeKernelRefused, [NSString stringWithFormat:@"support input health volume=%.17g tolerance=%.17g finite=%d valid=%d", before, inputTolerance, (int)OS3DFiniteBounds(owned), (int)BRepCheck_Analyzer(owned).IsValid()]); return nil;
+        }
         const double allowedTolerance = std::max(1e-6, inputTolerance * 10);
         const double volumeTolerance = std::max(1e-9, before * 1e-8);
         NSString *closedRefusal = @"";
@@ -5702,6 +5733,181 @@ static OCCTShape *OS3DPlanarSupportShell(const TopoDS_Shape &source,
         OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"kernel exception");
         return nil;
     }
+}
+
++ (nullable NSData *)spurGearMeasurementsOfShape:(OCCTShape *)shape
+                                    pitchRadius:(double)pitchRadius
+                                         status:(nullable OCCTOpStatus *)status {
+    OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"invalid gear measurement input");
+    if (shape == nil || !std::isfinite(pitchRadius) || pitchRadius <= 0) return nil;
+    try {
+        BRepBuilderAPI_Copy copy(shape->_shape, Standard_True, Standard_False);
+        if (!copy.IsDone() || copy.Shape().IsNull()) return nil;
+        const TopoDS_Shape owned = copy.Shape();
+        if (!OS3DFiniteBounds(owned)) return nil;
+        double lower = INFINITY, upper = -INFINITY, bore = 0;
+        TopTools_IndexedMapOfShape faces, edges;
+        TopExp::MapShapes(owned, TopAbs_FACE, faces); TopExp::MapShapes(owned, TopAbs_EDGE, edges);
+        if (faces.Extent() > 4096 || edges.Extent() > 16384) return nil;
+        for (Standard_Integer i = 1; i <= faces.Extent(); ++i) {
+            const TopoDS_Face face = TopoDS::Face(faces(i)); BRepAdaptor_Surface surface(face);
+            if (surface.GetType() == GeomAbs_Plane && fabs(surface.Plane().Axis().Direction().Z()) > 1-1e-10) {
+                const double z = surface.Plane().Location().Z(); lower = std::min(lower,z); upper = std::max(upper,z);
+            }
+            if (surface.GetType() == GeomAbs_Cylinder) {
+                const gp_Cylinder cylinder = surface.Cylinder(); const gp_Ax1 axis = cylinder.Axis();
+                if (fabs(axis.Direction().Z()) < 1-1e-10 || hypot(axis.Location().X(),axis.Location().Y()) > 1e-6
+                    || cylinder.Radius() >= pitchRadius) continue;
+                gp_Pnt point; gp_Vec du,dv;
+                surface.D1((surface.FirstUParameter()+surface.LastUParameter())/2,
+                    (surface.FirstVParameter()+surface.LastVParameter())/2,point,du,dv);
+                gp_Vec normal = du.Crossed(dv); if (face.Orientation()==TopAbs_REVERSED) normal.Reverse();
+                if (normal.Dot(gp_Vec(point.X(),point.Y(),0)) < 0) bore = std::max(bore,cylinder.Radius());
+            }
+        }
+        if (!std::isfinite(lower) || !std::isfinite(upper) || upper-lower <= 0) return nil;
+        const double middle = (lower+upper)/2;
+        OS3DDeadlineProgress *deadline = new OS3DDeadlineProgress(kOS3DOpDeadlineSeconds);
+        Handle(Message_ProgressIndicator) progress(deadline);
+        const TopoDS_Edge pitch = BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(gp_Pnt(0,0,middle),gp_Dir(0,0,1)),pitchRadius));
+        TopTools_ListOfShape arguments, tools; arguments.Append(owned); tools.Append(pitch);
+        BRepAlgoAPI_Common common; common.SetArguments(arguments); common.SetTools(tools);
+        common.SetNonDestructive(Standard_True); common.SetRunParallel(Standard_False);
+        common.SetFuzzyValue(0.0);
+        OS3D_GUARDED(status,"gear pitch-circle intersection",common.Build(progress->Start()));
+        if (deadline->Fired() || !common.IsDone() || common.HasErrors() || common.HasWarnings()) {
+            OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"gear pitch-circle common failed or exceeded its deadline");return nil;
+        }
+        TopTools_IndexedMapOfShape contactEdges, vertices;
+        TopExp::MapShapes(common.Shape(),TopAbs_EDGE,contactEdges);
+        if (contactEdges.Extent() < 1 || contactEdges.Extent() > 512) return nil;
+        std::vector<int> parent((size_t)contactEdges.Extent()), owners;
+        for (int i=0;i<(int)parent.size();++i) parent[(size_t)i]=i;
+        auto root = [&](int i) { while(parent[(size_t)i]!=i) { parent[(size_t)i]=parent[(size_t)parent[(size_t)i]]; i=parent[(size_t)i]; } return i; };
+        for (Standard_Integer i=1;i<=contactEdges.Extent();++i) {
+            for(TopExp_Explorer v(contactEdges(i),TopAbs_VERTEX);v.More();v.Next()) {
+                const int index=vertices.Add(v.Current());
+                if((size_t)index>owners.size()) owners.push_back((int)i-1);
+                else parent[(size_t)root((int)i-1)]=root(owners[(size_t)index-1]);
+            }
+        }
+        // A closed circle can split at its parameter seam into distinct
+        // native vertices at the SAME geometric endpoint. Join only within
+        // the actual vertex tolerances; never merge by expected tooth count.
+        for(Standard_Integer i=1;i<=vertices.Extent();++i) {
+            const TopoDS_Vertex a=TopoDS::Vertex(vertices(i));const gp_Pnt point=BRep_Tool::Pnt(a);
+            if(!std::isfinite(BRep_Tool::Tolerance(a)) || BRep_Tool::Tolerance(a)>1e-5) {
+                OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"gear contact intersection exceeded its native tolerance");return nil;
+            }
+            for(Standard_Integer j=1;j<i;++j) {
+                const TopoDS_Vertex b=TopoDS::Vertex(vertices(j));
+                const double tolerance=std::max({Precision::Confusion(),BRep_Tool::Tolerance(a),BRep_Tool::Tolerance(b)});
+                if(point.Distance(BRep_Tool::Pnt(b))<=tolerance)
+                    parent[(size_t)root(owners[(size_t)i-1])]=root(owners[(size_t)j-1]);
+            }
+        }
+        std::map<int,double> contactLengths;
+        for(Standard_Integer i=1;i<=contactEdges.Extent();++i) {
+            BRepAdaptor_Curve curve(TopoDS::Edge(contactEdges(i)));
+            if(curve.GetType()!=GeomAbs_Circle || fabs(curve.Circle().Radius()-pitchRadius)>1e-6) return nil;
+            GProp_GProps length; BRepGProp::LinearProperties(contactEdges(i),length);
+            if(!(length.Mass()>0)) return nil;
+            contactLengths[root((int)i-1)]+=length.Mass();
+        }
+        double sum=0,minimum=INFINITY,maximum=0;
+        for(const auto &entry:contactLengths) { sum+=entry.second;minimum=std::min(minimum,entry.second);maximum=std::max(maximum,entry.second); }
+        const int teeth=(int)contactLengths.size();
+        if(teeth<1) return nil;
+        IntCurvesFace_ShapeIntersector ray;
+        ray.Load(owned,Precision::Confusion());
+        auto radiusAt = [&](double angle) {
+            ray.Perform(gp_Lin(gp_Pnt(0,0,middle),gp_Dir(cos(angle),sin(angle),0)),0,pitchRadius*4);
+            if(!ray.IsDone()) throw Standard_Failure("gear radial intersection failed");
+            double radius=0;for(Standard_Integer i=1;i<=ray.NbPnt();++i) radius=std::max(radius,ray.WParameter(i));
+            if(!(radius>0)) throw Standard_Failure("gear radial intersection has no material");return radius;
+        };
+        double tip=0,dedendum=0;
+        OS3D_GUARDED(status,"gear tip ray intersection",tip=radiusAt(0));
+        OS3D_GUARDED(status,"gear root ray intersection",dedendum=radiusAt(M_PI/(double)teeth));
+        // Use an ACTUAL contact endpoint on a polynomial flank. The circle's
+        // seam vertex can lie inside a tooth and must never be used as a flank.
+        double pressure=-1;
+        for(Standard_Integer v=1;v<=vertices.Extent() && pressure<0;++v) {
+            const gp_Pnt point=BRep_Tool::Pnt(TopoDS::Vertex(vertices(v)));
+            for(Standard_Integer f=1;f<=faces.Extent();++f) {
+                if(deadline->Fired()) return nil;
+                const TopoDS_Face face=TopoDS::Face(faces(f));BRepAdaptor_Surface adaptor(face);
+                if(adaptor.GetType()!=GeomAbs_SurfaceOfExtrusion && adaptor.GetType()!=GeomAbs_BSplineSurface) continue;
+                BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(point).Vertex(),face);
+                if(!distance.IsDone() || distance.NbSolution()==0 || distance.Value()>1e-6) continue;
+                TopLoc_Location location;Handle(Geom_Surface) surface=BRep_Tool::Surface(face,location);
+                GeomAPI_ProjectPointOnSurf projection(point.Transformed(location.Transformation().Inverted()),surface);
+                if(projection.NbPoints()==0) continue;
+                Standard_Real u=0,w=0;projection.LowerDistanceParameters(u,w);
+                gp_Pnt actual;gp_Vec du,dv;adaptor.D1(u,w,actual,du,dv);
+                const gp_Vec normal=du.Crossed(dv);gp_Vec tangent(-normal.Y(),normal.X(),0),radial(point.X(),point.Y(),0);
+                if(tangent.SquareMagnitude()<1e-20 || radial.SquareMagnitude()<1e-20) continue;
+                tangent.Normalize();radial.Normalize();
+                pressure=acos(std::max(0.0,std::min(1.0,fabs(tangent.Dot(radial)))))*180/M_PI;break;
+            }
+        }
+        int polynomialEdges=0;
+        for(Standard_Integer i=1;i<=edges.Extent();++i) {
+            BRepAdaptor_Curve curve(TopoDS::Edge(edges(i)));const double a=curve.FirstParameter(),b=curve.LastParameter();
+            const gp_Pnt first=curve.Value(a),last=curve.Value(b);
+            if(fabs(first.Z()-lower)>1e-7 || fabs(last.Z()-lower)>1e-7 || fabs(curve.Value((a+b)/2).Z()-lower)>1e-7) continue;
+            if(curve.GetType()==GeomAbs_BezierCurve && curve.Bezier()->Degree()==3) ++polynomialEdges;
+            else if(curve.GetType()==GeomAbs_BSplineCurve && curve.BSpline()->Degree()==3 && curve.BSpline()->NbKnots()==2) ++polynomialEdges;
+        }
+        if(pressure<0 || deadline->Fired()) {
+            OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"gear actual flank tangent was unavailable or exceeded its deadline");return nil;
+        }
+        const double values[12]={upper-lower,tip,dedendum,bore,(double)teeth,sum/teeth,minimum,maximum,
+            pressure,OS3DVolume(owned),(double)polynomialEdges,OS3DMaxTolerance(owned)};
+        for(double value:values) if(!std::isfinite(value)) return nil;
+        OS3DSetStatus(status,OCCTOpCodeOK,nil);return [NSData dataWithBytes:values length:sizeof(values)];
+    } catch(Standard_Failure &failure) {
+        const char *message=failure.GetMessageString();OS3DSetStatus(status,OCCTOpCodeKernelRefused,
+            message && message[0] ? @(message) : @"gear native measurement failed");return nil;
+    } catch(...) { OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"gear native measurement exception");return nil; }
+}
+
++ (nullable NSData *)gearBoundaryDistancesOfShape:(OCCTShape *)shape
+                                         points:(NSData *)points
+                                    faceIndices:(NSData *)faceIndices
+                                         status:(nullable OCCTOpStatus *)status {
+    OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"invalid gear witness input");
+    if(shape==nil || points.length%(3*sizeof(double)) || faceIndices.length%sizeof(int32_t)) return nil;
+    const size_t count=points.length/(3*sizeof(double)),facesCount=faceIndices.length/sizeof(int32_t);
+    if(count<1 || count>256 || facesCount<1 || facesCount>128) return nil;
+    const auto *coordinates=(const double *)points.bytes;const auto *indices=(const int32_t *)faceIndices.bytes;
+    try {
+        BRepBuilderAPI_Copy copy(shape->_shape,Standard_True,Standard_False);
+        if(!copy.IsDone() || copy.Shape().IsNull()) return nil;
+        TopTools_IndexedMapOfShape originals;TopExp::MapShapes(shape->_shape,TopAbs_FACE,originals);
+        BRep_Builder builder;TopoDS_Compound boundary;builder.MakeCompound(boundary);
+        std::set<int32_t> used;
+        for(size_t i=0;i<facesCount;++i) {
+            if(indices[i]<1 || indices[i]>originals.Extent() || !used.insert(indices[i]).second) return nil;
+            const TopoDS_Shape face=copy.ModifiedShape(originals(indices[i]));if(face.IsNull()) return nil;builder.Add(boundary,face);
+        }
+        OS3DDeadlineProgress *deadline=new OS3DDeadlineProgress(kOS3DOpDeadlineSeconds);
+        Handle(Message_ProgressIndicator) progress(deadline);
+        std::vector<double> distances;
+        for(size_t i=0;i<count;++i) {
+            const double x=coordinates[3*i],y=coordinates[3*i+1],z=coordinates[3*i+2];
+            if(!std::isfinite(x)||!std::isfinite(y)||!std::isfinite(z)||deadline->Fired()) return nil;
+            BRepExtrema_DistShapeShape distance;
+            distance.LoadS1(BRepBuilderAPI_MakeVertex(gp_Pnt(x,y,z)).Vertex());distance.LoadS2(boundary);
+            OS3D_GUARDED(status,"gear native boundary witness",distance.Perform(progress->Start()));
+            if(deadline->Fired()||!distance.IsDone()||distance.NbSolution()==0||!std::isfinite(distance.Value())) return nil;
+            distances.push_back(distance.Value());
+        }
+        OS3DSetStatus(status,OCCTOpCodeOK,nil);return [NSData dataWithBytes:distances.data() length:distances.size()*sizeof(double)];
+    } catch(Standard_Failure &failure) {
+        const char *message=failure.GetMessageString();OS3DSetStatus(status,OCCTOpCodeKernelRefused,
+            message&&message[0]?@(message):@"gear witness failed");return nil;
+    } catch(...) { OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"gear witness exception");return nil; }
 }
 
 + (double)volumeOfShape:(OCCTShape *)shape {
@@ -7000,6 +7206,471 @@ static OCCTShape *OS3DSurfaceResult(const TopoDS_Shape &shape, bool solid,
         return [NSData dataWithBytes:values length:sizeof(values)];
     } catch (Standard_Failure &) { return nil; }
     catch (...) { return nil; }
+}
+
+
+// No shared TShape enters this path. All sections and guide curves are built
+// from the immutable numeric snapshot; signal state is restored by the scope.
++ (nullable OCCTShape *)guidedLoftWithOuterLoops:(NSArray<NSData *> *)loops
+                                    outerConics:(NSArray<NSData *> *)conics
+                                  outerSegments:(NSArray<NSData *> *)segments
+                                          bases:(NSArray<OCCTPlaneBasis *> *)bases
+                                    guideCurves:(NSArray<NSData *> *)guideCurves
+                                     guideBases:(NSArray<OCCTPlaneBasis *> *)guideBases
+                                  guideReversed:(NSArray<NSNumber *> *)reversed
+                                        history:(OCCTShapeHistory *)history
+                                        metrics:(NSMutableDictionary<NSString *,id> *)metrics
+                                         status:(OCCTOpStatus *)status {
+    OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"The sections and auxiliary guide could not form a solid.");
+    if (NSThread.isMainThread || loops.count < 2 || loops.count > 8 || bases.count != loops.count
+        || conics.count != loops.count || segments.count != loops.count || guideCurves.count < 1
+        || guideCurves.count > 8 || guideBases.count != guideCurves.count || reversed.count != guideCurves.count) return nil;
+    OS3DSignalScope signalScope;
+    try {
+        OCC_CATCH_SIGNALS
+        const double tol=1e-5;
+        const gp_Pnt origin(bases[0]->_o[0],bases[0]->_o[1],bases[0]->_o[2]);
+        const gp_Pnt last(bases.lastObject->_o[0],bases.lastObject->_o[1],bases.lastObject->_o[2]);
+        const gp_Vec along(origin,last);const double length=along.Magnitude();
+        if (!std::isfinite(length) || length <= tol || length > 1000000) return nil;
+        const gp_Dir direction(along);double prior=-1;
+        BRepBuilderAPI_MakePolygon primary;
+        std::vector<gp_Pnt> centers;
+        std::vector<TopoDS_Wire> wires;
+        std::vector<TopoDS_Face> localFaces;
+        for (NSUInteger i=0;i<loops.count;++i) {
+            const gp_Pnt center(bases[i]->_o[0],bases[i]->_o[1],bases[i]->_o[2]);
+            const gp_Vec offset(origin,center),normal(bases[i]->_n[0],bases[i]->_n[1],bases[i]->_n[2]);
+            const double station=offset.Dot(gp_Vec(direction));
+            if (station <= prior+tol || offset.Crossed(gp_Vec(direction)).Magnitude() > tol
+                || normal.Magnitude() < 1e-9 || std::abs(gp_Dir(normal).Dot(direction)) < 1-1e-9) {
+                OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"Guided sections must be ordered on one straight main spine through their origins, with parallel section planes normal to that spine.");return nil;
+            }
+            prior=station;centers.push_back(center);primary.Add(center);
+            TopoDS_Wire wire;
+            if (conics[i].length >= 5*sizeof(double)) wire=ConicWire((const double *)conics[i].bytes,0);
+            if (wire.IsNull() && segments[i].length) wire=SegWire(segments[i],0);
+            if (wire.IsNull()) wire=PolyWire(loops[i],0);
+            if (wire.IsNull() || OS3DSurfaceCount(wire,TopAbs_EDGE) > 64) return nil;
+            BRepBuilderAPI_MakeFace face(wire,Standard_True);if (!face.IsDone()) return nil;
+            localFaces.push_back(face.Face());
+            wires.push_back(TopoDS::Wire(BRepBuilderAPI_Transform(wire,OS3DBasisTransform(bases[i]),Standard_True).Shape()));
+        }
+        if (!primary.IsDone()) return nil;const TopoDS_Wire spine=primary.Wire();
+        BRepBuilderAPI_MakeWire railMaker;std::vector<Handle(Geom_Curve)> railCurves;
+        gp_Pnt firstRail,previousRail;bool hasPrevious=false;
+        for (NSUInteger i=0;i<guideCurves.count;++i) {
+            Handle(Geom_Curve) curve=OS3DSketchCurveDefinition(guideCurves[i],false);
+            if (curve.IsNull()) return nil;
+            curve=Handle(Geom_Curve)::DownCast(curve->Transformed(OS3DBasisTransform(guideBases[i])));
+            BRepBuilderAPI_MakeEdge edgeMaker(curve);if (!edgeMaker.IsDone()) return nil;
+            TopoDS_Edge edge=edgeMaker.Edge();if (reversed[i].boolValue) edge.Reverse();
+            TopoDS_Vertex a,b;TopExp::Vertices(edge,a,b,Standard_True);if(a.IsNull() || b.IsNull()) return nil;
+            const gp_Pnt pa=BRep_Tool::Pnt(a),pb=BRep_Tool::Pnt(b);
+            if (hasPrevious && previousRail.Distance(pa) > tol) {
+                OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"The stored guide order/reversal no longer connects.");return nil;
+            }
+            if (!hasPrevious) firstRail=pa;previousRail=pb;hasPrevious=true;
+            railMaker.Add(edge);if (!railMaker.IsDone()) return nil;railCurves.push_back(curve);
+        }
+        if (firstRail.Distance(previousRail) <= tol) return nil;
+        auto pointDistance=[](const gp_Pnt &point,const TopoDS_Shape &shape) {
+            BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(point).Vertex(),shape);
+            return distance.IsDone() ? distance.Value() : std::numeric_limits<double>::infinity();
+        };
+        if (pointDistance(firstRail,wires.front()) > tol || pointDistance(previousRail,wires.back()) > tol) {
+            OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"The ordered guide endpoints must meet the first and last section boundaries.");return nil;
+        }
+        // The plane-intersection mode has a single, unambiguous authored rail
+        // point at EVERY supplied section. Do not replace a missed section.
+        for (NSUInteger index=0;index<centers.size();++index) {
+            Handle(Geom_Plane) plane=new Geom_Plane(centers[index],direction);
+            std::vector<gp_Pnt> hits;
+            for (auto &curve:railCurves) {
+                GeomAPI_IntCS intersection(curve,plane);
+                if (!intersection.IsDone() || intersection.NbSegments() != 0) return nil;
+                for (int k=1;k<=intersection.NbPoints();++k) {
+                    const gp_Pnt point=intersection.Point(k);bool duplicate=false;
+                    for (const auto &priorPoint:hits) if (point.Distance(priorPoint) <= tol) duplicate=true;
+                    if (!duplicate) hits.push_back(point);
+                }
+            }
+            if (hits.size() != 1 || pointDistance(hits[0],wires[index]) > tol) {
+                OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"The guide must meet every supplied section boundary once.");return nil;
+            }
+        }
+        BRepOffsetAPI_MakePipeShell maker(spine);
+        // ContactOnBorder's automatic law CLEARS earlier Add profiles in 7.8.1.
+        // Contact retains all sections and imposes actual rail contact.
+        maker.SetMode(railMaker.Wire(),Standard_False,BRepFill_Contact);
+        maker.SetTolerance(tol,tol,1e-5);maker.SetMaxDegree(8);maker.SetMaxSegments(64);
+        maker.SetForceApproxC1(Standard_False);
+        TopTools_IndexedMapOfShape spineVertices;TopExp::MapShapes(spine,TopAbs_VERTEX,spineVertices);
+        for (NSUInteger i=0;i<wires.size();++i) {
+            TopoDS_Vertex location;
+            for (int j=1;j<=spineVertices.Extent();++j) {
+                const TopoDS_Vertex vertex=TopoDS::Vertex(spineVertices(j));
+                if (BRep_Tool::Pnt(vertex).Distance(centers[i]) <= tol) { location=vertex;break; }
+            }
+            if (location.IsNull()) return nil;
+            maker.Add(wires[i],location,Standard_False,Standard_False);
+        }
+        TopTools_ListOfShape retainedProfiles;maker.Profiles(retainedProfiles);
+        if (retainedProfiles.Extent() != (int)wires.size()) return nil;
+        // Deliberately NOT a deadline claim: the pinned Build ignores range.
+        // The Swift serial worker joins this bounded operation then fences it.
+        OS3D_GUARDED(status,"guided loft",maker.Build());
+        if (!maker.IsDone()) return nil;
+        const double approximation=maker.ErrorOnSurface();
+        if (!std::isfinite(approximation) || approximation > tol || !maker.MakeSolid()) return nil;
+        const TopoDS_Shape solid=maker.Shape();
+        if (solid.IsNull() || OS3DSurfaceCount(solid,TopAbs_FACE) > 1024) return nil;
+        OCCTShape *validated=OS3DSurfaceResult(solid,true,tol,status);if (!validated) return nil;
+        // Independent actual-face distance samples. Sampling is labelled in
+        // the report, never promoted to a full-curve exactness certificate.
+        BRep_Builder builder;TopoDS_Compound boundary;builder.MakeCompound(boundary);
+        for (TopExp_Explorer face(solid,TopAbs_FACE);face.More();face.Next()) builder.Add(boundary,face.Current());
+        double guideResidual=0,sectionResidual=0;int guideSamples=0,sectionSamples=0;
+        auto sample=[&](const Handle(Geom_Curve)& curve,double first,double last,int count,double &maximum,int &samples) {
+            if (!std::isfinite(first) || !std::isfinite(last)) return false;
+            for (int k=0;k<count;++k) {
+                const double distance=pointDistance(curve->Value(first+(last-first)*k/(count-1)),boundary);
+                if (!std::isfinite(distance) || distance > 2*tol) return false;
+                maximum=std::max(maximum,distance);++samples;
+            }
+            return true;
+        };
+        for (const auto &curve:railCurves) if (!sample(curve,curve->FirstParameter(),curve->LastParameter(),33,guideResidual,guideSamples)) {
+            OS3DSetStatus(status,OCCTOpCodeInvalidResult,@"The built surface does not meet the authored guide within tolerance.");return nil;
+        }
+        for (const auto &wire:wires) for (TopExp_Explorer e(wire,TopAbs_EDGE);e.More();e.Next()) {
+            Standard_Real first,last;TopLoc_Location location;
+            Handle(Geom_Curve) curve=BRep_Tool::Curve(TopoDS::Edge(e.Current()),location,first,last);
+            if (curve.IsNull()) return nil;
+            curve=Handle(Geom_Curve)::DownCast(curve->Transformed(location.Transformation()));
+            if (!sample(curve,first,last,9,sectionResidual,sectionSamples)) {
+                OS3DSetStatus(status,OCCTOpCodeInvalidResult,@"The built surface does not preserve an authored section within tolerance.");return nil;
+            }
+        }
+        // Ask native history on the exact wire/edges consumed by Add.
+        // Result-map containment gates every row; unknown faces stay unknown.
+        TopTools_IndexedMapOfShape finalFaces;TopExp::MapShapes(solid,TopAbs_FACE,finalFaces);
+        std::set<std::array<int32_t,5>> rows;
+        auto emit=[&](const TopoDS_Shape &shape,int32_t kind,int32_t sub,int32_t relation) {
+            for (TopExp_Explorer faces(shape,TopAbs_FACE);faces.More();faces.Next()) {
+                const int face=finalFaces.FindIndex(faces.Current());
+                if (face > 0) rows.insert({(int32_t)face,0,kind,sub,relation});
+            }
+        };
+        TopTools_IndexedMapOfShape inputEdges;TopExp::MapShapes(wires.front(),TopAbs_EDGE,inputEdges);
+        for(int j=1;j<=inputEdges.Extent();++j) {
+            const auto &generated=maker.Generated(inputEdges(j));
+            for(TopTools_ListIteratorOfListOfShape it(generated);it.More();it.Next()) emit(it.Value(),1,j,2);
+        }
+        const TopoDS_Shape firstCap=OS3DCapFace(solid,maker.FirstShape()),lastCap=OS3DCapFace(solid,maker.LastShape());
+        if (!firstCap.IsNull()) { const int face=finalFaces.FindIndex(firstCap);if(face > 0) rows.insert({(int32_t)face,0,0,1,1}); }
+        if (!lastCap.IsNull()) { const int face=finalFaces.FindIndex(lastCap);if(face > 0) rows.insert({(int32_t)face,0,0,2,1}); }
+        std::vector<int32_t> packed;for(const auto &row:rows) packed.insert(packed.end(),row.begin(),row.end());
+        history.rows=[NSData dataWithBytes:packed.data() length:packed.size()*sizeof(int32_t)];history.rowCount=rows.size();history.truncatedByHeal=NO;
+        metrics[@"native_surface_error"]=@(approximation);metrics[@"guide_sample_deviation"]=@(guideResidual);
+        metrics[@"section_sample_deviation"]=@(sectionResidual);metrics[@"guide_sample_count"]=@(guideSamples);
+        metrics[@"section_sample_count"]=@(sectionSamples);metrics[@"volume"]=@(OS3DVolume(solid));
+        metrics[@"faces"]=@(OS3DFaceCount(solid));metrics[@"profile_count"]=@(retainedProfiles.Extent());
+        return validated;
+    } catch (Standard_Failure &failure) {
+        OS3DSetStatus(status,OCCTOpCodeKernelRefused,OS3DCrashMessage("guided loft",failure.GetMessageString()));return nil;
+    } catch (...) { return nil; }
+}
+
+
+// Exact tensor interpolation of native section control polygons. ContactOrder
+// 1/2 rows are prescribed derivatives consumed by OCCT's interpolation solver;
+// they are not global continuity settings and are not post-hoc D2 filters.
++ (OCCTShape *)endpointLoftWithOuterLoops:(NSArray<NSData *> *)loops
+    outerConics:(NSArray<NSData *> *)conics outerSegments:(NSArray<NSData *> *)segments
+    bases:(NSArray<OCCTPlaneBasis *> *)bases startBoundary:(NSData *)start endBoundary:(NSData *)end
+    history:(OCCTShapeHistory *)history metrics:(NSMutableDictionary *)metrics status:(OCCTOpStatus *)status {
+    OS3DSetStatus(status,OCCTOpCodeOK,@"");
+    OS3DSignalScope signals;
+    try {
+        OCC_CATCH_SIGNALS
+        const double tol=1e-6;
+        auto finite=[](const gp_XYZ &v) {return std::isfinite(v.X()) && std::isfinite(v.Y()) && std::isfinite(v.Z());};
+        const NSUInteger count=loops.count;
+        if (count < 2 || count > 4 || conics.count != count || segments.count != count || bases.count != count
+            || (!start.length && !end.length)) return nil;
+        const gp_Pnt origin(bases[0]->_o[0],bases[0]->_o[1],bases[0]->_o[2]);
+        const gp_Pnt finish(bases.lastObject->_o[0],bases.lastObject->_o[1],bases.lastObject->_o[2]);
+        const gp_Vec axis(origin,finish);const double span=axis.Magnitude();
+        if (!std::isfinite(span) || span < 1e-3 || span > 10000) return nil;
+        const gp_Vec direction=axis/span;
+        struct Boundary { int order=0;gp_Vec tangent,curvature;double angular=0,curvatureTol=0; };
+        auto decode=[&](NSData *data,Boundary &b) {
+            if (!data.length) return true;
+            if (data.length != 10*sizeof(double)) return false;
+            const double *p=(const double *)data.bytes;
+            for(int i=0;i<10;i++) if(!std::isfinite(p[i])) return false;
+            b.order=(int)p[0];b.tangent=gp_Vec(p[1],p[2],p[3]);b.curvature=gp_Vec(p[4],p[5],p[6]);
+            b.angular=p[7];b.curvatureTol=p[8];
+            if ((b.order!=1 && b.order!=2) || b.tangent.Magnitude() < 1e-9 || b.angular<=0 || b.angular>0.1 || b.curvatureTol<=0) return false;
+            b.tangent.Normalize();
+            return b.tangent.Dot(direction)>0.1 && b.curvature.Magnitude()<=4/span
+                && (b.order!=2 || std::abs(b.tangent.Dot(b.curvature))<=1e-10*std::max(1.0,b.curvature.Magnitude()));
+        };
+        Boundary boundaries[2];if(!decode(start,boundaries[0]) || !decode(end,boundaries[1])) return nil;
+        const int rows=(int)count+boundaries[0].order+boundaries[1].order,degree=rows-1;
+        if(degree<2 || degree>7) return nil;
+        // End derivative rows precede end D0. This ordering avoids a zero
+        // diagonal in OCCT's documented no-pivot band interpolation routine.
+        TColStd_Array1OfReal parameters(1,rows),flatKnots(1,2*rows),vKnots(1,2);
+        TColStd_Array1OfInteger contact(1,rows),vMults(1,2);
+        int row=1;
+        parameters(row)=0;contact(row++)=0;
+        for(int d=1;d<=boundaries[0].order;d++) {parameters(row)=0;contact(row++)=d;}
+        for(NSUInteger i=1;i+1<count;i++) {parameters(row)=(double)i/(count-1);contact(row++)=0;}
+        for(int d=boundaries[1].order;d>=0;d--) {parameters(row)=1;contact(row++)=d;}
+        for(int i=1;i<=2*rows;i++) flatKnots(i)=i<=rows ? 0 : 1;
+        vKnots(1)=0;vKnots(2)=1;vMults(1)=rows;vMults(2)=rows;
+        std::vector<TopoDS_Wire> wires;std::vector<std::vector<TopoDS_Edge>> edges;
+        for(NSUInteger i=0;i<count;i++) {
+            const gp_Pnt center(bases[i]->_o[0],bases[i]->_o[1],bases[i]->_o[2]);
+            const gp_Vec normal(bases[i]->_n[0],bases[i]->_n[1],bases[i]->_n[2]);
+            const gp_Pnt expected=origin.Translated(axis*((double)i/(count-1)));
+            if(center.Distance(expected)>tol || normal.Magnitude()<1e-9 || std::abs(gp_Dir(normal).Dot(gp_Dir(axis)))<1-1e-10) {
+                OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"Endpoint sections require equally spaced, parallel normal planes on their origin axis.");return nil;
+            }
+            TopoDS_Wire local;
+            if(conics[i].length!=5*sizeof(double) || loops[i].length%(2*sizeof(double)) || segments[i].length%sizeof(double)) return nil;
+            const double *conic=(const double *)conics[i].bytes;
+            const bool isConic=conic[2]>0 && conic[3]>0;
+            for(int c=0;c<5;c++) if(!std::isfinite(conic[c])) return nil;
+            if(isConic) {
+                if(conic[2]!=conic[3] && std::abs(conic[2]-conic[3])<=1e-9*std::max(conic[2],conic[3])) return nil;
+                local=ConicWire(conic,0);
+            }
+            else if(segments[i].length) {
+                // Legacy SegWire can flatten an invalid arc to a line. New
+                // endpoint intent must refuse such an arc before that fallback.
+                const double *data=(const double *)segments[i].bytes;
+                const NSUInteger total=segments[i].length/sizeof(double);
+                for(NSUInteger j=0;j<total;) {
+                    const double kind=data[j];
+                    if(kind<1.5) {
+                        if(j+7>total) return nil;
+                        if(kind>0.5) {
+                            GC_MakeArcOfCircle arc(gp_Pnt(data[j+1],data[j+2],0),gp_Pnt(data[j+5],data[j+6],0),gp_Pnt(data[j+3],data[j+4],0));
+                            if(!arc.IsDone()) return nil;
+                        }
+                        j+=7;
+                    } else if(kind==4 && j+3<=total) {
+                        const double rawCount=data[j+1];
+                        if(!std::isfinite(rawCount) || rawCount<9 || rawCount>total || rawCount!=std::floor(rawCount)) return nil;
+                        const NSUInteger length=(NSUInteger)rawCount;
+                        if(j+3+length>total) return nil;j+=3+length;
+                    } else return nil;
+                }
+                local=SegWire(segments[i],0);
+            } else local=PolyWire(loops[i],0);
+            if(local.IsNull()) return nil;
+            const TopoDS_Wire wire=TopoDS::Wire(BRepBuilderAPI_Transform(local,OS3DBasisTransform(bases[i]),Standard_True).Shape());
+            std::vector<TopoDS_Edge> ordered;
+            for(BRepTools_WireExplorer ex(wire);ex.More();ex.Next()) ordered.push_back(ex.Current());
+            if(ordered.empty() || ordered.size()>16 || (i && ordered.size()!=edges.front().size())) return nil;
+            wires.push_back(wire);edges.push_back(ordered);
+        }
+        std::vector<TopoDS_Face> walls;
+        double sectionResidual=0,poleD1Residual=0,poleD2Residual=0,angleResidual=0,curvatureResidual=0;
+        int poleCount=0,jetSamples=0;
+        BRepBuilderAPI_Sewing sewing(tol,Standard_True,Standard_True,Standard_True,Standard_False);
+        for(NSUInteger edgeIndex=0;edgeIndex<edges.front().size();edgeIndex++) {
+            std::vector<Handle(Geom_BSplineCurve)> exactCurves;
+            for(NSUInteger i=0;i<count;i++) {
+                Standard_Real first,last;TopLoc_Location location;
+                Handle(Geom_Curve) curve=BRep_Tool::Curve(edges[i][edgeIndex],location,first,last);
+                if(curve.IsNull() || !std::isfinite(first) || !std::isfinite(last) || last-first<1e-12) return nil;
+                curve=Handle(Geom_Curve)::DownCast(curve->Transformed(location.Transformation()));
+                Handle(Geom_TrimmedCurve) trimmed=new Geom_TrimmedCurve(curve,first,last);
+                if(edges[i][edgeIndex].Orientation()==TopAbs_REVERSED) trimmed->Reverse();
+                // Do not feed conics to GeomFill_Profiler: pinned 7.8.1 may
+                // approximate them. The exact conversion below uses native
+                // rational representations and never fits sampled points.
+                Handle(Geom_BSplineCurve) exact=GeomConvert::CurveToBSplineCurve(trimmed);
+                if(exact.IsNull() || exact->IsPeriodic()) return nil;
+                TColStd_Array1OfReal knots(1,exact->NbKnots());exact->Knots(knots);
+                BSplCLib::Reparametrize(0,1,knots);exact->SetKnots(knots);
+                exactCurves.push_back(exact);
+            }
+            const auto &basis=exactCurves.front();
+            const int np=basis->NbPoles(),nk=basis->NbKnots(),ud=basis->Degree();
+            if(np<2 || np>64 || ud<1 || ud>8 || (poleCount+=np)>256) return nil;
+            TColStd_Array1OfReal uKnots(1,nk),weights(1,np);TColStd_Array1OfInteger uMults(1,nk);
+            basis->Knots(uKnots);basis->Multiplicities(uMults);basis->Weights(weights);
+            std::vector<TColgp_Array1OfPnt> inputPoles;
+            for(NSUInteger i=0;i<count;i++) {
+                TColgp_Array1OfPnt poles(1,np);TColStd_Array1OfReal otherWeights(1,np);
+                const auto &exact=exactCurves[i];
+                if(exact->Degree()!=ud || exact->NbPoles()!=np || exact->NbKnots()!=nk) return nil;
+                for(int knot=1;knot<=nk;knot++) if(exact->Multiplicity(knot)!=uMults(knot) || exact->Knot(knot)!=uKnots(knot)) return nil;
+                exact->Poles(poles);exact->Weights(otherWeights);
+                for(int p=1;p<=np;p++) for(int c=1;c<=3;c++) if(!std::isfinite(poles(p).Coord(c)) || std::abs(poles(p).Coord(c))>1e6) return nil;
+                // A common positive U weight field, constant along V, is
+                // essential: it makes constant pole jets constant surface jets.
+                const double ratio=otherWeights(1)/weights(1);
+                if(!std::isfinite(ratio) || ratio<=0) return nil;
+                for(int p=1;p<=np;p++) if(weights(p)<=0 || otherWeights(p)/ratio!=weights(p)) {
+                    OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"Endpoint sections need compatible rational weights; no section was fitted or replaced.");return nil;
+                }
+                inputPoles.push_back(poles);
+            }
+            TColgp_Array2OfPnt net(1,np,1,rows);TColStd_Array2OfReal netWeights(1,np,1,rows);
+            for(int p=1;p<=np;p++) {
+                TColgp_Array1OfPnt data(1,rows);int r=1;
+                data(r++)=inputPoles.front()(p);
+                for(int d=1;d<=boundaries[0].order;d++) data(r++)=gp_Pnt((d==1 ? boundaries[0].tangent*span : boundaries[0].curvature*(span*span)).XYZ());
+                for(NSUInteger i=1;i+1<count;i++) data(r++)=inputPoles[i](p);
+                for(int d=boundaries[1].order;d>=0;d--) data(r++)=d==0 ? inputPoles.back()(p)
+                    : gp_Pnt((d==1 ? boundaries[1].tangent*span : boundaries[1].curvature*(span*span)).XYZ());
+                int inversion=0;
+                BSplCLib::Interpolate(degree,flatKnots,parameters,contact,data,inversion);
+                if(inversion) {OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"The endpoint derivative interpolation matrix is singular.");return nil;}
+                for(int k=1;k<=rows;k++) if(!finite(data(k).XYZ()) || data(k).XYZ().Modulus()>1e7) return nil;
+                Handle(Geom_BSplineCurve) trajectory=new Geom_BSplineCurve(data,vKnots,vMults,degree);
+                for(NSUInteger i=0;i<count;i++) sectionResidual=std::max(sectionResidual,trajectory->Value((double)i/(count-1)).Distance(inputPoles[i](p)));
+                for(int side=0;side<2;side++) if(boundaries[side].order) {
+                    gp_Pnt point;gp_Vec d1,d2;trajectory->D2(side,point,d1,d2);
+                    if(!finite(point.XYZ()) || !finite(d1.XYZ()) || !finite(d2.XYZ())) return nil;
+                    poleD1Residual=std::max(poleD1Residual,(d1-boundaries[side].tangent*span).Magnitude());
+                    if(boundaries[side].order==2) {
+                        poleD2Residual=std::max(poleD2Residual,(d2-boundaries[side].curvature*(span*span)).Magnitude());
+                    }
+                }
+                for(int v=1;v<=rows;v++) {net(p,v)=data(v);netWeights(p,v)=weights(p);}
+            }
+            if(sectionResidual>tol || poleD1Residual>tol || poleD2Residual>tol) return nil;
+            Handle(Geom_BSplineSurface) surface=new Geom_BSplineSurface(net,netWeights,uKnots,vKnots,uMults,vMults,ud,degree);
+            // Independent checks on the actual constructed surface; not on a
+            // display mesh or on the requested input vectors.
+            for(int side=0;side<2;side++) if(boundaries[side].order) for(int sample=0;sample<=32;sample++) {
+                const double u=uKnots(1)+(uKnots(nk)-uKnots(1))*sample/32;
+                gp_Pnt point;gp_Vec du,dv,duu,dvv,duv;surface->D2(u,side,point,du,dv,duu,dvv,duv);
+                if(!finite(point.XYZ()) || !finite(du.XYZ()) || !finite(dv.XYZ()) || !finite(dvv.XYZ())
+                    || dv.Magnitude()<1e-9 || du.Crossed(dv).Magnitude()<1e-9) return nil;
+                const double angle=dv.Angle(boundaries[side].tangent);
+                const gp_Vec curvature=(dvv-dv*(dv.Dot(dvv)/dv.SquareMagnitude()))/dv.SquareMagnitude();
+                angleResidual=std::max(angleResidual,angle);
+                if(!std::isfinite(angle) || angle>boundaries[side].angular) return nil;
+                if(boundaries[side].order==2) {
+                    const double error=(curvature-boundaries[side].curvature).Magnitude();curvatureResidual=std::max(curvatureResidual,error);
+                    if(error>boundaries[side].curvatureTol) return nil;
+                }
+                ++jetSamples;
+            }
+            BRepBuilderAPI_MakeFace face(surface,tol);if(!face.IsDone()) return nil;
+            walls.push_back(face.Face());sewing.Add(face.Face());
+        }
+        // Whole-boundary certificates: positive common U weights make
+        // position/D1/D2 error convex combinations of the checked pole errors.
+        // Conservative propagation through K=P_perp(D1)D2/|D1|² bounds every U,
+        // so finite sample agreement is never the only boundary proof.
+        const double lowerSpeed=span-poleD1Residual;
+        if(lowerSpeed<=0) return nil;
+        const double wholeAngle=std::asin(std::min(1.0,poleD1Residual/lowerSpeed));
+        double wholeCurvature=0;
+        for(int side=0;side<2;side++) if(boundaries[side].order) {
+            if(wholeAngle>boundaries[side].angular) return nil;
+            if(boundaries[side].order==2) {
+                const double acceleration=boundaries[side].curvature.Magnitude()*span*span;
+                const double bound=(poleD2Residual+4*acceleration*poleD1Residual/lowerSpeed)/(lowerSpeed*lowerSpeed)
+                    +acceleration*std::abs(1/(lowerSpeed*lowerSpeed)-1/(span*span));
+                wholeCurvature=std::max(wholeCurvature,bound);
+                if(!std::isfinite(bound) || bound>boundaries[side].curvatureTol) return nil;
+            }
+        }
+        BRepBuilderAPI_MakeFace firstCap(wires.front(),Standard_True),lastCap(wires.back(),Standard_True);
+        if(!firstCap.IsDone() || !lastCap.IsDone()) return nil;
+        sewing.Add(firstCap.Face());sewing.Add(lastCap.Face());
+        OS3D_GUARDED(status,"endpoint loft sewing",sewing.Perform());
+        const TopoDS_Shape sewed=sewing.SewedShape();
+        if(sewed.IsNull() || OS3DSurfaceCount(sewed,TopAbs_SHELL)!=1 || OS3DSurfaceCount(sewed,TopAbs_FACE)!=(NSInteger)walls.size()+2) return nil;
+        TopoDS_Shell shell;
+        if(sewed.ShapeType()==TopAbs_SHELL) shell=TopoDS::Shell(sewed);
+        else {TopExp_Explorer ex(sewed,TopAbs_SHELL);if(ex.More()) shell=TopoDS::Shell(ex.Current());}
+        if(shell.IsNull()) return nil;
+        // Correct only orientation; never heal away failed derivative/section
+        // constraints or relax the original topology/closure assertions.
+        ShapeFix_Shell orient(shell);orient.FixFaceOrientation(shell);
+        BRepBuilderAPI_MakeSolid maker(orient.Shell());if(!maker.IsDone()) return nil;
+        TopoDS_Solid solid=maker.Solid();
+        if(OS3DSurfaceCount(solid,TopAbs_FACE)!=(NSInteger)walls.size()+2 || !BRepLib::OrientClosedSolid(solid)) return nil;
+        OCCTShape *validated=OS3DSurfaceResult(solid,true,tol,status);if(!validated) return nil;
+        TopTools_IndexedMapOfShape finalFaces;TopExp::MapShapes(solid,TopAbs_FACE,finalFaces);
+        std::set<std::array<int32_t,5>> ancestry;
+        auto emit=[&](const TopoDS_Face &input,int kind,int sub) {
+            const TopoDS_Shape &changed=sewing.ModifiedSubShape(input);
+            const TopoDS_Shape candidate=changed.IsNull() ? TopoDS_Shape(input) : changed;
+            // Sewing may copy topology; match the actual retained surface
+            // handle and exact location, never a nearest face/ordinal guess.
+            for(int i=1;i<=finalFaces.Extent();i++) {
+                TopLoc_Location a,b;
+                if(BRep_Tool::Surface(input,a)==BRep_Tool::Surface(TopoDS::Face(finalFaces(i)),b) && a.IsEqual(b))
+                    ancestry.insert({i,0,kind,sub,kind==0 ? 1 : 2});
+                else if(finalFaces(i).IsSame(candidate)) ancestry.insert({i,0,kind,sub,kind==0 ? 1 : 2});
+            }
+        };
+        TopTools_IndexedMapOfShape firstEdges;TopExp::MapShapes(wires.front(),TopAbs_EDGE,firstEdges);
+        for(NSUInteger i=0;i<walls.size();i++) emit(walls[i],1,firstEdges.FindIndex(edges.front()[i]));
+        emit(firstCap.Face(),0,1);emit(lastCap.Face(),0,2);
+        // Every delivered face must retain an explicitly measured native
+        // surface/identity; orientation repair may not discard a wall.
+        if(ancestry.size()!=walls.size()+2) return nil;
+        std::vector<int32_t> packed;for(const auto &r:ancestry) packed.insert(packed.end(),r.begin(),r.end());
+        history.rows=[NSData dataWithBytes:packed.data() length:packed.size()*sizeof(int32_t)];history.rowCount=ancestry.size();history.truncatedByHeal=NO;
+        metrics[@"section_pole_residual_mm"]=@(sectionResidual);metrics[@"endpoint_pole_d1_residual_mm"]=@(poleD1Residual);
+        metrics[@"endpoint_normal_d2_residual_mm"]=@(poleD2Residual);metrics[@"endpoint_angle_residual_rad"]=@(angleResidual);
+        metrics[@"endpoint_curvature_residual_per_mm"]=@(curvatureResidual);metrics[@"endpoint_sample_count"]=@(jetSamples);
+        metrics[@"section_count"]=@(count);metrics[@"u_pole_count"]=@(poleCount);metrics[@"v_degree"]=@(degree);
+        metrics[@"volume_mm3"]=@(OS3DVolume(solid));metrics[@"faces"]=@(OS3DFaceCount(solid));
+        metrics[@"whole_boundary_angle_bound_rad"]=@(wholeAngle);
+        metrics[@"whole_boundary_curvature_bound_per_mm"]=@(wholeCurvature);
+        metrics[@"span_mm"]=@(span);return validated;
+    } catch(Standard_Failure &failure) {
+        OS3DSetStatus(status,OCCTOpCodeKernelRefused,OS3DCrashMessage("endpoint loft",failure.GetMessageString()));return nil;
+    } catch(...) {return nil;}
+}
+
+// Independent numerical evidence from a delivered BRep. Sample positions,
+// first/second derivatives and finite differences without reading build metrics.
++ (NSDictionary *)endpointLoftJets:(OCCTShape *)shape {
+    OS3DSignalScope signals;
+    try {
+        OCC_CATCH_SIGNALS
+        if(!shape || shape->_shape.IsNull() || OS3DSurfaceCount(shape->_shape,TopAbs_FACE)>128) return @{};
+        NSMutableArray *rows=[NSMutableArray array];
+        int faceIndex=0;
+        for(TopExp_Explorer ex(shape->_shape,TopAbs_FACE);ex.More();ex.Next()) {
+            ++faceIndex;TopLoc_Location location;
+            Handle(Geom_BSplineSurface) surface=Handle(Geom_BSplineSurface)::DownCast(BRep_Tool::Surface(TopoDS::Face(ex.Current()),location));
+            if(surface.IsNull()) continue;
+            const double u0=surface->UKnot(surface->FirstUKnotIndex()),u1=surface->UKnot(surface->LastUKnotIndex());
+            const double v0=surface->VKnot(surface->FirstVKnotIndex()),v1=surface->VKnot(surface->LastVKnotIndex()),h=(v1-v0)*1e-4;
+            if(h<=0 || rows.count>16384) return @{};
+            auto pack=[](const gp_XYZ &v) {return @[@(v.X()),@(v.Y()),@(v.Z())];};
+            const double stations[]={0,1.0/3,0.5,2.0/3,1};
+            for(int station=0;station<5;station++) for(int i=0;i<=16;i++) {
+                const int side=station==0 ? 0 : (station==4 ? 1 : -1);
+                const double u=u0+(u1-u0)*i/16,v=v0+(v1-v0)*stations[station],step=side==1 ? -h : h;
+                gp_Pnt p;gp_Vec du,dv,duu,dvv,duv;surface->D2(u,v,p,du,dv,duu,dvv,duv);
+                const gp_Pnt p1=surface->Value(u,v+step),p2=surface->Value(u,v+2*step),p3=surface->Value(u,v+3*step);
+                gp_XYZ finiteD1=(p.XYZ()*-3+p1.XYZ()*4-p2.XYZ())/(2*step);
+                gp_XYZ finiteD2=(p.XYZ()*2-p1.XYZ()*5+p2.XYZ()*4-p3.XYZ())/(step*step);
+                p.Transform(location.Transformation());dv.Transform(location.Transformation());dvv.Transform(location.Transformation());
+                finiteD1.Multiply(location.Transformation().VectorialPart());finiteD2.Multiply(location.Transformation().VectorialPart());
+                [rows addObject:@{@"face":@(faceIndex),@"side":@(side),@"v_fraction":@(stations[station]),@"u_fraction":@((double)i/16),@"point":pack(p.XYZ()),
+                    @"d1":pack(dv.XYZ()),@"d2":pack(dvv.XYZ()),@"finite_d1":pack(finiteD1),@"finite_d2":pack(finiteD2)}];
+            }
+        }
+        return @{@"jets":rows,@"method":@"actual-brep-surface-derivatives-and-one-sided-finite-differences"};
+    } catch(...) {return @{};}
 }
 
 @end

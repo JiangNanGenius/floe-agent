@@ -763,6 +763,22 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 /// sanity checks (a shell must REMOVE material) and exact enough for tests to
 /// pin against analytically-derived values.
 + (double)volumeOfShape:(OCCTShape *)shape;
+/// Read-only gear qualification on an owned native copy. Twelve doubles:
+/// width, tip/root/bore radius, measured tooth components, mean/min/max
+/// pitch-circle arc thickness, pitch pressure angle deg, volume, polynomial
+/// lower-cap edge count, maximum native tolerance. No requested dimensions returned.
++ (nullable NSData *)spurGearMeasurementsOfShape:(OCCTShape *)shape
+                                    pitchRadius:(double)pitchRadius
+                                         status:(nullable OCCTOpStatus *)status
+    NS_SWIFT_NAME(spurGearMeasurements(of:pitchRadius:status:));
+/// Distances from local analytic witness points to the selected actual native
+/// faces. Face IDs map through the copier's real ancestry; no mesh distance.
++ (nullable NSData *)gearBoundaryDistancesOfShape:(OCCTShape *)shape
+                                         points:(NSData *)points
+                                    faceIndices:(NSData *)faceIndices
+                                         status:(nullable OCCTOpStatus *)status
+    NS_SWIFT_NAME(gearBoundaryDistances(of:points:faceIndices:status:));
+
 
 /// The largest tolerance any sub-shape of `shape` carries
 /// (`ShapeAnalysis_ShapeTolerance`). Healthy analytic solids sit at
@@ -894,6 +910,31 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 + (OCCTRenderMesh *)snapshotRenderMeshFromShape:(OCCTShape *)shape
                        angularDeflection:(double)angularDeflection
                         linearDeflection:(double)linearDeflection;
+
+/// Fresh value-input construction only. Contact retains every added section;
+/// ContactOnBorder is deliberately not used because OCCT clears prior sections.
+/// 7.8.1 PipeShell ignores its progress range: call off-main, join and discard
+/// cancelled/stale results. Metrics distinguish native tolerance from exact input.
++ (nullable OCCTShape *)guidedLoftWithOuterLoops:(NSArray<NSData *> *)loops
+                                    outerConics:(NSArray<NSData *> *)conics
+                                  outerSegments:(NSArray<NSData *> *)segments
+                                          bases:(NSArray<OCCTPlaneBasis *> *)bases
+                                    guideCurves:(NSArray<NSData *> *)guideCurves
+                                     guideBases:(NSArray<OCCTPlaneBasis *> *)guideBases
+                                  guideReversed:(NSArray<NSNumber *> *)reversed
+                                        history:(OCCTShapeHistory *)history
+                                        metrics:(NSMutableDictionary<NSString *,id> *)metrics
+                                         status:(OCCTOpStatus *)status;
+
+/// Native exact section-control interpolation with prescribed longitudinal
+/// endpoint D1 / normal curvature. Boundary bytes: 10 Float64 values, order,
+/// tangent.xyz, curvature.xyz, angularTolerance, curvatureTolerance, reserved0.
++ (nullable OCCTShape *)endpointLoftWithOuterLoops:(NSArray<NSData *> *)loops
+    outerConics:(NSArray<NSData *> *)conics outerSegments:(NSArray<NSData *> *)segments
+    bases:(NSArray<OCCTPlaneBasis *> *)bases startBoundary:(nullable NSData *)start endBoundary:(nullable NSData *)end
+    history:(OCCTShapeHistory *)history metrics:(NSMutableDictionary<NSString *,id> *)metrics status:(OCCTOpStatus *)status
+    NS_SWIFT_NAME(endpointLoft(outerLoops:outerConics:outerSegments:bases:startBoundary:endBoundary:history:metrics:status:));
++ (NSDictionary<NSString *,id> *)endpointLoftJets:(OCCTShape *)shape NS_SWIFT_NAME(endpointLoftJets(_:));
 
 @end
 

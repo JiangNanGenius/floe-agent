@@ -1316,6 +1316,62 @@ final class DocumentSession {
                               previewDocument: preview)
     }
 
+    /// The service snapshots resolved value geometry before the async native
+    /// phase. A stale/missing reference is a refusal, never nearest-edge search.
+    func guidedLoftSnapshot(sections:[ProfileRef],definition:LoftDefinition,before feature:FeatureID?=nil) throws -> CADGuidedLoftSnapshot {
+        try definition.requireSupported(sectionCount:sections.count)
+        guard let guide=definition.guides.first else { throw LoftSurfaceError.invalid("Select the auxiliary guide.") }
+        let result:EvalResult?
+        if let feature { result=inputState(before:feature) } else { result=previewLoftSurface() }
+        guard let result,result.errors.isEmpty else { throw LoftSurfaceError.invalid("The input history must rebuild before preparing the guide.") }
+        var sketches=document.sketches
+        for index in sketches.indices {
+            if let plane=result.resolvedSketchSupportUpdates[sketches[index].id] { sketches[index].plane=plane }
+            if let entities=result.resolvedSketchEntityUpdates[sketches[index].id] { sketches[index].entities=entities }
+        }
+        let choices=CADLoftSurfaceUIModel.closedSections(sketches:sketches)
+        var resolved:[(profile:Profile,holes:[Profile],plane:SketchPlane)]=[]
+        for reference in sections {
+            guard let source=sketches.first(where:{ $0.id == reference.sketchID }) else { throw LoftSurfaceError.invalid("A guided section was removed.") }
+            try CADGuidedLoftSnapshot.validateSource(reference,sketch:source)
+            let matches=choices.filter { $0.matches(reference) }
+            guard matches.count == 1,let choice=matches.first else { throw LoftSurfaceError.invalid("The selected guided section is ambiguous or unavailable.") }
+            resolved.append((choice.profile,choice.holes,choice.plane))
+        }
+        return try CADGuidedLoftSnapshot(sections:resolved,guide:guide,sketch:{ id in sketches.first { $0.id == id } })
+    }
+
+    /// Resolve identity-bound section values before worker preparation. Outer
+    /// and each paired inner loop use the same endpoint intent and native
+    /// interpolation. The graph retains its existing exact hole containment.
+    func endpointLoftSnapshots(sections:[ProfileRef],definition:LoftDefinition,before feature:FeatureID?=nil) throws -> [CADLoftEndpointSnapshot] {
+        try definition.requireSupported(sectionCount:sections.count)
+        guard definition.hasEndpointConstraints else { return [] }
+        let result:EvalResult?
+        if let feature { result=inputState(before:feature) } else { result=previewLoftSurface() }
+        guard let result,result.errors.isEmpty else { throw LoftSurfaceError.invalid("The input history must rebuild before preparing endpoint constraints.") }
+        var sketches=document.sketches
+        for index in sketches.indices {
+            if let plane=result.resolvedSketchSupportUpdates[sketches[index].id] { sketches[index].plane=plane }
+            if let entities=result.resolvedSketchEntityUpdates[sketches[index].id] { sketches[index].entities=entities }
+        }
+        let choices=CADLoftSurfaceUIModel.closedSections(sketches:sketches)
+        var resolved:[(profile:Profile,holes:[Profile],plane:SketchPlane)]=[]
+        for reference in sections {
+            guard let source=sketches.first(where:{ $0.id == reference.sketchID }) else { throw LoftSurfaceError.invalid("An endpoint section was removed.") }
+            try CADLoftEndpointSnapshot.validateSource(reference,sketch:source)
+            let matches=choices.filter { $0.matches(reference) }
+            guard matches.count==1,let choice=matches.first else { throw LoftSurfaceError.invalid("The endpoint section is ambiguous or unavailable.") }
+            resolved.append((choice.profile,choice.holes,choice.plane))
+        }
+        guard let holeCount=resolved.first?.holes.count,holeCount<=3,resolved.allSatisfy({ $0.holes.count==holeCount }) else {
+            throw LoftSurfaceError.unsupported("Endpoint sections need the same explicit pairing of up to three inner loops.")
+        }
+        var snapshots=[try CADLoftEndpointSnapshot(sections:resolved.map { ($0.profile,$0.plane) },definition:definition)]
+        for index in 0..<holeCount { snapshots.append(try CADLoftEndpointSnapshot(sections:resolved.map { ($0.holes[index],$0.plane) },definition:definition)) }
+        return snapshots
+    }
+
     /// The memo's bodies take the DOCUMENT's post-apply geometry and revision
     /// (shared storage, the re-minted stamp), so the next replay's splices
     /// compare equal to what is live and the memo does not double the

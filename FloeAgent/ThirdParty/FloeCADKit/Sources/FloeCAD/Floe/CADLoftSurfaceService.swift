@@ -35,6 +35,84 @@ final class CADLoftSurfaceService {
         }
         return node
     }
+    private static var guidedRuns:[ObjectIdentifier:UUID]=[:]
+    #if DEBUG
+    static var testBeforeGuidedPrepare: (@Sendable ()->Void)?
+    static var testAfterGuidedPrepare: (@MainActor ()->Void)?
+    #endif
+    /// The same loft.create/update authority, with an off-main preparation
+    /// phase. Commit still uses the existing single transaction and replays
+    /// downstream features with freshly deserialized, identity-bound geometry.
+    func handleAsync(action:String,args:[String:Any]) async -> [String:Any] {
+        guard action == "loft.create" || action == "loft.update" else { return handle(action:action,args:args) }
+        if let refusal=CADServiceOperations.readOnlyRefusal(document:document,kind:"parameter",action:action) { return refusal }
+        do {
+            let node:FeatureNode?=action == "loft.update" ? try feature(args) : nil
+            let oldSections:[ProfileRef],oldDefinition:LoftDefinition?
+            if let node {
+                guard case let .loft(sections,_,definition)=node.kind else { throw LoftSurfaceError.invalid("This is not a loft feature.") }
+                oldSections=sections;oldDefinition=definition
+            } else { oldSections=[];oldDefinition=nil }
+            let changes=action == "loft.update" ? (args["changes"] as? [String:Any] ?? [:]) : args
+            let sections=try changes["sections"].map { try decode($0,as:[ProfileRef].self) } ?? oldSections
+            let definition:LoftDefinition
+            if let raw=changes["definition"] {
+                if raw is NSNull { definition=LoftDefinition() }
+                else { definition=try decode(raw,as:LoftDefinition.self) }
+            } else { definition=oldDefinition ?? LoftDefinition() }
+            guard !definition.guides.isEmpty || oldDefinition?.guides.isEmpty == false || definition.hasEndpointConstraints || oldDefinition?.hasEndpointConstraints == true else { return handle(action:action,args:args) }
+            try definition.requireSupported(sectionCount:sections.count)
+            let generation=document.session.changeCount
+            if let raw=args["expected_change_count"] {
+                guard let number=number(raw),Int(exactly:number) == generation else { return failure("stale_feature","The design changed. Read the current feature before calculating.") }
+            }
+            let owner=ObjectIdentifier(document),run=UUID()
+            guard Self.guidedRuns[owner] == nil,Self.guidedRuns.count < 2 else { return failure("guided_loft_busy","A guided calculation is finishing. Try again after it stops.") }
+            Self.guidedRuns[owner]=run
+            defer { if Self.guidedRuns[owner] == run { Self.guidedRuns.removeValue(forKey:owner) } }
+            var snapshots:[CADGuidedLoftSnapshot]=[]
+            if let oldDefinition,!oldDefinition.guides.isEmpty {
+                snapshots.append(try document.session.guidedLoftSnapshot(sections:oldSections,definition:oldDefinition,before:node?.id))
+            }
+            if !definition.guides.isEmpty {
+                snapshots.append(try document.session.guidedLoftSnapshot(sections:sections,definition:definition,before:node?.id))
+            }
+            var endpointSnapshots:[CADLoftEndpointSnapshot]=[]
+            if let oldDefinition,oldDefinition.hasEndpointConstraints {
+                endpointSnapshots += try document.session.endpointLoftSnapshots(sections:oldSections,definition:oldDefinition,before:node?.id)
+            }
+            if definition.hasEndpointConstraints {
+                endpointSnapshots += try document.session.endpointLoftSnapshots(sections:sections,definition:definition,before:node?.id)
+            }
+            #if DEBUG
+            let probe=Self.testBeforeGuidedPrepare
+            #else
+            let probe:(@Sendable ()->Void)?=nil
+            #endif
+            let guidedReady=await CADGuidedLoftPreparation.prepare(snapshots,probe:endpointSnapshots.isEmpty ? probe:nil)
+            let endpointReady=guidedReady ? await CADLoftEndpointPreparation.prepare(endpointSnapshots,probe:endpointSnapshots.isEmpty ? nil:probe):false
+            let ready=guidedReady && endpointReady
+            #if DEBUG
+            Self.testAfterGuidedPrepare?()
+            #endif
+            guard !document.isClosed else { return failure("document_closed","The document is closed. The calculation was discarded.") }
+            guard !Task.isCancelled else { return failure("guided_loft_cancelled","The native phase finished; its cancelled result was discarded.") }
+            guard document.session.changeCount == generation else { return failure("stale_feature","The design changed during calculation. Nothing was applied.") }
+            guard ready else { return failure("guided_loft_refused","The native loft failed its bounded section, boundary or topology checks. Nothing changed.") }
+            // handle rechecks revision/read-only and owns one ordinary undo.
+            var reply=handle(action:action,args:args)
+            if reply["ok"] as? Bool == true,!definition.guides.isEmpty,let snapshot=snapshots.last,let report=CADGuidedLoftStore.shared.cached(snapshot)?.metrics {
+                reply["guided_validation"]=report.dictionary;reply["exactness"]="nativeToleranceBRep"
+            }
+            if reply["ok"] as? Bool == true,definition.hasEndpointConstraints {
+                let count=(sections.first?.holeEntityIDs.count ?? 0)+1
+                reply["endpoint_validation"]=endpointSnapshots.suffix(count).compactMap { CADLoftEndpointStore.shared.cached($0)?.report }
+                reply["exactness"]="exactSectionConstrainedBRep"
+            }
+            return reply
+        } catch { return failure("invalid_guided_loft",error.localizedDescription) }
+    }
+
     func handle(action: String, args: [String:Any]) -> [String:Any] {
         if let refusal=CADServiceOperations.readOnlyRefusal(document:document,kind:"parameter",action:action) { return refusal }
         do {
@@ -64,10 +142,24 @@ final class CADLoftSurfaceService {
             case "loft.describe":
                 let node=try feature(args)
                 guard case let .loft(sections,_,definition)=node.kind else { throw LoftSurfaceError.invalid("This is not a loft feature.") }
+                var report:Any=NSNull()
+                if let definition,!definition.guides.isEmpty,
+                   let snapshot=try? document.session.guidedLoftSnapshot(sections:sections,definition:definition,before:node.id),
+                   let measured=CADGuidedLoftStore.shared.cached(snapshot)?.metrics { report=measured.dictionary }
+                let endpointReports:Any
+                if let definition,definition.hasEndpointConstraints,
+                   let inputs=try? document.session.endpointLoftSnapshots(sections:sections,definition:definition,before:node.id) {
+                    endpointReports=inputs.compactMap { CADLoftEndpointStore.shared.cached($0)?.report }
+                } else { endpointReports=NSNull() }
                 return ["ok":true,"mutated":false,"feature_id":node.id.raw.uuidString,"sections":json(sections),
+                    "endpoint_validation":endpointReports,"guided_validation":report,
                     "definition":definition.map { json($0) } ?? NSNull(),"update_action":"loft.update",
-                    "supported":["section_replacement","section_reordering","ruled","exact_paired_inner_loops"],
-                    "unsupported":["guide_constraints","specified_start_end_tangency","specified_start_end_curvature"],
+                    "supported":["section_replacement","section_reordering","ruled","exact_paired_inner_loops","single_auxiliary_guide_native_tolerance","specified_longitudinal_endpoint_direction","specified_longitudinal_normal_curvature"],
+                    "guided_scope":"2–8 parallel normal-plane sections on their origin main spine; one ordered auxiliary Contact guide; no inner loops or ruled; exact line/conic inputs; native tolerance BRep",
+                    "guided_precision":"OCCT ErrorOnSurface plus explicitly sampled independent rail/section deviations; no whole-curve distance certificate",
+                    "endpoint_scope":"2–4 equally spaced parallel normal-plane sections; up to 16 compatible exact edges/256 U poles per loop; common rational weights; up to three paired holes; no ruled or guide combination",
+                    "boundary_schema":"{tangent:{point:[x,y,z]},curvature?:{point:[kx,ky,kz]},angularTolerance:rad,curvatureTolerance:1/mm}; both directions follow first-to-last section; curvature is perpendicular longitudinal normal curvature, not adjacent-face G2",
+                    "unsupported":["multiple_guides","guided_inner_loops","guide_plus_endpoints","adjacent_support_face_G2","unequal_rational_weights"],
                     "change_count":document.session.changeCount]
             case "loft.create":
                 guard document.session.document.features.rollbackIndex == nil else {

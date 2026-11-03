@@ -46,6 +46,9 @@ nonisolated struct Profile: Identifiable {
         /// spline (the curve returns to its first point; `start == end`).
         /// Nil for lines and arcs.
         var controlPoints: [SIMD2<Double>]? = nil
+        /// Explicit polynomial Bezier poles, NOT spline interpolation points.
+        /// Gear intent separately records the bound against its analytic involute.
+        var bezierPoles: [SIMD2<Double>]? = nil
         /// Exact arbitrary interval or normal-offset record. Native SegWire
         /// consumes this definition directly; loop remains display/mesh-only.
         var curve: SketchCurveDefinition? = nil
@@ -55,12 +58,14 @@ nonisolated struct Profile: Identifiable {
         var reversed: Bool = false
 
         init(start: SIMD2<Double>, end: SIMD2<Double>, mid: SIMD2<Double>? = nil,
-             controlPoints: [SIMD2<Double>]? = nil, curve: SketchCurveDefinition? = nil,
+             controlPoints: [SIMD2<Double>]? = nil, bezierPoles: [SIMD2<Double>]? = nil,
+             curve: SketchCurveDefinition? = nil,
              closed: Bool = false, reversed: Bool = false) {
             self.start = start
             self.end = end
             self.mid = mid
             self.controlPoints = controlPoints
+            self.bezierPoles = bezierPoles
             self.curve = curve
             self.closed = closed
             self.reversed = reversed

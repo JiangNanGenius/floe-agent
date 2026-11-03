@@ -296,6 +296,8 @@ public enum CadNativeEditActions {
         "surface.create","surface.update","surface.inspect",
     ]
     public static let loftSurfaceExamples: [String] = [
+        #"{"action":"loft.update","feature_id":"00000000-0000-4000-8000-000000000001","changes":{"definition":{"version":1,"ruled":false,"guides":[],"start":{"tangent":{"point":[0,0,1]},"curvature":{"point":[0.01,0,0]},"angularTolerance":0.00001,"curvatureTolerance":0.000001},"end":{"tangent":{"point":[0,0,1]},"curvature":{"point":[0,0,0]},"angularTolerance":0.00001,"curvatureTolerance":0.000001}}}}"#,
+        #"{"action":"loft.update","feature_id":"00000000-0000-4000-8000-000000000001","changes":{"definition":{"version":1,"guides":[{"version":1,"segments":[{"sketchID":"00000000-0000-4000-8000-000000000002","entityID":"00000000-0000-4000-8000-000000000003","reversed":false}]}]}}}"#,
         #"{"action":"loft.describe","feature_id":"30000000-0000-0000-0000-000000000001"}"#,
         #"{"action":"loft.create","sections":[{"sketchID":{"raw":"10000000-0000-0000-0000-000000000001"},"entityIDs":["20000000-0000-0000-0000-000000000001"],"holeEntityIDs":[]},{"sketchID":{"raw":"10000000-0000-0000-0000-000000000002"},"entityIDs":["20000000-0000-0000-0000-000000000002"],"holeEntityIDs":[]}],"definition":{"version":1,"ruled":false}}"#,
         #"{"action":"loft.update","feature_id":"30000000-0000-0000-0000-000000000001","changes":{"sections":[{"sketchID":{"raw":"10000000-0000-0000-0000-000000000002"},"entityIDs":["20000000-0000-0000-0000-000000000002"],"holeEntityIDs":[]},{"sketchID":{"raw":"10000000-0000-0000-0000-000000000001"},"entityIDs":["20000000-0000-0000-0000-000000000001"],"holeEntityIDs":[]}],"definition":{"version":1,"ruled":true}}}"#,
@@ -317,6 +319,7 @@ public enum CadNativeEditActions {
         "feature.setExpression",
         "thread.catalog", "thread.sources", "thread.create", "thread.update",
         "mechanical.catalog", "mechanical.inspect", "mechanical.update",
+        "gear.catalog", "gear.create", "gear.update", "gear.inspect",
         "sheetMetal.create", "sheetMetal.update", "weldment.create", "weldment.update", "weldment.cutList",
         "datum.offsetPlane.create", "datum.offsetPlane.update", "datum.offsetPlane.delete",
         "datum.anglePlane.create", "datum.anglePlane.update", "datum.anglePlane.delete",

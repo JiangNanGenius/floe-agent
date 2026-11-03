@@ -1397,6 +1397,9 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeAxisFormatFloorTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADHoleFeatureTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADLoftSurfaceWorkflowTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSpurGearTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADLoftEndpointWorkflowTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADGuidedLoftWorkflowTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADLoftSurfaceNativeEntryTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADShellRegionTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPolygonMeshTests.swift

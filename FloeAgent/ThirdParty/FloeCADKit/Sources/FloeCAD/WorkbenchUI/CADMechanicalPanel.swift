@@ -15,6 +15,8 @@ struct CADMechanicalPanel: View {
     @State private var material = "Steel"
     @State private var initialMaterial = "Steel"
     @State private var quantity = 2
+    @State private var teeth = 20
+    @State private var initialTeeth = 20
     @State private var generation = 0
     @State private var busy = false
     @State private var message = ""
@@ -33,6 +35,10 @@ struct CADMechanicalPanel: View {
          ("width",t("width","Width (mm)")),("thickness",t("thickness","Thickness (mm)")),
          ("inner_radius",t("radius","Inside radius (mm)")),("bend_degrees",t("angle","Bend angle (°)")),
          ("k_factor",t("k","K factor"))]
+    }
+    private var gearFields: [(String,String)] {
+        [("module",t("module","Module (mm)")),("width",t("width","Width (mm)")),
+         ("bore_diameter",t("bore","Bore diameter (mm)")),("maximum_deviation",t("gearPrecision","Involute error limit (mm)"))]
     }
     private var memberFields: [(String,String)] {
         var result = [("width",profile == .roundBar || profile == .roundTube ? t("diameter","Outside diameter (mm)") : t("width","Width (mm)"))]
@@ -58,9 +64,24 @@ struct CADMechanicalPanel: View {
                 Picker(t("type","Type"),selection:$operation) {
                     Text(t("sheet","Single bend sheet")).tag(CADMechanicalDefinition.Operation.singleBendSheet)
                     Text(t("weldment","Straight weldment")).tag(CADMechanicalDefinition.Operation.straightWeldment)
+                    Text(t("gearBody","Spur gear")).tag(CADMechanicalDefinition.Operation.spurGear)
                 }.pickerStyle(.segmented)
             }
-            if operation == .singleBendSheet {
+            if operation == .spurGear {
+                Stepper(t("teeth","Teeth")+": \(teeth)",value:$teeth,in:18...160)
+                    .accessibilityIdentifier("CADGearTeeth")
+                dimensionFields(gearFields)
+                Text(t("gearGrade","B-Rep with approximated involute. 20° straight teeth."))
+                    .font(.footnote).foregroundStyle(.secondary)
+                Text(t("gearLimits","Full-depth external gear, zero backlash and profile shift. Circular root transition; no cutter undercut or manufacturing quality grade."))
+                    .font(.footnote).foregroundStyle(.secondary)
+                if let (node,_) = editing, let id=node.outputBodyIDs.first {
+                    PanelActionButton(title:LocalizedStringKey(t("gearSelect","Select gear")),systemImage:"gearshape") { viewModel.selectItemBody(id) }
+                }
+                DisclosureGroup(t("licenses","Licenses")) {
+                    Text(CADSpurGearAttribution.notices).font(.footnote).textSelection(.enabled)
+                }
+            } else if operation == .singleBendSheet {
                 Text(t("tangent","Flange lengths start at the bend tangencies. K is your process value."))
                     .font(.footnote).foregroundStyle(.secondary)
                 dimensionFields(sheetFields)
@@ -113,7 +134,7 @@ struct CADMechanicalPanel: View {
             if !diagnostic.isEmpty {
                 DisclosureGroup(t("details","Details")) { Text(diagnostic).font(.footnote).textSelection(.enabled) }
             }
-            Text(t("scope","One straight bend or square-cut stock. Multiple bends, miters and gears are unavailable."))
+            Text(t("scope","One straight bend, square-cut stock or a 20° external spur gear. Multiple bends, miters and other gear types are unavailable."))
                 .font(.footnote).foregroundStyle(.secondary)
         }
         .disabled(busy)
@@ -149,6 +170,8 @@ struct CADMechanicalPanel: View {
         fields = ["flange_a":"40","flange_b":"30","width":operation == .singleBendSheet ? "25" : "20",
                   "thickness":"2","inner_radius":"4","bend_degrees":"90","k_factor":"0.5",
                   "depth":"10","wall":"2","length":"100"]
+        if operation == .spurGear { fields=["module":"2","width":"8","bore_diameter":"10","maximum_deviation":"0.001"] }
+        teeth=20;initialTeeth=20
         initialFields = fields; material = "Steel"; initialMaterial = material
         profile = .rectangularTube; initialProfile = profile
         generation = document.session.changeCount; cutRows = []
@@ -157,7 +180,10 @@ struct CADMechanicalPanel: View {
         message = ""; diagnostic = ""; cutRows = []
         guard let (_,definition) = editing else { loadDefaults(); return }
         operation = definition.operation; generation = document.session.changeCount
-        if definition.sheet != nil {
+        if let gear=definition.gear {
+            fields=Dictionary(uniqueKeysWithValues:definition.expressions.map { ($0.name,string($0.expr)) })
+            initialFields=fields;teeth=gear.teeth;initialTeeth=teeth;member=nil
+        } else if definition.sheet != nil {
             fields = Dictionary(uniqueKeysWithValues:definition.expressions.map { ($0.name,string($0.expr)) })
             initialFields = fields; member = nil
         } else { member = definition.members.first?.id; loadMember() }
@@ -176,6 +202,7 @@ struct CADMechanicalPanel: View {
         let action: String, args: [String:Any]
         if let (node,_) = editing {
             var changes: [String:Any] = fields.filter { initialFields[$0.key] != $0.value }.mapValues { $0 as Any }
+            if operation == .spurGear,teeth != initialTeeth { changes["teeth"]=teeth }
             if operation == .straightWeldment {
                 if profile != initialProfile { changes["profile"] = profile.rawValue }
                 if material != initialMaterial { changes["material"] = material }
@@ -183,6 +210,11 @@ struct CADMechanicalPanel: View {
             }
             guard !changes.isEmpty, !(changes.count == 1 && changes["member_id"] != nil) else { return }
             action = "mechanical.update"; args = ["feature_id":node.id.raw.uuidString,"changes":changes,"expected_change_count":generation]
+        } else if operation == .spurGear {
+            action="gear.create"
+            var values:[String:Any]=["teeth":teeth,"expected_change_count":generation]
+            for (key,_) in gearFields { values[key]=fields[key] }
+            args=values
         } else if operation == .singleBendSheet {
             action = "sheetMetal.create"
             var values: [String:Any] = [:]; for (key,_) in sheetFields { values[key] = fields[key] }

@@ -62,6 +62,26 @@ nonisolated struct CADLoftSurfaceUISnapshot {
             "expected_change_count":generation,"changes":["sections":loftSurfaceJSON(sections),
                 "definition":loftSurfaceJSON(definition)]])
     }
+    func applyNativeGuidedLoftSettings(_ id:FeatureID,sections:[ProfileRef],definition:LoftDefinition,generation:Int) async -> [String:Any] {
+        guard let guidedLoftActionHandler else { return ["ok":false,"mutated":false,"error":"unavailable"] }
+        return await guidedLoftActionHandler("loft.update",["feature_id":id.raw.uuidString,
+            "expected_change_count":generation,"changes":["sections":loftSurfaceJSON(sections),"definition":loftSurfaceJSON(definition)]])
+    }
+    func configureNativeGuidedLoftDraft(sections:[ProfileRef],definition:LoftDefinition,generation:Int) async -> Bool {
+        do {
+            try definition.requireSupported(sectionCount:sections.count)
+            if !definition.guides.isEmpty {
+                let snapshot=try session.guidedLoftSnapshot(sections:sections,definition:definition)
+                guard await CADGuidedLoftPreparation.prepare([snapshot]) else { return false }
+            }
+            if definition.hasEndpointConstraints {
+                let snapshots=try session.endpointLoftSnapshots(sections:sections,definition:definition)
+                guard await CADLoftEndpointPreparation.prepare(snapshots) else { return false }
+            }
+            guard !Task.isCancelled,session.changeCount == generation,documentClosedCheck?() != true else { return false }
+            return configureNativeLoftDraft(sections:sections,ruled:definition.ruled,guides:definition.guides,start:definition.start,end:definition.end,expectedChangeCount:generation)
+        } catch { return false }
+    }
     func applyNativeSurface(_ definition: CADSurfaceDefinition,editing feature: FeatureID?,generation: Int) -> [String:Any] {
         var args: [String:Any]=["definition":loftSurfaceJSON(definition),"expected_change_count":generation]
         if let feature { args["feature_id"]=feature.raw.uuidString }

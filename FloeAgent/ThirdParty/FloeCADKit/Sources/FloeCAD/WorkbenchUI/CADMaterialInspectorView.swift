@@ -105,9 +105,6 @@ struct CADMaterialInspectorView: View {
         NavigationStack {
             Form {
                 targetSection
-                surfaceSection
-                texturesSection
-                mappingSection
                 if model.target.bodyIDs.count == 1, let id = model.target.bodyIDs.first {
                     Section {
                         Button(FloeCADStrings.text("cad.uv.title", "UV Editor"), systemImage: "square.grid.3x3") {
@@ -127,9 +124,13 @@ struct CADMaterialInspectorView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
+                surfaceSection
+                texturesSection
+                mappingSection
                 librarySection
                 issueSection
             }
+            .accessibilityIdentifier("CADMaterialInspectorForm")
             .navigationTitle(FloeCADStrings.text("cad.ui.tool.material", "Material"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -161,6 +162,7 @@ struct CADMaterialInspectorView: View {
             }
             .sheet(item:$paintTarget,onDismiss:{ model.refreshAfterTexturePainting() }) { target in
                 CADTexturePaintView(document:model.document,bodyID:target.bodyID)
+                    .presentationDetents([.large])
             }
             .onAppear {
                 isVisible = true

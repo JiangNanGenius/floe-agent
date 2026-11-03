@@ -433,7 +433,7 @@ final class FloeCAD3DBridge {
             try Self.requireRevisionPin(request, document: document)
             let changeBefore = document.liveChangeCount
             let checkpoint = document.captureEditCheckpoint()
-            var reply = CADParameterService(document: document).handle(action: action, args: payload)
+            var reply = await CADParameterService(document: document).handleAsync(action: action, args: payload)
             if Self.bool(reply["mutated"]) == true {
                 let changeAfter = document.liveChangeCount
                 if changeAfter == changeBefore {
