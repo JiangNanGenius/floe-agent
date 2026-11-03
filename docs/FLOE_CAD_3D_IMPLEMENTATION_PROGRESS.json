@@ -3547,15 +3547,25 @@
       "package": "engineering",
       "implementation": {
         "stage": "D",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_criterion",
+        "source_changes": [
+          "56ee750d93623740d2252608f16a71b988ca4fd0"
+        ],
+        "verification": [
+          {
+            "evidence": "docs/qualification/cad-joints-texture-import-20261103/README.md",
+            "scope": "Shared App/native and native UI qualification, scope-specific original criteria; original absent selectors recovered separately",
+            "physical_device": false
+          }
+        ],
+        "limitations": [
+          "Hinge uses signed single-turn -180...180 degrees; slider uses signed millimetres; no claim of universal mechanism solver."
+        ]
       },
       "alignment_review": {
-        "disposition": "planned",
+        "disposition": "accepted_original_criterion",
         "existing": "基线已有：有fixed/coaxial/planarAlign/distance/angle五种定位约束。",
-        "remaining": "补铰链/滑块、行程限位及齿轮/齿条/螺旋等机械配合模型，验证拖动和重开约束。",
+        "remaining": "",
         "evidence": [
           {
             "path": "docs/FLOE_CAD_3D_IMPLEMENTATION_PROGRESS.json",
@@ -3572,13 +3582,15 @@
           }
         ],
         "notes": [],
-        "evidence_level": "baseline_plus_verified_delta",
-        "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
-        "acceptance_pending": "创建铰链或滑块并设限位，拖动/参数修改和重开后仍保持机构约束。"
+        "evidence_level": "actual_App_native_and_UI",
+        "verified_delta": "Original scope implemented and verified through shared actual service/workbench, native geometry or actual texture pixels, undo/save/reopen",
+        "acceptance_pending": ""
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "evidence": "docs/qualification/cad-joints-texture-import-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       },
       "verification_plan": {
         "priority": "P1",
@@ -3621,15 +3633,25 @@
       "package": "engineering",
       "implementation": {
         "stage": "D",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_criterion",
+        "source_changes": [
+          "56ee750d93623740d2252608f16a71b988ca4fd0"
+        ],
+        "verification": [
+          {
+            "evidence": "docs/qualification/cad-joints-texture-import-20261103/README.md",
+            "scope": "Shared App/native and native UI qualification, scope-specific original criteria; original absent selectors recovered separately",
+            "physical_device": false
+          }
+        ],
+        "limitations": [
+          "Associativity requires an author-owned native face name or explicit datum identity; numeric/mesh-only legacy references stay static."
+        ]
       },
       "alignment_review": {
-        "disposition": "planned",
+        "disposition": "accepted_original_criterion",
         "existing": "基线已有：可从实际面/边/选中对象取参考，记录源revision，拒绝陈旧拾取。",
-        "remaining": "把配合point/direction快照升级为持续可解析面/边身份，源变更自动跟随，歧义明确要求重选。",
+        "remaining": "",
         "evidence": [
           {
             "path": "docs/FLOE_CAD_3D_IMPLEMENTATION_PROGRESS.json",
@@ -3653,13 +3675,15 @@
           }
         ],
         "notes": [],
-        "evidence_level": "baseline_plus_verified_delta",
-        "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
-        "acceptance_pending": "改孔中心和基准面后，同轴/对齐配合跟随正确几何；歧义时明确要求重选。"
+        "evidence_level": "actual_App_native_and_UI",
+        "verified_delta": "Original scope implemented and verified through shared actual service/workbench, native geometry or actual texture pixels, undo/save/reopen",
+        "acceptance_pending": ""
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "evidence": "docs/qualification/cad-joints-texture-import-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       },
       "verification_plan": {
         "priority": "P1",
@@ -4127,15 +4151,25 @@
       "package": "engineering",
       "implementation": {
         "stage": "H",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_criterion",
+        "source_changes": [
+          "56ee750d93623740d2252608f16a71b988ca4fd0"
+        ],
+        "verification": [
+          {
+            "evidence": "docs/qualification/cad-joints-texture-import-20261103/README.md",
+            "scope": "Shared App/native and native UI qualification, scope-specific original criteria; original absent selectors recovered separately",
+            "physical_device": false
+          }
+        ],
+        "limitations": [
+          "Travel is sampled displacement/shortest-rotation sum, not a continuous integral; 2...121 solved samples, explicit result envelope, no partial output on cancellation."
+        ]
       },
       "alignment_review": {
-        "disposition": "planned",
+        "disposition": "accepted_original_criterion",
         "existing": "基线已有：当前装配服务是静态定位/干涉；产品动画另有实例轨道。",
-        "remaining": "引入成熟机构/动力学后端做配合驱动、接触、行程、运动包络与载荷分析；关键帧动画不替代机械求解。",
+        "remaining": "",
         "evidence": [
           {
             "path": "docs/FLOE_CAD_3D_IMPLEMENTATION_PROGRESS.json",
@@ -4159,13 +4193,15 @@
           }
         ],
         "notes": [],
-        "evidence_level": "baseline_plus_verified_delta",
-        "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
-        "acceptance_pending": "驱动一个关节，其他零件由约束求解运动，能检查行程和干涉。"
+        "evidence_level": "actual_App_native_and_UI",
+        "verified_delta": "Original scope implemented and verified through shared actual service/workbench, native geometry or actual texture pixels, undo/save/reopen",
+        "acceptance_pending": ""
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "evidence": "docs/qualification/cad-joints-texture-import-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       },
       "verification_plan": {
         "priority": "P1",
@@ -7486,15 +7522,27 @@
       "package": "experience",
       "implementation": {
         "stage": "F",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_criterion",
+        "source_changes": [
+          "56ee750d93623740d2252608f16a71b988ca4fd0"
+        ],
+        "verification": [
+          {
+            "evidence": "docs/qualification/cad-joints-texture-import-20261103/README.md",
+            "scope": "Shared App/native and native UI qualification, scope-specific original criteria; original absent selectors recovered separately",
+            "physical_device": false
+          }
+        ],
+        "limitations": [
+          "Existing resource limits and explicit supported image conversions retained; estimates are not physical-device memory measurements.",
+          "Files/Photos provider selector not exercised by this staged-input UI case; real product review/apply/undo/reopen are exercised.",
+          "Internal breakdown presentation cleanup is a separate small pending source delta."
+        ]
       },
       "alignment_review": {
-        "disposition": "partial",
+        "disposition": "accepted_original_criterion",
         "existing": "正式sniffer接受PNG/JPEG；单图8MiB，库512项/96MiB。",
-        "remaining": "没有EXR/HDR/KTX/UDIM或高位深贴图工作流；大纹理会被明确拒绝。",
+        "remaining": "",
         "evidence": [
           {
             "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/MaterialKit.swift",
@@ -7510,12 +7558,15 @@
           }
         ],
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
-        "evidence_level": "baseline_plus_verified_delta",
-        "acceptance_pending": "多张大图导入应给明确转码选择、内存预算和回读外观，避免静默丢图。"
+        "evidence_level": "actual_App_native_and_UI",
+        "acceptance_pending": "",
+        "verified_delta": "Original scope implemented and verified through shared actual service/workbench, native geometry or actual texture pixels, undo/save/reopen"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "evidence": "docs/qualification/cad-joints-texture-import-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       },
       "verification_plan": {
         "priority": "P1",
@@ -9858,7 +9909,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "7e3091386a6dc4363da62e0c7292cfdc9fc25abb",
+    "source": "56ee750d93623740d2252608f16a71b988ca4fd0",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -9891,8 +9942,8 @@
       "actual_OBJ": "真实OBJ/MTL/PNG显示、缺失贴图及仅资源变化后的旧帧拒绝通过。",
       "scope": "本地实际渲染与资源来源；不冒充原生可编辑BRep，也不代替真实LLM视觉连续编辑。"
     },
-    "accepted_original_criteria": 79,
-    "pending_original_criteria": 27,
+    "accepted_original_criteria": 83,
+    "pending_original_criteria": 23,
     "device_acceptance": "iPad通过的功能复用验收，iPhone仅确认界面；不使用用户手机。",
     "latest_native_batch": {
       "source": "582810ed58f8d3d63e23967909b74898af502c60",
@@ -10224,6 +10275,16 @@
       "physicalDevice": false,
       "newPaidRequests": 0,
       "originalFailuresRetained": true
+    },
+    "joints_and_texture_import": {
+      "source": "56ee750d93623740d2252608f16a71b988ca4fd0",
+      "evidence": "docs/qualification/cad-joints-texture-import-20261103/README.md",
+      "actualAppCompile": true,
+      "nativeDistinct": 123,
+      "relevantNativeUI": 2,
+      "sourceBoundMultiRun": true,
+      "originalSelectorFailureRetained": true,
+      "physicalDevice": false
     }
   },
   "verification_strategy": {
@@ -10388,6 +10449,36 @@
         "X10",
         "X11",
         "X12",
+        "X18",
+        "X19",
+        "X26",
+        "X27",
+        "X34",
+        "X37"
+      ],
+      "original33AllocationPreserved": true
+    },
+    "remaining_after_joints_texture_batch": {
+      "heavy": 18,
+      "light_or_reuse": 5,
+      "pending_ids": [
+        "M16",
+        "M17",
+        "M22",
+        "M29",
+        "M30",
+        "E12",
+        "E14",
+        "E20",
+        "E22",
+        "E23",
+        "E38",
+        "X01",
+        "X02",
+        "X03",
+        "X04",
+        "X10",
+        "X11",
         "X18",
         "X19",
         "X26",

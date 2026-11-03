@@ -1,0 +1,18 @@
+[
+  {
+    "file": "joint-reopened.png",
+    "sourceAttachment": "3340A915-56F7-4D26-8A0B-5C58B1D347D9.png",
+    "sha256": "9c98df85a92484d116992ba4011786b7633d909a02443487ce0320a7794300ce",
+    "unaltered": true,
+    "rootVisuallyReviewed": true,
+    "scope": "Actual synthetic fixture, canonical iPad Simulator"
+  },
+  {
+    "file": "textures-reopened.png",
+    "sourceAttachment": "92670551-3BD3-48CC-BAA2-460B08CE7CCA.png",
+    "sha256": "98cac5eefc916fd97f042828af47a92df1989dcf69631bb6a3729c1f6b582dbc",
+    "unaltered": true,
+    "rootVisuallyReviewed": true,
+    "scope": "Actual synthetic fixture, canonical iPad Simulator"
+  }
+]

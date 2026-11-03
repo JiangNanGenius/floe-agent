@@ -41,7 +41,7 @@ struct CADTextureImportReviewView: View {
                 }
                 Section {
                     if model.isImportingTextures {
-                        ProgressView(FloeCADStrings.text("cad.textureImport.preparing", "Preparing and reading back images…"))
+                        ProgressView(FloeCADStrings.text("cad.textureImport.preparing", "Preparing preview…"))
                     } else if model.preparedTextureImport != nil {
                         Button(FloeCADStrings.text("cad.textureImport.revise", "Change import options")) {
                             model.reviseTextureImport()
@@ -54,7 +54,7 @@ struct CADTextureImportReviewView: View {
                         .accessibilityIdentifier("CADTextureImportPrepare")
                     }
                 } footer: {
-                    Text(FloeCADStrings.text("cad.textureImport.copyNote", "Original files stay unchanged. Converted copies become part of this document only after you use them and apply the material."))
+                    Text(FloeCADStrings.text("cad.textureImport.copyNote", "Next, apply the material to your selection."))
                 }
             }
             .navigationTitle(FloeCADStrings.text("cad.textureImport.title", "Import textures"))
@@ -102,7 +102,7 @@ struct CADTextureImportReviewView: View {
                            selection: choiceBinding(source.id, descriptor: descriptor)) {
                         Text(FloeCADStrings.text("cad.textureImport.choose", "Choose an option")).tag(CADTextureImport.Choice.choose)
                         if descriptor.canKeepOriginal {
-                            Text(FloeCADStrings.text("cad.textureImport.original", "Keep original bytes")).tag(CADTextureImport.Choice.original)
+                            Text(FloeCADStrings.text("cad.textureImport.original", "Keep original")).tag(CADTextureImport.Choice.original)
                         }
                         ForEach(CADTextureImport.Choice.allCases.filter { $0.maximumDimension != nil }, id: \.self) { choice in
                             Text(FloeCADStrings.format("cad.textureImport.pngSize", "8-bit PNG · up to %d px", choice.maximumDimension ?? 0)).tag(choice)
@@ -134,28 +134,31 @@ struct CADTextureImportReviewView: View {
                             .font(.caption).foregroundStyle(.secondary)
                         Text(receipt.converted
                              ? FloeCADStrings.text("cad.textureImport.converted", "Converted PNG")
-                             : FloeCADStrings.text("cad.textureImport.original", "Keep original bytes"))
+                             : FloeCADStrings.text("cad.textureImport.original", "Keep original"))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }
         } header: {
-            Text(FloeCADStrings.text("cad.textureImport.readBack", "Read-back preview"))
+            Text(FloeCADStrings.text("cad.textureImport.readBack", "Preview"))
         }
     }
 
     private var budgetSection: some View {
         Section {
             if let current = model.preparedTextureImport?.budget ?? budget {
-                LabeledContent(FloeCADStrings.text("cad.textureImport.decoded", "Decoded images"), value: Self.bytes(current.decodedBytes))
-                LabeledContent(FloeCADStrings.text("cad.textureImport.resident", "Images with mip levels"),
+                LabeledContent(FloeCADStrings.text("cad.textureImport.memoryUse", "Texture memory"),
                                value: "\(Self.bytes(current.residentBytes)) / \(Self.bytes(CADTextureImport.maximumResidentBytes))")
-                LabeledContent(FloeCADStrings.text("cad.textureImport.working", "Estimated import memory"), value: Self.bytes(current.workingBytes))
+                DisclosureGroup(FloeCADStrings.text("cad.textureImport.details", "Details")) {
+                    LabeledContent(FloeCADStrings.text("cad.textureImport.decoded", "Decoded images"), value: Self.bytes(current.decodedBytes))
+                    LabeledContent(FloeCADStrings.text("cad.textureImport.resident", "Images with mip levels"), value: Self.bytes(current.residentBytes))
+                    LabeledContent(FloeCADStrings.text("cad.textureImport.working", "Estimated import memory"), value: Self.bytes(current.workingBytes))
+                }
             }
         } header: {
-            Text(FloeCADStrings.text("cad.textureImport.budget", "Image memory budget"))
+            Text(FloeCADStrings.text("cad.textureImport.budget", "Texture memory"))
         } footer: {
-            Text(FloeCADStrings.text("cad.textureImport.budgetNote", "Includes existing body and face textures and the resulting material. Geometry and other app memory are additional."))
+            Text(FloeCADStrings.text("cad.textureImport.budgetNote", "Includes textures already in use. Choose smaller sizes if needed."))
         }
     }
 

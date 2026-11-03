@@ -132039,13 +132039,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Preparing and reading back images…"
+            "value": "Preparing preview…"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在处理并回读图片…"
+            "value": "正在准备预览…"
           }
         }
       }
@@ -132087,13 +132087,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Original files stay unchanged. Converted copies become part of this document only after you use them and apply the material."
+            "value": "Next, apply the material to your selection."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "原始文件保持不变。确认使用并应用材质后，转换副本才会保存在此文档中。"
+            "value": "下一步将材质应用到所选对象。"
           }
         }
       }
@@ -132183,13 +132183,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Keep original bytes"
+            "value": "Keep original"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "保留原始字节"
+            "value": "保留原图"
           }
         }
       }
@@ -132247,13 +132247,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Read-back preview"
+            "value": "Preview"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "回读预览"
+            "value": "预览"
           }
         }
       }
@@ -132311,13 +132311,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Image memory budget"
+            "value": "Texture memory"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "图像内存预算"
+            "value": "贴图占用"
           }
         }
       }
@@ -132327,13 +132327,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Includes existing body and face textures and the resulting material. Geometry and other app memory are additional."
+            "value": "Includes textures already in use. Choose smaller sizes if needed."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "包含已有实体、面的贴图和导入后的材质。几何及 App 其他内存另计。"
+            "value": "包含正在使用的贴图；需要时可缩小导入尺寸。"
           }
         }
       }
@@ -132398,6 +132398,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "基准轴 %@"
+          }
+        }
+      }
+    },
+    "cad.textureImport.memoryUse": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Texture memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "贴图占用"
+          }
+        }
+      }
+    },
+    "cad.textureImport.details": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Details"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "详情"
           }
         }
       }
