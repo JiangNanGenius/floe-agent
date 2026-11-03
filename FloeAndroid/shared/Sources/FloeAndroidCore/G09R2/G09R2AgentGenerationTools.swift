@@ -515,7 +515,7 @@ public struct G09R2AgentVideoStatusTool: AgentTool {
             : "Do not resubmit; the durable job is polled automatically, including after a relaunch. A submitted or unknown job is not a delivered artifact."
         let text = String(decoding: try JSONSerialization.data(
             withJSONObject: output, options: [.sortedKeys]), as: UTF8.self)
-        return ToolExecutionOutput(digesting: text, exitStatus: status.ready ? 0 : 1)
+        return ToolExecutionOutput(digesting: text, exitStatus: status.toolExitStatus)
     }
 }
 

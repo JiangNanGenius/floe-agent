@@ -211,6 +211,10 @@ public struct G09R2AgentJobStatus: Sendable, Equatable {
     public var deliveredSHA256: String?
     public var nextPollAt: Date?
     public var lastError: String?
+    /// A valid pending query succeeds without claiming delivery. Only a
+    /// terminated job without its verified artifact is a failed outcome.
+    var toolExitStatus: Int32 { terminated && !ready ? 1 : 0 }
+
 }
 
 // MARK: - Service

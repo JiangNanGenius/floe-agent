@@ -426,6 +426,8 @@ final class G09R2AgentGenerationOutcomeRepairTests: XCTestCase {
         for status in statuses {
             XCTAssertFalse(status.terminated,
                            "status churn must never report terminal while the worker owns the row")
+            XCTAssertEqual(status.toolExitStatus, 0,
+                           "a valid pending status must not be reported as a tool failure")
             XCTAssertTrue(status.state == .preparing || status.state == .submitted,
                           "unexpected live state \(status.state.rawValue)")
         }
@@ -471,9 +473,11 @@ final class G09R2AgentGenerationOutcomeRepairTests: XCTestCase {
         try await waitForWorkerSettled(fixture, jobID: summary.jobID)
         // Recovery/status churn: nothing may resubmit or rewrite the unknown.
         for _ in 0..<5 {
-            _ = try? await fixture.service.status(
+            let status = try await fixture.service.status(
                 epoch: fixture.epoch, conversationID: fixture.conversationID,
                 jobID: summary.jobID, refresh: true)
+            XCTAssertEqual(status.toolExitStatus, 1,
+                           "a terminal unknown outcome must remain a failed outcome")
         }
         for _ in 0..<2 {
             await fixture.service.resumeStaleJobs(
@@ -558,6 +562,10 @@ final class G09R2AgentGenerationOutcomeRepairTests: XCTestCase {
         XCTAssertEqual(owned.job.state, .ready,
                        "verified delivered bytes must keep their receipt; a late stop "
                        + "after the write cannot downgrade them to no-artifact unknown")
+        let deliveredStatus = try await fixture.service.status(
+            epoch: fixture.epoch, conversationID: fixture.conversationID,
+            jobID: summary.jobID, refresh: false)
+        XCTAssertEqual(deliveredStatus.toolExitStatus, 0)
         let payload = try JSONDecoder().decode(
             G09R2AgentGenerationPayload.self, from: owned.job.requestJSON)
         let artifact = try XCTUnwrap(payload.artifacts?.first)
