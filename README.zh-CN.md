@@ -3,19 +3,19 @@
   <h1>Floe Agent</h1>
   <p><strong>你的模型，你的文件，你的电脑。</strong></p>
   <p>Floe Agent 是以 iPad 为先、为 iOS / iPadOS 深度优化的开源 AI 智能体工作空间，原生支持 iPhone，并提供独立 Android Alpha 版本。把 AI 任务、手记、Office 文档、创作、开发、语音对话与技能放进同一处——设备端 Linux 环境可直接运行代码、软件包与网页服务，支持的本地模型可在设备端完成推理，云端 AI 使用你自己准备的 API Key（BYOK）。</p>
-  <p><a href="README.md">English</a> · <a href="https://www.floe-agent.com/">官网</a> · <a href="docs/USER_GUIDE.zh-CN.md">使用手册</a> · <a href="docs/README.md">文档中心</a></p>
+  <p><a href="README.md">English</a> · <a href="https://www.floe-agent.com/?utm_source=github&utm_medium=referral&utm_campaign=readme_zh">官网</a> · <a href="docs/USER_GUIDE.zh-CN.md">使用手册</a> · <a href="docs/README.md">文档中心</a></p>
 </div>
 
 [![Release](https://img.shields.io/github/v/release/JiangNanGenius/floe-agent?include_prereleases&label=release)](https://github.com/JiangNanGenius/floe-agent/releases)
 [![iOS 26+](https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-0A84FF)](FloeAgent/project.yml)
-[![Android 9+ ARM64 测试版](https://img.shields.io/badge/Android-9%2B%20ARM64%20alpha-3DDC84)](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.21)
+[![Android 9+ ARM64 测试版](https://img.shields.io/badge/Android-9%2B%20ARM64%20alpha-3DDC84)](https://www.floe-agent.com/releases?platform=android&utm_source=github&utm_medium=referral&utm_campaign=readme_zh)
 [![MPL 2.0](https://img.shields.io/badge/license-MPL--2.0-4A5568)](LICENSE)
 
 [安装](#开始使用) · [功能](#主要功能) · [演示](#看看-floe-如何工作) · [文档](#文档导航) · [开发](#从源码构建) · [参与贡献](#贡献与许可证)
 
 ## 开始使用
 
-从[官网](https://www.floe-agent.com/#download)选择安装方式；各渠道的版本、地区和资格分别以[当前状态](docs/CURRENT_STATUS.md)及安装页面为准。也可查看 [iOS AI Agent 与 iPad 工作空间介绍](https://www.floe-agent.com/ios-ai-agent)。
+从[官网](https://www.floe-agent.com/?utm_source=github&utm_medium=referral&utm_campaign=readme_zh#download)选择安装方式；各渠道的版本、地区和资格分别以[当前状态](docs/CURRENT_STATUS.md)及安装页面为准。也可查看 [iOS AI Agent 与 iPad 工作空间介绍](https://www.floe-agent.com/ios-ai-agent?utm_source=github&utm_medium=referral&utm_campaign=readme_zh)。
 
 <p align="center">
   <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=feather"><img src="docs/images/badge-add-to-feather.png" alt="添加到 Feather" height="52"></a>
@@ -40,7 +40,7 @@ https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json
 | iOS / iPadOS · TestFlight | 需要有效测试资格；可安装构建与到期时间以 TestFlight 为准。 |
 | iOS / iPadOS · Feather / AltStore | 先安装对应 App，点击上方按钮添加源，再按自己的签名方式安装。 |
 | iOS / iPadOS · GitHub IPA | 从发布页下载 IPA 和校验文件；IPA 未签名，需要自行签名。 |
-| Android 测试版 | Android 9+（ARM64）。从 [Android 发布页](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.21) 安装签名 APK；GitHub 版会检查更新，引导下载、校验和系统安装，有补丁时可减少下载量。当前支持自备云端 Key 的 AI 任务、历史与附件、服务商与凭据设置、MCP、设备端 Linux 终端与作业、文件、代码 IDE、Git、浏览器、内置 Office 查看与基础编辑，以及手记基础工作区。网络工作台包含 Wi-Fi、局域网发现、DNS、Ping、TCP、HTTPS、测速、监测与脱敏报告。Alpha21 加入离线 PCAP／PCAPNG 分析、可选平面图的 Wi-Fi 覆盖点记录，以及在独立对话中执行的定时 Agent 任务；精确时间需要系统授权，弹性时间需主动选择。安卓不提供本地模型推理，语音、只读 CAD／3D 与完整 Skill Hub 客户端仍在计划中。实际测试设备与限制见发布说明。 |
+| Android 测试版 | Android 9+（ARM64）。从 [Android 发布页](https://www.floe-agent.com/releases?platform=android&utm_source=github&utm_medium=referral&utm_campaign=readme_zh) 安装签名 APK；GitHub 版会检查更新，引导下载、校验和系统安装，有补丁时可减少下载量。当前支持自备云端 Key 的 AI 任务、历史与附件、服务商与凭据设置、MCP、设备端 Linux 终端与作业、文件、代码 IDE、Git、浏览器、内置 Office 查看与基础编辑，以及手记基础工作区。网络工作台包含 Wi-Fi、局域网发现、DNS、Ping、TCP、HTTPS、测速、监测与脱敏报告。Alpha21 加入离线 PCAP／PCAPNG 分析、可选平面图的 Wi-Fi 覆盖点记录，以及在独立对话中执行的定时 Agent 任务；精确时间需要系统授权，弹性时间需主动选择。安卓不提供本地模型推理，语音、只读 CAD／3D 与完整 Skill Hub 客户端仍在计划中。实际测试设备与限制见发布说明。 |
 
 iOS / iPadOS 首次使用：**安装 → 配置模型 → 新建任务 → 打开成果**。核心手记、文件整理和画布无需 AI 服务商；AI 功能使用你配置的服务商或设备支持的本地模型。Android 首次使用：**安装 → 添加云端模型 Key → 开始对话**；手记基础编辑无需配置模型；AI功能使用自备云端服务。Office 文档、文件工作区、Linux 终端、代码 IDE 和网络工作台已在当前测试版中可用。
 
@@ -50,7 +50,7 @@ iOS 设置向导提供四种推荐配置，帮助预填模型、搜索、语音�
 
 ## 主要功能
 
-下表介绍 Floe 的核心工作流程，具体可用性因平台与发布版本而异；Android 测试版现状请见上方安装说明与 [Android 发布记录](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.21)。
+下表介绍 Floe 的核心工作流程，具体可用性因平台与发布版本而异；Android 测试版现状请见上方安装说明与 [Android 发布记录](https://www.floe-agent.com/releases?platform=android&utm_source=github&utm_medium=referral&utm_campaign=readme_zh)。
 
 | 工作方式 | 在 Floe 中做什么 | 操作指南 |
 | --- | --- | --- |
@@ -60,7 +60,7 @@ iOS 设置向导提供四种推荐配置，帮助预填模型、搜索、语音�
 | 手记 | 导入 PDF 与图片，搜索、Pencil 批注，并围绕文档提问。 | [手记](docs/USER_GUIDE.zh-CN.md#7-手记导入搜索与书写) |
 | Office | 创建、编辑、保存 DOCX、XLSX 与 PPTX。复杂格式需检查保存结果。 | [文档、表格与演示](docs/USER_GUIDE.zh-CN.md#8-office编辑批注保存和重新打开) |
 | 画布与媒体 | 在画布组织素材，进入图像、视频和音频工作台处理细节。 | [画布与媒体](docs/USER_GUIDE.zh-CN.md#15-画布图像音视频) |
-| 图纸与 3D | 查看工程文件，编辑支持的图元，使用图纸助手。能力随格式而异。 | [工程图纸](docs/USER_GUIDE.zh-CN.md#14-工程图纸与图纸助手) |
+| 图纸与 3D | 在 iOS/iPadOS 上编辑二维图纸，在同一工作台创建并持续完善原生 3D 模型——AI 连续修改、材质与展示导出。能力随格式而异。 | [原生 3D 编辑器](docs/USER_GUIDE.zh-CN.md#3d-模型统一工作台) · [二维图纸](docs/USER_GUIDE.zh-CN.md#14-工程图纸与图纸助手) |
 | 开发与远程 | 编辑代码、跟踪 Git 变更，并使用授权的远程主机。 | [终端与端口](docs/USER_GUIDE.zh-CN.md#9-本地终端与-linux-性能配置) · [远程连接](docs/USER_GUIDE.zh-CN.md#12-远程设备桌面与网络诊断) |
 | 语音 | 语音输入生成可编辑草稿、进行语音对话，并让最终回答使用系统、设备端增强或已配置在线语音朗读。语音已在 iOS 提供，Android 尚未包含。 | [语音输入与朗读](docs/USER_GUIDE.zh-CN.md#16-语音输入与转录) |
 | Skills 与 Skill Hub | 安装带精确依赖声明和版本管理的受审技能、统一更新，并使用 MCP 服务与邮件操作自动化。Skill Hub 商店已在 iOS 提供，Android 支持在路线图中。 | [Skills、MCP 与自动任务](docs/USER_GUIDE.zh-CN.md#17-skillsmcp邮件与自动任务) |
@@ -73,7 +73,7 @@ iOS 设置向导提供四种推荐配置，帮助预填模型、搜索、语音�
 
 [![观看 Floe：任务、Office、代码、手记与画布](docs/assets/video/floe-zh.jpg)](https://www.bilibili.com/video/BV1YBpx6QEe1/)
 
-[在 B 站观看](https://www.bilibili.com/video/BV1YBpx6QEe1/) · [Watch on YouTube](https://www.youtube.com/watch?v=OXHntB2dyvo) · [官网功能介绍](https://www.floe-agent.com/features)
+[在 B 站观看](https://www.bilibili.com/video/BV1YBpx6QEe1/) · [Watch on YouTube](https://www.youtube.com/watch?v=OXHntB2dyvo) · [官网功能介绍](https://www.floe-agent.com/features?utm_source=github&utm_medium=referral&utm_campaign=readme_zh)
 
 ## 文档导航
 
