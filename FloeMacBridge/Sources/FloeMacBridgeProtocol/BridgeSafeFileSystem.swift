@@ -72,16 +72,21 @@ public enum BridgeSafeFileSystem {
     }
     private static func openRoot(_ root: URL) throws -> Int32 {
         guard root.isFileURL, root.path.hasPrefix("/") else { throw BridgeFailure.unsafePath }
-        var descriptor = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        // A sandbox grants access to the selected workspace, not directory
+        // enumeration on every ancestor up to /. Open that capability first.
+        // F_GETPATH verifies the opened directory itself: an ancestor swapped
+        // for a link must not redirect this descriptor outside the frozen,
+        // canonical root. Every path below it still uses openat/O_NOFOLLOW.
+        let expected = root.standardizedFileURL.path
+        let descriptor = Darwin.open(expected, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else { throw BridgeFailure.unsafePath }
-        do {
-            for component in root.standardizedFileURL.path.split(separator: "/") {
-                let next = Darwin.openat(descriptor, String(component), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-                guard next >= 0 else { throw BridgeFailure.unsafePath }
-                Darwin.close(descriptor); descriptor = next
-            }
-            return descriptor
-        } catch { Darwin.close(descriptor); throw error }
+        var pathBuffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard Darwin.fcntl(descriptor, F_GETPATH, &pathBuffer) != -1 else {
+            Darwin.close(descriptor); throw BridgeFailure.unsafePath
+        }
+        let actual = URL(fileURLWithPath: String(cString: pathBuffer)).standardizedFileURL.path
+        guard actual == expected else { Darwin.close(descriptor); throw BridgeFailure.unsafePath }
+        return descriptor
     }
     private static func checkExisting(_ name: String, parent: Int32, expected: String?) throws -> mode_t {
         let descriptor = Darwin.openat(parent, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)

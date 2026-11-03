@@ -57,6 +57,43 @@ struct BridgeWireTests {
         }
         #expect(!FileManager.default.fileExists(atPath: outside.appendingPathComponent("output.txt").path))
     }
+    @Test("A link in the frozen root's ancestry cannot redirect a download")
+    func ancestorLinkCommitRefused() throws {
+        let scratch = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        let parent = scratch.appendingPathComponent("parent"), outside = scratch.appendingPathComponent("outside")
+        let root = parent.appendingPathComponent("workspace")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside.appendingPathComponent("workspace"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let source = scratch.appendingPathComponent("transfer")
+        try Data("artifact".utf8).write(to: source)
+        try FileManager.default.moveItem(at: parent, to: scratch.appendingPathComponent("original"))
+        try FileManager.default.createSymbolicLink(at: parent, withDestinationURL: outside)
+        #expect(throws: (any Error).self) {
+            try BridgeSafeFileSystem.commit(staged: source, relativePath: "output.txt", under: root, expectedSHA256: nil)
+        }
+        #expect(!FileManager.default.fileExists(atPath: outside.appendingPathComponent("workspace/output.txt").path))
+    }
+    @Test("Workspace commits retain digest conflict and recovery guarantees")
+    func workspaceCommitAndRecovery() throws {
+        let scratch = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        let root = scratch.appendingPathComponent("workspace"), recovery = scratch.appendingPathComponent("recovery")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let source = scratch.appendingPathComponent("transfer"), initial = Data("original".utf8), updated = Data("updated".utf8)
+        try initial.write(to: source)
+        try BridgeSafeFileSystem.commit(staged: source, relativePath: "nested/output.txt", under: root, expectedSHA256: nil)
+        try updated.write(to: source)
+        #expect(throws: (any Error).self) {
+            try BridgeSafeFileSystem.commit(staged: source, relativePath: "nested/output.txt", under: root, expectedSHA256: BridgeWire.digest(updated))
+        }
+        #expect(try Data(contentsOf: root.appendingPathComponent("nested/output.txt")) == initial)
+        try BridgeSafeFileSystem.commit(staged: source, relativePath: "nested/output.txt", under: root, expectedSHA256: BridgeWire.digest(initial))
+        try BridgeSafeFileSystem.moveToRecovery(relativePath: "nested/output.txt", under: root, expectedSHA256: BridgeWire.digest(updated), recoveryRoot: recovery)
+        #expect(try Data(contentsOf: recovery.appendingPathComponent("output.txt")) == updated)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("nested/output.txt").path))
+    }
     #endif
 
 }

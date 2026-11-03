@@ -118,8 +118,17 @@ actor BridgeService {
     }
     private func execute(_ method: String, _ p: [String: BridgeValue], clientID: String) async throws -> [String: BridgeValue] {
         switch method {
-        case "ping": return ["host": .string(Host.current().localizedName ?? "Mac"), "os": .string("macos"), "arch": .string("arm64"),
-                            "capabilities": .array(advertisedCapabilities().map(BridgeValue.string))]
+        case "ping":
+            var value: [String: BridgeValue] = ["host": .string(Host.current().localizedName ?? "Mac"), "os": .string("macos"), "arch": .string("arm64"),
+                "capabilities": .array(advertisedCapabilities().map(BridgeValue.string))]
+            if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String { value["appVersion"] = .string(version) }
+            if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String { value["appBuild"] = .string(build) }
+            if let url = Bundle.main.url(forResource: "source-commit", withExtension: "txt"),
+               let source = try? String(contentsOf: url, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+               source.count == 40, source.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) {
+                value["sourceCommit"] = .string(source)
+            }
+            return value
         case "workspace":
             let root = try workspace(p)
             return ["root": .string(root.path), "transferPolicyVersion": .integer(Int64(BridgeWorkspaceTransferPolicy.version)),
