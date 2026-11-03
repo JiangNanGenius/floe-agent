@@ -41,7 +41,7 @@ import Foundation
         let editedSave=await doc.save(); XCTAssertTrue(editedSave.succeeded)
         XCTAssertGreaterThan(doc.revision,revision); XCTAssertNotEqual(doc.modelSHA256,model)
         let stepURL=directory.appendingPathComponent("edited.step")
-        switch doc.nativeExportData(format:"step") {
+        switch doc.nativeExportData(format:"step", pageID:nil) {
         case .success(let output):try output.0.write(to:stepURL)
         case .failure(let error):throw error
         }
