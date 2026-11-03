@@ -362,12 +362,10 @@ class ProviderHostController internal constructor(
                 ),
             )
         }
-        if (counts.isEmpty()) {
-            // The models page may not have landed yet. Request it AFTER the
-            // destination carries these rows: the sweep (and its editing
-            // admission) is bound to the CURRENT provider set, so starting
-            // it against the previous empty list would cache an empty sweep
-            // for the wrong target set.
+        if (!host.conversations.modelsProjectionReadyForEditing()) {
+            // Start after publishing the CURRENT provider set. A nonempty
+            // old cache may belong to fewer providers after a save; reading
+            // it before this page lands must not leave the new row stranded.
             host.conversations.refreshModels()
         }
         // The provider side of the model join just changed: republish the

@@ -102,6 +102,7 @@ class ConversationModelCacheAdmissionTest {
     private class SweepScript {
         /** Complete B rows instead of the initial A profile. */
         var serveB = false
+        @Volatile var additionalProviderID: String? = null
         /** Reject every model page (a failed sweep). */
         var failModels = false
         var modelReads = 0
@@ -117,7 +118,10 @@ class ConversationModelCacheAdmissionTest {
                     when (tag) {
                         "op:v1:providers" -> effectPage(
                             correlation, "providers",
-                            accepted("""{"rows":[${providerRow()}]}"""),
+                            accepted("""{"rows":[${providerRow()}${script.additionalProviderID?.let { "," + providerRow().replace(providerId, it) } ?: ""}]}"""),
+                        )
+                        "op:v1:models-added" -> effectPage(
+                            correlation, "models-added", accepted("""{"rows":[]}"""),
                         )
                         "op:v1:models" -> {
                             script.modelReads += 1
@@ -147,7 +151,7 @@ class ConversationModelCacheAdmissionTest {
                 raw.contains("\"command\":\"config.providers.list\"") ->
                     receipt(correlation, "providers")
                 raw.contains("\"command\":\"config.models.list\"") ->
-                    receipt(correlation, "models")
+                    receipt(correlation, if (script.additionalProviderID?.let { raw.contains(it, ignoreCase = true) } == true) "models-added" else "models")
                 raw.contains("\"command\":\"config.preferences.get\"") ->
                     receipt(correlation, "preferences")
                 else -> receipt(correlation, "other")
@@ -248,4 +252,32 @@ class ConversationModelCacheAdmissionTest {
         assertFalse(host.conversations.modelsProjectionReadyForEditing())
         assertTrue(host.conversations.modelRowsForProvider(providerId).isEmpty())
     }
+    @Test
+    fun newProviderPageRefreshesNonemptyCacheBeforeEditorAdmission() = runBlocking {
+        val script = SweepScript()
+        val exchange = buildExchange(script)
+        val host = host(exchange)
+        host.onBootstrapCapability(com.floe.android.RuntimeBootstrapCapability.OwnedStoreReady)
+        host.onDomainAvailability("providerConfigurationDomain", true, emptyList())
+        host.providers.refreshProviders()
+        assertTrue(await { host.conversations.modelsProjectionReadyForEditing() })
+        assertEquals(1, host.conversations.modelCountsByProvider()[providerId.uppercase()])
+
+        // A save's early sweep can finish against the previous provider set.
+        // Publishing the later provider page must trigger the complete sweep
+        // even though the previous cache already contains a real model.
+        val added = "eeeeeeee-1111-4222-8333-444455556666"
+        script.additionalProviderID = added
+        host.providers.refreshProviders()
+        assertTrue(await {
+            host.providers.destination.value.list.conversationProviders.size == 2 &&
+                host.conversations.modelsProjectionReadyForEditing() &&
+                exchange.commandsOf("config.models.list").any {
+                    it.toString().contains(added, ignoreCase = true)
+                }
+        })
+        assertEquals(listOf(modelA), host.conversations.modelRowsForProvider(providerId).map { it.id })
+        assertTrue(host.conversations.modelRowsForProvider(added).isEmpty())
+    }
+
 }
