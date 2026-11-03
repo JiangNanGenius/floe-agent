@@ -8,6 +8,7 @@
 - 完善材质、UV、表面绘制与遮挡烘焙，改进保存、撤销和导出的一致性。
 - 优化 iPad 与紧凑布局下的工具栏、编辑面板和 Office 界面。
 - 完善助手的连续编辑、真实视图检查，以及工具结果和错误回收。
+- 支持查看原图局部细节，改善长会话压缩后的上下文恢复。
 - 更新火山套餐模型目录和月之暗面服务配置，保持不同计费渠道独立。
 - 扩充技能商店内容，完善依赖准备、版本和运行位置管理。
 - 修复 Mac 挂起恢复的存储处理，并支持连接 Floe Bridge 1.1。
@@ -18,6 +19,7 @@
 - Improved materials, UVs, surface painting and occlusion baking, including consistent saving, undo and export.
 - Refined iPad and compact toolbars, editing panels and Office layouts.
 - Improved continued assistant edits, actual viewport inspection and tool-result recovery.
+- Added original-image region viewing and improved context recovery after long-conversation compaction.
 - Updated Volcengine plan model listings and Moonshot service setup while keeping billing channels separate.
 - Expanded Skill Hub content and improved dependency, version and execution-location management.
 - Repaired storage handling during Mac suspension and added support for Floe Bridge 1.1.

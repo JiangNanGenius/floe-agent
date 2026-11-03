@@ -151,6 +151,8 @@ In the Volcengine editor, choose the account that matches your key:
 
 Settings → Auxiliary Models configures image understanding, image generation and image editing separately. Text support does not imply any of these capabilities. Attach the source image before requesting an edit.
 
+For small text, dimension labels or other fine details, ask the assistant to view a region of the original image. The local view preserves the source file and provides the chosen region to the current visual workflow. Ask for a fresh screenshot after changing a model or page; an earlier capture represents its earlier state.
+
 <!-- doc-anchor: section-6 -->
 ### Apple and downloaded models
 
