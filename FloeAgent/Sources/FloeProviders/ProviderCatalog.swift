@@ -115,7 +115,7 @@ public struct ProviderCatalogModelMetadata: Codable, Sendable, Equatable, Hashab
     public var toolCall: Bool?
     public var attachment: Bool?
     public var reasoning: Bool?
-    /// Verified context window, when the official provider page states one.
+    /// Provider-declared or support-confirmed context window.
     /// Additive/optional: old catalogs decode with `nil` and callers keep the
     /// existing protocol/listing default. Never an invented ceiling.
     public var contextTokens: Int?

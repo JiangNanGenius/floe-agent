@@ -34,6 +34,18 @@ func clearComposerDraftThroughNativeEditMenu(
     file: StaticString = #filePath, line: UInt = #line
 ) {
     guard !((composer.value as? String) ?? "").isEmpty else { return }
+    // Focus and let keyboard layout settle before locating the native menu.
+    // typeText can deliver to a focused field while the software keyboard is
+    // hidden; a long press that also opens it otherwise uses the old frame.
+    composer.tap()
+    var previousFrame = composer.frame
+    let layoutDeadline = Date().addingTimeInterval(3)
+    repeat {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        let current = composer.frame
+        if current == previousFrame { break }
+        previousFrame = current
+    } while Date() < layoutDeadline
     // Use the visible field centre, never the AX activation point: a
     // restored draft can put that point on the leading edge.
     composer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))

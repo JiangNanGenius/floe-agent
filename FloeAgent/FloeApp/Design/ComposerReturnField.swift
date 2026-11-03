@@ -233,6 +233,10 @@ struct ComposerReturnField: UIViewRepresentable {
     /// additionally clamped by the device line cap (6 compact / 8 regular)
     /// and by `maxHeightBudget`.
     var lineLimit: ClosedRange<Int> = 1...3
+    /// Keep inline padding outside the scrolling text viewport so a scrolled
+    /// fourth row cannot paint inside its top/bottom padding.
+    var verticalTextInset: CGFloat = 8
+    var minimumViewportHeight: CGFloat = 44
     /// Height available to the hosting page; the field never grows beyond
     /// one third of it. Nil disables the height rule.
     var maxHeightBudget: CGFloat? = nil
@@ -282,10 +286,12 @@ struct ComposerReturnField: UIViewRepresentable {
     var onEditingChange: ((Bool) -> Void)? = nil
     var onReturn: () -> Void
 
-    private let textInsets = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
+    private var textInsets: UIEdgeInsets {
+        UIEdgeInsets(top: verticalTextInset, left: 0, bottom: verticalTextInset, right: 0)
+    }
     /// Classic 44pt composer row; the `lineLimit.lowerBound` may push the
     /// resting height beyond this (e.g. a two-line canvas prompt field).
-    private let restingMinHeight: CGFloat = 44
+    private var restingMinHeight: CGFloat { minimumViewportHeight }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(field: self)

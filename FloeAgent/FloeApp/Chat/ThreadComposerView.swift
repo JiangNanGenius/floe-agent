@@ -944,6 +944,8 @@ struct ThreadComposerView: View {
                 placeholder: composerPlaceholder,
                 canSend: canSend && !isAttachmentProcessing && !isSavingChatReasoning,
                 lineLimit: 1...3,
+                verticalTextInset: 0,
+                minimumViewportHeight: 28,
                 maxHeightBudget: composerHeightBudget,
                 hostAvailableWidth: composerFieldHostWidth,
                 restoredSelection: editorSelection,
@@ -971,6 +973,7 @@ struct ThreadComposerView: View {
                 },
                 onReturn: { onSend() }
             )
+            .padding(.vertical, 8)
             // Let the row measure this exact draft at both candidate widths.
             // A height captured from the previous placement makes those two
             // measurements identical and feeds the result back into layout.

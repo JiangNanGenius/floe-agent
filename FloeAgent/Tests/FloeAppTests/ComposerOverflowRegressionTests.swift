@@ -1077,10 +1077,10 @@ struct ComposerCompleteRowViewportTests {
             of: NSTextStorage(string: "first English row\n第二行中文\nthird row 123\nfourth row tail"),
             width: 520, fallbackFont: UIFont.preferredFont(forTextStyle: .body))
         #expect(metrics.lineBottoms.count >= 4)
-        let insets: CGFloat = 16
+        let insets: CGFloat = 0 // Inline padding belongs to the SwiftUI host.
         let result = ComposerFieldLayout.verdict(naturalTextHeight: metrics.height + insets,
             lineHeight: 17, verticalInsets: insets, lineLimit: 1...3, deviceLineCap: 3,
-            availableHeight: 900, restingMinimumHeight: 44, visualLineCount: metrics.lineCount,
+            availableHeight: 900, restingMinimumHeight: 28, visualLineCount: metrics.lineCount,
             lineBottoms: metrics.lineBottoms.map { $0 + insets })
         #expect(result.height == metrics.lineBottoms[2] + insets)
         #expect(result.scrolls)

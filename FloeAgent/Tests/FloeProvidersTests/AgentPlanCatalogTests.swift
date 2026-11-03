@@ -87,7 +87,12 @@ struct AgentPlanCatalogTests {
 
         // Verified image input from the plan table / official model pages.
         // No vision is inferred from a model name alone.
+        // Current official tool configuration also declares image input for
+        // all three Kimi rows: agent-plan-personal-openclaw (2026-11-04).
         let imageInput: Set<String> = [
+            "kimi-k3",
+            "kimi-k2.8-preview",
+            "kimi-k3.1-pro",
             "ark-code-latest",
             "doubao-seed-2.0-mini",
             "doubao-seed-2.1-lite",

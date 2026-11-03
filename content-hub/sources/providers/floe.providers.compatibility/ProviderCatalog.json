@@ -6465,14 +6465,24 @@
           ]
         },
         "kimi-k2.8-preview": {
+          "attachment": true,
           "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
           "maxOutputTokens": 1048576,
           "output": [
             "text"
           ]
         },
         "kimi-k3": {
+          "attachment": true,
           "contextTokens": 1048576,
+          "input": [
+            "image",
+            "text"
+          ],
           "maxOutputTokens": 131072,
           "output": [
             "text"
