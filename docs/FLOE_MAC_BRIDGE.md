@@ -1,5 +1,10 @@
 # Floe Bridge
 
+[Floe Bridge 1.0.0 (2)](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-bridge-v1.0.0)
+is Developer ID signed and Apple notarized. See the
+[delivery record](releases/builds/FLOE_BRIDGE_1_0_0_DELIVERY.md) for actual
+same-Mac App acceptance and independent public download verification.
+
 Floe Bridge is an optional same-Mac terminal companion for Floe running as an iPad app on Apple silicon. Normal Floe features remain available without it. The companion is distributed independently; a public download requires Developer ID signing and Apple notarization. Source implementation does not establish App Review approval or installability.
 
 ## Connection and execution

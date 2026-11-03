@@ -1875,18 +1875,32 @@
       "priority_reason": "用户明确将曲面与放样列入本轮核心 CAD 范围。",
       "implementation": {
         "stage": "C",
-        "status": "research_only",
-        "source_changes": [],
+        "status": "accepted_original_criterion_App_native_and_iPad_UI",
+        "source_changes": [
+          "9444a20b"
+        ],
         "verification": [
           {
-            "kind": "primary_source_readiness_only",
-            "result": "固定OCCT头文件与TiGL源码/依赖/许可核对；未产品接入/构建/运行",
-            "evidence": "Local/Private/cad-3d-implementation-20261030/guided-surface-readiness/HANDOFF.md"
+            "kind": "actual_App_native_selected_class",
+            "source": "d2c6cbc331eeaca3018bb5533711892b52623fc1",
+            "class": "CADLoftSurfaceWorkflowTests",
+            "passed": 8,
+            "failed": 0,
+            "skipped": 0,
+            "evidence": "docs/qualification/cad-surface-workflow-20261103/README.md"
+          },
+          {
+            "kind": "actual_canonical_iPad_UI_original_workflow",
+            "source": "9444a20b2aec7482a6ddc9c99c5667ca49f4c9d1",
+            "selector": "CADLoftSurfaceFormAcceptanceUITests/testRealSurfaceCreateTrimThickenUndoSaveReopenAndSameHistoryEdit",
+            "passed": 1,
+            "failed": 0,
+            "skipped": 0,
+            "scope": "Only this selected workflow passed; UI311 batch overall1passed5failed retained."
           }
         ],
         "limitations": [
-          "建立独立surface类型与开放放样/扫掠/补面/修剪/缝合/加厚历史，先验证成熟OCCT组合及格式隔离；readiness不是实现。",
-          "预研或私有测试源码不计生产实现/运行通过。"
+          "Same-target real LLM inspection/edit chain remains M30; no physical Pencil or complex-device performance claim."
         ]
       },
       "alignment_review": {
@@ -1930,8 +1944,30 @@
         "acceptance_pending": "独立开放截面放样成surface，修剪/补面/缝合后检查闭合，再按厚度生成精确实体；各步可撤销重开重建。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "9444a20b"
+        ],
+        "verification": [
+          {
+            "kind": "actual_App_native_selected_class",
+            "source": "d2c6cbc331eeaca3018bb5533711892b52623fc1",
+            "class": "CADLoftSurfaceWorkflowTests",
+            "passed": 8,
+            "failed": 0,
+            "skipped": 0,
+            "evidence": "docs/qualification/cad-surface-workflow-20261103/README.md"
+          },
+          {
+            "kind": "actual_canonical_iPad_UI_original_workflow",
+            "source": "9444a20b2aec7482a6ddc9c99c5667ca49f4c9d1",
+            "selector": "CADLoftSurfaceFormAcceptanceUITests/testRealSurfaceCreateTrimThickenUndoSaveReopenAndSameHistoryEdit",
+            "passed": 1,
+            "failed": 0,
+            "skipped": 0,
+            "scope": "Only this selected workflow passed; UI311 batch overall1passed5failed retained."
+          }
+        ]
       },
       "verification_plan": {
         "priority": "P2",
