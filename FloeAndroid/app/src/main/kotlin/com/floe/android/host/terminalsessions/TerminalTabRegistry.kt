@@ -103,7 +103,10 @@ internal class TerminalTabRegistry {
                title: String? = null, purpose: String = "interactive"): TerminalTabView? {
         if (tabs.values.count { it.conversationID == conversationID } >= TerminalTabLimits.MAX_TABS) return null
         if (tabs.values.any { it.pendingRequestID == requestID }) return null
-        val ordinal = tabs.values.count { it.conversationID == conversationID } + 1
+        val existingTitles = tabs.values.filter { it.conversationID == conversationID }.map { it.title }.toSet()
+        val ordinal = generateSequence(1) { it + 1 }.first {
+            "${TerminalTabLimits.DEFAULT_TITLE} $it" !in existingTitles
+        }
         val tab = Tab(
             tabID = pendingID(requestID),
             sessionID = null,

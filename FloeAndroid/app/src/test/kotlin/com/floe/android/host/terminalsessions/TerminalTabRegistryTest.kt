@@ -37,6 +37,21 @@ class TerminalTabRegistryTest {
     }
 
     @Test
+    fun `replacement default title differs from the surviving tab without increasing the limit`() {
+        val registry = TerminalTabRegistry()
+        registry.newTab("conv-1", "req-1")
+        registry.adopt("req-1", "session-A")
+        registry.newTab("conv-1", "req-2")
+        val survivor = registry.adopt("req-2", "session-B")!!
+        registry.updatePhase("session-A", "exited")
+        registry.close("session-A")
+        val replacement = registry.newTab("conv-1", "req-3")!!
+        assertFalse(survivor.title == replacement.title)
+        assertEquals(2, registry.tabsFor("conv-1").size)
+        assertNull(registry.newTab("conv-1", "req-4"))
+    }
+
+    @Test
     fun `adopt replaces the pending identity exactly once`() {
         val registry = TerminalTabRegistry()
         registry.newTab("conv-1", "req-1")

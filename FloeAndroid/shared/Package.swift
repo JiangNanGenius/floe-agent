@@ -874,6 +874,13 @@ let package = Package(
         .testTarget(name: "FloeToolsTests", dependencies: [
             "FloeTools", "FloeCore",
         ], swiftSettings: strictSettings),
+        // Provider service-role projection contract (provider purpose
+        // roundtrip repair, job-da1626251bbb47fe): pins that the roles the
+        // config.providers.list projection reports are the roles the
+        // FloeProviders adapter layer actually serves.
+        .testTarget(name: "FloeProvidersTests", dependencies: [
+            "FloeProviders", "FloeCore", "FloeModels",
+        ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidCoreTests", dependencies: [
             "FloeBrowser", "FloeAndroidCore", "FloeSSH", "FloeVNC", "FloeRDP", "FloeAndroidMail",
             "FloeAndroidDataExchange", "FloeAndroidToolResults",

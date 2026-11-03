@@ -105,6 +105,9 @@ internal fun WorkspaceTerminalPane(
     var tabOpenFailure by remember(controller, conversationID) {
         mutableStateOf<TerminalActionReply?>(null)
     }
+    LaunchedEffect(tabs.size) {
+        if (tabs.size < TerminalTabLimits.MAX_TABS) tabLimitNotice = false
+    }
     var keyboardVisible by remember { mutableStateOf(true) }
     var terminalCopyText by remember(controller, conversationID) { mutableStateOf<String?>(null) }
     var textSp by remember { mutableStateOf(13f) }

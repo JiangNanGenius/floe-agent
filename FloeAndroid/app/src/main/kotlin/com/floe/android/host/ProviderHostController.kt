@@ -2115,6 +2115,12 @@ internal object ProviderWire {
      * the canonical `provider.<uuid>` / `<syncRevision>` mapping
      * (`ConfigRevision.provider`), derived here from the REAL persisted
      * value so a subsequent save/delete uses the actual revision.
+     *
+     * ADDITIVE ROLE PROJECTION: the secret-free `serviceRoles` string array
+     * (conversation/image/video, emitted by newer native builds from the
+     * persisted model surface bits) buckets the row into EVERY section it
+     * serves. Absent on older native builds: the conversation-only default
+     * keeps the previous behavior byte-identical.
      */
     fun decodeProviderRows(
         value: JsonElement,
@@ -2159,9 +2165,16 @@ internal object ProviderWire {
             } else {
                 ProviderCredentialStateUi.AWAITING_CONFIGURATION
             }
-            val roles = (obj["serviceRoles"] as? JsonArray)
-                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
-                ?: listOf("conversation")
+            // The ACTUAL roles this provider serves, emitted by the native
+            // `config.providers.list` projection as the additive secret-free
+            // `serviceRoles` array (derived there from the persisted model
+            // surface bits — FloeModels ProviderServiceRoles — never from
+            // names/presets/kinds). Older native builds omit the field:
+            // the conversation-only default below is the documented backward
+            // compatibility behavior, NOT an inference. Unknown entries and
+            // an empty array are sanitized to the same default so a row can
+            // never vanish from every section.
+            val roles = decodeServiceRoles(obj["serviceRoles"])
             val revision = (obj["revision"] as? JsonObject)?.let {
                 val resourceID = it.string("resourceID")
                 val version = it.string("version")
@@ -2185,12 +2198,14 @@ internal object ProviderWire {
                 credentialState = credential,
                 revisionVersion = revision?.version,
             )
-            when {
-                "conversation" in roles -> conversation.add(row)
-                "image" in roles -> image.add(row)
-                "video" in roles -> video.add(row)
-                else -> conversation.add(row)
-            }
+            // A provider serves EVERY role the projection reports (iOS list
+            // parity: one provider can appear in the conversation, image and
+            // video sections at once). A first-match `when` would pin a
+            // multi-role provider to the conversation section only and the
+            // reopened editor would seed the wrong purpose again.
+            if ("conversation" in roles) conversation.add(row)
+            if ("image" in roles) image.add(row)
+            if ("video" in roles) video.add(row)
         }
         return ProviderRows(conversation, image, video)
     }
@@ -2229,6 +2244,26 @@ internal object ProviderWire {
         put("operation", JsonPrimitive("snapshot"))
         if (cursor != null) put("cursor", JsonPrimitive(cursor))
     })
+
+    /**
+     * Sanitizes the additive native `serviceRoles` projection member into
+     * the canonical role set. Absent/malformed/empty input, and any entry
+     * that is not one of the three closed wire roles, falls back to the
+     * conversation-only default (older native builds and the empty-provider
+     * visibility contract); a provider row therefore never disappears from
+     * every list section. The canonical conversation/image/video order is
+     * preserved regardless of the emitted order.
+     */
+    fun decodeServiceRoles(value: JsonElement?): List<String> {
+        val known = linkedSetOf("conversation", "image", "video")
+        val emitted = (value as? JsonArray)
+            ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            ?.filter { it in known }
+            ?.toSet()
+            ?: emptySet()
+        val roles = known.filter { it in emitted }
+        return roles.ifEmpty { listOf("conversation") }
+    }
 
     /** Legacy closed models-list payload (UNCHANGED behavior): first page
      *  carries NO payload; a continuation carries ONLY the composer cursor

@@ -64,6 +64,7 @@ import Foundation
 import GRDB
 import Crypto
 import FloeCore
+import FloeModels
 import FloePersistence
 import FloeProviders
 import FloeAndroidWebTools
@@ -346,8 +347,18 @@ public actor ModelConfigurationFacade {
     /// the deterministic opaque reference + persisted sync status only.
     public func listProviders(cursor: Int? = nil) async throws -> Data {
         let providers: [ProviderProfile]
+        // The COMPLETE persisted model rows for the page, read ONCE (the
+        // same `models(providerID: nil)` binding the config.models.list
+        // command uses). The additive secret-free `serviceRoles` projection
+        // is derived from these rows' canonical surface bits (FloeModels
+        // ProviderServiceRoles — exact iOS ProviderListViewModel parity),
+        // never from provider names, presets or kinds. Disabled rows are
+        // included: a disabled provider's role binding must survive its
+        // disabled state, exactly like the iOS list.
+        let models: [ModelProfile]
         do {
             providers = try await store.providers()
+            models = try await store.models(providerID: nil)
         } catch {
             throw ConfigDomainError(code: .persistenceUnavailable, reason: "providersQuery")
         }
@@ -363,8 +374,12 @@ public actor ModelConfigurationFacade {
             throw ConfigDomainError(code: .persistenceUnavailable,
                                     reason: "presetJoinFailed")
         }
+        let modelsByProvider = Dictionary(grouping: models, by: \.providerID)
         let objects = providers.map {
-            $0.configSummary(presetID: presetIDs[$0.id]).jsonObject()
+            $0.configSummary(
+                presetID: presetIDs[$0.id],
+                serviceRoles: ProviderServiceRoles.derive(
+                    from: modelsByProvider[$0.id] ?? [])).jsonObject()
         }
         return try Self.projectPage(ConfigPageComposer.compose(objects,
                                                                cursor: cursor,

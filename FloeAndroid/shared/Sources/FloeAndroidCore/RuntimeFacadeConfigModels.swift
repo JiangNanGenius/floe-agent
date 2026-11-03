@@ -22,7 +22,7 @@
 //   as settlement evidence.
 //
 // Authority chain (all paths relative to the repository root):
-// * Local/Private/android-g02-20261018/RB2_MODEL_CONFIGURATION_SOURCE_ADMISSION_20261019.json
+// * RB2 model-configuration source admission (2026-10-19).
 // * MAIN_SOURCE_REVIEW_20261019.json (MC-R1..R4 findings + settlement rules)
 // * MAIN_GATEWAY_PHYSICAL_LIFETIME_API_GAP_20261019.json (physical API scope)
 // * runtime-facade-contract/contract.json: commandVocabulary families config.*,
@@ -43,6 +43,7 @@
 import Foundation
 import Crypto
 import FloeCore
+import FloeModels
 import FloePersistence
 import FloeProviders
 import FloeAndroidWebTools
@@ -579,6 +580,17 @@ public struct ConfigProviderSummary: Sendable {
     public let presetID: String?
     public let nonSecretHeaders: [String: String]
 
+    /// ADDITIVE SECRET-FREE ROLE PROJECTION (provider purpose roundtrip
+    /// repair, job-da1626251bbb47fe): the provider's service roles
+    /// ("conversation"/"image"/"video"), derived from the persisted model
+    /// surface bits by FloeModels `ProviderServiceRoles.derive` — exact iOS
+    /// ProviderListViewModel parity, never inferred from names/presets/
+    /// kinds. Older App readers ignore this member and keep their
+    /// conversation-only default; newer readers bucket each row into EVERY
+    /// served section so the reopened editor seeds the purpose the user
+    /// actually saved.
+    public let serviceRoles: [String]
+
     public func jsonObject() -> [String: Any] {
         [
             "id": id.uuidString,
@@ -602,6 +614,8 @@ public struct ConfigProviderSummary: Sendable {
             // reader consumes them for exact editor/Keep reconstruction).
             "presetID": presetID as Any,
             "nonSecretHeaders": nonSecretHeaders as [String: String],
+            // Additive role projection (see the member doc above).
+            "serviceRoles": serviceRoles,
         ]
     }
 }
@@ -618,7 +632,8 @@ extension ProviderProfile {
     /// ORIGINAL preset sidecar (the providers table has no preset column and
     /// `ProviderProfile.presetID` does not round-trip through the store);
     /// when nil the profile's own value is used (in-memory projections).
-    public func configSummary(presetID overridePresetID: String? = nil) -> ConfigProviderSummary {
+    public func configSummary(presetID overridePresetID: String? = nil,
+                              serviceRoles: [String] = ["conversation"]) -> ConfigProviderSummary {
         ConfigProviderSummary(
             id: id,
             kind: kind,
@@ -635,7 +650,8 @@ extension ProviderProfile {
             secret: ConfigProviderSecretStatus(reference: secretRef) ?? .none,
             // Secret-free persisted metadata (see ConfigProviderSummary).
             presetID: overridePresetID ?? presetID,
-            nonSecretHeaders: nonSecretHeaders
+            nonSecretHeaders: nonSecretHeaders,
+            serviceRoles: serviceRoles
         )
     }
 }
