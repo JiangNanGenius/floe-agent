@@ -523,6 +523,24 @@ final class NativeCADLiveBudgetTests: XCTestCase {
         }
     }
 
+    func testUserSelectedArkAliasKeepsExactPrepaidOwnershipAndBudget() throws {
+        let policy = try NativeCADLiveOptIn.decodePolicy(policyData(
+            prepaid: true, total: 3_000_000,
+            overrides: ["remoteModelID": "ark-code-latest"]
+        ))
+        XCTAssertEqual(policy.remoteModelID, "ark-code-latest")
+        XCTAssertEqual(policy.maxTotalTokens, 3_000_000)
+        for overrides: [String: Any] in [
+            ["remoteModelID": "ark-code-latest-other"],
+            ["remoteModelID": "ark-code-latest", "providerID": UUID().uuidString],
+            ["remoteModelID": "ark-code-latest", "inputPerMillionUSD": 1],
+        ] {
+            XCTAssertThrowsError(try NativeCADLiveOptIn.decodePolicy(policyData(
+                prepaid: true, total: 3_000_000, overrides: overrides
+            )))
+        }
+    }
+
     func testMeasuredAggregateCannotBroadenReviewedRoute() throws {
         let invalidOverrides: [[String: Any]] = [
             ["providerID": UUID().uuidString],
@@ -762,8 +780,9 @@ private enum NativeCADLivePrepaidRoute {
         /// Whether the reviewed row declares native image input. The owned
         /// model capability flag must match this exactly.
         var supportsVision: Bool
-        /// Documented context window for this reviewed row.
-        var documentedContextTokens: Int
+        /// Qualification request ceiling. For a control-plane alias this is not
+        /// a claim about its current underlying model; actual server limits apply.
+        var contextTokenCeiling: Int
         /// Highest output limit this harness accepts for the row. The
         /// documented v4.1 Flash maximum is 393,216; the legacy row keeps the
         /// previous 32,768 harness bound. GLM's output maximum is not
@@ -788,37 +807,44 @@ private enum NativeCADLivePrepaidRoute {
 
     static let reviewedModels: [ReviewedModel] = [
         ReviewedModel(
+            remoteModelID: "ark-code-latest",
+            supportsVision: true,
+            contextTokenCeiling: recordedContextTokens,
+            maximumOutputTokens: 65_536,
+            review: "User explicitly selected this exact same-plan alias on 2026-11-04. Official Agent Plan OpenCode guide and maintained catalog permit image input. Window/output values are qualification request ceilings; the control-plane target may change and actual provider errors remain authoritative. No entitlement or fixed underlying model is claimed."
+        ),
+        ReviewedModel(
             remoteModelID: legacyRemoteModelID,
             supportsVision: false,
-            documentedContextTokens: 1_000_000,
+            contextTokenCeiling: 1_000_000,
             maximumOutputTokens: 32_768,
             review: "Historical text-only same-plan row; preserves the prior opt-ins and compaction tests."
         ),
         ReviewedModel(
             remoteModelID: "glm-5.3-flash",
             supportsVision: true,
-            documentedContextTokens: recordedContextTokens,
+            contextTokenCeiling: recordedContextTokens,
             maximumOutputTokens: 32_768,
             review: "Official Agent Plan supported-models page, updated 2026-10-29: native image input."
         ),
         ReviewedModel(
             remoteModelID: "deepseek-v4.1-flash",
             supportsVision: true,
-            documentedContextTokens: recordedContextTokens,
+            contextTokenCeiling: recordedContextTokens,
             maximumOutputTokens: 393_216,
             review: "Official Agent Plan supported-models page, updated 2026-10-29: native image input; documented max output 393,216."
         ),
         ReviewedModel(
             remoteModelID: "deepseek-v4.1-flash-economy",
             supportsVision: true,
-            documentedContextTokens: recordedContextTokens,
+            contextTokenCeiling: recordedContextTokens,
             maximumOutputTokens: 393_216,
             review: "Official Agent Plan supported-models page, updated 2026-10-29: native image input."
         ),
         ReviewedModel(
             remoteModelID: "kimi-k3.1-pro",
             supportsVision: true,
-            documentedContextTokens: recordedContextTokens,
+            contextTokenCeiling: recordedContextTokens,
             maximumOutputTokens: 1_048_576,
             review: "Maintained Agent Plan catalog bounds; exact same-plan native image input observed with a synthetic color probe. Actual CAD image/geometry acceptance is still required."
         ),
@@ -864,7 +890,7 @@ private enum NativeCADLivePrepaidRoute {
             && model.capabilities.contains(.tools)
             && declaresVision == reviewed.supportsVision
             && model.limits.contextTokens >= 16_384
-            && model.limits.contextTokens <= reviewed.documentedContextTokens
+            && model.limits.contextTokens <= reviewed.contextTokenCeiling
             && model.limits.maxOutputTokens >= 1_024
             && model.limits.maxOutputTokens <= reviewed.maximumOutputTokens
     }
@@ -902,7 +928,7 @@ private struct NativeCADLiveOwnedRoute {
               metadata.baseURL.scheme == "https", metadata.baseURL.host != nil,
               metadata.baseURL.user == nil, metadata.baseURL.password == nil,
               metadata.baseURL.query == nil,
-              (16_384...reviewed.documentedContextTokens).contains(metadata.contextTokens),
+              (16_384...reviewed.contextTokenCeiling).contains(metadata.contextTokens),
               (1_024...reviewed.maximumOutputTokens).contains(metadata.maxOutputTokens),
               (metadata.supportsVision == true) == reviewed.supportsVision,
               !metadata.remoteModelID.isEmpty else {
