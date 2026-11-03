@@ -46,9 +46,15 @@ import XCTest
         XCTAssertTrue(item.waitForExistence(timeout:5),app.debugDescription);item.tap()
     }
     private func number(_ app: XCUIApplication,_ id: String,_ value: String) {
-        let field=visible(app,id),old=field.value as? String ?? ""
-        field.coordinate(withNormalizedOffset:CGVector(dx:1,dy:0.5)).withOffset(CGVector(dx:-4,dy:0)).tap()
-        field.typeText(String(repeating:XCUIKeyboardKey.delete.rawValue,count:old.count)+value)
+        let field=visible(app,id)
+        // Select the real numeric word. Deleting from a guessed caret position
+        // previously left the initial 1 and typed 2 before it (21), so the
+        // saved-geometry assertion correctly caught the test's wrong input.
+        field.coordinate(withNormalizedOffset:CGVector(dx:0.95,dy:0.5)).doubleTap()
+        let selectAll = app.menuItems["Select All"].firstMatch
+        if selectAll.waitForExistence(timeout:1), selectAll.isHittable { selectAll.tap() }
+        field.typeText(value)
+        XCTAssertEqual(field.value as? String,value,"The real numeric field must contain the requested value before Apply")
     }
     private func apply(_ app: XCUIApplication) {
         let button=app.buttons["CADSurfaceApply"]

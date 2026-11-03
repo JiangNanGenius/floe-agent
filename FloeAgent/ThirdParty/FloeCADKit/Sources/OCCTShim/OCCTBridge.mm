@@ -4981,7 +4981,8 @@ static void OS3DCollectShellHistory(BRepBuilderAPI_MakeShape *builder,
         || openFaces.length % sizeof(int32_t) != 0 || regionFaces.length % sizeof(int32_t) != 0
         || regionThicknesses.length % sizeof(double) != 0) return nil;
     const size_t count = regionFaces.length / sizeof(int32_t);
-    if (count == 0 || count > 128 || regionThicknesses.length / sizeof(double) != count) return nil;
+    if (count > 128 || regionThicknesses.length / sizeof(double) != count
+        || (count == 0 && openFaces.length == 0)) return nil;
     const auto *opens = (const int32_t *)openFaces.bytes;
     const auto *regions = (const int32_t *)regionFaces.bytes;
     const auto *walls = (const double *)regionThicknesses.bytes;
@@ -5012,7 +5013,7 @@ static void OS3DCollectShellHistory(BRepBuilderAPI_MakeShape *builder,
             lastStage = join == GeomAbs_Intersection ? @"OCCT intersection join" : @"OCCT arc join";
             BRepOffset_MakeOffset maker;
             maker.Initialize(copy.Shape(), -thickness, 1.0e-3, BRepOffset_Skin,
-                Standard_True, Standard_False, join, Standard_False, Standard_True);
+                count == 0 ? Standard_False : Standard_True, Standard_False, join, Standard_False, Standard_True);
             maker.AllowLinearization(Standard_False);
             for (size_t i = 0; i < openFaces.length / sizeof(int32_t); ++i)
                 maker.AddFace(TopoDS::Face(copy.ModifiedShape(faces(opens[i]))));
@@ -5171,6 +5172,7 @@ static void OS3DCollectShellHistory(BRepBuilderAPI_MakeShape *builder,
         }
 
         TopoDS_Shape built;
+        BOOL candidateWasHealed = NO;
         std::vector<OS3DHistEdge> histEdges;
         if (openFaces.IsEmpty()) {
             // Fully-enclosed hollow: offset the solid inward and SUBTRACT the
@@ -5237,6 +5239,41 @@ static void OS3DCollectShellHistory(BRepBuilderAPI_MakeShape *builder,
             if (history != nil) OS3DCollectShellHistory(nullptr, sourceInput, inputCopy,
                 Handle(BRepTools_History)(), histEdges);
         } else {
+            TopoDS_Shape acceptedCandidate;
+            NSString *candidateRefusal = @"no completed exact candidate";
+            const double inputVolume = OS3DVolume(input);
+            auto acceptCandidate = [&](BRepOffsetAPI_MakeThickSolid &maker) -> bool {
+                try {
+                    if (!maker.IsDone() || maker.Shape().IsNull()) {
+                        candidateRefusal = @"OCCT did not complete the candidate"; return false;
+                    }
+                    int solids = 0;
+                    const TopoDS_Shape single = OS3DExtractSingleSolid(maker.Shape(), solids);
+                    if (solids != 1 || single.IsNull()) {
+                        candidateRefusal = @"candidate is not one closed solid"; return false;
+                    }
+                    const TopoDS_Shape valid = OS3DHealAndValidate(single);
+                    if (valid.IsNull()) {
+                        candidateRefusal = @"candidate failed native validity"; return false;
+                    }
+                    const double volume = OS3DVolume(valid);
+                    const bool unchanged = fabs(volume - inputVolume) <= inputVolume * 1e-9;
+                    const bool wrongWay = outward ? volume <= inputVolume : volume >= inputVolume;
+                    if (!std::isfinite(volume) || volume <= 0 || (inputVolume > 0 && (unchanged || wrongWay))) {
+                        candidateRefusal = outward ? @"candidate added no material" : @"candidate removed no material";
+                        return false;
+                    }
+                    acceptedCandidate = valid;
+                    candidateWasHealed = !valid.IsSame(single);
+                    return true;
+                } catch (Standard_Failure &failure) {
+                    const char *message = failure.GetMessageString();
+                    candidateRefusal = message != nullptr && message[0] != 0 ? @(message) : @"candidate validation threw without a message";
+                    return false;
+                } catch (...) {
+                    candidateRefusal = @"candidate validation threw"; return false;
+                }
+            };
             BRepOffsetAPI_MakeThickSolid mk;
             bool primaryThrew = false;
             NSString *primaryException = @"";
@@ -5255,7 +5292,9 @@ static void OS3DCollectShellHistory(BRepBuilderAPI_MakeShape *builder,
             // before refusing.
             BRepOffsetAPI_MakeThickSolid mkIntersection;
             BRepBuilderAPI_Copy intersectionCopy;
-            BRepOffsetAPI_MakeThickSolid *made = !primaryThrew && mk.IsDone() && !mk.Shape().IsNull() ? &mk : nullptr;
+            // IsDone alone is insufficient: OCCT can return the original
+            // solid for this opening. Reject it HERE so later joins still run.
+            BRepOffsetAPI_MakeThickSolid *made = !primaryThrew && acceptCandidate(mk) ? &mk : nullptr;
             BRepBuilderAPI_Copy *madeCopy = &inputCopy;
             int code = -1;
             if (made == nullptr) {
@@ -5283,7 +5322,7 @@ static void OS3DCollectShellHistory(BRepBuilderAPI_MakeShape *builder,
                     // split had already removed (18.23, 2026-09-17).
                     try {
                         mkSplit.MakeThickSolidByJoin(split, splitOpenFaces, offset, 1.0e-3);
-                        if (mkSplit.IsDone() && !mkSplit.Shape().IsNull()) {
+                        if (acceptCandidate(mkSplit)) {
                             made = &mkSplit;
                         } else {
                             code = (int)mkSplit.MakeOffset().Error();
@@ -5316,7 +5355,7 @@ static void OS3DCollectShellHistory(BRepBuilderAPI_MakeShape *builder,
                         mkIntersection.MakeThickSolidByJoin(
                             intersectionCopy.Shape(), copiedOpenFaces, offset, 1.0e-3, BRepOffset_Skin,
                             allParallels, Standard_False, GeomAbs_Intersection);
-                        if (mkIntersection.IsDone() && !mkIntersection.Shape().IsNull()) {
+                        if (acceptCandidate(mkIntersection)) {
                             made = &mkIntersection; madeCopy = &intersectionCopy; break;
                         }
                         code = (int)mkIntersection.MakeOffset().Error();
@@ -5332,6 +5371,37 @@ static void OS3DCollectShellHistory(BRepBuilderAPI_MakeShape *builder,
                 }
             }
             if (made == nullptr) {
+                // Reuse the already checked indexed low-level OCCT builder.
+                // Its RemoveIntEdges/linearization controls differ from the
+                // legacy wrapper; an empty override list is a UNIFORM shell.
+                TopTools_IndexedMapOfShape originalFaces;
+                TopExp::MapShapes(sourceInput, TopAbs_FACE, originalFaces);
+                std::vector<int32_t> openings;
+                for (TopTools_ListIteratorOfListOfShape it(sourceOpenFaces); it.More(); it.Next()) {
+                    const Standard_Integer index = originalFaces.FindIndex(it.Value());
+                    if (index > 0) openings.push_back((int32_t)index);
+                }
+                OCCTOpStatus *indexedStatus = [OCCTOpStatus new];
+                if (openings.size() == (size_t)sourceOpenFaces.Extent() && !openings.empty()) {
+                    NSData *indices = [NSData dataWithBytes:openings.data() length:openings.size() * sizeof(int32_t)];
+                    OCCTShape *indexed = [self regionShelledShape:shape openFaceIndices:indices
+                        thickness:thickness regionFaceIndices:[NSData data] regionThicknesses:[NSData data]
+                        status:indexedStatus history:history];
+                    if (indexed != nil) {
+                        const double indexedVolume = OS3DVolume(indexed->_shape);
+                        const bool unchanged = fabs(indexedVolume - inputVolume) <= inputVolume * 1e-9;
+                        const bool wrongWay = outward ? indexedVolume <= inputVolume : indexedVolume >= inputVolume;
+                        if (std::isfinite(indexedVolume) && indexedVolume > 0
+                            && !(inputVolume > 0 && (unchanged || wrongWay))) {
+                            OS3DSetStatus(status, OCCTOpCodeOK, nil);
+                            return indexed;
+                        }
+                        candidateRefusal = outward ? @"indexed candidate added no material" : @"indexed candidate removed no material";
+                    }
+                }
+                if (indexedStatus.detail.length > 0)
+                    retryNote = [retryNote stringByAppendingFormat:@"; indexed join: %@", indexedStatus.detail];
+                retryNote = [retryNote stringByAppendingFormat:@"; last candidate: %@", candidateRefusal];
                 // Say WHY: BRepOffset's own error code, so a refusal on a
                 // curved wall can be told apart from a wall eating the body.
                 static const char *const kOffsetErrors[] = {
@@ -5345,7 +5415,7 @@ static void OS3DCollectShellHistory(BRepBuilderAPI_MakeShape *builder,
                     : [NSString stringWithFormat:@"the wall thickness is out of range for this shape (OCCT offset: %s%@)", name, retryNote]);
                 return nil;
             }
-            built = made->Shape();
+            built = acceptedCandidate;
             if (made == &mkSplit) OS3DSetSameRangeOnNewEdges(built, input);
             // Harvest before the maker dies with this scope.
             if (history != nil) {
@@ -5388,7 +5458,7 @@ static void OS3DCollectShellHistory(BRepBuilderAPI_MakeShape *builder,
         if (history != nil) {
             OS3DFillHistory(history, histEdges, {sourceInput},
                             Handle(BRepTools_History)(), valid,
-                            /*truncatedByHeal*/ !valid.IsSame(result));
+                            /*truncatedByHeal*/ candidateWasHealed || !valid.IsSame(result));
         }
         OCCTShape *out = [OCCTShape new];
         out->_shape = valid;
@@ -6369,10 +6439,15 @@ static OCCTShape *OS3DSurfaceResult(const TopoDS_Shape &shape, bool solid,
     const bool valid=OS3DIsValid(shape);
     const NSInteger faceCount=OS3DFaceCount(shape);
     const double maxTolerance=OS3DMaxTolerance(shape);
-    if (!valid || faceCount == 0 || !std::isfinite(maxTolerance) || maxTolerance > tolerance*10) {
+    const double allowed = tolerance * 10;
+    // Decimal 1e-5 and binary (1e-6 * 10) differ by one representable
+    // double. Accept only that arithmetic rounding, not a wider geometry
+    // tolerance; the exact validity and closure gates remain unchanged.
+    const double roundedAllowed = std::nextafter(allowed, INFINITY);
+    if (!valid || faceCount == 0 || !std::isfinite(maxTolerance) || maxTolerance > roundedAllowed) {
         OS3DSetStatus(status,OCCTOpCodeInvalidResult,[NSString stringWithFormat:
-            @"Surface validation failed: valid=%d, faces=%ld, max_tolerance=%.12g mm, allowed=%.12g mm.",
-            valid,(long)faceCount,maxTolerance,tolerance*10]);
+            @"Surface validation failed: valid=%d, faces=%ld, max_tolerance=%.17g mm, allowed=%.17g mm.",
+            valid,(long)faceCount,maxTolerance,allowed]);
         return nil;
     }
     // BRep bounds must be finite. Do not allow the underlying infinite support

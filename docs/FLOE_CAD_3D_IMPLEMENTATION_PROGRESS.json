@@ -4361,8 +4361,14 @@
         "acceptance_pending": "对带遮挡内孔和曲面的模型，与独立CAD精确投影逐线对照，可切换隐藏线显示。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "8b91cfc9",
+          "3eba1f71"
+        ],
+        "evidence": "docs/qualification/cad-projection-and-polygon-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       },
       "verification_plan": {
         "priority": "P2",
@@ -4513,8 +4519,14 @@
         "acceptance_pending": "双材料装配剖面具有可配置不同剖面线，阶梯切线与剖视标记同步保存导出。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "8b91cfc9",
+          "3eba1f71"
+        ],
+        "evidence": "docs/qualification/cad-projection-and-polygon-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       },
       "verification_plan": {
         "priority": "P2",
@@ -6778,8 +6790,14 @@
         "acceptance_pending": "建立稳定顶点/边/面ID，创建→选面挤出→环切→撤销→保存重开后继续编辑。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "8b91cfc9",
+          "3eba1f71"
+        ],
+        "evidence": "docs/qualification/cad-projection-and-polygon-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       },
       "verification_plan": {
         "priority": "P1",
@@ -6841,8 +6859,14 @@
         "acceptance_pending": "控制笼与最终网格分离，修改器开关/顺序及保存重开结果一致。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "8b91cfc9",
+          "3eba1f71"
+        ],
+        "evidence": "docs/qualification/cad-projection-and-polygon-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       },
       "verification_plan": {
         "priority": "P2",
@@ -9803,6 +9827,30 @@
       "commit": "33abe3e7b36ba3e6e49cc80abaf39009fd2ed07b",
       "scope": "Saved identity observation, Present callbacks and conservative OCCT volume integration",
       "verification": "240 unique passes across195component+43unaffectedhosted+2correctednewfixture followups, not one240run; actualnativeworkbench limited UI proof; no fullApp/device/release"
+    },
+    {
+      "commit": "3eba1f71",
+      "scope": "E12/E14/X01/X02 original criteria accepted;47 real checks43pass4unrelatedfail preserved",
+      "accepted": 90,
+      "pending": [
+        "M16",
+        "M17",
+        "M22",
+        "M29",
+        "M30",
+        "E38",
+        "X03",
+        "X04",
+        "X10",
+        "X11",
+        "X18",
+        "X19",
+        "X26",
+        "X27",
+        "X34",
+        "X37"
+      ],
+      "evidence": "docs/qualification/cad-projection-and-polygon-20261103/README.md"
     }
   ],
   "alignment_review": {

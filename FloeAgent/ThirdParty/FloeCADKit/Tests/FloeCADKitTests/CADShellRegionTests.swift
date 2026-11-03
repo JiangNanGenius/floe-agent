@@ -16,6 +16,28 @@ final class CADShellRegionTests: XCTestCase {
         for document in documents { document.close() }
         if let directory { try FileManager.default.removeItem(at: directory) }
     }
+    /// Preserve full real ASCII if byte idempotence fails; Data's XCTest
+    /// description alone contains only a byte count and cannot be diffed.
+    private func preserveBRepDifference(before: Data, after: Data?, stage: String) {
+        guard after != before else { return }
+        for (suffix, bytes) in [("before", before), ("after", after ?? Data())] {
+            let attachment = XCTAttachment(data: bytes, uniformTypeIdentifier: "public.plain-text")
+            attachment.name = "M22-" + stage + "-" + suffix + ".brep.txt"
+            attachment.lifetime = .keepAlways; add(attachment)
+        }
+        let a = String(decoding: before, as: UTF8.self).components(separatedBy: "\n")
+        let b = String(decoding: after ?? Data(), as: UTF8.self).components(separatedBy: "\n")
+        var differences: [String] = []
+        for i in 0..<max(a.count, b.count) {
+            let old = i < a.count ? a[i] : "<missing>"
+            let new = i < b.count ? b[i] : "<missing>"
+            if old != new { differences.append("line \(i+1)\n- \(old)\n+ \(new)") }
+        }
+        let attachment = XCTAttachment(string: differences.joined(separator: "\n"))
+        attachment.name = "M22-" + stage + "-actual-ascii-diff.txt"
+        attachment.lifetime = .keepAlways; add(attachment)
+    }
+
     private func fixture() async throws -> (document: FloeCADDocument, body: BodyID) {
         let document = try await FloeCADDocument.create(at: directory.appendingPathComponent("\(UUID()).floecad"), name: "Regional shell")
         documents.append(document)
@@ -119,6 +141,7 @@ final class CADShellRegionTests: XCTestCase {
         XCTAssertEqual(document.session.document.features.nodes.map(\.id), ids)
         XCTAssertEqual(document.session.undoStack.undoCommands.count, count)
         XCTAssertTrue(document.session.undoStack.canRedo)
+        preserveBRepDifference(before: raw, after: OCCTKernel.serialize(try handle(document, body)), stage: "rejected-command")
         XCTAssertEqual(OCCTKernel.serialize(try handle(document, body)), raw)
         document.session.redo(); try assertGeometry(handle(document, body))
     }
@@ -133,17 +156,21 @@ final class CADShellRegionTests: XCTestCase {
         XCTAssertFalse(success.ancestry.rows.isEmpty)
         // BRepTools VERSION_2 ASCII is deterministic native topology/geometry,
         // not JSON dictionary order. Keep exact bytes AND geometric evidence.
+        preserveBRepDifference(before: input, after: OCCTKernel.serialize(source), stage: "uniform-success")
         XCTAssertEqual(OCCTKernel.serialize(source), input)
         let refused = OCCTKernel.shellResultWithAncestry(source, openingAt: [opening],
             thickness: 1_000, tolerance: OCCTKernel.matchTolerance(for: source))
         if case let .failure(error) = refused { XCTAssertFalse(error.message.isEmpty) }
         else { XCTFail("An oversized wall must be refused") }
+        preserveBRepDifference(before: input, after: OCCTKernel.serialize(source), stage: "uniform-refusal")
         XCTAssertEqual(OCCTKernel.serialize(source), input)
         XCTAssertEqual(OCCTKernel.volume(source), 24_000, accuracy: 1e-6)
         let originalRender = try XCTUnwrap(document.session.document.body(with: id)?.render)
         let model = document.viewModel(); model.selectItemBody(id); model.beginShell()
+        preserveBRepDifference(before: input, after: OCCTKernel.serialize(source), stage: "initial-preview")
         XCTAssertEqual(OCCTKernel.serialize(source), input, "The initial closed-hollow preview owns its native input.")
         model.handle(.tap(ray: Ray(origin: SIMD3(0, 60, 0), direction: SIMD3(0, -1, 0))))
+        preserveBRepDifference(before: input, after: OCCTKernel.serialize(source), stage: "tap-prepare")
         XCTAssertEqual(OCCTKernel.serialize(source), input)
         model.cancelShell()
         XCTAssertEqual(document.session.document.body(with: id)?.render, originalRender)

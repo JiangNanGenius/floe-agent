@@ -274,11 +274,13 @@ nonisolated struct CADFaceNamingSnapshot: Codable, Sendable {
             face in face.signature.map { (face.index, $0) }
         })
         if result.nativeFaceChannel == nil {
-            let native = OCCTKernel.renderMesh(from: brep)
-            if native.positions == body.render.positions, native.normals == body.render.normals,
-               native.indices == body.render.indices {
-                let channel = OCCTKernel.renderMeshFaceChannel(from: brep)
-                if channel.count == body.render.triangleCount { result.nativeFaceChannel = channel }
+            // Even a cached mesher marks live wires Checked, which changes
+            // BRepTools serialization and mutates undo/redo snapshots. The
+            // existing owned snapshot also remaps its channel through the
+            // copier's actual face ancestry; compare that ONE paired result.
+            if let native = OCCTKernel.faceMeshSnapshot(from: brep), native.render == body.render,
+               native.channel.count == body.render.triangleCount {
+                result.nativeFaceChannel = native.channel
             }
         }
         return result

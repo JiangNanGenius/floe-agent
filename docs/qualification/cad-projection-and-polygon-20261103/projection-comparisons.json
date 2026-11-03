@@ -1,0 +1,308 @@
+{
+  "appSource": "3eba1f71764bbba99192762c0e52512c4d02b38d",
+  "independentProduct": "FreeCAD1.0.2R39319 TechDraw",
+  "independentSource": "256fc7eff3379911ab5daf88e10182c509aa8052",
+  "kernelBoundary": "Both use OCCT7.8.1; independent product, not independent kernel",
+  "cases": [
+    {
+      "case": "box-alone",
+      "passed": true,
+      "comparison": "one-to-one analytic geometry + visibility; multiplicity retained",
+      "toleranceMM": 1e-06,
+      "prescribedFloeScale": 1,
+      "prescribedFloeOffset": [
+        0,
+        0
+      ],
+      "expectedCount": 8,
+      "actualCount": 8,
+      "matches": [
+        {
+          "oracle": "visible-0",
+          "floe": "floe-0",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "visible-1",
+          "floe": "floe-1",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "visible-2",
+          "floe": "floe-2",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "visible-3",
+          "floe": "floe-3",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-0",
+          "floe": "floe-4",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-1",
+          "floe": "floe-5",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-2",
+          "floe": "floe-6",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-3",
+          "floe": "floe-7",
+          "maxResidualMM": 0.0
+        }
+      ],
+      "missing": [],
+      "extra": [],
+      "inputSHA256": [
+        "4d7a60da2c1eee437d3feefafba44ec15ba2963518e5fedd1e671276137baa73",
+        "b7c4dfc43987497d5539a71395907bb0b680ecb2fd92a57fc5c0ea762f13e078"
+      ]
+    },
+    {
+      "case": "mutual-occlusion",
+      "passed": true,
+      "comparison": "one-to-one analytic geometry + visibility; multiplicity retained",
+      "toleranceMM": 1e-06,
+      "prescribedFloeScale": 1,
+      "prescribedFloeOffset": [
+        0,
+        0
+      ],
+      "expectedCount": 10,
+      "actualCount": 10,
+      "matches": [
+        {
+          "oracle": "visible-0",
+          "floe": "floe-2",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "visible-1",
+          "floe": "floe-3",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "visible-2",
+          "floe": "floe-4",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "visible-3",
+          "floe": "floe-5",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-0",
+          "floe": "floe-0",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-1",
+          "floe": "floe-1",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-2",
+          "floe": "floe-6",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-3",
+          "floe": "floe-7",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-4",
+          "floe": "floe-8",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-5",
+          "floe": "floe-9",
+          "maxResidualMM": 0.0
+        }
+      ],
+      "missing": [],
+      "extra": [],
+      "inputSHA256": [
+        "144c192bdfa80ee34d06ee091b7ffd8a782f11a5c8fa598f6f0f46febec11550",
+        "eccdef8d5c9e58680ba7c727e52d6a13314543e4ca382781f9ed02fff6d953e2"
+      ]
+    },
+    {
+      "case": "bore-hidden",
+      "passed": true,
+      "comparison": "one-to-one analytic geometry + visibility; multiplicity retained",
+      "toleranceMM": 1e-06,
+      "prescribedFloeScale": 1,
+      "prescribedFloeOffset": [
+        0,
+        0
+      ],
+      "expectedCount": 10,
+      "actualCount": 10,
+      "matches": [
+        {
+          "oracle": "visible-0",
+          "floe": "floe-0",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "visible-1",
+          "floe": "floe-2",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "visible-2",
+          "floe": "floe-3",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "visible-3",
+          "floe": "floe-1",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-0",
+          "floe": "floe-4",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-1",
+          "floe": "floe-6",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-2",
+          "floe": "floe-7",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-3",
+          "floe": "floe-5",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-4",
+          "floe": "floe-8",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-5",
+          "floe": "floe-9",
+          "maxResidualMM": 0.0
+        }
+      ],
+      "missing": [],
+      "extra": [],
+      "inputSHA256": [
+        "fd061a1bc472a202a5c3d4f8640322c408b0d61939efba2cb89804cb58a90950",
+        "9f067323c042ec4cce92f7039419a9634c9353320c6289590f2782070be79bec"
+      ]
+    },
+    {
+      "case": "bore-circle",
+      "passed": true,
+      "comparison": "one-to-one analytic geometry + visibility; multiplicity retained",
+      "toleranceMM": 1e-06,
+      "prescribedFloeScale": 1,
+      "prescribedFloeOffset": [
+        0,
+        0
+      ],
+      "expectedCount": 10,
+      "actualCount": 10,
+      "matches": [
+        {
+          "oracle": "visible-0",
+          "floe": "floe-1",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "visible-1",
+          "floe": "floe-0",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "visible-2",
+          "floe": "floe-3",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "visible-3",
+          "floe": "floe-2",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "visible-4",
+          "floe": "floe-4",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-0",
+          "floe": "floe-6",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-1",
+          "floe": "floe-8",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-2",
+          "floe": "floe-7",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-3",
+          "floe": "floe-5",
+          "maxResidualMM": 0.0
+        },
+        {
+          "oracle": "hidden-4",
+          "floe": "floe-9",
+          "maxResidualMM": 0.0
+        }
+      ],
+      "missing": [],
+      "extra": [],
+      "inputSHA256": [
+        "a2142abb119a6d83fa6efc598ceaed9138840326d5ddeb6550b2d2414e4bf3cc",
+        "4bfe1f2742e89f9f509fa16ac521cc8ee655e9eced2557570b2885c518d06e3f"
+      ]
+    },
+    {
+      "case": "sphere-curved",
+      "passed": true,
+      "comparison": "one-to-one analytic geometry + visibility; multiplicity retained",
+      "toleranceMM": 1e-06,
+      "prescribedFloeScale": 1,
+      "prescribedFloeOffset": [
+        0,
+        0
+      ],
+      "expectedCount": 1,
+      "actualCount": 1,
+      "matches": [
+        {
+          "oracle": "visible-0",
+          "floe": "floe-0",
+          "maxResidualMM": 0.0
+        }
+      ],
+      "missing": [],
+      "extra": [],
+      "inputSHA256": [
+        "3dd2044eda8050d2ba81f47ac019a45d52587082e6be1598122f49162c2b1ae2",
+        "342ff1f5b9aae26e3ff837d21d6609e19313343ce49ff9bef13d04ef470097ce"
+      ]
+    }
+  ]
+}
