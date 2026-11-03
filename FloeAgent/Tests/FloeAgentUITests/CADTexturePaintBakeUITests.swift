@@ -90,7 +90,15 @@ import XCTest
         let painted=awaitNewDigest("none");XCTAssertEqual(painted.count,64);capture("X10 actual surface stroke")
         reveal("CADTexturePaintUndo").tap();XCTAssertEqual(digest("none"),"none")
         reveal("CADTexturePaintRedo").tap();XCTAssertEqual(digest(painted),painted)
-        let others=reveal("CADTextureBakeOtherBodies");others.tap()
+        let others=reveal("CADTextureBakeOtherBodies")
+        // The native switch's AX frame includes its label. Activate the
+        // trailing switch itself, then verify the actual control state.
+        if others.value as? String != "1" {
+            others.coordinate(withNormalizedOffset:CGVector(dx:0.95,dy:0.5)).tap()
+        }
+        XCTAssertEqual(XCTWaiter.wait(for:[XCTNSPredicateExpectation(
+            predicate:NSPredicate(format:"value == %@","1"),object:others)],timeout:10),.completed,
+            "The real occluder switch must be on before baking: \(app.debugDescription)")
         let bake=reveal("CADTextureBakeAO");XCTAssertTrue(bake.isEnabled);bake.tap()
         let baked=awaitNewDigest(painted);XCTAssertNotEqual(baked,painted);capture("X10 geometry AO baked into current color")
         app.buttons["CADTexturePaintDone"].tap();app.buttons["CADMaterialCancel"].tap()

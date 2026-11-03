@@ -310,6 +310,8 @@ final class DocumentSession {
     func discardOwnedCommandReceipts() {
         lastOwnedCommandReceipt = nil
         lastCommittedOwnedToken = nil
+        historyBrepArchivesEnabled = false
+        historyBrepArchives.removeAll()
     }
 
     /// Perform one host-owned command and mint its rollback receipt. Returns
@@ -706,6 +708,19 @@ final class DocumentSession {
 
     func undo() {
         guard requireWritable() else { return }
+        let restoredBrepBodies = undoStack.undoCommands.last.map { historyBrepBodies(in: $0) } ?? []
+        // Same-handle new-generation edits may have changed native geometry
+        // in place. Invalidate those archives BEFORE restoring any history.
+        for expected in restoredBrepBodies {
+            if let current = document.body(with: expected.id),
+               current.meshRevision != expected.meshRevision,
+               let handle = expected.brep ?? expected.surfaceBRep,
+               (current.brep ?? current.surfaceBRep) === handle {
+                historyBrepArchives = historyBrepArchives.filter {
+                    $0.key.bodyID != expected.id.raw || $0.key.handle != ObjectIdentifier(handle)
+                }
+            }
+        }
         restoredNamingCacheFromHistory = false
         undoStack.undo(on: &document)
         // A rebuild's errors were computed for the state being undone;
@@ -713,6 +728,7 @@ final class DocumentSession {
         // rather than the last live edit (review S6 residual).
         refreshEvalErrors()
         finishHistoryNamingRestore()
+        restoreHistoryBrepArchives(restoredBrepBodies)
         didChange()
     }
 
@@ -2281,6 +2297,7 @@ final class DocumentSession {
                     // same geometry differently, which must not masquerade as
                     // an untracked shape edit during a two-copy comparison.
                     brepBlobCache[body.id.raw] = (ObjectIdentifier(decoded), body.meshRevision, data)
+                    retainHistoryBrepArchive(body: body, handle: decoded, data: data)
                 } else {
                     unreadableRows.bodyBrep.insert(persisted.bodyID)
                 }
@@ -2856,6 +2873,77 @@ final class DocumentSession {
     /// and blob column serve a closed solid and an open IGES surface.
     private var brepBlobCache: [UUID: (handle: ObjectIdentifier, revision: UInt64, data: Data)] = [:]
 
+    // Retain verified archives weakly for explicit ReplaceBody undo only.
+    // Ordinary edits/prewarm still require the current handle AND revision.
+    private struct HistoryBrepKey: Hashable {
+        let bodyID: UUID
+        let handle: ObjectIdentifier
+        let revision: UInt64
+    }
+    private final class HistoryBrepArchive {
+        weak var handle: BRepHandle?
+        let data: Data
+        let order: UInt64
+        init(handle: BRepHandle, data: Data, order: UInt64) {
+            self.handle = handle; self.data = data; self.order = order
+        }
+    }
+    private var historyBrepArchives: [HistoryBrepKey: HistoryBrepArchive] = [:]
+    private var historyBrepArchiveOrder: UInt64 = 0
+    private var historyBrepArchivesEnabled = true
+
+    private func retainHistoryBrepArchive(body: Body, handle: BRepHandle, data: Data, restoredHistory: Bool = false) {
+        guard historyBrepArchivesEnabled else { return }
+        historyBrepArchives = historyBrepArchives.filter { $0.value.handle != nil }
+        let byteLimit = 64 * 1024 * 1024
+        guard data.count <= byteLimit else { return }
+        let key = HistoryBrepKey(bodyID: body.id.raw, handle: ObjectIdentifier(handle), revision: body.meshRevision)
+        if !restoredHistory {
+            // A normal same-handle edit never inherits another revision's
+            // archive, even if its render happens to compare equal.
+            historyBrepArchives = historyBrepArchives.filter {
+                $0.key.bodyID != key.bodyID || $0.key.handle != key.handle || $0.key.revision == key.revision
+            }
+        }
+        historyBrepArchives[key] = nil
+        var bytes = historyBrepArchives.values.reduce(0) { $0 + $1.data.count }
+        while historyBrepArchives.count >= 64 || bytes + data.count > byteLimit {
+            guard let oldest = historyBrepArchives.min(by: { $0.value.order < $1.value.order }) else { break }
+            bytes -= oldest.value.data.count
+            historyBrepArchives[oldest.key] = nil
+        }
+        historyBrepArchiveOrder &+= 1
+        historyBrepArchives[key] = HistoryBrepArchive(handle: handle, data: data, order: historyBrepArchiveOrder)
+    }
+
+    private func historyBrepBodies(in command: DocumentCommand) -> [Body] {
+        if let replace = command as? ReplaceBodyCommand { return [replace.before] }
+        guard let composite = command as? CompositeCommand else { return [] }
+        var bodies: [BodyID: Body] = [:]
+        // Match the actual reverse application order; the last before-state
+        // for a body is the one that this complete undo restores.
+        for child in composite.commands.reversed() {
+            for body in historyBrepBodies(in: child) { bodies[body.id] = body }
+        }
+        return Array(bodies.values)
+    }
+
+    private func restoreHistoryBrepArchives(_ expectedBodies: [Body]) {
+        guard historyBrepArchivesEnabled else { return }
+        historyBrepArchives = historyBrepArchives.filter { $0.value.handle != nil }
+        for expected in expectedBodies {
+            guard let original = expected.brep ?? expected.surfaceBRep,
+                  let current = document.body(with: expected.id), current.render == expected.render,
+                  let restored = current.brep ?? current.surfaceBRep, restored === original else { continue }
+            let key = HistoryBrepKey(bodyID: expected.id.raw, handle: ObjectIdentifier(original), revision: expected.meshRevision)
+            guard let archive = historyBrepArchives[key], archive.handle === original else { continue }
+            // ReplaceBodyCommand deliberately mints a fresh meshRevision.
+            // Only this exact history snapshot may rebind its original bytes.
+            brepBlobCache[expected.id.raw] = (ObjectIdentifier(restored), current.meshRevision, archive.data)
+            retainHistoryBrepArchive(body: current, handle: restored, data: archive.data, restoredHistory: true)
+        }
+    }
+
     private func serializedBrep(for body: Body) -> Data? {
         // A body owns at most one exact shape. Prefer the solid field if a
         // future path ever leaves both populated.
@@ -2868,6 +2956,7 @@ final class DocumentSession {
         let data = OCCTKernel.serialize(handle)
         if let data {
             brepBlobCache[body.id.raw] = (key, body.meshRevision, data)
+            retainHistoryBrepArchive(body: body, handle: handle, data: data)
         }
         return data
     }
@@ -2925,6 +3014,7 @@ final class DocumentSession {
                   let handle = current.brep ?? current.surfaceBRep,
                   ObjectIdentifier(handle) == entry.2 else { continue }
             brepBlobCache[entry.0] = (entry.2, entry.1, entry.3)
+            retainHistoryBrepArchive(body: current, handle: handle, data: entry.3)
         }
     }
 
