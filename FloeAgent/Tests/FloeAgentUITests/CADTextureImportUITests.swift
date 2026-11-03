@@ -159,7 +159,9 @@ final class CADTextureImportUITests: XCTestCase {
         XCTAssertEqual(stable, 2, "The native menu row must finish positioning")
         option.tap()
         let selected = NSPredicate { _, _ in
-            picker.exists && picker.label.contains(label) && !option.exists
+            // iOS may retain a dismissed menu's AX objects. Its row must no
+            // longer accept taps; existence alone is not menu visibility.
+            picker.exists && picker.label.contains(label) && !option.isHittable
         }
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: selected, object: picker)], timeout: 8),
                        .completed, "The actual picker must show \(label) after selection, got \(picker.label)")

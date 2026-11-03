@@ -433,6 +433,43 @@ private final class PredicateBox: @unchecked Sendable {
 /// Only this fixture's writable disk and shares are changed or removed.
 @MainActor
 final class LinuxRunnerEnvironmentRealGuestTests: XCTestCase {
+    // This qualification deliberately starts from the immutable predecessor,
+    // even after the App's new-install default advances to runner 2.1.
+    private let predecessorImageID = "floe-debian13-riscv64-202609202607-basic-r572a77382feb-b37171053949-1"
+
+    func testPublishedRunnerCatalogMatchesPublicComponentAndKeepsPredecessor() async throws {
+        guard ProcessInfo.processInfo.environment["FLOE_RUNNER21_PUBLISHED_CATALOG"] == "1" else {
+            throw XCTSkip("Opt-in public component readback is not enabled.")
+        }
+        let current = try XCTUnwrap(LinuxGuestImageDistributionCatalog.entry(id: LinuxGuestImageDistributionCatalog.defaultImageID))
+        let predecessor = try XCTUnwrap(LinuxGuestImageDistributionCatalog.entry(id: predecessorImageID))
+        XCTAssertNotEqual(current.id, predecessor.id)
+        let folder = current.archiveURL.deletingLastPathComponent()
+        func fetch(_ name: String) async throws -> Data {
+            var request = URLRequest(url: folder.appendingPathComponent(name))
+            request.timeoutInterval = 60
+            let (data, response) = try await URLSession.shared.data(for: request)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+            XCTAssertLessThanOrEqual(data.count, 128 * 1024)
+            return data
+        }
+        let manifest = try JSONDecoder().decode(LinuxGuestImage.self, from: await fetch("manifest.json"))
+        let distributionData = try await fetch("distribution.json")
+        let distribution = try XCTUnwrap(JSONSerialization.jsonObject(with: distributionData) as? [String: Any])
+        let archive = try XCTUnwrap(distribution["image"] as? [String: Any])
+        XCTAssertEqual(manifest.id, current.id)
+        XCTAssertEqual(archive["id"] as? String, current.id)
+        XCTAssertEqual(archive["sha512"] as? String, current.archiveSHA512)
+        XCTAssertEqual(archive["archive"] as? String, current.archiveURL.lastPathComponent)
+        XCTAssertEqual(manifest.runnerCapabilities, "runner=2.1.0 protocol=3 maxCommands=8 maxSessions=4 env=1 net=up")
+        XCTAssertEqual(manifest.runnerArtifact?.role, .runner)
+        XCTAssertTrue(manifest.compatibleOrigins?.contains(where: { $0.imageID == predecessor.id }) == true)
+        let base = try XCTUnwrap(distribution["base"] as? [String: Any])
+        XCTAssertEqual(base["zipSha512"] as? String, predecessor.archiveSHA512)
+        XCTAssertTrue(current.provenance.distributionAllowed)
+        XCTAssertTrue(predecessor.provenance.distributionAllowed)
+    }
+
     func testRealRunnerUpgradeRetainsDiskAndIsolatesChildEnvironments() async throws {
         let variables = ProcessInfo.processInfo.environment
         guard variables["FLOE_RUNNER21_REAL_GUEST"] == "1" else {
@@ -440,7 +477,7 @@ final class LinuxRunnerEnvironmentRealGuestTests: XCTestCase {
         }
         let imagesRoot = URL(fileURLWithPath: try XCTUnwrap(variables["FLOE_RUNNER21_IMAGES_ROOT"]),
                              isDirectory: true)
-        let imageID = LinuxGuestImageDistributionCatalog.defaultImageID
+        let imageID = predecessorImageID
         let imageDirectory = imagesRoot.appendingPathComponent(imageID, isDirectory: true)
         let candidate = try JSONDecoder().decode(RunnerCandidate.self, from:
             Data(contentsOf: imageDirectory.appendingPathComponent("runner-component.json")))
@@ -626,8 +663,7 @@ final class LinuxRunnerEnvironmentRealGuestTests: XCTestCase {
         let expectedComponent = try JSONDecoder().decode(LinuxGuestImage.self,
             from: Data(contentsOf: newSource.appendingPathComponent("manifest.json")))
         let baseArchive = URL(fileURLWithPath: try XCTUnwrap(variables["FLOE_RUNNER21_BASE_ARCHIVE"]))
-        let baseEntry = try XCTUnwrap(LinuxGuestImageDistributionCatalog.entry(
-            id: LinuxGuestImageDistributionCatalog.defaultImageID))
+        let baseEntry = try XCTUnwrap(LinuxGuestImageDistributionCatalog.entry(id: predecessorImageID))
         let owned = imagesRoot.deletingLastPathComponent().appendingPathComponent("adoption-\(UUID().uuidString)")
         let writable = owned.appendingPathComponent("environment", isDirectory: true)
         let workspace = owned.appendingPathComponent("workspace", isDirectory: true)
@@ -645,7 +681,7 @@ final class LinuxRunnerEnvironmentRealGuestTests: XCTestCase {
             writableDirectory: writable,
             shares: [.init(tag: LinuxGuestShare.environmentTag, hostDirectory: writable),
                      .init(tag: LinuxGuestShare.workspaceTag, hostDirectory: workspace)],
-            imageID: LinuxGuestImageDistributionCatalog.defaultImageID,
+            imageID: baseEntry.id,
             ramMB: 256, vcpus: 1, networkEnabled: true)
         let provider = RunnerImportedDescriptor(descriptor: descriptor)
         let layout = RuntimeV2Layout(root: owned.appendingPathComponent("runtime-v2"))

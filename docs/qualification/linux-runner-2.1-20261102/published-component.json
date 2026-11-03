@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "componentTag": "floe-linux-guest-runner21-20261102.1-candidate",
+  "sourceCommit": "368826932a4dab19fc1822dd40d421af0f56d689",
+  "publishedAt": "2026-11-03T00:57:42Z",
+  "releaseURL": "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-runner21-20261102.1-candidate",
+  "draft": false,
+  "prerelease": true,
+  "appLatestUnchanged": "v1.7.65",
+  "localQualificationReused": true,
+  "assets": [
+    {
+      "name": "distribution.json",
+      "bytes": 14406,
+      "sha256": "009a546774f57e0160328fa9d58c1483410ed65ad496f21984dd1f44a213cc6f"
+    },
+    {
+      "name": "floe-linux-guest-floe-debian13-riscv64-basic-runner210-20261102-r36882693.zip",
+      "bytes": 566630150,
+      "sha256": "b2d8b439c31a79a1c22791e71f9b95df767902993770991a2afd78c92c2dc80f"
+    },
+    {
+      "name": "linux-guest-reused-source-references-floe-linux-guest-runner21-20261102.1-candidate.tar",
+      "bytes": 20480,
+      "sha256": "7c086769bf1bf03337641a2715dfb9bb024cfd33758902a83b411317e67b6bd5"
+    },
+    {
+      "name": "linux-guest-runner-relink-floe-linux-guest-runner21-20261102.1-candidate.tar",
+      "bytes": 430080,
+      "sha256": "f46f756a854fd7ea3b1552d7efc19eeccb307158b4494ff301f62fe4a252ffea"
+    },
+    {
+      "name": "manifest.json",
+      "bytes": 6649,
+      "sha256": "69cf2bd8db53abe839a229308a894d3dad093ca2416b6e943c8a11629ca68ac6"
+    },
+    {
+      "name": "RELEASE-NOTES.md",
+      "bytes": 2573,
+      "sha256": "8896c4f52bb8950a0500fbd159bfa0a7f2b1de1b354276ecd76224091f312f6d"
+    },
+    {
+      "name": "SHA256SUMS",
+      "bytes": 847,
+      "sha256": "059b958387c59f7fa9eeee85b842fde8aa69515b1b07f617f161ded17c6ae6b4"
+    },
+    {
+      "name": "SHA512SUMS",
+      "bytes": 1218,
+      "sha256": "2e2cbf59fa6e1a46c34880b52b65081776bde730a27a61ba25ca3f6efd06a34e"
+    },
+    {
+      "name": "SOURCE-OFFER.md",
+      "bytes": 2493,
+      "sha256": "50b47bc65a88128962e3308de9ffd80c4fc4791c53907c8a58fd9c352810722b"
+    }
+  ],
+  "publicArchiveReadback": {
+    "at": 1793667508.711543,
+    "url": "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-runner21-20261102.1-candidate/floe-linux-guest-floe-debian13-riscv64-basic-runner210-20261102-r36882693.zip",
+    "bytes": 566630150,
+    "digests": {
+      "sha256": "b2d8b439c31a79a1c22791e71f9b95df767902993770991a2afd78c92c2dc80f",
+      "sha512": "0fddc375127f5ce585ff0e36946d78882dee76f1148da9668ba2ddb7c6d9c20251dd5f6affa31aa1592214f4345cd27ec81e6180d5481db42c03d7fdae1743e3"
+    },
+    "sourceCommit": "368826932a4dab19fc1822dd40d421af0f56d689",
+    "tag": "floe-linux-guest-runner21-20261102.1-candidate",
+    "publicDownloadVerified": true,
+    "appLatest": "v1.7.65",
+    "qualifiedBytesRebuilt": false
+  }
+}

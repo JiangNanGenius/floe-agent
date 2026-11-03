@@ -97,6 +97,9 @@ struct CADTextureImportReviewView: View {
                             Text(Self.slotTitle(slot)).tag(slot)
                         }
                     }
+                    .pickerStyle(.menu)
+                    .buttonStyle(.borderless)
+                    .menuActionDismissBehavior(.enabled)
                     .accessibilityIdentifier("CADTextureImportChannel-\(offset)")
                     Picker(FloeCADStrings.text("cad.textureImport.option", "Import option"),
                            selection: choiceBinding(source.id, descriptor: descriptor)) {
@@ -108,6 +111,9 @@ struct CADTextureImportReviewView: View {
                             Text(FloeCADStrings.format("cad.textureImport.pngSize", "8-bit PNG · up to %d px", choice.maximumDimension ?? 0)).tag(choice)
                         }
                     }
+                    .pickerStyle(.menu)
+                    .buttonStyle(.borderless)
+                    .menuActionDismissBehavior(.enabled)
                     .accessibilityIdentifier("CADTextureImportChoice-\(offset)")
                 }
                 .disabled(model.isImportingTextures)

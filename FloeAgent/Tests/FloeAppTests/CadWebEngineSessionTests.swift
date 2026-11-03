@@ -751,15 +751,93 @@ struct CadWebEngineSessionTests {
         }
     }
 
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["FLOE_E23_XREF_QUALIFICATION"] == "1"))
+    func realXrefRefusalAndVisibleRecoveryImport() async throws {
+        // Proprietary third-party corpus is supplied privately by the run,
+        // never bundled or committed to the App or test source.
+        let source64 = try #require(ProcessInfo.processInfo.environment["FLOE_E23_XREF_SOURCE_BASE64"])
+        let source = try #require(Data(base64Encoded: source64))
+        #expect(FloeDigest.sha256Hex(source) == "feaf790e234e8334c676eba3729748609089c56298985d15633ef67280d6f1e3")
+        let temporary = FileManager.default.temporaryDirectory
+        let before = Set(try FileManager.default.contentsOfDirectory(at: temporary, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("FloeCADRecovery-") })
+        try await withVisibleDrawing(bytes: source, format: "dwg") { session, web, controller in
+            _ = try await web.evaluateJavaScript(#"""
+            document.getElementById('cadEdit').click();
+            const select=document.getElementById('cadEntities');
+            if(![...select.options].some(o=>o.value==='44'))throw Error('Actual real LINE 44 is not available');
+            select.value='44';select.dispatchEvent(new Event('change'));
+            const fields=document.querySelector('#cadPanel .cadFields');
+            const inputs=fields.querySelectorAll('input');inputs[0].value='0.1';inputs[1].value='0';
+            const button=[...document.querySelectorAll('#cadPanel .cadActions button')].find(b=>b.textContent==='Move');
+            if(!button)throw Error('The supported real LINE cannot be edited');button.click();
+            """#)
+            var edited = false
+            for _ in 0..<200 {
+                if (try? await web.evaluateJavaScript("document.getElementById('cadSave').disabled === false")) as? Bool == true {
+                    edited = true; break
+                }
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            #expect(edited)
+            let result = try await web.callAsyncJavaScript(#"""
+            await document.getElementById('cadSave').onclick();
+            return document.getElementById('cadMessage').textContent;
+            """#, arguments: [:], in: nil, contentWorld: .page)
+            let refusal = try #require(result as? String)
+            #expect(refusal.contains("CAD round-trip changed styles, objects or layout data; original preserved"))
+            let snapshot = try await web.takeSnapshot(configuration: nil)
+            Attachment.record(Array(try #require(snapshot.pngData())), named: "e23-real-xref-strict-refusal.png")
+            _ = try await web.evaluateJavaScript(#"""
+            const b=[...document.querySelectorAll('#cadPanel button')].find(b=>b.textContent==='Export recovery draft');
+            b.click();
+            """#)
+            var picker: UIDocumentPickerViewController?
+            for _ in 0..<100 {
+                if let actual = controller.presentedViewController as? UIDocumentPickerViewController { picker=actual; break }
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+            let actualPicker = try #require(picker)
+            #expect(actualPicker.delegate === session.coordinator)
+            let folders = Set(try FileManager.default.contentsOfDirectory(at: temporary, includingPropertiesForKeys: nil)
+                .filter { $0.lastPathComponent.hasPrefix("FloeCADRecovery-") }).subtracting(before)
+            #expect(folders.count == 1)
+            let folder = try #require(folders.first)
+            let draft = try String(contentsOf: folder.appendingPathComponent("Drawing.floe-cad-draft.json"), encoding: .utf8)
+            let journal = try #require(JSONSerialization.jsonObject(with: Data(draft.utf8)) as? [String: Any])
+            #expect(journal["sourceBase64"] as? String == source64)
+            #expect(journal["sourceSHA256"] as? String == FloeDigest.sha256Hex(source))
+            #expect((journal["events"] as? [Any])?.count == 1)
+            session.coordinator?.cancelRecoveryExport()
+            for _ in 0..<100 where controller.presentedViewController != nil {
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            #expect(!FileManager.default.fileExists(atPath: folder.path))
+            // The real Open recovery draft file-input handler reads the exact
+            // exported bytes and invokes the production worker replay.
+            let imported = try await web.callAsyncJavaScript(#"""
+            const input=document.querySelector('#cadPanel input[type=file]');
+            const transfer=new DataTransfer();transfer.items.add(new File([draft],'Drawing.floe-cad-draft.json',{type:'application/json'}));
+            input.files=transfer.files;await input.onchange();
+            return {message:document.getElementById('cadMessage').textContent,saveEnabled:!document.getElementById('cadSave').disabled};
+            """#, arguments: ["draft": draft], in: nil, contentWorld: .page)
+            let status = try #require(imported as? [String: Any])
+            #expect((status["message"] as? String)?.contains("Draft restored.") == true)
+            #expect(status["saveEnabled"] as? Bool == true)
+            Attachment.record(refusal, named: "e23-original-save-refusal.txt")
+            Attachment.record("Original SHA256: \(FloeDigest.sha256Hex(source)); exported draft SHA256: \(FloeDigest.sha256Hex(Data(draft.utf8))); one native LINE edit; actual native picker; actual recovery import", named: "e23-real-xref-recovery-summary.txt")
+        }
+    }
+
     private func withVisibleDrawing(
-        bytes: Data,
+        bytes: Data, format: String = "dxf",
         action: (EngineeringWebSession, WKWebView, UIViewController) async throws -> Void
     ) async throws {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             .filter { $0.activationState == .foregroundActive }
         #expect(scenes.count == 1)
         let scene = try #require(scenes.first)
-        let package = try EngineeringPreviewPackage.single(name: "QualifiedDrawing.dxf", bytes: bytes)
+        let package = try EngineeringPreviewPackage.single(name: "QualifiedDrawing.\(format)", bytes: bytes)
         let session = EngineeringWebSession()
         let web = session.attach(package: package, error: .constant(nil), onReview: nil,
             onSave: { _, _ in throw FloeError.internalError("This read-only witness must not replace source bytes") },
