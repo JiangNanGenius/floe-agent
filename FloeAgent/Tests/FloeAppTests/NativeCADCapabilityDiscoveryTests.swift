@@ -166,7 +166,8 @@ struct NativeCADCapabilityDiscoveryTests {
         #expect(full.contains("source revision/CAS"));#expect(full.contains("sculpt_pick_samples"))
         var page=0,text=""
         while true {
-            let row=try #require(CadDocumentHelp.page(.init(topic:"sculpt",page:page,pageSize:1000)))
+            let candidate = try CadDocumentHelp.page(.init(topic:"sculpt",page:page,pageSize:1000))
+            let row = try #require(candidate)
             text+=row.text;guard let next=row.nextPage else { break };page=next
         }
         #expect(text==full);#expect(page>0)
