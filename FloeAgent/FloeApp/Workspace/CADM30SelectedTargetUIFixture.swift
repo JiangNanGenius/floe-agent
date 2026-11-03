@@ -17,6 +17,7 @@ import FloePersistence
     let workspaceID: UUID
     var status = "awaiting real History tap"
     var observed: CADSelectionContext?
+    private var savedObservationKey: String?
     var rowIdentifier: String { (descriptor.targetKind == "datum_plane" ? "HistoryPlane-" : "HistoryRow-") + descriptor.targetName }
     var selected: Bool {
         guard let context = observed, context.historySelectionGeneration > 0 else { return false }
@@ -72,7 +73,15 @@ import FloePersistence
         } catch { status = "witness FAILED: \(error.localizedDescription)" }
     }
 
-    func observe(_ context: CADSelectionContext) { observed = context; status = selected ? "real target selected; press Save" : "awaiting real History tap" }
+    func observe(_ context: CADSelectionContext) {
+        observed = context
+        // Saving publishes the same current selection through both native
+        // observers. It must not erase an already-written witness/attachment
+        // receipt. A genuinely changed selection or revision invalidates it.
+        guard savedObservationKey != context.observationKey else { return }
+        savedObservationKey = nil
+        status = selected ? "real target selected; press Save" : "awaiting real History tap"
+    }
     /// Called by the shipped host Save action only, after the ordinary save.
     func didSave(_ outcome: CADSaveOutcome) {
         do {
@@ -92,6 +101,7 @@ import FloePersistence
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
             try encoder.encode(witness).write(to: CADM30SelectionWitness.directory(nonce)
                 .appendingPathComponent(descriptor.target.rawValue + ".json"), options: .atomic)
+            savedObservationKey = context.observationKey
             status = "witness saved \(descriptor.target.rawValue) \(document.modelSHA256)"
         } catch { status = "witness FAILED: \(error.localizedDescription)" }
     }
