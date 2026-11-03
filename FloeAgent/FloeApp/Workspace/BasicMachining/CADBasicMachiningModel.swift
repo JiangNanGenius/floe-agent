@@ -2,6 +2,7 @@
 import Foundation
 import FloeCore
 import FloeExecution
+import FloeModels
 import FloePersistence
 import FloeTools
 import FloeWorkbench
