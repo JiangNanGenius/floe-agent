@@ -18,3 +18,7 @@ Final production libraries, signed APK, Samsung/tablet acceptance, actual provid
 ## Real-provider test routing
 
 Use the existing Ark Plan configuration with `ark-code-latest` for LLM testing and its configured image route. Video generation uses the separately authorized Volcengine pay-as-you-go route because the plan excludes it. Perform one minimum supported request per media scenario, stop on failure or unknown acceptance, and do not automatically resubmit or switch paid providers. A successful model-list response is not proof of working generation.
+
+## Cold-start follow-up
+
+The first installed candidate exposed eager font-pump creation before the RuntimeHost factory injected its Android Context. Font startup now follows the existing context-bound deferred-service pattern; stopping an uninitialized service does not create it. Full/Play Kotlin compilation and 52 focused JVM tests (including host launch/fencing and settings lifecycle) passed after this fix. The 32 media component results remain applicable because those sources are unchanged. The corrected APK still requires actual cold-start, task, provider and installation acceptance; the failing candidate is not a public delivery.
