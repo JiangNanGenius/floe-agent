@@ -32,6 +32,9 @@
 // generation download shape, and the workbench staged-write/atomic-commit +
 // SHA-256 verification discipline.
 import Foundation
+#if canImport(Android)
+import Android
+#endif
 import FloeCore
 import FloeModels
 import FloeWorkspace
