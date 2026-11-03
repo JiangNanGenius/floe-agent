@@ -199,7 +199,8 @@ final class CADPolygonMeshTests: XCTestCase {
             return (try? JSONSerialization.data(withJSONObject: reply)) ?? Data()
         }
         operation.cancel()
-        let cancelled = try XCTUnwrap(JSONSerialization.jsonObject(with: await operation.value) as? [String: Any])
+        let cancelledBytes = await operation.value
+        let cancelled = try XCTUnwrap(JSONSerialization.jsonObject(with: cancelledBytes) as? [String: Any])
         XCTAssertEqual(cancelled["ok"] as? Bool,false); XCTAssertEqual(try cage(doc,id),before)
         XCTAssertEqual(doc.session.undoStack.undoCommands.count,count)
         let originalBody = try XCTUnwrap(doc.session.document.body(with:id))

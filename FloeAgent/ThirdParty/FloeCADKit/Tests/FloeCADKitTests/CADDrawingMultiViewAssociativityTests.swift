@@ -940,6 +940,28 @@ final class CADDrawingMultiViewAssociativityTests: XCTestCase {
 // E12/E14 source packet: these tests require the pinned native OCCT archive.
 // They are component behavior tests, not independent-CAD or presented-UI proof.
 extension CADDrawingMultiViewAssociativityTests {
+    private func retainProjectionEdges(_ edges: [CADHiddenLineEdge], name: String,
+                                       normal: SIMD3<Double>, xAxis: SIMD3<Double>) throws {
+        func point(_ p: SIMD2<Double>) -> [Double] { [p.x, p.y] }
+        let rows = edges.map { edge -> [String: Any] in
+            var row: [String: Any] = ["sourceIndex": edge.sourceIndex,
+                "layer": edge.hidden ? "hidden" : edge.outline ? "outline" : "edges"]
+            switch edge.curve {
+            case let .line(a, b): row["kind"] = "line"; row["a"] = point(a); row["b"] = point(b)
+            case let .circle(center, radius): row["kind"] = "circle"; row["center"] = point(center); row["radius"] = radius
+            case let .arc(center, radius, start, end):
+                row["kind"] = "arc"; row["center"] = point(center); row["radius"] = radius; row["angles"] = [start, end]
+            case let .polyline(points): row["kind"] = "polyline"; row["points"] = points.map(point)
+            }
+            return row
+        }
+        let bytes = try JSONSerialization.data(withJSONObject: ["name": name, "projectionMethod": "occt-brep-hlr",
+            "projectionComplete": true, "scale": 1, "normal": [normal.x, normal.y, normal.z],
+            "xAxis": [xAxis.x, xAxis.y, xAxis.z], "entities": rows], options: [.prettyPrinted, .sortedKeys])
+        let attachment = XCTAttachment(data: bytes, uniformTypeIdentifier: "public.json")
+        attachment.name = name+"-floe-exact-edges.json"; attachment.lifetime = .keepAlways; add(attachment)
+    }
+
     func testExactHLRMutualOcclusionHiddenStyleAndReopen() async throws {
         let small = try XCTUnwrap(OCCTKernel.primitiveShape(
             .box(width: 10, depth: 10, height: 4), placement: .identity))
@@ -955,9 +977,20 @@ extension CADDrawingMultiViewAssociativityTests {
         XCTAssertFalse(together.contains { $0.sourceIndex == 0 && !$0.hidden },
                        "A larger nearer B-rep must hide the OTHER body's edges")
         XCTAssertTrue(together.contains { $0.sourceIndex == 1 && !$0.hidden })
+        try retainProjectionEdges(alone, name: "box-alone", normal: SIMD3(0,0,1), xAxis: SIMD3(1,0,0))
+        try retainProjectionEdges(together, name: "mutual-occlusion", normal: SIMD3(0,0,1), xAxis: SIMD3(1,0,0))
+        let sphere = try XCTUnwrap(OCCTKernel.primitiveShape(.sphere(radius: 20), placement: .identity))
+        try retainProjectionEdges(try XCTUnwrap(OCCTKernel.hiddenLineProjection([sphere], normal: SIMD3(0,0,1), xAxis: SIMD3(1,0,0))),
+                                  name: "sphere", normal: SIMD3(0,0,1), xAxis: SIMD3(1,0,0))
 
         let document = try await makeDocument("E12-HLR")
         let fixture = try makePlateWithHole(document)
+        let actualBody = try XCTUnwrap(document.session.document.bodies.first { $0.id.raw.uuidString == fixture.bodyID })
+        let actualBRep = try XCTUnwrap(actualBody.brep.flatMap { OCCTKernel.transformed($0, by: actualBody.transform) })
+        for (name,normal) in [("bore-side",SIMD3<Double>(0,0,1)),("bore-circle",SIMD3<Double>(0,1,0))] {
+            try retainProjectionEdges(try XCTUnwrap(OCCTKernel.hiddenLineProjection([actualBRep], normal: normal, xAxis: SIMD3(1,0,0))),
+                                      name: name, normal: normal, xAxis: SIMD3(1,0,0))
+        }
         let service = CADDrawingService(document: document)
         let created = service.handle(action: "addPage", args: [
             "name": "Occluded bore", "kind": "side", "bodyIDs": [fixture.bodyID],
