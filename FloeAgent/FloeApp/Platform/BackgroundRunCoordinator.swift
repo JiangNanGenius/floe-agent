@@ -926,7 +926,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if transition.stopsScreenShare {
             if environment.screenShareCenter.isSharing
                 || environment.screenShareCenter.isWaitingForBroadcast {
-                environment.screenShareCenter.stopSharing()
+                environment.screenShareCenter.stopSharingForTaskLifecycle()
             }
         }
         if transition.preparesPictureInPicture {
@@ -3392,7 +3392,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 environment.backgroundVideoService.stop()
                 if environment.screenShareCenter.isSharing
                     || environment.screenShareCenter.isWaitingForBroadcast {
-                    environment.screenShareCenter.stopSharing()
+                    environment.screenShareCenter.stopSharingForTaskLifecycle()
                 }
             }
             FloeLogger(category: .app).info(
@@ -3445,7 +3445,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         environment.backgroundVideoService.stop()
         if environment.screenShareCenter.isSharing
             || environment.screenShareCenter.isWaitingForBroadcast {
-            environment.screenShareCenter.stopSharing()
+            environment.screenShareCenter.stopSharingForTaskLifecycle()
         }
     }
 

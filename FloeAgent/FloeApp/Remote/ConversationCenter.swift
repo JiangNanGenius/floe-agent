@@ -8178,13 +8178,36 @@ final class ConversationCenter: ObservableObject {
         return "\(model.displayName)（\(providerName)）"
     }
 
-    func screenAnalysisDestinationName() -> String? {
-        guard let (provider, model) = auxiliaryVisionProviderAndModel() else { return nil }
-        let customName = provider.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let providerName = customName.flatMap { $0.isEmpty ? nil : $0 }
-            ?? provider.baseURL.host
-            ?? provider.kind.rawValue
-        return "\(model.displayName)（\(providerName)）"
+    struct ScreenAnalysisDestination: Sendable, Equatable {
+        var provider: ProviderProfile
+        var model: ModelProfile
+        var name: String
+        var providerID: UUID { provider.id }
+        var modelID: UUID { model.id }
+    }
+    /// Screen upload uses the configured vision route, or the explicitly
+    /// configured default when no vision route was chosen. No first-candidate
+    /// or paid fallback is selected for a user-consented screen frame.
+    func screenAnalysisDestination() -> ScreenAnalysisDestination? {
+        guard let id=modelPreferences.visionModelID ?? modelPreferences.defaultAgentModelID,
+              let model=visionModels.first(where: { $0.id == id }),
+              let provider=providers.first(where: { $0.id == model.providerID }) else { return nil }
+        let custom=provider.displayName?.trimmingCharacters(in:.whitespacesAndNewlines)
+        let name=custom.flatMap { $0.isEmpty ? nil : $0 } ?? provider.baseURL.host ?? provider.kind.rawValue
+        return .init(provider:provider,model:model,name:"\(model.displayName)（\(name)）")
+    }
+    func screenAnalysisDestinationName() -> String? { screenAnalysisDestination()?.name }
+
+    /// Freeze the actual provider/model snapshot shown for this explicit
+    /// request; reuse the same bounded image implementation and real errors.
+    func describeScreenImageResult(base64:String,mimeType:String,prompt:String,
+                                   destination:ScreenAnalysisDestination) async -> AuxiliaryVisionResult {
+        guard screenAnalysisDestination() == destination else {
+            return .failure(.provider(domain:"FloeScreenAnalysis",code:409,
+                message:FloeL10n.l("screenshare.guide.destinationChanged")))
+        }
+        return await describeImageResult(base64:base64,mimeType:mimeType,prompt:prompt,
+            provider:destination.provider,model:destination.model,traceID:UUID().uuidString)
     }
 
     enum AuxiliaryVisionFailure: Error, Sendable, Equatable {

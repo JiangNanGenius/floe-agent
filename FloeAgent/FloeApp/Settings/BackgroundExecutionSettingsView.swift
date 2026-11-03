@@ -87,6 +87,14 @@ struct BackgroundExecutionSettingsView: View {
     var body: some View {
         Form {
             Section {
+                NavigationLink {
+                    ScreenShareGuideView(center: center.environment.screenShareCenter)
+                } label: {
+                    Label("screenshare.guide.title", systemImage: "rectangle.inset.filled.and.person.filled")
+                }
+                .accessibilityIdentifier("background.screenShare.guide")
+            }
+            Section {
                 Toggle("background.features.enhanced", isOn: Binding(
                     get: { center.backgroundExecutionOptions.enhancedBackgroundEnabled },
                     set: { value in Task { await center.setEnhancedBackgroundEnabled(value) } }
