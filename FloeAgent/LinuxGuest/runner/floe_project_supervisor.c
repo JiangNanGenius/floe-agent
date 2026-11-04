@@ -717,6 +717,15 @@ static void supervisor_bring_up_network(void) {
         diag("floe-supervisor: net %s: no socket: %s\n", FLOE_NET_INTERFACE, strerror(errno));
         return;
     }
+    struct ifreq loopback;
+    memset(&loopback, 0, sizeof loopback);
+    memcpy(loopback.ifr_name, "lo", 3);
+    int loopback_ready = ioctl(fd, SIOCGIFFLAGS, &loopback) == 0;
+    if (loopback_ready) {
+        loopback.ifr_flags = (short)(loopback.ifr_flags | IFF_UP | IFF_RUNNING);
+        loopback_ready = ioctl(fd, SIOCSIFFLAGS, &loopback) == 0;
+    }
+    if (!loopback_ready) diag("floe-supervisor: loopback unavailable: %s\n", strerror(errno));
     int configured = net_apply_interface(fd) == 0;
     close(fd);
     if (!configured) {
@@ -733,7 +742,7 @@ static void supervisor_bring_up_network(void) {
         diag("floe-supervisor: net /etc/gitconfig (git safe.directory) not written\n");
     }
     const char *answered = net_resolver_answers();
-    if (answered != NULL) {
+    if (answered != NULL && loopback_ready) {
         g_net_status = FLOE_NET_UP;
         diag("floe-supervisor: net %s=%s/%s gw=" FLOE_NET_GATEWAY " dns=%s status=up\n",
              FLOE_NET_INTERFACE, FLOE_NET_GUEST_ADDRESS, FLOE_NET_GUEST_PREFIX, answered);
@@ -985,7 +994,8 @@ static int project_rootfs_mount(floe_project *p) {
     }
     if (path_join(target, sizeof target, p->root, "dev/pts") != 0) return -1;
     if (mkdir_p(target, 0755) != 0) return -1;
-    try_mount("devpts", target, "devpts", MS_NOSUID, "mode=0620,ptmxmode=0666");
+    if (mount("devpts", target, "devpts", MS_NOSUID,
+              "newinstance,mode=0620,ptmxmode=0666") != 0) return -1;
     {
         // /dev/ptmx -> pts/ptmx (glibc posix_openpt opens /dev/ptmx).
         char ptmx[768];
@@ -997,8 +1007,9 @@ static int project_rootfs_mount(floe_project *p) {
             return -1;
         }
     }
-    if (path_join(target, sizeof target, p->root, "dev/shm") != 0) return -1;
-    try_mount("tmpfs", target, "tmpfs", MS_NOSUID | MS_NODEV, "mode=1777");
+    if (path_join(target, sizeof target, p->root, "dev/shm") != 0 ||
+        mkdir_p(target, 01777) != 0 ||
+        mount("tmpfs", target, "tmpfs", MS_NOSUID | MS_NODEV, "mode=1777") != 0) return -1;
     if (path_join(target, sizeof target, p->root, "tmp") != 0) return -1;
     try_mount("tmpfs", target, "tmpfs", MS_NOSUID | MS_NODEV, "mode=1777");
     if (path_join(target, sizeof target, p->root, "sys/fs/cgroup") != 0) return -1;
@@ -1169,13 +1180,14 @@ static int spawn_project_runner(floe_project *p) {
             _exit(126);
         }
 
-        char env_cgroup[768], env_project[96], env_generation[64];
+        char env_cgroup[768], env_project[96], env_generation[64], env_network[64];
         // The project's cgroup subtree is bound at /sys/fs/cgroup inside
         // the chroot, so this in-project absolute path is the real one the
         // runner uses for every task cgroup write.
         snprintf(env_cgroup, sizeof env_cgroup, "FLOE_CGROUP_TASKS=/sys/fs/cgroup/tasks");
         snprintf(env_project, sizeof env_project, "FLOE_PROJECT_ID=%s", p->id);
         snprintf(env_generation, sizeof env_generation, "FLOE_PROJECT_GENERATION=%s", p->generation);
+        snprintf(env_network, sizeof env_network, "FLOE_PROJECT_NETWORK=%s", floe_net_status_text(g_net_status));
         char *child_env[] = {
             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "HOME=/root",
@@ -1186,6 +1198,7 @@ static int spawn_project_runner(floe_project *p) {
             env_cgroup,
             env_project,
             env_generation,
+            env_network,
             NULL,
         };
         char *argv[] = { (char *)"/usr/local/bin/floe-exec", NULL };

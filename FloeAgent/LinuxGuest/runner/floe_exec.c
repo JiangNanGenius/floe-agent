@@ -3178,6 +3178,12 @@ int main(void) {
     install_signal_handlers();
     set_default_environment();
     task_iso_load();
+    // This runner shares the supervisor's configured network. Its startup
+    // environment is supplied only by the trusted supervisor, not tool args.
+    if (g_task_iso_active > 0) {
+        const char *network = getenv("FLOE_PROJECT_NETWORK");
+        if (network) g_net_status = floe_net_status_parse(network);
+    }
     if (g_task_iso_active < 0) {
         // Isolation was configured by the supervisor but is broken (e.g.
         // the delegated cgroup dir is not writable). Nothing this runner
