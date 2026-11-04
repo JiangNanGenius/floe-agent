@@ -440,31 +440,11 @@ final class SourceControlCenter: ObservableObject {
             diagnostic: "GitHub skill source unavailable. Check the repository, ref, path and connector access")
     }
 
-    /// One bounded GitHub stream: ephemeral session, redirects refused,
-    /// cancellation checked per byte, a hard size ceiling, and a diagnostic
-    /// that carries the HTTP status alone — never body bytes or credentials.
-    private func fetchBounded(request: URLRequest, maximumBytes: Int, diagnostic: String) async throws -> Data {
-        let session = URLSession(configuration: .ephemeral, delegate: SkillGitHubNoRedirect(), delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
-        let (stream, response) = try await session.bytes(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw FloeError.syncUnavailable("\(diagnostic). GitHub HTTP status \(status).")
-        }
-        var result = Data()
-        for try await byte in stream {
-            try Task.checkCancellation()
-            guard result.count < maximumBytes else { throw FloeError.validationFailed("GitHub skill download exceeds its size limit") }
-            result.append(byte)
-        }
-        return result
-    }
-
-    private final class SkillGitHubNoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-            completionHandler(nil)
-        }
+    /// The delegate appends network chunks off the main actor. Iterating
+    /// AsyncBytes here used to hop actors for every byte of multi-MiB engines,
+    /// allowing a healthy transfer to exceed its request timeout.
+    private nonisolated func fetchBounded(request: URLRequest, maximumBytes: Int, diagnostic: String) async throws -> Data {
+        try await SkillGitHubDataRequest(maximumBytes: maximumBytes, diagnostic: diagnostic).load(request)
     }
 
     private var githubOAuthClientID: String? {
@@ -915,3 +895,93 @@ final class SourceControlCenter: ObservableObject {
     }
 }
 #endif
+
+// One existing GitHub transport request, with bounded chunks and no redirects.
+// No credentials, bodies or redirect destinations enter diagnostic messages.
+final class SkillGitHubDataRequest: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let maximumBytes: Int
+    private let diagnostic: String
+    private let configuration: URLSessionConfiguration
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Data, Error>?
+    private var session: URLSession?
+    private var task: URLSessionDataTask?
+    private var body = Data()
+    private var finished = false
+    private var acceptedResponse = false
+
+    init(maximumBytes: Int, diagnostic: String, configuration: URLSessionConfiguration = .ephemeral) {
+        self.maximumBytes = max(1, maximumBytes)
+        self.diagnostic = diagnostic
+        self.configuration = configuration
+        super.init()
+    }
+
+    func load(_ request: URLRequest) async throws -> Data {
+        try Task.checkCancellation()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                configuration.urlCache = nil
+                configuration.httpCookieStorage = nil
+                configuration.urlCredentialStorage = nil
+                configuration.httpShouldSetCookies = false
+                let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+                let task = session.dataTask(with: request)
+                lock.lock()
+                guard !finished else {
+                    lock.unlock(); session.invalidateAndCancel()
+                    continuation.resume(throwing: CancellationError()); return
+                }
+                self.continuation = continuation; self.session = session; self.task = task
+                lock.unlock()
+                task.resume()
+            }
+        } onCancel: { self.complete(.failure(CancellationError())) }
+    }
+
+    private func complete(_ result: Result<Data, Error>) {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        finished = true
+        let continuation = self.continuation, task = self.task, session = self.session
+        self.continuation = nil; self.task = nil; self.session = nil; body = Data()
+        lock.unlock()
+        task?.cancel(); session?.invalidateAndCancel()
+        continuation?.resume(with: result)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+        didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            complete(.failure(FloeError.syncUnavailable("\(diagnostic). GitHub HTTP status \(status).")))
+            completionHandler(.cancel); return
+        }
+        guard http.expectedContentLength <= Int64(maximumBytes) else {
+            complete(.failure(FloeError.validationFailed("GitHub skill download exceeds its size limit")))
+            completionHandler(.cancel); return
+        }
+        lock.lock(); acceptedResponse = true; lock.unlock()
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        let overflow = data.count > maximumBytes || body.count > maximumBytes - data.count
+        if !overflow { body.append(data) }
+        lock.unlock()
+        if overflow { complete(.failure(FloeError.validationFailed("GitHub skill download exceeds its size limit"))) }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error { complete(.failure(error)); return }
+        lock.lock(); let received = body, accepted = acceptedResponse; lock.unlock()
+        if accepted { complete(.success(received)) }
+        else { complete(.failure(FloeError.syncUnavailable(diagnostic))) }
+    }
+}
