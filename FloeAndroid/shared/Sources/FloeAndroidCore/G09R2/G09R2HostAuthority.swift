@@ -34,6 +34,7 @@ public struct G09R2HostStatusDTO: Encodable, Sendable {
 public struct G09R2HostGrantDTO: Encodable, Sendable {
     public var epoch: UInt64
     public var mediaRootPath: String
+    /// Same UUID spelling as Foundation Codable project/context IDs.
     public var projectID: String?
     public var revision: Int64?
     public var timelineDigest: String?
@@ -177,7 +178,7 @@ public enum G09R2HostAuthority {
         }
         return G09R2HostGrantDTO(
             epoch: epoch, mediaRootPath: record.mediaRootPath,
-            projectID: record.projectID.uuidString.lowercased(),
+            projectID: record.projectID.uuidString,
             revision: record.revision,
             timelineDigest: record.timelineDigest)
     }
@@ -217,7 +218,7 @@ public enum G09R2HostAuthority {
         let timeline = loaded.project.videoTimeline ?? VideoTimeline()
         return G09R2HostGrantDTO(
             epoch: epoch, mediaRootPath: loaded.storage.rootURL.path,
-            projectID: loaded.project.id.uuidString.lowercased(),
+            projectID: loaded.project.id.uuidString,
             revision: loaded.project.revision,
             timelineDigest: G09R2MediaDigests.timeline(timeline))
     }
@@ -241,7 +242,7 @@ public enum G09R2HostAuthority {
         }
         return G09R2HostGrantDTO(
             epoch: epoch, mediaRootPath: native.mediaRootPath,
-            projectID: native.projectID.uuidString.lowercased(),
+            projectID: native.projectID.uuidString,
             revision: native.projectRevision,
             timelineDigest: native.timelineDigest)
     }
@@ -282,7 +283,7 @@ public enum G09R2HostAuthority {
             "\(loaded.project.ownerKind)|\(ownerID)"
         return G09R2ProjectMediaRootDTO(
             epoch: epoch, mediaRootPath: rootPath,
-            projectID: loaded.project.id.uuidString.lowercased(),
+            projectID: loaded.project.id.uuidString,
             revision: loaded.project.revision,
             timelineDigest: G09R2MediaDigests.timeline(timeline),
             storage: loaded.storage.storage,
@@ -490,7 +491,7 @@ public final class G09R2RenderBindingPins: @unchecked Sendable {
             pinHandle: handle, epoch: epoch,
             leaseID: prepared.snapshot.leaseID,
             mediaRootPath: grant.mediaRootPath,
-            projectID: grant.projectID ?? prepared.context.projectID.uuidString.lowercased(),
+            projectID: grant.projectID ?? prepared.context.projectID.uuidString,
             revision: grant.revision ?? prepared.projectRevision,
             timelineDigest: grant.timelineDigest ?? prepared.timelineDigest,
             attemptID: prepared.attemptID, kind: request.kind,

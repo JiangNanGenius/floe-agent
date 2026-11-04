@@ -931,12 +931,19 @@ final class G09R2NativeFoundationTests: XCTestCase {
                 service: fixture.service, epoch: fixture.epoch,
                 request: G09R2VideoLoadRequest(
                     context: context(projectID, token: token)))
-            let binding = try await G09R2MediaFoundation.shared
+            let prepared = try await G09R2MediaFoundation.shared
                 .prepareRenderBinding(
                     service: fixture.service, epoch: fixture.epoch,
                     context: context(projectID, token: token),
                     expectedRevision: 0,
                     attemptID: "attempt-prepare-\(kind.rawValue)")
+            let binding = try G09CreativeWire.decoder().decode(
+                G09R2MediaExportBindingDTO.self,
+                from: G09CreativeWire.encoder().encode(prepared))
+            let rootGrant = try await G09R2HostAuthority.resolveProjectMediaRoot(
+                service: fixture.service, epoch: fixture.epoch,
+                context: context(projectID, token: token))
+            XCTAssertEqual(rootGrant.projectID, projectID.uuidString)
             XCTAssertEqual(binding.mediaRootPath, created.storage.rootURL.path)
             XCTAssertEqual(binding.timelineDigest, loaded.timelineDigest)
             XCTAssertEqual(binding.projectRevision, 0)
@@ -945,6 +952,7 @@ final class G09R2NativeFoundationTests: XCTestCase {
                 service: fixture.service, epoch: fixture.epoch,
                 request: G09R2RetainRenderBindingRequest(
                     binding: binding, ownerOperationID: "export-\(kind.rawValue)"))
+            XCTAssertEqual(pin.projectID, projectID.uuidString)
             XCTAssertEqual(pin.mediaRootPath, created.storage.rootURL.path)
             // Platform lifecycle pin: same native-prepared attempt/lease,
             // no lease by value in the request.
@@ -956,6 +964,7 @@ final class G09R2NativeFoundationTests: XCTestCase {
                         kind: "export", epoch: fixture.epoch,
                         mediaRootPath: binding.mediaRootPath,
                         attemptID: binding.attemptID, jobID: "job-1"))
+            XCTAssertEqual(lifecycle.projectID, projectID.uuidString)
             XCTAssertEqual(lifecycle.kind, "export")
             XCTAssertEqual(lifecycle.attemptID, binding.attemptID)
             XCTAssertEqual(lifecycle.leaseID, binding.snapshot.leaseID)
