@@ -271,6 +271,10 @@ complete:
     *out=(floe_ae_slice){.struct_size=sizeof(*out),.reason=reason,.instructions=executed,.host_elapsed_ns=now-began,.wake_sequence=(reason==FLOE_AE_PARKED||reason==FLOE_AE_OUTPUT_FULL)?observed_sequence:s->sequence,.next_deadline_ns=deadline,.state=(uint32_t)s->state};
     unlock(s);return error?FLOE_AE_FAULT:0;
 }
+int floe_ae_notify(floe_ae_handle h) {
+    AESession *s=locked(h);if(!s)return FLOE_AE_STALE;
+    ae_signal_locked(s);unlock(s);return FLOE_AE_OK;
+}
 int floe_ae_request_stop(floe_ae_handle h) {
     AESession *s=locked(h);if(!s)return FLOE_AE_STALE;atomic_store_explicit(&s->stop,true,memory_order_release);ae_signal_locked(s);unlock(s);return 0;
 }
@@ -342,6 +346,14 @@ int floe_ae_channel_count(floe_ae_handle h,uint32_t *count) {
     if(!count)return FLOE_AE_INVALID;AESession *s=locked(h);if(!s)return FLOE_AE_STALE;
     uint32_t n=0;for(uint32_t i=0;i<AE_MAX_CHANNELS;i++)if(s->channels[i].present)n++;
     *count=n;unlock(s);return 0;
+}
+int floe_ae_channel_reset(floe_ae_handle h,uint32_t channel) {
+    AESession *s=locked(h);if(!s)return FLOE_AE_STALE;
+    if(s->active||s->waiters){unlock(s);return FLOE_AE_BUSY;}
+    if(channel>=AE_MAX_CHANNELS||!s->channels[channel].present){unlock(s);return FLOE_AE_INVALID;}
+    AEChannel *ch=&s->channels[channel];
+    ch->input.head=ch->input.count=0;ch->output.head=ch->output.count=0;
+    ae_signal_locked(s);unlock(s);return FLOE_AE_OK;
 }
 int floe_ae_channel_read(floe_ae_handle h,uint32_t channel,void *p,size_t n,size_t *got) {
     if(!got||(!p&&n))return FLOE_AE_INVALID;*got=0;AESession *s=locked(h);if(!s)return FLOE_AE_STALE;

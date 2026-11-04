@@ -546,6 +546,7 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
                     verified: verified
                 )
             }
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: disk.path)
             // Grow-only migration in place. A v1 sidecar has no recorded
             // capacity: the disk itself (the compact base size) is grown to
             // the target and the sidecar is rewritten with provenance. A v2
@@ -676,10 +677,12 @@ struct LinuxGuestRuntimeImagePreparer: Sendable {
     /// reach the verified base. Filesystems without clone support fall back to
     /// an ordinary byte copy.
     private func stageCopy(from base: URL, to staging: URL, fileManager: FileManager) throws {
-        if clonefile(base.path, staging.path, 0) == 0 {
-            return
+        if clonefile(base.path, staging.path, 0) != 0 {
+            try fileManager.copyItem(at: base, to: staging)
         }
-        try fileManager.copyItem(at: base, to: staging)
+        // APFS clones inherit the immutable base's mode. Only the verified
+        // private working copy becomes writable; never chmod the base.
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: staging.path)
     }
 
     /// Grows a raw disk image logically to exactly `capacityBytes` without

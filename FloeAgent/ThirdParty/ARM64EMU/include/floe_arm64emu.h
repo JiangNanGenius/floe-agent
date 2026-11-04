@@ -14,7 +14,8 @@ extern "C" {
  * channel. Nothing about the version-1 layout is reinterpreted. */
 #define FLOE_AE_ABI_VERSION 2u
 #define FLOE_AE_MAX_VCPUS 5u /* engine ceiling; caller chooses device limit before boot */
-#define FLOE_AE_MAX_SHARES 8u
+/* Eight workspace roots + eight environment roots + one shared cache. */
+#define FLOE_AE_MAX_SHARES 17u
 /* Nine consoles: one supervisor control console (hvc0) plus one data console
  * per project (hvc1..hvc8 for FLOE_MAX_PROJECTS == 8). The 32 virtio-mmio
  * slots still fit: net + <=8 disks + 8 shares + 9 consoles <= 32. */
@@ -149,6 +150,9 @@ FLOE_AE_API int floe_ae_diagnostic_read(floe_ae_handle, void *, size_t capacity,
  * fields. After run_slice returns with workers quiescent, resume clears stop;
  * active resume/destroy is BUSY. Destroy joins owned workers before freeing.
  */
+/* Wake the owner loop after host-side queued work or output demand changes.
+ * Thread-safe, no stop flag or device mutation, harmless for a stale handle. */
+FLOE_AE_API int floe_ae_notify(floe_ae_handle handle);
 FLOE_AE_API int floe_ae_request_stop(floe_ae_handle);
 FLOE_AE_API int floe_ae_resume(floe_ae_handle);
 FLOE_AE_API int floe_ae_destroy(floe_ae_handle);
@@ -170,6 +174,9 @@ FLOE_AE_API int floe_ae_wait_event(floe_ae_handle, uint64_t expected_sequence,
  * guest tty follows the host window without SIGWINCH or a host terminal.
  */
 FLOE_AE_API int floe_ae_channel_count(floe_ae_handle, uint32_t *count);
+/* After the previous runner has joined, discard only this console's host
+ * rings at a quiescent point. Other consoles and geometry are untouched. */
+FLOE_AE_API int floe_ae_channel_reset(floe_ae_handle, uint32_t channel);
 FLOE_AE_API int floe_ae_channel_read(floe_ae_handle, uint32_t channel, void *, size_t capacity, size_t *read_count);
 FLOE_AE_API int floe_ae_channel_write(floe_ae_handle, uint32_t channel, const void *, size_t length, size_t *accepted);
 FLOE_AE_API int floe_ae_channel_get_winsize(floe_ae_handle, uint32_t channel, uint16_t *cols, uint16_t *rows);

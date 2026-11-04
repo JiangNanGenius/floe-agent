@@ -788,6 +788,8 @@ typedef struct {
     char root[512];              // <dir>/root (overlay mount point)
     char workspace_dir[256];     // in-project workspace mount/dir
     int workspace_shared;        // 1 only after the selected native slot is mounted
+    int environment_shared;
+    int cache_shared;
     // Lease (serialized destructive operations); 0 = free.
     char lease_id[FLOE_CTRL_MAX_TOKEN + 1];
     int64_t lease_deadline_ms;
@@ -803,6 +805,7 @@ static char g_runner_path[256];
 static char g_boot_id[64];
 static int g_ready = 0;      // base/state verified; PROJOPEN may be served
 static int g_cgroup_ready = 0; // cgroup2 tree mounted; PROJOPEN may be served
+static int g_cache_ready = 0;
 #endif
 
 static floe_project *project_find(const char *id) {
@@ -1033,6 +1036,32 @@ static int project_rootfs_mount(floe_project *p) {
     }
     p->workspace_shared = 1;
 
+    // Independently authorized roots, never a common host parent. The host
+    // attaches these before PROJOPEN. The cache is shared read-only; each
+    // environment has its own writable export at slot 8 + project slot.
+    if (p->environment_shared) {
+        snprintf(ws_tag, sizeof ws_tag, "floe-ws-%d", 8 + p->console_index - 1);
+        if (path_join(target, sizeof target, p->root, "floe/env") != 0 ||
+            mkdir_p(target, 0755) != 0 ||
+            mount(ws_tag, target, "9p", MS_NOSUID | MS_NODEV,
+                  "trans=virtio,version=9p2000.L,access=client") != 0) return -1;
+    }
+    if (p->cache_shared) {
+        // One virtio-9p transport accepts one client mount. Mount the shared
+        // cache once under the trusted supervisor, then bind it read-only
+        // into each project instead of opening the same channel twice.
+        if (!g_cache_ready) {
+            if (mkdir_p("/floe-shared-cache", 0755) != 0 ||
+                mount("floe-ws-16", "/floe-shared-cache", "9p", MS_RDONLY | MS_NOSUID | MS_NODEV,
+                      "trans=virtio,version=9p2000.L,access=client") != 0) return -1;
+            g_cache_ready = 1;
+        }
+        if (path_join(target, sizeof target, p->root, "floe/cache") != 0 ||
+            mkdir_p(target, 0755) != 0 ||
+            mount("/floe-shared-cache", target, NULL, MS_BIND, NULL) != 0 ||
+            mount(NULL, target, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY | MS_NOSUID | MS_NODEV, NULL) != 0) return -1;
+    }
+
     // The trusted runner binary: the immutable base tree carries the
     // Debian userland only, so the pinned floe-exec is bound in read-only
     // at its in-project path.
@@ -1059,7 +1088,7 @@ static void project_rootfs_unmount(floe_project *p) {
     // mounts live in task namespaces and die with their processes; the
     // supervisor unmounts the runtime view it mounted.
     static const char *leafs[] = {
-        "usr/local/bin/floe-exec", "workspace", "tmp", "dev/shm", "dev/pts",
+        "usr/local/bin/floe-exec", "floe/cache", "floe/env", "workspace", "tmp", "dev/shm", "dev/pts",
         "dev", "sys/fs/cgroup", "sys", "proc",
     };
     for (size_t i = 0; i < sizeof leafs / sizeof leafs[0]; i++) {
@@ -1145,6 +1174,7 @@ static int spawn_project_runner(floe_project *p) {
              p->id, console_path, strerror(errno));
         return -1;
     }
+    if (tcflush(hvc, TCIOFLUSH) != 0) { close(hvc); return -1; }
     int ready_pipe[2];
     if (pipe2(ready_pipe, O_CLOEXEC) != 0) {
         close(hvc);
@@ -1606,9 +1636,10 @@ static void do_projopen(const char *token, ctrl_request *r,
         return;
     }
 
-    // Payload: [baseRootfs, workspaceDir, nativeShareSlot].
+    // Payload: [baseRootfs, workspaceDir, nativeShareSlot] with optional
+    // [environmentShare, cacheShare] flags. No arbitrary mount/host paths.
     field_table t;
-    if (fields_split(r->payload.data, r->payload.len, &t) != 0 || t.count != 3) {
+    if (fields_split(r->payload.data, r->payload.len, &t) != 0 || (t.count != 3 && t.count != 5)) {
         fields_free(&t);
         emit_failure(token, 125, "floe-supervisor: malformed PROJOPEN payload");
         return;
@@ -1616,8 +1647,17 @@ static void do_projopen(const char *token, ctrl_request *r,
     char *base_rootfs = field_dup_cstr(r->payload.data, t.offsets[0], t.lengths[0]);
     char *workspace = field_dup_cstr(r->payload.data, t.offsets[1], t.lengths[1]);
     char *slot_text = field_dup_cstr(r->payload.data, t.offsets[2], t.lengths[2]);
+    int env_share = 0, cache_share = 0, flags_valid = 1;
+    if (t.count == 5) {
+        for (unsigned i = 3; i < 5; i++) {
+            if (t.lengths[i] != 1 || (r->payload.data[t.offsets[i]] != '0' &&
+                                     r->payload.data[t.offsets[i]] != '1')) flags_valid = 0;
+        }
+        env_share = t.lengths[3] == 1 && r->payload.data[t.offsets[3]] == '1';
+        cache_share = t.lengths[4] == 1 && r->payload.data[t.offsets[4]] == '1';
+    }
     fields_free(&t);
-    int ok = base_rootfs && workspace && slot_text && strlen(slot_text) == 1
+    int ok = flags_valid && base_rootfs && workspace && slot_text && strlen(slot_text) == 1
           && slot_text[0] >= '0' && slot_text[0] < '0' + FLOE_MAX_PROJECTS;
     unsigned slot = ok ? (unsigned)(slot_text[0] - '0') : FLOE_MAX_PROJECTS;
     free(slot_text);
@@ -1644,6 +1684,8 @@ static void do_projopen(const char *token, ctrl_request *r,
     snprintf(p->id, sizeof p->id, "%s", project);
     snprintf(p->generation, sizeof p->generation, "%s", generation);
     p->console_index = console;
+    p->environment_shared = env_share;
+    p->cache_shared = cache_share;
     p->open_ms = now_ms();
     if (workspace[0] != '\0') snprintf(p->workspace_dir, sizeof p->workspace_dir, "%s", workspace);
     free(workspace);
@@ -1699,29 +1741,60 @@ static void do_projopen(const char *token, ctrl_request *r,
 // Shared close path: kill the project's tasks + runner, detach the runtime
 // view, keep the overlay data. Returns 0 when fully closed.
 static int project_close_impl(floe_project *p, const char *reason) {
-    if (p->state == PROJ_CLOSING || p->state == PROJ_FREE) return 0;
+    if (p->state == PROJ_FREE) return 0;
     p->state = PROJ_CLOSING;
     (void)project_record_write(p);
     // Kill the whole project tree (runner + every task cgroup) in one
     // bounded operation; never a global reboot, never another project.
-    (void)write_cgroup_value(p->cgroup_dir, "cgroup.kill", "1");
+    if (write_cgroup_value(p->cgroup_dir, "cgroup.kill", "1") != 0) return -1;
     if (p->runner_pid > 0) {
         (void)kill(p->runner_pid, SIGKILL);
         int status = 0;
         for (int i = 0; i < 50; i++) {
-            if (waitpid(p->runner_pid, &status, WNOHANG) == p->runner_pid) break;
+            pid_t result = waitpid(p->runner_pid, &status, WNOHANG);
+            if (result == p->runner_pid || (result < 0 && errno == ECHILD)) {
+                p->runner_pid = 0;
+                break;
+            }
             struct timespec ts = {0, 20 * 1000 * 1000};
             nanosleep(&ts, NULL);
         }
         (void)status;
-        p->runner_pid = 0;
+        if (p->runner_pid != 0) return -1;
     }
+    // Cancellation is not evidence of termination. Do not release this
+    // mount/share slot until cgroup2 reports the entire subtree empty.
+    char events_path[640];
+    if (path_join(events_path, sizeof events_path, p->cgroup_dir, "cgroup.events") != 0) return -1;
+    int empty = 0;
+    for (int i = 0; i < 100; i++) {
+        char events[256];
+        int fd = open(events_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (fd < 0) return -1;
+        ssize_t count = read(fd, events, sizeof events - 1);
+        close(fd);
+        if (count <= 0) return -1;
+        events[count] = '\0';
+        if (strncmp(events, "populated 0\n", 12) == 0 || strstr(events, "\npopulated 0\n")) {
+            empty = 1; break;
+        }
+        struct timespec ts = {0, 20 * 1000 * 1000};
+        nanosleep(&ts, NULL);
+    }
+    if (!empty) return -1;
     project_rootfs_unmount(p);
-    project_cgroup_kill_and_remove(p);
     char rec_path[768];
     if (path_join(rec_path, sizeof rec_path, p->dir, "supervisor.json") == 0) {
         (void)unlink(rec_path); // liveness claim only; overlay data stays
     }
+    // All guests share this disk. Commit overlay metadata and deletion of
+    // the liveness record before the host may stop the last machine.
+    int state_fd = open(g_state, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (state_fd < 0) return -1;
+    int synced = syncfs(state_fd);
+    close(state_fd);
+    if (synced != 0) return -1;
+    project_cgroup_kill_and_remove(p);
     emit_event(p->id, p->generation, "closed", reason);
     p->used = 0;
     p->state = PROJ_FREE;
@@ -1743,8 +1816,9 @@ static void do_projclose(const char *token, const char *project, const char *gen
         (void)emit_end(token, 127);
         return;
     }
-    project_close_impl(p, "host-close");
-    (void)emit_end(token, 0);
+    if (project_close_impl(p, "host-close") != 0) {
+        emit_failure(token, 126, "floe-supervisor: project still stopping; state retained");
+    } else { (void)emit_end(token, 0); }
 }
 
 static void do_projdrop(const char *token, const char *project, const char *generation) {
@@ -2154,14 +2228,9 @@ int main(void) {
                     // Runner death is never silent: the host must re-open the
                     // project (same generation = reattach, or recover first).
                     if (proj->state == PROJ_ACTIVE) {
-                        proj->state = PROJ_CLOSING;
-                        (void)write_cgroup_value(proj->cgroup_dir, "cgroup.kill", "1");
-                        project_rootfs_unmount(proj);
-                        project_cgroup_kill_and_remove(proj);
                         emit_event(proj->id, proj->generation, "runner-died",
                                    WIFSIGNALED(status) ? "signaled" : "exited");
-                        proj->used = 0;
-                        proj->state = PROJ_FREE;
+                        (void)project_close_impl(proj, "runner-died");
                     }
                 }
             }

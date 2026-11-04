@@ -23,8 +23,8 @@ public struct LinuxGuestSessionHandle: Sendable {
     public var stop: @Sendable () async -> Void
     public var close: @Sendable () async -> Void
     public var isRunning: @Sendable () async -> Bool
-    public var addForward: @Sendable (LinuxGuestServiceForward) throws -> Void
-    public var removeForward: @Sendable (LinuxGuestServiceForward) throws -> Void
+    public var addForward: @Sendable (LinuxGuestServiceForward) async throws -> Void
+    public var removeForward: @Sendable (LinuxGuestServiceForward) async throws -> Void
     /// Latest cumulative emulator-thread CPU sample; nil on scripted/test
     /// sessions that do not model it.
     public var emulatorCPUSample: @Sendable () -> LinuxGuestEmulatorCPUSample?
@@ -53,8 +53,8 @@ public struct LinuxGuestSessionHandle: Sendable {
         stop: @escaping @Sendable () async -> Void,
         close: @escaping @Sendable () async -> Void,
         isRunning: @escaping @Sendable () async -> Bool,
-        addForward: @escaping @Sendable (LinuxGuestServiceForward) throws -> Void,
-        removeForward: @escaping @Sendable (LinuxGuestServiceForward) throws -> Void,
+        addForward: @escaping @Sendable (LinuxGuestServiceForward) async throws -> Void,
+        removeForward: @escaping @Sendable (LinuxGuestServiceForward) async throws -> Void,
         emulatorCPUSample: @escaping @Sendable () -> LinuxGuestEmulatorCPUSample? = { nil },
         setRAMMB: (@Sendable (Int) -> Void)? = nil,
         setVCPUs: (@Sendable (Int) throws -> Void)? = nil,
@@ -76,11 +76,26 @@ public struct LinuxGuestSessionHandle: Sendable {
 
 /// Session creation seam: production = TinyEMU, tests = scripted transports.
 public protocol LinuxGuestSessionCreating: Sendable {
+    var usesResidentMachine: Bool { get }
+    var preferredSharedConfiguration: LinuxGuestLifecycleConfig? { get }
     func makeSession(
         descriptor: LinuxGuestEnvironmentDescriptor,
         image: LinuxGuestImage,
         limits: LinuxGuestLimits
     ) throws -> LinuxGuestSessionHandle
+    func makeSession(descriptor: LinuxGuestEnvironmentDescriptor, image: LinuxGuestImage,
+                     imageDirectory: URL?, limits: LinuxGuestLimits) throws -> LinuxGuestSessionHandle
+    func shutdown() async
+}
+
+public extension LinuxGuestSessionCreating {
+    var usesResidentMachine: Bool { false }
+    var preferredSharedConfiguration: LinuxGuestLifecycleConfig? { nil }
+    func makeSession(descriptor: LinuxGuestEnvironmentDescriptor, image: LinuxGuestImage,
+                     imageDirectory: URL?, limits: LinuxGuestLimits) throws -> LinuxGuestSessionHandle {
+        try makeSession(descriptor: descriptor, image: image, limits: limits)
+    }
+    func shutdown() async {}
 }
 
 extension TinyEMUGuestSessionFactory: LinuxGuestSessionCreating {}
@@ -1126,7 +1141,8 @@ public actor TinyEMULinuxGuestRegistry {
         guard var descriptor = await environments.linuxGuestEnvironment(id: environmentID) else {
             return false
         }
-        if let saved = LinuxGuestLifecycleConfig.load(from: descriptor.writableDirectory) {
+        if let saved = factory.preferredSharedConfiguration
+            ?? LinuxGuestLifecycleConfig.load(from: descriptor.writableDirectory) {
             if descriptor.vcpus == nil { descriptor.vcpus = saved.vcpus }
             if descriptor.ramMB == nil { descriptor.ramMB = saved.memoryMB }
         }
@@ -1266,7 +1282,15 @@ public actor TinyEMULinuxGuestRegistry {
         var admission: RuntimeV2Admission?
         var grantedVCPUs: Int?
         do {
-            if let runtimeV2 {
+            if factory.usesResidentMachine {
+                guard guestReservations.count < 8 else {
+                    throw LinuxGuestError.capacityReached(detail: "All shared runtime project sessions are in use")
+                }
+                // Project admission is not a second physical VM/RAM charge.
+                // The resident owner publishes the physical allocation once.
+                guestReservations[environmentID] = 0
+                admissionOwned = true
+            } else if let runtimeV2 {
                 let runtimeID = Self.makeRuntimeID(environmentID: environmentID)
                 let requestedShape = try Self.typedStartShape(
                     descriptor: descriptor,
@@ -1326,7 +1350,7 @@ public actor TinyEMULinuxGuestRegistry {
                 sessionRegistered: &sessionRegistered,
                 quarantinedByFailure: &quarantinedByFailure
             )
-            if let directory = descriptor.writableDirectory {
+            if !factory.usesResidentMachine, let directory = descriptor.writableDirectory {
                 let configured = LinuxGuestLifecycleConfig(
                     vcpus: grantedVCPUs ?? descriptor.vcpus ?? 1,
                     memoryMB: admission?.ramMB ?? limits.clampedRAMMB(descriptor.ramMB)
@@ -1475,7 +1499,11 @@ public actor TinyEMULinuxGuestRegistry {
         if let grantedVCPUs { bootDescriptor.vcpus = grantedVCPUs }
         let runtimeImage: LinuxGuestImage
         var workingDiskCapacity: Int64?
-        if let runtimeV2, let admission, let imageDirectory {
+        if factory.usesResidentMachine {
+            // The factory prepares one private physical disk from this
+            // verified image; never clone/capture one disk per project.
+            runtimeImage = image
+        } else if let runtimeV2, let admission, let imageDirectory {
             do {
                 let work = try await runtimeV2.prepareWorkingDisk(
                     environmentID: environmentID,
@@ -1525,7 +1553,8 @@ public actor TinyEMULinuxGuestRegistry {
                 at: share.hostDirectory, withIntermediateDirectories: true
             )
         }
-        let handle = try factory.makeSession(descriptor: bootDescriptor, image: runtimeImage, limits: limits)
+        let handle = try factory.makeSession(descriptor: bootDescriptor, image: runtimeImage,
+            imageDirectory: imageDirectory, limits: limits)
         do {
             try await handle.start()
         } catch {
@@ -1562,7 +1591,17 @@ public actor TinyEMULinuxGuestRegistry {
         // an upgrade the probed channel itself is the live one.
         var sessionChannel = channel
         var negotiatedCapabilities: String?
-        if descriptor.writableDirectory != nil || admission != nil {
+        if factory.usesResidentMachine {
+            do {
+                negotiatedCapabilities = try await channel.probeCapabilities(timeout: limits.runnerProbeTimeout)
+            } catch {
+                lastErrors[environmentID] = error.localizedDescription
+                quarantinedByFailure = await abandonFailedStart(environmentID: environmentID,
+                    descriptor: bootDescriptor, image: runtimeImage, handle: handle, channel: channel,
+                    taskID: taskID, error: error, shareAccessLease: &shareAccessLease)
+                throw error
+            }
+        } else if descriptor.writableDirectory != nil || admission != nil {
             do {
                 // Persistent-disk runner upgrade: the disk is a mutable clone,
                 // so a new catalog image does not change the runner inside it.
@@ -1719,7 +1758,7 @@ public actor TinyEMULinuxGuestRegistry {
                 )
             }
             for forward in descriptor.serviceForwards {
-                try handle.addForward(forward)
+                try await handle.addForward(forward)
                 session.forwards.append(forward)
             }
         } catch {
@@ -2740,9 +2779,10 @@ public actor TinyEMULinuxGuestRegistry {
     }
 
     public func stopAll() async {
-        for id in Array(sessions.keys) {
+        for id in Set(sessions.keys).union(startingEnvironments) {
             await stop(environmentID: id)
         }
+        await factory.shutdown()
     }
 
     // MARK: logical-run ownership / scoped transient release
@@ -3591,20 +3631,25 @@ public actor TinyEMULinuxGuestRegistry {
         // Revalidate the captured session identity after the await: a stop or
         // shape change may have replaced it, and writing the stale copy back
         // would resurrect its descriptor over the replacement.
-        guard var current = sessions[environmentID],
+        guard let current = sessions[environmentID],
               current.generation == session.generation else {
             throw LinuxGuestError.notRunning(environmentID: environmentID)
         }
-        try current.handle.addForward(forward)
-        current.forwards.append(forward)
-        sessions[environmentID] = current
+        try await current.handle.addForward(forward)
+        guard var latest = sessions[environmentID], latest.generation == current.generation else {
+            try? await current.handle.removeForward(forward)
+            throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
+        latest.forwards.append(forward)
+        sessions[environmentID] = latest
     }
 
     public func removeForward(environmentID: String, forward: LinuxGuestServiceForward) async {
-        guard var session = sessions[environmentID] else { return }
-        try? session.handle.removeForward(forward)
-        session.forwards.removeAll { $0 == forward }
-        sessions[environmentID] = session
+        guard let session = sessions[environmentID] else { return }
+        try? await session.handle.removeForward(forward)
+        guard var latest = sessions[environmentID], latest.generation == session.generation else { return }
+        latest.forwards.removeAll { $0 == forward }
+        sessions[environmentID] = latest
     }
 
     // MARK: background services (exec.localService)
@@ -3637,6 +3682,7 @@ public actor TinyEMULinuxGuestRegistry {
         environmentID: String,
         descriptor: LinuxGuestEnvironmentDescriptor
     ) async -> CurrentEnvironmentShares {
+        if factory.usesResidentMachine { return .resolved(sessions[environmentID]?.descriptor.shares ?? descriptor.shares) }
         if let session = sessions[environmentID] {
             return .resolved(session.descriptor.shares)
         }

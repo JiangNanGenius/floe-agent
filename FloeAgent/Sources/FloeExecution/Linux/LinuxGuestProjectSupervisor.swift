@@ -167,8 +167,10 @@ public struct LinuxGuestProjectGeneration: Sendable, Hashable, CustomStringConve
 public struct LinuxGuestProjectWorkspaceMount: Sendable, Equatable {
     public let directory: String
     public let shareSlot: Int
+    public let environmentShare: Bool
+    public let cacheShare: Bool
 
-    public init(directory: String, shareSlot: Int) throws {
+    public init(directory: String, shareSlot: Int, environmentShare: Bool = false, cacheShare: Bool = false) throws {
         try LinuxGuestProjectSupervisor.validateRoot(directory, field: "workspaceDir", allowEmpty: true)
         guard (0..<8).contains(shareSlot) else {
             throw LinuxGuestProjectSupervisorError.invalidIdentity(
@@ -176,10 +178,14 @@ public struct LinuxGuestProjectWorkspaceMount: Sendable, Equatable {
         }
         self.directory = directory
         self.shareSlot = shareSlot
+        self.environmentShare = environmentShare
+        self.cacheShare = cacheShare
     }
 
     func payloadFields(baseRootfs: String) -> [String] {
-        [baseRootfs, directory, String(shareSlot)]
+        let fields = [baseRootfs, directory, String(shareSlot)]
+        return environmentShare || cacheShare
+            ? fields + [environmentShare ? "1" : "0", cacheShare ? "1" : "0"] : fields
     }
 }
 

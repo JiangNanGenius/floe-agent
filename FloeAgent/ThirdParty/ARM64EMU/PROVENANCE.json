@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "upstreamRepository": "https://github.com/sylirre/arm64emu-system",
   "upstreamCommit": "55c8128cb02d8ba3809f6579f7c6d316537e0546",
-  "checkpoint": "A6 + immutable CRC tables + A9 five-file slot optimization + resident live I/O",
+  "checkpoint": "A6 + immutable CRC tables + A9 five-file slot optimization + resident live I/O and project roots",
   "checkpointArchiveSHA256": "3bbcbaac69b092757f6fad1a853659904c183ae0948a79e446cfe30ae73b603c",
   "license": {
     "Source": "Apache-2.0",
@@ -53,9 +53,13 @@
     "liveShareAttachDetach": true,
     "syntheticGuestOwnership": true,
     "readinessDrivenNetworkWait": true,
-    "independentConsoleBackpressure": true
+    "independentConsoleBackpressure": true,
+    "environmentShareSlots": 8,
+    "sharedReadOnlyCacheSlots": 1,
+    "hostWorkNotification": true,
+    "projectConsoleGenerationReset": true
   },
-  "integrationStatus": "Combined source compiled and all-object linked on iOS device/simulator and macOS (30 TUs,21 ABI exports); actual ARM64 guest boot reached supervisor. Resident-project and production App integration are pending; previous backend is still selected.",
+  "integrationStatus": "30 C translation units and 23 ABI operations compiled/all-object linked on macOS, iOS device and simulator. Swift 6 FloeExecution object build passed. Actual Linux checks cover17-root topology, two projects, read-only shared ARM64 binary, loopback, restart and overlay reset. Full App cutover and acceptance remain pending; previous backend is still selected.",
   "files": [
     {
       "path": "Bridge/MPL-2.0.txt",
@@ -99,7 +103,7 @@
     },
     {
       "path": "Bridge/runtime.c",
-      "sha256": "d3918b97c66426bca14483f4a9c82cad829ec536ca32a57d53e1ccdf9b407b98"
+      "sha256": "6414ffd37f46bcf597224de99a1fd31a959ee24f2cfbdd455190190ea6ccdba6"
     },
     {
       "path": "Source/LICENSE",
@@ -227,7 +231,7 @@
     },
     {
       "path": "Source/src/machine.h",
-      "sha256": "c3240b2adadd45944138ba91553ab908560903e5d3daa7354bfc1b2f5d6ec5ba"
+      "sha256": "714a5e9916184a3d51f1e528f01b8edac58d1e7dba22dccc193b75a607a00895"
     },
     {
       "path": "Source/src/memory.c",
@@ -415,7 +419,7 @@
     },
     {
       "path": "include/floe_arm64emu.h",
-      "sha256": "e3f68de29c49fddfed759452741fb24dc863480f648cf1eed34ccde767c2f054"
+      "sha256": "d711f810ecedd7f851fd7c79575fcd783b5704d2c2edb862d0e85d6985fdf607"
     },
     {
       "path": "Tools/generate_crc32_tables.py",

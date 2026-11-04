@@ -40,7 +40,7 @@ typedef struct {
 #define MAX_DRIVES 8
 /* Max host directory shares (virtio-9p). Same 31-slot ceiling shared with disks
  * (net=slot 0, then disks, then shares); 8 keeps the Machine arrays small. */
-#define MAX_SHARES 8
+#define MAX_SHARES 17
 /* Max virtio-console devices, each a separate guest tty (hvc0, hvc1, ...).
  * Nine = one supervisor control console (hvc0) + one data console per project
  * (hvc1..hvc8, FLOE_MAX_PROJECTS == 8 in the guest supervisor contract). The

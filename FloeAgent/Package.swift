@@ -204,7 +204,9 @@ let package = Package(
                 .define("_POSIX_C_SOURCE", to: "200809L"),
                 .define("_DARWIN_C_SOURCE"),
                 .unsafeFlags(["-std=c11", "-UNDEBUG", "-fno-math-errno", "-fvisibility=hidden"]),
-                .unsafeFlags(["-O2"], .when(configuration: .release))
+                // Interpreter throughput is part of the runtime in Debug
+                // too; keep assertions and line info while optimizing the C core.
+                .unsafeFlags(["-O2"])
             ],
             linkerSettings: [
                 .linkedFramework("Security", .when(platforms: [.iOS, .macOS])),
@@ -345,6 +347,7 @@ let package = Package(
                 // The Linux guest backend (Sources/FloeExecution/Linux) talks to
                 // the vendored TinyEMU engine through this C target.
                 "FloeTinyEMU",
+                "FloeARM64Engine",
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
                 .product(name: "Crypto", package: "swift-crypto")
             ],
