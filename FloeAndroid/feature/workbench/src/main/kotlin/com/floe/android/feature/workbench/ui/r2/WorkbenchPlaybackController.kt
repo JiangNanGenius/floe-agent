@@ -64,6 +64,7 @@ class WorkbenchPlaybackController(
     private var requestToken = 0
 
     val isPlaying: Boolean get() = state?.isPlaying == true
+    val buffering: Boolean get() = state?.isBuffering == true
     val positionSeconds: Double get() = state?.positionSeconds ?: requestedPlayhead
     val durationSeconds: Double get() = state?.durationSeconds?.takeIf { it > 0.0 } ?: 0.0
     val ready: Boolean get() = player != null && !preparing
@@ -77,7 +78,10 @@ class WorkbenchPlaybackController(
         startAtSeconds: Double = requestedPlayhead,
         autoplay: Boolean = false,
     ) {
-        if (preparedRevision == revision && player != null && !preparing) {
+        // A failed handle is never reused: retrying the same revision must
+        // rebuild the player against a fresh immutable binding instead of
+        // re-seeking a dead one.
+        if (preparedRevision == revision && player != null && !preparing && failure == null) {
             requestedPlayhead = startAtSeconds
             player?.seekTo(startAtSeconds)
             if (autoplay) player?.play()
@@ -114,6 +118,14 @@ class WorkbenchPlaybackController(
                 val createdSubscription = createdPlayer.subscribe { nextState ->
                     if (token == requestToken) {
                         state = nextState
+                        // The platform handle reports terminal refusals and
+                        // decoder/player errors through the state error code
+                        // (its prepare runs asynchronously, so nothing is
+                        // thrown to the prepare coroutine). Surfacing it here
+                        // keeps a black, inert preview from masquerading as a
+                        // healthy one: the failure panel and disabled
+                        // transport appear instead. A clean state clears it.
+                        failure = MediaFailures.fromCode(nextState.errorCode)
                         val position = nextState.positionSeconds
                         if (position.isFinite() && position >= 0.0) {
                             requestedPlayhead = position
@@ -201,7 +213,17 @@ class WorkbenchPlaybackController(
 
     fun togglePlay() {
         val current = player ?: return
-        if (isPlaying) runCatching { current.pause() } else runCatching { current.play() }
+        if (isPlaying) {
+            runCatching { current.pause() }
+            return
+        }
+        // A real end-of-composition event restarts from the beginning instead
+        // of dead-playing at the end position.
+        if (state?.ended == true) {
+            requestedPlayhead = 0.0
+            runCatching { current.seekTo(0.0) }
+        }
+        runCatching { current.play() }
     }
 
     fun pause() {
@@ -230,6 +252,7 @@ class WorkbenchPlaybackController(
         surface = null
         attached = false
         state = null
+        failure = null
         preparing = false
         if (previousBinding != null) {
             scope.launch { runCatching { releaseBinding.releaseRenderBinding(previousBinding) } }

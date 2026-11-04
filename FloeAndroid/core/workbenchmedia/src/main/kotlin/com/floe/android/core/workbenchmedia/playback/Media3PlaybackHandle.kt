@@ -4,6 +4,7 @@ package com.floe.android.core.workbenchmedia.playback
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Surface
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -88,6 +89,10 @@ internal class Media3PlaybackHandle(
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            // The wire code stays the bounded rendererUnavailable contract
+            // value; the real cause is diagnostics only (never a user string
+            // with paths or payloads).
+            Log.e(TAG, "CompositionPlayer error ${error.errorCodeName}: ${error.message}")
             update(
                 stateRef.get().copy(
                     isBuffering = false,
@@ -185,6 +190,7 @@ internal class Media3PlaybackHandle(
     }
 
     private suspend fun prepare() {
+        var preparePhase = "authority"
         try {
             val binding: MediaExportBinding = request.binding
             val decision = authority.validateRenderBinding(binding)
@@ -197,6 +203,7 @@ internal class Media3PlaybackHandle(
             // Pin before the snapshot verifier reads project bytes or the
             // player is handed a composition. The pin stays owned until the
             // player has actually been released.
+            preparePhase = "lifecyclePin"
             val pin = pins.acquire(
                 MediaLifecyclePinRequest(
                     context = binding.context,
@@ -211,6 +218,7 @@ internal class Media3PlaybackHandle(
                 releasePinNow()
                 return
             }
+            preparePhase = "snapshot"
             val snapshot = SnapshotVerifier.verify(
                 SnapshotExpectation(
                     epoch = grant.epoch,
@@ -224,13 +232,16 @@ internal class Media3PlaybackHandle(
                 grant,
                 MediaClockAdapter(config),
             )
+            preparePhase = "compositionPlan"
             val builtPlan = planner.planForPlayback(snapshot)
             durationSeconds = builtPlan.durationSeconds
+            preparePhase = "compositionBuild"
             val composition = Media3CompositionFactory.build(
                 builtPlan,
                 isCancelled = { closed.get() },
             )
             val current = player ?: return
+            preparePhase = "playerPrepare"
             runOnMain {
                 if (closed.get()) return@runOnMain
                 current.setComposition(composition)
@@ -246,6 +257,7 @@ internal class Media3PlaybackHandle(
         } catch (failure: MediaRefusal) {
             if (!handedOff.get()) releasePinNow()
             if (closed.get()) return
+            Log.w(TAG, "Playback refused at $preparePhase: ${failure.code} ${failure.message}")
             update(
                 stateRef.get().copy(
                     isBuffering = false,
@@ -257,9 +269,10 @@ internal class Media3PlaybackHandle(
             // handle close cancels preparation; the pin is released only after
             // the actual snapshot/player read path has returned.
             if (!handedOff.get()) releasePinNow()
-        } catch (_: Throwable) {
+        } catch (error: Throwable) {
             if (!handedOff.get()) releasePinNow()
             if (!closed.get()) {
+                Log.e(TAG, "Playback prepare failed at $preparePhase: ${error.message}", error)
                 update(
                     stateRef.get().copy(
                         isBuffering = false,
@@ -344,5 +357,9 @@ internal class Media3PlaybackHandle(
     private class MediaClockAdapter(private val config: WorkbenchMediaPlatformConfig) :
         com.floe.android.core.workbenchmedia.util.MediaClock {
         override fun nowMillis(): Long = config.clockMillis()
+    }
+
+    private companion object {
+        const val TAG = "Media3PlaybackHandle"
     }
 }

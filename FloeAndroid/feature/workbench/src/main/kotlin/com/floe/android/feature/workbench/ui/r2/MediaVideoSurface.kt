@@ -20,6 +20,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -81,42 +82,46 @@ internal fun MediaVideoSurface(
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (playback != null) {
                 val handle = playback
-                AndroidView(
-                    factory = { context ->
-                        SurfaceView(context).apply {
-                            holder.addCallback(
-                                object : SurfaceHolder.Callback {
-                                    override fun surfaceCreated(holder: SurfaceHolder) {
-                                        val frame = holder.surfaceFrame
-                                        handle.attach(
-                                            holder.surface,
-                                            frame.width().coerceAtLeast(1),
-                                            frame.height().coerceAtLeast(1),
-                                        )
-                                    }
+                // A retained AndroidView callback must never keep a retired
+                // playback controller when the project/controller is replaced.
+                key(handle) {
+                    AndroidView(
+                        factory = { context ->
+                            SurfaceView(context).apply {
+                                holder.addCallback(
+                                    object : SurfaceHolder.Callback {
+                                        override fun surfaceCreated(holder: SurfaceHolder) {
+                                            val frame = holder.surfaceFrame
+                                            handle.attach(
+                                                holder.surface,
+                                                frame.width().coerceAtLeast(1),
+                                                frame.height().coerceAtLeast(1),
+                                            )
+                                        }
 
-                                    override fun surfaceChanged(
-                                        holder: SurfaceHolder,
-                                        format: Int,
-                                        width: Int,
-                                        height: Int,
-                                    ) {
-                                        handle.attach(
-                                            holder.surface,
-                                            width.coerceAtLeast(1),
-                                            height.coerceAtLeast(1),
-                                        )
-                                    }
+                                        override fun surfaceChanged(
+                                            holder: SurfaceHolder,
+                                            format: Int,
+                                            width: Int,
+                                            height: Int,
+                                        ) {
+                                            handle.attach(
+                                                holder.surface,
+                                                width.coerceAtLeast(1),
+                                                height.coerceAtLeast(1),
+                                            )
+                                        }
 
-                                    override fun surfaceDestroyed(holder: SurfaceHolder) {
-                                        handle.detach()
-                                    }
-                                },
-                            )
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize(),
-                )
+                                        override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                            handle.detach()
+                                        }
+                                    },
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
             // Captions are rendered by the same Media3 composition used by
             // export. Only editor guides belong above the video Surface;
@@ -184,8 +189,23 @@ internal fun MediaVideoSurface(
                         )
                     }
                 }
+                playback.buffering -> {
+                    // The platform player is still opening the composition or
+                    // buffering after a seek; the transport stays disabled
+                    // until real decoder events arrive.
+                    Column(
+                        Modifier
+                            .align(Alignment.Center)
+                            .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                            .padding(12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        FloeActivityIndicator()
+                    }
+                }
             }
         }
+        val transportReady = playback?.ready == true && playback.failure == null
         Row(
             Modifier
                 .fillMaxWidth()
@@ -201,7 +221,7 @@ internal fun MediaVideoSurface(
                     if (state?.isPlaying == true) R.string.media_r2_pause else R.string.media_r2_play,
                 ),
                 onClick = { playback?.togglePlay() },
-                enabled = playback?.ready == true,
+                enabled = transportReady,
                 visualSize = 36.dp,
                 iconSize = 18.dp,
             )
@@ -223,7 +243,7 @@ internal fun MediaVideoSurface(
                 },
                 visualSize = 32.dp,
                 iconSize = 15.dp,
-                enabled = playback?.ready == true,
+                enabled = transportReady,
             )
             FloeCircleButton(
                 icon = FloeIcons.ChevronForward,
@@ -243,7 +263,7 @@ internal fun MediaVideoSurface(
                 },
                 visualSize = 32.dp,
                 iconSize = 15.dp,
-                enabled = playback?.ready == true,
+                enabled = transportReady,
             )
             FloeText(
                 WorkbenchVideoMath.timecode(

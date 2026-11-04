@@ -197,6 +197,13 @@ internal fun MediaEditorCover(
                                     onClick = { editor.redo() },
                                 )
                             }
+                            // Compact windows keep at most ONE primary action
+                            // plus the overflow so the file title stays
+                            // readable and every target keeps its standard
+                            // size. Everything hidden here remains reachable
+                            // through the overflow sheet (and, for the R2
+                            // entries, the existing bottom bar); no capability
+                            // is removed.
                             if (editor.isImageProject) {
                                 FloeToolbarIconButton(
                                     icon = FloeIcons.Pencil,
@@ -207,28 +214,36 @@ internal fun MediaEditorCover(
                                     enabled = editor.writable && !editor.busy && !editor.needsReload,
                                 )
                             }
-                            if (editor.r2 != null) {
-                                FloeToolbarIconButton(
-                                    icon = FloeIcons.Wand,
-                                    contentDescription = stringResource(R.string.media_r2_ai),
-                                    onClick = { showAi = true },
-                                )
-                                if (session.agentAvailable) {
+                            if (wide) {
+                                if (editor.r2 != null) {
                                     FloeToolbarIconButton(
-                                        icon = FloeIcons.ChatRole,
-                                        contentDescription = stringResource(R.string.media_ask_ai),
-                                        onClick = { showAskAi = true },
+                                        icon = FloeIcons.Wand,
+                                        contentDescription = stringResource(R.string.media_r2_ai),
+                                        onClick = { showAi = true },
+                                    )
+                                    if (session.agentAvailable) {
+                                        FloeToolbarIconButton(
+                                            icon = FloeIcons.ChatRole,
+                                            contentDescription = stringResource(R.string.media_ask_ai),
+                                            onClick = { showAskAi = true },
+                                        )
+                                    }
+                                    FloeToolbarIconButton(
+                                        icon = FloeIcons.Share,
+                                        contentDescription = stringResource(R.string.media_r2_export),
+                                        onClick = { showExport = true },
+                                    )
+                                    FloeToolbarIconButton(
+                                        icon = FloeIcons.Gauge,
+                                        contentDescription = stringResource(R.string.media_enhancement_title),
+                                        onClick = { showEnhance = true },
                                     )
                                 }
+                            } else if (editor.r2 != null && !editor.isImageProject) {
                                 FloeToolbarIconButton(
                                     icon = FloeIcons.Share,
                                     contentDescription = stringResource(R.string.media_r2_export),
                                     onClick = { showExport = true },
-                                )
-                                FloeToolbarIconButton(
-                                    icon = FloeIcons.Gauge,
-                                    contentDescription = stringResource(R.string.media_enhancement_title),
-                                    onClick = { showEnhance = true },
                                 )
                             }
                             FloeToolbarIconButton(
@@ -508,6 +523,20 @@ internal fun MediaEditorCover(
             onDismiss = { showMore = false },
             onRename = { showMore = false; showRename = true },
             onClose = { showMore = false; requestClose() },
+            overflow = if (editor.r2 != null) {
+                MediaOverflowActions(
+                    onAi = { showMore = false; showAi = true },
+                    onAskAi = if (session.agentAvailable) {
+                        { showMore = false; showAskAi = true }
+                    } else {
+                        null
+                    },
+                    onExport = { showMore = false; showExport = true },
+                    onEnhance = { showMore = false; showEnhance = true },
+                )
+            } else {
+                null
+            },
         )
     }
     if (showRename) {
@@ -747,12 +776,21 @@ private fun MediaPanelSheet(
     }
 }
 
+/** R2 entries surfaced in the overflow when the compact toolbar hides them. */
+private data class MediaOverflowActions(
+    val onAi: () -> Unit,
+    val onAskAi: (() -> Unit)?,
+    val onExport: () -> Unit,
+    val onEnhance: () -> Unit,
+)
+
 @Composable
 private fun MediaMoreSheet(
     editor: MediaEditorController,
     onDismiss: () -> Unit,
     onRename: () -> Unit,
     onClose: () -> Unit,
+    overflow: MediaOverflowActions?,
 ) {
     FloeActionSheet(visible = true, onDismiss = onDismiss) {
         Column(Modifier.fillMaxWidth().padding(20.dp)) {
@@ -765,6 +803,34 @@ private fun MediaMoreSheet(
                 FloeCapsuleAction(
                     label = stringResource(R.string.media_done),
                     onClick = onDismiss,
+                )
+            }
+            if (overflow != null) {
+                MediaMoreRow(
+                    icon = FloeIcons.Wand,
+                    label = stringResource(R.string.media_r2_ai),
+                    enabled = true,
+                    onClick = { onDismiss(); overflow.onAi() },
+                )
+                overflow.onAskAi?.let { onAskAi ->
+                    MediaMoreRow(
+                        icon = FloeIcons.ChatRole,
+                        label = stringResource(R.string.media_ask_ai),
+                        enabled = true,
+                        onClick = { onDismiss(); onAskAi() },
+                    )
+                }
+                MediaMoreRow(
+                    icon = FloeIcons.Share,
+                    label = stringResource(R.string.media_r2_export),
+                    enabled = true,
+                    onClick = { onDismiss(); overflow.onExport() },
+                )
+                MediaMoreRow(
+                    icon = FloeIcons.Gauge,
+                    label = stringResource(R.string.media_enhancement_title),
+                    enabled = true,
+                    onClick = { onDismiss(); overflow.onEnhance() },
                 )
             }
             MediaMoreRow(

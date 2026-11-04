@@ -60,8 +60,31 @@ data class MediaFailure(
 object MediaFailures {
     fun from(error: Throwable): MediaFailure {
         val typed = error as? CreativeException
-        val code = typed?.code
-        val kind = when (code) {
+        return MediaFailure(
+            kind = kindForCode(typed?.code),
+            code = typed?.code,
+            retryable = typed?.retryable == true ||
+                kindForCode(typed?.code) == MediaFailureKind.RUNTIME_NOT_READY,
+        )
+    }
+
+    /**
+     * Maps a bounded platform/playback error code (already free of secrets and
+     * file paths) to the shared failure surface. Used by the playback
+     * controller where the async platform handle reports terminal refusal
+     * codes through [com.floe.android.feature.workbench.PlaybackState] rather
+     * than a thrown exception.
+     */
+    fun fromCode(code: String?): MediaFailure? {
+        if (code.isNullOrEmpty()) return null
+        return MediaFailure(
+            kind = kindForCode(code),
+            code = code,
+            retryable = kindForCode(code) == MediaFailureKind.RUNTIME_NOT_READY,
+        )
+    }
+
+    internal fun kindForCode(code: String?): MediaFailureKind = when (code) {
             "needsCoreUpdate", "coreTooNew", "unsupportedSchema" ->
                 MediaFailureKind.NEEDS_CORE_UPDATE
             "runtimeUnavailable", "acceptedRootNotLive" ->
@@ -99,13 +122,6 @@ object MediaFailures {
             "renderTicketExpired", "renderTicketAlreadySettled", "foregroundStartDenied" ->
                 MediaFailureKind.EXPORT
             else -> MediaFailureKind.UNKNOWN
-        }
-        return MediaFailure(
-            kind = kind,
-            code = code,
-            retryable = typed?.retryable == true ||
-                kind == MediaFailureKind.RUNTIME_NOT_READY,
-        )
     }
 }
 
