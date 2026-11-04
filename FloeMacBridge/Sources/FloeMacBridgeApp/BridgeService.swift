@@ -17,7 +17,7 @@ actor BridgeService {
     private var accepted: [String: Int64] = [:]
     private var transfers: [String: Transfer] = [:]
     private var pending: [String: (name: String, key: Data, nonce: String, verification: String, updateLease: BridgeUpdateActivity.Lease)] = [:]
-    private var rejected = Set<String>()
+    private var rejected: [String: String] = [:]
     var skillPins: [String: Set<String>] = [:]
     var consent: (@MainActor @Sendable (String, String, String) -> Void)?
     // A caller-supplied key permits isolated synthetic contract fixtures without
@@ -33,15 +33,16 @@ actor BridgeService {
         accepted = (try? BridgeWire.decode([String: Int64].self, from: Data(contentsOf: paths.root.appendingPathComponent("State/request-ids.json")))) ?? [:]
     }
     func setConsent(_ callback: @escaping @MainActor @Sendable (String, String, String) -> Void) { consent = callback }
-    func approve(_ clientID: String, allow: Bool) throws {
+    func approve(_ clientID: String, verification: String, allow: Bool) throws {
         let operation = try updateActivity.begin(.maintenance)
         defer { updateActivity.finish(operation) }
-        guard let proposal = pending.removeValue(forKey: clientID) else { return }
+        guard let proposal = pending[clientID], proposal.verification == verification else { return }
+        pending.removeValue(forKey: clientID)
         defer { updateActivity.finish(proposal.updateLease) }
         if allow {
             pairs[clientID] = Pair(key: proposal.key, name: proposal.name, acceptedAt: Date(), verification: proposal.verification, nonce: proposal.nonce)
             try savePairs()
-        } else { rejected.insert(clientID) }
+        } else { rejected[clientID] = proposal.nonce }
     }
     func pairedClients() -> [(String, String)] { pairs.map { ($0.key, $0.value.name + ($0.value.verification.map { " · " + $0 } ?? "")) } }
     func revoke(_ clientID: String) async throws {
@@ -80,12 +81,23 @@ actor BridgeService {
         let body = request.body; let clientID = BridgeWire.digest(body.clientKey)
         let result: [String: BridgeValue]
         do {
-            if body.method == "pair" || body.method == "pairStatus" {
+            if body.method == "pairCancel" {
+                guard let nonce = body.payload["nonce"]?.string, nonce.count >= 32, nonce.count <= 160 else { throw BridgeFailure.authentication }
+                if let proposal = pending[clientID], proposal.nonce == nonce {
+                    pending.removeValue(forKey: clientID)
+                    updateActivity.finish(proposal.updateLease)
+                }
+                if rejected[clientID] == nonce { rejected.removeValue(forKey: clientID) }
+                result = ["cancelled": .bool(true), "nonce": .string(nonce)]
+            } else if body.method == "pair" || body.method == "pairStatus" {
                 guard let nonce = body.payload["nonce"]?.string, nonce.count >= 32, nonce.count <= 160 else { throw BridgeFailure.authentication }
                 if let pair = pairs[clientID], pair.key == body.clientKey, pair.nonce == nonce {
                     result = approvedPair(nonce: nonce)
-                } else if rejected.contains(clientID) { throw BridgeFailure.remote("The Mac connection was declined.") }
+                } else if rejected[clientID] == nonce { throw BridgeFailure.remote("The Mac connection was declined.") }
                 else {
+                    if let proposal = pending[clientID], proposal.nonce != nonce {
+                        throw BridgeFailure.remote("A previous connection request is waiting in Bridge. Finish or cancel it, then try again.")
+                    }
                     guard pending.count < 4 || pending[clientID] != nil else { throw BridgeFailure.remote("Another connection request is waiting.") }
                     if pending[clientID] == nil {
                         let name = String(String.UnicodeScalarView((body.payload["name"]?.string ?? "Floe").unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })).prefix(80).description
@@ -97,7 +109,7 @@ actor BridgeService {
                     // removes `pending`, and a decline inserts `rejected`.
                     if let pair = pairs[clientID], pair.key == body.clientKey, pair.nonce == nonce {
                         result = approvedPair(nonce: nonce)
-                    } else if rejected.contains(clientID) {
+                    } else if rejected[clientID] == nonce {
                         throw BridgeFailure.remote("The Mac connection was declined.")
                     } else {
                         guard pending[clientID]?.nonce == nonce else { throw BridgeFailure.authentication }

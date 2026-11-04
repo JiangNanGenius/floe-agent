@@ -107,7 +107,7 @@ final class BridgeAppModel: ObservableObject {
         alert.addButton(withTitle: String(localized: "Connect"))
         alert.addButton(withTitle: String(localized: "Cancel"))
         let allow = alert.runModal() == .alertFirstButtonReturn
-        Task { do { try await service?.approve(id, allow: allow); await refresh() } catch { self.error = error.localizedDescription } }
+        Task { do { try await service?.approve(id, verification: verification, allow: allow); await refresh() } catch { self.error = error.localizedDescription } }
     }
     func refresh() async {
         guard let service else { return }

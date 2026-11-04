@@ -1,0 +1,350 @@
+{
+  "schemaVersion": 1,
+  "upstreamRepository": "https://github.com/sylirre/arm64emu-system",
+  "upstreamCommit": "55c8128cb02d8ba3809f6579f7c6d316537e0546",
+  "checkpoint": "A6",
+  "checkpointArchiveSHA256": "3bbcbaac69b092757f6fad1a853659904c183ae0948a79e446cfe30ae73b603c",
+  "license": {
+    "Source": "Apache-2.0",
+    "Bridge": "MPL-2.0",
+    "Sources": "MPL-2.0"
+  },
+  "productionTranslationUnits": [
+    "Source/src/cpu.c",
+    "Source/src/decode.c",
+    "Source/src/devices/fwcfg.c",
+    "Source/src/devices/gicv2.c",
+    "Source/src/devices/pl011.c",
+    "Source/src/devices/pl031.c",
+    "Source/src/devices/psci.c",
+    "Source/src/devices/timer.c",
+    "Source/src/devices/virtio_blk.c",
+    "Source/src/devices/virtio_console.c",
+    "Source/src/exception.c",
+    "Source/src/exec_fpsimd.c",
+    "Source/src/fdt/fdt.c",
+    "Source/src/jit/predecode.c",
+    "Source/src/memory.c",
+    "Source/src/mmu.c",
+    "Source/src/platform.c",
+    "Source/src/sysreg.c",
+    "Source/src/memory_sync.c",
+    "Bridge/boot_entropy.c",
+    "Bridge/console_channel.c",
+    "Bridge/no_native_jit.c",
+    "Bridge/ownership.c",
+    "Bridge/runtime.c",
+    "Bridge/parallel_runtime.c"
+  ],
+  "capabilities": {
+    "nativeJIT": false,
+    "possibleVCPUs": 5,
+    "liveMachines": 1,
+    "network": false,
+    "hostFileShares": false,
+    "terminalResize": false
+  },
+  "integrationStatus": "component staged; production App remains on previous backend until guest services are integrated and validated",
+  "files": [
+    {
+      "path": "Bridge/MPL-2.0.txt",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    {
+      "path": "Bridge/boot_entropy.c",
+      "sha256": "58f62c53deaa5418a28b907bdf28222a663ca066a1cc4c66b291823463e77e5f"
+    },
+    {
+      "path": "Bridge/boot_entropy.h",
+      "sha256": "e1d1b16bab32667d121902ffefc578cde833f0484c13777ae213134e9d4a4415"
+    },
+    {
+      "path": "Bridge/console_channel.c",
+      "sha256": "23f4c181039787fda7a2e88fc027b159528f9386a903bcab15cf3952b33297b3"
+    },
+    {
+      "path": "Bridge/embedded_internal.h",
+      "sha256": "72ae631baf54ddb7cf3fe3fa4a289955607c1a5b8ae262c54bd35e79168fe9db"
+    },
+    {
+      "path": "Bridge/host_hooks.h",
+      "sha256": "faf0dcf0128745fc724eb8b4df1cfcb6e1da8a9e5f12112b10402734723f37a0"
+    },
+    {
+      "path": "Bridge/no_native_jit.c",
+      "sha256": "557a91a8836cd599aaad33880e0ee028933f0e049ae1112283b1b5c1252fb347"
+    },
+    {
+      "path": "Bridge/ownership.c",
+      "sha256": "262c975f1a438790fbc0c2ba4ea13662580721fe98f222cf8f7cd08db5269d22"
+    },
+    {
+      "path": "Bridge/parallel_runtime.c",
+      "sha256": "b2c60d80e8d876928b1cae003cf6730703fb6dd660114c294dc2c748605bacf3"
+    },
+    {
+      "path": "Bridge/parallel_runtime.h",
+      "sha256": "7a611568f2ee6d41883cffc16d4c6dc198c908fe5a3ac014f4c9b2178ad9ba86"
+    },
+    {
+      "path": "Bridge/runtime.c",
+      "sha256": "c23926bc7baeed949a9f561522eacc2d001c63fd2bbbcb8d8712f19e9c5c3671"
+    },
+    {
+      "path": "Source/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "Source/NOTICE",
+      "sha256": "22ef7e1e998ce2da85f0795460cdb1b27552568d13a84a29ea92fdf4286f4e48"
+    },
+    {
+      "path": "Source/README.md",
+      "sha256": "22aec1566361fc742e6a6e9dfabc8b7f1bce457911e99a52d878ca9ebeb5ba03"
+    },
+    {
+      "path": "Source/src/console.h",
+      "sha256": "1290539904077329fb5b9e4ffdce7b9cfc176828ee449ce39304b1b0a355a4fc"
+    },
+    {
+      "path": "Source/src/cpu.c",
+      "sha256": "3ca18139ef371efb75b344c0660a4d46fbfc1c9916b7846a34aaf9fc5d2ec847"
+    },
+    {
+      "path": "Source/src/cpu.h",
+      "sha256": "e86328e36c9fe0d236104b38cd9baaa778e2dd62d79ab6507385270677bf267e"
+    },
+    {
+      "path": "Source/src/decode.c",
+      "sha256": "4af5e1d8b787d9686ffd5da7bc17d4c407d1d2cfb1b846ff4172e944be66b468"
+    },
+    {
+      "path": "Source/src/devices/fwcfg.c",
+      "sha256": "c9e70da590945715449a7f4d88490935d4c3650d0503509e4fcad84f5e1577de"
+    },
+    {
+      "path": "Source/src/devices/gicv2.c",
+      "sha256": "6ecf79a768bf1ec952698a568dcd7b90874d2f06c65d590d8c897625aa965bda"
+    },
+    {
+      "path": "Source/src/devices/pl011.c",
+      "sha256": "f70cc9a0ef84bbe19f3d34c9efe0d67154a25d4c76a2c93fffddc3731907b01a"
+    },
+    {
+      "path": "Source/src/devices/pl031.c",
+      "sha256": "27bfb5ba1c6e5ca1b913c9e53d13f24d13a4dff1bba20a28421a7ec9e215bd51"
+    },
+    {
+      "path": "Source/src/devices/psci.c",
+      "sha256": "9316b6f94d1ec81dc348fe2ae7a6041087b001ae63521908a733384f82cddd40"
+    },
+    {
+      "path": "Source/src/devices/timer.c",
+      "sha256": "be2c7b09a96a25f72b0cc91f9e26f2389970f3b51e150ecf8202b23f7bb83a35"
+    },
+    {
+      "path": "Source/src/devices/virtio_blk.c",
+      "sha256": "df80b37aa9a9a5231eb9df24cb36ae025412921ded35b9d16c9b4198e49165f4"
+    },
+    {
+      "path": "Source/src/devices/virtio_console.c",
+      "sha256": "787905a6a7b86b357fb47bd1d4a17c8d930baf0ee56155c38d3d9597bc9a3ce9"
+    },
+    {
+      "path": "Source/src/devices.h",
+      "sha256": "2e6e1eb65162f45fe151c59b9a54a82b6c8b9a3068fec370016310bd9bb104ae"
+    },
+    {
+      "path": "Source/src/esr.h",
+      "sha256": "6f3d9f971d5314466cc5c8c9560d20db26e89cca9ad52a7f39da5b1e4556e93d"
+    },
+    {
+      "path": "Source/src/exception.c",
+      "sha256": "762370e5a56dc70813435b97cfd996f871f41997bede471fa3cb8dce85f117c4"
+    },
+    {
+      "path": "Source/src/exec_fpsimd.c",
+      "sha256": "261dee471daf2adfa6fac81428212275834c13048549c0d11c3780b9c12e90a4"
+    },
+    {
+      "path": "Source/src/fdt/fdt.c",
+      "sha256": "5b8827546c9ca6f22df548a225009f5230e8447f9f27377b61d498671fd6032a"
+    },
+    {
+      "path": "Source/src/fdt/fdt.h",
+      "sha256": "74faa2c57bd980b9d60c80e48b78cfdfa1880c08816c649e6c301358f59501d4"
+    },
+    {
+      "path": "Source/src/fdt/smp_dtb.h",
+      "sha256": "d94c6b3df4012b0ddbb4183a174dd0bd3c007cf02ca8904437a2b458cff2ed1b"
+    },
+    {
+      "path": "Source/src/fdt/virt.dts",
+      "sha256": "c3bbd0c25252fc5bb2ead6dcd954f1464927fbf23f110df30eea88fbb17671d6"
+    },
+    {
+      "path": "Source/src/fdt/virt_dtb.h",
+      "sha256": "921aae0130949236f454059c9c72b4438406379d3c0aa5a41b5bb6c113db8c3e"
+    },
+    {
+      "path": "Source/src/jit/predecode.c",
+      "sha256": "3b3fad0c2add5c449572e16acb27915c9b67eb62ee2607f5f25013f0c8ac551f"
+    },
+    {
+      "path": "Source/src/jit/predecode.h",
+      "sha256": "6c01dd7793df87e899e46ea5da770ee32d995f449aaff39143fd68e9a768e71d"
+    },
+    {
+      "path": "Source/src/machine.h",
+      "sha256": "47a5d20e2e2b15c3e9034e11a7cc65de1e8abcc077403c646fb54318ee50d7b5"
+    },
+    {
+      "path": "Source/src/memory.c",
+      "sha256": "1852ca8ac482b44ad01ad571273c942a3872679a24e6ddadd658850677aad0a8"
+    },
+    {
+      "path": "Source/src/memory_sync.c",
+      "sha256": "2ef5dccb1ddfd3f39abc1caef318d8fc6aac7e8338c4ba601b62cafb51f18519"
+    },
+    {
+      "path": "Source/src/memory_sync.h",
+      "sha256": "4e2d9ced342ed0e43b7bdf7a88702a6a49d97b0b8f2a18c22fae1d32f37bc940"
+    },
+    {
+      "path": "Source/src/mmu.c",
+      "sha256": "6fe6e0d4dc14b6afc60b242c4c4fdf93e3c7097ec93367c6e3b6318325fd2f91"
+    },
+    {
+      "path": "Source/src/mmu.h",
+      "sha256": "6ad96e74943171ac73015f104261dd6cd7af51683f03ccd8b7b29e8d15b1b1d0"
+    },
+    {
+      "path": "Source/src/parallel_iface.h",
+      "sha256": "ad6d8c3a49dfe334b2bc78700e3a45447e5428fcc0dbf5c7d70b3b77a74b2930"
+    },
+    {
+      "path": "Source/src/platform.c",
+      "sha256": "431d447b39fa280f48bfe7bb8605bb4f8b5883cdfcbfdeb4de7d5440232eeb63"
+    },
+    {
+      "path": "Source/src/sysreg.c",
+      "sha256": "464e1840d72a9a413f06e4e02b3c13b764306299cc9d52dbe45ee1a1135c8abf"
+    },
+    {
+      "path": "Source/src/sysreg.h",
+      "sha256": "3e7e8b9be0256830cd077a1e86cfa2832d7df323ebab2af4518fd0cf668a5e51"
+    },
+    {
+      "path": "Source/src/tty.h",
+      "sha256": "e3d50f37c4be4e58d1940a0819b9d25b74092b68e47e06681dd32d6f1d153e43"
+    },
+    {
+      "path": "Source/src/types.h",
+      "sha256": "b7dc4d0b42393d66374817504326f661ac67ffb7a00ff8919ec4dd76b1392653"
+    },
+    {
+      "path": "Sources/00_cpu.c",
+      "sha256": "cedb2312a8c2777741906078a3ea88f627b225496869aa65d50dd196dd01c2a9"
+    },
+    {
+      "path": "Sources/01_decode.c",
+      "sha256": "5fae02481dbe3008238ed08abe42d09e033e10c36a4b5a0753c944997a23f982"
+    },
+    {
+      "path": "Sources/02_fwcfg.c",
+      "sha256": "ca86df370c469b0d638fd81c54277cab92b93c7a98580340a057a860c0e255af"
+    },
+    {
+      "path": "Sources/03_gicv2.c",
+      "sha256": "d64536c134d472199ebec2cf2c37cd06fa6c9c64da7a6eb8c4b9aed4bfa09736"
+    },
+    {
+      "path": "Sources/04_pl011.c",
+      "sha256": "42aa15553feac94b35b0b70ea662278a4624a7d14ba80973a60e6a4485f3e2d9"
+    },
+    {
+      "path": "Sources/05_pl031.c",
+      "sha256": "a951d7404c237a64805d5357788913d306b3c69175e8f287c019994611fb9e5d"
+    },
+    {
+      "path": "Sources/06_psci.c",
+      "sha256": "ef3866b64e56667a2ac2f2cdac2b01e2705f6aafe2859d90c06992ee58e8b0ab"
+    },
+    {
+      "path": "Sources/07_timer.c",
+      "sha256": "dc0b8feedd0f2dfeb18bdf8eb5ceca75648946a9e6bb15a6da79c2d963a0cb4f"
+    },
+    {
+      "path": "Sources/08_virtio_blk.c",
+      "sha256": "414b529013b35396627ba92076c86ed44cb6c1e7f0e322722a8855b335098249"
+    },
+    {
+      "path": "Sources/09_virtio_console.c",
+      "sha256": "97c72aa502c6bd77af6a1268d746d6aebc74f923d84246512b83dfcc04c0d1d0"
+    },
+    {
+      "path": "Sources/10_exception.c",
+      "sha256": "37bc918e555d7e18da730ab938414f1387fd472d9549026a02321e60739df5ff"
+    },
+    {
+      "path": "Sources/11_exec_fpsimd.c",
+      "sha256": "831c2ba8ea165ce7ebf65c93c59b4511a6390dc3ab970f3cb9d86d904944f337"
+    },
+    {
+      "path": "Sources/12_fdt.c",
+      "sha256": "97d03d3e0f36c34dd667888e5dde38c6db5b2c94d57dbcc46344339b86003d55"
+    },
+    {
+      "path": "Sources/13_predecode.c",
+      "sha256": "5ed3be691732a87020366d52c5ceb28a6b377d2ce0a952524289844757550152"
+    },
+    {
+      "path": "Sources/14_memory.c",
+      "sha256": "b8e2635a5d25efc003fcf937f796106cf0b36c759dbbb03ec2589a7c291c62a1"
+    },
+    {
+      "path": "Sources/15_mmu.c",
+      "sha256": "3cd7f1e21345fea9d2a3a92e00c41aaac0c6786f5740701001cacabff755e9bc"
+    },
+    {
+      "path": "Sources/16_platform.c",
+      "sha256": "6bbf3298bd687dfa5ae044b24d28470336e5fdfc94a06133646d845174164b5e"
+    },
+    {
+      "path": "Sources/17_sysreg.c",
+      "sha256": "2b565c21f43c8ca729ffbf3f81988822313c3abc23a997597fb4f34157f20f46"
+    },
+    {
+      "path": "Sources/18_memory_sync.c",
+      "sha256": "80b69eaa0a4527aa8ba0060828cf5faa7ef060819b6fec5d18742207d950a0da"
+    },
+    {
+      "path": "Sources/19_boot_entropy.c",
+      "sha256": "3c3e6635f7686afd4ddecd813ab2a2ee031f545c07d970b6e23bb041b333e5b6"
+    },
+    {
+      "path": "Sources/20_console_channel.c",
+      "sha256": "0f23c12ad9987baf1d50d8730318f8fe5b077cf706f9d200b0e1980159cfdd3e"
+    },
+    {
+      "path": "Sources/21_no_native_jit.c",
+      "sha256": "aa9c9caec875fd9a0d210825f4852ddf96ea44012229ec9c3321c7d1eb26733b"
+    },
+    {
+      "path": "Sources/22_ownership.c",
+      "sha256": "61c93dc9eaa1d4d2dcf8c1d745b4444300c0930c1a5d0adf67835b0cd2e2cedd"
+    },
+    {
+      "path": "Sources/23_runtime.c",
+      "sha256": "91a304279b2caf28e5cbe605e90562b9b4a807ac81872d9783970a73d66b8d7e"
+    },
+    {
+      "path": "Sources/24_parallel_runtime.c",
+      "sha256": "84ef8fc51a0a886145f59d635dbb392cfedd3e6ae260f26c18327d1cbd67b322"
+    },
+    {
+      "path": "include/floe_arm64emu.h",
+      "sha256": "10cd4b70064bdc3bba42c1b6e690e20fa32e6122ec641097d5cb6f9e8c76b317"
+    }
+  ]
+}

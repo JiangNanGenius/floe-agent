@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "floe-ios-automation",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "capabilities": [
     "credentials",
     "device.observe",

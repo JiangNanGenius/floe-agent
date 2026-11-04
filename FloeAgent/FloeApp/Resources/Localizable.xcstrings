@@ -53276,6 +53276,57 @@
         }
       }
     },
+    "mac.bridge.forget": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forget connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "忘记连接"
+          }
+        }
+      }
+    },
+    "mac.bridge.forget_detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You can pair again. Files and jobs on the Mac are kept. If Bridge is unavailable, remove the old authorization there when you reconnect."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "之后可以重新配对，Mac 上的文件和作业会保留。桥程序不可用时，请在恢复连接后移除其中的旧授权。"
+          }
+        }
+      }
+    },
+    "mac.bridge.forget_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forget this Mac connection?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "忘记这台 Mac 的连接？"
+          }
+        }
+      }
+    },
     "mac.bridge.introduction": {
       "extractionState": "manual",
       "localizations": {
@@ -53390,6 +53441,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "重新连接"
+          }
+        }
+      }
+    },
+    "mac.bridge.setup": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect this Mac"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接这台 Mac"
+          }
+        }
+      }
+    },
+    "mac.bridge.setup_detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install and open Floe Bridge, then connect below. Confirm the matching code in both apps."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装并打开 Floe Bridge，再点击下方连接，在两个 App 中确认相同的配对码。"
           }
         }
       }

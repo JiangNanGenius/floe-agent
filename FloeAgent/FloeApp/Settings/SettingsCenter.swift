@@ -35,6 +35,7 @@ final class SettingsCenter: ObservableObject {
     private let workspaceStore: any WorkspaceStore
     private let approvalGrants: ApprovalGrantStore
     private let defaults: UserDefaults
+    private var appliedMacAudioLaunchPolicy = false
 
     // MARK: - General (UserDefaults layer)
 
@@ -198,6 +199,13 @@ final class SettingsCenter: ObservableObject {
             return
         }
         applyStoredValues(values)
+        if !appliedMacAudioLaunchPolicy {
+            appliedMacAudioLaunchPolicy = true
+            let options = backgroundExecutionOptions.applyingMacAudioLaunchPolicy(platform: .current)
+            if options != backgroundExecutionOptions {
+                await setBackgroundExecutionOptions(options)
+            }
+        }
         launchPreferencesLoaded = true
         // Reconcile even when the stored value equals the in-memory default:
         // before this point a cold-launch continued task must fail closed.

@@ -36,9 +36,11 @@ Skill or companion available on a build that lacks the native tools.
    A usable address appears only after Bridge reports real readiness. After a
    reboot, unlock the device and open Bridge; restore follows the user's
    previous run intent but is not an always-on boot promise.
-7. In Floe, install and enable this optional Skill, accept its declared
-   `credentials`, `device.observe`, and `device.interact` access, then open
-   the Skill's **Local Bridge connection** field and pair. The default
+7. In Floe, install and enable this optional Skill and accept its declared
+   `credentials`, `device.observe`, and `device.interact` access. In chat,
+   ask Floe to connect this device: the assistant checks `ios.bridge.status`
+   and calls `ios.bridge.pair` when needed. The Skill's **Local Bridge
+   connection** field remains a manual setup route. The default
    configuration profile is `default`; the native target is `local-ios`.
 8. Approve the request in Bridge. Floe waits for that native decision; nobody
    can approve it from chat or from the Skill package.
@@ -102,7 +104,7 @@ user can return manually and check status.
 1. 确认是真实 iPhone/iPad，且 Floe 构建包含本机自动化工具。
 2. 从官方发布获取 Floe iOS Bridge 未签名 IPA，自行签名并安装；完成开发者配对记录、本地 VPN 和运行镜像设置。
 3. 在 Bridge 中点“开始服务”，确认真正可用。
-4. 在 Floe 中安装并启用本 Skill，接受 `credentials`、`device.observe`、`device.interact`，再配对。
+4. 在 Floe 中安装并启用本 Skill，接受 `credentials`、`device.observe`、`device.interact`；在聊天中要求连接本机 Bridge，由助手检查状态并发起配对。也可从技能详情的配置入口手动配对。
 5. 在 Bridge 中由用户亲自批准；不要在聊天中传递密钥、密码或设备密码。
 6. 只有状态真实 `ready` 才继续；锁定、拒绝、版本不兼容、服务未运行或引擎未就绪时按上表处理。
 7. 变更结果未知时先观察屏幕；不要自动重试。Bridge 1.0 没有 URL scheme，打开 Bridge 需要手动操作，不能承诺自动返回。

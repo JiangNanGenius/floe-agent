@@ -15,6 +15,9 @@ final class MacBridgeConnectionCenter: ObservableObject {
     @Published private(set) var recentJobs: [MacBridgeClient.SavedJob] = []
     @Published private(set) var host = ""
     @Published private(set) var error: String?
+    @Published var showingConnectionPage = false
+    private var operationID = UUID()
+    private var cancellingPairing = false
     private var pairingTask: Task<Void, Never>?
     private var availabilityObserver: NSObjectProtocol?
     private init() {
@@ -30,104 +33,172 @@ final class MacBridgeConnectionCenter: ObservableObject {
         return url
     }
     func bootstrap() async {
-        guard Self.isMac else { return }
+        guard Self.isMac, !connecting, pairingCode == nil else { return }
+        let operation = operationID
         do {
             try await MacBridgeClient.shared.bootstrap()
-            connected = await MacBridgeClient.shared.isConnected()
-            hasPairing = await MacBridgeClient.shared.hasPairing()
-            recentJobs = Array((try await MacBridgeClient.shared.savedJobs()).reversed().prefix(20))
-            if connected {
-                let state = try await MacBridgeClient.shared.call("ping")
-                host = state["host"]?.string ?? "Mac"; error = nil
-            }
+            let available = await MacBridgeClient.shared.isConnected()
+            let paired = await MacBridgeClient.shared.hasPairing()
+            let jobs = Array((try await MacBridgeClient.shared.savedJobs()).reversed().prefix(20))
+            let name: String?
+            if available { name = try await MacBridgeClient.shared.call("ping")["host"]?.string }
+            else { name = nil }
+            guard operationID == operation, !Task.isCancelled else { return }
+            connected = available; hasPairing = paired; recentJobs = jobs
+            host = name ?? ""; error = nil
         } catch {
-            connected = false
-            hasPairing = await MacBridgeClient.shared.hasPairing()
-            recentJobs = Array(((try? await MacBridgeClient.shared.savedJobs()) ?? []).reversed().prefix(20))
+            let paired = await MacBridgeClient.shared.hasPairing()
+            let jobs = Array(((try? await MacBridgeClient.shared.savedJobs()) ?? []).reversed().prefix(20))
+            guard operationID == operation, !Task.isCancelled else { return }
+            connected = false; hasPairing = paired; recentJobs = jobs
             self.error = error.localizedDescription
         }
     }
     func connect() {
         guard !connecting, pairingCode == nil, Self.isMac else { return }
+        let operation = UUID(); operationID = operation
         connecting = true; error = nil
         pairingTask = Task {
-            defer { connecting = false; pairingTask = nil }
+            defer {
+                if operationID == operation { connecting = false; pairingTask = nil }
+            }
             do {
-                // The system opens the user's installed companion. Floe
-                // neither downloads code nor silently starts an installer.
                 _ = await UIApplication.shared.open(URL(string: "floe-bridge://connect")!)
+                try checkCurrent(operation)
+                let deadline = ContinuousClock.now.advanced(by: .seconds(90))
                 for _ in 0..<90 {
-                    try Task.checkCancellation()
+                    if ContinuousClock.now >= deadline { break }
                     do {
-                        if try await MacBridgeClient.shared.beginPairing() {
-                            if let verification = try await MacBridgeClient.shared.pairingVerification() {
-                                pairingCode = verification
-                                return
-                            }
-                            await finishConnection()
+                        let approved = try await MacBridgeClient.shared.beginPairing()
+                        try checkCurrent(operation)
+                        if approved {
+                            let verification = try await MacBridgeClient.shared.pairingVerification()
+                            try checkCurrent(operation)
+                            if let verification { pairingCode = verification }
+                            else { await finishConnection(operation: operation) }
                             return
                         }
                     } catch let failure as BridgeFailure {
+                        try checkCurrent(operation)
                         switch failure {
-                        case .disconnected, .ambiguous:
-                            // Only the idempotent pairing request waits for the
-                            // user-opened app to start. Never retry a command.
-                            break
+                        case .disconnected, .ambiguous: break // Only idempotent pairing is retried.
                         default: throw failure
                         }
                     }
                     try await Task.sleep(for: .seconds(1))
+                    try checkCurrent(operation)
                 }
                 error = String(localized: "mac.bridge.confirm_timeout")
             } catch is CancellationError { }
-            catch { connected = false; self.error = error.localizedDescription }
+            catch {
+                guard operationID == operation else { return }
+                connected = false; self.error = error.localizedDescription
+            }
         }
     }
     func cancelPairing() {
-        pairingTask?.cancel(); pairingCode = nil
-        Task { await MacBridgeClient.shared.cancelPairing() }
-    }
-    func confirmPairing() {
-        guard let verification = pairingCode else { return }
+        guard !cancellingPairing else { return }
+        cancellingPairing = true
+        let operation = UUID(); operationID = operation
+        pairingTask?.cancel(); pairingTask = nil; pairingCode = nil
+        // Do not permit a new attempt until the actor has fenced the old one.
+        connecting = true
         Task {
-            do {
-                try await MacBridgeClient.shared.confirmPairing(verification: verification)
-                pairingCode = nil
-                await finishConnection()
-            } catch { self.error = error.localizedDescription }
+            await MacBridgeClient.shared.cancelPairing()
+            guard operationID == operation else { return }
+            connecting = false; cancellingPairing = false
         }
     }
-    private func finishConnection() async {
+    func confirmPairing() {
+        guard !connecting, let verification = pairingCode else { return }
+        let operation = operationID
+        connecting = true; error = nil
+        pairingTask = Task {
+            defer {
+                if operationID == operation { connecting = false; pairingTask = nil }
+            }
+            do {
+                try checkCurrent(operation)
+                try await MacBridgeClient.shared.confirmPairing(verification: verification)
+                try checkCurrent(operation)
+                pairingCode = nil
+                await finishConnection(operation: operation)
+            } catch is CancellationError { }
+            catch {
+                guard operationID == operation else { return }
+                self.error = error.localizedDescription
+            }
+        }
+    }
+    private func checkCurrent(_ operation: UUID) throws {
+        try Task.checkCancellation()
+        guard operationID == operation else { throw CancellationError() }
+    }
+    private func finishConnection(operation: UUID) async {
         do {
             let state = try await MacBridgeClient.shared.call("ping")
+            try checkCurrent(operation)
             connected = true; hasPairing = true
             MacBridgeRoutingPreferences.preferMacForNewTasks = true
             host = state["host"]?.string ?? "Mac"; error = nil
-        } catch { connected = false; self.error = error.localizedDescription }
+        } catch is CancellationError { }
+        catch {
+            guard operationID == operation else { return }
+            connected = false; self.error = error.localizedDescription
+        }
     }
-    func disconnect() async {
-        do { try await MacBridgeClient.shared.disconnect(); connected = false; hasPairing = false; host = ""; error = nil }
-        catch { self.error = error.localizedDescription }
+    func disconnect(revoke: Bool = true) async {
+        guard !connecting else { return }
+        let operation = UUID(); operationID = operation
+        pairingTask?.cancel(); pairingTask = nil; pairingCode = nil
+        connecting = true
+        defer { if operationID == operation { connecting = false } }
+        do {
+            await MacBridgeClient.shared.cancelPairing()
+            try await MacBridgeClient.shared.disconnect(revoke: revoke)
+            try checkCurrent(operation)
+            connected = false; hasPairing = false; host = ""; error = nil
+        } catch {
+            guard operationID == operation else { return }
+            self.error = error.localizedDescription
+        }
     }
+
 }
 
 struct MacBridgeConnectionView: View {
     @ObservedObject private var center = MacBridgeConnectionCenter.shared
     @AppStorage("floe.macBridge.preferForNewTasks.v1") private var preferMacForNewTasks = true
+    @State private var confirmingForget = false
+    @Environment(\.scenePhase) private var scenePhase
     var body: some View {
         Form {
+            if !center.connected {
+                Section("mac.bridge.setup") {
+                    Text("mac.bridge.setup_detail")
+                    if let url = MacBridgeConnectionCenter.downloadURL {
+                        Link(destination: url) {
+                            Label("mac.bridge.download", systemImage: "arrow.down.app")
+                        }
+                    }
+                }
+            }
             Section {
                 LabeledContent("mac.bridge.status", value: center.connected ? center.host : String(localized: "mac.bridge.disconnected"))
                 if center.connected {
                     if !preferMacForNewTasks {
                         Button("mac.bridge.prefer_for_new_tasks") { preferMacForNewTasks = true }
                     }
-                    Button("mac.bridge.disconnect", role: .destructive) { Task { await center.disconnect() } }
+                    Button("mac.bridge.disconnect", role: .destructive) { Task { await center.disconnect() } }.disabled(center.connecting)
                 } else {
-                    Button("mac.bridge.connect") { center.connect() }.disabled(center.connecting)
+                    Button("mac.bridge.connect") { center.connect() }.disabled(center.connecting || center.pairingCode != nil)
                     if center.connecting {
                         HStack { ProgressView(); Text("mac.bridge.confirm_on_mac") }
                         Button("action.cancel") { center.cancelPairing() }
+                    }
+                    if center.hasPairing {
+                        Button("mac.bridge.forget", role: .destructive) { confirmingForget = true }
+                            .disabled(center.connecting)
                     }
                 }
             }
@@ -135,8 +206,8 @@ struct MacBridgeConnectionView: View {
                 Section("mac.bridge.verify_title") {
                     Text(code).font(.title2.monospaced().bold()).textSelection(.enabled)
                     Text("mac.bridge.verify_message")
-                    Button("mac.bridge.verify_match") { center.confirmPairing() }
-                    Button("action.cancel", role: .cancel) { center.cancelPairing() }
+                    Button("mac.bridge.verify_match") { center.confirmPairing() }.disabled(center.connecting)
+                    Button("action.cancel", role: .cancel) { center.cancelPairing() }.disabled(center.connecting)
                 }
             }
             Section {
@@ -157,7 +228,15 @@ struct MacBridgeConnectionView: View {
             if let error = center.error { Section { Text(error).foregroundStyle(.red) } }
         }
         .navigationTitle("mac.bridge.title")
+        .onAppear { center.showingConnectionPage = true }
+        .onDisappear { center.showingConnectionPage = false }
         .task { await center.bootstrap() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await center.bootstrap() } }
+        }
+        .confirmationDialog("mac.bridge.forget_title", isPresented: $confirmingForget) {
+            Button("mac.bridge.forget", role: .destructive) { Task { await center.disconnect(revoke: false) } }
+        } message: { Text("mac.bridge.forget_detail") }
     }
 }
 
@@ -237,7 +316,7 @@ struct MacBridgeRecommendationModifier: ViewModifier {
             Button("action.later", role: .cancel) { dismissed = true }
         } message: { Text("mac.bridge.introduction") }
         .alert("mac.bridge.verify_title", isPresented: Binding(
-            get: { center.pairingCode != nil },
+            get: { center.pairingCode != nil && !center.showingConnectionPage },
             set: { _ in /* Explicit buttons resolve the pending trust decision. */ }
         )) {
             Button("mac.bridge.verify_match") { center.confirmPairing() }

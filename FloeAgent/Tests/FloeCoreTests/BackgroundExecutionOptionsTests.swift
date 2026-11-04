@@ -4,6 +4,25 @@ import Testing
 
 @Suite("FloeCore.BackgroundExecutionOptions")
 struct BackgroundExecutionOptionsTests {
+    @Test("Mac launch enables audio with its prerequisite and leaves other surfaces unchanged")
+    func macAudioLaunchPolicy() {
+        let saved = BackgroundExecutionOptions(enhancedBackgroundEnabled: false, taskLiveActivityEnabled: true)
+        for platform in LocalBridgePlatform.allCases {
+            let options = saved.applyingMacAudioLaunchPolicy(platform: platform)
+            if platform.supportsMacBridge {
+                #expect(options.audioEnabled)
+                #expect(options.enhancedBackgroundEnabled)
+                #expect(!options.pictureInPictureEnabled)
+                #expect(!options.screenFeedbackEnabled)
+                #expect(options.taskLiveActivityEnabled)
+            } else {
+                #expect(options == saved)
+            }
+        }
+        let existing = BackgroundExecutionOptions(legacy: .screenShare)
+        #expect(existing.applyingMacAudioLaunchPolicy(platform: .iOSAppOnMac) == existing)
+    }
+
     @Test("Legacy choices migrate without dropping their enabled capabilities")
     func legacyMigration() throws {
         for legacy in BackgroundExecutionPreference.allCases {

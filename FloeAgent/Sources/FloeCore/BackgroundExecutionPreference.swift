@@ -48,7 +48,8 @@ public struct BackgroundExecutionOptions: Sendable, Codable, Equatable, Hashable
     public var enhancedBackgroundEnabled: Bool
     /// Standalone task audio (the service-owned ambient loop and stage
     /// speech run as the task's session, not as a PiP view accessory). Off
-    /// by default: upgrading never auto-plays audio.
+    /// by default, except for the explicit Mac launch policy below. Selecting
+    /// the capability does not itself start playback.
     public var audioEnabled: Bool
     public var pictureInPictureEnabled: Bool
     public var screenFeedbackEnabled: Bool
@@ -83,6 +84,16 @@ public struct BackgroundExecutionOptions: Sendable, Codable, Equatable, Hashable
             pictureInPictureEnabled: legacy != .standard,
             screenFeedbackEnabled: legacy == .screenShare
         )
+    }
+
+    /// Mac launch policy requested by the product owner. Applied once by the
+    /// settings service at process startup, not on every settings refresh.
+    /// Sound preferences and playback ownership remain with their services.
+    public func applyingMacAudioLaunchPolicy(platform: LocalBridgePlatform) -> Self {
+        guard platform.supportsMacBridge else { return self }
+        var options = self
+        options.setAudioEnabled(true)
+        return options
     }
 
     private enum CodingKeys: String, CodingKey {

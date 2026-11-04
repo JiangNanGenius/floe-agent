@@ -153,6 +153,17 @@ struct SkillHubDetailView: View {
                 }
             }
 
+            if let installed {
+                Section {
+                    NavigationLink {
+                        SkillConfigurationEntryView(skill: installed)
+                    } label: {
+                        Label(SkillConfigurationCopy.title, systemImage: "slider.horizontal.3")
+                    }
+                    .accessibilityIdentifier("skills.detail.configuration.\(item.id)")
+                }
+            }
+
             Section("skills.hub.about") {
                 LabeledContent(SkillHubCopy.localized("skills.hub.install_state",
                                                       en: "Status", zh: "安装状态"),

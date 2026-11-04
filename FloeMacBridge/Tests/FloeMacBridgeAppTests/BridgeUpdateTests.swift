@@ -185,7 +185,7 @@ struct BridgeUpdateTests {
         #expect(value["paired"] == .bool(false))
         service.finishDelivery(reply.lease)
         #expect(service.reserveUpdateInstallationIfIdle() == nil)
-        try await service.approve(BridgeWire.digest(client.publicKey.rawRepresentation), allow: false)
+        try await service.approve(BridgeWire.digest(client.publicKey.rawRepresentation), verification: BridgeWire.pairingVerification(clientKey: client.publicKey.rawRepresentation, serverKey: server.publicKey.rawRepresentation, nonce: String(repeating: "a", count: 64)), allow: false)
         let token = try #require(service.reserveUpdateInstallationIfIdle()); gate.resume(after: token)
     }
     @Test("Official Sparkle postpone, on-quit and abort selectors are implemented")

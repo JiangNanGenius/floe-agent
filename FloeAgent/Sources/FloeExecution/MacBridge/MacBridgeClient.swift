@@ -20,6 +20,7 @@ public actor MacBridgeClient {
     private let keychainService = "org.floeagent.bridge.client"
     private var key: Curve25519.Signing.PrivateKey?
     private var serverKey: Data?
+    private var trustGeneration = UUID()
     public static let availabilityDidChange = Notification.Name("org.floeagent.macBridge.availabilityDidChange")
     private var connected = false {
         didSet {
@@ -28,9 +29,7 @@ public actor MacBridgeClient {
             }
         }
     }
-    private var candidateKey: Data?
-    private var pairingNonce: String?
-    private var candidateApproved = false
+    private var pairing = BridgePairingSession()
     private var baseline: [String: [String: String]] = [:]
     private let session: URLSession
     public init() {
@@ -44,7 +43,9 @@ public actor MacBridgeClient {
     public func bootstrap() async throws {
         try requireSupportedPlatform()
         key = try BridgeKeychain.signingKey(service: keychainService)
-        serverKey = try BridgeKeychain.read(service: keychainService, account: "server-public-key-v1")
+        let savedKey = try BridgeKeychain.read(service: keychainService, account: "server-public-key-v1")
+        if savedKey != serverKey { trustGeneration = UUID() }
+        serverKey = savedKey
         if let url = try? baselineURL(), let data = try? Data(contentsOf: url) {
             baseline = (try? BridgeWire.decode([String: [String: String]].self, from: data)) ?? [:]
         }
@@ -54,39 +55,45 @@ public actor MacBridgeClient {
     public func isConnected() -> Bool { LocalBridgePlatform.current.supportsMacBridge && connected && serverKey != nil }
     public func hasPairing() -> Bool { LocalBridgePlatform.current.supportsMacBridge && serverKey != nil }
     public func beginPairing(name: String = "Floe") async throws -> Bool {
+        try Task.checkCancellation()
         try requireSupportedPlatform()
         if key == nil { key = try BridgeKeychain.signingKey(service: keychainService) }
         if serverKey != nil {
             // Existing trust is never replaced by an unpinned response.
             _ = try await call("ping"); return true
         }
-        if pairingNonce == nil { pairingNonce = UUID().uuidString + UUID().uuidString }
-        guard let nonce = pairingNonce else { throw BridgeFailure.authentication }
-        let (result, responseKey) = try await send("pair", ["name": .string(name), "nonce": .string(nonce)], paired: false)
-        guard result["nonce"]?.string == nonce else { throw BridgeFailure.authentication }
-        if let candidateKey, candidateKey != responseKey { throw BridgeFailure.authentication }
-        candidateKey = responseKey
-        candidateApproved = result["paired"]?.bool == true
+        let attempt = pairing.begin()
+        let (result, responseKey) = try await send("pair", ["name": .string(name), "nonce": .string(attempt.nonce)], paired: false)
+        try pairing.accept(attempt, nonce: result["nonce"]?.string,
+                           serverKey: responseKey, approved: result["paired"]?.bool == true)
         // The caller must explicitly match the companion's native fingerprint.
-        return candidateApproved
+        return pairing.approved
     }
     public func pairingVerification() throws -> String? {
-        guard serverKey == nil, let candidateKey, let key, let nonce = pairingNonce else { return nil }
-        return BridgeWire.pairingVerification(clientKey: key.publicKey.rawRepresentation, serverKey: candidateKey, nonce: nonce)
+        guard serverKey == nil, let key else { return nil }
+        return pairing.verification(clientKey: key.publicKey.rawRepresentation)
     }
     public func confirmPairing(verification: String) throws {
         try requireSupportedPlatform()
-        guard candidateApproved, let candidateKey, verification == (try pairingVerification()) else { throw BridgeFailure.authentication }
+        guard let key else { throw BridgeFailure.authentication }
+        let candidateKey = try pairing.approvedKey(clientKey: key.publicKey.rawRepresentation, verification: verification)
         try BridgeKeychain.save(candidateKey, service: keychainService, account: "server-public-key-v1")
-        serverKey = candidateKey; connected = true
-        cancelPairing()
+        trustGeneration = UUID(); serverKey = candidateKey; connected = true
+        pairing.cancel()
     }
-    public func cancelPairing() { candidateKey = nil; pairingNonce = nil; candidateApproved = false }
+    public func cancelPairing() async {
+        let attempt = pairing.attempt
+        pairing.cancel() // Fence before awaiting the companion's best-effort cleanup.
+        if let attempt {
+            _ = try? await send("pairCancel", ["nonce": .string(attempt.nonce)], paired: false)
+        }
+    }
     public func disconnect(revoke: Bool = true) async throws {
         try requireSupportedPlatform()
+        trustGeneration = UUID()
         if revoke, serverKey != nil { _ = try await call("revoke") }
         try BridgeKeychain.remove(service: keychainService, account: "server-public-key-v1")
-        serverKey = nil; cancelPairing(); connected = false
+        trustGeneration = UUID(); serverKey = nil; pairing.cancel(); connected = false
     }
     public func call(_ method: String, _ payload: [String: BridgeValue] = [:]) async throws -> [String: BridgeValue] {
         try requireSupportedPlatform()
@@ -98,8 +105,11 @@ public actor MacBridgeClient {
         guard let key else { throw BridgeFailure.disconnected }
         let body = BridgeRequestBody(clientKey: key.publicKey.rawRepresentation, method: method, payload: payload)
         let bytes = try BridgeWire.encode(BridgeRequest(body: body, key: key))
+        let pinnedKey = paired ? serverKey : pairing.candidateKey
+        let generation = trustGeneration
         guard bytes.count <= BridgeWire.maximumFrameBytes else { throw BridgeFailure.remote("The request is too large. Transfer the file in chunks.") }
         var request = URLRequest(url: BridgeWire.endpoint)
+        if method == "pairCancel" { request.timeoutInterval = 2 }
         request.httpMethod = "POST"; request.httpBody = bytes
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         do {
@@ -107,16 +117,24 @@ public actor MacBridgeClient {
             guard let response = response as? HTTPURLResponse, response.statusCode == 200,
                   data.count <= BridgeWire.maximumFrameBytes else { throw BridgeFailure.disconnected }
             let signed = try BridgeWire.decode(BridgeResponse.self, from: data)
-            let result = try signed.verified(for: body, pinnedKey: paired ? serverKey : candidateKey)
-            if paired { connected = true }
+            let result = try signed.verified(for: body, pinnedKey: pinnedKey)
+            if paired {
+                guard trustGeneration == generation, serverKey == pinnedKey else { throw CancellationError() }
+                connected = true
+            }
             return (result, signed.body.serverKey)
         } catch is CancellationError { throw CancellationError() }
         catch let error as BridgeFailure {
-            if case .remote = error { if paired { connected = true } }
-            else { connected = false }
+            if paired, trustGeneration == generation {
+                if case .remote = error { connected = true }
+                else { connected = false }
+            }
             throw error
         }
-        catch { connected = false; throw BridgeFailure.ambiguous }
+        catch {
+            if paired, trustGeneration == generation { connected = false }
+            throw BridgeFailure.ambiguous
+        }
     }
     public func workspaceID(for root: URL) -> String {
         BridgeWire.digest(Data(root.resolvingSymlinksInPath().standardizedFileURL.path.utf8))

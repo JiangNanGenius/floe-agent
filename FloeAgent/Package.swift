@@ -190,6 +190,27 @@ let package = Package(
             path: "Sources/FloeLlamaVisionShim",
             publicHeadersPath: "include"
         ),
+        // Staged ARM64 replacement. Not selected by FloeExecution until the
+        // new guest's network/files/project services pass integration.
+        .target(
+            name: "FloeARM64Engine",
+            path: "ThirdParty/ARM64EMU",
+            exclude: ["Source", "Bridge", "PROVENANCE.json"],
+            sources: ["Sources"],
+            publicHeadersPath: "include",
+            cSettings: [
+                .headerSearchPath("Source/src"),
+                .headerSearchPath("Bridge"),
+                .define("_POSIX_C_SOURCE", to: "200809L"),
+                .define("_DARWIN_C_SOURCE"),
+                .unsafeFlags(["-std=c11", "-UNDEBUG", "-fno-math-errno", "-fvisibility=hidden"]),
+                .unsafeFlags(["-O2"], .when(configuration: .release))
+            ],
+            linkerSettings: [
+                .linkedFramework("Security", .when(platforms: [.iOS, .macOS])),
+                .linkedLibrary("m")
+            ]
+        ),
         // Pinned TinyEMU 2019-12-21 RV64 engine (MIT/BSD/PD, see
         // ThirdParty/TinyEMU/LICENSE-INVENTORY.md) compiled for the app.
         // Sources are vendored by ThirdParty/TinyEMU/vendor_swift_sources.sh
