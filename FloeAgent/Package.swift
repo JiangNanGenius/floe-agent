@@ -208,7 +208,8 @@ let package = Package(
             ],
             linkerSettings: [
                 .linkedFramework("Security", .when(platforms: [.iOS, .macOS])),
-                .linkedLibrary("m")
+                .linkedLibrary("m"),
+                .linkedLibrary("resolv", .when(platforms: [.iOS, .macOS]))
             ]
         ),
         // Pinned TinyEMU 2019-12-21 RV64 engine (MIT/BSD/PD, see

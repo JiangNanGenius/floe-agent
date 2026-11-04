@@ -12,7 +12,18 @@ _Static_assert(A64_MAX_CPUS==FLOE_AE_MAX_VCPUS,"public and internal CPU ceilings
 typedef struct AERing { unsigned char *bytes; size_t cap,head,count; } AERing;
 typedef struct AESession AESession;
 struct AEParallel;
-struct ConsoleEP { AESession *owner; };
+/* One host-visible byte channel. Channel 0 is the PL011 UART (the legacy
+ * floe_ae_console_* target); channels 1..N are the virtio-consoles in
+ * creation order (hvc<i> -> channel i+1). Input is host->guest, output is
+ * guest->host; both are bounded rings drained by the ABI and the devices. */
+typedef struct AEChannel {
+    AERing input, output;
+    uint16_t cols, rows;     /* last pushed geometry; 0x0 = unknown */
+    bool winch;              /* geometry changed since the guest last looked */
+    bool present;
+} AEChannel;
+#define AE_MAX_CHANNELS (MAX_CONSOLES + 1)
+struct ConsoleEP { AESession *owner; uint32_t channel; };
 struct AESession {
     Machine machine;
     struct AEParallel *parallel;
@@ -22,9 +33,23 @@ struct AESession {
     pthread_cond_t condition;
     int mutex_ready,condition_ready,active,waiters,state,error,last_reason;
     atomic_bool stop;
-    AERing input,output,diagnostic;
-    ConsoleEP endpoint;
+    AERing diagnostic;
+    AEChannel channels[AE_MAX_CHANNELS];
+    ConsoleEP endpoint;                     /* channel 0 */
+    ConsoleEP vcon_endpoints[MAX_CONSOLES]; /* channels 1.. */
     char *disk_path;
+    /* Deep copies of the device configuration (owned, freed at destroy). */
+    char *dns_text;                          /* NULL when probing */
+    uint32_t dns_server;                     /* parsed host-order IPv4, 0 = probe */
+    uint32_t requested_consoles;
+    struct {
+        char *path;
+        char *tag;
+        bool ro;
+    } share[FLOE_AE_MAX_SHARES];
+    uint32_t share_count;
+    NetFwd fwd[FLOE_AE_MAX_NET_FORWARDS];
+    uint32_t fwd_count;
     fenv_t guest_environment[A64_MAX_CPUS];
 };
 extern _Thread_local AESession *ae_current;

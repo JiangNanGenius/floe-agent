@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "upstreamRepository": "https://github.com/sylirre/arm64emu-system",
   "upstreamCommit": "55c8128cb02d8ba3809f6579f7c6d316537e0546",
-  "checkpoint": "A6",
+  "checkpoint": "A6 + immutable CRC tables + device I/O v3",
   "checkpointArchiveSHA256": "3bbcbaac69b092757f6fad1a853659904c183ae0948a79e446cfe30ae73b603c",
   "license": {
     "Source": "Apache-2.0",
@@ -34,17 +34,22 @@
     "Bridge/no_native_jit.c",
     "Bridge/ownership.c",
     "Bridge/runtime.c",
-    "Bridge/parallel_runtime.c"
+    "Bridge/parallel_runtime.c",
+    "Source/src/devices/virtio_net.c",
+    "Source/src/devices/virtio_9p.c",
+    "Source/src/net/usernet_core.c",
+    "Source/src/net/usernet_udp.c",
+    "Source/src/net/usernet_tcp.c"
   ],
   "capabilities": {
     "nativeJIT": false,
     "possibleVCPUs": 5,
     "liveMachines": 1,
-    "network": false,
-    "hostFileShares": false,
-    "terminalResize": false
+    "network": true,
+    "hostFileShares": true,
+    "terminalResize": true
   },
-  "integrationStatus": "component staged; production App remains on previous backend until guest services are integrated and validated",
+  "integrationStatus": "Device I/O component staged and all-object linked on iOS device/simulator and macOS; production App remains on previous backend. Live shares, network wake and per-channel backpressure still in progress.",
   "files": [
     {
       "path": "Bridge/MPL-2.0.txt",
@@ -60,11 +65,11 @@
     },
     {
       "path": "Bridge/console_channel.c",
-      "sha256": "23f4c181039787fda7a2e88fc027b159528f9386a903bcab15cf3952b33297b3"
+      "sha256": "b0c3bb580e37a922ca927db4b6e288a64f78b4a4fcc9e0552b70ea4d5270a3dd"
     },
     {
       "path": "Bridge/embedded_internal.h",
-      "sha256": "72ae631baf54ddb7cf3fe3fa4a289955607c1a5b8ae262c54bd35e79168fe9db"
+      "sha256": "470bb16ebfc2ef927d8a390f77dbc0995ae3c729d786304b39b4c979e1a8de87"
     },
     {
       "path": "Bridge/host_hooks.h",
@@ -76,11 +81,11 @@
     },
     {
       "path": "Bridge/ownership.c",
-      "sha256": "262c975f1a438790fbc0c2ba4ea13662580721fe98f222cf8f7cd08db5269d22"
+      "sha256": "7bb05e09cb98340793c5be4470dec5a53895c3c2f90d71bb8e478a000165162a"
     },
     {
       "path": "Bridge/parallel_runtime.c",
-      "sha256": "b2c60d80e8d876928b1cae003cf6730703fb6dd660114c294dc2c748605bacf3"
+      "sha256": "7e4b9072858c476c3e8ebbfa88ad1d162189cd61faebb9052e0d0cdc4abd0bc2"
     },
     {
       "path": "Bridge/parallel_runtime.h",
@@ -88,7 +93,7 @@
     },
     {
       "path": "Bridge/runtime.c",
-      "sha256": "c23926bc7baeed949a9f561522eacc2d001c63fd2bbbcb8d8712f19e9c5c3671"
+      "sha256": "b9578b7f8c2b2282d16a9b789a60ae7e95ba4054f9178ae899d936af917876fc"
     },
     {
       "path": "Source/LICENSE",
@@ -143,6 +148,14 @@
       "sha256": "be2c7b09a96a25f72b0cc91f9e26f2389970f3b51e150ecf8202b23f7bb83a35"
     },
     {
+      "path": "Source/src/devices/virtio_9p.c",
+      "sha256": "855b938476f4c79cd5372b4175841311b9249fdd263d7bf7dc4da97a3e39bdde"
+    },
+    {
+      "path": "Source/src/devices/virtio_9p_port.h",
+      "sha256": "3da08ba110b651b0467c06b3a70753e006d3ac5953069218e78fbd7eb3a74fd6"
+    },
+    {
       "path": "Source/src/devices/virtio_blk.c",
       "sha256": "df80b37aa9a9a5231eb9df24cb36ae025412921ded35b9d16c9b4198e49165f4"
     },
@@ -151,8 +164,12 @@
       "sha256": "787905a6a7b86b357fb47bd1d4a17c8d930baf0ee56155c38d3d9597bc9a3ce9"
     },
     {
+      "path": "Source/src/devices/virtio_net.c",
+      "sha256": "4f07265f95f8a68b8bddcd0c1d0b49282088fb3f2f0e2ea1228a59766a3eb993"
+    },
+    {
       "path": "Source/src/devices.h",
-      "sha256": "2e6e1eb65162f45fe151c59b9a54a82b6c8b9a3068fec370016310bd9bb104ae"
+      "sha256": "85174765cfb0f1869d473838b9e55e9946bcd49664ca124d3de0a9c9a9eb3b98"
     },
     {
       "path": "Source/src/esr.h",
@@ -196,7 +213,7 @@
     },
     {
       "path": "Source/src/machine.h",
-      "sha256": "47a5d20e2e2b15c3e9034e11a7cc65de1e8abcc077403c646fb54318ee50d7b5"
+      "sha256": "52a7fcd5d576a1f29a5efb31dc0a66f2acd0c412d7ed25ab08ff4a25d5be9ad0"
     },
     {
       "path": "Source/src/memory.c",
@@ -219,12 +236,32 @@
       "sha256": "6ad96e74943171ac73015f104261dd6cd7af51683f03ccd8b7b29e8d15b1b1d0"
     },
     {
+      "path": "Source/src/net/usernet.h",
+      "sha256": "5e5f17c19243190102a1198eed0570065cce2a4c41bdd029890d6574c8bf38cf"
+    },
+    {
+      "path": "Source/src/net/usernet_core.c",
+      "sha256": "a59b402032607decf9fde300a5bfb6f935f81632df833bf8a9fd52aff3e4fb24"
+    },
+    {
+      "path": "Source/src/net/usernet_priv.h",
+      "sha256": "a40e4aa67b64ec57e3ecd5378d6a09f136e5e22c0615db726a803075c63c3ee7"
+    },
+    {
+      "path": "Source/src/net/usernet_tcp.c",
+      "sha256": "2db484c6d377186b9e214db20f0032bdb6839fe29ce8889a0efd6b469d7fe8d4"
+    },
+    {
+      "path": "Source/src/net/usernet_udp.c",
+      "sha256": "ac60e8c52b593d47b1e139b022642f9bf8c0ef51ddd6a8d922db3183d6395b42"
+    },
+    {
       "path": "Source/src/parallel_iface.h",
       "sha256": "ad6d8c3a49dfe334b2bc78700e3a45447e5428fcc0dbf5c7d70b3b77a74b2930"
     },
     {
       "path": "Source/src/platform.c",
-      "sha256": "431d447b39fa280f48bfe7bb8605bb4f8b5883cdfcbfdeb4de7d5440232eeb63"
+      "sha256": "a9f403dd862c7d05a076ffa237eb5b62acdf11cf00f549df5619ca1176ace705"
     },
     {
       "path": "Source/src/sysreg.c",
@@ -343,8 +380,28 @@
       "sha256": "84ef8fc51a0a886145f59d635dbb392cfedd3e6ae260f26c18327d1cbd67b322"
     },
     {
+      "path": "Sources/25_virtio_net.c",
+      "sha256": "caf991bc79233a67c3df0fde250019af0440b278930c5cec3a2e3ee6be952cc5"
+    },
+    {
+      "path": "Sources/26_virtio_9p.c",
+      "sha256": "268e52d4aced58c1ba24a24f25c2098f8d19cc15afe32c177d8aac646dfb9ea1"
+    },
+    {
+      "path": "Sources/27_usernet_core.c",
+      "sha256": "f182d3f25f4c640049f98fb59ac2313654fe7d6ba8e63338ca9c2086faf712bc"
+    },
+    {
+      "path": "Sources/28_usernet_udp.c",
+      "sha256": "6d19eb5a978ab1256a075f9201486355df72e8ff21b06147ace71f8f3eb825ff"
+    },
+    {
+      "path": "Sources/29_usernet_tcp.c",
+      "sha256": "582c4caf256211936b4018516d158516b4c54763df90a49c15a368b8dc8ad1b1"
+    },
+    {
       "path": "include/floe_arm64emu.h",
-      "sha256": "10cd4b70064bdc3bba42c1b6e690e20fa32e6122ec641097d5cb6f9e8c76b317"
+      "sha256": "6a6c8db61fb8d36e4d5111096696f4d3623c8129605b8b2633ae0b01017dc9e1"
     }
   ],
   "patches": [
@@ -365,5 +422,24 @@
       ],
       "qualification": "Owner Mac A8b normal/TSan; selected A6+CRC Apple SDK object/link qualification recorded separately. No App or guest result implied."
     }
-  ]
+  ],
+  "capabilityMeaning": "Implemented C ABI surface; not a claim of real Linux or App runtime acceptance.",
+  "componentQualification": {
+    "translationUnits": 30,
+    "abiVersion": 2,
+    "abiExports": 18,
+    "targets": [
+      "arm64 iOS26 device",
+      "arm64 iOS26 simulator",
+      "arm64 macOS13"
+    ],
+    "nativeUnits": [
+      "9P wire portability",
+      "ABI contract",
+      "console direction and idempotent geometry",
+      "usernet DNS refusal with valid IP checksum"
+    ],
+    "realLinuxIO": false,
+    "productionAppBackendSwitched": false
+  }
 }

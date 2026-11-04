@@ -1,8 +1,25 @@
 /* SPDX-License-Identifier: MPL-2.0 */
+/* Multi-channel console endpoints for the embedded profile.
+ *
+ * Every guest console device speaks through a ConsoleEP naming one of the
+ * session's AEChannels. Channel 0 backs the PL011; each virtio-console gets
+ * its own channel (its own bounded input/output rings, its own geometry).
+ * The legacy floe_ae_console_read/write ABI targets channel 0; the version-2
+ * channel operations address any present channel by index.
+ *
+ * Geometry lives here: the ABI pushes cols/rows into a channel and sets its
+ * winch flag; virtio_console_poll() (already upstream logic) notices the
+ * change through console_take_winch()/console_get_winsize(), updates config
+ * space and raises the virtio config-change interrupt. No SIGWINCH, no host
+ * terminal, no inherited descriptors anywhere in this profile.
+ *
+ * Ring access is serialized on the session mutex: devices touch the rings
+ * from the machine coordinator, embedders from arbitrary host threads. */
 #include "embedded_internal.h"
 #include "parallel_runtime.h"
 #include <stdarg.h>
 #include <string.h>
+#include <stdlib.h>
 _Thread_local AESession *ae_current;
 size_t ae_ring_write(AERing *r,const void *data,size_t n) {
     if(n>r->cap-r->count)n=r->cap-r->count;
@@ -16,29 +33,56 @@ size_t ae_ring_read(AERing *r,void *data,size_t n) {
     r->head=(r->head+n)%r->cap;r->count-=n;return n;
 }
 void ae_signal_locked(AESession *s) { s->sequence++;pthread_cond_broadcast(&s->condition);ae_parallel_notify(s); }
+static AEChannel *ae_channel(AESession *s,uint32_t index) {
+    if(index>=AE_MAX_CHANNELS||!s->channels[index].present)return NULL;
+    return &s->channels[index];
+}
+/* There is no process terminal in the embedded profile: every console is on
+ * a native-owned channel endpoint, so the "shared stdio" endpoint and the
+ * inherited-fd endpoint are explicitly absent (NULL), never success stubs. */
 ConsoleEP *console_stdio(void) { return NULL; }
 ConsoleEP *console_open_fd(int a,int b) { (void)a;(void)b;return NULL; }
 void console_close(ConsoleEP *e) { (void)e; }
 bool console_is_stdio(const ConsoleEP *e) { (void)e;return false; }
 int console_getchar(ConsoleEP *e) {
-    if(!e)return -1;AESession *s=e->owner;unsigned char ch;
-    pthread_mutex_lock(&s->mutex);size_t n=ae_ring_read(&s->input,&ch,1);pthread_mutex_unlock(&s->mutex);
-    return n?ch:-1;
+    if(!e)return -1;AESession *s=e->owner;AEChannel *ch=ae_channel(s,e->channel);
+    if(!ch)return -1;unsigned char chb;
+    pthread_mutex_lock(&s->mutex);size_t n=ae_ring_read(&ch->input,&chb,1);pthread_mutex_unlock(&s->mutex);
+    return n?chb:-1;
 }
 void console_write(ConsoleEP *e,const void *data,size_t n) {
-    if(!e)return;AESession *s=e->owner;pthread_mutex_lock(&s->mutex);
-    size_t accepted=ae_ring_write(&s->output,data,n);
-    /* A valid PL011 slice reserves >2x its maximum output before each batch.
+    if(!e)return;AESession *s=e->owner;AEChannel *ch=ae_channel(s,e->channel);
+    if(!ch)return;pthread_mutex_lock(&s->mutex);
+    size_t accepted=ae_ring_write(&ch->output,data,n);
+    /* A valid slice reserves >2x its maximum output before each batch.
      * An unexpected backend overflow poisons instead of silently losing bytes. */
     if(accepted!=n)s->machine.host_error=FLOE_AE_FAULT;
     pthread_mutex_unlock(&s->mutex);
 }
 void console_putchar(ConsoleEP *e,int c) { unsigned char b=(unsigned char)c;console_write(e,&b,1); }
-void console_flush(ConsoleEP *e) { (void)e; }
+void console_flush(ConsoleEP *e) { (void)e; }  /* rings drain through the ABI */
 int console_poll_fd(const ConsoleEP *e) { (void)e;return -1; }
-void console_get_winsize(ConsoleEP *e,u16 *cols,u16 *rows) { (void)e;*cols=0;*rows=0; }
-void console_set_winsize(ConsoleEP *e,u16 cols,u16 rows) { (void)e;(void)cols;(void)rows; }
-bool console_take_winch(ConsoleEP *e) { (void)e;return false; }
+void console_get_winsize(ConsoleEP *e,u16 *cols,u16 *rows) {
+    if(!e){*cols=0;*rows=0;return;}AESession *s=e->owner;AEChannel *ch=ae_channel(s,e->channel);
+    if(!ch){*cols=0;*rows=0;return;}
+    pthread_mutex_lock(&s->mutex);*cols=ch->cols;*rows=ch->rows;pthread_mutex_unlock(&s->mutex);
+}
+void console_set_winsize(ConsoleEP *e,u16 cols,u16 rows) {
+    if(!e)return;AESession *s=e->owner;AEChannel *ch=ae_channel(s,e->channel);
+    if(!ch)return;
+    pthread_mutex_lock(&s->mutex);
+    if(ch->cols!=cols||ch->rows!=rows){ch->cols=cols;ch->rows=rows;ch->winch=true;}
+    pthread_mutex_unlock(&s->mutex);
+}
+bool console_take_winch(ConsoleEP *e) {
+    if(!e)return false;AESession *s=e->owner;AEChannel *ch=ae_channel(s,e->channel);
+    if(!ch)return false;
+    pthread_mutex_lock(&s->mutex);bool w=ch->winch;ch->winch=false;pthread_mutex_unlock(&s->mutex);
+    return w;
+}
+/* The inherited-fd control channel is not part of the embedded profile:
+ * terminal geometry is pushed through floe_ae_channel_set_winsize instead.
+ * These stay explicit absence stubs so the platform code paths never bind. */
 ConsoleCtrl *console_ctrl_open(int fd) { (void)fd;return NULL; }
 void console_ctrl_poll(ConsoleCtrl *c,ConsoleEP *u,ConsoleEP **v,int n) { (void)c;(void)u;(void)v;(void)n; }
 int console_ctrl_fd(const ConsoleCtrl *c) { (void)c;return -1; }

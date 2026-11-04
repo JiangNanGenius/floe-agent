@@ -152,6 +152,8 @@ typedef struct Machine {
                                    * its own needs no arbitration. */
     NetFwd net_fwds[16];          /* -netfwd rules */
     int    n_net_fwds;
+    uint32_t dns_server;          /* host-order IPv4 resolver relay target,
+                                   * 0 = probe the host resolver at runtime */
 
     u64 io_poll_due;              /* icount at which machine_tick next runs the
                                    * host-IO polls (UART/console read, net poll);

@@ -453,7 +453,7 @@ static AEParallelResult parallel_epoch(AESession *s,u64 max_ns,u64 max_insn,cons
         /* Sequence denotes the actual conditions observation, never a later
          * unserviced input/drain event. It is preserved on PARKED/FULL. */
         pthread_mutex_lock(&s->mutex);result.observed_sequence=s->sequence;
-        size_t room=s->output.cap-s->output.count;pthread_mutex_unlock(&s->mutex);
+        size_t room=s->channels[0].output.cap-s->channels[0].output.count;pthread_mutex_unlock(&s->mutex);
         m->io_poll_due=0;fn->tick(m);
         bool io_work=false;
         if(!defer_dma&&!atomic_load_explicit(&s->stop,memory_order_acquire)&&!m->host_error&&!m->system_off&&!m->system_reset){

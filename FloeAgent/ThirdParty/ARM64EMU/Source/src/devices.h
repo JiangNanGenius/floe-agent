@@ -108,13 +108,20 @@ struct VirtIONet;
 struct VirtIONet *virtio_net_create(Machine *m, GIC *gic);
 void              virtio_net_poll(struct VirtIONet *v);
 void              virtio_net_reset(struct VirtIONet *v);  /* system reset: quiesce queues */
+void              virtio_net_destroy(struct VirtIONet *v); /* full teardown after quiet */
+/* Opaque usernet backend handle for the live-management ABI operations. */
+struct UserNet;
+struct UserNet   *virtio_net_usernet(struct VirtIONet *);
 
 /* ---- virtio-9p host directory share (virtio-mmio slot N) ---- */
 /* Exports host directory `root` to the guest as a 9P2000.L filesystem named by
- * `tag`; `ro` makes it read-only. slot picks the MMIO window / IRQ as for blk. */
+ * `tag`; `ro` makes it read-only. slot picks the MMIO window / IRQ as for blk.
+ * Containment is pinned-descriptor based: create resolves `root` once and all
+ * host access stays on that root descriptor. */
 struct VirtIO9P;
 struct VirtIO9P *virtio_9p_create(Machine *m, GIC *gic, const char *root,
                                   const char *tag, bool ro, int slot);
+void             virtio_9p_destroy(struct VirtIO9P *);
 
 /* ---- virtio-console (virtio-mmio slot N) ---- */
 /* Non-multiport console (DeviceID 3) advertising VIRTIO_CONSOLE_F_SIZE: the

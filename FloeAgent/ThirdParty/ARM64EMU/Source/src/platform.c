@@ -49,7 +49,10 @@ static int place_board_dtb(Machine *m) {
 }
 
 int platform_build(Machine *m) {
-    if(m->net_enabled||m->n_shares||m->n_consoles_req)return -8;
+    /* Device restoration (network/NAT, contained 9P shares, virtio-consoles)
+     * is wired for the embedded profile: the backends are native-owned,
+     * create errors propagate through host_error, and every device has a
+     * matching destroy path. There is no "not available" gate here anymore. */
     if (!gic_create(m)) return -6;
     if (!gtimer_create(m)) return -6;
     if (!pl011_create(m,m->gic)) return -6;
@@ -79,14 +82,14 @@ int platform_build(Machine *m) {
                 m->n_drives, m->n_shares, m->n_consoles_req);
         return -1;
     }
-    if (m->net_enabled) virtio_net_create(m, m->gic);
+    if (m->net_enabled && !virtio_net_create(m, m->gic)) return -5;
     for (int i = 0; i < m->n_drives; i++)
         if (!virtio_blk_create(m,m->gic,m->drives[i].path,m->drives[i].ro,i+1)) return -5;  /* slots 1..n_drives */
     for (int i = 0; i < m->n_shares; i++)                    /* slots after disks  */
-        virtio_9p_create(m, m->gic, m->shares[i].path, m->shares[i].tag,
-                         m->shares[i].ro, m->n_drives + 1 + i);
+        if (!virtio_9p_create(m, m->gic, m->shares[i].path, m->shares[i].tag,
+                              m->shares[i].ro, m->n_drives + 1 + i)) return -5;
     for (int i = 0; i < m->n_consoles_req; i++)              /* slots after disks + shares */
-        virtio_console_create(m, m->gic, 1 + m->n_drives + m->n_shares + i);
+        if (!virtio_console_create(m, m->gic, 1 + m->n_drives + m->n_shares + i)) return -6;
     if (!m->net_enabled) machine_add_device(m, 0x0a000000, 0x200, virtio_mmio_read, stub_write, m, "virtio-mmio");
     /* Slot 1 (0x0a000200) is stubbed only when nothing real occupies it — no
      * disk, no share, and (when there are neither) no virtio-console either. */
@@ -152,6 +155,9 @@ void machine_tick(Machine *m) {
      * it has its own input stream and its own output buffer to drain, so poll
      * it unconditionally. */
     for (int i=0;i<m->n_vcon;i++) virtio_console_poll(m->vcon[i]);
+    /* Background-polled network backend: NAT timers, host sockets and any
+     * RX frames the guest's ring can take. Same cadence as the consoles. */
+    if (m->net) virtio_net_poll(m->net);
     if (m->uart) pl011_rx_poll(m);
 
 }
