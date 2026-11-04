@@ -128,4 +128,22 @@ class ConversationMediaWireTest {
         assertFalse(WorkspaceOpenPolicy.relativePathAdmitted("a".repeat(600)))
         assertFalse(WorkspaceOpenPolicy.relativePathAdmitted("a\u0000b.txt"))
     }
+    @org.junit.Test
+    fun markdownRelativeArtifactLinksResolveToOwnedPaths() {
+        org.junit.Assert.assertEquals("GeneratedMedia/clip.mp4",
+            WorkspaceOpenPolicy.messageRelativePath("GeneratedMedia/clip.mp4"))
+        org.junit.Assert.assertEquals("report.md", WorkspaceOpenPolicy.messageRelativePath("report.md"))
+        org.junit.Assert.assertEquals("GeneratedMedia/my clip.mp4",
+            WorkspaceOpenPolicy.messageRelativePath("GeneratedMedia/my%20clip.mp4"))
+    }
+
+    @org.junit.Test
+    fun markdownFileRouteRejectsWebOriginsAndDecodedTraversal() {
+        for (link in listOf("https://example.com/file.mp4", "//example.com/file.mp4",
+            "file:///etc/passwd", "javascript:alert(1)", "/etc/passwd", "../secret",
+            "GeneratedMedia/%2e%2e/secret", "%2fetc/passwd", "#section", "file.mp4?token=x")) {
+            org.junit.Assert.assertNull(link, WorkspaceOpenPolicy.messageRelativePath(link))
+        }
+    }
+
 }

@@ -132,6 +132,16 @@ internal object ConversationMediaWire {
 internal object WorkspaceOpenPolicy {
     private const val MAX_PATH_CHARS = 512
 
+    /** Markdown file links use the same task-owned open path as file cards.
+     * URI decoding happens once before the existing containment admission. */
+    fun messageRelativePath(link: String): String? {
+        if (link.length > 2_048) return null
+        val uri = runCatching { java.net.URI(link.trim()) }.getOrNull() ?: return null
+        if (uri.isAbsolute || uri.rawAuthority != null ||
+            uri.rawQuery != null || uri.rawFragment != null) return null
+        return uri.path?.takeIf(::relativePathAdmitted)
+    }
+
     fun relativePathAdmitted(relativePath: String): Boolean {
         if (relativePath.isBlank() || relativePath.length > MAX_PATH_CHARS) return false
         if (relativePath[0] == '/' || relativePath[0] == '\\' ||

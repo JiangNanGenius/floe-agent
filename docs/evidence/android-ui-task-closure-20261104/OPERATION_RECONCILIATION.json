@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "state": "Current generation/refresh/direct-preview source compiled and focused component/JVM checks passed; production native/APK/device delivery and publication pending",
+  "state": "code33 real retained-video download and status receipt verified; Markdown file dispatch gap fixed and compiled; code34 APK direct-open/playback pending",
   "reviewedSource": "2d83a051bfe2122e8f43185749dd92ac749abd61",
   "environmentOverlay": "8499e778e2b1bd7f08ee1a8b7e14ff7db6889c5a",
   "originalOperationCount": 183,
@@ -2077,7 +2077,7 @@
     "providerRoleRoundtrip": "Actual image/video readback passed in code29; same native code retained30",
     "providerRefresh": "Post-save old-provider-set cache race corrected code30;20focusedJVMpassed; actual original failure retained",
     "imageGeneration": "Original single image job expired/outcomeUnknown with provider dispatch/charge unconfirmed; no replay. Extra new1image/1K test awaits user answer.",
-    "videoGeneration": "Exactly one authorized PAYG video submitted; provider succeeded independently confirmed once. App code31 still running/no artifact; completed-state fix and retained-job refresh pass component checks; reuse same original job for new APK acceptance.",
+    "videoGeneration": "Original single PAYG video downloaded in code33 with real699075B receipt. One extra read-only Ark Plan status turn: actual card1video.status success,ready=true,hash and original handle confirmed. Playback/direct Markdown link pending code34; zero new generation.",
     "publication": "Not published"
   },
   "latestGenerationRegression": {
@@ -2103,30 +2103,44 @@
       "full release passed",
       "play release passed"
     ],
-    "appJvmMediaTests": 16
+    "appJvmMediaTests": 11,
+    "reusedAppPreviewPolicyTests": 7,
+    "previousNativeApkQualification": {
+      "versionCode": 33,
+      "passed": true,
+      "currentCode34Apk": "pending"
+    },
+    "specificVideoDelivery": {
+      "providerSucceeded": true,
+      "deviceDownloaded": true,
+      "realToolReceipt": true,
+      "playback": false,
+      "newGenerationSubmissions": 0,
+      "imageGenerationRetest": "pending authorization answer"
+    }
   },
   "newRuntimeGaps": [
     {
       "id": "GEN-READY-DELIVERY",
-      "state": "source-fixed-component-verified-device-pending",
+      "state": "device-delivery-verified",
       "evidence": "Single authorized video succeeded at provider; App later still returns running with advancing nextPoll and no artifact. Originaljob reused, no newsubmit.",
       "requirement": "Trace and fix true poll/delivery/storage root behavior, preserve unknown/owner/CAS/no-resubmit.",
       "cause": "Provider adapters emit completed; service previously only accepted ready and kept rewriting running.",
-      "verification": "34 component tests passed including completed artifact delivery, retained refresh, historical receipt rejection and legacy compatibility; Android final APK delivery pending."
+      "verification": "code33 original video downloaded, actual1video.status card succeeded with ready/terminated flags and699075B/SHA receipt. No resubmit; playback separately pending."
     },
     {
       "id": "CONVO-MEDIA-REFRESH",
-      "state": "source-connected-integration-device-pending",
+      "state": "device-verified",
       "source": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt:refreshMediaJobs",
       "requirement": "Connect current session/task/root to actual existing-job refresh; no fake success.",
-      "verification": "BridgeV28 and real retained-job refresh passed component checks; Full/Play and9 media-wire JVM tests passed; actual original video download pending new APK."
+      "verification": "Real on-demand refresh in original Samsung task delivered same accepted provider video into GeneratedMedia; no new generation."
     },
     {
       "id": "CONVO-WORKSPACE-LINK",
-      "state": "source-connected-integration-device-pending",
+      "state": "source-fixed-compiled-device-pending",
       "source": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt:openWorkspaceFile",
       "requirement": "Resolve authorized task artifact with existing full-screen viewer; modelrelativepaths do notgrant authority.",
-      "verification": "Existing typed full-window route connected; originating root/generation/session survive presentation and are checked at display. Full/Play compile and7 focused preview-policy JVM tests passed; device pending."
+      "verification": "code33 file callback/full-window consumer exists, but actual blue Markdown tap went to browser. New relative-URI dispatch now routes to existing owned viewer; Full/Play and11media tests passed. Same-message direct open pending code34."
     }
   ],
   "newGapBoundary": "These additional actual gaps do not reset183 historical IDs or imply every prior source-connected legacy entry passed deviceacceptance."

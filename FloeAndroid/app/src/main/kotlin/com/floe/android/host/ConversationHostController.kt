@@ -6171,8 +6171,11 @@ class ConversationHostController internal constructor(
         )
     }
 
-    override fun openMessageLink(session: ConversationSessionToken, urlString: String): Boolean =
-        host.openWebUrl(urlString)
+    override fun openMessageLink(session: ConversationSessionToken, urlString: String): Boolean {
+        val path = WorkspaceOpenPolicy.messageRelativePath(urlString)
+        return if (path != null) openWorkspaceFile(session, path)
+        else host.openWebUrl(urlString)
+    }
 
     override fun openRichArtifactPreview(
         session: ConversationSessionToken,
