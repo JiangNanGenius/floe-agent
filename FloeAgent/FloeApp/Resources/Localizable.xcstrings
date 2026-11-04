@@ -42911,13 +42911,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Component installed; guest stopped"
+            "value": "Ready · Not running"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "组件已安装；客户机已停止"
+            "value": "已就绪 · 未运行"
           }
         }
       }
@@ -42979,13 +42979,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Preparing Linux image storage…"
+            "value": "Preparing the runtime…"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在准备 Linux 镜像存储…"
+            "value": "正在准备运行环境…"
           }
         }
       }
@@ -43115,13 +43115,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Recovering interrupted template builds…"
+            "value": "Preparing the runtime…"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在恢复中断的模板构建…"
+            "value": "正在准备运行环境…"
           }
         }
       }
@@ -81897,13 +81897,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Linux runtime"
+            "value": "On-device runtime"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Linux 运行时"
+            "value": "本机运行环境"
           }
         }
       }
