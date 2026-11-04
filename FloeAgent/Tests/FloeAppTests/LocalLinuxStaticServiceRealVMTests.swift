@@ -11,6 +11,7 @@ import FloeExecution
 import FloeModels
 import FloePersistence
 import FloeTools
+import FloeSkills
 @testable import FloeApp
 
 @Suite("FloeApp.LocalLinuxStaticServiceRealVM", .serialized)
@@ -1350,6 +1351,13 @@ import FloeTools
             evidence["snapshotBytes"] = String(capture.snapshotBytes)
             retainEvidence("built-in-browser-click-and-real-capture-verified")
 
+            if ProcessInfo.processInfo.environment["FLOE_ARM64_IMPECCABLE_WORKFLOW"] == "1" {
+                try await qualifyARM64Impeccable(browser: browser, capture: capture,
+                    root: root, environmentID: id, evidenceRoot: captureEvidence)
+                evidence["impeccableWorkflow"] = "reviewed candidate context + native capture/facts + final identity assessment"
+                retainEvidence("impeccable-workflow-verified")
+            }
+
             // A consumer/observer owns polling only, not the service task.
             // This is intentionally not a SwiftUI/view-lifetime UI test.
             observer = Task { @MainActor in
@@ -1404,6 +1412,113 @@ import FloeTools
                 retainFailureEvidence()
                 Issue.record("Own service cleanup incomplete; retained qualification workspace: \(root.path)")
             }
+            throw error
+        }
+    }
+
+    // Qualification of exact reviewed candidate bytes, before publication.
+    // This does not claim an official Hub install or grant a dependency receipt.
+    private func qualifyARM64Impeccable(browser: BrowserTaskSession,
+        capture: ImpeccableCaptureTicket, root: URL, environmentID: String,
+        evidenceRoot: URL) async throws {
+        let fm = FileManager.default
+        let inputs = URL.applicationSupportDirectory.appendingPathComponent(
+            "FloeAgent/QualificationInputs/ARM64Impeccable", isDirectory: true)
+        let packageSHA = "1667517c22ea2e2288d6a807e3fe21605fa66390ace16ec46e9a4cb7d9e62bce"
+        let contentSHA = "92be953dcfde593e848f08158ce7b44470e56ce0ef9515c6ec7c159dc394d6be"
+        let engineSHA = "8221227bf0702fb6f50f9db0f36a7cc15a98bfe1fc1c46e6dc0b1b6d34523213"
+        let zip = try Data(contentsOf: inputs.appendingPathComponent("impeccable.zip"))
+        try #require(zip.count == 493_677 && FloeDigest.sha256Hex(zip) == packageSHA)
+        let package = try SkillPackageValidator().validate(packageAt: inputs.appendingPathComponent("skill"))
+        try #require(package.canonicalSHA256 == contentSHA)
+        let engine = try Data(contentsOf: inputs.appendingPathComponent("engine/floe-impeccable"))
+        try #require(engine.count == 6_003_320 && FloeDigest.sha256Hex(engine) == engineSHA)
+        try fm.copyItem(at: inputs.appendingPathComponent("skill"), to: root.appendingPathComponent("qa-skill"))
+        try fm.copyItem(at: inputs.appendingPathComponent("engine"), to: root.appendingPathComponent("qa-engine"))
+        try fm.setAttributes([.posixPermissions: 0o755],
+            ofItemAtPath: root.appendingPathComponent("qa-engine/floe-impeccable").path)
+        try Data("# Product\nFLOE_ARM64_QUALIFICATION synthetic browser page.\n".utf8)
+            .write(to: root.appendingPathComponent("PRODUCT.md"), options: .atomic)
+        let runner = try #require(FloePlatformServices.shared.linuxCommandRunner())
+        let resultDirectory = root.appendingPathComponent("qa-results", isDirectory: true)
+        try fm.createDirectory(at: resultDirectory, withIntermediateDirectories: true)
+        var receipt: [String: String] = ["kind": "reviewed-candidate-real-App-guest-workflow",
+            "packageSHA256": packageSHA, "contentDigest": contentSHA, "engineSHA256": engineSHA,
+            "environmentID": environmentID, "captureID": capture.captureID.uuidString,
+            "appVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
+            "appBuild": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""]
+        func retain(_ phase: String) throws {
+            receipt["phase"] = phase
+            try JSONEncoder().encode(receipt).write(to: evidenceRoot.appendingPathComponent("skill-workflow.json"), options: .atomic)
+            // Keep failed as well as successful rounds, before workspace cleanup.
+            let saved = evidenceRoot.appendingPathComponent("skill-results", isDirectory: true)
+            if fm.fileExists(atPath: saved.path) { try fm.removeItem(at: saved) }
+            try fm.copyItem(at: resultDirectory, to: saved)
+            print("FLOE_ARM64_IMPECCABLE phase=\(phase) evidence=\(evidenceRoot.path)")
+        }
+        func invoke(_ label: String, _ arguments: [String]) async throws -> LinuxCommandResult {
+            let result = try await runner.run(environmentID: environmentID,
+                argv: ["/usr/bin/env", "FLOE_IMPECCABLE_ENGINE=/workspace/qa-engine/floe-impeccable",
+                       "FLOE_IMPECCABLE_VERIFY_DIGEST=1", "/bin/sh",
+                       "/workspace/qa-skill/scripts/floe-impeccable.sh"] + arguments,
+                workingDirectory: "/workspace", standardInput: nil, timeout: 120,
+                maxOutputBytes: 65_536, cancellation: CancellationToken())
+            try Data(result.stdout.utf8).write(to: resultDirectory.appendingPathComponent(label + ".stdout"), options: .atomic)
+            try Data(result.stderr.utf8).write(to: resultDirectory.appendingPathComponent(label + ".stderr"), options: .atomic)
+            receipt[label + ".exit"] = String(result.exitCode)
+            try retain(label)
+            return result
+        }
+        do {
+            let context = try await invoke("context", ["context", "--target", "/workspace"])
+            try #require(context.exitCode == 0 && context.stdout.contains("FLOE_ARM64_QUALIFICATION"),
+                "Real reviewed context command must read the synthetic product file")
+            var facts: [String] = []
+            var final: ImpeccableResultAssessment?
+            for round in 1...3 {
+                let relativeOutput = "qa-results/round\(round).json"
+                var arguments = ["snapshot-scan", "--snapshot", "/workspace/" + capture.relativeSnapshotFile,
+                    "--identity", "/workspace/" + capture.relativeIdentityFile,
+                    "--out", "/workspace/" + relativeOutput, "--round", String(round)]
+                for file in facts { arguments += ["--facts", "/workspace/" + file] }
+                let result = try await invoke("scan\(round)", arguments)
+                let data = try Data(contentsOf: root.appendingPathComponent(relativeOutput))
+                let document = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+                receipt["round\(round).status"] = document["status"] as? String ?? ""
+                receipt["round\(round).verdict"] = document["verdict"] as? String ?? ""
+                try retain("scan\(round)-result-read")
+                if result.exitCode == 3 {
+                    try #require(document["status"] as? String == "needs-facts")
+                    let needs = try #require(document["needs"] as? [String: Any])
+                    let factURL = try await browser.impeccableCaptures.answerNeeds(captureID: capture.captureID,
+                        needsJSON: JSONSerialization.data(withJSONObject: needs))
+                    let prefix = root.path + "/"
+                    try #require(factURL.path.hasPrefix(prefix))
+                    let relative = String(factURL.path.dropFirst(prefix.count))
+                    facts.append(relative)
+                    try fm.copyItem(at: factURL, to: resultDirectory.appendingPathComponent("facts-round\(round).json"))
+                    try retain("native-facts\(round)")
+                } else {
+                    try #require(result.exitCode == 2 || result.exitCode == 4,
+                        "Frozen v1 coverage cannot certify a clean result")
+                    let assessed = await browser.impeccableCaptures.resultAssessment(captureID: capture.captureID, resultJSON: data)
+                    receipt["identityState"] = assessed.identityState
+                    receipt["findingCount"] = String(assessed.findingCount)
+                    receipt["uncoveredRequired"] = assessed.uncoveredRequired.joined(separator: ",")
+                    receipt["nativeExit"] = String(assessed.exit.rawValue)
+                    receipt["identityRejections"] = assessed.identityRejections.joined(separator: ";")
+                    try retain("native-result-assessed")
+                    try #require(assessed.identityState == "verified" && assessed.needsOutstanding == nil)
+                    try #require(assessed.exit == .findings || assessed.exit == .inconclusive)
+                    final = assessed
+                    break
+                }
+            }
+            try #require(final != nil && !facts.isEmpty, "Actual native facts loop must settle within the existing three-round contract")
+            try retain("workflow-passed")
+        } catch {
+            receipt["failure"] = String(describing: error)
+            try retain("workflow-failed")
             throw error
         }
     }

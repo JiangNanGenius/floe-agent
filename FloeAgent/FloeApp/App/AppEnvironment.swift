@@ -919,7 +919,10 @@ final class AppEnvironment: ObservableObject {
         let environmentRegistry = EnvironmentRegistry(
             baseRevision: FloePlatformServices.environmentBaseRevision,
             compatibleBaseRevisions: [],
-            retiredLinuxBaseRevisions: ["ios-v1-cpython313-node18204-wasi1"]
+            retiredLinuxBaseRevisions: ["ios-v1-cpython313-node18204-wasi1"],
+            managedPrivateTasksRoot: (try? FileManager.default.url(for: .applicationSupportDirectory,
+                in: .userDomainMask, appropriateFor: nil, create: false))?
+                .appendingPathComponent("FloeAgent/PrivateTasks", isDirectory: true)
         )
         self.environmentRegistry = environmentRegistry
         let containerCAS = ContainerCAS(roots: environmentRoots)

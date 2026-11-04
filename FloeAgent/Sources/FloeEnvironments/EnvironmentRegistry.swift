@@ -20,6 +20,7 @@ public actor EnvironmentRegistry {
 
     private let compatibleBaseRevisions: Set<String>
     private let retiredLinuxBaseRevisions: Set<String>
+    private let managedPrivateTasksRoot: URL?
     private let roots: EnvironmentRoots
     private let fileManager = FileManager.default
     private var records: [String: ContainerRecord] = [:]
@@ -37,12 +38,14 @@ public actor EnvironmentRegistry {
         baseRevision: String,
         compatibleBaseRevisions: Set<String> = [],
         retiredLinuxBaseRevisions: Set<String> = [],
+        managedPrivateTasksRoot: URL? = nil,
         defaultExecutionBackend: EnvironmentExecutionBackend = .linuxVM
     ) {
         self.roots = roots
         self.baseRevision = baseRevision
         self.compatibleBaseRevisions = compatibleBaseRevisions
         self.retiredLinuxBaseRevisions = retiredLinuxBaseRevisions
+        self.managedPrivateTasksRoot = managedPrivateTasksRoot?.resolvingSymlinksInPath().standardizedFileURL
         self.defaultExecutionBackend = defaultExecutionBackend
     }
 
@@ -355,6 +358,20 @@ public actor EnvironmentRegistry {
             }
             touch(existing.id)
             return records[existing.id] ?? existing
+        }
+        let canonicalWorkspace = URL(fileURLWithPath: workspaceRootPath).resolvingSymlinksInPath().standardizedFileURL
+        if let managedPrivateTasksRoot,
+           canonicalWorkspace.deletingLastPathComponent().path == managedPrivateTasksRoot.path,
+           UUID(uuidString: canonicalWorkspace.lastPathComponent) != nil {
+            let mapping = try workspaceMappings()
+            if let relocated = records.values.first(where: {
+                $0.kind == .project && $0.name == canonicalWorkspace.lastPathComponent
+                    && $0.effectiveExecutionBackend == (executionBackend ?? defaultExecutionBackend)
+                    && workspaceRootFromLoadedRecords(for: $0.id, mapping: mapping)?.path == canonicalWorkspace.path
+            }) {
+                touch(relocated.id)
+                return records[relocated.id] ?? relocated
+            }
         }
         let template = templateID.flatMap { records[$0] }
         let templateBackend = template?.executionBackend
@@ -1076,7 +1093,35 @@ public actor EnvironmentRegistry {
               let path = entry["path"] else { return nil }
         let root = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
         guard FloeDigest.sha256Hex(Data(root.path.utf8)) == owner else { return nil }
+        // iOS may relocate the complete App data container during an update.
+        // Keep the environment identity and resolve only the same UUID-named
+        // private task under a root supplied by native App assembly. External
+        // folders and model-provided paths never establish this authority.
+        if let managedPrivateTasksRoot,
+           let relocated = relocatedPrivateTaskRoot(root, projectName: project.name, under: managedPrivateTasksRoot) {
+            return relocated
+        }
         return root
+    }
+
+    private func relocatedPrivateTaskRoot(_ original: URL, projectName: String?, under root: URL) -> URL? {
+        let taskID = original.lastPathComponent
+        guard UUID(uuidString: taskID) != nil, projectName == taskID,
+              original.deletingLastPathComponent().lastPathComponent == "PrivateTasks" else { return nil }
+        let artifact = original.deletingLastPathComponent().deletingLastPathComponent()
+        guard artifact.lastPathComponent == "FloeAgent",
+              artifact.deletingLastPathComponent().lastPathComponent == "Application Support",
+              artifact.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent == "Library" else { return nil }
+        let container = artifact.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        guard UUID(uuidString: container.lastPathComponent) != nil,
+              container.deletingLastPathComponent().lastPathComponent == "Application",
+              container.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent == "Data",
+              container.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().lastPathComponent == "Containers" else { return nil }
+        let candidate = root.appendingPathComponent(taskID, isDirectory: true)
+        guard let values = try? candidate.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+              values.isDirectory == true, values.isSymbolicLink != true,
+              candidate.resolvingSymlinksInPath().deletingLastPathComponent().standardizedFileURL.path == root.path else { return nil }
+        return candidate.standardizedFileURL
     }
 
     private func rememberWorkspaceRoot(workspaceID: String, path: String, containerID: String) {

@@ -40,7 +40,10 @@ public actor EnvironmentExecutionCoordinator {
                     throw FloeError.validationFailed("Environment belongs to another conversation")
                 }
             } else if selected.ownerID != workspaceID {
-                throw FloeError.validationFailed("Environment belongs to another workspace")
+                let registered = try await registry.workspaceRoot(for: selected.id)
+                guard registered?.path == workspace.resolvingSymlinksInPath().standardizedFileURL.path else {
+                    throw FloeError.validationFailed("Environment belongs to another workspace")
+                }
             }
             record = selected
         } else {

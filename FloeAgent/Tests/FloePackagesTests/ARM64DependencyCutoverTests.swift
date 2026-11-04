@@ -3,6 +3,7 @@ import Testing
 import FloeCore
 import FloeEnvironments
 import FloeExecution
+import FloeTools
 
 @Suite(.serialized)
 struct ARM64DependencyCutoverTests {
@@ -80,4 +81,57 @@ struct ARM64DependencyCutoverTests {
         #expect(root.lastPathComponent == "arm64-v1")
         #expect(root.deletingLastPathComponent().lastPathComponent == "Runtime")
     }
+    @Test func relocatedPrivateTaskKeepsItsEnvironmentAndRejectsAnotherTask() async throws {
+        let (root, roots, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let taskID = UUID()
+        let oldContainer = root.appendingPathComponent("Containers/Data/Application/" + UUID().uuidString)
+        let oldTask = oldContainer.appendingPathComponent("Library/Application Support/FloeAgent/PrivateTasks/" + taskID.uuidString)
+        try FileManager.default.createDirectory(at: oldTask, withIntermediateDirectories: true)
+        let original = EnvironmentRegistry(roots: roots, baseRevision: "arm64")
+        let oldOwner = FloeDigest.sha256Hex(Data(oldTask.resolvingSymlinksInPath().standardizedFileURL.path.utf8))
+        let project = try await original.ensureProjectContainer(workspaceID: oldOwner, workspaceRootPath: oldTask.path)
+        try Data("retained file".utf8).write(to: oldTask.appendingPathComponent("keep.txt"))
+        let managed = root.appendingPathComponent("new-app/PrivateTasks")
+        try FileManager.default.createDirectory(at: managed, withIntermediateDirectories: true)
+        let moved = managed.appendingPathComponent(taskID.uuidString)
+        try FileManager.default.moveItem(at: oldTask, to: moved)
+        let current = EnvironmentRegistry(roots: roots, baseRevision: "arm64", managedPrivateTasksRoot: managed)
+        try await current.prepare()
+        #expect(try await current.workspaceRoot(for: project.id)?.path == moved.path)
+        let reused = try await current.ensureProjectContainer(
+            workspaceID: FloeDigest.sha256Hex(Data(moved.path.utf8)), workspaceRootPath: moved.path)
+        #expect(reused.id == project.id)
+        let coordinator = EnvironmentExecutionCoordinator(roots: roots, registry: current)
+        let lease = try await coordinator.acquire(ToolContext(runID: UUID(), workspaceRootURL: moved,
+            cancellation: CancellationToken(), environmentID: project.id, conversationID: taskID))
+        #expect(lease.context.environment?.id == project.id)
+        await lease.finish()
+        let other = managed.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        do {
+            let wrong = try await coordinator.acquire(ToolContext(runID: UUID(), workspaceRootURL: other,
+                cancellation: CancellationToken(), environmentID: project.id, conversationID: taskID))
+            await wrong.finish()
+            Issue.record("Relocation must not authorize another task root")
+        } catch { #expect(error.localizedDescription.contains("another workspace")) }
+        #expect(try Data(contentsOf: moved.appendingPathComponent("keep.txt")) == Data("retained file".utf8))
+    }
+
+    @Test func externalFolderNamedPrivateTasksIsNotReinterpreted() async throws {
+        let (root, roots, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let taskID = UUID().uuidString
+        let external = root.appendingPathComponent("external/PrivateTasks/" + taskID)
+        let managed = root.appendingPathComponent("current/PrivateTasks")
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: managed.appendingPathComponent(taskID), withIntermediateDirectories: true)
+        let old = EnvironmentRegistry(roots: roots, baseRevision: "arm64")
+        let record = try await old.ensureProjectContainer(
+            workspaceID: FloeDigest.sha256Hex(Data(external.path.utf8)), workspaceRootPath: external.path)
+        let current = EnvironmentRegistry(roots: roots, baseRevision: "arm64", managedPrivateTasksRoot: managed)
+        try await current.prepare()
+        #expect(try await current.workspaceRoot(for: record.id)?.path == external.path)
+    }
+
 }
