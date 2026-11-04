@@ -24,6 +24,8 @@
 </p>
 <p align="center">
   <a href="https://github.com/JiangNanGenius/floe-agent/releases"><strong>下载发布版本</strong></a>
+  &nbsp;·&nbsp;
+  <a href="https://www.floe-agent.com/?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=beta_readme_zh#beta"><strong>前往官网申请 TestFlight</strong></a>
 </p>
 
 <details>

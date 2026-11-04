@@ -24,6 +24,8 @@ Choose an installation channel on the [website](https://www.floe-agent.com/en?ut
 </p>
 <p align="center">
   <a href="https://github.com/JiangNanGenius/floe-agent/releases"><strong>Download releases</strong></a>
+  &nbsp;·&nbsp;
+  <a href="https://www.floe-agent.com/en?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=beta_readme_en#beta"><strong>Apply for TestFlight on the website</strong></a>
 </p>
 
 <details>
