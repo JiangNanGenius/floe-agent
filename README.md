@@ -3,7 +3,7 @@
   <h1>Floe Agent</h1>
   <p><strong>Your models. Your files. Your machines.</strong></p>
   <p>Floe Agent is an open-source on-device AI agent workspace for iOS and Android — iPad-first, with native iPhone support and a separate Android alpha. Bring AI tasks, Notes, Office documents, creative tools, development, voice conversations and skills together — with a real Linux environment on your device that runs code, packages and services, supported local models for on-device inference, and cloud AI using your own API keys (BYOK).</p>
-  <p><a href="README.zh-CN.md">简体中文</a> · <a href="https://www.floe-agent.com/en?utm_source=github&utm_medium=referral&utm_campaign=readme_en">Website</a> · <a href="https://www.floe-agent.com/en?utm_source=github&utm_medium=referral&utm_campaign=beta_readme_en#beta">Apply for iOS beta</a> · <a href="docs/USER_GUIDE.md">User manual</a> · <a href="docs/README.md">Documentation</a></p>
+  <p><a href="README.zh-CN.md">简体中文</a> · <a href="https://www.floe-agent.com/en?utm_source=github&utm_medium=referral&utm_campaign=readme_en">Website</a> · <a href="https://www.floe-agent.com/en?utm_source=github&utm_medium=referral&utm_campaign=beta_readme_en#beta">Apply for iOS beta</a> · <a href="docs/USER_GUIDE.md">User manual</a> · <a href="docs/README.md">Documentation</a> · <a href="docs/DISCLAIMER.md">Disclaimer</a></p>
 </div>
 
 [![Release](https://img.shields.io/github/v/release/JiangNanGenius/floe-agent?include_prereleases&label=release)](https://github.com/JiangNanGenius/floe-agent/releases)

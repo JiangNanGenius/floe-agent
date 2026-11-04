@@ -3,7 +3,7 @@
   <h1>Floe Agent</h1>
   <p><strong>你的模型，你的文件，你的电脑。</strong></p>
   <p>Floe Agent 是面向 iOS 和 Android 的开源设备端 AI 智能体工作空间，以 iPad 体验为先，原生支持 iPhone，并提供独立 Android Alpha 版本。把 AI 任务、手记、Office 文档、创作、开发、语音对话与技能放进同一处——设备端 Linux 环境可直接运行代码、软件包与网页服务，支持的本地模型可在设备端完成推理，云端 AI 使用你自己准备的 API Key（BYOK）。</p>
-  <p><a href="README.md">English</a> · <a href="https://www.floe-agent.com/?utm_source=github&utm_medium=referral&utm_campaign=readme_zh">官网</a> · <a href="https://www.floe-agent.com/?utm_source=github&utm_medium=referral&utm_campaign=beta_readme_zh#beta">申请 iOS 内测</a> · <a href="docs/USER_GUIDE.zh-CN.md">使用手册</a> · <a href="docs/README.md">文档中心</a></p>
+  <p><a href="README.md">English</a> · <a href="https://www.floe-agent.com/?utm_source=github&utm_medium=referral&utm_campaign=readme_zh">官网</a> · <a href="https://www.floe-agent.com/?utm_source=github&utm_medium=referral&utm_campaign=beta_readme_zh#beta">申请 iOS 内测</a> · <a href="docs/USER_GUIDE.zh-CN.md">使用手册</a> · <a href="docs/README.md">文档中心</a> · <a href="docs/DISCLAIMER.zh-CN.md">免责声明</a></p>
 </div>
 
 [![Release](https://img.shields.io/github/v/release/JiangNanGenius/floe-agent?include_prereleases&label=release)](https://github.com/JiangNanGenius/floe-agent/releases)
