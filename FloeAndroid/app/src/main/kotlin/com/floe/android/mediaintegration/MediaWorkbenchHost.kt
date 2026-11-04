@@ -2,6 +2,7 @@
 package com.floe.android.mediaintegration
 
 import android.content.Context
+import android.util.Log
 import com.floe.android.core.workbenchmedia.MAX_RECOVERED_EXPORT_LIST
 import com.floe.android.core.workbenchmedia.WorkbenchMediaSession
 import com.floe.android.feature.canvas.CreativeException
@@ -181,7 +182,18 @@ internal class MediaWorkbenchHost(
                 // never an unbounded scan (no clamp of an authority decision).
                 val bounded = limit.coerceIn(1, MAX_RECOVERED_EXPORT_LIST)
                 withContext(Dispatchers.IO) {
-                    val statuses = session.listRecoveredExports(context, bounded)
+                    val statuses = try {
+                        session.listRecoveredExports(context, bounded)
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        val code = when (failure) {
+                            is CreativeException -> failure.code
+                            else -> failure.javaClass.simpleName
+                        }
+                        Log.w("MediaWorkbenchRecovery", "Recovery failed: $code")
+                        throw failure
+                    }
                     // Capture each verified receipt against the exact context
                     // that the native journal just authorized. Recovered
                     // receipts stay Save/Share-able after a project reopen.

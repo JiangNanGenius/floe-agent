@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.mediaintegration
 
+import android.util.Log
+
 import com.floe.android.core.workbenchmedia.AuthorityDecision
 import com.floe.android.core.workbenchmedia.AuthorityGrant
 import com.floe.android.core.workbenchmedia.MediaLifecycleKind
@@ -89,6 +91,7 @@ internal class MediaWorkbenchRecoveryAuthority(
     } catch (cancelled: kotlinx.coroutines.CancellationException) {
         throw cancelled
     } catch (error: CreativeException) {
+        Log.w("MediaWorkbenchRecovery", "Root refused: ${error.code} ${error.reason}")
         RecoveryRootDecision.Refused(error.code, error.reason ?: error.code, error.retryable)
     } catch (_: Throwable) {
         RecoveryRootDecision.Refused(

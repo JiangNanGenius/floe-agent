@@ -271,8 +271,7 @@ public actor G09R2MediaFoundation {
             ownerReference: G09CreativeAssetHost.sessionDigest(
                 request.context.sessionToken),
             createdAt: createdAt,
-            expiresAt: createdAt.addingTimeInterval(
-                G09R2SnapshotLeases.lifetimeSeconds),
+            expiresAt: G09R2SnapshotLeases.expiration(createdAt: createdAt),
             pinnedAssets: pinned)
         do {
             try G09R2SnapshotLeases.shared.insert(record, snapshotURL: target)

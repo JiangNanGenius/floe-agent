@@ -44,6 +44,14 @@ public final class G09R2SnapshotLeases: @unchecked Sendable {
 
     /// Bounded lease lifetime; a ticket may not outlive it.
     public static let lifetimeSeconds: TimeInterval = 15 * 60
+
+    /// The bridge's ISO-8601 dates have whole-second precision. Canonicalize
+    /// before recording authority so its exact expiry survives a wire roundtrip.
+    /// Rounding down never extends the bounded lease lifetime.
+    public static func expiration(createdAt: Date) -> Date {
+        Date(timeIntervalSince1970:
+            (createdAt.timeIntervalSince1970 + lifetimeSeconds).rounded(.down))
+    }
     public static let maximumLeases = 16
 
     private struct Entry {
