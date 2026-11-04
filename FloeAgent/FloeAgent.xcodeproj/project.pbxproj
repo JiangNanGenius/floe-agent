@@ -975,6 +975,7 @@
 		B69E27351929CB12D7CAF7F5 /* CADSpecialistEntrySmokeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3D22FA2AC89DF4C8A1A7C47 /* CADSpecialistEntrySmokeUITests.swift */; };
 		B6A8E8EF99A3CF38AB4684FF /* WorkspaceFileRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CA0C2CAAB89E1162F2821B5 /* WorkspaceFileRouter.swift */; };
 		B6F675C24C4FF8F63CF5E47C /* PersonalToolPaginationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D301C9E553B01FBCAFE3F98 /* PersonalToolPaginationTests.swift */; };
+		B7089744E412405BD7190FD6 /* SkillGitHubDownloadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 058B4257AB61821D154E48F0 /* SkillGitHubDownloadTests.swift */; };
 		B7663C049754E27F2A652BD5 /* IDEGitHubActionsPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B91CD5A983CE9340539D00A0 /* IDEGitHubActionsPolicy.swift */; };
 		B7969DA5F6FF2DA334151D0F /* ProviderServiceOfferPromptStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD3FD16924A54CC0C6F5AE38 /* ProviderServiceOfferPromptStore.swift */; };
 		B7F0F74C8489B7A55A332D31 /* BrowserImpeccableProducer.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED3BF697D18546CF27232342 /* BrowserImpeccableProducer.swift */; };
@@ -1473,6 +1474,7 @@
 		052BCAFDA11A9580401AA692 /* FoundationPrimitivesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoundationPrimitivesTests.swift; sourceTree = "<group>"; };
 		05308E8930F4B27808A3CEB2 /* CADSketchEntityEditingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADSketchEntityEditingTests.swift; sourceTree = "<group>"; };
 		056D48997010E93B1EA2BD84 /* IDELanguageRunPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IDELanguageRunPolicy.swift; sourceTree = "<group>"; };
+		058B4257AB61821D154E48F0 /* SkillGitHubDownloadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillGitHubDownloadTests.swift; sourceTree = "<group>"; };
 		05AC8D7D5BBFE2B1EBC303DB /* PiPAmbientMeditation.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = PiPAmbientMeditation.wav; sourceTree = "<group>"; };
 		05CD3FCDF6CC1F08B06B9119 /* DiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffView.swift; sourceTree = "<group>"; };
 		05F5CCEB4F6F572ECFBBF480 /* PluginUpdatePermissionPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginUpdatePermissionPersistenceTests.swift; sourceTree = "<group>"; };
@@ -3575,6 +3577,7 @@
 				4AEA9BFEA4BB48349F0F6A8C /* SkillAuthoringPackageTests.swift */,
 				9FFADE785CAAE02620042320 /* SkillDependencyGuestQualificationTests.swift */,
 				765EA911CA0A8A2DD55660F9 /* SkillDependencyPreparationTests.swift */,
+				058B4257AB61821D154E48F0 /* SkillGitHubDownloadTests.swift */,
 				4F52D97F5D9E03E5EE45DA63 /* SkillHubMediaTests.swift */,
 				5ABA13D446559FEB1FB0754F /* SkillHubPublicTransportTests.swift */,
 				664CC843DF66F4FFD04F43B4 /* SkillHubStoreFlowTests.swift */,
@@ -6510,6 +6513,7 @@
 				C3FBF1E304F1EFDB0A6288F3 /* SkillDependencyGuestQualificationTests.swift in Sources */,
 				78DAD1CF36BCF4D29B0B1DA6 /* SkillDependencyPreparationTests.swift in Sources */,
 				BD0889BAF700D072DD2CFF97 /* SkillDependencyTests.swift in Sources */,
+				B7089744E412405BD7190FD6 /* SkillGitHubDownloadTests.swift in Sources */,
 				057E6C9A3CA8198ED0AE9027 /* SkillHubMediaTests.swift in Sources */,
 				8660BDE92422ABD529E3E20E /* SkillHubPublicTransportTests.swift in Sources */,
 				556CF61C3080CF4FE10E8915 /* SkillHubShowcaseTests.swift in Sources */,
