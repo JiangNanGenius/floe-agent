@@ -21,6 +21,7 @@ public actor MacBridgeClient {
     private var key: Curve25519.Signing.PrivateKey?
     private var serverKey: Data?
     private var trustGeneration = UUID()
+    private var identityRestored = false
     public static let availabilityDidChange = Notification.Name("org.floeagent.macBridge.availabilityDidChange")
     private var connected = false {
         didSet {
@@ -41,22 +42,39 @@ public actor MacBridgeClient {
         session = URLSession(configuration: config, delegate: MacBridgeSessionDelegate(), delegateQueue: nil)
     }
     public func bootstrap() async throws {
+        try restorePairingIdentity()
+        guard serverKey != nil else { connected = false; return }
+        _ = try await call("ping")
+    }
+    /// Restore saved trust without a network request or an implicit new key.
+    /// Target selection must distinguish a saved offline Mac from no pairing.
+    public func restoredPairing() throws -> Bool {
+        try restorePairingIdentity()
+        return serverKey != nil
+    }
+    private func restorePairingIdentity() throws {
         try requireSupportedPlatform()
-        key = try BridgeKeychain.signingKey(service: keychainService)
+        guard !identityRestored else { return }
         let savedKey = try BridgeKeychain.read(service: keychainService, account: "server-public-key-v1")
         if savedKey != serverKey { trustGeneration = UUID() }
         serverKey = savedKey
+        if let savedKey {
+            _ = try Curve25519.Signing.PublicKey(rawRepresentation: savedKey)
+            guard let identity = try BridgeKeychain.read(service: keychainService, account: "identity-v1") else {
+                throw BridgeFailure.authentication
+            }
+            key = try Curve25519.Signing.PrivateKey(rawRepresentation: identity)
+        }
         if let url = try? baselineURL(), let data = try? Data(contentsOf: url) {
             baseline = (try? BridgeWire.decode([String: [String: String]].self, from: data)) ?? [:]
         }
-        guard serverKey != nil else { connected = false; return }
-        _ = try await call("ping")
+        identityRestored = true
     }
     public func isConnected() -> Bool { LocalBridgePlatform.current.supportsMacBridge && connected && serverKey != nil }
     public func hasPairing() -> Bool { LocalBridgePlatform.current.supportsMacBridge && serverKey != nil }
     public func beginPairing(name: String = "Floe") async throws -> Bool {
         try Task.checkCancellation()
-        try requireSupportedPlatform()
+        try restorePairingIdentity()
         if key == nil { key = try BridgeKeychain.signingKey(service: keychainService) }
         if serverKey != nil {
             // Existing trust is never replaced by an unpinned response.
@@ -93,7 +111,8 @@ public actor MacBridgeClient {
         trustGeneration = UUID()
         if revoke, serverKey != nil { _ = try await call("revoke") }
         try BridgeKeychain.remove(service: keychainService, account: "server-public-key-v1")
-        trustGeneration = UUID(); serverKey = nil; pairing.cancel(); connected = false
+        trustGeneration = UUID(); serverKey = nil; identityRestored = true
+        pairing.cancel(); connected = false
     }
     public func call(_ method: String, _ payload: [String: BridgeValue] = [:]) async throws -> [String: BridgeValue] {
         try requireSupportedPlatform()

@@ -195,7 +195,7 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
                 } else if case .host(let id) = environment.settingsCenter.execution.target {
                     preferred = Choice(id: id.uuidString, name: "", kind: .ssh(id))
                 } else if MacBridgeConnectionCenter.isMac, MacBridgeRoutingPreferences.preferMacForNewTasks,
-                          await MacBridgeClient.shared.hasPairing() {
+                          try await MacBridgeClient.shared.restoredPairing() {
                     preferred = Choice(id: "mac", name: "", kind: .mac)
                 } else { preferred = Choice(id: "local", name: "", kind: .linux) }
                 target = try await prepareTarget(preferred, conversationID: conversationID, root: root, fresh: false)
@@ -252,6 +252,10 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
         case .mac:
             guard LocalBridgePlatform.current.supportsMacBridge else {
                 throw FloeError.invalidConfiguration(String(localized: "execution.location.unavailable_on_device"))
+            }
+            do { try await MacBridgeClient.shared.bootstrap() }
+            catch {
+                throw TaskExecutionAvailabilityError(message: copy("请重新连接这台 Mac 后继续，也可选择备用运行环境。", "Reconnect this Mac to continue, or choose the backup environment."))
             }
             guard await MacBridgeClient.shared.isConnected() else { throw TaskExecutionAvailabilityError(message: copy("请先连接这台 Mac。", "Connect this Mac first.")) }
             record = try await registry.ensureMacBridgeSessionContainer(conversationID: conversationID.uuidString,
