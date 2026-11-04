@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "state": "code33 real retained-video download and status receipt verified; Markdown file dispatch gap fixed and compiled; code34 APK direct-open/playback pending",
+  "state": "Alpha25code44 published and anonymous5assetbytes/source/feed/latest verified; C08full183reconciliation stillopen",
   "reviewedSource": "2d83a051bfe2122e8f43185749dd92ac749abd61",
   "environmentOverlay": "8499e778e2b1bd7f08ee1a8b7e14ff7db6889c5a",
   "originalOperationCount": 183,
@@ -2064,7 +2064,7 @@
   "newObservedDefects": [
     {
       "id": "PROVIDER-PURPOSE-ROUNDTRIP",
-      "status": "Code repair active; image/video submissions remain0",
+      "status": "device-verified-code29; unchangedproofreused",
       "observed": "Image provider saved then reopened with Conversation purpose; original chat configuration preserved; new QA provider disabled pending fix."
     }
   ],
@@ -2072,13 +2072,16 @@
     "Dedicated Notes reading screen parity; current paginated editor remains readable",
     "Further iOS visual/material polish and hardware-specific feedback"
   ],
-  "currentSource": "e386206a9ac15806fa56cab5812572e2631f30b3",
+  "currentSource": "41c42d7f1fa4761461a36a443bea9ef6916fbd0e",
   "currentAcceptance": {
     "providerRoleRoundtrip": "Actual image/video readback passed in code29; same native code retained30",
     "providerRefresh": "Post-save old-provider-set cache race corrected code30;20focusedJVMpassed; actual original failure retained",
     "imageGeneration": "Original single image job expired/outcomeUnknown with provider dispatch/charge unconfirmed; no replay. Extra new1image/1K test awaits user answer.",
-    "videoGeneration": "Original single PAYG video downloaded in code33 with real699075B receipt. One extra read-only Ark Plan status turn: actual card1video.status success,ready=true,hash and original handle confirmed. Playback/direct Markdown link pending code34; zero new generation.",
-    "publication": "Not published"
+    "videoGeneration": "Same originalPAYGvideo delivered; realplay/pause/restart/frame and localexport/gallery/full-decode verified; no newgeneration",
+    "publication": "PublishedAndroidAlpha25prerelease/code44; fivepublicbytes match; iOSLatestv1.7.69 retained",
+    "finalArtifact": "Full44 exact installedMain/runtime hashes and retainedoldtask verified; nofunctionalchange fromqualified43",
+    "tablet": "API37/16KiB: settingssplit/secondaryreturn/fullscreenUnicodeDOCX verified; close recoveryprompt remainsopen",
+    "update": "Finalpublic22to44 producerroundtrip passed; actualFull44 compiled discovery/delta policy accepts publicfeed+matchingbase and rejectswrongbase; prior deviceinstaller evidence reused"
   },
   "latestGenerationRegression": {
     "scope": "Mac component, real service/store/migrations and worker registry; injected provider transport, unexercised Android native defaults",
@@ -2137,10 +2140,24 @@
     },
     {
       "id": "CONVO-WORKSPACE-LINK",
-      "state": "source-fixed-compiled-device-pending",
+      "state": "device-verified",
       "source": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt:openWorkspaceFile",
       "requirement": "Resolve authorized task artifact with existing full-screen viewer; modelrelativepaths do notgrant authority.",
-      "verification": "code33 file callback/full-window consumer exists, but actual blue Markdown tap went to browser. New relative-URI dispatch now routes to existing owned viewer; Full/Play and11media tests passed. Same-message direct open pending code34."
+      "verification": "OriginalSamsungvideoMarkdownlink opensownedfull-windoweditor; close returnsoriginalconversation; samepublished44oldtask retained"
+    },
+    {
+      "id": "MEDIA-LOCAL-PLAYBACK",
+      "state": "device-verified",
+      "evidence": "With matchingApp/runtime34andrealLinuxPTYoutput/exit0, original4sclipdirectopensfull-windowbutPlaystill00:00andPlayafter2.28s;selectedclipalsofails2.35s. OriginalfileSHAindependentlymatchesinguestruntime. Exportsettingsopenedonlyshowrequestunconfirmed,notanexportattempt.",
+      "requirement": "Connectactualtransport/decoder/frame/clockandtruthfulfailure,retainowner/close/exportcomposition;compactphoneheadertitleandactions.",
+      "boundary": "NativefiledownloadandToolreadyreceiptarenotplaybacksuccess;oneNormalcodeworker,Primaryownsverification.",
+      "verification": "Snapshotwireprecision, UUIDecho and nativeissuedroot fixed without weakeningowner/leasefences; actualSamsungplay/pause/restart/frame, source-aware24fps default, customname export/gallery/hash/full-decode passed; 43functionalevidence reusedin44"
+    },
+    {
+      "id": "OFFICE-READONLY-CLOSE-RECOVERY",
+      "state": "observed-open",
+      "evidence": "API37/16KiB same43: systempickedexistingDOCX showedrealUnicodepagefull-window; close surfacedunconfirmedsavecopyrecoverydialog; noedit/nooverwrite/nodiscard",
+      "requirement": "Determine whether import/preview creates an unintended unsavedjournal orclosecommitraces; preserveoriginal and recoverycopy; newrepair beforeclaimingcleanclose"
     }
   ],
   "newGapBoundary": "These additional actual gaps do not reset183 historical IDs or imply every prior source-connected legacy entry passed deviceacceptance."
