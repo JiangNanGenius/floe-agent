@@ -5,8 +5,8 @@
 // App version/build, database schema version, capability summary (providers /
 // models / catalog tools), the in-memory log ring buffer (redacted on write),
 // redacted diagnostics export, and the single legal entry point. That entry is
-// the unified third-party license browser in TinyEMULicensesView.swift, which
-// carries the complete TinyEMU/slirp notices plus every other bundled notice;
+// the unified third-party license browser in ThirdPartyLicensesView.swift, which
+// carries the complete ARM64 engine notices plus every other bundled notice;
 // see docs/FLOE_1_7_NEXT_RELEASE_STATUS.md.
 
 #if canImport(SwiftUI) && canImport(UIKit)
@@ -155,7 +155,7 @@ struct DiagnosticsAboutView: View {
 
             Section {
                 // One legal entry only. The unified browser carries the complete
-                // TinyEMU/slirp notices plus every other bundled dependency
+                // ARM64 engine notices plus every other bundled dependency
                 // notice, so no declaration is lost or split across rows.
                 NavigationLink {
                     ThirdPartyLicensesView()
@@ -250,7 +250,7 @@ struct DiagnosticsAboutView: View {
     }
 }
 
-/// TinyEMU (RISC-V engine) license notices, read from the local resource
+/// ARM64 engine license notices, read from the local resource
 /// bundled with the app. A plain scrollable, selectable Text keeps the
 /// notices readable and copyable in place; no external file viewer or Safari
 /// hand-off is involved.

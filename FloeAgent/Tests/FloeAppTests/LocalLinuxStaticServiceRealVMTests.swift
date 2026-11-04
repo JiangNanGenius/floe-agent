@@ -1186,8 +1186,7 @@ import FloeTools
     @Test("real guest static service serves nested Unicode HTML and relative CSS, survives observer close, and exits on cancel",
           .enabled(if: ProcessInfo.processInfo.environment["FLOE_REALVM_QUALIFICATION"] == "1"))
     func staticHTMLNestedResourcesLifecycle() async throws {
-        let app = AppEnvironment.live()
-        await app.bootstrap()
+        let app = try await appQualificationEnvironment()
         try #require(app.persistenceReady, "Production persistence bootstrap failed")
         let jobs = try #require(app.backgroundJobService, "Production job service is unavailable")
         let services = FloePlatformServices.shared
@@ -1230,6 +1229,8 @@ import FloeTools
         // Async cleanup is explicitly awaited on both paths. No unstructured
         // defer Task can outlive the test and delete a still-mounted share.
         func cleanup() async throws {
+            app.browserCenter.discard(conversationID: conversationID)
+
             if let poller = observer {
                 poller.cancel(); await poller.value; observer = nil
             }
@@ -1273,7 +1274,7 @@ import FloeTools
             }
             let relativeEntry = "嵌套 demo/页面 目录/预览 页面.html"
             let relativeCSS = "资源 子目录/配色 样式.css"
-            let html = "<!doctype html><meta charset='utf-8'><link rel='stylesheet' href='\(relativeCSS)'><h1>FLOE_STATIC_REALVM_中文</h1>"
+            let html = "<!doctype html><meta charset='utf-8'><link rel='stylesheet' href='\(relativeCSS)'><h1>FLOE_STATIC_REALVM_中文</h1><button onclick=\"this.textContent='FLOE_BROWSER_CLICK_OK'\">Verify browser</button>"
             let css = "h1 { color: rgb(17, 53, 97); } /* FLOE_STATIC_CSS_中文 */"
             let entry = root.appendingPathComponent(relativeEntry)
             let cssFile = entry.deletingLastPathComponent().appendingPathComponent(relativeCSS)
@@ -1316,6 +1317,38 @@ import FloeTools
             evidence["htmlSHA256"] = FloeDigest.sha256Hex(htmlData)
             evidence["cssSHA256"] = FloeDigest.sha256Hex(cssData)
             retainEvidence("html-css-verified")
+
+            // Use the launched application's real browser session and WebKit
+            // transport. HTTP success alone cannot prove the built-in browser.
+            let browser = try app.browserCenter.taskSession(for: conversationID)
+            let tab = try #require(browser.activeTabID)
+            func browserCommand(_ action: BrowserAction) async -> BrowserResult {
+                await browser.execute(BrowserCommand(sessionID: browser.sessionID, tabID: tab,
+                    timeoutMilliseconds: 30_000, action: action))
+            }
+            let navigation = await browserCommand(.navigate(url: preview.absoluteString))
+            try #require(navigation.status == .ok, "Browser navigation: \(navigation.message ?? "no detail")")
+            let loaded = await browserCommand(.wait(.text("FLOE_STATIC_REALVM_中文")))
+            try #require(loaded.status == .ok)
+            let observed = await browserCommand(.observe(cursor: nil))
+            let page = try #require(observed.page)
+            let button = try #require(page.nodes.first { $0.name == "Verify browser" || $0.text == "Verify browser" })
+            let clicked = await browserCommand(.click(.element(ref: button.ref, documentID: page.documentID)))
+            try #require(clicked.status == .ok)
+            let changed = await browserCommand(.wait(.text("FLOE_BROWSER_CLICK_OK")))
+            try #require(changed.status == .ok, "Browser did not execute the page interaction")
+            let capture = try await browser.impeccableCaptures.capture(tabID: tab, bridgeRoot: root)
+            let captureEvidence = URL.applicationSupportDirectory
+                .appendingPathComponent("FloeAgent/QualificationEvidence/ARM64Browser/" + conversationID.uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: captureEvidence, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: capture.bridgeDirectory,
+                to: captureEvidence.appendingPathComponent("capture", isDirectory: true))
+            evidence["browserStatus"] = changed.status.rawValue
+            evidence["captureID"] = capture.captureID.uuidString
+            evidence["captureEvidence"] = captureEvidence.path
+            evidence["snapshotSHA256"] = FloeDigest.sha256Hex(try Data(contentsOf: capture.snapshotFile))
+            evidence["snapshotBytes"] = String(capture.snapshotBytes)
+            retainEvidence("built-in-browser-click-and-real-capture-verified")
 
             // A consumer/observer owns polling only, not the service task.
             // This is intentionally not a SwiftUI/view-lifetime UI test.

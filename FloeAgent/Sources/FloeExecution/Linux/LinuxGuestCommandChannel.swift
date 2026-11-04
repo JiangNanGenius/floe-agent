@@ -303,7 +303,7 @@ public final class SensitiveProcessEnvironmentTicket: @unchecked Sendable {
 }
 
 /// Task-scoped carrier for the one production hop that still takes the
-/// ordinary `LinuxCommandRunning` signature (shell backend → TinyEMU service
+/// ordinary `LinuxCommandRunning` signature (shell backend → Linux runtime service
 /// → registry → this channel). Task-local values are per command task, so
 /// two concurrent children never share a ticket.
 public enum SensitiveProcessEnvironmentCarrier {

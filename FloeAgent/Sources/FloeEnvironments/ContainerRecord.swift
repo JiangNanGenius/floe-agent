@@ -28,8 +28,8 @@ public enum LayerKind: String, Codable, Sendable, CaseIterable {
 
 /// Which backend executes an environment's commands. `native` is the
 /// historical stack (ios_system shell, no bundled language runtimes since the
-/// Phase 2 TinyEMU migration) and remains selectable as the documented
-/// compatibility backend; `linuxVM` means a TinyEMU RV64 guest owns the
+/// Phase 2 Linux runtime migration) and remains selectable as the documented
+/// compatibility backend; `linuxVM` means a shared ARM64 guest owns the
 /// environment's shell, Python/Node and package commands. Optional on disk so
 /// older registries decode unchanged; the registry's prepare() migrates
 /// legacy nil records to `.linuxVM` with a recoverable backup.

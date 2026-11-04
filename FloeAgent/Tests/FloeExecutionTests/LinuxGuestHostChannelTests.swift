@@ -755,7 +755,7 @@ final class LinuxGuestHostChannelTests: XCTestCase {
             shares: [LinuxGuestShare(tag: LinuxGuestShare.workspaceTag, hostDirectory: shareDirectory)],
             imageID: "test-image"
         )
-        let registry = TinyEMULinuxGuestRegistry(
+        let registry = LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: ["env-bridge": descriptor]),
             images: FakeImageResolver(images: ["test-image": hostBridgeTestImage()]),
             limits: .standard,
@@ -800,7 +800,7 @@ final class LinuxGuestHostChannelTests: XCTestCase {
             shares: [LinuxGuestShare(tag: LinuxGuestShare.workspaceTag, hostDirectory: FileManager.default.temporaryDirectory)],
             imageID: "test-image"
         )
-        let registry = TinyEMULinuxGuestRegistry(
+        let registry = LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: ["env-plain": descriptor]),
             images: FakeImageResolver(images: ["test-image": hostBridgeTestImage()]),
             limits: .standard,

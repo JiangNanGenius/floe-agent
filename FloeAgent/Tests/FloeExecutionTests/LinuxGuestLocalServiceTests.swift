@@ -8,7 +8,7 @@
 //    invented exit code, a probe that could not verify emits nothing and keeps
 //    the handle owned, and a stop landing during an in-flight probe wins over
 //    the stale probe answer. Forward cleanup happens on a confirmed exit.
-//  * `TinyEMULinuxGuestRegistry.runtimeIdentity`/`runtimeStates` expose the
+//  * `LinuxGuestRegistry.runtimeIdentity`/`runtimeStates` expose the
 //    runtime owner's own per-session runtimeID and per-start launch
 //    generation, so the metrics sampler reads a real identity that rotates on
 //    restart (and resets its delta baselines) instead of a placeholder.
@@ -521,7 +521,7 @@ final class LinuxGuestLocalServiceTests: XCTestCase {
     private func makeIdentityRegistry(
         environmentIDs: [String],
         root: URL
-    ) throws -> (registry: TinyEMULinuxGuestRegistry, image: LinuxGuestImage) {
+    ) throws -> (registry: LinuxGuestRegistry, image: LinuxGuestImage) {
         let expandedRoot = root.appendingPathComponent("expanded", isDirectory: true)
         try FileManager.default.createDirectory(at: expandedRoot, withIntermediateDirectories: true)
         let image = try identityImage(id: "identity-image", directory: expandedRoot)
@@ -529,7 +529,7 @@ final class LinuxGuestLocalServiceTests: XCTestCase {
         for id in environmentIDs {
             descriptors[id] = identityDescriptor(id: id, imageID: image.id)
         }
-        let registry = TinyEMULinuxGuestRegistry(
+        let registry = LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: descriptors),
             images: FakeImageResolver(images: [image.id: image]),
             limits: .standard,

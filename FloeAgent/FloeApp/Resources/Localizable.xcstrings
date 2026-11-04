@@ -140318,6 +140318,38 @@
           }
         }
       }
+    },
+    "settings.licenses.document.arm64.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe ARM64 engine — licenses and notices"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe ARM64 引擎 — 许可证与声明"
+          }
+        }
+      }
+    },
+    "settings.licenses.note.arm64": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The interpreted ARM64 engine is arm64emu-system at commit 55c8128cb02d8ba3809f6579f7c6d316537e0546 (Apache-2.0), with Floe MPL-2.0 bridge and resident I/O changes. It generates no native code. Complete notices and both licenses are bundled as Licenses/ARM64EMU-LICENSES.txt; source hashes are recorded in ThirdParty/ARM64EMU/PROVENANCE.json."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ARM64 解释执行引擎采用 arm64emu-system（Apache-2.0），Floe 的桥接与运行管理修改采用 MPL-2.0。应用内附完整许可证及上游声明；精确源码摘要保存在引擎来源记录中。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

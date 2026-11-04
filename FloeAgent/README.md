@@ -42,9 +42,9 @@ simulator legs (see `.github/workflows/ci.yml`); a passing simulator leg is not
 device acceptance. The IDE module contracts run in the SwiftPM suite
 (`IDENativeTextWorkspaceTests`, `ArchiveEngineTests`, `ArchiveBrowserServiceTests`).
 
-Since the Phase 2 TinyEMU migration there is no bundled CPython/NodeMobile
-build input: local Python/Node execute inside each environment's TinyEMU
-Linux guest, and `audit_native_runtime_free.py` fails the build if a native
+There is no bundled CPython/NodeMobile build input: local Python/Node
+execute in the shared ARM64 Linux runtime with explicit project roots and
+reusable dependency layers, and `audit_native_runtime_free.py` fails the build if a native
 Python/Node marker, a precompiled wheel payload or a native Ruby/Rust runtime
 returns to the project or the packaged app. The retired
 recipes (pinned runtime bootstrap, ios-wheelhouse builders, Node tools) are
@@ -93,7 +93,7 @@ CI regenerates the project and fails if the committed project differs.
 | `FloePersistence` | GRDB stores, atomic run launch, credential metadata, archive state, and append-only migrations through v46, including media-job owner/idempotency columns, durable private-workspace cleanup intents, the conversation search index repair, the child-run lifecycle tables and schedule occurrences, and explicit model-capability provenance. |
 | `FloeWorkspace`, `FloeDocuments`, `FloeImages` | File scopes, change evidence, document working copies, and image operations. Also the native text/code editing workspace (`IDENativeTextWorkspace`, with the Web workbench retained as the advanced fallback) and the bounded native archive engine (zip/tar/tar.gz/tar.xz create, list and extract; bzip2 create-only; 7z read-only). |
 | `FloeGit` | Non-destructive libgit2 repository operations, GitHub API/Keychain integration, and model-facing local/cloud source-control tools. |
-| `FloeSSH`, `FloeExecution`, `FloeVNC` | SSH/jump/PTY/forwarding, remote execution, and Metal-backed VNC. `FloeExecution` owns Runtime v2: content-addressed images, immutable software templates with pinned per-environment deltas, the CPU/RAM/VM pool with fail-closed SMP admission, and the TinyEMU guest service. |
+| `FloeSSH`, `FloeExecution`, `FloeVNC` | SSH/jump/PTY/forwarding, remote execution, and Metal-backed VNC. `FloeExecution` owns Runtime v2: content-addressed images, immutable software templates with pinned per-environment deltas, global CPU/RAM configuration, owned project sessions, and the ARM64 guest service. |
 | `FloeSkills` | Declarative Skill validation, compatibility, provenance, install staging, and tool ceilings. |
 | `FloeApp` | SwiftUI workbench, visible browser, voice coordinator, task inspector, settings, notifications, background recovery, and the status Picture-in-Picture surface behind its release gate. |
 

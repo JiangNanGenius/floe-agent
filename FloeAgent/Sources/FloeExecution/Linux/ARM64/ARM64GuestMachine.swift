@@ -119,6 +119,7 @@ public final class ARM64GuestMachine: @unchecked Sendable {
 
     public let ownership: ARM64MachineOwnership
     private let config: ARM64MachineConfig
+    private let headroomProbe: @Sendable () -> Int?
 
     private let stateLock = NSLock()
     private var stateValue: ARM64MachineState = .idle
@@ -137,9 +138,20 @@ public final class ARM64GuestMachine: @unchecked Sendable {
     private var diagnosticsEventHandler: @Sendable (ARM64DiagnosticTap.Event) -> Void = { _ in }
     private var diagnosticsTap: ARM64DiagnosticTap?
 
-    public init(ownership: ARM64MachineOwnership, config: ARM64MachineConfig) throws {
+    public init(ownership: ARM64MachineOwnership, config: ARM64MachineConfig,
+                headroomProbe: (@Sendable () -> Int?)? = nil) throws {
         self.ownership = ownership
         self.config = try config.validated()
+        self.headroomProbe = headroomProbe ?? { RuntimeProcessHeadroom.availableBytes() }
+    }
+
+    private func checkHeadroom() throws {
+        let required = RuntimeProcessHeadroom.requiredBytes(guestRAMMiB: config.ramMiB,
+            hostOverheadMiB: 64, futureReserveMiB: 256)
+        if let available = headroomProbe(), available < required {
+            throw ARM64MachineError.createFailed(code: Int32(FLOE_AE_NOMEM),
+                detail: "Not enough memory for the shared runtime; stop other work or choose less memory")
+        }
     }
 
     // MARK: - State
@@ -182,6 +194,7 @@ public final class ARM64GuestMachine: @unchecked Sendable {
         guard allowed, engineHandle == 0, workerThread?.isFinished != false else {
             throw ARM64MachineError.engineBusy("start() requires idle/stopped/failed, got \(stateValue)")
         }
+        try checkHeadroom()
         generation &+= 1
         let myGeneration = generation
         ioQueue.begin(generation: myGeneration)
@@ -628,6 +641,9 @@ public final class ARM64GuestMachine: @unchecked Sendable {
             let staged = ARM64StagedConfig(config)
             var handle: floe_ae_handle = 0
             var configCopy = staged.cConfig
+            // Asset verification can take time. Recheck at the actual native
+            // allocation boundary, including a real zero on physical devices.
+            try checkHeadroom()
             let createCode = withExtendedLifetime(staged) {
                 withUnsafePointer(to: &configCopy) { pointer in
                     pointer.withMemoryRebound(to: floe_ae_config.self, capacity: 1) { base in

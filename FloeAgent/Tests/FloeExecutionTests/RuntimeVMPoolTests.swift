@@ -801,69 +801,13 @@ final class RuntimeVMPoolTests: XCTestCase {
     /// count is rejected, never clamped. (Whether the second hart is
     /// DELIVERED is decided earlier by the pool's image gate; this boundary
     /// only refuses counts outside the released ladder.)
-    func testMachineProductionPolicyAcceptsDualAndRejectsInvalidCounts() throws {
-        let image = LinuxGuestImage(id: "img", biosPath: "bbl64.bin", qualified: false)
-        let dual = LinuxGuestEnvironmentDescriptor(
-            id: "env-1", imageID: "img", ramMB: 1024, vcpus: 2
-        )
-        let machine = try TinyEMUGuestMachine(
-            descriptor: dual, image: image, limits: .standard
-        )
-        XCTAssertEqual(machine.configuredShape.vcpus, 2)
-        XCTAssertEqual(machine.configuredShape.ramMB, 1024)
-        // A six-core request is malformed relative to the engine ladder, not
-        // silently clamped to two.
-        let six = LinuxGuestEnvironmentDescriptor(
-            id: "env-1", imageID: "img", ramMB: 1024, vcpus: 6
-        )
-        XCTAssertThrowsError(
-            try TinyEMUGuestMachine(descriptor: six, image: image, limits: .standard)
-        ) { error in
-            guard case .invalidVCPUCount(let requested, _) = error as? GuestReleaseShapeError else {
-                return XCTFail("expected invalidVCPUCount, got \(error)")
-            }
-            XCTAssertEqual(requested, 6)
-        }
-        let zero = LinuxGuestEnvironmentDescriptor(
-            id: "env-1", imageID: "img", ramMB: 1024, vcpus: 0
-        )
-        XCTAssertThrowsError(
-            try TinyEMUGuestMachine(descriptor: zero, image: image, limits: .standard)
-        ) { error in
-            guard case .invalidVCPUCount = error as? GuestReleaseShapeError else {
-                return XCTFail("expected invalidVCPUCount for 0, got \(error)")
-            }
-        }
-    }
+
 
     /// Synthetic SMP engine/admission experiments stay possible through the
     /// explicit internal test policy only (code-supplied provenance); the
     /// machine then accepts two harts and its setVCPUs boundary still rejects
     /// malformed counts and never clamps six to two.
-    func testMachineSyntheticDualPolicyAcceptsTwoButRejectsSix() throws {
-        let image = LinuxGuestImage(id: "img", biosPath: "bbl64.bin", qualified: false)
-        let descriptor = LinuxGuestEnvironmentDescriptor(
-            id: "env-1", imageID: "img", ramMB: 1024, vcpus: 2
-        )
-        let policy = GuestReleaseShapePolicy.internalSyntheticTesting(
-            maximumSupportedVCPUs: 2, provenance: "RuntimeVMPoolTests direct machine dual"
-        )
-        let machine = try TinyEMUGuestMachine(
-            descriptor: descriptor, image: image, limits: .standard, releasePolicy: policy
-        )
-        XCTAssertEqual(machine.configuredShape.vcpus, 2)
-        XCTAssertEqual(machine.configuredShape.ramMB, 1024)
-        try machine.setVCPUs(1)
-        XCTAssertEqual(machine.configuredShape.vcpus, 1)
-        try machine.setVCPUs(2)
-        XCTAssertEqual(machine.configuredShape.vcpus, 2)
-        XCTAssertThrowsError(try machine.setVCPUs(6)) { error in
-            guard case .invalidVCPUCount = error as? GuestReleaseShapeError else {
-                return XCTFail("expected invalidVCPUCount for 6, got \(error)")
-            }
-        }
-        XCTAssertEqual(machine.configuredShape.vcpus, 2, "a refused count must not change the shape")
-    }
+
 
     /// Pure release-gate contract: loose integer parsing under production
     /// and synthetic policies, with no clamping in any direction.
@@ -904,15 +848,7 @@ final class RuntimeVMPoolTests: XCTestCase {
     /// Default for a request without workload evidence: 256 MiB, one hart
     /// (advisor-driven; the historical ~182 MiB guest is not claimed to be
     /// caused or fixed by this value).
-    func testMachineDefaultShapeIs256MiBOneHart() throws {
-        let image = LinuxGuestImage(id: "img", biosPath: "bbl64.bin", qualified: false)
-        let descriptor = LinuxGuestEnvironmentDescriptor(id: "env-1", imageID: "img")
-        let machine = try TinyEMUGuestMachine(
-            descriptor: descriptor, image: image, limits: .standard
-        )
-        XCTAssertEqual(machine.configuredShape.vcpus, 1)
-        XCTAssertEqual(machine.configuredShape.ramMB, 256)
-    }
+
 
     // MARK: - default quota table + CPU clamp + performance gating
 
@@ -1362,47 +1298,7 @@ final class RuntimeVMPoolTests: XCTestCase {
     /// the engine allocates and touches guest RAM. A shortage is a recoverable
     /// start error and the VM is never created. This is the single boundary
     /// both the Runtime v2 and the legacy (runtimeV2 == nil) start paths reach.
-    func testMachineRechecksHeadroomBeforeEngineCreate() throws {
-        let image = LinuxGuestImage(
-            id: "img", biosPath: "missing-bios-for-headroom-check.bin", qualified: false
-        )
-        let descriptor = LinuxGuestEnvironmentDescriptor(
-            id: "env-1", imageID: "img", ramMB: 512
-        )
-        let required = RuntimeProcessHeadroom.requiredBytes(
-            guestRAMMiB: 512, hostOverheadMiB: 64, futureReserveMiB: 256
-        )
-        // One byte less than required: refused before floe_vm_create, so no
-        // VM exists and no run thread was spawned.
-        let starved = try TinyEMUGuestMachine(
-            descriptor: descriptor, image: image, limits: .standard,
-            headroomProbe: { required - 1 }
-        )
-        XCTAssertThrowsError(try starved.start()) { error in
-            guard case .startFailed(let detail) = error as? LinuxGuestError else {
-                return XCTFail("expected startFailed, got \(error)")
-            }
-            XCTAssertTrue(detail.contains("headroom"), detail)
-        }
-        XCTAssertFalse(starved.isRunning)
-        // Exactly the requirement clears the headroom boundary; the engine
-        // then fails on the deliberately missing firmware, proving this gate
-        // does not over-refuse at the equality edge.
-        let roomy = try TinyEMUGuestMachine(
-            descriptor: descriptor, image: image, limits: .standard,
-            headroomProbe: { required }
-        )
-        XCTAssertThrowsError(try roomy.start()) { error in
-            guard case .startFailed(let detail) = error as? LinuxGuestError else {
-                return XCTFail("expected engine startFailed, got \(error)")
-            }
-            XCTAssertFalse(
-                detail.contains("headroom"),
-                "the headroom gate must pass at exactly the requirement: \(detail)"
-            )
-        }
-        XCTAssertFalse(roomy.isRunning)
-    }
+
 
     // MARK: - helpers
 

@@ -1,4 +1,4 @@
-// FloeExecution — bridge between the TinyEMU guest registry and Runtime v2.
+// FloeExecution — bridge between the Linux runtime guest registry and Runtime v2.
 //
 // The registry keeps owning session/channel lifecycle; the integrator owns
 // everything durable: pool admission (four running VMs, a fifth queues),
@@ -7,7 +7,7 @@
 // stop, and the explicit memory-tier path. The seam is a protocol so focused
 // tests drive the registry with a scripted integrator (no VM, no disk).
 //
-// Memory boundary (documented, tested): the pinned TinyEMU engine allocates
+// Memory boundary (documented, tested): the pinned Linux runtime engine allocates
 // guest RAM once at create time and exposes no balloon/resize API. Adaptive
 // memory therefore means (a) admission-time tiering — a start is granted the
 // requested tier or the highest tier that fits the 1.5/2 GiB device budget —

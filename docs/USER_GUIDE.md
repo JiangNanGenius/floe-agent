@@ -336,6 +336,8 @@ A saved rule is not a live listener. The VM must be running and the service must
 <!-- doc-anchor: section-14 -->
 ## 10. Python, Node, packages and code execution
 
+The local runtime uses one shared ARM64 Linux machine. Set CPU and memory globally in Execution Environments; later tasks in the same project can reuse its dependencies while project files stay separate. **Restore Initial State** stops related work and resets runtime storage and dependencies, keeping project files, chats and installed Skills. Required dependencies are prepared again when used. **Re-download** repairs base resources and keeps existing resources until the replacement is downloaded and verified.
+
 Settings → Execution Environments → choose project/task → Python·PyPI or Node.js·npm. Confirm the environment before installing; project and shared dependencies have different write locations.
 
 Commands use the task’s selected environment: on-device Linux, a connected Mac bridge or a configured SSH host. Packages must support that system and architecture; binaries are not interchangeable. In the full IDE, Run shows the target and command. Resolve save errors/conflicts first. Remote single-file execution does not synchronize the entire project and requires the remote runtime, dependencies and assistant service where applicable.

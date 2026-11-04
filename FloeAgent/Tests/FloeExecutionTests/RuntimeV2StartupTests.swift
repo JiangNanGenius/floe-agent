@@ -964,7 +964,7 @@ final class RuntimeV2StartupTests: XCTestCase {
         let factory = FakeSessionFactory(ledger: ledger) { _, token in
             token.hasPrefix("hello-") ? runtimeV2CapsReply(token) : runtimeV2OKReply(token)
         }
-        let registry = TinyEMULinuxGuestRegistry(
+        let registry = LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: [
                 "env-v2": LinuxGuestEnvironmentDescriptor(id: "env-v2", ownerID: "owner", imageID: image.id)
             ]),

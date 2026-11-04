@@ -11,7 +11,7 @@
 // one stdlib-only provisioning restores every self-HTTP probe.
 //
 // This helper owns exactly one bounded, idempotent, guest-local repair frame
-// issued once per real boot from `TinyEMULinuxGuestRegistry.performStart` —
+// issued once per real boot from `LinuxGuestRegistry.performStart` —
 // after the runner handshake/reboot settles and before the session registers,
 // so no exec/local-service workload can observe a guest whose 127.0.0.1 still
 // leaks out eth0. It touches only `lo`; it never modifies eth0, non-local

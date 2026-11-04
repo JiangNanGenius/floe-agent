@@ -130,8 +130,8 @@ private func makeRegistry(
     provider: LeaseEnvironmentProvider,
     image: LinuxGuestImage,
     factory: LeaseSessionFactory
-) -> TinyEMULinuxGuestRegistry {
-    TinyEMULinuxGuestRegistry(
+) -> LinuxGuestRegistry {
+    LinuxGuestRegistry(
         environments: provider,
         images: LeaseImageResolver(images: [image.id: image]),
         limits: .standard,
@@ -254,7 +254,7 @@ final class LinuxGuestShareAccessLeaseTests: XCTestCase {
         let ledger = FakeSessionLedger()
         let factory = FakeSessionFactory(ledger: ledger) { _, _ in [] }
         let (descriptor, _) = makeWorkspaceDescriptor(id: "env-legacy")
-        let registry = TinyEMULinuxGuestRegistry(
+        let registry = LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: ["env-legacy": descriptor]),
             images: LeaseImageResolver(images: ["lease-image": makeLeaseImage()]),
             limits: .standard,

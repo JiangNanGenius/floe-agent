@@ -1,8 +1,8 @@
-// FloeExecution — Linux guest backend contract (TinyEMU RV64).
+// FloeExecution — Linux guest backend contract (shared ARM64).
 //
 // Floe Linux environments run a real Debian userland inside the pinned
-// TinyEMU 2019-12-21 interpreter (ThirdParty/TinyEMU). This file owns the
-// protocol, limits and error vocabulary; `TinyEMULinuxCommandService` owns the
+// shared ARM64 interpreter (ThirdParty/ARM64EMU). This file owns the
+// protocol, limits and error vocabulary; `LinuxGuestCommandService` owns the
 // actual VM. The app injects one service through
 // `FloePlatformServices.setLinuxCommandService`.
 //
@@ -144,7 +144,7 @@ public struct LinuxGuestCommandTimeout: Error, LocalizedError, CustomStringConve
 }
 
 /// Bounds applied to every guest. The RAM ceiling is deliberately small: the
-/// guest is an interpreted RV64 machine sharing memory with the app.
+/// guest is an interpreted ARM64 machine sharing memory with the app.
 public struct LinuxGuestLimits: Sendable, Equatable {
     public var defaultRAMMB: Int
     public var maxRAMMB: Int
@@ -1067,7 +1067,7 @@ public protocol LinuxGuestControlling: Sendable {
     /// Scoped release of a logical run's OWN transient tool guest for that
     /// run's continuation. Revalidates ownership and transience inside the
     /// registry and refuses (never destroys) anything that stopped being
-    /// transient; see `TinyEMULinuxGuestRegistry.releaseTransientGuest`.
+    /// transient; see `LinuxGuestRegistry.releaseTransientGuest`.
     func releaseTransientGuest(
         environmentID: String,
         expectedOwnerRunID: String
@@ -1076,7 +1076,7 @@ public protocol LinuxGuestControlling: Sendable {
     // MARK: exclusive lifecycle transaction (hard restart)
 
     /// Begins an exclusive stop → start transaction for one environment on
-    /// the shared service. The production TinyEMU service holds the
+    /// the shared service. The production Linux runtime service holds the
     /// registry's existing per-environment lifecycle lock for the whole
     /// transaction: while it is held, a direct start, guest command,
     /// terminal or shape change is refused (`guestBusy`) instead of
@@ -1172,7 +1172,7 @@ public extension LinuxGuestControlling {
     func preferredGuestConfiguration(environmentID: String) async -> LinuxGuestLifecycleConfig? { nil }
     /// Default explicit-shape start: nil shape forwards to the shape-less
     /// start; a non-nil shape is refused honestly by a backend that cannot
-    /// carry it, never silently reduced. The production TinyEMU service
+    /// carry it, never silently reduced. The production Linux runtime service
     /// overrides this to merge the shape into the start descriptor.
     func startGuest(
         environmentID: String,
@@ -1188,11 +1188,11 @@ public extension LinuxGuestControlling {
     }
 
     /// Default: a controller that does not publish per-launch states reports
-    /// none; the concrete TinyEMU service overrides it with real session truth.
+    /// none; the concrete Linux runtime service overrides it with real session truth.
     func runtimeStates() async -> [LinuxGuestRuntimeState] { [] }
 
     /// Default: a controller that does not model capacity reports none. The
-    /// production TinyEMU service overrides this with the registry's real
+    /// production Linux runtime service overrides this with the registry's real
     /// reservation set.
     func environmentsWithGuestActivity() async -> [String] { [] }
 
@@ -1211,7 +1211,7 @@ public extension LinuxGuestControlling {
     }
 
     /// Default: no repair substrate, so the resolution refuses honestly
-    /// instead of pretending. The production TinyEMU service overrides this
+    /// instead of pretending. The production Linux runtime service overrides this
     /// with the Runtime v2 verified restore.
     func restoreRepair(environmentID: String) async throws -> RuntimeV2Store.RepairResolutionReport {
         throw LinuxGuestError.invalidConfiguration(
@@ -1221,7 +1221,7 @@ public extension LinuxGuestControlling {
 
     /// Default: this backend cannot hold an environment across a whole
     /// restart transaction, so the manager keeps its per-call ordering. The
-    /// production TinyEMU service overrides this with the registry's real
+    /// production Linux runtime service overrides this with the registry's real
     /// per-environment lifecycle ownership.
     func beginLifecycleTransaction(
         environmentID: String
@@ -1255,7 +1255,7 @@ public extension LinuxGuestControlling {
 
     /// Default: no transaction-scoped command seam, so the ordered soft
     /// restart refuses honestly instead of slipping a stage command past the
-    /// lease. The production TinyEMU service overrides this.
+    /// lease. The production Linux runtime service overrides this.
     func runForLifecycleTransaction(
         _ transaction: LinuxGuestLifecycleTransaction,
         argv: [String],
@@ -1267,7 +1267,7 @@ public extension LinuxGuestControlling {
         )
     }
 
-    /// Default: no orderly-poweroff observation seam. The production TinyEMU
+    /// Default: no orderly-poweroff observation seam. The production Linux runtime
     /// service overrides this with the liveness-raced poweroff boundary.
     func requestOrderlyPoweroffForLifecycleTransaction(
         _ transaction: LinuxGuestLifecycleTransaction,
@@ -1406,7 +1406,7 @@ public struct LinuxGuestEmulatorCPUSample: Sendable, Equatable {
     }
 }
 
-/// Low-level guest console byte pipe. Implemented by the TinyEMU bridge; the
+/// Low-level guest console byte pipe. Implemented by the Linux runtime bridge; the
 /// command channel and tests depend on this seam only.
 public protocol LinuxGuestConsoleTransport: Sendable {
     func write(_ bytes: [UInt8]) async throws
@@ -1432,10 +1432,10 @@ enum LinuxGuestBootArguments {
     }
 }
 
-/// The production TinyEMU service is the only `LinuxCommandRunning`
+/// The production Linux runtime service is the only `LinuxCommandRunning`
 /// implementation whose `run`/`openSession` path reaches
-/// `LinuxGuestCommandChannel` (through `TinyEMULinuxGuestRegistry`). Adopting
+/// `LinuxGuestCommandChannel` (through `LinuxGuestRegistry`). Adopting
 /// this marker lets `LinuxGuestShellBackend` deliver a scoped sensitive
 /// environment ticket through that existing signature; any other backend is
 /// refused before a command runs instead of silently dropping the values.
-extension TinyEMULinuxCommandService: LinuxGuestSensitiveEnvironmentDelivering {}
+extension LinuxGuestCommandService: LinuxGuestSensitiveEnvironmentDelivering {}

@@ -103,7 +103,7 @@ private func waitUntil(
 /// Runs one shape change and returns its error (nil on success). File scope so
 /// the driving tasks capture only sendable values.
 private func shapeChangeError(
-    _ registry: TinyEMULinuxGuestRegistry, environmentID: String, ramMB: Int, vcpus: Int
+    _ registry: LinuxGuestRegistry, environmentID: String, ramMB: Int, vcpus: Int
 ) async -> Error? {
     do {
         try await registry.setShape(environmentID: environmentID, ramMB: ramMB, vcpus: vcpus)
@@ -115,7 +115,7 @@ private func shapeChangeError(
 
 /// Runs one RAM-only retier and returns its error (nil on success).
 private func retierError(
-    _ registry: TinyEMULinuxGuestRegistry, environmentID: String, ramMB: Int
+    _ registry: LinuxGuestRegistry, environmentID: String, ramMB: Int
 ) async -> Error? {
     do {
         try await registry.setMemoryTier(environmentID: environmentID, ramMB: ramMB)
@@ -496,8 +496,8 @@ final class LinuxGuestShapeLifecycleTests: XCTestCase {
         runtimeV2: (any LinuxGuestRuntimeV2Integrating)? = nil,
         releasePolicy: GuestReleaseShapePolicy = .production,
         descriptor: LinuxGuestEnvironmentDescriptor? = nil
-    ) -> TinyEMULinuxGuestRegistry {
-        TinyEMULinuxGuestRegistry(
+    ) -> LinuxGuestRegistry {
+        LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: [
                 environmentID: descriptor ?? shapeDescriptor(
                     id: environmentID, imageID: images.keys.first ?? "shape-image"
@@ -529,7 +529,7 @@ final class LinuxGuestShapeLifecycleTests: XCTestCase {
     private func makeLegacyRegistry(
         environmentID: String,
         book: ShapeSessionBook
-    ) -> TinyEMULinuxGuestRegistry {
+    ) -> LinuxGuestRegistry {
         makeRegistry(
             environmentID: environmentID,
             images: ["shape-image": shapeImage()],
@@ -540,7 +540,7 @@ final class LinuxGuestShapeLifecycleTests: XCTestCase {
     }
 
     private func awaitTeardownRegistered(
-        _ registry: TinyEMULinuxGuestRegistry, environmentID: String
+        _ registry: LinuxGuestRegistry, environmentID: String
     ) async -> Bool {
         await waitUntil {
             (await registry.lifecycleDiagnostics(environmentID: environmentID)).teardownInFlight
@@ -1080,7 +1080,7 @@ final class LinuxGuestShapeLifecycleTests: XCTestCase {
         environmentID: String,
         descriptor: LinuxGuestEnvironmentDescriptor? = nil,
         releasePolicy: GuestReleaseShapePolicy = .production
-    ) throws -> (TinyEMULinuxGuestRegistry, ShapeV2Integrator, ShapeSessionBook, LinuxGuestImage) {
+    ) throws -> (LinuxGuestRegistry, ShapeV2Integrator, ShapeSessionBook, LinuxGuestImage) {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("floe-b4-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

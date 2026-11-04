@@ -22,7 +22,7 @@
 // must agree on the generation or the delta is corrupt and quarantined —
 // never silently applied, never overwritten in place.
 //
-// The pinned TinyEMU block path is a raw RW file (no qcow2, no online
+// The pinned Linux runtime block path is a raw RW file (no qcow2, no online
 // overlay), so the overlay lives host-side in this format; the engine only
 // ever sees the materialized working disk.
 

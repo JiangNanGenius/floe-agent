@@ -16,7 +16,7 @@ import FloeCore
 import FloeTools
 
 /// One guest session's lifecycle closures. The registry only needs these
-/// seams, which keeps the TinyEMU C bridge out of the scheduling logic.
+/// seams, which keeps the Linux runtime C bridge out of the scheduling logic.
 public struct LinuxGuestSessionHandle: Sendable {
     public var transport: any LinuxGuestConsoleTransport
     public var start: @Sendable () async throws -> Void
@@ -35,7 +35,7 @@ public struct LinuxGuestSessionHandle: Sendable {
     public var setRAMMB: (@Sendable (Int) -> Void)?
     /// Sets the vCPU count the machine will use on its NEXT start, same
     /// stop → flush → restart boundary as `setRAMMB` (the pinned engine has
-    /// no online hotplug). Wired by the TinyEMU session factory; nil on
+    /// no online hotplug). Wired by the Linux runtime session factory; nil on
     /// sessions that do not model shape changes. Throwing: the machine's
     /// own release gate (B4) is the last boundary, so an unqualified count
     /// that reached it despite the pool refusal surfaces as an error and
@@ -43,7 +43,7 @@ public struct LinuxGuestSessionHandle: Sendable {
     public var setVCPUs: (@Sendable (Int) throws -> Void)?
     /// A real guest kernel can still own dirty pages after a command exits.
     /// Flushing the host disk alone does not commit those pages. Native
-    /// TinyEMU handles require a guest sync before an intentional halt;
+    /// Linux runtime handles require a guest sync before an intentional halt;
     /// scripted transports without a guest filesystem leave this false.
     public var requiresGuestSyncBeforeStop: Bool
 
@@ -74,7 +74,7 @@ public struct LinuxGuestSessionHandle: Sendable {
     }
 }
 
-/// Session creation seam: production = TinyEMU, tests = scripted transports.
+/// Session creation seam: production = Linux runtime, tests = scripted transports.
 public protocol LinuxGuestSessionCreating: Sendable {
     var usesResidentMachine: Bool { get }
     var preferredSharedConfiguration: LinuxGuestLifecycleConfig? { get }
@@ -106,7 +106,14 @@ public extension LinuxGuestSessionCreating {
     }
 }
 
-extension TinyEMUGuestSessionFactory: LinuxGuestSessionCreating {}
+/// A registry without explicit runtime wiring cannot execute on the host.
+public struct UnavailableLinuxGuestSessionFactory: LinuxGuestSessionCreating {
+    public init() {}
+    public func makeSession(descriptor: LinuxGuestEnvironmentDescriptor, image: LinuxGuestImage,
+                            limits: LinuxGuestLimits) throws -> LinuxGuestSessionHandle {
+        throw LinuxGuestError.invalidConfiguration("Runtime storage is unavailable")
+    }
+}
 
 /// App-registered builder for the optional guest → host control bridge
 /// (`floe-host`). The app closes over its own bridge implementation and
@@ -142,7 +149,7 @@ final class LinuxGuestHostRequestHandlerRegistry: @unchecked Sendable {
 
 /// Shape admission result for one guest start: the granted RAM tier and vCPU
 /// count plus honest downgrade reporting. This is the B2-side seam consumed by
-/// `TinyEMULinuxGuestRegistry.start`; the Runtime v2 integrator overrides
+/// `LinuxGuestRegistry.start`; the Runtime v2 integrator overrides
 /// `acquireShape(...)` to reach the pool's three-axis (vCPU/RAM/VM) admission.
 public struct LinuxGuestShapeAdmission: Sendable, Equatable {
     public var runtimeID: String
@@ -296,7 +303,7 @@ public extension LinuxGuestRuntimeV2Integrating {
     }
 }
 
-public actor TinyEMULinuxGuestRegistry {
+public actor LinuxGuestRegistry {
     /// Logical capacity of each environment raw disk. Test registries can
     /// override via `init(targetDiskCapacityBytes:)`; production grows to
     /// the 8 GiB `LinuxGuestDiskLayout` target.
@@ -454,7 +461,7 @@ public actor TinyEMULinuxGuestRegistry {
         environments: any LinuxGuestEnvironmentProviding,
         images: any LinuxGuestImageResolving,
         limits: LinuxGuestLimits = .standard,
-        factory: any LinuxGuestSessionCreating = TinyEMUGuestSessionFactory(),
+        factory: any LinuxGuestSessionCreating = UnavailableLinuxGuestSessionFactory(),
         targetDiskCapacityBytes: Int64 = LinuxGuestDiskLayout.targetLogicalCapacityBytes,
         runtimeV2: (any LinuxGuestRuntimeV2Integrating)? = nil,
         releasePolicy: GuestReleaseShapePolicy = .production,
@@ -521,7 +528,7 @@ public actor TinyEMULinuxGuestRegistry {
     /// a retain cycle and the property is a `let` (no unsynchronized
     /// reconfiguration after publication).
     public typealias BootAssetAutoAdoptionHook =
-        @Sendable (_ registry: TinyEMULinuxGuestRegistry, _ imageID: String) async -> Void
+        @Sendable (_ registry: LinuxGuestRegistry, _ imageID: String) async -> Void
 
     /// Barrier for a two-phase reconnect. While held the registry already
     /// runs the NEW resolver and every guest-booting entry is refused
@@ -1562,7 +1569,7 @@ public actor TinyEMULinuxGuestRegistry {
             runtimeImage = image
         }
 
-        // Every 9P export must exist before the TinyEMU configuration is
+        // Every 9P export must exist before the Linux runtime configuration is
         // validated. This also repairs Build 221 installs whose retained
         // workspace reference points at an app-owned directory not yet made.
         for share in bootDescriptor.shares {
@@ -1929,7 +1936,7 @@ public actor TinyEMULinuxGuestRegistry {
     /// image's verified standalone runner artifact, preserving every installed
     /// package and file, or fails with an actionable error.
     ///
-    /// Console ownership: a TinyEMU VM has exactly ONE immutable console
+    /// Console ownership: a Linux runtime VM has exactly ONE immutable console
     /// stream and the channel has exactly one router reading it. Cancelling
     /// that reader finishes the stream for good (a replacement iterator then
     /// sees nil), so the upgrade runs on the very channel the session will
@@ -3361,7 +3368,7 @@ public actor TinyEMULinuxGuestRegistry {
 
     /// Changes the running guest's full shape (RAM tier + vCPU count) through
     /// the safe stop → flush → restart path. Documented boundary: the pinned
-    /// TinyEMU engine allocates guest RAM and its harts once at create time
+    /// Linux runtime engine allocates guest RAM and its harts once at create time
     /// and exposes no balloon/resize or hotplug API, so an online shape
     /// change is impossible by construction — the machine is stopped (its
     /// working disk stays exactly where it is), recreated with the new shape,
@@ -3879,9 +3886,9 @@ public actor TinyEMULinuxGuestRegistry {
     }
 }
 
-extension TinyEMULinuxGuestRegistry: LinuxGuestLocalServiceHosting {}
+extension LinuxGuestRegistry: LinuxGuestLocalServiceHosting {}
 
-extension TinyEMULinuxGuestRegistry {
+extension LinuxGuestRegistry {
     /// The service supervisor's acknowledged pending-terminal store lives in
     /// the app's own support directory, following the same convention as the
     /// other FloeExecution stores. The store is a bounded hand-off: events
@@ -3899,7 +3906,7 @@ extension TinyEMULinuxGuestRegistry {
     }
 }
 
-extension TinyEMULinuxCommandService {
+extension LinuxGuestCommandService {
     /// Installs (or clears, with nil) the app's builder for the optional
     /// guest → host control bridge. Forwarded to the one registry every copy
     /// of this service shares; a guest started after this call advertises the
@@ -3911,7 +3918,7 @@ extension TinyEMULinuxCommandService {
     }
 }
 
-extension TinyEMULinuxCommandService: LinuxGuestPathMapping {
+extension LinuxGuestCommandService: LinuxGuestPathMapping {
     public func linuxGuestPathMap(environmentID: String) async -> LinuxGuestPathMap? {
         await registry.linuxGuestPathMap(environmentID: environmentID)
     }
@@ -3919,11 +3926,11 @@ extension TinyEMULinuxCommandService: LinuxGuestPathMapping {
 
 /// The injected `LinuxCommandRunning` implementation: one service per app,
 /// one guest per environment, shared by shell, localPython and localService.
-public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControlling, LinuxGuestLocalServiceControlling, LinuxGuestLocalServiceLifecycleReporting {
-    private let registry: TinyEMULinuxGuestRegistry
+public struct LinuxGuestCommandService: LinuxCommandRunning, LinuxGuestControlling, LinuxGuestLocalServiceControlling, LinuxGuestLocalServiceLifecycleReporting {
+    private let registry: LinuxGuestRegistry
     private let localServices: LinuxGuestLocalServiceSupervisor
 
-    public init(registry: TinyEMULinuxGuestRegistry, limits: LinuxGuestLimits = .standard) {
+    public init(registry: LinuxGuestRegistry, limits: LinuxGuestLimits = .standard) {
         self.registry = registry
         self.localServices = LinuxGuestLocalServiceSupervisor(host: registry, limits: limits)
     }
@@ -3980,7 +3987,7 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
     }
 
     /// Production override of the protocol's fail-closed default: the pinned
-    /// TinyEMU runner supports unlimited EXEC (the deadline is host-side
+    /// Linux runtime runner supports unlimited EXEC (the deadline is host-side
     /// only), so the real deadline path is used instead of the refusal.
     public func run(
         environmentID: String,
@@ -4085,13 +4092,13 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
     /// Lease-based activity truth for the heavy-runtime arbiter's probe:
     /// every environment holding guest capacity (running, starting,
     /// stopping, or stop-quarantined). See
-    /// `TinyEMULinuxGuestRegistry.environmentsWithGuestActivity`.
+    /// `LinuxGuestRegistry.environmentsWithGuestActivity`.
     public func environmentsWithGuestActivity() async -> [String] {
         await registry.environmentsWithGuestActivity
     }
 
     /// Verified ownership/activity facts feeding the arbiter's own-transient
-    /// auto-release decision. See `TinyEMULinuxGuestRegistry.guestActivityDetails`.
+    /// auto-release decision. See `LinuxGuestRegistry.guestActivityDetails`.
     public func guestActivityDetails() async -> [LinuxGuestActivityDetail] {
         await registry.guestActivityDetails()
     }
@@ -4127,7 +4134,7 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
 
     /// Holds this environment's shared registry lifecycle ownership for the
     /// whole hard-restart transaction. See
-    /// `TinyEMULinuxGuestRegistry.beginLifecycleTransaction`.
+    /// `LinuxGuestRegistry.beginLifecycleTransaction`.
     public func beginLifecycleTransaction(
         environmentID: String
     ) async throws -> LinuxGuestLifecycleTransaction? {
@@ -4206,14 +4213,14 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
     }
 
     /// Authoritative runtime identity for one environment (metrics sampler
-    /// provider seam). See `TinyEMULinuxGuestRegistry.runtimeIdentity`.
+    /// provider seam). See `LinuxGuestRegistry.runtimeIdentity`.
     public func runtimeIdentity(environmentID: String) async -> LinuxGuestRuntimeIdentity {
         await registry.runtimeIdentity(environmentID: environmentID)
     }
 
     /// Authoritative per-launch states (identity, liveness, granted shape)
     /// for metrics/notification surfaces. See
-    /// `TinyEMULinuxGuestRegistry.runtimeStates`.
+    /// `LinuxGuestRegistry.runtimeStates`.
     public func runtimeStates() async -> [LinuxGuestRuntimeState] {
         await registry.runtimeStates()
     }

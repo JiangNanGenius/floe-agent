@@ -49,7 +49,7 @@ public enum LinuxBootAssetUpdatePolicy {
     /// re-proved inside the commit pass too. Never nil: the registry can
     /// always enumerate.
     public static func environmentIDs(
-        registry: TinyEMULinuxGuestRegistry,
+        registry: LinuxGuestRegistry,
         environments: any LinuxGuestEnvironmentProviding
     ) -> LinuxGuestBootAssetUpdateService.EnvironmentIDs {
         { imageID in
@@ -69,7 +69,7 @@ public enum LinuxBootAssetUpdatePolicy {
     public static func makeUpdateService(
         imagesRoot: URL,
         bundleProvider: @escaping @Sendable () -> URL?,
-        registry: TinyEMULinuxGuestRegistry,
+        registry: LinuxGuestRegistry,
         lifecycle: LinuxGuestLifecycleManager,
         environments: any LinuxGuestEnvironmentProviding,
         gate: LinuxGuestBootAssetGate = .default,
@@ -92,7 +92,7 @@ public enum LinuxBootAssetUpdatePolicy {
     public static func installUpdate(
         imageID: String,
         service: LinuxGuestBootAssetUpdateService,
-        registry: TinyEMULinuxGuestRegistry,
+        registry: LinuxGuestRegistry,
         environments: any LinuxGuestEnvironmentProviding
     ) async throws -> LinuxGuestBootAssetState {
         try await service.installUpdate(
@@ -109,7 +109,7 @@ public enum LinuxBootAssetUpdatePolicy {
     public static func rollback(
         imageID: String,
         service: LinuxGuestBootAssetUpdateService,
-        registry: TinyEMULinuxGuestRegistry,
+        registry: LinuxGuestRegistry,
         environments: any LinuxGuestEnvironmentProviding
     ) async throws -> LinuxGuestBootAssetState {
         try await service.rollback(
@@ -151,13 +151,13 @@ public extension LinuxGuestEnvironmentProviding {
 /// guest start and no VM is ever implicitly stopped.
 public final class LinuxBootAssetUpdateCenter: @unchecked Sendable {
     public let service: LinuxGuestBootAssetUpdateService
-    private let registry: TinyEMULinuxGuestRegistry
+    private let registry: LinuxGuestRegistry
     private let environments: any LinuxGuestEnvironmentProviding
 
     public init(
         imagesRoot: URL,
         bundleURL: @escaping @Sendable () -> URL?,
-        registry: TinyEMULinuxGuestRegistry,
+        registry: LinuxGuestRegistry,
         lifecycle: LinuxGuestLifecycleManager,
         environments: any LinuxGuestEnvironmentProviding,
         gate: LinuxGuestBootAssetGate = .default,

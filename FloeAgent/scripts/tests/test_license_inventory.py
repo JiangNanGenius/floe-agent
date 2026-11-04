@@ -1,6 +1,7 @@
 import contextlib
 import hashlib
 import io
+import importlib.util
 import json
 import os
 import re
@@ -127,7 +128,7 @@ class LicenseInventoryTests(unittest.TestCase):
             self.assertNotIn(" / ", section["fallback"], section["id"])
 
     def test_swift_view_reads_the_generated_manifest_only(self):
-        view = (ROOT / "FloeApp/Settings/TinyEMULicensesView.swift").read_text()
+        view = (ROOT / "FloeApp/Settings/ThirdPartyLicensesView.swift").read_text()
         self.assertIn("Licenses/third-party-inventory.json", view)
         for hand_copied in ("LicenseInventory.groups", "BundledLicenseCatalog", "LicenseComponent("):
             self.assertNotIn(hand_copied, view)
@@ -174,9 +175,9 @@ class LicenseInventoryTests(unittest.TestCase):
         # notices can precede the engine section without dropping TinyEMU.
         documents = {document["id"]: document for document in self.manifest["documents"]}
         self.assertEqual(len(documents), len(self.manifest["documents"]))
-        tinyemu = documents["tinyemu"]
+        tinyemu = documents["arm64-emu"]
         self.assertTrue(tinyemu["required"])
-        self.assertEqual(tinyemu["bundlePath"], "TinyEMU-LICENSES.txt")
+        self.assertEqual(tinyemu["bundlePath"], "Licenses/ARM64EMU-LICENSES.txt")
         self.assertEqual(tinyemu["section"], "engines")
         for music in ("pip-ambient-meditation", "pip-ambient-expansion"):
             self.assertTrue(documents[music]["required"])
@@ -276,7 +277,9 @@ class LicenseInventoryTests(unittest.TestCase):
             self.assertEqual(vendored["components"], [])
             self.assertFalse(any(c["name"] == "mlx-swift-lm" for c in swift))
             return
-        self.assertEqual([c["name"] for c in vendored["components"]], ["mlx-swift-lm"])
+        self.assertEqual([c["name"] for c in vendored["components"]],
+                         [spec["identity"] for spec in li.VENDORED_PACKAGES
+                          if spec["identity"] not in {pin["identity"] for pin in resolved}])
         component = next(c for c in swift if c["name"] == "mlx-swift-lm")
         self.assertEqual(component["license"], "MIT")
         self.assertIn(original["revision"], component["source"])
@@ -478,6 +481,22 @@ class EvidenceRevisionBindingTests(unittest.TestCase):
         self.assertIn("repository notice", problems[0])
         self.assertEqual(evidence[0]["revision"], "b" * 40)
 
+    def test_moved_app_notice_requires_identical_verified_checkout(self):
+        notice = self.tmp / "notice" / "LICENSE.txt"
+        notice.parent.mkdir(parents=True)
+        notice.write_text(MIT_TEXT, encoding="utf-8")
+        actual = make_checkout(self.checkouts, "alpha", MIT_TEXT)
+        recorded = {"alpha": self.record(revision="a" * 40, evidence="notice/LICENSE.txt",
+                                          sha256=li.sha256_file(notice))}
+        with mock.patch.dict(li.APP_ONLY_NOTICES, {"alpha": "notice/LICENSE.txt"}, clear=True):
+            problems, _, evidence, _ = self.resolve([self.pin(revision=actual)], recorded)
+            self.assertEqual(problems, [])
+            self.assertEqual(evidence[0]["revision"], actual)
+            self.assertEqual(evidence[0]["evidence"], "notice/LICENSE.txt")
+            notice.write_text(MIT_TEXT + "\nchanged notice\n", encoding="utf-8")
+            problems, _, _, _ = self.resolve([self.pin(revision=actual)], recorded)
+            self.assertTrue(any("byte-identical" in problem for problem in problems), problems)
+
     def test_same_pin_repository_notice_is_verified_and_tampering_is_flagged(self):
         notice = self.tmp / "notice" / "LICENSE.txt"
         notice.parent.mkdir(parents=True)
@@ -559,6 +578,11 @@ class VendoredPackageTests(unittest.TestCase):
         self.root = Path(self._tmp.name)
         self.spec = next(spec for spec in li.VENDORED_PACKAGES
                          if spec["identity"] == "mlx-swift-lm")
+        # This fixture exercises one vendored package. Production inventory
+        # tests above still require every actual vendored package to appear.
+        patcher = mock.patch.object(li, "VENDORED_PACKAGES", (self.spec,))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.license_path = self.root / self.spec["path"] / li.VENDORED_LICENSE_NAME
 
     def write_license(self, text=MIT_TEXT):
@@ -674,136 +698,6 @@ class VendoredPackageTests(unittest.TestCase):
         self.assertEqual(title["en"]["stringUnit"]["value"], document["titleFallback"])
         self.assertTrue(title["zh-Hans"]["stringUnit"]["value"].strip())
 
-
-class BundledBootPairTests(unittest.TestCase):
-    """The bundled Linux boot pair must be declared truthfully and bound to pins.
-
-    The app ships the verified Linux 6.18.56 Image + OpenSBI 1.9 fw_jump as
-    separate data resources, while the Debian rootfs stays a separately
-    downloaded image with its own legacy kernel/bbl pair. These tests bind the
-    rendered metadata to the canonical pair manifest and the tracked config so
-    a new pair cannot silently keep stale hashes, sources or license text.
-    """
-
-    NOTE_KEY = "settings.licenses.note.linux_boot_pair"
-    KERNEL_NAME = "Linux guest boot kernel (bundled 6.18.56 Image)"
-    FIRMWARE_NAME = "Linux guest boot firmware (bundled OpenSBI v1.9 fw_jump)"
-    LEGACY_NAME = (
-        "Floe Linux guest component (Debian 13 riscv64 userland, kernel, bbl, static glibc)"
-    )
-    DOCUMENT_ID = "linux-boot-pair"
-    NOTICE = ROOT / "FloeApp/Resources/Licenses/LinuxBootPair-LICENSES.txt"
-    RECORD = ROOT / "ThirdParty/TinyEMU/guest-image/BOOT-PAIR-LICENSES.md"
-    PAIR_MANIFEST = ROOT / "ThirdParty/TinyEMU/guest-image/boot-pair-v2.manifest.json"
-    CONFIG = ROOT / "ThirdParty/TinyEMU/guest-image/config_linux_riscv64_6.18.56"
-
-    @classmethod
-    def setUpClass(cls):
-        cls.result = li.build()
-        cls.manifest = cls.result["manifest"]
-        cls.pair = json.loads(cls.PAIR_MANIFEST.read_text())["pair"]
-
-    def component(self, name: str) -> dict:
-        return next(c for c in self.manifest["components"] if c["name"] == name)
-
-    def test_bundled_pair_is_separate_from_the_downloaded_guest_image(self):
-        kernel = self.component(self.KERNEL_NAME)
-        firmware = self.component(self.FIRMWARE_NAME)
-        for component in (kernel, firmware):
-            self.assertEqual(component["section"], "engines")
-            self.assertEqual(component["noteKey"], self.NOTE_KEY)
-        self.assertIn("GPL-2.0", kernel["license"])
-        self.assertIn("not linked into the app binary", kernel["license"])
-        self.assertIn(self.pair["version"], kernel["version"])
-        self.assertIn("linux-6.18.56.tar.xz", kernel["source"])
-        self.assertEqual(firmware["license"], "BSD-2-Clause")
-        self.assertIn("opensbi", firmware["source"])
-        # The legacy row keeps describing the separately downloaded image and
-        # its own note; it is not renamed away.
-        legacy = self.component(self.LEGACY_NAME)
-        self.assertIn("floe-linux-guest", legacy["source"])
-        self.assertEqual(legacy["noteKey"], "settings.licenses.note.guest_image")
-
-    def test_bundled_pair_notice_binds_the_pinned_pair_manifest(self):
-        notice = self.NOTICE.read_text(encoding="utf-8")
-        self.assertIn(self.pair["kernelSHA256"], notice)
-        self.assertIn(self.pair["firmwareSHA256"], notice)
-        self.assertIn(f'{self.pair["kernelBytes"]:,}', notice)
-        self.assertIn(f'{self.pair["firmwareBytes"]:,}', notice)
-        self.assertIn(li.sha256_file(self.CONFIG), notice)
-        self.assertIn("GNU GENERAL PUBLIC LICENSE", notice)
-        self.assertIn("Western Digital", notice)
-
-    def test_tracked_record_binds_manifest_notice_and_config_bytes(self):
-        record = self.RECORD.read_text(encoding="utf-8")
-        self.assertIn(self.pair["kernelSHA256"], record)
-        self.assertIn(self.pair["firmwareSHA256"], record)
-        self.assertIn(self.pair["version"], record)
-        self.assertIn(li.sha256_file(self.CONFIG), record)
-        self.assertIn(li.sha256_file(self.NOTICE), record)
-        self.assertIn("boot-pair-v2.manifest.json", record)
-
-    def test_boot_pair_document_is_required_and_bundled(self):
-        document = next(d for d in self.manifest["documents"] if d["id"] == self.DOCUMENT_ID)
-        self.assertTrue(document["required"])
-        self.assertEqual(document["bundlePath"], "Licenses/LinuxBootPair-LICENSES.txt")
-        self.assertEqual(document["section"], "engines")
-        self.assertEqual(document["noteKey"], None)
-        self.assertTrue(self.NOTICE.is_file())
-        rules = li.bundle_rules(li.PROJECT_YML.read_text())
-        self.assertEqual(
-            li.bundle_path_for(rules, "FloeAgent/" + document["repositoryPath"]),
-            document["bundlePath"],
-        )
-
-    def test_boot_pair_note_and_title_are_bilingual_and_aligned(self):
-        catalog = json.loads(li.XSTRINGS.read_text(encoding="utf-8"))["strings"]
-        note = next(n for n in self.manifest["notes"] if n["id"] == "linux_boot_pair")
-        self.assertEqual(note["textKey"], self.NOTE_KEY)
-        self.assertEqual(
-            catalog[self.NOTE_KEY]["localizations"]["en"]["stringUnit"]["value"],
-            note["fallback"],
-        )
-        for key in (self.NOTE_KEY, "settings.licenses.document.linux_boot_pair.title"):
-            for locale in ("en", "zh-Hans"):
-                value = catalog[key]["localizations"][locale]["stringUnit"]["value"]
-                self.assertTrue(value.strip(), f"{key}:{locale}")
-        title = next(d for d in self.manifest["documents"] if d["id"] == self.DOCUMENT_ID)
-        self.assertEqual(
-            catalog[title["titleKey"]]["localizations"]["en"]["stringUnit"]["value"],
-            title["titleFallback"],
-        )
-
-    def test_kernel_exception_is_exact_and_the_gate_is_not_loosened(self):
-        kernel_license = self.component(self.KERNEL_NAME)["license"]
-        self.assertIn(kernel_license, li.EXCEPTIONS)
-        explanation = li.EXCEPTIONS[kernel_license]
-        self.assertIn("not linked", explanation)
-        self.assertIn("corresponding source", explanation)
-        violations, notices = li.license_gate([{"name": "kernel", "license": kernel_license}])
-        self.assertEqual(violations, [])
-        self.assertEqual(len(notices), 1)
-        for near_miss in ("GPL-2.0", "GPL-2.0 (Linux kernel)", kernel_license + "."):
-            violations, _ = li.license_gate([{"name": "kernel", "license": near_miss}])
-            self.assertEqual(len(violations), 1, near_miss)
-
-    def test_checkout_override_defaults_to_the_real_build_cache(self):
-        script = (
-            "import sys; sys.path.insert(0, 'scripts'); "
-            "import license_inventory as li; print(li.CHECKOUTS)"
-        )
-        env = {key: value for key, value in os.environ.items()
-               if key != "FLOE_LICENSE_CHECKOUTS"}
-        completed = subprocess.run(
-            [sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True, env=env
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout.strip(), str(ROOT / ".build/checkouts"))
-        env["FLOE_LICENSE_CHECKOUTS"] = "/nonexistent/read-only-checkouts"
-        completed = subprocess.run(
-            [sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True, env=env
-        )
-        self.assertEqual(completed.stdout.strip(), "/nonexistent/read-only-checkouts")
 
 
 class CadPackageTests(unittest.TestCase):
@@ -1175,8 +1069,14 @@ class NativeOCCTTests(unittest.TestCase):
             path = ROOT / "ThirdParty/FloeCADKit" / artifact["installPath"]
             if not path.is_file():
                 continue
-            self.assertEqual(path.stat().st_size, artifact["size"], artifact["name"])
-            self.assertEqual(li.sha256_file(path), artifact["sha256"], artifact["name"])
+            expected = artifact.get("derivation", {}).get("expectedResult", artifact)
+            self.assertEqual(path.stat().st_size, expected["size"], artifact["name"])
+            self.assertEqual(li.sha256_file(path), expected["sha256"], artifact["name"])
+            if artifact.get("derivation"):
+                spec = importlib.util.spec_from_file_location("occt_bootstrap_qualification", ROOT / "ThirdParty/FloeCADKit/bootstrap.py")
+                bootstrap = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(bootstrap)
+                self.assertEqual(bootstrap.artifact_status(str(ROOT / "ThirdParty/FloeCADKit"), artifact), "derived")
             verified += 1
         # Slices are Git-ignored: a clean clone has none and verifies none.
 

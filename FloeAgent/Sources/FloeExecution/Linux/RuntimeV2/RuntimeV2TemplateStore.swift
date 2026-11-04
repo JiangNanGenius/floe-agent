@@ -286,7 +286,7 @@ public enum RuntimeV2VersionOrder {
 // MARK: - Template installer seam
 
 /// The guest-side install runner. Production runs the real package managers
-/// inside a TinyEMU guest over the cloned staging disk and returns the guest's
+/// inside a Linux runtime guest over the cloned staging disk and returns the guest's
 /// own package listing; tests inject a scripted runner. It must not claim
 /// `verified` unless the installs were actually verified in the guest.
 public protocol RuntimeV2TemplateInstaller: Sendable {

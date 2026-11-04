@@ -191,10 +191,10 @@ private func qualifiedImage() -> LinuxGuestImage {
 final class LinuxLifecycleCrossConcurrencyTests: XCTestCase {
     private let environmentID = "env-cross"
 
-    private func makeRegistry(book: EngineBook, environmentID: String? = nil) -> TinyEMULinuxGuestRegistry {
+    private func makeRegistry(book: EngineBook, environmentID: String? = nil) -> LinuxGuestRegistry {
         let id = environmentID ?? self.environmentID
         let image = qualifiedImage()
-        return TinyEMULinuxGuestRegistry(
+        return LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: [
                 id: LinuxGuestEnvironmentDescriptor(
                     id: id, ownerID: "owner", imageID: image.id
@@ -215,7 +215,7 @@ final class LinuxLifecycleCrossConcurrencyTests: XCTestCase {
         let environmentID = "env-cross"
         let book = EngineBook()
         let registry = makeRegistry(book: book)
-        let service = TinyEMULinuxCommandService(registry: registry)
+        let service = LinuxGuestCommandService(registry: registry)
         let manager = LinuxGuestLifecycleManager(controller: service)
 
         // Boot the original guest.
@@ -276,7 +276,7 @@ final class LinuxLifecycleCrossConcurrencyTests: XCTestCase {
         let environmentID = "env-cross-window"
         let book = EngineBook()
         let registry = makeRegistry(book: book, environmentID: environmentID)
-        let service = TinyEMULinuxCommandService(registry: registry)
+        let service = LinuxGuestCommandService(registry: registry)
         let manager = LinuxGuestLifecycleManager(
             controller: service, stopVerificationTimeout: 1
         )
@@ -394,7 +394,7 @@ final class LinuxLifecycleCrossConcurrencyTests: XCTestCase {
         let environmentID = "env-cross-fail"
         let book = EngineBook()
         let registry = makeRegistry(book: book, environmentID: environmentID)
-        let service = TinyEMULinuxCommandService(registry: registry)
+        let service = LinuxGuestCommandService(registry: registry)
         let manager = LinuxGuestLifecycleManager(
             controller: service, stopVerificationTimeout: 1
         )
@@ -446,7 +446,7 @@ final class LinuxLifecycleCrossConcurrencyTests: XCTestCase {
         let environmentID = "env-cross-quarantine"
         let book = EngineBook()
         let registry = makeRegistry(book: book, environmentID: environmentID)
-        let service = TinyEMULinuxCommandService(registry: registry)
+        let service = LinuxGuestCommandService(registry: registry)
         let manager = LinuxGuestLifecycleManager(
             controller: service, stopVerificationTimeout: 0.2
         )
@@ -491,7 +491,7 @@ final class LinuxLifecycleCrossConcurrencyTests: XCTestCase {
         let environmentID = "env-cross-dual"
         let book = EngineBook()
         let registry = makeRegistry(book: book, environmentID: environmentID)
-        let service = TinyEMULinuxCommandService(registry: registry)
+        let service = LinuxGuestCommandService(registry: registry)
         let manager = LinuxGuestLifecycleManager(
             controller: service,
             releasePolicy: GuestReleaseShapePolicy.internalSyntheticTesting(

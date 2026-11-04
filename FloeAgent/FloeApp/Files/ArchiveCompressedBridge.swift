@@ -159,7 +159,7 @@ enum ArchiveHostBridgeFactory {
 
     /// Builds the guest-service handler for one environment's declared 9p
     /// shares. The shell the app installs with
-    /// `TinyEMULinuxCommandService.installHostRequestHandlerFactory`.
+    /// `LinuxGuestCommandService.installHostRequestHandlerFactory`.
     ///
     /// One bridge is built per guest command token: the runner's control
     /// payload carries the token of the live command it belongs to, and the

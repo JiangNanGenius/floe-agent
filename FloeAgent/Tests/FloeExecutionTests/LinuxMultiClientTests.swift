@@ -105,8 +105,8 @@ final class LinuxMultiClientRegistryTests: XCTestCase {
         ledger: FakeSessionLedger,
         environmentID: String,
         factory: FakeSessionFactory
-    ) -> TinyEMULinuxGuestRegistry {
-        TinyEMULinuxGuestRegistry(
+    ) -> LinuxGuestRegistry {
+        LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: [environmentID: multiDescriptor(id: environmentID)]),
             images: FakeImageResolver(images: ["test-image": multiImage()]),
             limits: .standard,
@@ -117,11 +117,12 @@ final class LinuxMultiClientRegistryTests: XCTestCase {
     private func waitForExecCount(
         _ console: TestLinuxGuestConsole,
         _ expected: Int,
+        excluding baseline: Set<String>,
         deadline: TimeInterval = 5
     ) async throws -> [String] {
         let end = Date().addingTimeInterval(deadline)
         while Date() < end {
-            let tokens = TestLinuxGuestConsole.tokens(in: console.written, name: "EXEC")
+            let tokens = TestLinuxGuestConsole.tokens(in: console.written, name: "EXEC").filter { !baseline.contains($0) }
             if tokens.count >= expected { return tokens }
             try? await Task.sleep(for: .milliseconds(20))
         }
@@ -142,6 +143,7 @@ final class LinuxMultiClientRegistryTests: XCTestCase {
         let registry = makeRegistry(ledger: ledger, environmentID: "env-mc", factory: factory)
         _ = try await registry.start(environmentID: "env-mc", taskID: "task-parent")
         let console = try XCTUnwrap(ledger.console(for: "env-mc"))
+        let startupTokens = Set(TestLinuxGuestConsole.tokens(in: console.written, name: "EXEC"))
 
         // 1. The long child starts first and stays in flight (its reply is held).
         hold.holdNextToken()
@@ -151,7 +153,7 @@ final class LinuxMultiClientRegistryTests: XCTestCase {
             workingDirectory: nil, standardInput: nil,
             timeout: 30, maxOutputBytes: 4096, cancellation: longCancellation
         )
-        let firstWave = try await waitForExecCount(console, 1)
+        let firstWave = try await waitForExecCount(console, 1, excluding: startupTokens)
         let heldToken = try XCTUnwrap(hold.heldToken)
         XCTAssertEqual(firstWave, [heldToken])
         XCTAssertEqual(TestLinuxGuestConsole.tokens(in: console.written, name: "END").count, 0,
@@ -168,7 +170,7 @@ final class LinuxMultiClientRegistryTests: XCTestCase {
             workingDirectory: nil, standardInput: nil,
             timeout: 10, maxOutputBytes: 4096, cancellation: nil
         )
-        let allTokens = try await waitForExecCount(console, 3)
+        let allTokens = try await waitForExecCount(console, 3, excluding: startupTokens)
         XCTAssertEqual(Set(allTokens).count, 3, "three distinct client tokens must be in flight")
         XCTAssertTrue(allTokens.contains(heldToken))
         XCTAssertEqual(TestLinuxGuestConsole.tokens(in: console.written, name: "END").count, 0,
@@ -231,6 +233,7 @@ final class LinuxMultiClientRegistryTests: XCTestCase {
         let registry = makeRegistry(ledger: ledger, environmentID: "env-dup", factory: factory)
         _ = try await registry.start(environmentID: "env-dup", taskID: "task-parent")
         let console = try XCTUnwrap(ledger.console(for: "env-dup"))
+        let startupTokens = Set(TestLinuxGuestConsole.tokens(in: console.written, name: "EXEC"))
 
         // Identical argv on both clients: nothing caller-supplied is unique.
         async let first = registry.run(
@@ -243,7 +246,7 @@ final class LinuxMultiClientRegistryTests: XCTestCase {
             workingDirectory: nil, standardInput: nil,
             timeout: 10, maxOutputBytes: 4096, cancellation: nil
         )
-        let tokens = try await waitForExecCount(console, 2)
+        let tokens = try await waitForExecCount(console, 2, excluding: startupTokens)
         XCTAssertEqual(Set(tokens).count, 2, "each execution mints its own transport token")
         let (firstResult, secondResult) = try await (first, second)
         XCTAssertEqual(
@@ -277,28 +280,7 @@ final class LinuxMultiClientRegistryTests: XCTestCase {
 
     /// The bounded console refuses to silently skip bytes: an overflow is
     /// recorded and the stream is finished so every client fails honestly.
-    func testConsoleSinkOverflowFailsClosedInsteadOfSilentlyDroppingBytes() {
-        var continuation: AsyncStream<Data>.Continuation!
-        let stream = AsyncStream<Data>(bufferingPolicy: .bufferingOldest(2)) { continuation = $0 }
-        let sink = TinyEMUConsoleSink(continuation: continuation)
-        for index in 0..<5 {
-            sink.append(Data("chunk-\(index)".utf8))
-        }
-        XCTAssertGreaterThan(sink.overflowedChunks, 0, "the refused chunk must be recorded")
 
-        let collector = StringCollector()
-        let expectation = expectation(description: "stream finished")
-        let streamCopy = stream
-        Task {
-            for await chunk in streamCopy {
-                collector.append(String(decoding: chunk, as: UTF8.self))
-            }
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 5)
-        XCTAssertEqual(collector.values, ["chunk-0", "chunk-1"],
-                       "the bounded console keeps the oldest queued chunks and then closes honestly")
-    }
 
     /// A run's `environment` is applied to the guest command (the console
     /// protocol carries no env field), safely quoted, instead of being
@@ -314,7 +296,7 @@ final class LinuxMultiClientRegistryTests: XCTestCase {
             cwd: ".",
             rootURL: root,
             environment: ["FLOE_MC_ONE": "va'lue $HOME", "FLOE_MC_TWO": "two"],
-            timeout: 5,
+            deadline: .seconds(5),
             maxOutputBytes: 1024,
             sessionID: "session-env",
             toolEnvironment: ToolEnvironment(id: "env-mc", writableLayerURL: root, layerURLs: [], variables: [:])

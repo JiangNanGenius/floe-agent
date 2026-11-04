@@ -26,7 +26,7 @@ public actor EnvironmentRegistry {
     private var loaded = false
     public private(set) var baseRevision: String
     /// Backend applied to records created without an explicit choice. Phase 2
-    /// (TinyEMU migration): Linux is the selected main execution path, so the
+    /// (Linux runtime migration): Linux is the selected main execution path, so the
     /// default is `.linuxVM`; an explicit `.native` selection is always
     /// honored as the documented compatibility backend.
     public let defaultExecutionBackend: EnvironmentExecutionBackend
@@ -90,7 +90,7 @@ public actor EnvironmentRegistry {
         loaded = true
     }
 
-    /// Phase 2 (TinyEMU migration): records that never made an explicit
+    /// Phase 2 (Linux runtime migration): records that never made an explicit
     /// backend choice (`nil`, the legacy native default) move to the Linux
     /// guest backend in place. Only the metadata field changes — environment
     /// IDs, ownership, layers, manifests and packages are untouched. The

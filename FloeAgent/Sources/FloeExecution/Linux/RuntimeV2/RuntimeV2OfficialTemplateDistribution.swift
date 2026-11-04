@@ -97,7 +97,7 @@ public enum RuntimeV2OfficialTemplateDistribution {
 /// evidence (run URL, digests) is explicit.
 public enum RuntimeV2OfficialTemplatePinnedArtifacts {
     // The basic template was published as an immutable component prerelease
-    // after both TinyEMU boot checks and the corresponding-source audit. The
+    // after both Linux runtime boot checks and the corresponding-source audit. The
     // final archive digest differs from the image-build input because the
     // published manifest adds its release provenance; the disk bytes do not.
     // Full RISC-V guest templates cannot seed the shared ARM64 machine.
@@ -798,7 +798,7 @@ public actor RuntimeV2OfficialTemplateService {
                     kind: .baseImage, id: artifact.imageID, version: nil,
                     digest: ref.sha512.lowercased()
                 ),
-                architecture: "riscv64", diskURL: diskURL,
+                architecture: "arm64", diskURL: diskURL,
                 packages: packages, downloadBytes: artifact.archiveBytes,
                 missingPackages: [], installVerified: true,
                 provenance: provenance

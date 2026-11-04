@@ -901,8 +901,8 @@ final class LinuxGuestRegistryTests: XCTestCase {
         descriptors: [String: LinuxGuestEnvironmentDescriptor],
         images: [String: LinuxGuestImage],
         factory: FakeSessionFactory
-    ) -> TinyEMULinuxGuestRegistry {
-        TinyEMULinuxGuestRegistry(
+    ) -> LinuxGuestRegistry {
+        LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: descriptors),
             images: FakeImageResolver(images: images),
             limits: .standard,
@@ -1171,7 +1171,7 @@ final class LinuxGuestShellBackendTests: XCTestCase {
     }
 
     func testOwnedStoppedEnvironmentFailsInsteadOfRunning() async {
-        let service = TinyEMULinuxCommandService(registry: TinyEMULinuxGuestRegistry(
+        let service = LinuxGuestCommandService(registry: LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: ["env-1": makeDescriptor(id: "env-1")]),
             images: FakeImageResolver(images: [:]),
             limits: .standard,
@@ -1198,7 +1198,7 @@ final class LinuxGuestShellBackendTests: XCTestCase {
     }
 
     func testStoppedGuestSessionsAreReported() async {
-        let service = TinyEMULinuxCommandService(registry: TinyEMULinuxGuestRegistry(
+        let service = LinuxGuestCommandService(registry: LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: [:]),
             images: FakeImageResolver(images: [:]),
             limits: .standard,
@@ -1452,8 +1452,8 @@ final class LinuxGuestRuntimeImageTests: XCTestCase {
         fixture: RuntimeImageFixture,
         descriptors: [String: LinuxGuestEnvironmentDescriptor],
         ledger: FakeSessionLedger
-    ) -> TinyEMULinuxGuestRegistry {
-        TinyEMULinuxGuestRegistry(
+    ) -> LinuxGuestRegistry {
+        LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: descriptors),
             images: FileLinuxGuestImageResolver(root: fixture.root),
             limits: .standard,
@@ -1919,7 +1919,7 @@ final class LinuxGuestNetworkReadinessTests: XCTestCase {
     private func makeRegistry(
         capsLine: String,
         environmentID: String = "env-net"
-    ) -> TinyEMULinuxGuestRegistry {
+    ) -> LinuxGuestRegistry {
         let ledger = FakeSessionLedger()
         let factory = FakeSessionFactory(ledger: ledger) { _, token in
             guard token.hasPrefix("hello-") else { return reply(token) }
@@ -1937,7 +1937,7 @@ final class LinuxGuestNetworkReadinessTests: XCTestCase {
             writableDirectory: writable,
             imageID: "test-image"
         )
-        return TinyEMULinuxGuestRegistry(
+        return LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: [environmentID: descriptor]),
             images: FakeImageResolver(images: ["test-image": makeImage()]),
             limits: .standard,
@@ -2221,8 +2221,8 @@ final class LinuxGuestRuntimeShareMappingTests: XCTestCase {
         legacy: URL,
         workspace: URL,
         runtimeV2: (any LinuxGuestRuntimeV2Integrating)?
-    ) -> TinyEMULinuxGuestRegistry {
-        TinyEMULinuxGuestRegistry(
+    ) -> LinuxGuestRegistry {
+        LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: [
                 "env-1": LinuxGuestEnvironmentDescriptor(
                     id: "env-1",

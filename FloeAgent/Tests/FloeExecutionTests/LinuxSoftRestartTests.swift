@@ -1839,9 +1839,9 @@ final class LinuxSoftRestartRegistryRaceTests: XCTestCase {
 
     private func makeRegistry(
         engine: PoweroffRaceEngine, environmentID: String
-    ) -> TinyEMULinuxGuestRegistry {
+    ) -> LinuxGuestRegistry {
         let image = makeQualifiedImage()
-        return TinyEMULinuxGuestRegistry(
+        return LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: [
                 environmentID: LinuxGuestEnvironmentDescriptor(
                     id: environmentID, ownerID: "owner", imageID: image.id
@@ -1884,7 +1884,7 @@ final class LinuxSoftRestartRegistryRaceTests: XCTestCase {
         let environmentID = "env-race-powered-off"
         let engine = PoweroffRaceEngine()
         let registry = makeRegistry(engine: engine, environmentID: environmentID)
-        let service = TinyEMULinuxCommandService(registry: registry)
+        let service = LinuxGuestCommandService(registry: registry)
         _ = try await registry.start(environmentID: environmentID, taskID: nil)
         engine.armPowerDown()
         let token = try await registry.beginLifecycleTransaction(environmentID: environmentID)
@@ -1916,7 +1916,7 @@ final class LinuxSoftRestartRegistryRaceTests: XCTestCase {
         let environmentID = "env-race-unconfirmed"
         let engine = PoweroffRaceEngine()
         let registry = makeRegistry(engine: engine, environmentID: environmentID)
-        let service = TinyEMULinuxCommandService(registry: registry)
+        let service = LinuxGuestCommandService(registry: registry)
         _ = try await registry.start(environmentID: environmentID, taskID: nil)
         // This case needs a live SUBMITTED command, not an immediate END 0.
         engine.armHold()

@@ -83,8 +83,8 @@ final class LinuxGuestLoopbackProvisioningTests: XCTestCase {
     private func makeRegistry(
         descriptors: [String: LinuxGuestEnvironmentDescriptor],
         factory: RecordingFactory
-    ) -> TinyEMULinuxGuestRegistry {
-        TinyEMULinuxGuestRegistry(
+    ) -> LinuxGuestRegistry {
+        LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: descriptors),
             images: FakeImageResolver(images: ["test-image": makeImage()]),
             limits: .standard,

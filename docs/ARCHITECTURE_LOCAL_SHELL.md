@@ -1,5 +1,11 @@
 # Floe Local Shell Substrate — Architecture
 
+## 共享 ARM64 运行环境 / Shared ARM64 runtime (2026-11-05)
+
+本机使用一个驻留 ARM64 Linux，共用 CPU 和内存配置，项目文件与依赖层按实际项目归属接入；共享缓存只读复用。任务沿用同一个 `exec.shell`、作业及端口转发服务。运行环境的“恢复初始状态”停止并等待所有相关工作，再原子替换运行盘和依赖层；项目文件、聊天、已安装 Skill 记录及共享下载资源保留。重新下载只替换校验通过的基础资源，不执行任务、不迁移旧 RISC-V 二进制。TinyEMU 历史实现保存在[独立仓库](https://github.com/JiangNanGenius/floe-tinyemu)。
+
+On-device execution uses one resident ARM64 Linux machine with global CPU/RAM settings and explicit project-owned files and dependency layers. Shared download caches are reused read-only. Existing shell, job and port-forwarding services remain the entry points. Restore Initial State joins owned work before atomically replacing runtime storage and dependencies; project files, chats, installed Skill records and shared downloaded resources remain. Re-download promotes only verified base resources. It does not execute tasks or migrate retired RISC-V binaries. The retired implementation remains in the separate repository linked above.
+
 ## 当前执行入口 / Current execution entry points (2026-10-17)
 
 模型代码统一使用任务所属 Linux 环境中的 `exec.shell`：Python、JavaScript 和其他语言通过实际安装的命令运行。耗时工作使用现有 `jobs.submit`，网页服务使用 `exec.localService`；HTML 静态预览使用 `runtime=static`。`exec.localPython`、`exec.javascript`、`exec.compatEvaluator`、`exec.wasm`、`python.packages` 和 `wasm.packages` 不再注册，旧任务不会自动重放。缺少 Linux 环境或运行时返回明确错误，不回退执行宿主代码。内部文档处理服务和用户既有安装不因工具退役被删除。

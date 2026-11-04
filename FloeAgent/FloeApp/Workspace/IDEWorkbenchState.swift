@@ -585,15 +585,6 @@ final class IDELanguageRunController: ObservableObject, Identifiable {
     @Published private(set) var runOutput = Data()
     @Published private(set) var localRunSessionID: String?
 
-    /// The guest-core choice for guest-backed local runs (Python/Node). The
-    /// run sheet's picked value IS this property (single source of truth), so
-    /// what the sheet shows and what dispatch resolves cannot drift apart.
-    @Published var guestShapeSelection: GuestRunEntryShapeSelection = .automatic
-    /// The resolved run-entry shape plan for the active guest-backed run, or
-    /// nil for runs that never start the Linux guest. The sheet renders exactly
-    /// this plan and dispatch consumes exactly its `effectiveRequest`.
-    @Published private(set) var guestShapePlan: GuestRunEntryShapePlan?
-
     /// GitHub Actions state is owned by the app-level `GitHubActionsJobCenter`
     /// so a dispatched run survives this controller (and the IDE view) being
     /// dismissed. The controller only tracks the record it started.
@@ -938,62 +929,6 @@ final class IDELanguageRunController: ObservableObject, Identifiable {
         plan = IDELanguageRunPolicy.plan(request())
     }
 
-    // MARK: Guest run shape
-
-    /// Recomputes and publishes the run-entry shape plan for the active file.
-    /// The sheet observes `guestShapePlan`; dispatch recomputes through the
-    /// same function so the picker, the displayed plan and the dispatched
-    /// request are one source of truth.
-    func refreshGuestShapePlan() async {
-        guestShapePlan = await currentGuestShapePlan()
-    }
-
-    /// The run-entry shape plan for the active file, or nil when this run does
-    /// not start the Linux guest (remote/GitHub targets, native shell, WASI
-    /// Lua, or no guest-backed interpreter for the path).
-    ///
-    /// Deliberately independent of the language plan's own availability: the
-    /// sheet computes it as soon as a file is active (the language plan and
-    /// its capability snapshot may still be loading), and a run whose language
-    /// plan is unavailable is blocked by the dispatch gate with its own
-    /// reason — the shape plan never becomes a second, hidden switch.
-    ///
-    /// The plan is built from the same shared advisory the sheet reads, with
-    /// two pieces of real evidence this controller owns:
-    ///  * the image SMP proof comes from the VERIFIED image manifest (never
-    ///    the engine's capability query and never a loose claim). It is read
-    ///    for the app's distributed default image; a pinned environment whose
-    ///    base image differs is still gated by the registry's own verified
-    ///    image check at start time (which fails closed);
-    ///  * the dispatch path is `.shapeAware` because this build carries an
-    ///    accepted request into the guest start (the accepted intent reaches
-    ///    the Linux environment provider's descriptor and the registry's typed
-    ///    admission).
-    /// `GuestReleaseShapePolicy.production` qualifies up to three harts, but
-    /// each secondary hart requires proof from the verified image manifest;
-    /// an explicit unsupported selection is refused without silently lowering it. Dual
-    /// is correct-but-slower on the current equal-work benchmark, which the
-    /// sheet states.
-    func currentGuestShapePlan() async -> GuestRunEntryShapePlan? {
-        guard case .local = selection.target,
-              let path = state?.activePath,
-              let definition = IDELanguageRunPolicy.definition(forRelativePath: path),
-              let interpreter = definition.localInterpreter,
-              IDELanguageRunPolicy.runsInLinuxGuest(interpreter) else { return nil }
-        let signals = IDELanguageRunPolicy.guestShapeSignals(relativePath: path, interpreter: interpreter)
-        let recommendation = await GuestResourceAdvisory.shared.recommend(signals)
-        let imageMaximumVCPUs = await FloePlatformServices.shared.linuxImageMaximumVCPUs(
-            id: LinuxGuestBackendAssembly.defaultImageID
-        )
-        return GuestRunEntryShapePlanner.plan(
-            selection: guestShapeSelection,
-            recommendation: recommendation,
-            imageProvesSMP: imageMaximumVCPUs >= 2,
-            imageMaximumVCPUs: imageMaximumVCPUs,
-            dispatch: .shapeAware
-        )
-    }
-
     private func request() -> IDELanguageRunRequest {
         IDELanguageRunRequest(
             relativePath: state?.activePath ?? "",
@@ -1079,15 +1014,6 @@ final class IDELanguageRunController: ObservableObject, Identifiable {
             return
         }
 
-        // The guest shape this run would deliver (nil for runs that never
-        // start the Linux guest). Computed before the snapshot save and
-        // re-validated by the same identity checks as the language plan; a
-        // refused selection blocks dispatch outright so no guest is booted at
-        // a shape the user did not choose.
-        await refreshGuestShapePlan()
-        guard isCurrent(attempt), !isStopRequested(attempt) else { return }
-        let runShapePlan = guestShapePlan
-
         let hadConflict = state.nativeText.pendingConflict() != nil
         let saved = await state.saveAll()
         guard isCurrent(attempt), !isStopRequested(attempt) else { return }
@@ -1102,7 +1028,7 @@ final class IDELanguageRunController: ObservableObject, Identifiable {
             plan: plan,
             snapshotSaved: saved && !state.hasAnyDirty,
             hasUnresolvedConflict: hadConflict || state.nativeText.pendingConflict() != nil,
-            guestShapeRunnable: runShapePlan?.isRunnable ?? true
+            guestShapeRunnable: true
         )
         guard case .dispatch = decision else {
             if case .blocked(let reason) = decision { status = .blocked(reason) }
@@ -1113,7 +1039,7 @@ final class IDELanguageRunController: ObservableObject, Identifiable {
         let pinned = pinnedContextWithRevision()
         switch plan {
         case .local(_, let argv, _):
-            await dispatchLocal(argv: argv, pinned: pinned, attempt: attempt, shapePlan: runShapePlan)
+            await dispatchLocal(argv: argv, pinned: pinned, attempt: attempt)
         case .remote(let command, _):
             await dispatchRemote(command, pinned: pinned, attempt: attempt)
         case .githubActions(let gitHubPlan, _):
@@ -1229,8 +1155,7 @@ final class IDELanguageRunController: ObservableObject, Identifiable {
     private func dispatchLocal(
         argv: [String],
         pinned: IDELanguageRunPinnedContext,
-        attempt: IDELanguageRunAttempt,
-        shapePlan: GuestRunEntryShapePlan?
+        attempt: IDELanguageRunAttempt
     ) async {
         guard let root else { status = .workspaceChanged; return }
         guard isCurrent(attempt), !isStopRequested(attempt) else { return }
@@ -1263,51 +1188,6 @@ final class IDELanguageRunController: ObservableObject, Identifiable {
         guard IDELanguageRunPolicy.contextDrift(initial: pinned, current: pinnedContextWithRevision()) == nil else {
             status = .workspaceChanged
             return
-        }
-        // Register the accepted guest shape for exactly this run immediately
-        // before the session open that triggers the guest start. A refused
-        // selection produced no effective request, so nothing is registered
-        // and the start can never boot at another shape.
-        var effectiveShapePlan = shapePlan
-        if let environment = toolEnvironment, let plan = shapePlan {
-            let imageID = await FloePlatformServices.shared.linuxPinnedImageSource.baseImageID(
-                for: environment.id
-            ) ?? LinuxGuestBackendAssembly.defaultImageID
-            let imageMaximum = await FloePlatformServices.shared.linuxImageMaximumVCPUs(id: imageID)
-            let actualPlan = GuestRunEntryShapePlanner.plan(
-                selection: plan.selection,
-                recommendation: plan.recommendation,
-                imageProvesSMP: imageMaximum >= 2,
-                imageMaximumVCPUs: imageMaximum,
-                dispatch: .shapeAware
-            )
-            guard isCurrent(attempt), !isStopRequested(attempt) else { return }
-            guard actualPlan.isRunnable else {
-                guestShapePlan = actualPlan
-                status = .blocked(.guestShapeUnavailable)
-                return
-            }
-            effectiveShapePlan = actualPlan
-        }
-        var shapeIntent: ShellGuestRunShapeIntent?
-        if let environment = toolEnvironment,
-           let plan = effectiveShapePlan,
-           let intent = ShellGuestRunShapeIntent.from(
-               plan: plan, environmentID: environment.id, runID: runID.uuidString
-           ) {
-            FloePlatformServices.shared.registerLinuxGuestRunShapeIntent(intent)
-            shapeIntent = intent
-        }
-        // The intent is one-shot: once the open returned (success, failure or
-        // a stop) a later unrelated start must not inherit it. A start that
-        // consumed it already cleared the pending slot; this also covers the
-        // paths where no start happened at all.
-        defer {
-            if let shapeIntent {
-                FloePlatformServices.shared.clearLinuxGuestRunShapeIntent(
-                    environmentID: shapeIntent.environmentID, runID: shapeIntent.runID
-                )
-            }
         }
         let sessionID: String
         var initialOutput = Data()

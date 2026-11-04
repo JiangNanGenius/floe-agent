@@ -508,7 +508,7 @@ final class LinuxRunnerEnvironmentRealGuestTests: XCTestCase {
                      .init(tag: LinuxGuestShare.workspaceTag, hostDirectory: workspace)],
             imageID: imageID, ramMB: 256, vcpus: 1, networkEnabled: true)
         let resolver = RunnerCandidateResolver(root: imagesRoot, candidate: candidate)
-        let registry = TinyEMULinuxGuestRegistry(
+        let registry = LinuxGuestRegistry(
             environments: RunnerOwnedDescriptor(descriptor: descriptor), images: resolver,
             limits: LinuxGuestLimits(runnerProbeTimeout: 120),
             targetDiskCapacityBytes: 17_179_869_184)
@@ -693,7 +693,7 @@ final class LinuxRunnerEnvironmentRealGuestTests: XCTestCase {
             resolver = RuntimeV2CompositeImageResolver(expandedImagesRoot: layout.expandedImagesDirectory,
                 legacy: legacy, verifiedGate: { imageID in await integrator.isImageVerified(imageID: imageID) })
         } else { resolver = legacy }
-        let registry = TinyEMULinuxGuestRegistry(
+        let registry = LinuxGuestRegistry(
             environments: provider, images: resolver,
             limits: LinuxGuestLimits(runnerProbeTimeout: 120), targetDiskCapacityBytes: 17_179_869_184,
             runtimeV2: useRuntimeV2 ? integrator : nil)
@@ -820,7 +820,7 @@ final class LinuxRunnerEnvironmentRealGuestTests: XCTestCase {
         }
     }
 
-    private nonisolated static func sensitiveRun(_ registry: TinyEMULinuxGuestRegistry,
+    private nonisolated static func sensitiveRun(_ registry: LinuxGuestRegistry,
                                                  _ environmentID: String, value: String) async throws -> LinuxCommandResult {
         let ticket = SensitiveProcessEnvironmentTicket(try SensitiveProcessEnvironment(["FLOE_R21_SYNTHETIC": value]))
         return try await SensitiveProcessEnvironmentCarrier.$pending.withValue(ticket) {

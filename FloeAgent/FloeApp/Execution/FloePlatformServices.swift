@@ -26,7 +26,7 @@ final class FloePlatformServices: @unchecked Sendable {
     private var envCommand: FloeEnvCommand?
     private var aptEngine: AptEngine?
     private var contextProvider: (@Sendable () async -> PackagesCLI.Context?)?
-    /// Injected Linux guest command runner (TinyEMU backend, supplied by the
+    /// Injected Linux guest command runner (ARM64 backend, supplied by the
     /// app integration). Nil until a Linux environment backend exists; the
     /// apt/dpkg shell commands then answer honestly that a Linux environment
     /// is required instead of pretending to manage packages on iOS.
@@ -57,16 +57,6 @@ final class FloePlatformServices: @unchecked Sendable {
     /// closure inside the provider. nil/absent means preparation uses the
     /// shared default image.
     let linuxPinnedImageSource = PinnedImageSource()
-    /// The IDE run entry → guest start shape handoff (one slot per run, an
-    /// exclusive claim per environment). The Linux environment provider reads
-    /// the armed value while a start's descriptor is built; app tests can
-    /// drive the center directly.
-    let runShapeCenter = ShellGuestRunShapeCenter()
-    /// Authoritative probe for the core count an environment's ALREADY-RUNNING
-    /// guest was granted (the runtime's own session table), or nil when no
-    /// guest is running. Injected by the Linux backend assembly; nil leaves the
-    /// explicit-shape match check failing closed instead of guessing.
-    private var linuxRunningGuestVCPUProbe: (@Sendable (String) async -> Int?)?
     /// Late-injection, single-slot notification seam installed once by the
     /// production `AppEnvironment` after full initialization. It receives the
     /// environment id only after the runtime owner confirms a Linux guest has
@@ -271,7 +261,7 @@ final class FloePlatformServices: @unchecked Sendable {
         return configured
     }
 
-    /// Late-injection seam for the Linux guest command runner. The TinyEMU
+    /// Late-injection seam for the Linux guest command runner. The Linux runtime
     /// app integration sets this once its backend can own Linux environments;
     /// shell command handlers read it per invocation, so registration order
     /// does not matter.
@@ -294,7 +284,7 @@ final class FloePlatformServices: @unchecked Sendable {
     /// The Linux guest controller (start/stop/status/forward) when this build
     /// has a Linux backend. Build 222 port-forward restoration and the
     /// background surface read/observe it instead of touching the concrete
-    /// TinyEMU type.
+    /// runtime implementation type.
     func linuxGuestController() -> (any LinuxGuestControlling)? {
         lock.withLock { linuxCommandService as? any LinuxGuestControlling }
     }
@@ -323,14 +313,6 @@ final class FloePlatformServices: @unchecked Sendable {
     /// Updates the pinned-image resolver (production wiring or nil).
     func setLinuxPinnedImageIDProbe(_ probe: (@Sendable (String) async -> String?)?) {
         linuxPinnedImageSource.set(probe)
-    }
-
-    /// Injected running-guest core-count probe (the runtime's own session
-    /// table). Set by the Linux backend assembly; the run-shape claim uses it
-    /// to compare an explicit request against the guest that is already
-    /// running. Never a guess: a missing probe answers nil.
-    func setLinuxRunningGuestVCPUProbe(_ probe: (@Sendable (String) async -> Int?)?) {
-        lock.withLock { linuxRunningGuestVCPUProbe = probe }
     }
 
     /// Installs the single runtime-ended notification (or nil to detach).
@@ -541,7 +523,7 @@ final class FloePlatformServices: @unchecked Sendable {
         // Reconnect the real resolver and Runtime v2 substrate so first-Linux-use
         // preparation and exec use the recovered root instead of the unavailable
         // placeholder. Nothing is published if the backend refuses.
-        guard let guest = currentLinuxCommandService() as? TinyEMULinuxCommandService else {
+        guard let guest = currentLinuxCommandService() as? LinuxGuestCommandService else {
             return nil
         }
         guard await LinuxGuestBackendAssembly.reconnectBackend(
@@ -675,81 +657,6 @@ final class FloePlatformServices: @unchecked Sendable {
     func linuxImageMaximumVCPUs(id: String?) async -> Int {
         guard let id, let status = lock.withLock({ linuxImageRuntimeV2 }) else { return 1 }
         return await status.maximumVCPUs(id)
-    }
-
-    // MARK: Guest run shape handoff (IDE run entry → guest start)
-
-    /// Registers the accepted shape for the next guest start of one
-    /// environment. The run controller calls this immediately before it opens
-    /// the run's session; a refused selection registers nothing.
-    func registerLinuxGuestRunShapeIntent(_ intent: ShellGuestRunShapeIntent) {
-        runShapeCenter.register(intent)
-    }
-
-    /// Drops the intent of exactly this run (stop, failed session open,
-    /// workspace drift) so a later unrelated start can never inherit it.
-    func clearLinuxGuestRunShapeIntent(environmentID: String, runID: String) {
-        runShapeCenter.clear(environmentID: environmentID, runID: runID)
-    }
-
-    /// The core count the environment's already-running guest was granted, from
-    /// the runtime's own session table. nil when no guest is running or the
-    /// injected probe is absent; never a guessed number.
-    func linuxGuestRunningVCPUs(id: String) async -> Int? {
-        guard let probe = lock.withLock({ linuxRunningGuestVCPUProbe }) else { return nil }
-        return await probe(id)
-    }
-
-    /// Claims this run's shape intent for the start it is about to make.
-    ///
-    /// When the environment's guest is ALREADY RUNNING the shape cannot change
-    /// (the engine reads vCPUs/RAM once at create time):
-    ///  * an automatic request reuses the running shape — no reshape, no
-    ///    restart — and the intent is consumed so a later start cannot inherit
-    ///    it;
-    ///  * an explicit request whose count cannot be proven equal to the running
-    ///    guest is refused with `ShellGuestRunShapeError`, so the run never
-    ///    silently executes at a shape the user did not choose.
-    ///
-    /// Otherwise the pending intent is claimed and armed (exclusively) for this
-    /// start; another run's in-flight claim refuses this one instead of being
-    /// overwritten. The release gate is applied before any start call.
-    private func claimLinuxGuestRunShape(
-        environmentID: String,
-        runID: UUID?,
-        guestIsRunning: Bool
-    ) async throws -> ShellGuestRunShapeIntent? {
-        guard let runID else {
-            // A start that carries no run shape still must not slip into
-            // another run's in-flight start: while that run's claim is armed
-            // the environment's descriptor belongs to that start. Refuse
-            // visibly (the registry would refuse the concurrent start too).
-            if !guestIsRunning, runShapeCenter.armedIntent(environmentID: environmentID) != nil {
-                throw ShellGuestRunShapeError.startAlreadyInProgress(environmentID: environmentID)
-            }
-            return nil
-        }
-        if guestIsRunning {
-            guard let intent = try runShapeCenter.resolveForRunningGuest(
-                environmentID: environmentID,
-                runID: runID.uuidString,
-                releasePolicy: .production
-            ) else { return nil }
-            if let refusal = ShellGuestRunShapeCenter.runningGuestRefusal(
-                requestedVCPUs: intent.request.vcpus,
-                selection: intent.selection,
-                environmentID: environmentID,
-                runningVCPUs: await linuxGuestRunningVCPUs(id: environmentID)
-            ) {
-                throw refusal
-            }
-            return nil
-        }
-        return try runShapeCenter.claimForStart(
-            environmentID: environmentID,
-            runID: runID.uuidString,
-            releasePolicy: .production
-        )
     }
 
     /// Injected official software-template distribution service (C5). Set by
@@ -1524,103 +1431,41 @@ final class FloePlatformServices: @unchecked Sendable {
         return await registry.layerURL(for: environmentID)
     }
 
-    /// Starts an owned Linux guest on demand (lazy activation) and seeds
-    /// preserved native-era Python packages into the guest venv after a cold
-    /// start. Throws the engine's honest reason when the guest cannot start;
-    /// returns false when the environment is not Linux-owned.
-    ///
-    /// `runID` is the logical run's shell identity when the caller is a
-    /// guest-backed IDE script run: the accepted run shape registered for that
-    /// exact run is claimed (release-gated) and armed for this start's
-    /// descriptor resolution. Every other caller passes no `runID` and keeps
-    /// the worker-default one-hart request.
+    /// Starts an owned project in the shared runtime. CPU and memory come
+    /// exclusively from the durable global configuration, never an IDE run.
     @discardableResult
     func startLinuxGuest(id: String, taskID: String? = nil, runID: UUID? = nil) async throws -> Bool {
-        guard let service = currentLinuxCommandService() else {
+        guard let service = currentLinuxCommandService(),
+              let guests = service as? any LinuxGuestControlling else {
             throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
         }
         guard await service.ownsLinuxEnvironment(environmentID: id) else { return false }
-        guard let guests = service as? any LinuxGuestControlling else {
-            throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
-        }
-        let running = await guests.guestIsRunning(environmentID: id)
-        // The release gate and the running-guest match check are applied to
-        // the typed request BEFORE the start call: an unqualified explicit dual
-        // request or an explicit request that contradicts the running guest
-        // throws here and nothing boots at another shape.
-        let claimed = try await claimLinuxGuestRunShape(
-            environmentID: id, runID: runID, guestIsRunning: running
-        )
-        if running { return true }
-        do {
-            _ = try await guests.startGuest(environmentID: id, taskID: taskID)
-        } catch {
-            // A failed start keeps the run's intent for the image-preparation
-            // retry; only a completed start consumes it.
-            runShapeCenter.finishClaim(environmentID: id, intent: claimed, consumed: false)
-            throw error
-        }
-        runShapeCenter.finishClaim(environmentID: id, intent: claimed, consumed: true)
-        await LegacyPythonPackageMigration.seedIfNeeded(environmentID: id, runner: service)
-        // Build 222: a started VM restores its persisted port-forward rules,
-        // remapping any fixed port that is already taken.
+        if await guests.guestIsRunning(environmentID: id) { return true }
+        _ = try await guests.startGuest(environmentID: id, taskID: taskID)
         await LinuxPortForwardCenter.shared.applyRules(environmentID: id)
         return true
     }
 
-    /// The single lazy-activation entry used by shell routing, guest Python,
-    /// services and package commands: start when owned-but-stopped, seed
-    /// legacy packages after a cold start, surface the honest reason
-    /// otherwise.
-    ///
-    /// `taskID` is the logical run that caused this activation, when the
-    /// caller has one (a tool execution's `ToolContext.runID`). A COLD start
-    /// records it on the guest session, so the heavy-runtime arbiter can tell
-    /// that run's own transient tool guest from work that needs an explicit
-    /// user decision. An already-running guest is never re-owned here: a
-    /// user-started or other-run guest stays protected.
-    ///
-    /// `runID` is the shell-session run identity for a guest-backed IDE script
-    /// run (the controller's stable run UUID). When it matches a registered run
-    /// shape, that typed request is claimed under the release gate and armed
-    /// for the start's descriptor resolution; other callers pass nil.
+    /// Shared lazy activation for shell sessions, services and package work.
+    /// Existing project ownership is preserved when a project is already running.
     func activateLinuxGuest(id: String, taskID: String? = nil, runID: UUID? = nil) async throws {
         guard let service = currentLinuxCommandService() else {
             throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
         }
-        let running = await service.supports(environmentID: id)
-        let claimed = try await claimLinuxGuestRunShape(
-            environmentID: id, runID: runID, guestIsRunning: running
-        )
-        do {
-            if let taskID {
-                try await ensureRunningOwnedByRun(
-                    environmentID: id,
-                    ownerRunID: taskID,
-                    service: service
-                )
-            } else {
-                try await LinuxGuestActivator.ensureRunning(
-                    environmentID: id,
-                    guests: service,
-                    controller: service as? any LinuxGuestControlling,
-                    onColdStart: { environmentID in
-                        await LegacyPythonPackageMigration.seedIfNeeded(environmentID: environmentID, runner: service)
-                    }
-                )
-            }
-        } catch {
-            // Keep the run's intent for the caller's image-preparation retry;
-            // only a completed activation consumes it.
-            runShapeCenter.finishClaim(environmentID: id, intent: claimed, consumed: false)
-            throw error
+        if let taskID {
+            try await ensureRunningOwnedByRun(environmentID: id, ownerRunID: taskID, service: service)
+        } else {
+            try await LinuxGuestActivator.ensureRunning(
+                environmentID: id, guests: service,
+                controller: service as? any LinuxGuestControlling,
+                onColdStart: { _ in }
+            )
         }
-        runShapeCenter.finishClaim(environmentID: id, intent: claimed, consumed: true)
         await LinuxPortForwardCenter.shared.applyRules(environmentID: id)
     }
 
     /// Tool-owned cold start: same contract as `LinuxGuestActivator` (honest
-    /// errors, legacy package seeding after a real cold start) plus the
+    /// errors after a real cold start) plus the
     /// logical-run ownership the guest session records for the arbiter's
     /// scoped transient release.
     private func ensureRunningOwnedByRun(
@@ -1642,7 +1487,6 @@ final class FloePlatformServices: @unchecked Sendable {
         guard started else {
             throw LinuxGuestError.notOwned(environmentID: environmentID)
         }
-        await LegacyPythonPackageMigration.seedIfNeeded(environmentID: environmentID, runner: service)
     }
 
     /// Every Linux-required entry point (shell, guest Python, local services,

@@ -124,6 +124,14 @@
       "source": "https://github.com/kishikawakatsumi/SMBClient.git"
     },
     {
+      "identity": "sparkle",
+      "license": "MIT",
+      "evidence": "FloeApp/Resources/Licenses/Sparkle-LICENSE.txt",
+      "sha256": "389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe",
+      "revision": "ab7d71291238df6e0492143b120c9b696a35f603",
+      "source": "https://github.com/sparkle-project/Sparkle"
+    },
+    {
       "identity": "speech-swift-tts",
       "license": "Apache-2.0",
       "evidence": "ThirdParty/SpeechSwiftTTS/LICENSE",

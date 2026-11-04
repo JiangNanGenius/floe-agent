@@ -10,8 +10,8 @@
 //   the arbiter releases R's own TRANSIENT tool guest WITHOUT a user decision
 //   -> the registry flushes/closes/releases before the model may map weights.
 //
-// Everything below is the real `TinyEMULinuxGuestRegistry`, the real
-// `TinyEMULinuxCommandService` and a real `HeavyRuntimeArbiter`; only the
+// Everything below is the real `LinuxGuestRegistry`, the real
+// `LinuxGuestCommandService` and a real `HeavyRuntimeArbiter`; only the
 // TinyEMU machine is scripted (the same FakeSessionFactory pattern the other
 // LinuxGuestBackend tests use). The tests also pin the protection rules: a
 // user-started guest, another run's guest, a live service, a requested
@@ -332,8 +332,8 @@ private func f3WaitUntil(
 
 final class LinuxGuestTransientOwnershipTests: XCTestCase {
     private struct Harness {
-        let registry: TinyEMULinuxGuestRegistry
-        let service: TinyEMULinuxCommandService
+        let registry: LinuxGuestRegistry
+        let service: LinuxGuestCommandService
         let book: F3SessionBook
         let arbiter: HeavyRuntimeArbiter
         let order: F3OrderLog
@@ -394,7 +394,7 @@ final class LinuxGuestTransientOwnershipTests: XCTestCase {
             runtimeV2 = nil
             images = ["f3-image": f3LegacyImage()]
         }
-        let registry = TinyEMULinuxGuestRegistry(
+        let registry = LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(
                 descriptors: Dictionary(uniqueKeysWithValues: environmentIDs.map {
                     ($0, f3Descriptor(id: $0))
@@ -405,7 +405,7 @@ final class LinuxGuestTransientOwnershipTests: XCTestCase {
             factory: factory,
             runtimeV2: runtimeV2
         )
-        let service = TinyEMULinuxCommandService(registry: registry)
+        let service = LinuxGuestCommandService(registry: registry)
         let harness = Harness(
             registry: registry,
             service: service,

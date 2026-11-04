@@ -302,11 +302,7 @@ struct IDELanguageRunView: View {
     @State private var jobLogRecordID: UUID?
     @State private var jobLogText: String?
     @State private var showingJobLog = false
-    /// The run-entry guest shape choice and its resolved plan are BOTH owned by
-    /// the controller: the picker writes `controller.guestShapeSelection` and
-    /// the sheet renders `controller.guestShapePlan`, so the visible plan, the
-    /// Run button gate and the dispatched typed request can never diverge.
-    private var guestShapePlan: GuestRunEntryShapePlan? { controller.guestShapePlan }
+    @State private var sharedResources: LinuxGuestLifecycleConfig?
 
     private var fileName: String {
         guard let path = state.activePath, let last = path.split(separator: "/").last else {
@@ -374,13 +370,15 @@ struct IDELanguageRunView: View {
                     } label: {
                         Label(IDELanguageRunText.t("运行", "Run"), systemImage: "play.fill")
                     }
-                    .disabled(!controller.canDispatch || guestShapeBlocksDispatch)
+                    .disabled(!controller.canDispatch)
                     .accessibilityIdentifier("workspace.ide.run.confirm")
                     }
                 }
             }
             .task { await controller.prepare() }
-            .task(id: guestShapeTaskKey) { await controller.refreshGuestShapePlan() }
+            .task {
+                sharedResources = await FloePlatformServices.shared.linuxGuestController()?.sharedGuestConfiguration()
+            }
             .onChange(of: controller.selection) { _, _ in
                 Task { await controller.selectionDidChange() }
             }
@@ -521,94 +519,17 @@ struct IDELanguageRunView: View {
         return false
     }
 
-    /// True while a guest-backed local run cannot dispatch with the current
-    /// selection. A refused dual-core choice disables Run: the sheet never
-    /// starts a guest at a shape the user did not choose.
-    private var guestShapeBlocksDispatch: Bool {
-        guard showsGuestShapeSection else { return false }
-        return !(guestShapePlan?.isRunnable ?? false)
-    }
-
-    /// Recomputes the plan whenever the pinned file, the target or the
-    /// selection changes. The controller rebuilds it from the shared advisory
-    /// (honoring a user override or recorded outcome), the verified image's SMP
-    /// proof and the release gate, so the sheet never displays a plan that
-    /// differs from the one dispatch consumes.
-    private var guestShapeTaskKey: String {
-        let target: String
-        switch controller.selection.target {
-        case .local: target = "local"
-        case .remote(let id, _): target = "remote:\(id.uuidString)"
-        case .githubActions: target = "github"
-        }
-        return "\(target)|\(state.activePath ?? "")|\(guestShapeInterpreter?.rawValue ?? "none")|\(controller.guestShapeSelection.rawValue)"
-    }
-
-    private func guestShapeOptionLabel(_ selection: GuestRunEntryShapeSelection) -> String {
-        let label = IDELanguageRunText.shapeLabel(selection)
-        guard let plan = guestShapePlan,
-              let option = plan.option(for: selection),
-              !option.isAvailable else { return label }
-        return label + " · " + IDELanguageRunText.t("不可用", "unavailable")
-    }
-
     private var guestShapeSection: some View {
-        Section(IDELanguageRunText.t("客户机内核", "Guest cores")) {
-            Picker(selection: $controller.guestShapeSelection) {
-                ForEach(GuestRunEntryShapeSelection.allCases, id: \.self) { selection in
-                    Text(guestShapeOptionLabel(selection)).tag(selection)
-                }
-            } label: {
-                Text("vCPU")
-            }
-            .accessibilityIdentifier("workspace.ide.run.guestShape")
-
-            if let plan = guestShapePlan {
-                switch plan.selection {
-                case .automatic:
-                    Text(IDELanguageRunText.automaticShapeNote(plan))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                case .singleCore:
-                    Text(IDELanguageRunText.t(
-                        "显式选择 1 个客户机内核；请求按严格模式提交，资源池不会静默减少内核数。",
-                        "An explicit single guest core; the request is strict and the pool never silently reduces the core count."
-                    ))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                case .dualCore:
-                    if let refusal = plan.refusal {
-                        Label(IDELanguageRunText.shapeRefusal(refusal), systemImage: "exclamationmark.triangle")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    } else if plan.effectiveVCPUs == .two {
-                        Text(IDELanguageRunText.t(
-                            "显式选择 2 个客户机内核；请求按严格模式提交，只有已安装的镜像清单证明 SMP 时才会授予。双核已通过 S0–S4 正确性验证，但等量工作基准在 2 核上更慢（约 \(IDELanguageRunText.speedupText)），不会声称加速。",
-                            "An explicit dual guest-cores request; it is submitted strictly and granted only when the installed image manifest proves SMP. Dual-core passed the S0–S4 correctness contract, but the equal-work benchmark is slower on two cores (about \(IDELanguageRunText.speedupText)); no speedup is claimed."
-                        ))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                case .tripleCore:
-                    if let refusal = plan.refusal {
-                        Label(IDELanguageRunText.shapeRefusal(refusal), systemImage: "exclamationmark.triangle")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    } else {
-                        Text(IDELanguageRunText.t(
-                            "显式请求 3 个客户机内核。仅经验证的三核镜像可启动；资源池总计最多 4 核。",
-                            "Explicitly requests 3 guest cores. A verified three-core image is required; the pool allows 4 cores in total."
-                        ))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                }
+        Section(IDELanguageRunText.t("本机运行环境", "Local runtime")) {
+            if let sharedResources {
+                LabeledContent(IDELanguageRunText.t("处理器", "Processor"), value: "\(sharedResources.vcpus) vCPU")
+                LabeledContent(IDELanguageRunText.t("内存", "Memory"), value: "\(sharedResources.memoryMB) MB")
             }
             Text(IDELanguageRunText.t(
-                "Python/Node 脚本在 Linux 客户机中运行。此选择只影响客户机启动时的内核数；已运行的客户机保持其当前形状（形状变更需要停止并重启客户机）。",
-                "Python/Node scripts run inside the Linux guest. This choice affects the core count at guest start only; an already-running guest keeps its current shape (changing it requires a stop and restart)."
+                "所有项目共用运行资源，可在设置的本机运行环境中调整。",
+                "Projects share runtime resources. Adjust them in Local runtime settings."
             ))
-            .font(.caption2)
+            .font(.caption)
             .foregroundStyle(.secondary)
         }
     }

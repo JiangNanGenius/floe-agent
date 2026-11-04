@@ -8,8 +8,8 @@
 //    kernel version (`uname -sr`), tagged with the runtime identity so a
 //    reboot can never inherit a previous boot's identity values,
 //  * host-side emulator-thread CPU fraction (a proxy for vCPU usage),
-//  * GPU status is *always* `.unavailableNativeOnly`: TinyEMU interprets
-//    RISC-V with no GPU passthrough, and we never fabricate a measured value.
+//  * GPU status is *always* `.unavailableNativeOnly`: Linux runtime interprets
+//    ARM64 with no GPU passthrough, and we never fabricate a measured value.
 //
 // Sampling is bounded: the loop runs only while at least one consumer is
 // iterating the stream, uses one short bounded guest command per interval,

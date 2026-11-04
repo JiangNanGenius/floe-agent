@@ -171,7 +171,7 @@ final class AppEnvironment: ObservableObject {
     /// daemons use the same session/forward API when their consumer lands.
     /// Explicit tool calls retain their resolved environment. nil
     /// only where the engine is not built in.
-    let linuxGuestService: TinyEMULinuxCommandService?
+    let linuxGuestService: LinuxGuestCommandService?
     /// Trusted lazy runtime-component deployment (Impeccable engine): records
     /// immutable task/run/environment-bound plans from verified exact skill
     /// reads and prepares download/staging/probe only at the approved
@@ -976,9 +976,9 @@ final class AppEnvironment: ObservableObject {
         }
 
         // Build 222 heavy-runtime arbitration wiring. One process-wide arbiter
-        // owns the boundary between on-device MLX inference and TinyEMU Linux:
+        // owns the boundary between on-device MLX inference and ARM64 Linux:
         //   * a guest start waits cancellably while any local inference
-        //     session is active (`TinyEMULinuxGuestRegistry.start`),
+        //     session is active (`LinuxGuestRegistry.start`),
         //   * beginning local-model use probes this app for active guests and
         //     local services and presents the conflict here,
         //   * guests are stopped only after the user confirms; a declined or

@@ -468,7 +468,7 @@ final class LinuxKernelUpgradeTests: XCTestCase {
         )
         let fired = ProbeGate()
         let observedImageID = OrderRecorder()
-        let registry = TinyEMULinuxGuestRegistry(
+        let registry = LinuxGuestRegistry(
             environments: HookEnvProvider(descriptor: descriptor),
             images: HookImageResolver(),
             limits: .standard,
@@ -492,7 +492,7 @@ final class LinuxKernelUpgradeTests: XCTestCase {
         try Data("working".utf8).write(to: workingDisk)
 
         // Default: manifest pair.
-        let defaultBoot = try TinyEMULinuxGuestRegistry.v2BootImage(
+        let defaultBoot = try LinuxGuestRegistry.v2BootImage(
             image: fixture.manifest,
             imageDirectory: fixture.imageDirectory,
             workingDisk: workingDisk
@@ -510,7 +510,7 @@ final class LinuxKernelUpgradeTests: XCTestCase {
             quietProbe: { _ in makeQuietReconciliation() }
         )
         _ = try await service.installUpdate(imageID: fixture.id, environmentIDs: { _ in [] })
-        let adoptedBoot = try TinyEMULinuxGuestRegistry.v2BootImage(
+        let adoptedBoot = try LinuxGuestRegistry.v2BootImage(
             image: fixture.manifest,
             imageDirectory: fixture.imageDirectory,
             workingDisk: workingDisk
@@ -521,7 +521,7 @@ final class LinuxKernelUpgradeTests: XCTestCase {
 
         // Rollback: default pair again on the v2 path.
         _ = try await service.rollback(imageID: fixture.id, environmentIDs: { _ in [] })
-        let rolledBackBoot = try TinyEMULinuxGuestRegistry.v2BootImage(
+        let rolledBackBoot = try LinuxGuestRegistry.v2BootImage(
             image: fixture.manifest,
             imageDirectory: fixture.imageDirectory,
             workingDisk: workingDisk
@@ -842,7 +842,7 @@ final class LinuxKernelUpgradeTests: XCTestCase {
         // The registry hook is the App's real automatic path: it runs at the
         // top of every start on the same verified service with origin
         // `.automatic`.
-        let registry = TinyEMULinuxGuestRegistry(
+        let registry = LinuxGuestRegistry(
             environments: HookEnvProvider(descriptor: descriptor),
             images: HookImageResolver(),
             limits: .standard,
@@ -1241,7 +1241,7 @@ final class LinuxKernelUpgradeTests: XCTestCase {
         let resolver = BlockingImageResolver()
         let gate = LinuxGuestBootAssetGate()
         let hookCalls = OrderRecorder()
-        let registry = TinyEMULinuxGuestRegistry(
+        let registry = LinuxGuestRegistry(
             environments: LifecycleEnvProvider(descriptor: descriptor),
             images: resolver,
             limits: .standard,

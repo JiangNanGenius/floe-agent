@@ -2,7 +2,7 @@
 //
 // `<image root>/<id>` holds the immutable, verified qualification artifact:
 // manifests declare their paths relative to that directory and the verifier
-// hashes the bytes there before a start is allowed. The TinyEMU engine only
+// hashes the bytes there before a start is allowed. The Linux runtime engine only
 // receives C paths, though, and it must not be handed relative paths (the app
 // has no usable cwd) nor the shared base disk (a booted guest writes its own
 // APT state; writing the qualification bytes would corrupt verification and

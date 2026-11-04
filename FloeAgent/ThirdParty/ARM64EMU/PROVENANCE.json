@@ -59,7 +59,7 @@
     "hostWorkNotification": true,
     "projectConsoleGenerationReset": true
   },
-  "integrationStatus": "30 C translation units and 23 ABI operations compiled/all-object linked on macOS, iOS device and simulator. Swift 6 FloeExecution object build passed. Actual Linux checks cover17-root topology, two projects, read-only shared ARM64 binary, loopback, restart and overlay reset. Full App cutover and acceptance remain pending; previous backend is still selected.",
+  "integrationStatus": "App selects the resident ARM64 factory. Native 30-TU/23-ABI checks passed on macOS/device/simulator; Swift adapter18 and real Linux three-core/reset12 checks passed. Initial full App cutover compiled. Post-retirement App and UI acceptance remain pending.",
   "files": [
     {
       "path": "Bridge/MPL-2.0.txt",

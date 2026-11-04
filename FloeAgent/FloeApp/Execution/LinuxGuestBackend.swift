@@ -69,25 +69,18 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
     /// window has touched the workspace UI.
     let workspaceStore: any WorkspaceStore
     let sharedDownloadCacheURL: URL?
-    /// The run shape armed by `FloePlatformServices` for the start currently
-    /// in flight (an accepted IDE script-run shape), or nil for every ordinary
-    /// start. Read-only during descriptor build: a concurrent status probe must
-    /// not consume what the start in flight still needs.
-    let armedRunShape: (@Sendable (String) -> ShellGuestRunShapeIntent?)?
 
     init(
         registry: EnvironmentRegistry,
         defaultImageID: String,
         pinnedImageSource: PinnedImageSource,
         workspaceStore: any WorkspaceStore,
-        armedRunShape: (@Sendable (String) -> ShellGuestRunShapeIntent?)? = nil,
         sharedDownloadCacheURL: URL? = nil
     ) {
         self.registry = registry
         self.defaultImageID = defaultImageID
         self.pinnedImageSource = pinnedImageSource
         self.workspaceStore = workspaceStore
-        self.armedRunShape = armedRunShape
         self.sharedDownloadCacheURL = sharedDownloadCacheURL
     }
 
@@ -117,13 +110,6 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
         // One physical ARM64 base is shared. Legacy template pins cannot select
         // an incompatible RISC-V image for this machine.
         let imageID = defaultImageID
-        // An accepted IDE script-run shape armed for the start in flight is
-        // what this descriptor must carry: the typed vCPU/RAM request travels
-        // to the registry's typed admission (and from there to the pool) as an
-        // explicit environment-policy request, never as a hardcoded one-hart
-        // default. With no armed shape the descriptor keeps its previous
-        // nil values (worker default: one hart, the configured RAM default).
-        let armed: ShellGuestRunShapeIntent? = nil
         return LinuxGuestEnvironmentDescriptor(
             id: record.id,
             ownerID: record.ownerID,
@@ -131,8 +117,8 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
             writableDirectory: layer,
             shares: Array(shares.prefix(LinuxGuestShare.maximumShares)),
             imageID: imageID,
-            ramMB: armed?.request.memory.mb,
-            vcpus: armed?.request.vcpus.count,
+            ramMB: nil,
+            vcpus: nil,
             // Linux environments need apt/pip to install python3 and packages.
             // Each admitted guest owns its network instance; the registry
             // controls concurrent VM admission and lifecycle.
@@ -254,13 +240,6 @@ struct LinuxGuestRuntimeV2ImageStatus: Sendable {
 }
 
 /// Builds the single injected Linux guest service for the app.
-private struct UnavailableLinuxGuestSessionFactory: LinuxGuestSessionCreating {
-    func makeSession(descriptor: LinuxGuestEnvironmentDescriptor, image: LinuxGuestImage,
-                     limits: LinuxGuestLimits) throws -> LinuxGuestSessionHandle {
-        throw LinuxGuestError.invalidConfiguration("Runtime storage is unavailable")
-    }
-}
-
 enum LinuxGuestBackendAssembly {
     /// Manifest id expected under `<artifact root>/LinuxGuest/images/<id>/`.
     /// The manifest must carry a passing modern-guest qualification record.
@@ -277,7 +256,7 @@ enum LinuxGuestBackendAssembly {
         registry: EnvironmentRegistry,
         artifactRoot: URL?,
         workspaceStore: any WorkspaceStore
-    ) -> TinyEMULinuxCommandService {
+    ) -> LinuxGuestCommandService {
         // Resolver + v2 substrate plus every hook come from one prepared
         // bundle, so launch assembly and recoverable reconnect never
         // diverge. Construction publishes nothing.
@@ -300,15 +279,9 @@ enum LinuxGuestBackendAssembly {
             defaultImageID: defaultImageID,
             pinnedImageSource: FloePlatformServices.shared.linuxPinnedImageSource,
             workspaceStore: workspaceStore,
-            // The shape claimed for the start in flight (an accepted IDE
-            // script run): the descriptor it builds carries the typed
-            // request so the registry/pool admit that shape explicitly.
-            armedRunShape: { environmentID in
-                FloePlatformServices.shared.runShapeCenter.armedIntent(environmentID: environmentID)
-            },
             sharedDownloadCacheURL: wiring.runtimeV2 == nil ? nil : (try? RuntimeV2Layout.production())?.cacheDirectory
         )
-        let guestRegistry = TinyEMULinuxGuestRegistry(
+        let guestRegistry = LinuxGuestRegistry(
             environments: environmentProvider,
             images: wiring.images,
             limits: .standard,
@@ -317,17 +290,8 @@ enum LinuxGuestBackendAssembly {
             ) as any LinuxGuestSessionCreating } ?? UnavailableLinuxGuestSessionFactory(),
             runtimeV2: wiring.runtimeV2
         )
-        let service = TinyEMULinuxCommandService(registry: guestRegistry)
+        let service = LinuxGuestCommandService(registry: guestRegistry)
         // ARM64 firmware, kernel and supervisor are verified together with the image.
-        // The runtime's own session table is the authoritative source for the
-        // core count an already-running guest was granted; the run-shape claim
-        // compares an explicit request against it instead of guessing.
-        FloePlatformServices.shared.setLinuxRunningGuestVCPUProbe { environmentID in
-            let states = await service.runtimeStates()
-            guard let state = states.first(where: { $0.environmentID == environmentID }),
-                  state.running else { return nil }
-            return state.vcpus
-        }
         // Hooks are published last, before the service can serve anyone.
         publishGuestWiring(wiring)
         return service
@@ -499,7 +463,7 @@ enum LinuxGuestBackendAssembly {
     ///   4. `commit`: admits starts again.
     /// A refused begin answers false with hooks and resolver unchanged.
     static func reconnectBackend(
-        commandService: TinyEMULinuxCommandService,
+        commandService: LinuxGuestCommandService,
         artifactRoot: URL,
         imageService: LinuxGuestImageInstallationService
     ) async -> Bool {

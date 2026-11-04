@@ -130,6 +130,7 @@ CHECKOUT_EVIDENCE_PREFIX = ".build/checkouts/"
 # and is still bound to the declared revision by the recorded evidence row.
 APP_ONLY_NOTICES = {
     "whisperkit": "FloeApp/Resources/Whisper/WhisperKit-LICENSE.txt",
+    "sparkle": "FloeApp/Resources/Licenses/Sparkle-LICENSE.txt",
 }
 
 # Packages vendored under ThirdParty/ that replaced a formerly resolved remote
@@ -345,7 +346,7 @@ EXCEPTIONS = {
         "ThirdParty/FloeCADKit/OCCT_RELINK.md and relink/SOURCE_OFFER.md. "
         "This is an engineering record, not a legal certification."
     ),
-    "Debian package licenses; kernel GPL-2.0; bbl BSD-3-Clause; static glibc LGPL-2.1": (
+    "Debian package licenses; kernel GPL-2.0; EDK2 BSD/MIT; static glibc LGPL-2.1": (
         "the Linux guest is a separately distributed downloadable image; its "
         "source and license texts are recorded in the pinned image manifest"
     ),
@@ -459,20 +460,17 @@ NOTES = (
     (
         "guest_image",
         "The Linux guest is a separately distributed downloadable image built "
-        "from Debian 13 riscv64 packages plus a pinned kernel, bbl and static "
-        "glibc. Its source and license texts are recorded in the pinned image "
+        "from Debian 13 ARM64 packages with a pinned Linux kernel, EDK2 and "
+        "BusyBox. Its corresponding sources and license texts accompany the image "
         "manifest; they are not linked into the app binary.",
     ),
     (
-        "linux_boot_pair",
-        "The app bundles the verified Linux 6.18.56 kernel Image and OpenSBI "
-        "1.9 fw_jump firmware as separate data resources that run inside the "
-        "TinyEMU virtual machine; they are not linked into the app or engine "
-        "binary. The kernel is unmodified upstream Linux (GPL-2.0 with the "
-        "Linux syscall note) and the firmware is OpenSBI (BSD-2-Clause). Their "
-        "complete license texts, the exact build configuration and the "
-        "corresponding-source references ship in the app as "
-        "Licenses/LinuxBootPair-LICENSES.txt.",
+        "arm64",
+        "The interpreted ARM64 engine is arm64emu-system at commit "
+        "55c8128cb02d8ba3809f6579f7c6d316537e0546 (Apache-2.0), with Floe "
+        "MPL-2.0 bridge and resident I/O changes. It generates no native code. "
+        "Complete notices and both licenses are bundled as Licenses/ARM64EMU-LICENSES.txt; "
+        "source hashes are recorded in ThirdParty/ARM64EMU/PROVENANCE.json.",
     ),
     (
         "office",
@@ -508,48 +506,15 @@ STATIC_COMPONENTS = (
     ),
     # Engineering engines and runtimes.
     (
-        "TinyEMU / FloeTinyEMU engine",
-        "2019-12-21 + Floe patches",
-        "MIT",
-        "https://bellard.org/tinyemu/tinyemu-2019-12-21.tar.gz",
-        "engines",
-        None,
+        "Floe ARM64 engine (arm64emu-system)", "55c8128 + Floe resident I/O patches",
+        "Apache-2.0", "https://github.com/sylirre/arm64emu-system/tree/55c8128cb02d8ba3809f6579f7c6d316537e0546",
+        "engines", "settings.licenses.note.arm64",
     ),
     (
-        "TinyEMU slirp (compiled subset)",
-        "2019-12-21",
-        "BSD-2-Clause (Gasparovski files) and BSD-3-Clause (UC Regents files)",
-        "https://bellard.org/tinyemu/tinyemu-2019-12-21.tar.gz",
-        "engines",
-        None,
-    ),
-    (
-        "Floe Linux guest component (Debian 13 riscv64 userland, kernel, bbl, static glibc)",
-        "pinned catalog image",
-        "Debian package licenses; kernel GPL-2.0; bbl BSD-3-Clause; static glibc LGPL-2.1",
-        "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-20260920.1",
-        "engines",
-        "settings.licenses.note.guest_image",
-    ),
-    # The modern boot pair ships inside the app as separate data resources
-    # (LinuxBootPair-LICENSES.txt; pin: ThirdParty/TinyEMU/guest-image/
-    # boot-pair-v2.manifest.json). The legacy guest image above keeps its own
-    # original kernel/bbl pair as rollback and its download manifest.
-    (
-        "Linux guest boot kernel (bundled 6.18.56 Image)",
-        "6.18.56 (build #7)",
-        "GPL-2.0 (Linux kernel; bundled separate data blob, not linked into the app binary; corresponding source, config and license text recorded)",
-        "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.56.tar.xz",
-        "engines",
-        "settings.licenses.note.linux_boot_pair",
-    ),
-    (
-        "Linux guest boot firmware (bundled OpenSBI v1.9 fw_jump)",
-        "v1.9",
-        "BSD-2-Clause",
-        "https://github.com/riscv-software-src/opensbi/releases/tag/v1.9",
-        "engines",
-        "settings.licenses.note.linux_boot_pair",
+        "Floe shared Linux component (Debian 13 ARM64)", "resident-20261105-v1",
+        "Debian package licenses; kernel GPL-2.0; EDK2 BSD/MIT; static glibc LGPL-2.1",
+        "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-arm64-20261105.1",
+        "engines", "settings.licenses.note.guest_image",
     ),
     (
         "VideoEditorKit",
@@ -1048,16 +1013,9 @@ DOCUMENTS = (
         "media",
     ),
     (
-        "tinyemu",
-        "FloeApp/Resources/TinyEMU-LICENSES.txt",
-        "TinyEMU-LICENSES.txt",
-        "settings.licenses.document.tinyemu.title",
-        "TinyEMU 2019-12-21 and slirp",
-        None,
-        "MIT / BSD-2-Clause / BSD-3-Clause",
-        "full_text",
-        True,
-        "engines",
+        "arm64-emu", "FloeApp/Resources/Licenses/ARM64EMU-LICENSES.txt",
+        "Licenses/ARM64EMU-LICENSES.txt", "settings.licenses.document.arm64.title",
+        "Floe ARM64 engine — licenses and notices", None, "Apache-2.0 / MPL-2.0", "full_text", True, "engines",
     ),
     (
         "libgit2",
@@ -1067,18 +1025,6 @@ DOCUMENTS = (
         "libgit2",
         None,
         "GPL-2.0 with linking exception",
-        "full_text",
-        True,
-        "engines",
-    ),
-    (
-        "linux-boot-pair",
-        "FloeApp/Resources/Licenses/LinuxBootPair-LICENSES.txt",
-        "Licenses/LinuxBootPair-LICENSES.txt",
-        "settings.licenses.document.linux_boot_pair.title",
-        "Linux guest boot pair (kernel + firmware)",
-        None,
-        "GPL-2.0 (kernel), BSD-2-Clause (OpenSBI)",
         "full_text",
         True,
         "engines",
@@ -1688,11 +1634,18 @@ def resolve_pins(
                         f"{evidence_path} {digest[:12]}); review before regenerating"
                     )
             elif moved and origin == "notice":
-                problems.append(
-                    f"{identity}: pin moved to revision {revision} / {source} while only the "
-                    f"repository notice {evidence_path} is available; verify it matches the "
-                    "new revision, then regenerate"
-                )
+                # A new App-only pin can be reviewed from its exact resolved
+                # checkout without rewriting the shipped notice's stable path.
+                # A notice alone remains insufficient for a changed revision.
+                verified_digest = None
+                if state == "ok" and actual == revision:
+                    _, _, verified_digest = detect_pin_license(identity, checkouts)
+                if verified_digest != digest:
+                    problems.append(
+                        f"{identity}: pin moved to revision {revision} / {source}; the "
+                        f"repository notice {evidence_path} needs a byte-identical "
+                        "license from its verified checkout before regenerating"
+                    )
             else:
                 print(
                     f"note: recording license evidence for {identity}: "

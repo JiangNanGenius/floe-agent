@@ -194,7 +194,6 @@
 		2152EEB394E8606B0FAF2D88 /* dashE.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 41C98E7CCFBEC485C346C9A3 /* dashE.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		216B5AE7D8B2B8800E7D18EC /* CADAnimationAuthoringFlowUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD07D4A11AA16DACADF91C0A /* CADAnimationAuthoringFlowUITests.swift */; };
 		2173B3E56EC5D120D56FB730 /* OfficeAutomaticExecutionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 287C982A843843F175964825 /* OfficeAutomaticExecutionTests.swift */; };
-		217DCF6650FFED12E80CAD40 /* TinyEMU-LICENSES.txt in Resources */ = {isa = PBXBuildFile; fileRef = A6F5C96BCCB2084068B87229 /* TinyEMU-LICENSES.txt */; };
 		21CFBFBA419ECDCF8926258C /* DocumentExportServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B52255258EA1EE476256544E /* DocumentExportServiceTests.swift */; };
 		2204AB734CAA9BD927FB3F95 /* HostListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A23E7E08860487A8333BE4F /* HostListView.swift */; };
 		222B3B3482FB23F882D7E8AF /* CADThumbnailIsolationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F26415DCB5342059FAE6E556 /* CADThumbnailIsolationTests.swift */; };
@@ -282,6 +281,7 @@
 		32180DBBC109A9CEFC4C00A5 /* AgentPermissionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 105C43DC4C517D5A6A445B8B /* AgentPermissionsView.swift */; };
 		326698472DCA8270CB544022 /* CADAssemblyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D07EC996174F14A42C5BD38 /* CADAssemblyTests.swift */; };
 		328E93399AE2A291CF0DAEA7 /* ChildRunResumeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E85B49344D2CF8C81020AE /* ChildRunResumeTests.swift */; };
+		3292C80C4ADB8F3DD441E3AC /* ThirdPartyLicensesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C45EF2E09A954F3533130D38 /* ThirdPartyLicensesView.swift */; };
 		32E177C38C2EDDE5B01D2333 /* SystemMediaSystemServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 520D0B977211A12B1C13FBC6 /* SystemMediaSystemServices.swift */; };
 		32EFB0085EA11AF141BCE51E /* SpeechProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17008E94357A0C8A5DB8B34F /* SpeechProviderTests.swift */; };
 		3305F1B8DFFAB446D1BB46AD /* SpeechTextRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76D32E6BDA1703F387FC3571 /* SpeechTextRoutingTests.swift */; };
@@ -622,7 +622,6 @@
 		70520C3ACCCC3D82B68A7023 /* NotesLinkedMindMaps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F668EB3DFCFA9A320326D26 /* NotesLinkedMindMaps.swift */; };
 		708D1DBA44A699E58A9D4653 /* FloeShellCoreUtilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9075F54CA5B24D6571AFA532 /* FloeShellCoreUtilities.swift */; };
 		709D846BD9E004FF961B6F54 /* BrowserImpeccableCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EB5FAE1713DCDB627A6D7B7 /* BrowserImpeccableCapture.swift */; };
-		70AC642C190F2AF2E2DD3892 /* TinyEMULicensesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99FA210DA5A6EFEB7B543461 /* TinyEMULicensesView.swift */; };
 		70ACA9D47779015CABBCAD85 /* SkillInstallAuthorizationRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6244CD41D078A7E0BC966109 /* SkillInstallAuthorizationRegressionTests.swift */; };
 		70B0244D522DFFA14861A337 /* FloeScreenShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E388FA201B460E867D612C38 /* FloeScreenShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		70C853FDEBC620B5CD9A2A7A /* TTSSettingsServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14280797DF191ECFA0C679D2 /* TTSSettingsServiceTests.swift */; };
@@ -782,6 +781,7 @@
 		90CAC8FA7EADAF3CDFDFEFB7 /* LinuxBootAssetUpdatePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7930B11AFD4949FC77955BB /* LinuxBootAssetUpdatePolicy.swift */; };
 		91094E4C6D3DF46DEBEBC31C /* AmbientAudioSynthesizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4070A439369EBD73697E3121 /* AmbientAudioSynthesizer.swift */; };
 		912A144E85A4C312537582FC /* SetupGuideUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */; };
+		91471790749203E6615BF0E7 /* ARM64MachineConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A8873CA85FE4C2A85279299 /* ARM64MachineConfigurationTests.swift */; };
 		9190127B8D84D3B6A98B0E17 /* FloeL10nTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15F7F64E8FA73646C202779F /* FloeL10nTests.swift */; };
 		91959493555E91B8D0C0D72F /* SharedDocumentsFileProviderItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = F69849D5B4E6C5701169D1F8 /* SharedDocumentsFileProviderItem.swift */; };
 		91EA3DEC4908CCC6F47A53C3 /* LayoutPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB38C0A73749F36D4220FE3F /* LayoutPreferences.swift */; };
@@ -1041,7 +1041,6 @@
 		C0644D9C266B374CE223488D /* VNCSessionOwner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DF58B5C692BB56DB9A379F4 /* VNCSessionOwner.swift */; };
 		C0D555524FD4416C3D594C9D /* LocalModelsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3239F632B3D2E2DF7F9BBA8 /* LocalModelsSettingsView.swift */; };
 		C10BC168B21F6ADF1CB6B4AF /* RemoteSharedSkillIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB226648F62890591BBDC6AE /* RemoteSharedSkillIdentityTests.swift */; };
-		C123AF9288872B54F842F1D8 /* LinuxGuestConsoleSinkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E9DE1B1F43C125C8CFCDDDE /* LinuxGuestConsoleSinkTests.swift */; };
 		C1A554056C07CFBFB8E8A86E /* TemporaryChatUITestFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92FF9843C6AA861EBDD8C1AB /* TemporaryChatUITestFixture.swift */; };
 		C1CE007EB2CF532B33A72BCB /* NotesSession+DocumentIntake.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB5C64B60FB429CDA12527C8 /* NotesSession+DocumentIntake.swift */; };
 		C1DA068DB9EDAB2F2A7C541A /* LocalCADAdmissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D30928D1ABFD45A303EAA60 /* LocalCADAdmissionTests.swift */; };
@@ -2077,6 +2076,7 @@
 		79F6F5D551AD66D3EADD5EC5 /* CanvasNativeCADNodeContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasNativeCADNodeContent.swift; sourceTree = "<group>"; };
 		7A23E7E08860487A8333BE4F /* HostListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostListView.swift; sourceTree = "<group>"; };
 		7A2AB939793E51B7521EB646 /* SkillAuthoringInputSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillAuthoringInputSnapshot.swift; sourceTree = "<group>"; };
+		7A8873CA85FE4C2A85279299 /* ARM64MachineConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ARM64MachineConfigurationTests.swift; sourceTree = "<group>"; };
 		7AA5FE75929315E529714A75 /* PDFUnlockTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFUnlockTool.swift; sourceTree = "<group>"; };
 		7ADE79F616E839CB00E1B21F /* NotesKnowledgeAttachment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesKnowledgeAttachment.swift; sourceTree = "<group>"; };
 		7B0A26F4078FD87102346033 /* PiPAudioPreferencesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiPAudioPreferencesTests.swift; sourceTree = "<group>"; };
@@ -2100,7 +2100,6 @@
 		7DF58B5C692BB56DB9A379F4 /* VNCSessionOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VNCSessionOwner.swift; sourceTree = "<group>"; };
 		7E3403F8353E26CDD43FFDF6 /* LocalModelCanonicalCADAdmissionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelCanonicalCADAdmissionTests.swift; sourceTree = "<group>"; };
 		7E3DF23F725DF64749733A6E /* AlarmKitNativeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlarmKitNativeManager.swift; sourceTree = "<group>"; };
-		7E9DE1B1F43C125C8CFCDDDE /* LinuxGuestConsoleSinkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxGuestConsoleSinkTests.swift; sourceTree = "<group>"; };
 		7EB83CE4E7FCE787665DFBBB /* uuid.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = uuid.min.js; sourceTree = "<group>"; };
 		7EEC30733D712B607B8E48AB /* SystemMediaTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemMediaTools.swift; sourceTree = "<group>"; };
 		7F4320C0FA1D4880122D9B3B /* RemoteSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSettingsView.swift; sourceTree = "<group>"; };
@@ -2237,7 +2236,6 @@
 		99ADA8F33553BCBDA766023A /* prepare-multi-axis-preview.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "prepare-multi-axis-preview.sh"; sourceTree = "<group>"; };
 		99BF7EEAD430E5713C8A2CE4 /* DesignWorkflowIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignWorkflowIntegrationTests.swift; sourceTree = "<group>"; };
 		99CFF4252734BBEEE4706FC4 /* ChildToolDiscoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChildToolDiscoveryTests.swift; sourceTree = "<group>"; };
-		99FA210DA5A6EFEB7B543461 /* TinyEMULicensesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TinyEMULicensesView.swift; sourceTree = "<group>"; };
 		9A4CF2511A000A01D4C21C1E /* ContextCompactionDegradeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextCompactionDegradeTests.swift; sourceTree = "<group>"; };
 		9AE00AE8C48A57678150940A /* MediaAuthorityPayloadParityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaAuthorityPayloadParityTests.swift; sourceTree = "<group>"; };
 		9B3859A6FDC29C39C3ED5029 /* HealthKitService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthKitService.swift; sourceTree = "<group>"; };
@@ -2313,7 +2311,6 @@
 		A6797B7DAA890D6378153058 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		A67BD29EB5A04264BB080209 /* IDEWorkbenchState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IDEWorkbenchState.swift; sourceTree = "<group>"; };
 		A6AFF9D3E17B2962EAE99225 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
-		A6F5C96BCCB2084068B87229 /* TinyEMU-LICENSES.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "TinyEMU-LICENSES.txt"; sourceTree = "<group>"; };
 		A7642BD043053C610E612722 /* PDFKitAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFKitAccess.swift; sourceTree = "<group>"; };
 		A7705977F9297EBCC83FC679 /* FloeScreenShare.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FloeScreenShare.entitlements; sourceTree = "<group>"; };
 		A78C876BBD64B7A0BB9217AA /* CADHoleWorkflowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADHoleWorkflowTests.swift; sourceTree = "<group>"; };
@@ -2469,6 +2466,7 @@
 		C3D8C3CD2F985261A56BD563 /* ProfessionalSearchAuthorizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfessionalSearchAuthorizationTests.swift; sourceTree = "<group>"; };
 		C3EB8F799548AC5D70A47CBB /* LinuxSoftRestartTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxSoftRestartTests.swift; sourceTree = "<group>"; };
 		C43555513E313C954D2E39B3 /* ProviderListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderListViewModel.swift; sourceTree = "<group>"; };
+		C45EF2E09A954F3533130D38 /* ThirdPartyLicensesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThirdPartyLicensesView.swift; sourceTree = "<group>"; };
 		C475AC7DAECA1BD7C37234B3 /* SkillMutationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillMutationTests.swift; sourceTree = "<group>"; };
 		C47F2FEDD3D8B3671BD29D2B /* SearchProviderCatalog.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = SearchProviderCatalog.json; sourceTree = "<group>"; };
 		C4CD5173D18CDDB6549BBD7D /* RemoteSessionCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSessionCenter.swift; sourceTree = "<group>"; };
@@ -4041,7 +4039,7 @@
 				50BA473C0A70CA3815EF338B /* SettingsRootView.swift */,
 				E5C9FCB4BCFCE1897EF0991E /* StorageDiagnosticService.swift */,
 				38EF13B22EE01FC77116294D /* SyncSettingsView.swift */,
-				99FA210DA5A6EFEB7B543461 /* TinyEMULicensesView.swift */,
+				C45EF2E09A954F3533130D38 /* ThirdPartyLicensesView.swift */,
 				97B9B3602FD264F0C21CE627 /* UsageStatisticsView.swift */,
 				E2A973A1792C0F7A8E5C16A4 /* VolcengineSearchSettings.swift */,
 				3F4735140291FC5F3FC031CE /* WebSearchSettingsCenter.swift */,
@@ -4816,7 +4814,6 @@
 				85B917B643B922C86500E787 /* PrivacyInfo.xcprivacy */,
 				160825165F4817AEA236C1B9 /* ProviderCatalog.json */,
 				C47F2FEDD3D8B3671BD29D2B /* SearchProviderCatalog.json */,
-				A6F5C96BCCB2084068B87229 /* TinyEMU-LICENSES.txt */,
 				7858BFEF9F60D96BAA0E621E /* Whisper */,
 				E5AC44E2A3E68DA153AED855 /* ZLImageEditor-LICENSE.txt */,
 				DB36F422ADE950777B8304AD /* Audio */,
@@ -4920,6 +4917,7 @@
 		F3D2EC95488A303FB0654FEF /* FloeExecutionTests */ = {
 			isa = PBXGroup;
 			children = (
+				7A8873CA85FE4C2A85279299 /* ARM64MachineConfigurationTests.swift */,
 				81ED3DBB8BC16B60A029AB40 /* BackgroundJobDurationReminderTests.swift */,
 				EC1E9EC5FF07FB15909621BE /* BackgroundJobTests.swift */,
 				04817BC1C53D9C361D0650AD /* BraveSearchNormalizationTests.swift */,
@@ -4929,7 +4927,6 @@
 				418AD92B65BA11E89E2A9914 /* GuestPythonRuntimeTests.swift */,
 				CDE7C9846D09A655344648AA /* JobOutputPagingTests.swift */,
 				539F31408E05AE89AC0A3FA5 /* LinuxGuestBackendTests.swift */,
-				7E9DE1B1F43C125C8CFCDDDE /* LinuxGuestConsoleSinkTests.swift */,
 				3479B162E9ADAE1B2999462E /* LinuxGuestLanguagePackageTests.swift */,
 				9510D1D779925FDCB28E153C /* LinuxGuestLoopbackProvisioningTests.swift */,
 				2A584E0DC8FB3226A9FB3E98 /* LinuxGuestPythonFastProvisionTests.swift */,
@@ -5287,7 +5284,6 @@
 				720A576246CF124A1F9524C4 /* PrivacyInfo.xcprivacy in Resources */,
 				AF790906898107BF9A5B2C1C /* ProviderCatalog.json in Resources */,
 				999715D94CD5A3DFA1265E49 /* SearchProviderCatalog.json in Resources */,
-				217DCF6650FFED12E80CAD40 /* TinyEMU-LICENSES.txt in Resources */,
 				E9075DDE4B9BCC5B1C61D735 /* Whisper in Resources */,
 				85FE596AA078AE1512E4FD3A /* ZLImageEditor-LICENSE.txt in Resources */,
 				B52C3EFD71389DCC522FD3DA /* basic-machining-backend-0.2.0.zip in Resources */,
@@ -5905,6 +5901,7 @@
 				7BB5CA51824E786287F252A8 /* TextFileEditorView.swift in Sources */,
 				14FA0A8A02DE853A54CC1EFE /* TextReaderSource.swift in Sources */,
 				3ACBDB1D694AE9818F8CDAD0 /* TextReaderView.swift in Sources */,
+				3292C80C4ADB8F3DD441E3AC /* ThirdPartyLicensesView.swift in Sources */,
 				E848083DD6CD8D1D0C33B8EE /* ThreadComposerView.swift in Sources */,
 				144C0751E522D91EB3EAD196 /* ThreadDetailView.swift in Sources */,
 				EA75F07AFCF7BF5BF8A40F9E /* ThreadDetailViewModel.swift in Sources */,
@@ -5913,7 +5910,6 @@
 				8B8C939593D965E827582FE8 /* ThreadSearchBar.swift in Sources */,
 				4B66FE258B3380EFCECF6366 /* ThreadSearchModel.swift in Sources */,
 				E2D2BDB4FA66151CCC91F7D0 /* ThreadTimeline.swift in Sources */,
-				70AC642C190F2AF2E2DD3892 /* TinyEMULicensesView.swift in Sources */,
 				330DA84EDC7F8F28C0127FE1 /* ToolCallCardView.swift in Sources */,
 				1AF3FEAB736D464A0AE0957B /* UsageStatisticsView.swift in Sources */,
 				99C54A5F72057E2F5DE439BD /* UserMessageBubble.swift in Sources */,
@@ -6034,6 +6030,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				91471790749203E6615BF0E7 /* ARM64MachineConfigurationTests.swift in Sources */,
 				5188120D2FC5226FD8DD41D6 /* ASRAdapterFactoryTests.swift in Sources */,
 				1156FC858675FC819698528A /* ASRConfigurationTests.swift in Sources */,
 				61D14673490B4DEADD6DC414 /* ASRPacketProgressTests.swift in Sources */,
@@ -6312,7 +6309,6 @@
 				D49729B8CD03335BB94C01AA /* KimiImageProviderPresetTests.swift in Sources */,
 				FCD2E354FB678A9A1CB365D9 /* LinuxComponentUpdatePolicyTests.swift in Sources */,
 				C5CB4AFD633CF0A3AA9032D2 /* LinuxGuestBackendTests.swift in Sources */,
-				C123AF9288872B54F842F1D8 /* LinuxGuestConsoleSinkTests.swift in Sources */,
 				BC34ECFBE5DD3413A56ED43C /* LinuxGuestLanguagePackageTests.swift in Sources */,
 				809C0C37A9309B9BC62FE6B2 /* LinuxGuestLoopbackProvisioningTests.swift in Sources */,
 				1AD2CFB82DA3486476563058 /* LinuxGuestPythonFastProvisionTests.swift in Sources */,
@@ -6756,7 +6752,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 310;
+				CURRENT_PROJECT_VERSION = 311;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -6782,7 +6778,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.7.69;
+				MARKETING_VERSION = 1.7.70;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"-framework",
 					CPDFium,
@@ -6813,7 +6809,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
-				CURRENT_PROJECT_VERSION = 310;
+				CURRENT_PROJECT_VERSION = 311;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -6824,7 +6820,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.69;
+				MARKETING_VERSION = 1.7.70;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -6840,7 +6836,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeFileProvider/FloeFileProvider.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 310;
+				CURRENT_PROJECT_VERSION = 311;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -6851,7 +6847,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.69;
+				MARKETING_VERSION = 1.7.70;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.fileprovider;
 				PRODUCT_MODULE_NAME = FloeFileProvider;
 				PRODUCT_NAME = FloeFileProvider;
@@ -6925,7 +6921,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 310;
+				CURRENT_PROJECT_VERSION = 311;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -6936,7 +6932,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.69;
+				MARKETING_VERSION = 1.7.70;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";
@@ -6971,7 +6967,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
-				CURRENT_PROJECT_VERSION = 310;
+				CURRENT_PROJECT_VERSION = 311;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -6982,7 +6978,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.69;
+				MARKETING_VERSION = 1.7.70;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -7082,7 +7078,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 310;
+				CURRENT_PROJECT_VERSION = 311;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -7093,7 +7089,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.69;
+				MARKETING_VERSION = 1.7.70;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -7112,7 +7108,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 310;
+				CURRENT_PROJECT_VERSION = 311;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -7138,7 +7134,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.7.69;
+				MARKETING_VERSION = 1.7.70;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"-framework",
 					CPDFium,
@@ -7168,7 +7164,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeFileProvider/FloeFileProvider.entitlements;
-				CURRENT_PROJECT_VERSION = 310;
+				CURRENT_PROJECT_VERSION = 311;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -7179,7 +7175,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.69;
+				MARKETING_VERSION = 1.7.70;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.fileprovider;
 				PRODUCT_MODULE_NAME = FloeFileProvider;
 				PRODUCT_NAME = FloeFileProvider;
@@ -7195,7 +7191,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 310;
+				CURRENT_PROJECT_VERSION = 311;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -7206,7 +7202,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.69;
+				MARKETING_VERSION = 1.7.70;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -7250,7 +7246,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
-				CURRENT_PROJECT_VERSION = 310;
+				CURRENT_PROJECT_VERSION = 311;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -7261,7 +7257,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.69;
+				MARKETING_VERSION = 1.7.70;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";

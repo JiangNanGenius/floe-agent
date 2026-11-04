@@ -16,7 +16,7 @@
 // packages into the system interpreter.
 //
 // First-use cost: `python3 -m venv --system-site-packages` boots pip through
-// ensurepip, which is expensive under the TinyEMU interpreter (measured in
+// ensurepip, which is expensive under the Linux runtime interpreter (measured in
 // the pinned image inside a real guest: 143.6 s on an Apple M5 Pro host and
 // 255-259 s in the on-device run that motivated this). A fresh environment is
 // therefore created without ensurepip in a private staging directory, the

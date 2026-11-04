@@ -234,9 +234,9 @@ final class LinuxGuestImageRecoveryTests: XCTestCase {
     @discardableResult
     private func makeBarrierRegistry(
         resolver: FakeImageResolver
-    ) -> (TinyEMULinuxGuestRegistry, FakeSessionLedger) {
+    ) -> (LinuxGuestRegistry, FakeSessionLedger) {
         let ledger = FakeSessionLedger()
-        let registry = TinyEMULinuxGuestRegistry(
+        let registry = LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: [
                 "env-1": LinuxGuestEnvironmentDescriptor(id: "env-1", ownerID: "owner", imageID: "env-image")
             ]),
@@ -254,7 +254,7 @@ final class LinuxGuestImageRecoveryTests: XCTestCase {
 
     func testBeginReconnectSwapsResolverAndHoldsBarrier() async throws {
         let (registry, ledger) = makeBarrierRegistry(resolver: resolver(returning: "old-content"))
-        let service = TinyEMULinuxCommandService(registry: registry)
+        let service = LinuxGuestCommandService(registry: registry)
         let began = await service.beginLinuxBackendReconnect(
             images: resolver(returning: "new-content"), runtimeV2: nil
         )
@@ -275,7 +275,7 @@ final class LinuxGuestImageRecoveryTests: XCTestCase {
 
     func testAbortReconnectRestoresOldResolver() async throws {
         let (registry, ledger) = makeBarrierRegistry(resolver: resolver(returning: "old-content"))
-        let service = TinyEMULinuxCommandService(registry: registry)
+        let service = LinuxGuestCommandService(registry: registry)
         let began = await service.beginLinuxBackendReconnect(
             images: resolver(returning: "new-content"), runtimeV2: nil
         )
@@ -291,7 +291,7 @@ final class LinuxGuestImageRecoveryTests: XCTestCase {
 
     func testReconnectRefusedWhileGuestActiveLeavesResolverUnchanged() async throws {
         let (registry, ledger) = makeBarrierRegistry(resolver: resolver(returning: "old-content"))
-        let service = TinyEMULinuxCommandService(registry: registry)
+        let service = LinuxGuestCommandService(registry: registry)
         // Boot the old resolver first.
         let didStart = try await service.startGuest(environmentID: "env-1", taskID: nil)
         XCTAssertTrue(didStart)
@@ -317,7 +317,7 @@ final class LinuxGuestImageRecoveryTests: XCTestCase {
         let queuedV2 = QueuedRuntimeV2Recorder(root: queueRoot, parks: false, fixedQueued: 1)
         let pair = try makeQueuedRegistry(recorder: queuedV2, queueRoot: queueRoot, oldContent: "old-content")
         let registry = pair.0; let ledger = pair.1
-        let service = TinyEMULinuxCommandService(registry: registry)
+        let service = LinuxGuestCommandService(registry: registry)
         // Reconnect supplies a NEW resolver (its image also lives in a known
         // expanded dir; reuse queueRoot for the new image too).
         let newImage = try relativeQualifiedImage(contentID: "new-content", in: queueRoot)
@@ -341,7 +341,7 @@ final class LinuxGuestImageRecoveryTests: XCTestCase {
         let parkedV2 = QueuedRuntimeV2Recorder(root: queueRoot, parks: true, fixedQueued: 0)
         let pair = try makeQueuedRegistry(recorder: parkedV2, queueRoot: queueRoot, oldContent: "old-content")
         let registry = pair.0
-        let service = TinyEMULinuxCommandService(registry: registry)
+        let service = LinuxGuestCommandService(registry: registry)
         let newImage = try relativeQualifiedImage(contentID: "new-content", in: queueRoot)
 
         let beginTask = Task {
@@ -839,10 +839,10 @@ final class LinuxGuestImageRecoveryTests: XCTestCase {
         recorder: QueuedRuntimeV2Recorder,
         queueRoot: URL,
         oldContent: String
-    ) throws -> (TinyEMULinuxGuestRegistry, FakeSessionLedger) {
+    ) throws -> (LinuxGuestRegistry, FakeSessionLedger) {
         let ledger = FakeSessionLedger()
         let oldImage = try relativeQualifiedImage(contentID: oldContent, in: queueRoot)
-        let registry = TinyEMULinuxGuestRegistry(
+        let registry = LinuxGuestRegistry(
             environments: FakeEnvironmentProvider(descriptors: [
                 "env-1": LinuxGuestEnvironmentDescriptor(id: "env-1", ownerID: "owner", imageID: "env-image")
             ]),

@@ -1,7 +1,7 @@
 // FloeExecution — Model-facing Linux guest lifecycle tools' service layer.
 //
 // Explicit, truthful start/status/stop/soft-restart/hard-restart control for
-// the TinyEMU Linux guest owned by one Floe environment. The agent tools in
+// the ARM64 Linux guest owned by one Floe environment. The agent tools in
 // Tools/LinuxLifecycleTools.swift call `LinuxGuestLifecycleManager`; the
 // manager owns the safe ordering around an injected `LinuxGuestControlling`
 // backend and never lets a request claim a shape the runtime did not grant.
@@ -1089,7 +1089,7 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
                 reason: """
                 soft restart is not implemented in the guest image (no ordered flush + durable \
                 restart agent), so a false success was refused; use environment.hardRestartLinux \
-                (which stops the actual TinyEMU instance) when the disruption is acceptable
+                (which stops the actual Linux runtime instance) when the disruption is acceptable
                 """
             )
         }
@@ -1378,7 +1378,7 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
             reused: false,
             imageID: status.imageID,
             servicesStopped: serviceCount,
-            detail: "hard-restarted: the old TinyEMU instance was stopped and verified, then a fresh instance booted"
+            detail: "hard-restarted: the old Linux runtime instance was stopped and verified, then a fresh instance booted"
         )
     }
 
