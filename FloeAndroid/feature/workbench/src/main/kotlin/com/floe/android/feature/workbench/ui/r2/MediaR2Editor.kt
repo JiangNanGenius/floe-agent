@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.feature.workbench.ui.r2
 
+import android.util.Log
+
 import android.graphics.Bitmap
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -282,6 +284,7 @@ class MediaR2Editor internal constructor(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
+                Log.w("FloeMediaExport", "Export submission failed", error)
                 exportFailure = MediaFailures.from(error)
             } finally {
                 exportBusy = false
