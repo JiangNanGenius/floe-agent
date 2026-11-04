@@ -3,7 +3,7 @@
   <h1>Floe Agent</h1>
   <p><strong>你的模型，你的文件，你的电脑。</strong></p>
   <p>Floe Agent 是面向 iOS 和 Android 的开源设备端 AI 智能体工作空间，以 iPad 体验为先，原生支持 iPhone，并提供独立 Android Alpha 版本。把 AI 任务、手记、Office 文档、创作、开发、语音对话与技能放进同一处——设备端 Linux 环境可直接运行代码、软件包与网页服务，支持的本地模型可在设备端完成推理，云端 AI 使用你自己准备的 API Key（BYOK）。</p>
-  <p><a href="README.md">English</a> · <a href="https://www.floe-agent.com/?utm_source=github&utm_medium=referral&utm_campaign=readme_zh">官网</a> · <a href="docs/USER_GUIDE.zh-CN.md">使用手册</a> · <a href="docs/README.md">文档中心</a></p>
+  <p><a href="README.md">English</a> · <a href="https://www.floe-agent.com/?utm_source=github&utm_medium=referral&utm_campaign=readme_zh">官网</a> · <a href="https://www.floe-agent.com/?utm_source=github&utm_medium=referral&utm_campaign=beta_readme_zh#beta">申请 iOS 内测</a> · <a href="docs/USER_GUIDE.zh-CN.md">使用手册</a> · <a href="docs/README.md">文档中心</a></p>
 </div>
 
 [![Release](https://img.shields.io/github/v/release/JiangNanGenius/floe-agent?include_prereleases&label=release)](https://github.com/JiangNanGenius/floe-agent/releases)
@@ -37,7 +37,7 @@ https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json
 
 | 安装方式 | 使用前准备 |
 | --- | --- |
-| iOS / iPadOS · TestFlight | 需要有效测试资格；可安装构建与到期时间以 TestFlight 为准。 |
+| iOS / iPadOS · TestFlight | [前往官网申请内测](https://www.floe-agent.com/?utm_source=github&utm_medium=referral&utm_campaign=beta_readme_zh#beta)，可用构建与测试资格以 TestFlight 为准。 |
 | iOS / iPadOS · Feather / AltStore | 先安装对应 App，点击上方按钮添加源，再按自己的签名方式安装。 |
 | iOS / iPadOS · GitHub IPA | 从发布页下载 IPA 和校验文件；IPA 未签名，需要自行签名。 |
 | Android 测试版 | Android 9+（ARM64）。从 [Android 发布页](https://www.floe-agent.com/releases?platform=android&utm_source=github&utm_medium=referral&utm_campaign=readme_zh) 安装签名 APK；GitHub 版会检查更新，引导下载、校验和系统安装，有补丁时可减少下载量。当前支持自备云端 Key 的 AI 任务、历史与附件、服务商与凭据设置、MCP、设备端 Linux 终端与作业、文件、代码 IDE、Git、浏览器、内置 Office 查看与基础编辑，以及手记基础工作区。网络工作台包含 Wi-Fi、局域网发现、DNS、Ping、TCP、HTTPS、测速、监测与脱敏报告。Alpha21 加入离线 PCAP／PCAPNG 分析、可选平面图的 Wi-Fi 覆盖点记录，以及在独立对话中执行的定时 Agent 任务；精确时间需要系统授权，弹性时间需主动选择。安卓不提供本地模型推理，语音、只读 CAD／3D 与完整 Skill Hub 客户端仍在计划中。实际测试设备与限制见发布说明。 |

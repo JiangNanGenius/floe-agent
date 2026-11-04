@@ -3,7 +3,7 @@
   <h1>Floe Agent</h1>
   <p><strong>Your models. Your files. Your machines.</strong></p>
   <p>Floe Agent is an open-source on-device AI agent workspace for iOS and Android — iPad-first, with native iPhone support and a separate Android alpha. Bring AI tasks, Notes, Office documents, creative tools, development, voice conversations and skills together — with a real Linux environment on your device that runs code, packages and services, supported local models for on-device inference, and cloud AI using your own API keys (BYOK).</p>
-  <p><a href="README.zh-CN.md">简体中文</a> · <a href="https://www.floe-agent.com/en?utm_source=github&utm_medium=referral&utm_campaign=readme_en">Website</a> · <a href="docs/USER_GUIDE.md">User manual</a> · <a href="docs/README.md">Documentation</a></p>
+  <p><a href="README.zh-CN.md">简体中文</a> · <a href="https://www.floe-agent.com/en?utm_source=github&utm_medium=referral&utm_campaign=readme_en">Website</a> · <a href="https://www.floe-agent.com/en?utm_source=github&utm_medium=referral&utm_campaign=beta_readme_en#beta">Apply for iOS beta</a> · <a href="docs/USER_GUIDE.md">User manual</a> · <a href="docs/README.md">Documentation</a></p>
 </div>
 
 [![Release](https://img.shields.io/github/v/release/JiangNanGenius/floe-agent?include_prereleases&label=release)](https://github.com/JiangNanGenius/floe-agent/releases)
@@ -37,7 +37,7 @@ https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json
 
 | Channel | Before you install |
 | --- | --- |
-| iOS / iPadOS · TestFlight | Requires valid beta access. Available builds and expiry appear in TestFlight. |
+| iOS / iPadOS · TestFlight | [Apply for beta access on the website](https://www.floe-agent.com/en?utm_source=github&utm_medium=referral&utm_campaign=beta_readme_en#beta). Available builds and eligibility appear in TestFlight. |
 | iOS / iPadOS · Feather / AltStore | Install the corresponding app, use a button above to add the source, then sign with your own setup. |
 | iOS / iPadOS · GitHub IPA | Download the IPA and checksum from Releases. The IPA is unsigned and requires your own signing. |
 | Android alpha | Android 9+ (ARM64). Install the signed APK from the [Android release](https://www.floe-agent.com/en/releases?platform=android&utm_source=github&utm_medium=referral&utm_campaign=readme_en). GitHub builds check for updates and guide download, verification and system installation, using a smaller patch when available. The alpha includes BYOK cloud AI tasks, history and attachments, provider and credential settings, MCP, an on-device Linux terminal and jobs, files, a code IDE, Git, a browser, built-in Office viewing and basic editing, and core Notes workflows. The network workbench includes Wi-Fi, LAN discovery, DNS, Ping, TCP, HTTPS, speed tests, monitoring and redacted reports. Alpha21 adds offline PCAP/PCAPNG analysis, saved Wi-Fi coverage points with an optional floorplan, and scheduled Agent tasks in separate conversations. Exact-time scheduling requires system access; flexible timing is an explicit choice. Android does not provide local-model inference. Voice, read-only CAD/3D and the full Skill Hub client remain on the roadmap. See the release notes for tested devices and limits. |
