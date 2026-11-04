@@ -15,7 +15,8 @@ final class MacBridgeConnectionCenter: ObservableObject {
     @Published private(set) var recentJobs: [MacBridgeClient.SavedJob] = []
     @Published private(set) var host = ""
     @Published private(set) var error: String?
-    @Published var showingConnectionPage = false
+    @Published private(set) var showingConnectionPage = false
+    private var visibleConnectionSurfaces: Set<UUID> = []
     private var operationID = UUID()
     private var cancellingPairing = false
     private var pairingTask: Task<Void, Never>?
@@ -31,6 +32,11 @@ final class MacBridgeConnectionCenter: ObservableObject {
         guard let text = Bundle.main.object(forInfoDictionaryKey: "FloeMacBridgeDownloadURL") as? String,
               let url = URL(string: text), url.scheme == "https", url.host == "www.floe-agent.com" else { return nil }
         return url
+    }
+    func setConnectionSurfaceVisible(_ visible: Bool, id: UUID) {
+        if visible { visibleConnectionSurfaces.insert(id) }
+        else { visibleConnectionSurfaces.remove(id) }
+        showingConnectionPage = !visibleConnectionSurfaces.isEmpty
     }
     func bootstrap() async {
         guard Self.isMac, !connecting, pairingCode == nil else { return }
@@ -167,49 +173,11 @@ final class MacBridgeConnectionCenter: ObservableObject {
 }
 
 struct MacBridgeConnectionView: View {
+    var startPairingOnEntry = false
     @ObservedObject private var center = MacBridgeConnectionCenter.shared
-    @AppStorage("floe.macBridge.preferForNewTasks.v1") private var preferMacForNewTasks = true
-    @State private var confirmingForget = false
-    @Environment(\.scenePhase) private var scenePhase
     var body: some View {
         Form {
-            if !center.connected {
-                Section("mac.bridge.setup") {
-                    Text("mac.bridge.setup_detail")
-                    if let url = MacBridgeConnectionCenter.downloadURL {
-                        Link(destination: url) {
-                            Label("mac.bridge.download", systemImage: "arrow.down.app")
-                        }
-                    }
-                }
-            }
-            Section {
-                LabeledContent("mac.bridge.status", value: center.connected ? center.host : String(localized: "mac.bridge.disconnected"))
-                if center.connected {
-                    if !preferMacForNewTasks {
-                        Button("mac.bridge.prefer_for_new_tasks") { preferMacForNewTasks = true }
-                    }
-                    Button("mac.bridge.disconnect", role: .destructive) { Task { await center.disconnect() } }.disabled(center.connecting)
-                } else {
-                    Button("mac.bridge.connect") { center.connect() }.disabled(center.connecting || center.pairingCode != nil)
-                    if center.connecting {
-                        HStack { ProgressView(); Text("mac.bridge.confirm_on_mac") }
-                        Button("action.cancel") { center.cancelPairing() }
-                    }
-                    if center.hasPairing {
-                        Button("mac.bridge.forget", role: .destructive) { confirmingForget = true }
-                            .disabled(center.connecting)
-                    }
-                }
-            }
-            if let code = center.pairingCode {
-                Section("mac.bridge.verify_title") {
-                    Text(code).font(.title2.monospaced().bold()).textSelection(.enabled)
-                    Text("mac.bridge.verify_message")
-                    Button("mac.bridge.verify_match") { center.confirmPairing() }.disabled(center.connecting)
-                    Button("action.cancel", role: .cancel) { center.cancelPairing() }.disabled(center.connecting)
-                }
-            }
+            MacBridgePairingSection(startPairingOnEntry: startPairingOnEntry)
             Section {
                 NavigationLink("mac.bridge.about") { MacBridgeIntroductionView() }
             }
@@ -225,12 +193,75 @@ struct MacBridgeConnectionView: View {
                     }
                 }
             }
-            if let error = center.error { Section { Text(error).foregroundStyle(.red) } }
         }
         .navigationTitle("mac.bridge.title")
-        .onAppear { center.showingConnectionPage = true }
-        .onDisappear { center.showingConnectionPage = false }
-        .task { await center.bootstrap() }
+    }
+}
+
+/// The same visible connection controls are used by Execution Environment and
+/// the detail page. Pairing does not depend on finding a first-launch popup.
+struct MacBridgePairingSection: View {
+    var startPairingOnEntry = false
+    @ObservedObject private var center = MacBridgeConnectionCenter.shared
+    @AppStorage("floe.macBridge.preferForNewTasks.v1") private var preferMacForNewTasks = true
+    @State private var confirmingForget = false
+    @State private var surfaceID = UUID()
+    @State private var handledInitialConnection = false
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        Section("mac.bridge.title") {
+            LabeledContent("mac.bridge.status", value: center.connected ? center.host : String(localized: "mac.bridge.disconnected"))
+            if center.connected {
+                Toggle("mac.bridge.prefer_for_new_tasks", isOn: $preferMacForNewTasks)
+                Button("mac.bridge.disconnect", role: .destructive) {
+                    Task { await center.disconnect() }
+                }.disabled(center.connecting)
+            } else {
+                if center.connecting {
+                    HStack { ProgressView(); Text("mac.bridge.confirm_on_mac") }
+                    Button("action.cancel") { center.cancelPairing() }
+                        .disabled(center.pairingCode != nil)
+                } else if center.pairingCode == nil {
+                    Button {
+                        center.connect()
+                    } label: {
+                        Label("mac.bridge.connect", systemImage: "link")
+                    }
+                    .accessibilityIdentifier("mac.bridge.connect")
+                }
+                if let code = center.pairingCode {
+                    Text("mac.bridge.verify_message").foregroundStyle(.secondary)
+                    Text(code).font(.title2.monospaced().bold()).textSelection(.enabled)
+                        .accessibilityIdentifier("mac.bridge.verificationCode")
+                    Button("mac.bridge.verify_match") { center.confirmPairing() }.disabled(center.connecting)
+                    Button("action.cancel", role: .cancel) { center.cancelPairing() }.disabled(center.connecting)
+                }
+                if let url = MacBridgeConnectionCenter.downloadURL {
+                    Link(destination: url) {
+                        Label("mac.bridge.download", systemImage: "arrow.down.app")
+                    }
+                } else {
+                    Text("mac.bridge.download_pending").foregroundStyle(.secondary)
+                }
+                if center.hasPairing {
+                    Button("mac.bridge.forget", role: .destructive) { confirmingForget = true }
+                        .disabled(center.connecting)
+                }
+                Text("mac.bridge.setup_detail").font(.footnote).foregroundStyle(.secondary)
+            }
+            if let error = center.error { Text(error).foregroundStyle(.red) }
+        }
+        .onAppear { center.setConnectionSurfaceVisible(true, id: surfaceID) }
+        .onDisappear { center.setConnectionSurfaceVisible(false, id: surfaceID) }
+        .task {
+            await center.bootstrap()
+            guard !Task.isCancelled else { return }
+            if startPairingOnEntry && !handledInitialConnection {
+                handledInitialConnection = true
+                if !center.connected { center.connect() }
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await center.bootstrap() } }
         }
@@ -286,43 +317,93 @@ struct MacBridgeIntroductionView: View {
                 Label("mac.bridge.title", systemImage: "terminal")
                 Text("mac.bridge.introduction")
             }
-            Section {
-                if let url = MacBridgeConnectionCenter.downloadURL { Link("mac.bridge.download", destination: url) }
-                else { Text("mac.bridge.download_pending").foregroundStyle(.secondary) }
-                Button("mac.bridge.connect") { MacBridgeConnectionCenter.shared.connect() }
-            }
+            MacBridgePairingSection()
         }.navigationTitle("mac.bridge.about")
     }
 }
 
 struct MacBridgeRecommendationModifier: ViewModifier {
+    var presentationReady: Bool
+    var onConnect: () -> Void
     @AppStorage("floe.macBridge.recommendation.dismissed.v1") private var dismissed = false
-    @State private var presented = false
+    @State private var prompt = MacBridgePromptState()
+    @State private var bootstrapFinished = false
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var center = MacBridgeConnectionCenter.shared
+
+    private struct Request: Equatable {
+        var ready: Bool
+        var active: Bool
+        var bootstrapped: Bool
+        var dismissed: Bool
+        var connected: Bool
+        var connecting: Bool
+        var verification: String?
+        var connectionPageVisible: Bool
+        var presented: MacBridgePromptState.Prompt?
+    }
+
+    private var request: Request {
+        Request(ready: presentationReady, active: scenePhase == .active,
+                bootstrapped: bootstrapFinished, dismissed: dismissed,
+                connected: center.connected, connecting: center.connecting,
+                verification: center.pairingCode,
+                connectionPageVisible: center.showingConnectionPage,
+                presented: prompt.presented)
+    }
+
+    private var promptTitle: LocalizedStringKey {
+        prompt.presented == .verification ? "mac.bridge.verify_title" : "mac.bridge.recommend.title"
+    }
+
     func body(content: Content) -> some View {
-        content.task {
-            guard MacBridgeConnectionCenter.isMac else { return }
+        content.task(id: presentationReady) {
+            guard MacBridgeConnectionCenter.isMac, presentationReady, !bootstrapFinished else { return }
             await center.bootstrap()
-            // Do not recommend a download before the release owner has
-            // supplied the notarized companion's real official URL.
-            if !dismissed && !center.connected && MacBridgeConnectionCenter.downloadURL != nil { presented = true }
+            guard !Task.isCancelled else { return }
+            bootstrapFinished = true
         }
-        .alert("mac.bridge.recommend.title", isPresented: $presented) {
-            Button("mac.bridge.download") {
-                dismissed = true
-                if let url = MacBridgeConnectionCenter.downloadURL { UIApplication.shared.open(url) }
+        .task(id: request) {
+            // Wait for the previous sheet's dismissal animation. A new launch,
+            // route or scene transition cancels this attempt without consuming it.
+            do { try await Task.sleep(for: .milliseconds(350)) }
+            catch { return }
+            prompt.reconcile(
+                platform: .current,
+                canPresent: presentationReady && scenePhase == .active && bootstrapFinished && !center.connecting,
+                recommendationHandled: dismissed,
+                downloadAvailable: MacBridgeConnectionCenter.downloadURL != nil,
+                connected: center.connected,
+                awaitingVerification: center.pairingCode != nil,
+                connectionPageVisible: center.showingConnectionPage
+            )
+        }
+        // One presenter owns both decisions, without competing root alerts
+        // for recommendation and verification.
+        .alert(promptTitle,
+               isPresented: Binding(
+                get: { prompt.presented != nil },
+                set: { if !$0 { prompt.presentationEnded() } }
+               ), presenting: prompt.presented) { presented in
+            if presented == .recommendation {
+                Button("mac.bridge.download") {
+                    dismissed = true
+                    if let url = MacBridgeConnectionCenter.downloadURL { UIApplication.shared.open(url) }
+                }
+                Button("mac.bridge.connect") { dismissed = true; onConnect() }
+                Button("action.later", role: .cancel) { dismissed = true }
+            } else {
+                Button("mac.bridge.verify_match") { center.confirmPairing() }
+                    .disabled(center.connecting)
+                Button("action.cancel", role: .cancel) { center.cancelPairing() }
+                    .disabled(center.connecting)
             }
-            Button("mac.bridge.connect") { dismissed = true; center.connect() }
-            Button("action.later", role: .cancel) { dismissed = true }
-        } message: { Text("mac.bridge.introduction") }
-        .alert("mac.bridge.verify_title", isPresented: Binding(
-            get: { center.pairingCode != nil && !center.showingConnectionPage },
-            set: { _ in /* Explicit buttons resolve the pending trust decision. */ }
-        )) {
-            Button("mac.bridge.verify_match") { center.confirmPairing() }
-            Button("action.cancel", role: .cancel) { center.cancelPairing() }
-        } message: {
-            Text("mac.bridge.verify_message") + Text("\n\n" + (center.pairingCode ?? ""))
+        } message: { presented in
+            if presented == .verification {
+                Text("mac.bridge.verify_message") + Text("\n\n" + (center.pairingCode ?? ""))
+            } else {
+                Text("mac.bridge.introduction")
+            }
         }
     }
 }

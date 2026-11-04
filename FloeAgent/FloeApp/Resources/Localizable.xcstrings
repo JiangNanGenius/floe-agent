@@ -53378,6 +53378,23 @@
         }
       }
     },
+    "mac.bridge.manage": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection Details"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接详情"
+          }
+        }
+      }
+    },
     "mac.bridge.prefer_for_new_tasks": {
       "localizations": {
         "en": {

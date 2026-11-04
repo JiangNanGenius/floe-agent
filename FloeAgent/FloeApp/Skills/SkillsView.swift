@@ -328,6 +328,7 @@ struct SkillsView: View {
                         }
                     }
                 )
+                .environment(\.skillConfigurationAccess, environment.skillConfigurationUIAccess)
             }
         }
         .sheet(item: $downloadPanel) { route in

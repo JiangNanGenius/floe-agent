@@ -389,8 +389,13 @@ struct RootView: View {
     @State private var sidebarWidthObservation: CGFloat = 0
     /// Linux session/service deep link destination, optionally focused on the
     /// environment the notification came from.
-    @State private var presentedExecutionEnvironment = false
-    @State private var focusedLinuxEnvironmentID: String?
+    private struct ExecutionEnvironmentRequest: Identifiable {
+        let id = UUID()
+        var linuxEnvironmentID: String? = nil
+        var connectMac = false
+    }
+    @State private var presentedExecutionEnvironment: ExecutionEnvironmentRequest?
+    @State private var launchPresentationReady = false
     private struct QueuedEntry: Identifiable {
         let id = UUID()
         let route: FloeAppEntryRoute
@@ -488,7 +493,15 @@ struct RootView: View {
         // need no provider.
         .environment(\.foldableDisplay, foldableSupport.snapshot)
         .modifier(FoldableCapabilityProbeModifier(state: foldableSupport))
-        .modifier(MacBridgeRecommendationModifier())
+        .modifier(MacBridgeRecommendationModifier(
+            presentationReady: launchPresentationReady && entryNavigationReady
+                && environment.persistenceReady && !destinationPresentationBlocked
+                && presentedDestination == nil && !showsConversationSearch
+                && environment.heavyRuntimeConflictCenter.pending == nil,
+            onConnect: {
+                presentedExecutionEnvironment = ExecutionEnvironmentRequest(connectMac: true)
+            }
+        ))
         .background(alignment: .bottomTrailing) {
             BackgroundPiPSceneSource(videoService: environment.backgroundVideoService)
         }
@@ -665,6 +678,7 @@ struct RootView: View {
         }
         .task(id: environment.persistenceReady) {
             entryNavigationReady = false
+            launchPresentationReady = false
             guard environment.persistenceReady else { return }
             if scenePhase == .active {
                 // Covers a launch where persistence readiness landed after the
@@ -700,6 +714,7 @@ struct RootView: View {
             await environment.conversationCenter.resumeSafeRunsAfterForeground()
             await environment.backgroundRunCoordinator.reconcileSchedulesAfterLaunch()
             await presentOnboardingIfNeeded()
+            launchPresentationReady = true
         }
         .onChange(of: foldableSupport.snapshot.isMountResolved) { _, resolved in
             if resolved && environment.persistenceReady {
@@ -773,20 +788,25 @@ struct RootView: View {
             // A Linux session/service notification routes to the execution
             // surface, focused on its own environment when the payload names
             // one. It never opens a conversation the id did not identify.
-            focusedLinuxEnvironmentID = notification.userInfo?["environmentID"] as? String
-            presentedExecutionEnvironment = true
+            presentedExecutionEnvironment = ExecutionEnvironmentRequest(
+                linuxEnvironmentID: notification.userInfo?["environmentID"] as? String
+            )
         }
-        .sheet(isPresented: $presentedExecutionEnvironment, onDismiss: {
-            focusedLinuxEnvironmentID = nil
-        }) {
+        .sheet(item: $presentedExecutionEnvironment) { request in
             NavigationStack {
-                ExecutionEnvironmentView(
-                    center: environment.settingsCenter,
-                    initialEnvironmentID: focusedLinuxEnvironmentID
-                )
+                Group {
+                    if request.connectMac {
+                        MacBridgeConnectionView(startPairingOnEntry: true)
+                    } else {
+                        ExecutionEnvironmentView(
+                            center: environment.settingsCenter,
+                            initialEnvironmentID: request.linuxEnvironmentID
+                        )
+                    }
+                }
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("action.done") { presentedExecutionEnvironment = false }
+                        Button("action.done") { presentedExecutionEnvironment = nil }
                     }
                 }
             }
@@ -1013,7 +1033,7 @@ struct RootView: View {
             || renamingConversation != nil
             || deletingConversation != nil
             || deletingWorkspace != nil
-            || presentedExecutionEnvironment
+            || presentedExecutionEnvironment != nil
     }
 
     /// Shows the chooser over the CURRENT surface only, and only when no

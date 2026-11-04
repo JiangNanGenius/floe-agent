@@ -54,9 +54,10 @@ struct ExecutionEnvironmentView: View {
     var body: some View {
         Form {
             if MacBridgeConnectionCenter.isMac {
+                MacBridgePairingSection()
                 Section {
                     NavigationLink { MacBridgeConnectionView() } label: {
-                        Label("mac.bridge.title", systemImage: "desktopcomputer")
+                        Label("mac.bridge.manage", systemImage: "desktopcomputer")
                     }
                 }
             }
