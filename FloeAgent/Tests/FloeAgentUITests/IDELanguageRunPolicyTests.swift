@@ -497,8 +497,8 @@ struct IDELanguageRunPolicyTests {
     }
 
     @Test func pickerSelectionResolvesToTheSamePlanDispatchUses() {
-        // The sheet binds its Picker directly to `controller.guestShapeSelection`
-        // and renders `controller.guestShapePlan`, which is built by exactly
+        // Historical generic planner coverage. The shared ARM64 App uses
+        // global CPU/RAM settings; the planner itself is built by exactly
         // this planner call (same recommendation, same verified-image SMP
         // evidence, same `.shapeAware` dispatch) the controller uses at
         // dispatch time. Every selectable row therefore resolves to the plan
@@ -546,34 +546,6 @@ struct IDELanguageRunPolicyTests {
         }
     }
 
-    @Test func platformServiceRegistersAndClearsTheRunShapeHandoff() {
-        let services = FloePlatformServices.shared
-        let environmentID = "test-env-\(UUID().uuidString.lowercased())"
-        let runID = UUID()
-        let plan = GuestRunEntryShapePlanner.plan(
-            selection: .singleCore,
-            signals: IDELanguageRunPolicy.guestShapeSignals(
-                relativePath: "scripts/main.py", interpreter: .python3
-            )
-        )
-        guard let intent = ShellGuestRunShapeIntent.from(
-            plan: plan, environmentID: environmentID, runID: runID.uuidString
-        ) else {
-            Issue.record("the accepted single-core plan produced no handoff intent")
-            return
-        }
-        services.registerLinuxGuestRunShapeIntent(intent)
-        #expect(services.runShapeCenter.intent(
-            environmentID: environmentID, runID: runID.uuidString
-        ) == intent)
-        // Nothing is armed until a start claims it for the same run.
-        #expect(services.runShapeCenter.armedIntent(environmentID: environmentID) == nil)
-        services.clearLinuxGuestRunShapeIntent(
-            environmentID: environmentID, runID: runID.uuidString
-        )
-        #expect(services.runShapeCenter.intent(
-            environmentID: environmentID, runID: runID.uuidString
-        ) == nil)
-    }
+
 }
 #endif

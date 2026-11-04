@@ -177,7 +177,7 @@ private func makeELF64(
     }
 
     @Test func oversizedDescriptorFailsClosed() {
-        var bytes = frozenDescriptorBytes
+        var bytes = arm64ContractFixtureBytes
         bytes.append(Data(count: SkillRuntimeDependency.maximumDescriptorBytes))
         #expect(throws: SkillRuntimeDependencyError.self) {
             _ = try SkillRuntimeDependency.decode(bytes)
