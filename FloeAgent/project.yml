@@ -733,6 +733,7 @@ targets:
       - path: Tests/FloeAppTests/BackgroundDownloadSettlementTests.swift
       - path: Tests/FloeSkillsTests/SkillDependencyTests.swift
       - path: Tests/FloeAppTests/SkillDependencyPreparationTests.swift
+      - path: Tests/FloeAppTests/SkillGitHubDownloadTests.swift
       - path: Tests/FloeExecutionTests/ManagedPythonPackageInspectorTests.swift
       - path: Tests/FloeAppTests/SkillDependencyGuestQualificationTests.swift
       - path: Tests/FloeAppTests/WhisperBackgroundSettlementTests.swift
