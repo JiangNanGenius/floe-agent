@@ -631,6 +631,15 @@ private fun VerifiedReceipt(
             style = Floe.typography.bodyEmphasized,
             color = Floe.colors.success,
         )
+        receipt.displayName?.let { name ->
+            FloeText(
+                name,
+                style = Floe.typography.metadata,
+                color = Floe.colors.label,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         FloeText(
             stringResource(
                 R.string.media_r2_export_details,
