@@ -113,15 +113,30 @@ void              virtio_net_destroy(struct VirtIONet *v); /* full teardown afte
 struct UserNet;
 struct UserNet   *virtio_net_usernet(struct VirtIONet *);
 
-/* ---- virtio-9p host directory share (virtio-mmio slot N) ---- */
-/* Exports host directory `root` to the guest as a 9P2000.L filesystem named by
+/* ---- virtio-9p host directory share (virtio-mmio slot N) ------------------
+ * Exports host directory `root` to the guest as a 9P2000.L filesystem named by
  * `tag`; `ro` makes it read-only. slot picks the MMIO window / IRQ as for blk.
- * Containment is pinned-descriptor based: create resolves `root` once and all
- * host access stays on that root descriptor. */
+ * Containment is pinned-descriptor based: attach resolves `root` once and all
+ * host access stays on that root descriptor. `root` may be NULL to create a
+ * DETACHED slot (the device probes but refuses fs ops with ENODEV) that the
+ * host later binds with virtio_9p_attach_root() while the machine is quiet.
+ * guest_uid/guest_gid are the synthetic ids stat reports to the guest; they
+ * are never forwarded to a host chown. */
 struct VirtIO9P;
 struct VirtIO9P *virtio_9p_create(Machine *m, GIC *gic, const char *root,
-                                  const char *tag, bool ro, int slot);
+                                  const char *tag, bool ro,
+                                  uint32_t guest_uid, uint32_t guest_gid,
+                                  int slot);
 void             virtio_9p_destroy(struct VirtIO9P *);
+int              virtio_9p_attach_root(struct VirtIO9P *, const char *root,
+                                       uint32_t guest_uid, uint32_t guest_gid,
+                                       bool ro);      /* 0, -EBUSY, -errno */
+int              virtio_9p_detach_root(struct VirtIO9P *, bool force); /* 0/-EBUSY */
+void             virtio_9p_get_info(struct VirtIO9P *, int *state,
+                                    uint64_t *generation, uint32_t *open_handles,
+                                    uint32_t *guest_uid, uint32_t *guest_gid,
+                                    int *ro);
+const char      *virtio_9p_slot_tag(struct VirtIO9P *, uint16_t *tag_len);
 
 /* ---- virtio-console (virtio-mmio slot N) ---- */
 /* Non-multiport console (DeviceID 3) advertising VIRTIO_CONSOLE_F_SIZE: the

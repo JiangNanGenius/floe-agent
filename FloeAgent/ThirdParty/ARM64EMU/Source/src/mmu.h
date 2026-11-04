@@ -225,3 +225,61 @@ static inline bool mem_ifetch(CPU *c, u64 va, u32 *insn_out) {
 }
 
 #endif /* A64_MMU_H */
+
+/* Private synchronous PD stack-view chain. Canonical callers above, including
+ * decode/GENERIC, DMA and direct component calls, retain their original APIs.
+ * No entry here constructs a view from a CPU or retains/reuses one. */
+#if defined(AE_PD_GUARD_SLOT_PRIVATE) && !defined(AE_PD_MMU_GUARD_SLOT_PRIVATE_H)
+#define AE_PD_MMU_GUARD_SLOT_PRIVATE_H
+#include "memory_sync.h"
+__attribute__((visibility("hidden")))
+bool mem_ifetch_bank_lookup_unheld(CPU *c,FetchCache *f,u64 va,u64 version,u32 *out);
+__attribute__((visibility("hidden")))
+bool mem_ifetch_refill_unheld(CPU *c,FetchCache *f,u64 va,u32 *out);
+
+static inline bool mem_read_pd_slot(CPU *c,u64 va,unsigned size,u64 *out,
+                                    const PDGuardSlotView *view) {
+    if((size!=1&&size!=2&&size!=4&&size!=8)||!c->exec.mmu)
+        return mem_read(c,va,size,out);
+    u64 off=va&0xfffULL;
+    if(off+size>0x1000)return mem_read(c,va,size,out);
+    DTlbEnt *de=dtlb_ent(c,va);
+    if(de->tag!=dtlb_tag(c,va)||!(de->pte&DTLB_R))return mem_read(c,va,size,out);
+    const u8 *host=(const u8 *)(uintptr_t)(de->pte&~0xfffULL)+off;
+    /* Reload the pointer VALUE for this access, never hoist a NULL snapshot
+     * across instructions or GENERIC. A real nested guard keeps its old path. */
+    if(*view->slot)return memory_read_small(c->m,host,size,out);
+    return memory_read_small_pd_unheld(c->m,host,size,out);
+}
+
+static inline bool mem_ifetch_page_slot(CPU *c,FetchCache *f,u64 va,u32 *out,
+                                        const PDGuardSlotView *view) {
+    if(f->epoch&&!*view->slot) {
+        u64 version=atomic_load_explicit(&f->epoch->version,memory_order_acquire);
+        if(version!=UINT64_MAX) {
+            MMUCache *m=c->exec.mmu;
+            if(version&&f->snapshot_version==version&&f->snapshot_pa==f->pa_page&&
+               f->active_slot<IFETCH_BANK_PAGES) {
+                IFetchBytePage *slot=&m->ifetch_bank[f->active_slot];
+                if(slot->generation==m->ifetch_generation&&slot->version==version&&
+                   slot->pa_page==f->pa_page&&slot->epoch==f->epoch) {
+                    __builtin_memcpy(out,slot->bytes+(va&0xfffULL),4);return true;
+                }
+            }
+            if(version)return mem_ifetch_bank_lookup_unheld(c,f,va,version,out);
+            return mem_ifetch_refill_unheld(c,f,va,out);
+        }
+    }
+    MemoryGuard guard;
+    if(!memory_guard_host(&guard,c->m,f->host+(va&0xfffULL),4,false))return false;
+    __builtin_memcpy(out,f->host+(va&0xfffULL),4);
+    memory_guard_end(&guard);return true;
+}
+static inline bool mem_ifetch_slot(CPU *c,u64 va,u32 *out,const PDGuardSlotView *view) {
+    if(!mmu_bind_cpu(c))return false;
+    u64 page=va&~0xfffULL;FetchCache *f=&c->exec.mmu->fcache[c->el==0];
+    if(f->host&&f->page==page&&!(va&3)&&f->mmu==(u8)(c->sctlr[1]&1))
+        return mem_ifetch_page_slot(c,f,va,out,view);
+    return mem_ifetch_slow(c,va,out);
+}
+#endif

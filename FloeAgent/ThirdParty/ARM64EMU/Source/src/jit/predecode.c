@@ -18,6 +18,7 @@
 
 #include "predecode.h"
 #include <string.h>
+#define AE_PD_GUARD_SLOT_PRIVATE 1
 #include "../mmu.h"
 #include "../machine.h"
 #include "../parallel_iface.h"
@@ -602,6 +603,12 @@ StepResult pd_step(CPU *c, u64 slice, u64 max_insn) {
     }
     if (c->halted) return STEP_OK;
     PDCache *state=ae_pd_cache(c);if(!state)return STEP_OK;
+    /* The address belongs to THIS native thread and THIS invocation only.
+     * Actual accesses reload *slot; GENERIC/nested transactions may change it.
+     * No CPU/worker identity, reset state or prior owner supplies this address. */
+    const PDGuardSlotView guard_view={.slot=&memory_guard_held};
+#define PD_READ(c,va,size,out) mem_read_pd_slot((c),(va),(size),(out),&guard_view)
+#define PD_IFETCH(c,va,out) mem_ifetch_slot((c),(va),(out),&guard_view)
     /* The full entry poll above is mandatory. Bridge validates this native
      * worker once; the view never escapes this invocation or crosses reset. */
     const MachineParallelPollView *poll_view=machine_parallel_poll_view(c);
@@ -852,7 +859,7 @@ StepResult pd_step(CPU *c, u64 slice, u64 max_insn) {
                      (c->fiq_line && !(c->daif & PS_F)))) return STEP_OK; \
         c->cur_insn_pc = c->pc; \
         c->instruction_partial=false; \
-        if (UNLIKELY(!mem_ifetch(c, c->pc, &insn))) return STEP_OK; \
+        if (UNLIKELY(!PD_IFETCH(c, c->pc, &insn))) return STEP_OK; \
         c->pc += 4; \
         e = &cache[(c->cur_insn_pc >> 2) & PD_MASK]; \
         if (UNLIKELY(e->insn != insn)) pd_fill_tier(e, insn); \
@@ -863,7 +870,7 @@ StepResult pd_step(CPU *c, u64 slice, u64 max_insn) {
     /* First instruction of the slice (the preamble ran the rare-event checks). */
     c->cur_insn_pc = c->pc;
     c->instruction_partial=false;
-    if (UNLIKELY(!mem_ifetch(c, c->pc, &insn))) return STEP_OK;
+    if (UNLIKELY(!PD_IFETCH(c, c->pc, &insn))) return STEP_OK;
     c->pc += 4;
     e = &cache[(c->cur_insn_pc >> 2) & PD_MASK];
     if (UNLIKELY(e->insn != insn)) pd_fill_tier(e, insn);
@@ -1298,55 +1305,55 @@ L_RORV32:
 L_LDR64U:
     {
         u64 va = reg_xsp(c, e->rn) + e->imm, v;
-        if (mem_read_pd(c, va, 8, &v)) set_x(c, e->rd, v);
+        if (PD_READ(c, va, 8, &v)) set_x(c, e->rd, v);
         NEXT;
     }
 L_LDR32U:
     {
         u64 va = reg_xsp(c, e->rn) + e->imm, v;
-        if (mem_read_pd(c, va, 4, &v)) set_x(c, e->rd, (u32)v);
+        if (PD_READ(c, va, 4, &v)) set_x(c, e->rd, (u32)v);
         NEXT;
     }
 L_LDRB:
     {
         u64 va = reg_xsp(c, e->rn) + e->imm, v;
-        if (mem_read_pd(c, va, 1, &v)) set_x(c, e->rd, v);
+        if (PD_READ(c, va, 1, &v)) set_x(c, e->rd, v);
         NEXT;
     }
 L_LDRH:
     {
         u64 va = reg_xsp(c, e->rn) + e->imm, v;
-        if (mem_read_pd(c, va, 2, &v)) set_x(c, e->rd, v);
+        if (PD_READ(c, va, 2, &v)) set_x(c, e->rd, v);
         NEXT;
     }
 L_LDRSB64:
     {
         u64 va = reg_xsp(c, e->rn) + e->imm, v;
-        if (mem_read_pd(c, va, 1, &v)) set_x(c, e->rd, sign_extend(v, 8));
+        if (PD_READ(c, va, 1, &v)) set_x(c, e->rd, sign_extend(v, 8));
         NEXT;
     }
 L_LDRSB32:
     {
         u64 va = reg_xsp(c, e->rn) + e->imm, v;
-        if (mem_read_pd(c, va, 1, &v)) set_x(c, e->rd, (u32)sign_extend(v, 8));
+        if (PD_READ(c, va, 1, &v)) set_x(c, e->rd, (u32)sign_extend(v, 8));
         NEXT;
     }
 L_LDRSH64:
     {
         u64 va = reg_xsp(c, e->rn) + e->imm, v;
-        if (mem_read_pd(c, va, 2, &v)) set_x(c, e->rd, sign_extend(v, 16));
+        if (PD_READ(c, va, 2, &v)) set_x(c, e->rd, sign_extend(v, 16));
         NEXT;
     }
 L_LDRSH32:
     {
         u64 va = reg_xsp(c, e->rn) + e->imm, v;
-        if (mem_read_pd(c, va, 2, &v)) set_x(c, e->rd, (u32)sign_extend(v, 16));
+        if (PD_READ(c, va, 2, &v)) set_x(c, e->rd, (u32)sign_extend(v, 16));
         NEXT;
     }
 L_LDRSW:
     {
         u64 va = reg_xsp(c, e->rn) + e->imm, v;
-        if (mem_read_pd(c, va, 4, &v)) set_x(c, e->rd, sign_extend(v, 32));
+        if (PD_READ(c, va, 4, &v)) set_x(c, e->rd, sign_extend(v, 32));
         NEXT;
     }
 L_STR64U:
@@ -1362,28 +1369,28 @@ L_STRH:
 L_LDR64PRE:
     {
         u64 va = reg_xsp(c, e->rn) + e->imm, v;
-        if (!mem_read_pd(c, va, 8, &v)) NEXT;
+        if (!PD_READ(c, va, 8, &v)) NEXT;
         set_x(c, e->rd, v); set_xsp(c, e->rn, va);
         NEXT;
     }
 L_LDR64POST:
     {
         u64 base = reg_xsp(c, e->rn), v;
-        if (!mem_read_pd(c, base, 8, &v)) NEXT;
+        if (!PD_READ(c, base, 8, &v)) NEXT;
         set_x(c, e->rd, v); set_xsp(c, e->rn, base + e->imm);
         NEXT;
     }
 L_LDR32PRE:
     {
         u64 va = reg_xsp(c, e->rn) + e->imm, v;
-        if (!mem_read_pd(c, va, 4, &v)) NEXT;
+        if (!PD_READ(c, va, 4, &v)) NEXT;
         set_x(c, e->rd, (u32)v); set_xsp(c, e->rn, va);
         NEXT;
     }
 L_LDR32POST:
     {
         u64 base = reg_xsp(c, e->rn), v;
-        if (!mem_read_pd(c, base, 4, &v)) NEXT;
+        if (!PD_READ(c, base, 4, &v)) NEXT;
         set_x(c, e->rd, (u32)v); set_xsp(c, e->rn, base + e->imm);
         NEXT;
     }
@@ -1418,7 +1425,7 @@ L_STR32POST:
 L_LDRBPOST:
     {
         u64 base = reg_xsp(c, e->rn), v;
-        if (!mem_read_pd(c, base, 1, &v)) NEXT;
+        if (!PD_READ(c, base, 1, &v)) NEXT;
         set_x(c, e->rd, v); set_xsp(c, e->rn, base + e->imm);
         NEXT;
     }
@@ -1437,10 +1444,10 @@ L_LDR64RO:
                  pd_extend_reg(reg_x(c, e->rm), (unsigned)(e->imm >> 3) & 7,
                                (unsigned)e->imm & 7);
         u64 v;
-        if (e->op == PD_LDR64RO) { if (mem_read_pd(c, va, 8, &v)) set_x(c, e->rd, v); }
-        else if (e->op == PD_LDR32RO) { if (mem_read_pd(c, va, 4, &v)) set_x(c, e->rd, (u32)v); }
-        else if (e->op == PD_LDRBRO) { if (mem_read_pd(c, va, 1, &v)) set_x(c, e->rd, v); }
-        else if (e->op == PD_LDRHRO) { if (mem_read_pd(c, va, 2, &v)) set_x(c, e->rd, v); }
+        if (e->op == PD_LDR64RO) { if (PD_READ(c, va, 8, &v)) set_x(c, e->rd, v); }
+        else if (e->op == PD_LDR32RO) { if (PD_READ(c, va, 4, &v)) set_x(c, e->rd, (u32)v); }
+        else if (e->op == PD_LDRBRO) { if (PD_READ(c, va, 1, &v)) set_x(c, e->rd, v); }
+        else if (e->op == PD_LDRHRO) { if (PD_READ(c, va, 2, &v)) set_x(c, e->rd, v); }
         else if (e->op == PD_STR64RO) mem_write(c, va, 8, reg_x(c, e->rd));
         else if (e->op == PD_STR32RO) mem_write(c, va, 4, reg_x(c, e->rd));
         else if (e->op == PD_STRBRO) mem_write(c, va, 1, reg_x(c, e->rd));
@@ -1461,13 +1468,13 @@ L_LDR64RO:
 L_LDRLIT64:
     {
         u64 v;
-        if (mem_read_pd(c, c->cur_insn_pc + e->imm, 8, &v)) set_x(c, e->rd, v);
+        if (PD_READ(c, c->cur_insn_pc + e->imm, 8, &v)) set_x(c, e->rd, v);
         NEXT;
     }
 L_LDRLIT32:
     {
         u64 v;
-        if (mem_read_pd(c, c->cur_insn_pc + e->imm, 4, &v)) set_x(c, e->rd, (u32)v);
+        if (PD_READ(c, c->cur_insn_pc + e->imm, 4, &v)) set_x(c, e->rd, (u32)v);
         NEXT;
     }
 L_LDRLITV:
@@ -1629,6 +1636,8 @@ L_STPD:
         NEXT;
     }
 
+#undef PD_IFETCH
+#undef PD_READ
 #undef FP_GUARD
 #undef NEXT
 #undef NEXT_MODE

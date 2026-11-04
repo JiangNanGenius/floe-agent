@@ -20,6 +20,7 @@
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 
 /* ---- Linux asm-generic open(2) flag values on the 9P2000.L wire -------- */
 #define P9_O_ACCMODE      000000003u
@@ -149,6 +150,9 @@ static inline int p9_err(int host_errno) {
 #endif
         case ENOSYS: return 38;
         case ENOTEMPTY: return 39;
+#ifdef ESTALE
+        case ESTALE: return 116;
+#endif
         case ELOOP: return 62;
 #ifdef ENODATA
         case ENODATA: return 61;
@@ -255,6 +259,40 @@ static inline bool p9_name_ok(const char *name) {
     if (name[0] == '.' && (name[1] == '\0' || (name[1] == '.' && name[2] == '\0')))
         return false;
     return strchr(name, '/') == NULL;
+}
+
+/* Tsetattr valid bits (Linux-wire values, host-independent). */
+#define P9_ATTR_MODE      (1u << 0)
+#define P9_ATTR_UID       (1u << 1)
+#define P9_ATTR_GID       (1u << 2)
+#define P9_ATTR_SIZE      (1u << 3)
+#define P9_ATTR_ATIME     (1u << 4)
+#define P9_ATTR_MTIME     (1u << 5)
+#define P9_ATTR_CTIME     (1u << 6)
+#define P9_ATTR_ATIME_SET (1u << 7)
+#define P9_ATTR_MTIME_SET (1u << 8)
+
+/* ---- live-share ownership / setattr policy (pure, standalone) -------------
+ * These helpers freeze the decisions the device implements, so the focused
+ * qualification tests can exercise them without a Machine:
+ *
+ *  - Guest uid/gid are a per-share PRESENTATION choice (synthetic ownership).
+ *    They are never forwarded to a host chown/fchown: any setattr that asks
+ *    to change uid/gid is refused EPERM, honestly, on every share.
+ *  - A symlink node itself rejects metadata writes (EACCES) so a link can
+ *    never be retargeted through setattr.
+ * Returns 0 when the setattr may proceed, or the host errno to refuse with.
+ */
+static inline int p9_policy_setattr(uint32_t valid, bool is_link) {
+    if (valid & (P9_ATTR_UID | P9_ATTR_GID)) return EPERM;
+    if (is_link && (valid & (P9_ATTR_SIZE | P9_ATTR_ATIME | P9_ATTR_MTIME |
+                             P9_ATTR_CTIME))) return EACCES;
+    return 0;
+}
+
+/* Refuse anything that could block a slice or punch outside the file model. */
+static inline bool p9_mode_blocked(mode_t mode) {
+    return S_ISFIFO(mode) || S_ISSOCK(mode);
 }
 
 /* Join/resolve one element against a root-relative base, clamping '..' at

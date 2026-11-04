@@ -20,10 +20,17 @@
  * purpose; file-access scope comes only from native configuration):
  *
  *  - Containment is descriptor-based, not lexical. The share root is
- *    resolved once at create (realpath) and pinned with a root directory
- *    descriptor; every host operation is an *at() call on that descriptor,
- *    so the kernel can never resolve outside the registered root, and no
- *    host path string is ever built for file access.
+ *    resolved once (at create or at the host's live attach) and pinned with a
+ *    root directory descriptor; every host operation is an *at() call on that
+ *    descriptor, so the kernel can never resolve outside the registered root,
+ *    and no host path string is ever built for file access.
+ *  - Live project shares: every slot exists from platform build so a booted
+ *    guest has probed it; the host attaches/detaches a pinned root while the
+ *    machine is quiescent. attach/detach bump a per-slot generation and every
+ *    guest fid records the generation it was created under, so a replaced
+ *    root can never be reached through an old fid (ESTALE fence). Detach
+ *    refuses EBUSY while the guest holds open host handles unless the host
+ *    passes force, which drains them immediately.
  *  - Linux-wire open flags and errno are translated explicitly
  *    (virtio_9p_port.h); unsupported bits refuse with EOPNOTSUPP rather
  *    than degrade silently. See the port header for the exact tables.
@@ -41,6 +48,7 @@
  */
 #include "../devices.h"
 #include "virtio_9p_port.h"
+#include "virtio_9p_share.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -113,16 +121,7 @@ enum {
 /* Tgetattr / Rgetattr valid mask (subset we fill: mode..blocks, uid/gid, ino). */
 #define P9_STATS_BASIC 0x000007ffULL
 
-/* Tsetattr valid bits. */
-#define P9_ATTR_MODE      (1u << 0)
-#define P9_ATTR_UID       (1u << 1)
-#define P9_ATTR_GID       (1u << 2)
-#define P9_ATTR_SIZE      (1u << 3)
-#define P9_ATTR_ATIME     (1u << 4)
-#define P9_ATTR_MTIME     (1u << 5)
-#define P9_ATTR_CTIME     (1u << 6)
-#define P9_ATTR_ATIME_SET (1u << 7)
-#define P9_ATTR_MTIME_SET (1u << 8)
+/* Tsetattr valid bits live in virtio_9p_port.h (pure policy helpers there). */
 
 #define P9_MAXWELEM 16            /* max walk elements per Twalk */
 #define P9_NAME_MAX 512
@@ -142,14 +141,15 @@ typedef struct P9Fid {
     int   fd;                     /* -1 unless opened as a file (Tlopen/Tlcreate) */
     DIR  *dir;                    /* non-NULL when opened as a directory */
     char  path[PATH_MAX];         /* ROOT-RELATIVE path; "" == share root */
+    u64   gen;                    /* share generation this fid was created under */
 } P9Fid;
 
 typedef struct VirtIO9P {
     Machine *m; GIC *gic; int irq;
 
-    int    rootfd;                /* pinned share root (O_RDONLY|O_DIRECTORY) */
+    int    rootfd;                /* pinned share root (-1 while DETACHED) */
     char   root[PATH_MAX]; size_t rootlen;   /* realpath'd root (diagnostics + link policy) */
-    bool   ro;
+    P9Share share;                /* live attach/detach state machine + generation fence */
     char   tag[TAG_MAX]; u16 tag_len;
 
     /* virtio-mmio state (single request queue) */
@@ -364,17 +364,22 @@ static int p9_resolve_fid_path(VirtIO9P *v, const char *rel, char *out, size_t o
     return p9_resolve_rel(v, rel, out, outsz);
 }
 
-/* Refuse anything that could block a slice or punch outside the file model. */
-static bool p9_mode_blocked(mode_t mode) {
-    return S_ISFIFO(mode) || S_ISSOCK(mode);
-}
-
 /* ============================ fid table ============================ */
 
 static P9Fid *fid_find(VirtIO9P *v, u32 fid) {
     for (P9Fid *f = v->fids[fid & (FID_BUCKETS - 1)]; f; f = f->next)
         if (f->fid == fid) return f;
     return NULL;
+}
+/* Device-dispatched lookup with the generation fence: a fid created under a
+ * previous share generation (attach/detach replaced the root) is stale and
+ * must never reach the host filesystem through the new root. Tattach after a
+ * replacement binds fresh fids to the current generation. */
+static P9Fid *fid_find_live(VirtIO9P *v, u32 fid) {
+    P9Fid *f = fid_find(v, fid);
+    if (!f) { errno = EBADF; return NULL; }
+    if (!p9s_fid_live(&v->share, f->gen)) { errno = ESTALE; return NULL; }
+    return f;
 }
 static P9Fid *fid_new(VirtIO9P *v, u32 fid, const char *path) {
     P9Fid *f = fid_find(v, fid);
@@ -388,6 +393,7 @@ static P9Fid *fid_new(VirtIO9P *v, u32 fid, const char *path) {
         u32 b = fid & (FID_BUCKETS - 1);
         f->next = v->fids[b]; v->fids[b] = f;
     }
+    f->gen = v->share.generation;
     snprintf(f->path, sizeof(f->path), "%s", path);
     return f;
 }
@@ -444,8 +450,8 @@ static u32 h_walk(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     u32 fid = c_u32(in), newfid = c_u32(in);
     u16 nw = c_u16(in);
     if (in->err || nw > P9_MAXWELEM) return mk_lerror(v, tag, EINVAL, cap);
-    P9Fid *f = fid_find(v, fid);
-    if (!f) return mk_lerror(v, tag, EBADF, cap);
+    P9Fid *f = fid_find_live(v, fid);
+    if (!f) return mk_lerror(v, tag, errno, cap);
 
     char names[P9_MAXWELEM][P9_NAME_MAX];
     for (u16 i = 0; i < nw; i++) c_str(in, names[i], sizeof(names[i]));
@@ -499,16 +505,19 @@ static u32 h_walk(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
 static u32 h_getattr(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     u32 fid = c_u32(in); (void)c_u64(in);      /* request_mask ignored */
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    P9Fid *f = fid_find(v, fid);
-    if (!f) return mk_lerror(v, tag, EBADF, cap);
+    P9Fid *f = fid_find_live(v, fid);
+    if (!f) return mk_lerror(v, tag, errno, cap);
     struct stat st;
     if (p9_stat(v, f->path, &st)) return mk_lerror(v, tag, errno, cap);
     Cur o = resp_begin(v, P9_RGETATTR, tag, cap);
     p_u64(&o, P9_STATS_BASIC);
     p_qid(&o, qid_type(st.st_mode), 0, qid_mix((u64)st.st_dev, (u64)st.st_ino));
     p_u32(&o, (u32)st.st_mode);
-    p_u32(&o, (u32)st.st_uid);
-    p_u32(&o, (u32)st.st_gid);
+    /* Synthetic ownership: the guest sees the share's configured uid/gid
+     * (default 0/0, the mounting root), never the host's Darwin ids and
+     * never a value that would require a host chown to satisfy. */
+    p_u32(&o, v->share.guest_uid);
+    p_u32(&o, v->share.guest_gid);
     p_u64(&o, (u64)st.st_nlink);
     p_u64(&o, (u64)st.st_rdev);
     p_u64(&o, (u64)st.st_size);
@@ -539,35 +548,25 @@ static u32 h_setattr(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     u32 mode = c_u32(in), uid = c_u32(in), gid = c_u32(in);
     u64 size = c_u64(in);
     u64 at_s = c_u64(in), at_ns = c_u64(in), mt_s = c_u64(in), mt_ns = c_u64(in);
+    (void)uid; (void)gid;   /* synthetic ownership: guest ids are never forwarded */
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    if (v->ro) return mk_lerror(v, tag, EROFS, cap);
-    P9Fid *f = fid_find(v, fid);
-    if (!f) return mk_lerror(v, tag, EBADF, cap);
+    if (v->share.ro) return mk_lerror(v, tag, EROFS, cap);
+    P9Fid *f = fid_find_live(v, fid);
+    if (!f) return mk_lerror(v, tag, errno, cap);
 
-    /* Refuse attribute changes through a symlink: the fid names the link
-     * itself after walk, and silently retargeting a host path would break
-     * containment. chmod/chown below act on the link node intentionally. */
+    /* Ownership/mode transition policy (pure helpers in virtio_9p_port.h):
+     * uid/gid changes are refused EPERM — the share presents synthetic ids and
+     * a guest chown must never reach a host chown/fchown; metadata writes
+     * through a symlink are refused EACCES so a link can never be retargeted.
+     * chmod on the link node itself stays allowed, matching lstat semantics. */
     struct stat lst;
     if (p9_stat(v, f->path, &lst)) return mk_lerror(v, tag, errno, cap);
     bool is_link = S_ISLNK(lst.st_mode);
-    if (is_link && (valid & (P9_ATTR_SIZE | P9_ATTR_ATIME | P9_ATTR_MTIME | P9_ATTR_CTIME)))
-        return mk_lerror(v, tag, EACCES, cap);
+    int policy = p9_policy_setattr(valid, is_link);
+    if (policy) return mk_lerror(v, tag, policy, cap);
 
     if (valid & P9_ATTR_MODE)
         if (p9_chmod_link(v, f->path, (mode_t)(mode & 07777))) return mk_lerror(v, tag, errno, cap);
-    if (valid & (P9_ATTR_UID | P9_ATTR_GID)) {
-        uid_t u = (valid & P9_ATTR_UID) ? (uid_t)uid : (uid_t)-1;
-        gid_t g = (valid & P9_ATTR_GID) ? (gid_t)gid : (gid_t)-1;
-        /* lchown semantics on the link node, matching p9_stat. */
-#if defined(__APPLE__)
-        char abs[PATH_MAX];
-        snprintf(abs, sizeof(abs), "%s%s%s", v->root, f->path[0] ? "/" : "", f->path);
-        if (lchown(abs, u, g) && errno != EPERM) return mk_lerror(v, tag, errno, cap);
-#else
-        if (fchownat(v->rootfd, f->path[0] ? f->path : ".", u, g, AT_SYMLINK_NOFOLLOW) && errno != EPERM)
-            return mk_lerror(v, tag, errno, cap);
-#endif
-    }
     if (valid & P9_ATTR_SIZE) {
         char resolved[PATH_MAX];
         if (p9_resolve_fid_path(v, f->path, resolved, sizeof(resolved)) != 0)
@@ -610,8 +609,8 @@ static DIR *p9_opendir(VirtIO9P *v, const char *rel) {
 static u32 h_readdir(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     u32 fid = c_u32(in); u64 off = c_u64(in); u32 count = c_u32(in);
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    P9Fid *f = fid_find(v, fid);
-    if (!f) return mk_lerror(v, tag, EBADF, cap);
+    P9Fid *f = fid_find_live(v, fid);
+    if (!f) return mk_lerror(v, tag, errno, cap);
     if (!f->dir) { f->dir = p9_opendir(v, f->path); if (!f->dir) return mk_lerror(v, tag, errno, cap); }
     if (off == 0) rewinddir(f->dir); else seekdir(f->dir, (long)off);
 
@@ -661,11 +660,11 @@ static u32 h_readdir(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
 static u32 h_lopen(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     u32 fid = c_u32(in), fl = c_u32(in);
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    P9Fid *f = fid_find(v, fid);
-    if (!f) return mk_lerror(v, tag, EBADF, cap);
+    P9Fid *f = fid_find_live(v, fid);
+    if (!f) return mk_lerror(v, tag, errno, cap);
     struct stat st;
     if (p9_stat(v, f->path, &st)) return mk_lerror(v, tag, errno, cap);
-    if (v->ro && p9_dotl_wants_write(fl)) return mk_lerror(v, tag, EROFS, cap);
+    if (v->share.ro && p9_dotl_wants_write(fl)) return mk_lerror(v, tag, EROFS, cap);
     if (p9_mode_blocked(st.st_mode)) return mk_lerror(v, tag, EOPNOTSUPP, cap);
     if (S_ISBLK(st.st_mode) || S_ISCHR(st.st_mode))
         return mk_lerror(v, tag, EPERM, cap);  /* device nodes: never from a share */
@@ -722,9 +721,9 @@ static u32 h_lcreate(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     char name[P9_NAME_MAX]; c_str(in, name, sizeof(name));
     u32 fl = c_u32(in), mode = c_u32(in); (void)c_u32(in);  /* gid */
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    if (v->ro) return mk_lerror(v, tag, EROFS, cap);
-    P9Fid *f = fid_find(v, fid);
-    if (!f) return mk_lerror(v, tag, EBADF, cap);
+    if (v->share.ro) return mk_lerror(v, tag, EROFS, cap);
+    P9Fid *f = fid_find_live(v, fid);
+    if (!f) return mk_lerror(v, tag, errno, cap);
     if (!p9_elem_ok(name)) return mk_lerror(v, tag, EINVAL, cap);
     int err = 0;
     int host_flags = p9_dotl_to_host(fl, &err);
@@ -753,7 +752,7 @@ static u32 h_lcreate(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
 static u32 h_read(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     u32 fid = c_u32(in); u64 off = c_u64(in); u32 count = c_u32(in);
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    P9Fid *f = fid_find(v, fid);
+    P9Fid *f = fid_find_live(v, fid);
     if (!f || f->fd < 0) return mk_lerror(v, tag, EBADF, cap);
     u32 room = cap > 11 ? cap - 11 : 0;        /* Rread header = size+type+tag+count = 11 */
     if (count > room) count = room;
@@ -770,8 +769,8 @@ static u32 h_read(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
 static u32 h_write(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     u32 fid = c_u32(in); u64 off = c_u64(in); u32 count = c_u32(in);
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    if (v->ro) return mk_lerror(v, tag, EROFS, cap);
-    P9Fid *f = fid_find(v, fid);
+    if (v->share.ro) return mk_lerror(v, tag, EROFS, cap);
+    P9Fid *f = fid_find_live(v, fid);
     if (!f || f->fd < 0) return mk_lerror(v, tag, EBADF, cap);
     if (in->pos + count > in->cap) count = in->cap - in->pos;  /* clamp to gathered data */
     ssize_t n = pwrite(f->fd, v->req + in->pos, count, (off_t)off);
@@ -786,9 +785,9 @@ static u32 h_mkdir(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     char name[P9_NAME_MAX]; c_str(in, name, sizeof(name));
     u32 mode = c_u32(in); (void)c_u32(in);     /* gid */
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    if (v->ro) return mk_lerror(v, tag, EROFS, cap);
-    P9Fid *f = fid_find(v, dfid);
-    if (!f) return mk_lerror(v, tag, EBADF, cap);
+    if (v->share.ro) return mk_lerror(v, tag, EROFS, cap);
+    P9Fid *f = fid_find_live(v, dfid);
+    if (!f) return mk_lerror(v, tag, errno, cap);
     if (!p9_elem_ok(name)) return mk_lerror(v, tag, EINVAL, cap);
     int dfd = p9_open_dir_fd(v, f->path);
     if (dfd < 0) return mk_lerror(v, tag, errno, cap);
@@ -808,9 +807,9 @@ static u32 h_mknod(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     char name[P9_NAME_MAX]; c_str(in, name, sizeof(name));
     u32 mode = c_u32(in), major = c_u32(in), minor = c_u32(in); (void)c_u32(in);  /* gid */
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    if (v->ro) return mk_lerror(v, tag, EROFS, cap);
-    P9Fid *f = fid_find(v, dfid);
-    if (!f) return mk_lerror(v, tag, EBADF, cap);
+    if (v->share.ro) return mk_lerror(v, tag, EROFS, cap);
+    P9Fid *f = fid_find_live(v, dfid);
+    if (!f) return mk_lerror(v, tag, errno, cap);
     if (!p9_elem_ok(name)) return mk_lerror(v, tag, EINVAL, cap);
     /* Device nodes and FIFOs are never created inside a share: they could
      * block a host slice or punch a hole in the containment model. */
@@ -840,9 +839,9 @@ static u32 h_symlink(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     c_str(in, name, sizeof(name)); c_str(in, target, sizeof(target));
     (void)c_u32(in);                           /* gid */
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    if (v->ro) return mk_lerror(v, tag, EROFS, cap);
-    P9Fid *f = fid_find(v, dfid);
-    if (!f) return mk_lerror(v, tag, EBADF, cap);
+    if (v->share.ro) return mk_lerror(v, tag, EROFS, cap);
+    P9Fid *f = fid_find_live(v, dfid);
+    if (!f) return mk_lerror(v, tag, errno, cap);
     if (!p9_elem_ok(name)) return mk_lerror(v, tag, EINVAL, cap);
     int dfd = p9_open_dir_fd(v, f->path);
     if (dfd < 0) return mk_lerror(v, tag, errno, cap);
@@ -860,8 +859,8 @@ static u32 h_symlink(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
 static u32 h_readlink(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     u32 fid = c_u32(in);
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    P9Fid *f = fid_find(v, fid);
-    if (!f) return mk_lerror(v, tag, EBADF, cap);
+    P9Fid *f = fid_find_live(v, fid);
+    if (!f) return mk_lerror(v, tag, errno, cap);
     char buf[4096];
     ssize_t n = readlinkat(v->rootfd, f->path[0] ? f->path : ".", buf, sizeof(buf) - 1);
     if (n < 0) return mk_lerror(v, tag, errno, cap);
@@ -875,8 +874,8 @@ static u32 h_link(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     u32 dfid = c_u32(in), fid = c_u32(in);
     char name[P9_NAME_MAX]; c_str(in, name, sizeof(name));
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    if (v->ro) return mk_lerror(v, tag, EROFS, cap);
-    P9Fid *df = fid_find(v, dfid), *sf = fid_find(v, fid);
+    if (v->share.ro) return mk_lerror(v, tag, EROFS, cap);
+    P9Fid *df = fid_find_live(v, dfid), *sf = fid_find_live(v, fid);
     if (!df || !sf) return mk_lerror(v, tag, EBADF, cap);
     if (!p9_elem_ok(name)) return mk_lerror(v, tag, EINVAL, cap);
     int dfd = p9_open_dir_fd(v, df->path);
@@ -894,8 +893,8 @@ static u32 h_rename(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     u32 fid = c_u32(in), dfid = c_u32(in);
     char name[P9_NAME_MAX]; c_str(in, name, sizeof(name));
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    if (v->ro) return mk_lerror(v, tag, EROFS, cap);
-    P9Fid *f = fid_find(v, fid), *df = fid_find(v, dfid);
+    if (v->share.ro) return mk_lerror(v, tag, EROFS, cap);
+    P9Fid *f = fid_find_live(v, fid), *df = fid_find_live(v, dfid);
     if (!f || !df) return mk_lerror(v, tag, EBADF, cap);
     if (!p9_elem_ok(name)) return mk_lerror(v, tag, EINVAL, cap);
     char child[PATH_MAX];
@@ -915,8 +914,8 @@ static u32 h_renameat(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     u32 nd = c_u32(in);
     char newn[P9_NAME_MAX]; c_str(in, newn, sizeof(newn));
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    if (v->ro) return mk_lerror(v, tag, EROFS, cap);
-    P9Fid *of = fid_find(v, od), *nf = fid_find(v, nd);
+    if (v->share.ro) return mk_lerror(v, tag, EROFS, cap);
+    P9Fid *of = fid_find_live(v, od), *nf = fid_find_live(v, nd);
     if (!of || !nf) return mk_lerror(v, tag, EBADF, cap);
     if (!p9_elem_ok(oldn) || !p9_elem_ok(newn)) return mk_lerror(v, tag, EINVAL, cap);
     char op[PATH_MAX], np[PATH_MAX];
@@ -933,9 +932,9 @@ static u32 h_unlinkat(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     char name[P9_NAME_MAX]; c_str(in, name, sizeof(name));
     u32 flags = c_u32(in);
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    if (v->ro) return mk_lerror(v, tag, EROFS, cap);
-    P9Fid *f = fid_find(v, dfid);
-    if (!f) return mk_lerror(v, tag, EBADF, cap);
+    if (v->share.ro) return mk_lerror(v, tag, EROFS, cap);
+    P9Fid *f = fid_find_live(v, dfid);
+    if (!f) return mk_lerror(v, tag, errno, cap);
     if (!p9_elem_ok(name)) return mk_lerror(v, tag, EINVAL, cap);
     char child[PATH_MAX];
     if (!p9_path_child(f->path, name, child, sizeof(child))) return mk_lerror(v, tag, ENAMETOOLONG, cap);
@@ -948,9 +947,9 @@ static u32 h_unlinkat(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
 static u32 h_remove(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     u32 fid = c_u32(in);
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    P9Fid *f = fid_find(v, fid);
-    if (!f) return mk_lerror(v, tag, EBADF, cap);
-    if (v->ro) { fid_del(v, fid); return mk_lerror(v, tag, EROFS, cap); }
+    P9Fid *f = fid_find_live(v, fid);
+    if (!f) return mk_lerror(v, tag, errno, cap);
+    if (v->share.ro) { fid_del(v, fid); return mk_lerror(v, tag, EROFS, cap); }
     struct stat st;
     int flags = 0;
     if (p9_stat(v, f->path, &st) == 0 && S_ISDIR(st.st_mode)) flags = AT_REMOVEDIR;
@@ -973,8 +972,8 @@ static u32 h_clunk(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
 static u32 h_fsync(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     u32 fid = c_u32(in), datasync = c_u32(in);
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    P9Fid *f = fid_find(v, fid);
-    if (!f) return mk_lerror(v, tag, EBADF, cap);
+    P9Fid *f = fid_find_live(v, fid);
+    if (!f) return mk_lerror(v, tag, errno, cap);
     if (f->fd >= 0) {
 #if defined(__APPLE__)
         (void)datasync;
@@ -991,8 +990,8 @@ static u32 h_fsync(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
 static u32 h_statfs(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     u32 fid = c_u32(in);
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
-    P9Fid *f = fid_find(v, fid);
-    if (!f) return mk_lerror(v, tag, EBADF, cap);
+    P9Fid *f = fid_find_live(v, fid);
+    if (!f) return mk_lerror(v, tag, errno, cap);
     char abs[PATH_MAX];
     snprintf(abs, sizeof(abs), "%s%s%s", v->root, f->path[0] ? "/" : "", f->path);
     struct statvfs sv;
@@ -1051,6 +1050,15 @@ static u32 p9_dispatch(VirtIO9P *v, u32 reqlen, u32 wcap) {
     /* Truncated header: reply Rlerror instead of a zero-length message, which
      * would complete the descriptor with no R-message and hang the tag forever. */
     if (in.err) return mk_lerror(v, tag, EINVAL, cap);
+
+    /* A detached slot has no media: refuse every filesystem operation
+     * honestly. Tversion (transport negotiation) and Tflush (tag cancel) stay
+     * usable so a guest that mounted the device before detach can always
+     * retire its outstanding tags; its fids went stale at detach (ESTALE via
+     * the generation fence) and Tattach of new fids waits for attach. */
+    if (v->share.state == P9_SHARE_DETACHED &&
+        type != P9_TVERSION && type != P9_TFLUSH)
+        return mk_lerror(v, tag, ENODEV, cap);
 
     switch (type) {
         case P9_TVERSION:     return h_version(v, &in, tag, cap);
@@ -1251,32 +1259,103 @@ static void fs_write(void *opaque, u64 off, unsigned size, u64 val) {
 
 /* ============================ creation ============================ */
 
-struct VirtIO9P *virtio_9p_create(Machine *m, GIC *gic, const char *root,
-                                  const char *tag, bool ro, int slot) {
-    /* Resolve the host directory ONCE at registration; from then on the
-     * pinned root descriptor is the only handle the host sees. */
-    char real[PATH_MAX];
-    if (!realpath(root, real)) {
-        fprintf(stderr, "[virtio-9p] cannot resolve %s: %s\n", root, strerror(errno));
-        return NULL;
-    }
-    struct stat st;
-    if (stat(real, &st) != 0 || !S_ISDIR(st.st_mode)) {
-        fprintf(stderr, "[virtio-9p] %s is not a directory\n", root);
-        return NULL;
-    }
-    int rootfd = open(real, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-    if (rootfd < 0) {
-        fprintf(stderr, "[virtio-9p] cannot pin %s: %s\n", real, strerror(errno));
-        return NULL;
-    }
+/* Count fids holding a live host handle (open file or directory). detach
+ * refuses without force while this is nonzero, so a normal project close
+ * never tears open files out from under the guest. */
+static uint32_t p9_open_handles(const VirtIO9P *v) {
+    uint32_t n = 0;
+    for (int i = 0; i < FID_BUCKETS; i++)
+        for (const P9Fid *f = v->fids[i]; f; f = f->next)
+            if (f->fd >= 0 || f->dir) n++;
+    return n;
+}
 
-    VirtIO9P *v = calloc(1, sizeof(*v));
-    if (!v) { close(rootfd); return NULL; }
+/* Pin a host directory as the slot root: resolve once (realpath), verify it
+ * is a directory, and hold an O_DIRECTORY descriptor every later *at() call
+ * is relative to. Returns 0, or -errno (and nothing pinned). */
+static int p9_pin_root(VirtIO9P *v, const char *root) {
+    char real[PATH_MAX];
+    if (!realpath(root, real)) return -errno;
+    struct stat st;
+    if (stat(real, &st) != 0) return -errno;
+    if (!S_ISDIR(st.st_mode)) return -ENOTDIR;
+    int rootfd = open(real, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (rootfd < 0) return -errno;
+    if (v->rootfd >= 0) close(v->rootfd);
     v->rootfd = rootfd;
-    v->m = m; v->gic = gic; v->irq = INTID_VIRTIO0 + slot; v->ro = ro;
     snprintf(v->root, sizeof(v->root), "%s", real);
     v->rootlen = strlen(v->root);
+    return 0;
+}
+
+int virtio_9p_attach_root(struct VirtIO9P *v, const char *root,
+                          uint32_t guest_uid, uint32_t guest_gid, bool ro) {
+    if (!v || !root) return -EINVAL;
+    if (v->share.state != P9_SHARE_DETACHED) return -EBUSY;
+    int error = p9_pin_root(v, root);
+    if (error) return error;
+    fids_clear(v);                 /* detached slots hold no fids; stay safe */
+    if (p9s_attach(&v->share, guest_uid, guest_gid, ro) != 0) {
+        close(v->rootfd); v->rootfd = -1;
+        return -EBUSY;
+    }
+    fprintf(stderr, "[virtio-9p] tag \"%s\" -> %s%s (uid %u gid %u gen %llu)\n",
+            v->tag, v->root, ro ? " (ro)" : "",
+            guest_uid, guest_gid, (unsigned long long)v->share.generation);
+    return 0;
+}
+
+int virtio_9p_detach_root(struct VirtIO9P *v, bool force) {
+    if (!v) return -EINVAL;
+    uint32_t open = p9_open_handles(v);
+    v->share.open_handles = open;
+    if (p9s_detach(&v->share, force) != 0) return -EBUSY;   /* guest holds handles */
+    fids_clear(v);                 /* drain: close every host handle once */
+    if (v->rootfd >= 0) { close(v->rootfd); v->rootfd = -1; }
+    fprintf(stderr, "[virtio-9p] tag \"%s\" detached (gen %llu%s)\n",
+            v->tag, (unsigned long long)v->share.generation,
+            force ? ", forced" : "");
+    return 0;
+}
+
+void virtio_9p_get_info(struct VirtIO9P *v, int *state, uint64_t *generation,
+                        uint32_t *open_handles, uint32_t *guest_uid,
+                        uint32_t *guest_gid, int *ro) {
+    if (!v) return;
+    if (state) *state = v->share.state;
+    if (generation) *generation = v->share.generation;
+    if (open_handles) *open_handles = p9_open_handles(v);
+    if (guest_uid) *guest_uid = v->share.guest_uid;
+    if (guest_gid) *guest_gid = v->share.guest_gid;
+    if (ro) *ro = v->share.ro ? 1 : 0;
+}
+
+/* The slot's fixed mount tag (config space, read by the guest at boot).
+ * Attach validates against it: the tag is never changed behind a live
+ * mount's fids. */
+const char *virtio_9p_slot_tag(struct VirtIO9P *v, uint16_t *tag_len) {
+    if (!v) { if (tag_len) *tag_len = 0; return NULL; }
+    if (tag_len) *tag_len = v->tag_len;
+    return v->tag;
+}
+
+struct VirtIO9P *virtio_9p_create(Machine *m, GIC *gic, const char *root,
+                                  const char *tag, bool ro,
+                                  uint32_t guest_uid, uint32_t guest_gid,
+                                  int slot) {
+    /* The device always exists from platform build (the guest probed it at
+     * boot); `root` == NULL creates a DETACHED slot that refuses filesystem
+     * operations with ENODEV until the host attaches a pinned root. A
+     * create-time share attaches right here, preserving the original
+     * create-fails-on-bad-path behavior. */
+    VirtIO9P *v = calloc(1, sizeof(*v));
+    if (!v) return NULL;
+    v->rootfd = -1;
+    v->m = m; v->gic = gic; v->irq = INTID_VIRTIO0 + slot;
+    p9s_init(&v->share);
+    v->share.ro = ro;
+    v->share.guest_uid = guest_uid;
+    v->share.guest_gid = guest_gid;
     size_t tl = strlen(tag); if (tl > TAG_MAX) tl = TAG_MAX;
     memcpy(v->tag, tag, tl); v->tag_len = (u16)tl;
     v->msize = P9_MSIZE_MAX;
@@ -1284,7 +1363,12 @@ struct VirtIO9P *virtio_9p_create(Machine *m, GIC *gic, const char *root,
     v->resp = malloc(P9_MSIZE_MAX);
     if (!v->req || !v->resp) {
         fprintf(stderr, "[virtio-9p] out of memory\n");
-        close(v->rootfd);
+        free(v->req); free(v->resp); free(v);
+        return NULL;
+    }
+
+    if (root && virtio_9p_attach_root(v, root, guest_uid, guest_gid, ro) != 0) {
+        fprintf(stderr, "[virtio-9p] cannot pin %s\n", root);
         free(v->req); free(v->resp); free(v);
         return NULL;
     }
@@ -1292,18 +1376,20 @@ struct VirtIO9P *virtio_9p_create(Machine *m, GIC *gic, const char *root,
     u64 base = 0x0a000000ULL + (u64)slot * 0x200;
     machine_add_device(m, base, 0x200, fs_read, fs_write, v, "virtio-9p");
     m->fs[m->n_fs++] = v;
-    fprintf(stderr, "[virtio-9p] slot %d: tag \"%s\" -> %s%s\n",
-            slot, tag, v->root, ro ? " (ro)" : "");
+    if (!root)
+        fprintf(stderr, "[virtio-9p] slot %d: tag \"%s\" (detached, awaiting root)\n",
+                slot, tag);
     return v;
 }
 
 /* Full teardown after the machine is quiet: open fid handles, the gather /
- * scatter buffers, and the pinned root descriptor. */
+ * scatter buffers, and the pinned root descriptor (when attached). */
 void virtio_9p_destroy(VirtIO9P *v) {
     if (!v) return;
     fids_clear(v);
     if (v->rootfd >= 0) close(v->rootfd);
     v->rootfd = -1;
+    v->share.state = P9_SHARE_DETACHED;
     free(v->req); v->req = NULL;
     free(v->resp); v->resp = NULL;
     free(v);

@@ -47,11 +47,21 @@ bool console_is_stdio(const ConsoleEP *e);
 /* One byte of host input, or -1 when none is available right now. Never blocks. */
 int console_getchar(ConsoleEP *e);
 
-/* Guest console output. Bulk (a whole descriptor's worth) and single-byte forms;
- * both are non-blocking on an fd endpoint, where bytes that cannot be written
- * yet are buffered and drained by console_flush. */
-void console_write(ConsoleEP *e, const void *buf, size_t len);
+/* Guest console output. Bulk (a whole descriptor's worth) and single-byte forms.
+ * Returns the number of bytes accepted into the channel's bounded output ring.
+ * A virtio-console caller must check this and apply transport backpressure
+ * (leave the TX descriptor queued) when accepted < len — bytes are never
+ * silently dropped and the machine is never faulted by console saturation.
+ * The PL011 UART (channel 0) keeps the legacy bounded contract: the run loop
+ * parks with FLOE_AE_OUTPUT_FULL before its ring can overflow. */
+size_t console_write(ConsoleEP *e, const void *buf, size_t len);
 void console_putchar(ConsoleEP *e, int ch);
+
+/* Free space in the endpoint's bounded output ring right now. A
+ * virtio-console TX path uses this to apply transport backpressure: only
+ * admit a descriptor chain that fits in its entirety. 0 when the endpoint
+ * has no channel. */
+size_t console_output_space(const ConsoleEP *e);
 
 /* Push out whatever console_write could not hand to the kernel earlier. Cheap
  * and safe to call on every tick; a no-op for stdio and for an empty buffer. */

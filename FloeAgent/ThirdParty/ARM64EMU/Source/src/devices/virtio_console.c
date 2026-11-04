@@ -195,6 +195,32 @@ static void con_flush_rx(VirtIOConsole *v) {
 
 /* ---- TX: drain guest console output to host stdout ---- */
 
+/* Total byte length of the descriptor chain starting at head, for the
+ * backpressure pre-check. Walk is bounded by q_num exactly like the copy
+ * loop; a malformed chain therefore costs one extra bounded walk, nothing
+ * more. Returns the length, and (via *chain_end_ok) whether the chain is
+ * well-formed enough to copy. */
+static uint32_t con_tx_chain_len(VirtIOConsole *v, uint16_t hd, uint16_t q_num,
+                                 bool *copyable) {
+    Machine *m = v->m;
+    uint32_t total = 0, n = 0;
+    uint16_t idx = hd;
+    *copyable = true;
+    for (;;) {
+        if (n >= q_num) { *copyable = false; break; }   /* unterminated chain */
+        uint64_t d    = v->q_desc[CON_QUEUE_TX] + (uint64_t)idx * 16;
+        uint32_t dlen = (uint32_t)phys_read(m, d + 8, 4);
+        uint16_t df   = (uint16_t)phys_read(m, d + 12, 2);
+        uint16_t next = (uint16_t)phys_read(m, d + 14, 2);
+        if (df & VIRTQ_DESC_F_WRITE) { *copyable = false; break; } /* TX chains are read-only */
+        total += dlen;
+        n++;
+        if (!(df & VIRTQ_DESC_F_NEXT)) break;
+        idx = next;
+    }
+    return total;
+}
+
 static void con_tx_process(VirtIOConsole *v) {
     Machine *m = v->m;
     if (!v->q_ready[CON_QUEUE_TX] || v->q_num[CON_QUEUE_TX] == 0) return;
@@ -207,11 +233,24 @@ static void con_tx_process(VirtIOConsole *v) {
         uint16_t hd = (uint16_t)phys_read(m,
             v->q_avail[CON_QUEUE_TX] + 4 +
             (uint64_t)(v->last_avail[CON_QUEUE_TX] % q_num) * 2, 2);
+
+        /* Transport backpressure: admit a chain only when this console's own
+         * output ring can take the WHOLE chain. Otherwise leave the descriptor
+         * queued (do not advance last_avail): the guest's TX ring fills and
+         * its write blocks — no byte loss, no machine fault, and every other
+         * console plus the UART stay fully usable. Space is rechecked per
+         * chain, so partial drains resume exactly where they fit. */
+        bool copyable = false;
+        uint32_t total = con_tx_chain_len(v, hd, q_num, &copyable);
+        if (copyable && total > 0 &&
+            console_output_space(v->ep) < total)
+            break;   /* this console's ring is full: stop consuming, backpressure */
         v->last_avail[CON_QUEUE_TX]++;
 
         /* Console TX is a byte stream (no atomic-frame requirement like net),
-         * so write each readable descriptor straight to stdout — no payload
-         * size cap and nothing dropped. Chain walk bounded by q_num. */
+         * so write each readable descriptor straight to the host channel.
+         * The pre-check guarantees the whole chain fits, so console_write
+         * accepts every byte. Chain walk bounded by q_num. */
         uint32_t n = 0, idx = hd;
         for (;;) {
             if (n >= q_num) break;
@@ -226,7 +265,14 @@ static void con_tx_process(VirtIOConsole *v) {
                 uint32_t c = dlen - off;
                 if (c > sizeof(chunk)) c = sizeof(chunk);
                 phys_read_blk(m, gpa + off, chunk, c);
-                console_write(v->ep, chunk, c);
+                size_t accepted = console_write(v->ep, chunk, c);
+                if (accepted != c) {
+                    /* Defensive invariant: the pre-check made this impossible.
+                     * Losing bytes is never acceptable; surface it honestly. */
+                    m->host_error = -3; /* FLOE_AE_FAULT value in the device layer */
+                    push_used(v, CON_QUEUE_TX, hd, 0);
+                    return;
+                }
                 off += c;
             }
             n++;

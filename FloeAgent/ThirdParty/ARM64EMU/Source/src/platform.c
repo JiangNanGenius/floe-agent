@@ -70,30 +70,41 @@ int platform_build(Machine *m) {
 
     /* virtio-mmio: 32 slots (0x0a000000–0x0a003fff, stride 0x200).
      * Slot 0 is reserved for virtio-net (-net); disks (-drive) take slots
-     * 1..n_drives; host shares (-virtfs) take the next slots. Numbering is
-     * deterministic regardless of which devices are present.
+     * 1..n_drives; all MAX_SHARES host-share slots take the next fixed block
+     * (each share device exists from build so a booted guest has probed every
+     * slot; unconfigured slots start detached with the default tag
+     * "floe-ws-<slot>"); virtio-consoles take the slots after the share block.
+     * Numbering is deterministic regardless of which optional devices are on.
      * Real devices must be registered before any stub that covers their range
      * because find_dev uses first-match dispatch — so a device at slot 2+ shadows
      * the catch-all stub below for its own 0x200 window.
      * Unoccupied slots get empty-transport stubs (DeviceID=0). */
-    if (m->n_drives + m->n_shares + m->n_consoles_req > 31) {   /* net=slot0, then disks, shares, consoles */
-        fprintf(stderr, "too many virtio-mmio devices (%d disks + %d shares + "
+    if (m->n_drives + MAX_SHARES + m->n_consoles_req > 31) {  /* net=slot0, disks, shares, consoles */
+        fprintf(stderr, "too many virtio-mmio devices (%d disks + %d share slots + "
                         "%d consoles > 31 slots)\n",
-                m->n_drives, m->n_shares, m->n_consoles_req);
+                m->n_drives, MAX_SHARES, m->n_consoles_req);
         return -1;
     }
     if (m->net_enabled && !virtio_net_create(m, m->gic)) return -5;
     for (int i = 0; i < m->n_drives; i++)
         if (!virtio_blk_create(m,m->gic,m->drives[i].path,m->drives[i].ro,i+1)) return -5;  /* slots 1..n_drives */
-    for (int i = 0; i < m->n_shares; i++)                    /* slots after disks  */
-        if (!virtio_9p_create(m, m->gic, m->shares[i].path, m->shares[i].tag,
-                              m->shares[i].ro, m->n_drives + 1 + i)) return -5;
-    for (int i = 0; i < m->n_consoles_req; i++)              /* slots after disks + shares */
-        if (!virtio_console_create(m, m->gic, 1 + m->n_drives + m->n_shares + i)) return -6;
+    for (int i = 0; i < MAX_SHARES; i++) {                   /* fixed share-slot block */
+        const char *tag = i < m->n_shares ? m->shares[i].tag : NULL;
+        char dtag[32];
+        if (!tag) { snprintf(dtag, sizeof(dtag), "floe-ws-%d", i); tag = dtag; }
+        const char *path = i < m->n_shares ? m->shares[i].path : NULL;
+        uint32_t uid = i < m->n_shares ? m->shares[i].guest_uid : 0;
+        uint32_t gid = i < m->n_shares ? m->shares[i].guest_gid : 0;
+        bool ro = i < m->n_shares ? m->shares[i].ro : false;
+        if (!virtio_9p_create(m, m->gic, path, tag, ro, uid, gid,
+                              m->n_drives + 1 + i)) return -5;
+    }
+    for (int i = 0; i < m->n_consoles_req; i++)              /* slots after disks + share block */
+        if (!virtio_console_create(m, m->gic, 1 + m->n_drives + MAX_SHARES + i)) return -6;
     if (!m->net_enabled) machine_add_device(m, 0x0a000000, 0x200, virtio_mmio_read, stub_write, m, "virtio-mmio");
-    /* Slot 1 (0x0a000200) is stubbed only when nothing real occupies it — no
-     * disk, no share, and (when there are neither) no virtio-console either. */
-    if (m->n_drives == 0 && m->n_shares == 0 && m->n_consoles_req == 0) machine_add_device(m, 0x0a000200, 0x200, virtio_mmio_read, stub_write, m, "virtio-mmio");
+    /* The fixed share block always occupies slot 1 when no disk takes it, so
+     * no slot-1 stub is needed; the catch-all below only ever serves slots
+     * past the share block and console run. */
     machine_add_device(m, 0x0a000400, 0x3c00, virtio_mmio_read, stub_write, m, "virtio-mmio");
     machine_add_device(m, 0x3eff0000, 0x10000,      stub_ones_read, stub_write, m, "pcie-pio");
     machine_add_device(m, 0x10000000, 0x2eff0000,   stub_ones_read, stub_write, m, "pcie-mmio");

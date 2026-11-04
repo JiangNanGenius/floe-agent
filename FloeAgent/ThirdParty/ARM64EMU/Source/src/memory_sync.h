@@ -58,3 +58,21 @@ void memory_monitor_sync_cpu(struct CPU *c);
 unsigned memory_monitor_store_locked(struct Machine *m,u64 pa,u64 length);
 void memory_monitor_store(struct Machine *m,u64 pa,u64 length);
 #endif
+
+/* Private PD forwarding surface, deliberately outside the compatibility guard:
+ * source-including qualification TUs may already have included this header.
+ * Only pd_step constructs this stack view. It is never stored in CPU/MMU/
+ * Machine or accepted by a public execution entry. No TLS address crosses a
+ * non-inline helper: those receive ordinary arguments after a live *slot read.
+ */
+#if defined(AE_PD_GUARD_SLOT_PRIVATE) && !defined(AE_PD_GUARD_SLOT_PRIVATE_H)
+#define AE_PD_GUARD_SLOT_PRIVATE_H
+typedef struct PDGuardSlotView {
+    MemoryGuard *const *slot;
+} PDGuardSlotView;
+/* Closed-call-chain helper: caller just observed no enclosing guard, without
+ * callbacks or control/RPC between that observation and this synchronous read.
+ * It repeats every canonical width/span/stripe check; it accepts no view. */
+__attribute__((visibility("hidden")))
+bool memory_read_small_pd_unheld(struct Machine *m,const void *host,unsigned size,u64 *out);
+#endif

@@ -436,6 +436,21 @@ enum LinuxGuestFraming {
         return payload
     }
 
+    /// Control-channel payload as the standard u32 fieldCount table
+    /// (the protocol-4 PROJOPEN spec: exactly `[baseRootfs, workspaceDir, nativeShareSlot]`).
+    /// The field order and encoding are the runner's own; this helper keeps
+    /// this module the single owner of the table codec.
+    static func projectControlPayload(fields: [String]) -> Data {
+        var payload = Data()
+        appendUInt32(UInt32(fields.count), to: &payload)
+        for field in fields {
+            let bytes = Data(field.utf8)
+            appendUInt32(UInt32(bytes.count), to: &payload)
+            payload.append(bytes)
+        }
+        return payload
+    }
+
     /// Inline EXEC envelope: `\x1eFLOE-EXEC <token> <base64 payload>\n`.
     /// Dedicated helper so the guest runner's native protocol check can drive
     /// the exact host bytes.
@@ -464,7 +479,11 @@ enum LinuxGuestFraming {
     }
 
     /// Frames for one payload transfer: header, base64 chunks, RUN.
-    static func payloadHeader(_ name: String, token: String, payload: Data) -> [Data] {
+    /// `extraArguments` precede the payload size/chunk count on the header
+    /// line (the protocol-4 PROJOPEN header carries
+    /// `<projectID> <generation>` there); the default keeps every existing
+    /// call site byte-identical.
+    static func payloadHeader(_ name: String, token: String, payload: Data, extraArguments: [String] = []) -> [Data] {
         var lines: [String] = []
         let base64 = payload.base64EncodedString()
         var start = base64.startIndex
@@ -474,7 +493,10 @@ enum LinuxGuestFraming {
             start = end
         }
         if lines.isEmpty { lines.append("") }
-        var frames: [Data] = [controlLine(name, token: token, arguments: ["\(payload.count)", "\(lines.count)"])]
+        var headerArguments = extraArguments
+        headerArguments.append("\(payload.count)")
+        headerArguments.append("\(lines.count)")
+        var frames: [Data] = [controlLine(name, token: token, arguments: headerArguments)]
         for (index, chunk) in lines.enumerated() {
             frames.append(controlLine("CHUNK", token: token, arguments: ["\(index)", chunk]))
         }
@@ -926,7 +948,7 @@ enum LinuxGuestFraming {
             let out = marker("OUT", token: token)
             let err = marker("ERR", token: token)
             let end = endMarkerPrefix(token)
-            let longest = max(pidPrefix.count, capsPrefix.count, begin.count, out.count, err.count, end.count)
+            let markers = [pidPrefix, capsPrefix, begin, out, err, end]
             while true {
                 var earliest: (range: Range<Data.Index>, kind: UInt8)?
                 for (kind, candidate) in [(UInt8(0), pidPrefix), (UInt8(1), begin), (UInt8(2), out), (UInt8(3), err), (UInt8(4), end), (UInt8(5), capsPrefix)] {
@@ -939,7 +961,7 @@ enum LinuxGuestFraming {
                     }
                 }
                 guard let hit = earliest else {
-                    keepTail(longest - 1)
+                    flushPendingPrefix(markers: markers)
                     return .needMore
                 }
                 switch hit.kind {
@@ -1002,9 +1024,20 @@ enum LinuxGuestFraming {
             text.append(contentsOf: bytes.prefix(maxTextBytes - text.count))
         }
 
-        private mutating func keepTail(_ count: Int) {
-            guard count > 0, pending.count > count else { return }
-            pending.removeFirst(pending.count - count)
+        /// Keep only a possible split marker; everything before it belongs
+        /// to this token's bounded control response. The router delivers OUT
+        /// separately from its text, so discarding that text loses ack fields.
+        private mutating func flushPendingPrefix(markers: [Data]) {
+            let maxTail = max(0, (markers.map(\.count).max() ?? 1) - 1)
+            var retain = min(maxTail, pending.count)
+            while retain > 0 {
+                let tail = pending.suffix(retain)
+                if markers.contains(where: { $0.starts(with: tail) }) { break }
+                retain -= 1
+            }
+            let flushEnd = pending.index(pending.endIndex, offsetBy: -retain)
+            appendText(pending[pending.startIndex..<flushEnd])
+            pending.removeSubrange(pending.startIndex..<flushEnd)
         }
     }
 }
@@ -1564,7 +1597,15 @@ public actor LinuxGuestCommandChannel {
     /// admits it is not (FAILED → poison). Key = command token.
     private var pendingInterrupts: [String: any Error & Sendable] = [:]
     private var poisoned = false
-    private var closed = false
+    private(set) var closed = false
+    /// Optional observer for protocol-4 supervisor EVENT notices
+    /// (`\x1eFLOE-EVENT <project> <generation> <kind> <detail>\x1e`).
+    /// Installed only by the trusted supervisor client; a data-channel
+    /// (protocol 3) runner never emits EVENT, so this stays nil and inert on
+    /// every ordinary command channel. The second closure argument is the
+    /// router generation at receipt so the client can fence notices from an
+    /// older boot.
+    private var supervisorEventObserver: (@Sendable (String, UInt64) -> Void)?
     /// Installed responder for the optional guest → host control bridge. nil
     /// keeps the capability unadvertised and every HOSTREQ unserved.
     private var hostRequestHandler: LinuxGuestHostRequestHandler?
@@ -1696,6 +1737,23 @@ public actor LinuxGuestCommandChannel {
         hostRequestHandler = handler
     }
 
+    /// Installs (or clears, with nil) the resident-supervisor EVENT observer.
+    /// Returns the router generation the observer is fenced under: notices
+    /// delivered with a different generation belong to an older boot and must
+    /// be discarded by the client until it re-installs (reconnect). nil keeps
+    /// every EVENT frame dropped. Internal: same-module typed client and the
+    /// focused regressions only.
+    @discardableResult
+    func installSupervisorEventObserver(
+        _ observer: (@Sendable (String, UInt64) -> Void)?
+    ) -> UInt64 {
+        supervisorEventObserver = observer
+        return routerGeneration
+    }
+
+    /// Read-only negotiated payload for typed control clients.
+    var negotiatedRunnerCapabilityPayload: String? { negotiatedCapabilities }
+
     /// The HELLO argument the next negotiation advertises, nil when no
     /// handler is installed (or its argument is empty).
     var advertisedHostRequestArgument: String? {
@@ -1709,7 +1767,7 @@ public actor LinuxGuestCommandChannel {
 
     /// Sends FLOE-HELLO and requires protocol >= 3. Idempotent; concurrent
     /// callers await the same probe.
-    private func ensureNegotiated() async throws {
+    func ensureNegotiated() async throws {
         if negotiated || legacySerialMode { return }
         if let negotiationTask {
             _ = try await negotiationTask.value
@@ -1954,7 +2012,7 @@ public actor LinuxGuestCommandChannel {
         tokenStreams[token] = stream
     }
 
-    private func unregisterToken(_ token: String) {
+    func unregisterToken(_ token: String) {
         tokenStreams.removeValue(forKey: token)
     }
 
@@ -2160,7 +2218,8 @@ public actor LinuxGuestCommandChannel {
         // a frame. Arbitrary `\x1eFLOE-<word> …` bytes in command output are
         // preserved as section payload (the wire-escape note in the header
         // documents the one unavoidable exception: a byte-exact known frame).
-        guard LinuxGuestFraming.guestFrameNames.contains(name),
+        guard (LinuxGuestFraming.guestFrameNames.contains(name)
+               || (name == "EVENT" && supervisorEventObserver != nil)),
               LinuxGuestFraming.isValidGuestToken(token) else { return .notAFrame }
         // Consume exactly the frame (opening 0x1e through closing 0x1e).
         routerPending.removeSubrange(routerPending.startIndex...closing)
@@ -2197,6 +2256,13 @@ public actor LinuxGuestCommandChannel {
             // other tokens, or reboot while the host work is in flight, so
             // the console reader must never wait for the handler.
             receiveHostRequest(token: token, encodedPayload: arguments)
+        case "EVENT":
+            // Protocol-4 supervisor notice: asynchronous, no BEGIN/END pair
+            // and no output section. Delivered only to the installed
+            // observer, stamped with the router generation at receipt; it
+            // never changes the section owner, so command output bytes that
+            // follow it keep routing to their owner.
+            supervisorEventObserver?(token + " " + arguments, routerGeneration)
         default:
             break
         }
@@ -3086,6 +3152,7 @@ public actor LinuxGuestCommandChannel {
         closed = true
         routerGeneration &+= 1
         cancelAllHostRequests()
+        supervisorEventObserver = nil
         failSendWaiters()
         consoleReader?.cancel()
         consoleReader = nil

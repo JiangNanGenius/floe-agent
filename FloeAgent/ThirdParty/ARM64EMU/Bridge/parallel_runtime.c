@@ -7,10 +7,13 @@
 #include "parallel_iface.h"
 #include "mmu.h"
 #include "sysreg.h"
+#include "../Source/src/net/usernet.h"
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <time.h>
+#include <poll.h>
+#include <unistd.h>
 /* Qualification-only observation; defaults erase at preprocessing, with no
  * production callback/extra per-boundary function call or synchronization. */
 #ifndef AE_FASTPOLL_OBSERVE
@@ -67,7 +70,16 @@ static u64 thread_cpu_ns(void){
     struct timespec t;if(clock_gettime(CLOCK_THREAD_CPUTIME_ID,&t))return 0;
     return (u64)t.tv_sec*1000000000ULL+(u64)t.tv_nsec;
 }
-static void changed(AEParallel *p){p->progress++;pthread_cond_broadcast(&p->changed);}
+static void changed(AEParallel *p){
+    p->progress++;pthread_cond_broadcast(&p->changed);
+    /* The coordinator now parks in poll(2), not only p->changed. Publish
+     * every worker/RPC transition to that same wait set. The pipe lifetime
+     * covers all workers, writes are nonblocking and need no session lock
+     * (taking it under p->mutex would invert the control-side lock order).
+     * EAGAIN already means an unread wake is pending. */
+    AESession *s=p->session;
+    if(s->wake_pipe_ready){unsigned char byte=0;(void)write(s->wake_pipe[1],&byte,1);}
+}
 static void enter_pd(AEHart *h){
     AEParallel *p=h->parallel;unsigned n=atomic_fetch_add_explicit(&p->in_pd,1,memory_order_relaxed)+1;
     unsigned old=atomic_load_explicit(&p->max_in_pd,memory_order_relaxed);
@@ -475,15 +487,35 @@ static AEParallelResult parallel_epoch(AESession *s,u64 max_ns,u64 max_insn,cons
                 if(ticks&&ticks!=UINT64_MAX){atomic_fetch_add(&m->virtual_ticks,ticks);continue;}}
             result.reason=FLOE_AE_PARKED;close_run(p);continue;
         }
-        u64 observed_progress=p->progress;
+        u64 observed_progress=p->progress,deadline_snapshot=p->deadline;
         pthread_mutex_unlock(&p->mutex);u64 timer=timer_next_event_ns(m),now=ae_now_ns();
-        ae_parallel_test_boundary(NULL,4);pthread_mutex_lock(&p->mutex);
+        ae_parallel_test_boundary(NULL,4);
+        /* Hart-busy readiness wait: at least one hart executes, so sleep
+         * until it makes progress, the budget/timer fires, a control signal
+         * arrives on the session wake pipe (input/stop/winsize/ABI), or a
+         * usernet descriptor becomes ready (socket readiness wakes the loop
+         * immediately, so a guest blocked on RX/TX resumes within this slice
+         * instead of after the remaining budget). Lock order respected: the
+         * usernet snapshot is taken with the parallel mutex released, and
+         * every mutation path (hostfwd add/remove, share attach/detach,
+         * destroy) requires this same quiescence, so the snapshotted fds
+         * cannot be closed or reused underneath poll(2). */
+        AESession *ps=p->session;
+        struct pollfd pf[132];
+        int nfds=0,held[128],nheld=0,pipe_idx=-1;
+        if(ps->wake_pipe_ready){pipe_idx=nfds;pf[nfds].fd=ps->wake_pipe[0];pf[nfds].events=POLLIN|POLLERR|POLLHUP;nfds++;}
+        UserNet *un=m->net?virtio_net_usernet(m->net):NULL;
+        int raw[128];int nraw=un?usernet_wait_fds(un,raw,128):0;
+        for(int i=0;i<nraw;i++){int d=dup(raw[i]);if(d>=0){pf[nfds].fd=d;pf[nfds].events=POLLIN|POLLERR|POLLHUP;held[nheld++]=d;nfds++;}}
+        u64 wait_ns=deadline_snapshot>now?deadline_snapshot-now:0;if(timer<wait_ns)wait_ns=timer;
+        int ready=0;
+        if(wait_ns)ready=poll(pf,(nfds_t)nfds,(int)((wait_ns+999999)/1000000));
+        pthread_mutex_lock(&p->mutex);
+        for(int i=0;i<nheld;i++)close(held[i]);
+        if(ready>0&&pipe_idx>=0&&(pf[pipe_idx].revents&(POLLIN|POLLERR|POLLHUP)))ae_wake_drain(ps);
         /* A worker/RPC/control change between observation and wait cannot be
          * consumed by the old condition signal. Re-enter the full predicates. */
         if(p->progress!=observed_progress||pending(p)>=0)continue;
-        u64 wait=p->deadline>now?p->deadline-now:0;if(timer<wait)wait=timer;
-        if(wait){struct timespec relative={(time_t)(wait/1000000000ULL),(long)(wait%1000000000ULL)};
-            pthread_cond_timedwait_relative_np(&p->changed,&p->mutex,&relative);}
     }
     result.instructions=p->executed;p->active=false;
     m->parallel_ops=NULL;m->parallel_owner=NULL;

@@ -72,5 +72,12 @@ void     usernet_get_stats(UserNet *un,
                            uint64_t *in_frames, uint64_t *out_ok,
                            uint64_t *out_refused,
                            unsigned *tcp_conns, unsigned *udp_flows);
+/* Snapshot of the host descriptors whose readiness can produce guest-bound
+ * work: host-forward listeners, TCP proxy connections, UDP flows and ICMP
+ * ping sockets. Intended for an embedder-side readiness poll while the
+ * machine is quiescent: the caller passes its own duplicated descriptors
+ * (dup(2) under its session lock), so a polled fd can never be closed or
+ * reused underneath the poll. Returns the number written (<= max). */
+int      usernet_wait_fds(UserNet *un, int *fds, int max);
 
 #endif

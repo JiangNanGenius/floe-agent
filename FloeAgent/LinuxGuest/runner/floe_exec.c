@@ -114,6 +114,18 @@
 // diagnostics (mount failures, clock state) go to stderr and are discarded by
 // the host parser before the first BEGIN.
 //
+// Project mode (supervisor-owned guests): when the supervisor exports
+// FLOE_CGROUP_TASKS, every command, session and background service child
+// runs in its own task cgroup (fixed cpu/memory/pids ceilings) plus a
+// private uts/ipc/mount namespace with a per-task tmpfs on /tmp, and final
+// cancellation is cgroup.kill so double-fork/setsid descendants are reaped.
+// Tasks run as the guest's own root: no user namespaces and no idmapped
+// mounts are used anywhere (overlayfs and cgroupfs both lack FS_ALLOW_IDMAP
+// on kernels <= 6.18, so mount_setattr(MOUNT_ATTR_IDMAP) would fail on the
+// Debian trixie 6.12 target). The wire protocol is unchanged (the per-
+// project console still speaks protocol 3); see floe_project_supervisor.h
+// for the control-channel contract.
+//
 // The runner is written in POSIX C so it can be compiled natively on the
 // developer host for protocol checks (mounts are Linux-only and compiled
 // out). The guest build is a static riscv64 binary (see Makefile).
@@ -143,8 +155,10 @@
 #include "floe_clock.h"
 #include "floe_net.h"
 #include "floe_host_archive.h"
+#include "floe_project_supervisor.h"
 
 #ifdef __linux__
+#include <sched.h>
 #include <sys/mount.h>
 #include <sys/sysmacros.h>
 #endif
@@ -205,6 +219,31 @@ static floe_net_status g_net_status = FLOE_NET_DOWN;
 #define MAX_SPAWNED 32
 #define MAX_PENDING_KILLS 32
 #define KILL_ESCALATE_MS 750
+
+// ---------------------------------------------------------------------------
+// Project task isolation (supervisor mode)
+// ---------------------------------------------------------------------------
+// When the supervisor starts this runner for a project it exports
+// FLOE_CGROUP_TASKS (the delegated task-cgroup directory, bound inside the
+// project rootfs at /sys/fs/cgroup/tasks). Each EXEC/OPEN/SPAWN child gets
+// its own task cgroup (fixed cpu/memory/pids ceilings) and unshares
+// uts/ipc/mount namespaces with a per-task tmpfs on /tmp. Built on the
+// proven 2026-11-04 isolation primitive: cgroup.kill cancels whole trees,
+// including double-fork/setsid escapees a process-group signal cannot
+// reach. Tasks run as the guest's own root; there is deliberately NO user
+// namespace, NO idmapped mount and NO capset/setns dance (the kernel
+// refuses MOUNT_ATTR_IDMAP on overlayfs and cgroupfs on the target).
+// Task cgroups are named after the frame token so commands, sessions and
+// background services cancel uniformly. Without the env the runner is
+// byte-identical to the protocol-3 runner. Configured-but-broken isolation
+// fails every command closed: no success string is ever emitted when
+// isolation is unsupported.
+#define TASK_ISO_DIR_MAX 560
+
+// Forward declarations: the cancel paths below call these before the
+// definitions further down (compile fix for the 2026-11-05 draft).
+static void task_iso_kill(const char *dir);
+static void task_iso_cleanup(const char *dir);
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -902,6 +941,8 @@ typedef struct {
     int host_wait;
     int64_t host_deadline;
     char token[MAX_TOKEN];
+    // Project-mode task cgroup dir ("" when isolation is off).
+    char iso_dir[TASK_ISO_DIR_MAX];
 } command_state;
 
 static command_state g_commands[MAX_CONCURRENT_COMMANDS];
@@ -1007,6 +1048,7 @@ static void request_cancel(command_state *c, int sig) {
         c->term_sent = 1;
         c->sigkill_sent = 1;
         signal_command(c, SIGKILL);
+        task_iso_kill(c->iso_dir); // whole tree, incl. setsid escapees
         return;
     }
     if (sig == SIGTERM) c->term_sent = 1;
@@ -1025,6 +1067,7 @@ static void enforce_cancel(command_state *c) {
     if (!c->sigkill_sent) {
         c->sigkill_sent = 1;
         signal_command(c, SIGKILL);
+        task_iso_kill(c->iso_dir); // whole tree, incl. setsid escapees
     }
 }
 
@@ -1064,6 +1107,8 @@ static void unreaped_forget(pid_t pid) {
 typedef struct {
     int active;
     char token[MAX_TOKEN];
+    // Project-mode task cgroup dir ("" when isolation is off).
+    char iso_dir[TASK_ISO_DIR_MAX];
     pid_t pid;
     pid_t pgid;
     int master_fd;
@@ -1105,6 +1150,7 @@ static void session_close_master(pty_session *s) {
 }
 
 static void session_free(pty_session *s) {
+    task_iso_cleanup(s->iso_dir);
     session_close_master(s);
     free(s->input);
     memset(s, 0, sizeof *s);
@@ -1206,7 +1252,10 @@ static void session_request_kill(pty_session *s, int sig) {
     s->abandon_deadline_set = 1;
     s->abandon_deadline = now_ms() + CANCEL_ABANDON_MS;
     session_signal(s, sig == SIGKILL ? SIGKILL : sig);
-    if (sig == SIGKILL) s->sigkill_sent = 1;
+    if (sig == SIGKILL) {
+        s->sigkill_sent = 1;
+        task_iso_kill(s->iso_dir); // whole tree, incl. setsid escapees
+    }
 }
 
 static void session_enforce_kill(pty_session *s) {
@@ -1214,6 +1263,7 @@ static void session_enforce_kill(pty_session *s) {
     if (now_ms() < s->kill_deadline) return;
     s->sigkill_sent = 1;
     session_signal(s, SIGKILL);
+    task_iso_kill(s->iso_dir); // whole tree, incl. setsid escapees
 }
 
 static int session_done(const pty_session *s) {
@@ -1229,6 +1279,8 @@ static int session_done(const pty_session *s) {
 typedef struct {
     int used;
     pid_t pid;
+    // Project-mode task cgroup dir ("" when isolation is off).
+    char iso_dir[TASK_ISO_DIR_MAX];
 } spawned_slot;
 
 typedef struct {
@@ -1236,20 +1288,31 @@ typedef struct {
     pid_t pid;
     int sigkill_sent;
     int64_t deadline;
+    // Project-mode task cgroup dir ("" when isolation is off).
+    char iso_dir[TASK_ISO_DIR_MAX];
 } pending_kill;
 
 static spawned_slot g_spawned[MAX_SPAWNED];
 static pending_kill g_kills[MAX_PENDING_KILLS];
 
-static int spawned_record(pid_t pid) {
+static int spawned_record(pid_t pid, const char *iso_dir) {
     for (int i = 0; i < MAX_SPAWNED; i++) {
         if (!g_spawned[i].used) {
             g_spawned[i].used = 1;
             g_spawned[i].pid = pid;
+            g_spawned[i].iso_dir[0] = '\0';
+            if (iso_dir) snprintf(g_spawned[i].iso_dir, sizeof g_spawned[i].iso_dir, "%s", iso_dir);
             return 0;
         }
     }
     return -1;
+}
+
+static const char *spawned_iso_dir_for(pid_t pid) {
+    for (int i = 0; i < MAX_SPAWNED; i++) {
+        if (g_spawned[i].used && g_spawned[i].pid == pid) return g_spawned[i].iso_dir;
+    }
+    return "";
 }
 
 static int spawned_contains(pid_t pid) {
@@ -1261,20 +1324,25 @@ static int spawned_contains(pid_t pid) {
 
 static void spawned_forget(pid_t pid) {
     for (int i = 0; i < MAX_SPAWNED; i++) {
-        if (g_spawned[i].used && g_spawned[i].pid == pid) g_spawned[i].used = 0;
+        if (g_spawned[i].used && g_spawned[i].pid == pid) {
+            task_iso_cleanup(g_spawned[i].iso_dir);
+            g_spawned[i].used = 0;
+        }
     }
     for (int i = 0; i < MAX_PENDING_KILLS; i++) {
         if (g_kills[i].used && g_kills[i].pid == pid) g_kills[i].used = 0;
     }
 }
 
-static int kills_schedule(pid_t pid) {
+static int kills_schedule(pid_t pid, const char *iso_dir) {
     for (int i = 0; i < MAX_PENDING_KILLS; i++) {
         if (!g_kills[i].used) {
             g_kills[i].used = 1;
             g_kills[i].pid = pid;
             g_kills[i].sigkill_sent = 0;
             g_kills[i].deadline = now_ms() + KILL_ESCALATE_MS;
+            g_kills[i].iso_dir[0] = '\0';
+            if (iso_dir) snprintf(g_kills[i].iso_dir, sizeof g_kills[i].iso_dir, "%s", iso_dir);
             return 0;
         }
     }
@@ -1290,6 +1358,7 @@ static void kills_enforce(void) {
         g_kills[i].deadline = now + CANCEL_ABANDON_MS;
         kill(-g_kills[i].pid, SIGKILL);
         kill(g_kills[i].pid, SIGKILL);
+        task_iso_kill(g_kills[i].iso_dir); // whole tree, incl. setsid escapees
     }
 }
 
@@ -1393,6 +1462,108 @@ static char **build_child_env(char **overrides, int count) {
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// Project task isolation helpers (Linux; no-op stubs on native builds)
+// ---------------------------------------------------------------------------
+
+static int g_task_iso_active; // 0 off, 1 on, -1 configured but broken
+static char g_task_iso_root[TASK_ISO_DIR_MAX];
+
+static void task_iso_load(void) {
+    g_task_iso_active = 0;
+    const char *root = getenv("FLOE_CGROUP_TASKS");
+    if (!root || root[0] != '/') return;
+    if (strlen(root) >= sizeof g_task_iso_root) { g_task_iso_active = -1; return; }
+    snprintf(g_task_iso_root, sizeof g_task_iso_root, "%s", root);
+#ifdef __linux__
+    if (access(g_task_iso_root, W_OK) != 0) { g_task_iso_active = -1; return; }
+    g_task_iso_active = 1;
+#else
+    g_task_iso_active = -1; // the native build never claims isolation
+#endif
+}
+
+#ifdef __linux__
+static int task_iso_write_file(const char *path, const char *value) {
+    int fd = open(path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    size_t len = strlen(value);
+    ssize_t wrote = write(fd, value, len);
+    close(fd);
+    return wrote == (ssize_t)len ? 0 : -1;
+}
+
+// Creates <root>/<token> with the fixed per-task ceilings. Called by the
+// parent before the workload fork; the child is moved into the cgroup right
+// after the fork (children inherit it from there).
+static int task_iso_pre_fork(const char *token, char *dir_out) {
+    int n = snprintf(dir_out, TASK_ISO_DIR_MAX, "%s/%s", g_task_iso_root, token);
+    if (n <= 0 || (size_t)n >= TASK_ISO_DIR_MAX) return -1;
+    if (mkdir(dir_out, 0755) != 0 && errno != EEXIST) return -1;
+    char path[TASK_ISO_DIR_MAX + 64];
+    char value[64];
+    snprintf(path, sizeof path, "%s/cpu.max", dir_out);
+    snprintf(value, sizeof value, "%d %d",
+             FLOE_TASK_CPU_QUOTA_MAX_US, FLOE_TASK_CPU_PERIOD_US);
+    if (task_iso_write_file(path, value) != 0) return -1;
+    snprintf(path, sizeof path, "%s/pids.max", dir_out);
+    snprintf(value, sizeof value, "%d", FLOE_TASK_PIDS_MAX);
+    if (task_iso_write_file(path, value) != 0) return -1;
+    snprintf(path, sizeof path, "%s/memory.max", dir_out);
+    snprintf(value, sizeof value, "%lld", (long long)FLOE_TASK_MEMORY_MAX_BYTES);
+    if (task_iso_write_file(path, value) != 0) return -1;
+    return 0;
+}
+
+// Child-side per-task namespace setup: the project runtime view (mounted by
+// the supervisor) is already in place; tasks just take private uts/ipc/
+// mount namespaces so hostname, IPC and any task-private mounts never leak
+// between siblings, and give the task a private tmpfs on /tmp so parallel
+// apt/pip tasks never share temp lock files. Runs as the guest's own root;
+// no user namespace or idmapped mount is involved (the kernel refuses
+// MOUNT_ATTR_IDMAP on overlayfs and cgroupfs on kernels <= 6.18).
+static int task_iso_child_bootstrap(void) {
+    if (unshare(CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWNS) != 0) return -1;
+    if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0) return -1;
+    char host[] = "floe-task";
+    (void)sethostname(host, sizeof host - 1);
+    if (mount("tmpfs", "/tmp", "tmpfs", MS_NOSUID | MS_NODEV, "mode=1777") != 0) return -1;
+    return 0;
+}
+
+// Parent side after the fork: the whole future subtree lands in the task
+// cgroup (the child has not forked anything yet).
+static int task_iso_parent_finish(const char *dir, pid_t pid) {
+    char path[TASK_ISO_DIR_MAX + 64];
+    char pid_text[24];
+    snprintf(pid_text, sizeof pid_text, "%ld", (long)pid);
+    snprintf(path, sizeof path, "%s/cgroup.procs", dir);
+    return task_iso_write_file(path, pid_text);
+}
+
+// Whole-tree kill: catches double-fork/setsid descendants a process-group
+// signal cannot reach (the POC's A1 proof). Idempotent and quiet.
+static void task_iso_kill(const char *dir) {
+    if (dir[0] == '\0') return;
+    char path[TASK_ISO_DIR_MAX + 64];
+    snprintf(path, sizeof path, "%s/cgroup.kill", dir);
+    (void)task_iso_write_file(path, "1");
+}
+
+// Best-effort teardown of the task cgroup after the child is reaped.
+static void task_iso_cleanup(const char *dir) {
+    if (dir[0] == '\0') return;
+    task_iso_kill(dir);
+    (void)rmdir(dir);
+}
+#else
+static int task_iso_pre_fork(const char *t, char *d) { (void)t; (void)d; return -1; }
+static int task_iso_child_bootstrap(void) { return -1; }
+static int task_iso_parent_finish(const char *d, pid_t p) { (void)d; (void)p; return -1; }
+static void task_iso_kill(const char *d) { (void)d; }
+static void task_iso_cleanup(const char *d) { (void)d; }
+#endif
+
 // The child gets its stdio from the three pipe ends and must not keep any
 // other copy of the six pipe fds: a leftover write end of the child's own
 // stdin pipe would keep the pipe open after the runner closes its copy, so
@@ -1402,6 +1573,7 @@ static char **build_child_env(char **overrides, int count) {
 static pid_t spawn_command_child(
     const exec_request *req,
     const char *cwd,
+    int iso_enabled,
     int in_read,
     int in_write,
     int out_read,
@@ -1421,6 +1593,9 @@ static pid_t spawn_command_child(
     }
     if (pid == 0) {
         if (child_env) environ = child_env;
+        if (iso_enabled && task_iso_child_bootstrap() != 0) {
+            _exit(126);
+        }
         (void)setpgid(0, 0);
         child_reset_signals();
         (void)dup2(in_read, STDIN_FILENO);
@@ -2066,6 +2241,7 @@ static void reap_all(void) {
 // ---------------------------------------------------------------------------
 
 static void clear_command(command_state *c) {
+    task_iso_cleanup(c->iso_dir);
     close_stream(&c->in_fd, &c->stdin_open);
     close_stream(&c->out_fd, &c->out_open);
     close_stream(&c->err_fd, &c->err_open);
@@ -2107,9 +2283,23 @@ static void start_command(command_state *c, const char *token, exec_request *req
     }
 
     const char *cwd = c->req.cwd && c->req.cwd[0] ? c->req.cwd : default_cwd();
+    if (g_task_iso_active != 0) {
+        if (g_task_iso_active < 0 ||
+            task_iso_pre_fork(token, c->iso_dir) != 0) {
+            c->iso_dir[0] = '\0';
+            close(in_pipe[0]); close(in_pipe[1]);
+            close(out_pipe[0]); close(out_pipe[1]);
+            close(err_pipe[0]); close(err_pipe[1]);
+            fail_command(c, 125, g_task_iso_active < 0
+                         ? "floe-exec: project isolation configured but unavailable\n"
+                         : "floe-exec: cannot prepare the task cgroup\n");
+            return;
+        }
+    }
     pid_t pid = spawn_command_child(
         &c->req,
         cwd,
+        g_task_iso_active > 0,
         in_pipe[0],
         in_pipe[1],
         out_pipe[0],
@@ -2121,11 +2311,14 @@ static void start_command(command_state *c, const char *token, exec_request *req
         close(in_pipe[0]); close(in_pipe[1]);
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
+        task_iso_cleanup(c->iso_dir);
+        c->iso_dir[0] = '\0';
         fail_command(c, 125, pid == -2
                      ? "floe-exec: cannot prepare the per-process environment\n"
                      : "floe-exec: cannot fork\n");
         return;
     }
+    if (g_task_iso_active > 0) (void)task_iso_parent_finish(c->iso_dir, pid);
 
     (void)setpgid(pid, pid); // best effort; the child also does this itself
     c->pid = pid;
@@ -2259,6 +2452,7 @@ static void finish_command(command_state *c) {
     // well-formed stream (BEGIN + END is legal; sections are optional).
     (void)emit_end(c->token, code);
     section_release(c->token);
+    task_iso_cleanup(c->iso_dir);
     exec_request_free(&c->req);
     memset(c, 0, sizeof *c);
     c->in_fd = c->out_fd = c->err_fd = -1;
@@ -2268,6 +2462,7 @@ static void finish_command(command_state *c) {
 // runner emits FAILED — never END — so the host reports a failed guest
 // instead of a clean stop. The pid is reaped asynchronously by reap_all.
 static void quarantine_command(command_state *c) {
+    task_iso_cleanup(c->iso_dir);
     close_stream(&c->in_fd, &c->stdin_open);
     close_stream(&c->out_fd, &c->out_open);
     close_stream(&c->err_fd, &c->err_open);
@@ -2345,15 +2540,32 @@ static void start_session(pty_session *s, const char *token, open_request *req) 
             return;
         }
     }
+    if (g_task_iso_active != 0) {
+        if (g_task_iso_active < 0 ||
+            task_iso_pre_fork(token, s->iso_dir) != 0) {
+            free_env(child_env, req->envc);
+            close(master);
+            s->iso_dir[0] = '\0';
+            emit_session_failure(token, 125, g_task_iso_active < 0
+                                 ? "floe-exec: project isolation configured but unavailable"
+                                 : "floe-exec: cannot prepare the task cgroup");
+            return;
+        }
+    }
     pid_t pid = fork();
     if (pid < 0) {
         free_env(child_env, req->envc);
+        task_iso_cleanup(s->iso_dir);
+        s->iso_dir[0] = '\0';
         close(master);
         emit_session_failure(token, 125, "floe-exec: cannot fork the session");
         return;
     }
     if (pid == 0) {
         if (child_env) environ = child_env;
+        if (g_task_iso_active > 0 && task_iso_child_bootstrap() != 0) {
+            _exit(126);
+        }
         (void)setsid();
         child_reset_signals();
         int slave = open(slave_path, O_RDWR);
@@ -2388,6 +2600,7 @@ static void start_session(pty_session *s, const char *token, open_request *req) 
         _exit(127);
     }
     free_env(child_env, req->envc);
+    if (g_task_iso_active > 0) (void)task_iso_parent_finish(s->iso_dir, pid);
 
     set_nonblocking(master);
     s->active = 1;
@@ -2418,13 +2631,28 @@ static void do_spawn(const char *token, const unsigned char *payload, size_t ple
     mkdir_parents(req.log_path, 0755);
 
     const char *cwd = req.cwd && req.cwd[0] ? req.cwd : default_cwd();
+    char iso_dir[TASK_ISO_DIR_MAX] = "";
+    if (g_task_iso_active != 0) {
+        if (g_task_iso_active < 0 ||
+            task_iso_pre_fork(token, iso_dir) != 0) {
+            emit_failure(token, 0, 125, g_task_iso_active < 0
+                         ? "floe-exec: project isolation configured but unavailable"
+                         : "floe-exec: cannot prepare the task cgroup");
+            spawn_request_free(&req);
+            return;
+        }
+    }
     pid_t pid = fork();
     if (pid < 0) {
+        task_iso_cleanup(iso_dir);
         emit_failure(token, 0, 125, "floe-exec: cannot fork the service");
         spawn_request_free(&req);
         return;
     }
     if (pid == 0) {
+        if (iso_dir[0] != '\0' && task_iso_child_bootstrap() != 0) {
+            _exit(126);
+        }
         (void)setsid();
         child_reset_signals();
         int nullfd = open("/dev/null", O_RDWR);
@@ -2460,9 +2688,12 @@ static void do_spawn(const char *token, const unsigned char *payload, size_t ple
         _exit(127);
     }
 
-    if (spawned_record(pid) != 0) {
+    if (g_task_iso_active > 0) (void)task_iso_parent_finish(iso_dir, pid);
+
+    if (spawned_record(pid, iso_dir) != 0) {
         kill(-pid, SIGKILL);
         kill(pid, SIGKILL);
+        task_iso_cleanup(iso_dir);
         emit_failure(token, 0, 125, "floe-exec: background service table is full");
         spawn_request_free(&req);
         return;
@@ -2839,7 +3070,7 @@ static void handle_frame(const unsigned char *body, size_t len) {
         }
         kill(-(pid_t)pid, SIGTERM);
         kill((pid_t)pid, SIGTERM);
-        (void)kills_schedule((pid_t)pid);
+        (void)kills_schedule((pid_t)pid, spawned_iso_dir_for(pid));
         (void)emit_end(token, 0);
         return;
     }
@@ -2946,6 +3177,14 @@ int main(void) {
     }
     install_signal_handlers();
     set_default_environment();
+    task_iso_load();
+    if (g_task_iso_active < 0) {
+        // Isolation was configured by the supervisor but is broken (e.g.
+        // the delegated cgroup dir is not writable). Nothing this runner
+        // starts would be isolated: refuse to serve instead of pretending.
+        child_message("floe-exec: project isolation configured but unavailable; refusing to serve\n");
+        return 1;
+    }
     int console = STDIN_FILENO;
     set_console_raw(console);
 

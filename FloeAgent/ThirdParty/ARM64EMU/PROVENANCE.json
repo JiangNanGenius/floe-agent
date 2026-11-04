@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "upstreamRepository": "https://github.com/sylirre/arm64emu-system",
   "upstreamCommit": "55c8128cb02d8ba3809f6579f7c6d316537e0546",
-  "checkpoint": "A6 + immutable CRC tables + device I/O v3",
+  "checkpoint": "A6 + immutable CRC tables + A9 five-file slot optimization + resident live I/O",
   "checkpointArchiveSHA256": "3bbcbaac69b092757f6fad1a853659904c183ae0948a79e446cfe30ae73b603c",
   "license": {
     "Source": "Apache-2.0",
@@ -47,9 +47,15 @@
     "liveMachines": 1,
     "network": true,
     "hostFileShares": true,
-    "terminalResize": true
+    "terminalResize": true,
+    "virtioConsoles": 9,
+    "projectShareSlots": 8,
+    "liveShareAttachDetach": true,
+    "syntheticGuestOwnership": true,
+    "readinessDrivenNetworkWait": true,
+    "independentConsoleBackpressure": true
   },
-  "integrationStatus": "Device I/O component staged and all-object linked on iOS device/simulator and macOS; production App remains on previous backend. Live shares, network wake and per-channel backpressure still in progress.",
+  "integrationStatus": "Combined source compiled and all-object linked on iOS device/simulator and macOS (30 TUs,21 ABI exports); actual ARM64 guest boot reached supervisor. Resident-project and production App integration are pending; previous backend is still selected.",
   "files": [
     {
       "path": "Bridge/MPL-2.0.txt",
@@ -65,11 +71,11 @@
     },
     {
       "path": "Bridge/console_channel.c",
-      "sha256": "b0c3bb580e37a922ca927db4b6e288a64f78b4a4fcc9e0552b70ea4d5270a3dd"
+      "sha256": "b7bd8cbed4a32ea3a214bb367d7a111df4cc1ef23f34f93f15d1655d07781f16"
     },
     {
       "path": "Bridge/embedded_internal.h",
-      "sha256": "470bb16ebfc2ef927d8a390f77dbc0995ae3c729d786304b39b4c979e1a8de87"
+      "sha256": "f4691db0a9a76447e25a7604c52fc81e3460fd3d992ed0ea165fb8b2e3d3d62e"
     },
     {
       "path": "Bridge/host_hooks.h",
@@ -85,7 +91,7 @@
     },
     {
       "path": "Bridge/parallel_runtime.c",
-      "sha256": "7e4b9072858c476c3e8ebbfa88ad1d162189cd61faebb9052e0d0cdc4abd0bc2"
+      "sha256": "66b4d3cedf438e0faeb74ebf1bbe7535e85a16bd481aa77020cc323d234a0023"
     },
     {
       "path": "Bridge/parallel_runtime.h",
@@ -93,7 +99,7 @@
     },
     {
       "path": "Bridge/runtime.c",
-      "sha256": "b9578b7f8c2b2282d16a9b789a60ae7e95ba4054f9178ae899d936af917876fc"
+      "sha256": "d3918b97c66426bca14483f4a9c82cad829ec536ca32a57d53e1ccdf9b407b98"
     },
     {
       "path": "Source/LICENSE",
@@ -104,8 +110,12 @@
       "sha256": "22ef7e1e998ce2da85f0795460cdb1b27552568d13a84a29ea92fdf4286f4e48"
     },
     {
+      "path": "Source/README.md",
+      "sha256": "22aec1566361fc742e6a6e9dfabc8b7f1bce457911e99a52d878ca9ebeb5ba03"
+    },
+    {
       "path": "Source/src/console.h",
-      "sha256": "1290539904077329fb5b9e4ffdce7b9cfc176828ee449ce39304b1b0a355a4fc"
+      "sha256": "ad8ae9bb7ce9ab21f2ab8353d8441475e640d78029efcfceee319162b0ea6923"
     },
     {
       "path": "Source/src/cpu.c",
@@ -122,10 +132,6 @@
     {
       "path": "Source/src/decode.c",
       "sha256": "17eb87d00a48215f51a632797a94309c0cc014c43a7ffd5266e3706cb434f7b9"
-    },
-    {
-      "path": "Source/src/devices.h",
-      "sha256": "85174765cfb0f1869d473838b9e55e9946bcd49664ca124d3de0a9c9a9eb3b98"
     },
     {
       "path": "Source/src/devices/fwcfg.c",
@@ -153,11 +159,15 @@
     },
     {
       "path": "Source/src/devices/virtio_9p.c",
-      "sha256": "855b938476f4c79cd5372b4175841311b9249fdd263d7bf7dc4da97a3e39bdde"
+      "sha256": "8579cbfdbc315f9b0cce9016645287bd466c6b038007827ee0636323e5586921"
     },
     {
       "path": "Source/src/devices/virtio_9p_port.h",
-      "sha256": "3da08ba110b651b0467c06b3a70753e006d3ac5953069218e78fbd7eb3a74fd6"
+      "sha256": "83df61404e2f6ae336f47ecdf5d6c0f343f94c065e8086800c5024621849921e"
+    },
+    {
+      "path": "Source/src/devices/virtio_9p_share.h",
+      "sha256": "f717f7649dd7777e430e8fae1b61166e59ee3198def4bb9ec1ed395af3ecfcd7"
     },
     {
       "path": "Source/src/devices/virtio_blk.c",
@@ -165,11 +175,15 @@
     },
     {
       "path": "Source/src/devices/virtio_console.c",
-      "sha256": "787905a6a7b86b357fb47bd1d4a17c8d930baf0ee56155c38d3d9597bc9a3ce9"
+      "sha256": "70ae0dd0c62cfc49d2a911e60d70a29301f705a22e9b0475d70d42d2800f680b"
     },
     {
       "path": "Source/src/devices/virtio_net.c",
       "sha256": "4f07265f95f8a68b8bddcd0c1d0b49282088fb3f2f0e2ea1228a59766a3eb993"
+    },
+    {
+      "path": "Source/src/devices.h",
+      "sha256": "421d787a05d40c7c4565f8e19f6da982f160ef5776f1cb75bfcc169024765be6"
     },
     {
       "path": "Source/src/esr.h",
@@ -205,7 +219,7 @@
     },
     {
       "path": "Source/src/jit/predecode.c",
-      "sha256": "3b3fad0c2add5c449572e16acb27915c9b67eb62ee2607f5f25013f0c8ac551f"
+      "sha256": "fb941b711e04d2fed9e6191c184ff7052c3d0eb118cf49f4dd7de0e6ab376045"
     },
     {
       "path": "Source/src/jit/predecode.h",
@@ -213,7 +227,7 @@
     },
     {
       "path": "Source/src/machine.h",
-      "sha256": "52a7fcd5d576a1f29a5efb31dc0a66f2acd0c412d7ed25ab08ff4a25d5be9ad0"
+      "sha256": "c3240b2adadd45944138ba91553ab908560903e5d3daa7354bfc1b2f5d6ec5ba"
     },
     {
       "path": "Source/src/memory.c",
@@ -221,27 +235,27 @@
     },
     {
       "path": "Source/src/memory_sync.c",
-      "sha256": "2ef5dccb1ddfd3f39abc1caef318d8fc6aac7e8338c4ba601b62cafb51f18519"
+      "sha256": "39c1afe6abb24c15acd82ec6c0fefe6aaa41c130744d2fa57752a6043c0a8cd5"
     },
     {
       "path": "Source/src/memory_sync.h",
-      "sha256": "4e2d9ced342ed0e43b7bdf7a88702a6a49d97b0b8f2a18c22fae1d32f37bc940"
+      "sha256": "960fc6fdd391c3e667dd3da19716de0bc2f3a879fb47332e77537167203cf7c3"
     },
     {
       "path": "Source/src/mmu.c",
-      "sha256": "6fe6e0d4dc14b6afc60b242c4c4fdf93e3c7097ec93367c6e3b6318325fd2f91"
+      "sha256": "e2b139f973d1881b669c60118fb21b30376e43d466b0bb813dbce8ba7400a64d"
     },
     {
       "path": "Source/src/mmu.h",
-      "sha256": "6ad96e74943171ac73015f104261dd6cd7af51683f03ccd8b7b29e8d15b1b1d0"
+      "sha256": "0abb4244c576d3c45a39751bd5fab95d011ac7a3a80700e2b694b289570b05ed"
     },
     {
       "path": "Source/src/net/usernet.h",
-      "sha256": "5e5f17c19243190102a1198eed0570065cce2a4c41bdd029890d6574c8bf38cf"
+      "sha256": "ba1d0b458fd75a2d2831cb86699aa3d511db5019caa69b0399ca4994605019cc"
     },
     {
       "path": "Source/src/net/usernet_core.c",
-      "sha256": "a59b402032607decf9fde300a5bfb6f935f81632df833bf8a9fd52aff3e4fb24"
+      "sha256": "7c2c6450fa1c17e7d818dd79f6c116f1e07d50e30486bdcc4985e0ba2f6026ed"
     },
     {
       "path": "Source/src/net/usernet_priv.h",
@@ -261,7 +275,7 @@
     },
     {
       "path": "Source/src/platform.c",
-      "sha256": "a9f403dd862c7d05a076ffa237eb5b62acdf11cf00f549df5619ca1176ace705"
+      "sha256": "5c3d9f892389515aeb8677201949308070e8af3e17f6889979453fa4e6d9bd8c"
     },
     {
       "path": "Source/src/sysreg.c",
@@ -400,12 +414,12 @@
       "sha256": "582c4caf256211936b4018516d158516b4c54763df90a49c15a368b8dc8ad1b1"
     },
     {
-      "path": "Tools/generate_crc32_tables.py",
-      "sha256": "6253ac38922b9e120ea6567ab180dcfde3ab59c95419edd253e71a4b6565938a"
+      "path": "include/floe_arm64emu.h",
+      "sha256": "e3f68de29c49fddfed759452741fb24dc863480f648cf1eed34ccde767c2f054"
     },
     {
-      "path": "include/floe_arm64emu.h",
-      "sha256": "6a6c8db61fb8d36e4d5111096696f4d3623c8129605b8b2633ae0b01017dc9e1"
+      "path": "Tools/generate_crc32_tables.py",
+      "sha256": "6253ac38922b9e120ea6567ab180dcfde3ab59c95419edd253e71a4b6565938a"
     }
   ],
   "patches": [
@@ -445,5 +459,11 @@
     ],
     "realLinuxIO": false,
     "productionAppBackendSwitched": false
-  }
+  },
+  "localIntegrationNotes": [
+    "Fixed slot shares and hvc0 supervisor + hvc1..hvc8 project data channels.",
+    "A9 changes only predecode.c,memory_sync.c/h,mmu.c/h; no new JIT or RO-cache mode.",
+    "Worker/RPC progress explicitly wakes the readiness pipe; retaining only pthread condition signaling delayed actual guest boot.",
+    "Compiler/component/guest and production App evidence are distinct; no general speed claim."
+  ]
 }

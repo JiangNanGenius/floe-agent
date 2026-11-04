@@ -20,6 +20,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 _Thread_local AESession *ae_current;
 size_t ae_ring_write(AERing *r,const void *data,size_t n) {
     if(n>r->cap-r->count)n=r->cap-r->count;
@@ -32,7 +33,18 @@ size_t ae_ring_read(AERing *r,void *data,size_t n) {
     memcpy(data,r->bytes+r->head,first);memcpy((unsigned char *)data+first,r->bytes,n-first);
     r->head=(r->head+n)%r->cap;r->count-=n;return n;
 }
-void ae_signal_locked(AESession *s) { s->sequence++;pthread_cond_broadcast(&s->condition);ae_parallel_notify(s); }
+size_t ae_ring_space(const AERing *r) { return r->cap-r->count; }
+/* Drop every pending wake byte. Called by readiness waiters after poll(2)
+ * reports the pipe readable, so stale bytes cannot shorten a later wait. */
+void ae_wake_drain(AESession *s) {
+    if(!s->wake_pipe_ready)return;unsigned char scratch[64];
+    for(;;){ssize_t n=read(s->wake_pipe[0],scratch,sizeof(scratch));if(n<(ssize_t)sizeof(scratch))break;}
+}
+void ae_signal_locked(AESession *s) {
+    s->sequence++;
+    if(s->wake_pipe_ready){unsigned char b=0;(void)write(s->wake_pipe[1],&b,1);} /* EAGAIN when full: a byte is already pending */
+    pthread_cond_broadcast(&s->condition);ae_parallel_notify(s);
+}
 static AEChannel *ae_channel(AESession *s,uint32_t index) {
     if(index>=AE_MAX_CHANNELS||!s->channels[index].present)return NULL;
     return &s->channels[index];
@@ -50,14 +62,23 @@ int console_getchar(ConsoleEP *e) {
     pthread_mutex_lock(&s->mutex);size_t n=ae_ring_read(&ch->input,&chb,1);pthread_mutex_unlock(&s->mutex);
     return n?chb:-1;
 }
-void console_write(ConsoleEP *e,const void *data,size_t n) {
-    if(!e)return;AESession *s=e->owner;AEChannel *ch=ae_channel(s,e->channel);
-    if(!ch)return;pthread_mutex_lock(&s->mutex);
+size_t console_output_space(const ConsoleEP *e) {
+    if(!e)return 0;AESession *s=e->owner;AEChannel *ch=ae_channel(s,e->channel);
+    if(!ch)return 0;pthread_mutex_lock(&s->mutex);
+    size_t space=ae_ring_space(&ch->output);pthread_mutex_unlock(&s->mutex);return space;
+}
+size_t console_write(ConsoleEP *e,const void *data,size_t n) {
+    if(!e||!n)return 0;AESession *s=e->owner;AEChannel *ch=ae_channel(s,e->channel);
+    if(!ch)return 0;pthread_mutex_lock(&s->mutex);
     size_t accepted=ae_ring_write(&ch->output,data,n);
-    /* A valid slice reserves >2x its maximum output before each batch.
-     * An unexpected backend overflow poisons instead of silently losing bytes. */
-    if(accepted!=n)s->machine.host_error=FLOE_AE_FAULT;
-    pthread_mutex_unlock(&s->mutex);
+    /* virtio-console callers must pre-check ae_ring_space and apply transport
+     * backpressure, so a partial write here is impossible for channels > 0 and
+     * never faults the machine. Channel 0 (the PL011 UART) keeps the legacy
+     * bounded contract: the run loop parks with FLOE_AE_OUTPUT_FULL before its
+     * ring can overflow; reaching the poison below means that invariant was
+     * violated, so it stays a hard fault for the UART only. */
+    if(accepted!=n&&e->channel==0)s->machine.host_error=FLOE_AE_FAULT;
+    pthread_mutex_unlock(&s->mutex);return accepted;
 }
 void console_putchar(ConsoleEP *e,int c) { unsigned char b=(unsigned char)c;console_write(e,&b,1); }
 void console_flush(ConsoleEP *e) { (void)e; }  /* rings drain through the ABI */

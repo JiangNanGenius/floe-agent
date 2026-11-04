@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright 2026 Floe contributors */
+#define AE_PD_GUARD_SLOT_PRIVATE 1
 #include "memory_sync.h"
 #include "machine.h"
 #include "parallel_iface.h"
@@ -259,9 +260,9 @@ static bool read_small_guarded(Machine *m,const void *host,unsigned size,u64 *ou
     else __builtin_memcpy(&value,host,size); /* original guarded non-PD fallback */
     memory_guard_end(&guard);*out=value;return true;
 }
-bool memory_read_small(Machine *m,const void *host,unsigned size,u64 *out) {
+static bool read_small_observed(Machine *m,const void *host,unsigned size,u64 *out,bool nested) {
     u64 pa;
-    if((size==1||size==2||size==4||size==8)&&!memory_guard_held&&m->memory_sync&&
+    if((size==1||size==2||size==4||size==8)&&!nested&&m->memory_sync&&
        memory_host_span(m,host,size,&pa)&&(pa&0xfffULL)+size<=0x1000) {
         unsigned stripe=stripe_index(pa);
         if(stripe_lock(m->memory_sync,stripe,false)){memory_sync_fail(m,-3);return false;}
@@ -270,6 +271,13 @@ bool memory_read_small(Machine *m,const void *host,unsigned size,u64 *out) {
     }
     return read_small_guarded(m,host,size,out);
 }
+bool memory_read_small(Machine *m,const void *host,unsigned size,u64 *out) {
+    return read_small_observed(m,host,size,out,memory_guard_held!=NULL);
+}
+bool memory_read_small_pd_unheld(Machine *m,const void *host,unsigned size,u64 *out) {
+    return read_small_observed(m,host,size,out,false);
+}
+
 void memory_code_store_publish(Machine *m,u64 pa,u64 length) {
     if(!length)return;
     if(length-1>UINT64_MAX-pa){memory_sync_fail(m,-3);return;}

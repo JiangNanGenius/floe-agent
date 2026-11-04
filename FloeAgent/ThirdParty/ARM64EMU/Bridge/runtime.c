@@ -18,6 +18,7 @@
 #include <time.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <poll.h>
 #include <sys/stat.h>
 #include <errno.h>
 #include <limits.h>
@@ -25,6 +26,10 @@
 #ifndef AE_COMPLETE_OBSERVER
 #define AE_COMPLETE_OBSERVER(s) ((void)0)
 #endif
+/* Upper bound on the usernet descriptors a readiness wait snapshots. The
+ * backend's own poll table is capped far lower; this only sizes local
+ * arrays, and any snapshot overflow degrades to the wake pipe + deadline. */
+#define AE_WAIT_FDS_MAX 128
 static pthread_mutex_t registry=PTHREAD_MUTEX_INITIALIZER;
 static AESession *live;
 static uint64_t generation;
@@ -47,6 +52,7 @@ static void free_device_config(AESession *s) {
 }
 static void dispose(AESession *s) {
     if(!s)return;
+    if(s->wake_pipe_ready){close(s->wake_pipe[0]);close(s->wake_pipe[1]);s->wake_pipe[0]=s->wake_pipe[1]=-1;s->wake_pipe_ready=0;}
     ae_parallel_destroy(s);
     ae_machine_destroy(&s->machine);
     for(uint32_t i=0;i<AE_MAX_CHANNELS;i++){free(s->channels[i].input.bytes);free(s->channels[i].output.bytes);}
@@ -107,6 +113,8 @@ static int valid_devices(const floe_ae_devices_config *d,AESession *s) {
         s->share[i].path=ae_strdup_bounded(sh->host_path,PATH_MAX);
         s->share[i].tag=ae_strdup_bounded(sh->mount_tag,128);
         s->share[i].ro=sh->read_only!=0;
+        s->share[i].guest_uid=sh->guest_uid;
+        s->share[i].guest_gid=sh->guest_gid;
         if(!s->share[i].path||!s->share[i].tag)return FLOE_AE_NOMEM;
         s->share_count=i+1;   /* copies owned from here on (dispose frees) */
         for(uint32_t j=0;j<i;j++)
@@ -151,6 +159,17 @@ int floe_ae_create(const floe_ae_config *c,floe_ae_handle *handle) {
     s->handle=id;s->state=FLOE_AE_CREATED;s->deadline_at=UINT64_MAX;s->sequence=1;atomic_init(&s->stop,false);
     if(pthread_mutex_init(&s->mutex,NULL)) { error=FLOE_AE_FAULT;goto finished; }s->mutex_ready=1;
     if(pthread_cond_init(&s->condition,NULL)) { error=FLOE_AE_FAULT;goto finished; }s->condition_ready=1;
+    s->wake_pipe[0]=s->wake_pipe[1]=-1;
+    if(pipe(s->wake_pipe)==0) {
+        int ok=1;
+        for(int e=0;e<2;e++){
+            int fl=fcntl(s->wake_pipe[e],F_GETFL),fd=fcntl(s->wake_pipe[e],F_GETFD);
+            if(fl<0||fd<0||fcntl(s->wake_pipe[e],F_SETFL,fl|O_NONBLOCK)<0||
+               fcntl(s->wake_pipe[e],F_SETFD,fd|FD_CLOEXEC)<0) ok=0;
+        }
+        if(ok)s->wake_pipe_ready=1;
+        else{close(s->wake_pipe[0]);close(s->wake_pipe[1]);s->wake_pipe[0]=s->wake_pipe[1]=-1;}
+    } /* a missing wake pipe degrades readiness waits to deadline waits only */
     s->diagnostic.cap=65536;
     s->diagnostic.bytes=malloc(s->diagnostic.cap);
     if(!s->diagnostic.bytes){error=FLOE_AE_NOMEM;goto finished;}
@@ -185,7 +204,8 @@ int floe_ae_create(const floe_ae_config *c,floe_ae_handle *handle) {
     s->machine.dns_server=s->dns_server;
     if(s->disk_path){s->machine.drives[0]=(Drive){s->disk_path,false};s->machine.n_drives=1;}
     for(uint32_t i=0;i<s->share_count;i++) {
-        s->machine.shares[i]=(VirtFS){s->share[i].path,s->share[i].tag,s->share[i].ro};
+        s->machine.shares[i]=(VirtFS){s->share[i].path,s->share[i].tag,s->share[i].ro,
+                                      s->share[i].guest_uid,s->share[i].guest_gid};
         s->machine.n_shares++;
     }
     for(uint32_t i=0;i<s->fwd_count;i++) {
@@ -284,8 +304,28 @@ int floe_ae_wait_event(floe_ae_handle h,uint64_t expected,uint64_t max_ns,uint64
     if(s->last_reason!=FLOE_AE_PARKED&&s->last_reason!=FLOE_AE_OUTPUT_FULL)wait=0;
     if(s->last_reason==FLOE_AE_OUTPUT_FULL&&s->channels[0].output.cap-s->channels[0].output.count>=1024)wait=0;
     if(wait&&s->sequence==expected&&!atomic_load(&s->stop)) {
-        struct timespec relative={(time_t)(wait/1000000000),(long)(wait%1000000000)};
-        pthread_cond_timedwait_relative_np(&s->condition,&s->mutex,&relative);
+        /* Readiness-driven park: poll the owned wake pipe together with a
+         * dup'd snapshot of the usernet descriptors, timed by the earliest
+         * real deadline (cpu/rtc/budget/caller cap). Wake sources: host
+         * input/stop/winsize/ABI signals (pipe byte from ae_signal_locked),
+         * usernet socket readiness (listeners, TCP, UDP, ICMP), deadline
+         * expiry. Never a fixed poll interval. The snapshot is taken while
+         * holding the session mutex: attach/detach, hostfwd add/remove and
+         * destroy all require the same quiescence this waiter represents
+         * (they return BUSY while waiters>0), so the listed descriptors
+         * cannot be closed or reused underneath poll(2); each fd is dup'd
+         * anyway so the poll set owns independent references. */
+        struct pollfd pf[AE_WAIT_FDS_MAX+2];
+        int nfds=0,held[AE_WAIT_FDS_MAX],nheld=0,pipe_idx=-1;
+        if(s->wake_pipe_ready){pipe_idx=nfds;pf[nfds].fd=s->wake_pipe[0];pf[nfds].events=POLLIN|POLLERR|POLLHUP;nfds++;}
+        UserNet *un=s->machine.net?virtio_net_usernet(s->machine.net):NULL;
+        int raw[AE_WAIT_FDS_MAX];int nraw=un?usernet_wait_fds(un,raw,AE_WAIT_FDS_MAX):0;
+        for(int i=0;i<nraw;i++){int d=dup(raw[i]);if(d>=0){pf[nfds].fd=d;pf[nfds].events=POLLIN|POLLERR|POLLHUP;held[nheld++]=d;nfds++;}}
+        pthread_mutex_unlock(&s->mutex);
+        int ready=poll(pf,(nfds_t)nfds,(int)((wait+999999)/1000000));
+        pthread_mutex_lock(&s->mutex);
+        for(int i=0;i<nheld;i++)close(held[i]);
+        if(ready>0&&pipe_idx>=0&&(pf[pipe_idx].revents&(POLLIN|POLLERR|POLLHUP)))ae_wake_drain(s);
     }
     *new_sequence=s->sequence;s->waiters--;pthread_mutex_unlock(&s->mutex);return 0;
 }
@@ -329,11 +369,15 @@ int floe_ae_channel_set_winsize(floe_ae_handle h,uint32_t channel,uint16_t cols,
 /* ---- version-2 network operations --------------------------------------- */
 /* Live port-forward management. Add/remove run on the live usernet backend;
  * bind failures (EADDRINUSE and friends) surface as FLOE_AE_IO with the host
- * error preserved in the session diagnostic via the backend's own note. */
+ * error preserved in the session diagnostic via the backend's own note.
+ * Device mutation requires the same quiescence as share attach/detach: while
+ * a slice or a readiness wait is active the coordinator owns the backend and
+ * these return FLOE_AE_BUSY for the caller to retry between slices. */
 int floe_ae_net_forward_add(floe_ae_handle h,const floe_ae_net_forward *rule) {
     if(!rule||rule->struct_size<sizeof(*rule))return FLOE_AE_VERSION;
     if(rule->is_udp>1||!rule->host_port||rule->host_port>65535||!rule->guest_port||rule->guest_port>65535)return FLOE_AE_INVALID;
     AESession *s=locked(h);if(!s)return FLOE_AE_STALE;
+    if(s->active||s->waiters){unlock(s);return FLOE_AE_BUSY;}
     int error=0;
     UserNet *un=virtio_net_usernet(s->machine.net);
     if(!un)error=FLOE_AE_UNSUPPORTED;
@@ -347,6 +391,7 @@ int floe_ae_net_forward_add(floe_ae_handle h,const floe_ae_net_forward *rule) {
 int floe_ae_net_forward_remove(floe_ae_handle h,uint32_t is_udp,uint32_t host_port) {
     if(is_udp>1||!host_port||host_port>65535)return FLOE_AE_INVALID;
     AESession *s=locked(h);if(!s)return FLOE_AE_STALE;
+    if(s->active||s->waiters){unlock(s);return FLOE_AE_BUSY;}
     int error=0;
     UserNet *un=virtio_net_usernet(s->machine.net);
     if(!un)error=FLOE_AE_UNSUPPORTED;
@@ -359,7 +404,10 @@ int floe_ae_net_get_info(floe_ae_handle h,floe_ae_net_info *out) {
     UserNet *un=virtio_net_usernet(s->machine.net);
     memset(out,0,sizeof(*out));
     out->struct_size=sizeof(*out);
-    out->share_count=s->machine.n_shares;
+    for(int i=0;i<s->machine.n_fs;i++) {
+        int state=0;virtio_9p_get_info(s->machine.fs[i],&state,NULL,NULL,NULL,NULL,NULL);
+        if(state==FLOE_AE_SHARE_ATTACHED)out->share_count++;
+    }
     out->console_count=(uint32_t)s->machine.n_vcon;
     if(s->machine.net&&un) {
         unsigned tcp=0,udp=0;uint64_t in=0,ok=0,ref=0;
@@ -372,4 +420,63 @@ int floe_ae_net_get_info(floe_ae_handle h,floe_ae_net_info *out) {
         out->rx_frames=in;out->tx_frames=ok;out->rx_refused=ref;
     }
     unlock(s);return 0;
+}
+/* ---- live project-share operations ---------------------------------------
+ * See the header contract: attach/detach mutate device state and therefore
+ * require machine quiescence (FLOE_AE_BUSY while a slice or readiness wait
+ * owns the machine; the registry retries between slices). info is read-only.
+ */
+int floe_ae_share_attach(floe_ae_handle h,uint32_t slot,const floe_ae_share_config *cfg) {
+    if(!cfg||cfg->struct_size<sizeof(*cfg)||cfg->reserved)return FLOE_AE_VERSION;
+    if(slot>=FLOE_AE_MAX_SHARES)return FLOE_AE_UNSUPPORTED;      /* capacity is explicit */
+    if(!cfg->host_path||!cfg->mount_tag)return FLOE_AE_INVALID;
+    AESession *s=locked(h);if(!s)return FLOE_AE_STALE;
+    if(s->active||s->waiters){unlock(s);return FLOE_AE_BUSY;}
+    int error=0;
+    if(slot>=(uint32_t)s->machine.n_fs)error=FLOE_AE_UNSUPPORTED;
+    else {
+        struct VirtIO9P *v=s->machine.fs[slot];
+        uint16_t tag_len=0;
+        const char *tag=virtio_9p_slot_tag(v,&tag_len);
+        char want[128];size_t wl=strnlen(cfg->mount_tag,sizeof(want));
+        if(!wl||wl>=sizeof(want)){unlock(s);return FLOE_AE_INVALID;}
+        memcpy(want,cfg->mount_tag,wl);want[wl]='\0';
+        if(!tag||(size_t)tag_len!=wl||memcmp(tag,want,wl))error=FLOE_AE_INVALID; /* tag is fixed per slot */
+        else {
+            int r=virtio_9p_attach_root(v,cfg->host_path,cfg->guest_uid,cfg->guest_gid,cfg->read_only!=0);
+            if(r==-EBUSY)error=FLOE_AE_BUSY;
+            else if(r!=0)error=FLOE_AE_IO;
+        }
+    }
+    unlock(s);return error;
+}
+int floe_ae_share_detach(floe_ae_handle h,uint32_t slot,uint32_t flags) {
+    if(slot>=FLOE_AE_MAX_SHARES)return FLOE_AE_UNSUPPORTED;
+    if(flags&~FLOE_AE_SHARE_FORCE)return FLOE_AE_INVALID;
+    AESession *s=locked(h);if(!s)return FLOE_AE_STALE;
+    if(s->active||s->waiters){unlock(s);return FLOE_AE_BUSY;}
+    int error=0;
+    if(slot>=(uint32_t)s->machine.n_fs)error=FLOE_AE_INVALID;
+    else if(virtio_9p_detach_root(s->machine.fs[slot],(flags&FLOE_AE_SHARE_FORCE)!=0)!=0)error=FLOE_AE_BUSY;
+    unlock(s);return error;
+}
+int floe_ae_share_get_info(floe_ae_handle h,uint32_t slot,floe_ae_share_info *out) {
+    if(!out||out->struct_size<sizeof(*out))return FLOE_AE_INVALID;
+    if(slot>=FLOE_AE_MAX_SHARES)return FLOE_AE_UNSUPPORTED;
+    AESession *s=locked(h);if(!s)return FLOE_AE_STALE;
+    int error=0;
+    if(slot>=(uint32_t)s->machine.n_fs)error=FLOE_AE_INVALID;
+    else {
+        struct VirtIO9P *v=s->machine.fs[slot];
+        const char *tag=NULL;uint16_t tag_len=0;
+        memset(out,0,sizeof(*out));out->struct_size=sizeof(*out);out->slot=slot;
+        tag=virtio_9p_slot_tag(v,&tag_len);
+        if(tag){size_t n=tag_len<sizeof(out->mount_tag)-1?tag_len:sizeof(out->mount_tag)-1;memcpy(out->mount_tag,tag,n);}
+        uint64_t generation=0;int state=0,ro=0;
+        virtio_9p_get_info(v,&state,&generation,&out->open_fids,&out->guest_uid,&out->guest_gid,&ro);
+        out->state=(uint32_t)state;
+        out->generation=(uint32_t)generation;
+        out->read_only=(uint32_t)ro;
+    }
+    unlock(s);return error;
 }

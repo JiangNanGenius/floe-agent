@@ -15,7 +15,10 @@ extern "C" {
 #define FLOE_AE_ABI_VERSION 2u
 #define FLOE_AE_MAX_VCPUS 5u /* engine ceiling; caller chooses device limit before boot */
 #define FLOE_AE_MAX_SHARES 8u
-#define FLOE_AE_MAX_CONSOLES 8u
+/* Nine consoles: one supervisor control console (hvc0) plus one data console
+ * per project (hvc1..hvc8 for FLOE_MAX_PROJECTS == 8). The 32 virtio-mmio
+ * slots still fit: net + <=8 disks + 8 shares + 9 consoles <= 32. */
+#define FLOE_AE_MAX_CONSOLES 9u
 #define FLOE_AE_MAX_NET_FORWARDS 16u
 #define FLOE_AE_API __attribute__((visibility("default")))
 typedef uint64_t floe_ae_handle;
@@ -58,9 +61,15 @@ typedef struct {
  */
 typedef struct {
     uint32_t struct_size;   /* == sizeof(floe_ae_share_config) */
-    const char *host_path;  /* existing host directory; resolved and pinned at create */
-    const char *mount_tag;  /* 9P2000.L mount tag, 1..127 bytes */
+    const char *host_path;  /* existing host directory; resolved and pinned at create/attach */
+    const char *mount_tag;  /* 9P2000.L mount tag, 1..127 bytes; must equal the slot tag */
     uint32_t read_only;     /* whole-tree read-only */
+    /* Synthetic ownership presented to the guest (9P2000.L getattr/stat).
+     * Guest uid/gid are a presentation choice only: they are NEVER forwarded
+     * to a host chown/fchown; guest chown attempts are refused with EPERM.
+     * Defaults are 0/0 (the mounting root, matching the supervisor model). */
+    uint32_t guest_uid;
+    uint32_t guest_gid;
     uint32_t reserved;
 } floe_ae_share_config;
 
@@ -174,6 +183,42 @@ FLOE_AE_API int floe_ae_channel_set_winsize(floe_ae_handle, uint32_t channel, ui
 FLOE_AE_API int floe_ae_net_forward_add(floe_ae_handle, const floe_ae_net_forward *);
 FLOE_AE_API int floe_ae_net_forward_remove(floe_ae_handle, uint32_t is_udp, uint32_t host_port);
 FLOE_AE_API int floe_ae_net_get_info(floe_ae_handle, floe_ae_net_info *);
+/* ---- live project-share lifecycle (ABI version 2 machines) ----------------
+ *
+ * All FLOE_AE_MAX_SHARES 9P devices exist from platform build so a guest that
+ * already booted has probed every slot; a slot either carries a create-time
+ * share (attached since create) or starts detached with the default tag
+ * "floe-ws-<slot>". attach pins a NEW root descriptor for the slot; detach
+ * unpins it. Both require machine quiescence: while a run_slice or
+ * wait_event is active/active-parked they return FLOE_AE_BUSY and the caller
+ * retries between slices (the host registry serializes with the slice
+ * driver). Capacity is explicit: slot >= FLOE_AE_MAX_SHARES is
+ * FLOE_AE_UNSUPPORTED.
+ *
+ * Generation fences: every attach/detach bumps the slot generation; guest
+ * fids created under an older generation fail with ESTALE on their next
+ * operation, so a replaced root can never be reached through an old fid.
+ * detach without FLOE_AE_SHARE_FORCE refuses with FLOE_AE_BUSY while the
+ * guest holds open host handles; FORCE drains them immediately (handles
+ * close, fids invalidate) and the guest sees ESTALE/ENODEV afterwards.
+ */
+enum { FLOE_AE_SHARE_DETACHED = 0, FLOE_AE_SHARE_ATTACHED = 1, FLOE_AE_SHARE_DRAINING = 2 };
+#define FLOE_AE_SHARE_FORCE 1u
+typedef struct {
+    uint32_t struct_size;        /* == sizeof(floe_ae_share_info) */
+    uint32_t state;              /* FLOE_AE_SHARE_* */
+    uint32_t read_only;
+    uint32_t slot;
+    uint32_t generation;         /* current slot generation */
+    uint32_t open_fids;          /* live host-side fid handles */
+    uint32_t guest_uid;          /* synthetic owner presented to the guest */
+    uint32_t guest_gid;
+    char     mount_tag[128];     /* the slot's fixed tag */
+    uint64_t reserved[4];
+} floe_ae_share_info;
+FLOE_AE_API int floe_ae_share_attach(floe_ae_handle, uint32_t slot, const floe_ae_share_config *);
+FLOE_AE_API int floe_ae_share_detach(floe_ae_handle, uint32_t slot, uint32_t flags);
+FLOE_AE_API int floe_ae_share_get_info(floe_ae_handle, uint32_t slot, floe_ae_share_info *);
 #ifdef __cplusplus
 }
 #endif

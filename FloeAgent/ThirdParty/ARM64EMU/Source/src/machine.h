@@ -41,11 +41,13 @@ typedef struct {
 /* Max host directory shares (virtio-9p). Same 31-slot ceiling shared with disks
  * (net=slot 0, then disks, then shares); 8 keeps the Machine arrays small. */
 #define MAX_SHARES 8
-/* Max virtio-console devices, each a separate guest tty (hvc0, hvc1, ...). The
+/* Max virtio-console devices, each a separate guest tty (hvc0, hvc1, ...).
+ * Nine = one supervisor control console (hvc0) + one data console per project
+ * (hvc1..hvc8, FLOE_MAX_PROJECTS == 8 in the guest supervisor contract). The
  * hard ceilings are elsewhere and higher — the same 31 virtio-mmio slots, and
- * Linux's MAX_NR_HVC_CONSOLES of 16 — so this is just the point past which an
- * embedder is asking for more terminals than anyone drives. */
-#define MAX_CONSOLES 8
+ * Linux's MAX_NR_HVC_CONSOLES of 16. The equality with FLOE_AE_MAX_CONSOLES
+ * is asserted in Bridge/embedded_internal.h, which sees both headers. */
+#define MAX_CONSOLES 9
 
 struct GIC;
 struct PL011;
@@ -64,11 +66,14 @@ typedef struct NetFwd {
 } NetFwd;
 
 /* A -virtfs host directory share: exported to the guest as a virtio-9p device
- * with mount tag `tag`; `ro` maps the whole tree read-only. */
+ * with mount tag `tag`; `ro` maps the whole tree read-only. guest_uid/gid are
+ * the synthetic ids the guest sees (never forwarded to a host chown). */
 typedef struct VirtFS {
-    const char *path;   /* host directory to export */
+    const char *path;   /* host directory to export, or NULL for a detached slot */
     const char *tag;    /* 9p mount tag (guest `mount -t 9p <tag> ...`) */
     bool        ro;     /* read-only share */
+    uint32_t    guest_uid;
+    uint32_t    guest_gid;
 } VirtFS;
 
 /* A -drive disk: backing image `path`; `ro` opens it O_RDONLY and advertises

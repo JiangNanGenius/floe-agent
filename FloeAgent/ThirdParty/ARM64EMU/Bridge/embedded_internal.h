@@ -9,6 +9,8 @@
 #include <fenv.h>
 #include <stdio.h>
 _Static_assert(A64_MAX_CPUS==FLOE_AE_MAX_VCPUS,"public and internal CPU ceilings must match");
+_Static_assert(MAX_CONSOLES==FLOE_AE_MAX_CONSOLES,"public and internal console ceilings must match");
+_Static_assert(MAX_SHARES==FLOE_AE_MAX_SHARES,"public and internal share ceilings must match");
 typedef struct AERing { unsigned char *bytes; size_t cap,head,count; } AERing;
 typedef struct AESession AESession;
 struct AEParallel;
@@ -33,6 +35,12 @@ struct AESession {
     pthread_cond_t condition;
     int mutex_ready,condition_ready,active,waiters,state,error,last_reason;
     atomic_bool stop;
+    /* Owned readiness pipe: ae_signal_locked writes one byte; the public
+     * wait_event and the fully-parked in-slice wait poll its read end
+     * together with dup'd usernet descriptors. Both ends are CLOEXEC and
+     * nonblocking; filled at create, closed at dispose after workers join. */
+    int wake_pipe[2];
+    int wake_pipe_ready;
     AERing diagnostic;
     AEChannel channels[AE_MAX_CHANNELS];
     ConsoleEP endpoint;                     /* channel 0 */
@@ -46,6 +54,8 @@ struct AESession {
         char *path;
         char *tag;
         bool ro;
+        uint32_t guest_uid;
+        uint32_t guest_gid;
     } share[FLOE_AE_MAX_SHARES];
     uint32_t share_count;
     NetFwd fwd[FLOE_AE_MAX_NET_FORWARDS];
@@ -56,7 +66,9 @@ extern _Thread_local AESession *ae_current;
 uint64_t ae_now_ns(void);
 size_t ae_ring_write(AERing *,const void *,size_t);
 size_t ae_ring_read(AERing *,void *,size_t);
+size_t ae_ring_space(const AERing *);
 void ae_signal_locked(AESession *);
+void ae_wake_drain(AESession *);
 void ae_machine_destroy(Machine *);
 void ae_reset_caches(Machine *);
 int platform_build(Machine *);

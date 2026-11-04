@@ -3,6 +3,7 @@
 /* Copyright 2026 Sylirre */
 /* AArch64 stage-1 address translation (EL1&0 regime, 4 KB granule) with a
  * software TLB, plus typed guest memory accesses. */
+#define AE_PD_GUARD_SLOT_PRIVATE 1
 #include "mmu.h"
 #include "machine.h"
 #include "esr.h"
@@ -455,7 +456,7 @@ static void ifetch_use(FetchCache *f,IFetchBytePage *slot,unsigned index,u64 va,
     f->snapshot_pa=slot->pa_page;f->snapshot_version=slot->version;f->active_slot=(u16)index;
     __builtin_memcpy(out,slot->bytes+(va&0xfffULL),4);
 }
-bool mem_ifetch_bank_lookup(CPU *c,FetchCache *f,u64 va,u64 version,u32 *insn_out) {
+static bool ifetch_bank_hit(CPU *c,FetchCache *f,u64 va,u64 version,u32 *insn_out) {
     MMUCache *m=c->exec.mmu;unsigned base=ifetch_set(f->pa_page)*IFETCH_BANK_WAYS;
     for(unsigned way=0;way<IFETCH_BANK_WAYS;way++) {
         unsigned index=base+way;IFetchBytePage *slot=&m->ifetch_bank[index];
@@ -464,7 +465,15 @@ bool mem_ifetch_bank_lookup(CPU *c,FetchCache *f,u64 va,u64 version,u32 *insn_ou
             ifetch_use(f,slot,index,va,insn_out);return true;
         }
     }
+    return false;
+}
+bool mem_ifetch_bank_lookup(CPU *c,FetchCache *f,u64 va,u64 version,u32 *insn_out) {
+    if(ifetch_bank_hit(c,f,va,version,insn_out))return true;
     return mem_ifetch_refill(c,f,va,insn_out);
+}
+bool mem_ifetch_bank_lookup_unheld(CPU *c,FetchCache *f,u64 va,u64 version,u32 *insn_out) {
+    if(ifetch_bank_hit(c,f,va,version,insn_out))return true;
+    return mem_ifetch_refill_unheld(c,f,va,insn_out);
 }
 static unsigned ifetch_victim(MMUCache *m,FetchCache *f) {
     unsigned set=ifetch_set(f->pa_page),base=set*IFETCH_BANK_WAYS,invalid=IFETCH_BANK_WAYS;
@@ -485,6 +494,9 @@ bool mem_ifetch_refill(CPU *c,FetchCache *f,u64 va,u32 *insn_out) {
      * version; a write-before-bytes epoch publish alone does NOT publish those
      * later bytes. The read lock waits for the writer to finish. */
     if(memory_guard_held||!f->epoch)return mem_ifetch_page(c,f,va,insn_out);
+    return mem_ifetch_refill_unheld(c,f,va,insn_out);
+}
+bool mem_ifetch_refill_unheld(CPU *c,FetchCache *f,u64 va,u32 *insn_out) {
     MemoryGuard guard;
     if(!memory_guard_host(&guard,c->m,f->host,4096,false))return false;
     u64 version=atomic_load_explicit(&f->epoch->version,memory_order_relaxed);

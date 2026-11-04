@@ -461,3 +461,17 @@ void usernet_get_stats(UserNet *un,
         *udp_flows = n;
     }
 }
+
+int usernet_wait_fds(UserNet *un, int *fds, int max) {
+    if (!un || !fds || max <= 0) return 0;
+    int n = 0;
+    for (int i = 0; i < un->n_fwd && n < max; i++)
+        if (un->fwd[i].fd >= 0) fds[n++] = un->fwd[i].fd;
+    for (TcpConn *c = un->tcp; c && n < max; c = c->next)
+        if (c->fd >= 0) fds[n++] = c->fd;
+    for (int i = 0; i < UN_UDP_MAX && n < max; i++)
+        if (un->udp[i].in_use && un->udp[i].fd >= 0) fds[n++] = un->udp[i].fd;
+    for (int i = 0; i < UN_ICMP_MAX && n < max; i++)
+        if (un->icmp[i].in_use && un->icmp[i].fd >= 0) fds[n++] = un->icmp[i].fd;
+    return n;
+}
