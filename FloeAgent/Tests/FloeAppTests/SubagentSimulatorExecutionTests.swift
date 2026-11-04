@@ -7332,6 +7332,9 @@ extension SubagentSimulatorExecutionTests {
                 title: "Impeccable current signed guest acceptance",
                 goal: "Production skillID activation, engine staging/probe, launcher execution and exact readback; no model")
             recordsCreated = true
+            let binding = try await app.taskExecutionEnvironments.resolveBinding(conversationID: conversationID,
+                runID: runID, root: root, workspace: nil, override: environmentID)
+            try #require(binding.target.environmentID == environmentID)
             let ceiling: Set<String> = ["exec.shell", "skill.read"]
             let hold = CancellationToken()
             parentHold = hold
@@ -7349,7 +7352,7 @@ extension SubagentSimulatorExecutionTests {
                 runID: runID, scope: .local, activeSkillIDs: [ImpeccableCurrentPins.skillID],
                 allowedToolNames: ceiling,
                 workspaceRootURL: root, cancellation: CancellationToken(),
-                environmentID: environmentID, conversationID: conversationID)
+                environmentID: environmentID, executionBindingGeneration: binding.generation, conversationID: conversationID)
             try await requireQualifiedKernel(runtime: runtime, identity: fixedIdentity, context: context)
 
             // Exact read: this stages the CURRENT task-pinned bundle through
@@ -7531,6 +7534,9 @@ extension SubagentSimulatorExecutionTests {
             try await skillHubCreateRunRows(app: app, conversationID: secondConversationID, runID: secondRunID,
                 title: "Impeccable second-task reuse acceptance", goal: "Reuse the installed binary skill in another task on the same project")
             secondRecordsCreated = true
+            let secondBinding = try await app.taskExecutionEnvironments.resolveBinding(conversationID: secondConversationID,
+                runID: secondRunID, root: root, workspace: nil, override: environmentID)
+            try #require(secondBinding.target.environmentID == environmentID)
             let nextHold = CancellationToken(); secondHold = nextHold
             let nextRuntime = makeRuntime(root: root, conversationID: secondConversationID, runID: secondRunID,
                 allowedToolNames: ceiling, environmentID: environmentID,
@@ -7545,7 +7551,7 @@ extension SubagentSimulatorExecutionTests {
             let nextContext = ToolContext(runID: secondRunID, scope: .local,
                 activeSkillIDs: [ImpeccableCurrentPins.skillID], allowedToolNames: ceiling,
                 workspaceRootURL: root, cancellation: CancellationToken(),
-                environmentID: environmentID, conversationID: secondConversationID)
+                environmentID: environmentID, executionBindingGeneration: secondBinding.generation, conversationID: secondConversationID)
             let nextRead = try await impeccableCurrentRead(runtime: nextRuntime, identity: nextIdentity,
                 context: nextContext, tag: "second-task-read")
             try #require(nextRead.resources?.guestRoot == guestRoot)
