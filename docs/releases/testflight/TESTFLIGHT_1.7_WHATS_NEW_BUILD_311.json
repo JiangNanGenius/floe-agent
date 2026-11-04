@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "本机运行环境升级为 ARM64，改进项目隔离、网页预览、技能依赖准备和 Mac Bridge 配对。新增重新下载及恢复初始状态；恢复保留项目文件、聊天和已安装技能，仅重置运行环境与依赖。请关注旧任务文件访问、跨任务依赖复用和网页服务预览。",
+  "en-US": "Upgraded the on-device runtime to ARM64, with improved project isolation, web previews, skill dependency preparation and Mac Bridge pairing. Added re-download and Restore Initial State, preserving project files, conversations and installed skills while resetting the runtime and dependencies. Please check existing task-folder access, dependency reuse across tasks and web-service previews."
+}
