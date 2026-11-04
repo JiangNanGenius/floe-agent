@@ -53395,6 +53395,23 @@
         }
       }
     },
+    "mac.bridge.open_required": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install and open Floe Bridge on this Mac, then try connecting again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先在这台 Mac 上安装并打开 Floe Bridge，再重新连接。"
+          }
+        }
+      }
+    },
     "mac.bridge.prefer_for_new_tasks": {
       "localizations": {
         "en": {

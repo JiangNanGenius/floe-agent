@@ -69,7 +69,7 @@ final class MacBridgeConnectionCenter: ObservableObject {
                 if operationID == operation { connecting = false; pairingTask = nil }
             }
             do {
-                _ = await UIApplication.shared.open(URL(string: "floe-bridge://connect")!)
+                let opened = await UIApplication.shared.open(URL(string: "floe-bridge://connect")!)
                 try checkCurrent(operation)
                 let deadline = ContinuousClock.now.advanced(by: .seconds(90))
                 for _ in 0..<90 {
@@ -87,7 +87,14 @@ final class MacBridgeConnectionCenter: ObservableObject {
                     } catch let failure as BridgeFailure {
                         try checkCurrent(operation)
                         switch failure {
-                        case .disconnected, .ambiguous: break // Only idempotent pairing is retried.
+                        case .disconnected, .ambiguous:
+                            // A missing companion needs installation/opening,
+                            // not a ninety-second invisible retry loop.
+                            if !opened {
+                                error = String(localized: "mac.bridge.open_required")
+                                return
+                            }
+                            break // Only idempotent pairing is retried.
                         default: throw failure
                         }
                     }
