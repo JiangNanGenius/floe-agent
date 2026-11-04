@@ -18,6 +18,8 @@
 从[官网](https://www.floe-agent.com/?utm_source=github&utm_medium=referral&utm_campaign=readme_zh#download)选择安装方式；各渠道的版本、地区和资格分别以[当前状态](docs/CURRENT_STATUS.md)及安装页面为准。也可查看 [iOS AI Agent 与 iPad 工作空间介绍](https://www.floe-agent.com/ios-ai-agent?utm_source=github&utm_medium=referral&utm_campaign=readme_zh)。
 
 <p align="center">
+  <a href="https://www.floe-agent.com/?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=beta_readme_zh#beta"><img src="docs/images/badge-apply-testflight.svg" alt="前往官网申请 TestFlight 内测" height="52"></a>
+  &nbsp;
   <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=feather"><img src="docs/images/badge-add-to-feather.png" alt="添加到 Feather" height="52"></a>
   &nbsp;
   <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=altstore"><img src="docs/images/badge-add-to-altstore.png" alt="添加到 AltStore" height="52"></a>
