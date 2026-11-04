@@ -87,6 +87,7 @@ internal data class RecoveryRecord(
     val verification: ExportVerification? = null,
     val errorCode: String? = null,
     val retryable: Boolean = false,
+    val displayName: String? = null,
 )
 
 /**
@@ -286,6 +287,7 @@ internal class ExportRecoveryStore(private val clock: MediaClock) {
                             sha256 = sha256,
                             verification = verification,
                             completedAt = record.updatedAt,
+                            displayName = record.displayName,
                         )
                     }
                 }
@@ -401,6 +403,7 @@ internal class ExportRecoveryStore(private val clock: MediaClock) {
         record.progress?.let { put("progress", it) }
         record.outputRelativePath?.let { put("outputRelativePath", it) }
         record.mimeType?.let { put("mimeType", it) }
+        record.displayName?.let { put("displayName", it) }
         record.byteCount?.let { put("byteCount", it) }
         record.sha256?.let { put("sha256", it) }
         record.errorCode?.let { put("errorCode", it) }
@@ -469,6 +472,8 @@ internal class ExportRecoveryStore(private val clock: MediaClock) {
             verification = verification,
             errorCode = string("errorCode"),
             retryable = boolean("retryable") ?: false,
+            // Additive v1 journal migration: older records have no delivery hint.
+            displayName = string("displayName")?.takeIf { it.length <= 255 },
         )
     }
 }

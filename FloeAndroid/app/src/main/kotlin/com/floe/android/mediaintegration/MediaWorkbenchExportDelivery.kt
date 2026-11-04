@@ -347,7 +347,8 @@ internal class MediaWorkbenchExportDelivery(
             }
             val identity = MediaWorkbenchReceiptIdentity.of(receipt)
                 ?: return@withContext WorkbenchExportDeliveryResult.Failed("invalidReceipt")
-            val displayName = safeDisplayName(identity.outputRelativePath.substringAfterLast('/'))
+            val displayName = safeDisplayName(
+                receipt.displayName ?: identity.outputRelativePath.substringAfterLast('/'))
                 ?: return@withContext WorkbenchExportDeliveryResult.Failed("invalidReceipt")
 
             val authorization = authorizeRoot(identity)

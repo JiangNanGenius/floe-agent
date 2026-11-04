@@ -319,7 +319,7 @@ class MediaR2Editor internal constructor(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
-                Log.w("FloeMediaExport", "Export submission failed", error)
+                Log.w("FloeMediaExport", "Export submission failed: ${MediaFailures.from(error).code ?: error.javaClass.simpleName}")
                 exportFailure = MediaFailures.from(error)
             } finally {
                 exportBusy = false

@@ -103,7 +103,8 @@ internal class MediaExportEngine(
             }
             throw CancellationException("Export job cancelled")
         } catch (failure: MediaRefusal) {
-            Log.w("FloeMediaExport", "Export failed at $phase", failure)
+            Log.w("FloeMediaExport", "Export failed at $phase: ${failure.code} at " +
+                failure.stackTrace.take(3).joinToString(";"))
             if (job.terminal) return
             when {
                 job.interrupted -> runtime.finish(
@@ -129,7 +130,7 @@ internal class MediaExportEngine(
                 )
             }
         } catch (failure: OutOfMemoryError) {
-            Log.w("FloeMediaExport", "Export failed at $phase", failure)
+            Log.w("FloeMediaExport", "Export failed at $phase: OutOfMemoryError")
             if (!job.terminal) {
                 runtime.finish(
                     job,
@@ -139,7 +140,9 @@ internal class MediaExportEngine(
                 )
             }
         } catch (failure: Throwable) {
-            Log.w("FloeMediaExport", "Export failed at $phase", failure)
+            Log.w("FloeMediaExport", "Export failed at $phase: " +
+                ((failure as? MediaRefusal)?.code ?: failure.javaClass.simpleName) +
+                " at " + failure.stackTrace.take(3).joinToString(";"))
             if (!job.terminal) {
                 runtime.finish(
                     job,
@@ -236,6 +239,7 @@ internal class MediaExportEngine(
                     attemptID = job.attemptID,
                 ),
                 kind = MediaExportKind.VIDEO,
+                displayName = exportDisplayName(request.settings.fileName, "mp4"),
                 outputRelativePath = outputRelative,
                 mimeType = "video/mp4",
                 byteCount = verified.byteCount,
@@ -292,6 +296,7 @@ internal class MediaExportEngine(
                 attemptID = job.attemptID,
             ),
             kind = MediaExportKind.IMAGE,
+            displayName = exportDisplayName(request.settings.fileName, extension),
             outputRelativePath = outputRelative,
             mimeType = when (extension) {
                 "png" -> "image/png"

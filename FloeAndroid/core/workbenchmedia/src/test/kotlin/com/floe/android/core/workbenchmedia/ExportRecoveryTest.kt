@@ -60,6 +60,20 @@ class ExportRecoveryTest {
         assertEquals(1.0, status.progress!!, 0.0)
         assertEquals("Workbench/Exports/attempt-1.png", status.receipt!!.outputRelativePath)
         assertEquals(Digests.sha256(bytes), status.receipt!!.sha256)
+        assertNull("Legacy journals have no name hint", status.receipt!!.displayName)
+    }
+
+    @Test
+    fun deliveryNameRoundTripsWithoutChangingOutputIdentity() {
+        val bytes = "named-output".toByteArray()
+        val path = "Workbench/Exports/named-attempt.png"
+        writeOutput(path, bytes)
+        store.write(root, completedRecord("named-job", "named-attempt", bytes, path)
+            .copy(displayName = "我的导出.png"))
+        val receipt = store.statusFromRecovery(root, expectation, "named-job")!!.receipt!!
+        assertEquals("我的导出.png", receipt.displayName)
+        assertEquals(path, receipt.outputRelativePath)
+        assertEquals(Digests.sha256(bytes), receipt.sha256)
     }
 
     @Test

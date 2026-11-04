@@ -247,6 +247,8 @@ data class MediaExportReceipt(
     val sha256: String,
     val verification: ExportVerification,
     val completedAt: String,
+    /** User-facing name only; never an output path or ownership proof. */
+    val displayName: String? = null,
 )
 
 data class MediaExportStatus(

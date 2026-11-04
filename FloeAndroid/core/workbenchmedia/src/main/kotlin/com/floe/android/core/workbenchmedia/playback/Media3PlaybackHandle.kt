@@ -92,7 +92,7 @@ internal class Media3PlaybackHandle(
             // The wire code stays the bounded rendererUnavailable contract
             // value; the real cause is diagnostics only (never a user string
             // with paths or payloads).
-            Log.e(TAG, "CompositionPlayer error ${error.errorCodeName}: ${error.message}")
+            Log.e(TAG, "CompositionPlayer error ${error.errorCodeName}")
             update(
                 stateRef.get().copy(
                     isBuffering = false,
@@ -257,7 +257,7 @@ internal class Media3PlaybackHandle(
         } catch (failure: MediaRefusal) {
             if (!handedOff.get()) releasePinNow()
             if (closed.get()) return
-            Log.w(TAG, "Playback refused at $preparePhase: ${failure.code} ${failure.message}")
+            Log.w(TAG, "Playback refused at $preparePhase: ${failure.code}")
             update(
                 stateRef.get().copy(
                     isBuffering = false,
@@ -272,7 +272,7 @@ internal class Media3PlaybackHandle(
         } catch (error: Throwable) {
             if (!handedOff.get()) releasePinNow()
             if (!closed.get()) {
-                Log.e(TAG, "Playback prepare failed at $preparePhase: ${error.message}", error)
+                Log.e(TAG, "Playback prepare failed at $preparePhase: ${error.javaClass.simpleName}")
                 update(
                     stateRef.get().copy(
                         isBuffering = false,

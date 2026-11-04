@@ -253,7 +253,7 @@ class AndroidMediaGallerySaver(
         )
         try {
             val displayName = safeDisplayName(
-                options.displayName,
+                options.displayName ?: receipt.displayName,
                 receipt,
                 collection,
             )

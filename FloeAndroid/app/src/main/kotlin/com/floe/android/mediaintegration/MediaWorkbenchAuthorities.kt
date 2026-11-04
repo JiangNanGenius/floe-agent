@@ -91,7 +91,7 @@ internal class MediaWorkbenchRecoveryAuthority(
     } catch (cancelled: kotlinx.coroutines.CancellationException) {
         throw cancelled
     } catch (error: CreativeException) {
-        Log.w("MediaWorkbenchRecovery", "Root refused: ${error.code} ${error.reason}")
+        Log.w("MediaWorkbenchRecovery", "Root refused: ${error.code}")
         RecoveryRootDecision.Refused(error.code, error.reason ?: error.code, error.retryable)
     } catch (_: Throwable) {
         RecoveryRootDecision.Refused(

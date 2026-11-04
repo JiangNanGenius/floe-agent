@@ -402,6 +402,7 @@ internal class ExportRuntime(
                         byteCount = status.receipt?.byteCount,
                         sha256 = status.receipt?.sha256,
                         verification = status.receipt?.verification,
+                        displayName = status.receipt?.displayName,
                         errorCode = status.errorCode,
                         retryable = status.retryable,
                     ),
