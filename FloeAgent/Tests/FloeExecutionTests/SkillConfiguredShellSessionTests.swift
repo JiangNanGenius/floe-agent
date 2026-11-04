@@ -11,13 +11,18 @@ private actor ConfigurationAuthority {
 }
 
 private actor ConfiguredSessionBackend: LocalShellBackend {
+    private(set) var runs = 0
     private(set) var opens = 0
     private(set) var exchanges = 0
     private(set) var closes = 0
     private(set) var receivedOrdinary: [String: String] = [:]
     private(set) var receivedSensitiveNames: [String] = []
     nonisolated func supportsSensitiveProcessEnvironment(for environment: ToolEnvironment?) -> Bool { true }
-    func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome { .cancelled }
+    func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
+        runs += 1; receivedOrdinary = request.environment
+        receivedSensitiveNames = request.sensitiveEnvironment?.names ?? []
+        return .exited(code: 0, stdout: "ok", stderr: "", truncated: false, durationMs: 1)
+    }
     func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
         opens += 1
         receivedOrdinary = request.environment
@@ -40,6 +45,37 @@ struct SkillConfiguredShellSessionTests {
                      configuredEnvironmentNames: ["SKILL_REGION", "SKILL_TOKEN"],
                      revalidate: { try await authority.check() },
                      sanitizeOutput: { redactor.redactComplete($0) })
+    }
+
+    @Test func configuredCommandsPreserveNativeRuntimePaths() async throws {
+        let root = FileManager.default.temporaryDirectory
+        let authority = ConfigurationAuthority(), backend = ConfiguredSessionBackend()
+        let native = ["PATH": "/runtime/bin", "HOME": "/runtime/home", "TMPDIR": "/runtime/tmp"]
+        let shell = LocalShellService(backend: backend, environmentDefaults: native, rootProvider: { root })
+        let result = await shell.run(command: "echo ok", cwd: ".", environment: [:],
+            skillConfiguration: configuration(authority), stdin: nil, requestedTimeout: nil,
+            maxOutputBytes: 1024, isBackground: false,
+            context: ToolContext(runID: UUID(), scope: .local, cancellation: CancellationToken()))
+        guard case .outcome(.exited(let code, _, _, _, _, _)) = result else {
+            Issue.record("Configured command was blocked by native runtime defaults"); return
+        }
+        #expect(code == 0)
+        #expect(await backend.runs == 1)
+        let received = await backend.receivedOrdinary
+        for (key, value) in native { #expect(received[key] == value) }
+        #expect(received["SKILL_REGION"] == "test")
+        #expect(await backend.receivedSensitiveNames == ["SKILL_TOKEN"])
+    }
+
+    @Test func configurationCannotReplaceProtectedRuntimePaths() async throws {
+        let root = FileManager.default.temporaryDirectory, backend = ConfiguredSessionBackend()
+        let shell = LocalShellService(backend: backend, environmentDefaults: ["PATH": "/runtime/bin"], rootProvider: { root })
+        let configuration = SkillProcessConfiguration(environment: ["PATH": "/untrusted/bin"],
+            sensitiveEnvironment: nil, configuredEnvironmentNames: ["PATH"], revalidate: {}, sanitizeOutput: { $0 })
+        _ = await shell.run(command: "echo ok", cwd: ".", environment: [:], skillConfiguration: configuration,
+            stdin: nil, requestedTimeout: nil, maxOutputBytes: 1024, isBackground: false,
+            context: ToolContext(runID: UUID(), scope: .local, cancellation: CancellationToken()))
+        #expect(await backend.runs == 0)
     }
 
     @Test func environmentIsNativeAndRevocationClosesBeforeFurtherInput() async throws {

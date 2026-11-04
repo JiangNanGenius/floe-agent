@@ -238,8 +238,12 @@ public actor LocalShellService {
         if let skillConfiguration {
             do {
                 try skillConfiguration.validateOverrides(environment)
+                // Validate caller/configuration additions, not native defaults:
+                // PATH/HOME/TMPDIR are owned by the backend and must survive.
+                var additions = environment
+                for (key, value) in skillConfiguration.environment { additions[key] = value }
+                try ShellInputValidation.validate(command: command, cwd: cwd, environment: additions, stdin: stdin)
                 for (key, value) in skillConfiguration.environment { mergedEnvironment[key] = value }
-                try ShellInputValidation.validate(command: command, cwd: cwd, environment: mergedEnvironment, stdin: stdin)
                 try await skillConfiguration.revalidate()
                 try context.cancellation.throwIfCancelled()
             } catch {
