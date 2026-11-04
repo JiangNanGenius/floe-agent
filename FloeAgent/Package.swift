@@ -195,7 +195,7 @@ let package = Package(
         .target(
             name: "FloeARM64Engine",
             path: "ThirdParty/ARM64EMU",
-            exclude: ["Source", "Bridge", "PROVENANCE.json"],
+            exclude: ["Source", "Bridge", "Tools", "PROVENANCE.json"],
             sources: ["Sources"],
             publicHeadersPath: "include",
             cSettings: [

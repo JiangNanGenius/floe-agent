@@ -124,6 +124,10 @@
       "sha256": "17eb87d00a48215f51a632797a94309c0cc014c43a7ffd5266e3706cb434f7b9"
     },
     {
+      "path": "Source/src/devices.h",
+      "sha256": "85174765cfb0f1869d473838b9e55e9946bcd49664ca124d3de0a9c9a9eb3b98"
+    },
+    {
       "path": "Source/src/devices/fwcfg.c",
       "sha256": "c9e70da590945715449a7f4d88490935d4c3650d0503509e4fcad84f5e1577de"
     },
@@ -166,10 +170,6 @@
     {
       "path": "Source/src/devices/virtio_net.c",
       "sha256": "4f07265f95f8a68b8bddcd0c1d0b49282088fb3f2f0e2ea1228a59766a3eb993"
-    },
-    {
-      "path": "Source/src/devices.h",
-      "sha256": "85174765cfb0f1869d473838b9e55e9946bcd49664ca124d3de0a9c9a9eb3b98"
     },
     {
       "path": "Source/src/esr.h",
@@ -398,6 +398,10 @@
     {
       "path": "Sources/29_usernet_tcp.c",
       "sha256": "582c4caf256211936b4018516d158516b4c54763df90a49c15a368b8dc8ad1b1"
+    },
+    {
+      "path": "Tools/generate_crc32_tables.py",
+      "sha256": "6253ac38922b9e120ea6567ab180dcfde3ab59c95419edd253e71a4b6565938a"
     },
     {
       "path": "include/floe_arm64emu.h",
