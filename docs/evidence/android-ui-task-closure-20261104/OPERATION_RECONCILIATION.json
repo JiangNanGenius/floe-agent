@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "state": "Source reconciliation reviewed; actual cloud generation lifecycle failure blocks current final acceptance and publication",
+  "state": "Current generation/refresh/direct-preview source compiled and focused component/JVM checks passed; production native/APK/device delivery and publication pending",
   "reviewedSource": "2d83a051bfe2122e8f43185749dd92ac749abd61",
   "environmentOverlay": "8499e778e2b1bd7f08ee1a8b7e14ff7db6889c5a",
   "originalOperationCount": 183,
@@ -2076,13 +2076,13 @@
   "currentAcceptance": {
     "providerRoleRoundtrip": "Actual image/video readback passed in code29; same native code retained30",
     "providerRefresh": "Post-save old-provider-set cache race corrected code30;20focusedJVMpassed; actual original failure retained",
-    "imageGeneration": "Actual one image.generate job expired/outcomeUnknown, noartifact; stop paidcalls, localrepairactive",
-    "videoGeneration": "No video.generate submitted after image failure",
+    "imageGeneration": "Original single image job expired/outcomeUnknown with provider dispatch/charge unconfirmed; no replay. Extra new1image/1K test awaits user answer.",
+    "videoGeneration": "Exactly one authorized PAYG video submitted; provider succeeded independently confirmed once. App code31 still running/no artifact; completed-state fix and retained-job refresh pass component checks; reuse same original job for new APK acceptance.",
     "publication": "Not published"
   },
   "latestGenerationRegression": {
     "scope": "Mac component, real service/store/migrations and worker registry; injected provider transport, unexercised Android native defaults",
-    "passed": 30,
+    "passed": 34,
     "failed": 0,
     "skipped": 0,
     "originalFailuresRetained": true,
@@ -2091,10 +2091,43 @@
       "cancelled worker loses accepted provider handle",
       "durable ready state without saved output receipt",
       "backward poll retry transition",
-      "test database closed under live worker"
+      "test database closed under live worker",
+      "provider completed state now enters verified artifact delivery",
+      "historical ready row without artifact receipt no longer claims delivery"
     ],
     "nativeApkQualified": false,
     "realCloudOutcomeVerified": false,
-    "publicReleasePublished": false
-  }
+    "publicReleasePublished": false,
+    "boundaryNote": "34 component checks passed; App direct preview source handed off, Kotlin integration running, new APK/device verification pending.",
+    "appKotlinChannels": [
+      "full release passed",
+      "play release passed"
+    ],
+    "appJvmMediaTests": 16
+  },
+  "newRuntimeGaps": [
+    {
+      "id": "GEN-READY-DELIVERY",
+      "state": "source-fixed-component-verified-device-pending",
+      "evidence": "Single authorized video succeeded at provider; App later still returns running with advancing nextPoll and no artifact. Originaljob reused, no newsubmit.",
+      "requirement": "Trace and fix true poll/delivery/storage root behavior, preserve unknown/owner/CAS/no-resubmit.",
+      "cause": "Provider adapters emit completed; service previously only accepted ready and kept rewriting running.",
+      "verification": "34 component tests passed including completed artifact delivery, retained refresh, historical receipt rejection and legacy compatibility; Android final APK delivery pending."
+    },
+    {
+      "id": "CONVO-MEDIA-REFRESH",
+      "state": "source-connected-integration-device-pending",
+      "source": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt:refreshMediaJobs",
+      "requirement": "Connect current session/task/root to actual existing-job refresh; no fake success.",
+      "verification": "BridgeV28 and real retained-job refresh passed component checks; Full/Play and9 media-wire JVM tests passed; actual original video download pending new APK."
+    },
+    {
+      "id": "CONVO-WORKSPACE-LINK",
+      "state": "source-connected-integration-device-pending",
+      "source": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt:openWorkspaceFile",
+      "requirement": "Resolve authorized task artifact with existing full-screen viewer; modelrelativepaths do notgrant authority.",
+      "verification": "Existing typed full-window route connected; originating root/generation/session survive presentation and are checked at display. Full/Play compile and7 focused preview-policy JVM tests passed; device pending."
+    }
+  ],
+  "newGapBoundary": "These additional actual gaps do not reset183 historical IDs or imply every prior source-connected legacy entry passed deviceacceptance."
 }

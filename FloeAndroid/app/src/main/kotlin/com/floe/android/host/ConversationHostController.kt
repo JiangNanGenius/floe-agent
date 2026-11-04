@@ -312,6 +312,21 @@ class ConversationHostController internal constructor(
     /** Permissions-inspector requests for a conversation. */
     val permissionsRequest = MutableStateFlow<String?>(null)
 
+    /** One-shot conversation artifact direct-preview request (host → shell).
+     *  Published only after the exact bindExisting owner proof; the shell
+     *  mirrors it into its own presentation state and clears the slot, so a
+     *  stale value can never reopen after its owner left. */
+    internal val artifactPreviewRequest = MutableStateFlow<ConversationArtifactPreviewRequest?>(null)
+
+    /** One-shot honest artifact-open failure note (host → shell). The
+     *  conversation tap result is dropped by the feature surface, so a
+     *  swallowed staging/owner refusal would leave no feedback at all. */
+    internal val artifactOpenFailure = MutableStateFlow<ConversationArtifactOpenFailure?>(null)
+
+    /** Latest-wins guard for the two artifact slots: a late callback of a
+     *  superseded tap can never publish over the newest tap's result. */
+    private val artifactOpenSequence = AtomicLong()
+
     /** Temporary navigation fence (TMP-NAV-2). */
     val tempFence = TemporaryNavigationFence(host)
 
@@ -4616,6 +4631,14 @@ class ConversationHostController internal constructor(
 
     private val taskExports = ConcurrentHashMap<String, Job>()
 
+    /**
+     * One bounded media reconcile per conversation: the in-flight refresh job
+     * owns the single admission slot, exactly like [taskExports]. A second
+     * menu tap while a reconcile runs is refused by the holder latch as well;
+     * this map is the cross-callback truth.
+     */
+    private val mediaRefreshes = ConcurrentHashMap<String, Job>()
+
     override fun exportStructuredConversation(session: ConversationSessionToken): Boolean {
         val entry = holders[session.conversationId] ?: return false
         val context = host.appContextOrNull ?: return false
@@ -4681,8 +4704,64 @@ class ConversationHostController internal constructor(
     }
 
     override fun refreshMediaJobs(session: ConversationSessionToken): Boolean {
-        // Media jobs refresh is not part of the G02 wire surface; honest false.
-        return false
+        if (!conversationAdmitted()) return false
+        val entry = holders[session.conversationId] ?: return false
+        val epoch = host.nativeRootEpoch() ?: return false
+        val commandGeneration = host.commandClient.generation()
+        if (entry.builder.isTemporary || epoch <= 0L ||
+            !ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) ||
+            mediaRefreshes.containsKey(session.conversationId)) return false
+        // The reconcile is a native-owner operation (BridgeV28): it restarts
+        // bounded poll workers for THIS conversation's retained accepted jobs
+        // and classifies lost single-shot rows unknown — it NEVER submits.
+        // The exchange is the blocking `floe_bridge_exchange` C ABI, so the
+        // whole job runs on the IO dispatcher; the owner/epoch/session fence
+        // is captured here and re-checked before the echo is applied.
+        val job = host.scope.launch(host.ioDispatcher, start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            var message: String? = null
+            try {
+                val request = ConversationMediaWire.refreshRequest(
+                    requestID = client().correlationID("mrefresh"),
+                    epoch = epoch,
+                    conversationID = session.conversationId,
+                )
+                if (request.toByteArray(Charsets.UTF_8).size > 65_536) {
+                    message = "mediaRefreshFailed"
+                } else {
+                    val raw = com.floe.android.bridge.SwiftCore.exchange(request)
+                    val result = ConversationMediaWire.parseRefreshResponse(raw)
+                    // `result.jobs` is the re-read durable projection. The
+                    // conversation snapshot owns no media-job fields, and the
+                    // visible Workspace files surface re-reads the native
+                    // listing live — nothing is cached or fabricated here.
+                    // The typed error (stale root, invalid owner, ...) is the
+                    // only user-presentable outcome on failure.
+                    message = result.error
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                message = "mediaRefreshFailed"
+            } finally {
+                mediaRefreshes.remove(session.conversationId, kotlinx.coroutines.currentCoroutineContext()[Job])
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable + kotlinx.coroutines.Dispatchers.Main.immediate) {
+                    if (ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
+                        host.nativeRootEpoch() == epoch &&
+                        host.commandClient.generation() == commandGeneration
+                    ) {
+                        entry.holder.applyMediaRefreshSettled(
+                            message?.let {
+                                host.appContextOrNull?.getString(
+                                    com.floe.android.R.string.workspace_source_failed)
+                                    ?: it
+                            })
+                    }
+                }
+            }
+        }
+        mediaRefreshes[session.conversationId] = job
+        job.start()
+        return true
     }
 
     override fun openTaskPermissions(session: ConversationSessionToken): Boolean {
@@ -4694,9 +4773,131 @@ class ConversationHostController internal constructor(
         session: ConversationSessionToken,
         relativePath: String,
     ): Boolean {
-        // Workspace file surfacing arrives with the workspace goal; no
-        // fabricated authority over host files in G02.
-        return false
+        if (!conversationAdmitted()) return false
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.builder.isTemporary ||
+            !ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) ||
+            !WorkspaceOpenPolicy.relativePathAdmitted(relativePath)) return false
+        val epoch = host.nativeRootEpoch() ?: return false
+        if (epoch <= 0L) return false
+        val generation = host.commandClient.generation()
+        val conversationId = session.conversationId
+        val sessionEpoch = session.sessionEpoch
+        // The EXACT ordinary-conversation owner fence the staged viewer routes
+        // re-check through staging AND launch (same capture as
+        // [openRunOutputFile]): entry identity + session epoch + the captured
+        // native root epoch + App command generation. A model-provided path
+        // never widens authority; the native workspace bridge re-validates
+        // the exact task→workspace containment before any byte is staged.
+        val ownerCurrent = {
+            ownCurrentEntry(entry, conversationId, sessionEpoch) &&
+                !entry.builder.isTemporary &&
+                host.nativeRootEpoch() == epoch &&
+                host.commandClient.generation() == generation
+        }
+        // A fresh admitted attempt must not keep a stale failure note.
+        artifactOpenFailure.value = null
+        val openSequence = artifactOpenSequence.incrementAndGet()
+        // Office formats have an existing host-reachable full-window viewer.
+        if (OfficePreviewController.supports(relativePath)) {
+            val office = (host.appContext as? FloeApplication)?.officePreviews ?: return false
+            if (office.isBusy) {
+                // The single owned viewer slot is held by another operation.
+                // The tap's Boolean result is dropped by the feature surface,
+                // so an honest visible note replaces the old silent refusal.
+                publishArtifactFailure(
+                    openSequence, ConversationArtifactOpenFailureKind.BUSY,
+                    relativePath.substringAfterLast('/'), ownerCurrent)
+                return false
+            }
+            val openJob = host.scope.launch(
+                host.ioDispatcher, start = kotlinx.coroutines.CoroutineStart.LAZY) {
+                try {
+                    // bindExisting: an explicit open NEVER activates a missing
+                    // workspace as a side effect; a conversation that really
+                    // owns files already has its durable association.
+                    val bound = G04WorkspaceBridgeClient.bindExisting(
+                        host, conversationId, ownerCurrent)
+                    if (!ownerCurrent()) return@launch
+                    office.openWorkspace(
+                        WorkspaceOfficeSnapshotStager.Owner(
+                            conversationId, bound.workspaceID, epoch, generation),
+                        relativePath,
+                        ownerCurrent,
+                    )
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    // Typed refusal (unbound workspace, retired owner, ...):
+                    // nothing was staged, nothing is claimed — and the user
+                    // sees the honest failure class instead of silence.
+                    publishArtifactFailure(
+                        openSequence,
+                        ConversationArtifactOpenPolicy.failureFor(
+                            (error as? G04WorkspaceBridgeClient.Failure)?.code),
+                        relativePath.substringAfterLast('/'), ownerCurrent,
+                    )
+                }
+            }
+            openJob.start()
+            return true
+        }
+        // Every other surface (PDF/image/media/CAD/code/archive/binary) opens
+        // DIRECTLY in the existing typed full-window document destination from
+        // the selected link — never a folder browse and never a second click.
+        // The extension router (the same classifier the Files pane uses)
+        // chooses the surface; the destination reuses the real verified
+        // staging/viewer chain and the captured owner fence below is
+        // re-checked before the one-shot request is published.
+        val surface = com.floe.android.WorkspaceDocumentRouter.surfaceFor(relativePath)
+        val openJob = host.scope.launch(
+            host.ioDispatcher, start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            try {
+                // bindExisting: never activates a missing workspace; a model
+                // relative path never widens authority and the native guard
+                // still re-validates containment before any byte is staged.
+                val bound = G04WorkspaceBridgeClient.bindExisting(host, conversationId, ownerCurrent)
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                    if (!ownerCurrent() || openSequence != artifactOpenSequence.get()) return@withContext
+                    artifactPreviewRequest.value = ConversationArtifactPreviewRequest(
+                        taskID = conversationId,
+                        workspaceID = bound.workspaceID,
+                        relativePath = relativePath,
+                        surface = surface,
+                        token = openSequence,
+                        nativeEpoch = epoch,
+                        hostGeneration = generation,
+                        sessionEpoch = sessionEpoch,
+                    )
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                publishArtifactFailure(
+                    openSequence,
+                    ConversationArtifactOpenPolicy.failureFor(
+                        (error as? G04WorkspaceBridgeClient.Failure)?.code),
+                    relativePath.substringAfterLast('/'), ownerCurrent,
+                )
+            }
+        }
+        openJob.start()
+        return true
+    }
+
+    /** Honest visible failure echo for an artifact open that never started.
+     *  Runs on the main thread, non-cancellable, latest-wins: a late refusal
+     *  of a superseded tap can never overwrite the newest tap's outcome. */
+    private fun publishArtifactFailure(
+        openSequence: Long,
+        kind: ConversationArtifactOpenFailureKind,
+        fileName: String,
+        ownerCurrent: () -> Boolean,
+    ) {
+        host.scope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
+            if (!ownerCurrent() || openSequence != artifactOpenSequence.get()) return@launch
+            artifactOpenFailure.value = ConversationArtifactOpenFailure(kind, fileName)
+        }
     }
 
     override fun showInspector(content: InspectorRouteUi, conversationId: String) {

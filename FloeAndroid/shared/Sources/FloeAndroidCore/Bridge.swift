@@ -51,7 +51,8 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV24.version
                 || requestVersion == BridgeV23.version
                 || requestVersion == BridgeV25.version
-                || requestVersion == BridgeV27.version else {
+                || requestVersion == BridgeV27.version
+                || requestVersion == BridgeV28.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -431,6 +432,24 @@ public enum AndroidBridge {
         }
         if requestVersion == BridgeV27.version {
             return response(FontHostMailbox.handle(request), stampVersion: BridgeV27.version)
+        }
+        if requestVersion == BridgeV28.version {
+            // Additive trusted-host channel for CONVERSATION-OWNED agent media
+            // jobs: one closed reconcile/read action (`media.jobs.refresh`)
+            // that restarts bounded poll workers for retained accepted rows
+            // and returns the re-read durable projections. It never submits,
+            // never carries credentials and grants no model/file authority.
+            // V1-V27 branches above remain byte-identical.
+            let object = G09R2AgentMediaBridge.handle(requestData: data,
+                                                      fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= BridgeV28.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV28.version)
+            }
+            return response(object, stampVersion: BridgeV28.version)
         }
         if requestVersion == BridgeV25.version {
             // Additive G04 host-only archive document channel: bounded

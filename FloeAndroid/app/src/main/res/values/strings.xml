@@ -70,6 +70,7 @@
     <string name="target_note">Tasks run on this device. Remote execution may come with a later update.</string>
     <string name="permissions_runtime_pending">Task permission policies become configurable in a future update.</string>
     <string name="conversation_runtime_pending">Conversations open once task capabilities are available.</string>
+    <string name="conversation_artifact_open_failed">The file couldn\'t be opened. Tap it to try again.</string>
     <string name="workspace_later_update">This workspace will become available in a future update.</string>
     <string name="no_tasks_yet">No tasks yet</string>
     <string name="task_center_empty_note">Running, waiting, failed and completed tasks appear here by state once tasks start running.</string>

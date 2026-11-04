@@ -70,6 +70,7 @@
     <string name="target_note">任务在本机运行。远程执行可能随后续更新提供。</string>
     <string name="permissions_runtime_pending">任务权限策略将在后续版本开放后配置。</string>
     <string name="conversation_runtime_pending">对话将在任务能力开放后打开。</string>
+    <string name="conversation_artifact_open_failed">无法打开该文件，请点按后重试。</string>
     <string name="workspace_later_update">该工作区将在后续更新中提供。</string>
     <string name="no_tasks_yet">暂无任务</string>
     <string name="task_center_empty_note">任务开始运行后，进行中、等待、失败与已完成的任务会按状态显示在这里。</string>

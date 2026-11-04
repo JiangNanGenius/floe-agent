@@ -237,6 +237,20 @@ private fun FloeShellContent(
     var settingsSectionKey by rememberSaveable { mutableStateOf("") }
     var previewVisible by rememberSaveable { mutableStateOf(false) }
     var inspectorRoute by rememberSaveable { mutableStateOf<String?>(null) }
+    // Conversation artifact direct preview (typed full-window document over
+    // the conversation that owns the link). The host publishes a one-shot
+    // request only after its bindExisting owner proof; the shell mirrors it
+    // into its own presentation state (saveable like the Files pane's
+    // document request, so rotation re-attaches the same token) and clears
+    // the host slot so a stale value can never reopen after its owner left.
+    var artifactTaskId by rememberSaveable { mutableStateOf<String?>(null) }
+    var artifactWorkspaceId by rememberSaveable { mutableStateOf<String?>(null) }
+    var artifactPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var artifactSurfaceName by rememberSaveable { mutableStateOf<String?>(null) }
+    var artifactToken by rememberSaveable { mutableLongStateOf(0L) }
+    var artifactNativeEpoch by rememberSaveable { mutableLongStateOf(0L) }
+    var artifactHostGeneration by rememberSaveable { mutableLongStateOf(0L) }
+    var artifactSessionEpoch by rememberSaveable { mutableLongStateOf(0L) }
     var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
     var drawerOpen by rememberSaveable { mutableStateOf(false) }
     // The IME belongs to the surface that opened it. Opening the compact
@@ -521,6 +535,39 @@ private fun FloeShellContent(
                 inspectorRoute = encodeInspectorRoute(
                     InspectorRoute(content = mapInspectorContent(content), conversationId = conversationId),
                 )
+            }
+        }
+        // Conversation artifact direct preview: consume the host's one-shot
+        // owner-proven request into the shell-owned (saveable) presentation
+        // state. The host slot clears immediately, so the same value can
+        // never be delivered twice or reopen after this owner left.
+        val requestedArtifactPreview by runtimeHost.conversations.artifactPreviewRequest.collectAsState()
+        LaunchedEffect(requestedArtifactPreview) {
+            requestedArtifactPreview?.let { request ->
+                runtimeHost.conversations.artifactPreviewRequest.value = null
+                artifactTaskId = request.taskID
+                artifactWorkspaceId = request.workspaceID
+                artifactPath = request.relativePath
+                artifactSurfaceName = request.surface.name
+                artifactToken = request.token
+                artifactNativeEpoch = request.nativeEpoch
+                artifactHostGeneration = request.hostGeneration
+                artifactSessionEpoch = request.sessionEpoch
+            }
+        }
+        // The preview belongs to the conversation surface that raised it: a
+        // real navigation away (another conversation, Home, ...) clears it.
+        // Recreation/rotation keep the remembered fields, so the same request
+        // token re-attaches to the live preview/editor session.
+        val artifactConversationId = artifactTaskId
+        LaunchedEffect(selection, artifactConversationId) {
+            val task = artifactConversationId ?: return@LaunchedEffect
+            if (selection != SidebarSelection.Conversation(task)) {
+                artifactTaskId = null
+                artifactWorkspaceId = null
+                artifactPath = null
+                artifactSurfaceName = null
+                artifactToken = 0L
             }
         }
         // Sidebar chat rows read the SAME produced history wire as the Task
@@ -1150,6 +1197,60 @@ private fun FloeShellContent(
         runtimeHost?.conversations?.notesChatTransfers?.let { transfers ->
             NotesChatTransferNotice(
                 transfers,
+                Modifier.align(Alignment.BottomCenter).navigationBarsPadding().imePadding()
+                    .padding(16.dp).widthIn(max = 560.dp),
+            )
+        }
+
+        // Conversation artifact direct preview: the existing typed
+        // full-window document destination over the owning conversation.
+        // Back/Close return to the conversation; owner retirement dismisses
+        // through the destination's own requestIsCurrent gate.
+        val artifactRequest = remember(
+            artifactTaskId, artifactWorkspaceId, artifactPath, artifactSurfaceName, artifactToken,
+            artifactNativeEpoch, artifactHostGeneration, artifactSessionEpoch,
+        ) {
+            val task = artifactTaskId
+            val workspace = artifactWorkspaceId
+            val path = artifactPath
+            val surface = artifactSurfaceName?.let { name ->
+                runCatching { WorkspaceDocumentSurface.valueOf(name) }.getOrNull()
+            }
+            val token = artifactToken
+            if (task != null && workspace != null && path != null && surface != null && token > 0L && artifactNativeEpoch > 0L) {
+                com.floe.android.host.ConversationArtifactPreviewRequest(
+                    taskID = task, workspaceID = workspace, relativePath = path,
+                    surface = surface, token = token,
+                    nativeEpoch = artifactNativeEpoch, hostGeneration = artifactHostGeneration,
+                    sessionEpoch = artifactSessionEpoch,
+                )
+            } else {
+                null
+            }
+        }
+        val artifactHost = runtimeHost
+        if (artifactRequest != null && artifactHost != null &&
+            selection == SidebarSelection.Conversation(artifactRequest.taskID)
+        ) {
+            ConversationArtifactPreviewDestination(
+                host = artifactHost,
+                request = artifactRequest,
+                onCleared = {
+                    artifactTaskId = null
+                    artifactWorkspaceId = null
+                    artifactPath = null
+                    artifactSurfaceName = null
+                    artifactToken = 0L
+                },
+            )
+        }
+
+        // One honest, dismissible note when a conversation artifact tap could
+        // not start its open at all (the tap's Boolean result is dropped by
+        // the feature surface, so this replaces the old silent refusal).
+        runtimeHost?.conversations?.artifactOpenFailure?.let { failures ->
+            ConversationArtifactOpenNotice(
+                failures,
                 Modifier.align(Alignment.BottomCenter).navigationBarsPadding().imePadding()
                     .padding(16.dp).widthIn(max = 560.dp),
             )

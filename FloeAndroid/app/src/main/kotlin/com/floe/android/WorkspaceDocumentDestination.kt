@@ -290,7 +290,13 @@ internal object WorkspaceDocumentPresentation {
 internal fun WorkspaceDocumentDestination(
     request: WorkspaceDocumentRequest,
     host: RuntimeHost,
-    presenter: IdePresenter,
+    /** The read/write code workbench presenter. Null is ONLY honest for
+     *  surfaces that never touch it (PDF/image/media/CAD/archive/covers) —
+     *  the conversation artifact route passes null there because it acquires
+     *  the workbench binding lazily and only for CODE_EDITOR. A null
+     *  presenter on CODE_EDITOR renders the honest typed cover instead of a
+     *  dead editor page. */
+    presenter: IdePresenter?,
     bottomAccessory: IdeBottomAccessory?,
     ownerTaskID: String?,
     ownerWorkspaceID: String?,
@@ -449,23 +455,37 @@ internal fun WorkspaceDocumentDestination(
         ) {
             when (request.surface) {
                 WorkspaceDocumentSurface.CODE_EDITOR -> {
-                    val state by presenter.state.collectAsState()
-                    LaunchedEffect(request.token, request.path) {
-                        if (WorkspaceDocumentPresentation.needsReopen(
-                                state.snapshot?.relativePath, state.documentLoading, request.path,
-                            )
-                        ) {
-                            // Same presenter, same drafts/undo: this is an
-                            // explicit open intent, never a second editor.
-                            presenter.openFile(request.path, claimsPaneLevel = false)
+                    val codePresenter = presenter
+                    if (codePresenter == null) {
+                        // No workbench binding was admitted for this request
+                        // (the conversation route acquires it lazily and only
+                        // for code): the honest typed cover instead of a dead
+                        // editor page. The Files pane always passes a live
+                        // presenter, so its behavior is unchanged.
+                        WorkspaceTypedDocumentSurface(
+                            request = request,
+                            onBackToFiles = backToFiles,
+                            onCloseTask = closeTask,
+                        )
+                    } else {
+                        val state by codePresenter.state.collectAsState()
+                        LaunchedEffect(request.token, request.path) {
+                            if (WorkspaceDocumentPresentation.needsReopen(
+                                    state.snapshot?.relativePath, state.documentLoading, request.path,
+                                )
+                            ) {
+                                // Same presenter, same drafts/undo: this is an
+                                // explicit open intent, never a second editor.
+                                codePresenter.openFile(request.path, claimsPaneLevel = false)
+                            }
                         }
+                        FloeIdeDocumentWindow(
+                            presenter = codePresenter,
+                            onClose = backToFiles,
+                            bottomAccessory = bottomAccessory,
+                            modifier = Modifier.fillMaxSize(),
+                        )
                     }
-                    FloeIdeDocumentWindow(
-                        presenter = presenter,
-                        onClose = backToFiles,
-                        bottomAccessory = bottomAccessory,
-                        modifier = Modifier.fillMaxSize(),
-                    )
                 }
                 WorkspaceDocumentSurface.PDF,
                 WorkspaceDocumentSurface.IMAGE,

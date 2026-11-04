@@ -199,6 +199,11 @@ public struct G09R2AgentJobStatus: Sendable, Equatable {
     public var terminated: Bool
     public var canCancel: Bool
     public var ready: Bool
+    /// Durable media kind spelling ("image" / "video") from the job row.
+    /// Defaulted so existing memberwise call sites (fallback statuses in the
+    /// concurrent-churn suites) keep compiling; the projection always sets
+    /// the real value.
+    public var mediaKind: String = ""
     public var providerTaskID: String?
     public var resultURL: URL?
     public var resultURLExpiresAt: Date?
@@ -230,6 +235,9 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
     static let videoPollIntervalSeconds: TimeInterval = 15
     static let maximumVideoPolls = 120
     static let maximumResultBytes: Int64 = 512 * 1024 * 1024
+    /// One refresh response carries at most this many durable job projections
+    /// (the wire bound the BridgeV28 host channel enforces as well).
+    static let maximumRefreshedJobs = 50
 
     internal let platform: G09R2GenerationPlatform
     private let afterImageBytesWritten: (@Sendable () async -> Void)?
@@ -869,8 +877,18 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
                 let status = try await adapter.status(
                     taskID: taskID, modelRemoteID: model.remoteModelID,
                     provider: provider, credentials: credentials)
+                // Every configured adapter reports a provider-succeeded video
+                // as `.completed` (Volcengine/Ark `succeeded`, DashScope
+                // `SUCCEEDED`, Google Omni `ACTIVE`) carrying the result URL —
+                // the shared UI worker handles `.completed` and `.ready`
+                // identically (`G09R2GenerationWorkers`). Matching that here:
+                // before this case existed, a succeeded task fell into
+                // `default`, kept rewriting the row to `.running` with a fresh
+                // `nextPollAt`, and the accepted paid result was never
+                // delivered — the row spun non-terminal forever even though
+                // the provider had long finished.
                 switch status.state {
-                case .ready:
+                case .completed, .ready:
                     guard let url = status.resultURL ?? owned.job.resultURL else {
                         throw RemoteVideoError.invalidResponse("missingResultURL")
                     }
@@ -1143,6 +1161,32 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
         }
     }
 
+    /// Host refresh entry (the App's "refresh media jobs" action, BridgeV28):
+    /// reconcile THIS conversation's durable media jobs through the exact
+    /// resume/stale authorities above and return their bounded projections.
+    /// This NEVER submits: the pump only restarts poll workers for retained
+    /// accepted rows and classifies lost single-shot rows unknown — the same
+    /// relaunch-resume semantics, on demand. A stopping or unavailable root
+    /// refuses typed before any work; projections retain conversation ownership.
+    public func refreshConversationJobs(
+        epoch: UInt64, conversationID: UUID
+    ) async throws -> [G09R2AgentJobStatus] {
+        // Fence the exact accepted root BEFORE the pump (the pump itself also
+        // re-checks; a stopping root must report the typed refusal, not run).
+        _ = try await requireEnvironment(epoch: epoch)
+        await resumeStaleJobs(epoch: epoch, conversationID: conversationID)
+        let env = try await requireEnvironment(epoch: epoch)
+        let store = MediaGenerationJobStore(database: env.database)
+        let owned = try await store.jobs(owner: .conversation(conversationID))
+        var statuses: [G09R2AgentJobStatus] = []
+        for job in owned.prefix(Self.maximumRefreshedJobs) {
+            let checked = try await requireOwnedJob(
+                store: store, jobID: job.id, conversationID: conversationID)
+            statuses.append(projection(checked))
+        }
+        return statuses
+    }
+
     // MARK: - Private helpers (shared G09R2 execution)
 
     /// Registers work on the ONE bounded shared generation worker table. The
@@ -1180,10 +1224,21 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
     private func projection(_ owned: OwnedMediaGenerationJob) -> G09R2AgentJobStatus {
         let job = owned.job
         let payload = try? decodePayload(job)
+        // Historical ready rows may predate the receipt upsert repair. A state
+        // label alone cannot claim delivery; preserve legacy single-file receipts.
+        let artifacts = payload?.artifacts ?? []
+        let hasTypedReceipt = !artifacts.isEmpty && artifacts.allSatisfy {
+            !$0.relativePath.isEmpty && $0.byteCount > 0 && $0.sha256.count == 64
+        }
+        let hasLegacyReceipt = payload?.workspaceRelativePath?.isEmpty == false
+            && (payload?.deliveredByteCount ?? 0) > 0
+            && payload?.deliveredSHA256?.count == 64
+        let missingReceipt = job.state == .ready && !hasTypedReceipt && !hasLegacyReceipt
         return G09R2AgentJobStatus(
             jobID: job.id, state: job.state, terminated: job.state.isTerminal,
             canCancel: !job.state.isTerminal,
-            ready: job.state == .ready,
+            ready: job.state == .ready && !missingReceipt,
+            mediaKind: job.mediaKind.rawValue,
             providerTaskID: job.providerTaskID,
             resultURL: job.resultURL,
             resultURLExpiresAt: job.resultURLExpiresAt,
@@ -1192,7 +1247,7 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
             deliveredByteCount: payload?.deliveredByteCount,
             deliveredSHA256: payload?.deliveredSHA256,
             nextPollAt: job.nextPollAt,
-            lastError: job.lastError)
+            lastError: missingReceipt ? "missingArtifactReceipt" : job.lastError)
     }
 
     private func requireOwnedJob(
