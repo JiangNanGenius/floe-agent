@@ -52,7 +52,7 @@ struct SkillConfiguredShellSessionTests {
         let authority = ConfigurationAuthority(), backend = ConfiguredSessionBackend()
         let native = ["PATH": "/runtime/bin", "HOME": "/runtime/home", "TMPDIR": "/runtime/tmp"]
         let shell = LocalShellService(backend: backend, environmentDefaults: native, rootProvider: { root })
-        let result = await shell.run(command: "echo ok", cwd: ".", environment: [:],
+        let result = try await shell.run(command: "echo ok", cwd: ".", environment: [:],
             skillConfiguration: configuration(authority), stdin: nil, requestedTimeout: nil,
             maxOutputBytes: 1024, isBackground: false,
             context: ToolContext(runID: UUID(), scope: .local, cancellation: CancellationToken()))

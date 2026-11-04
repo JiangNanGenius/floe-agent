@@ -1071,6 +1071,7 @@
 		C5CB4AFD633CF0A3AA9032D2 /* LinuxGuestBackendTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 539F31408E05AE89AC0A3FA5 /* LinuxGuestBackendTests.swift */; };
 		C5EDFDCD3E6C6D784D9F4ECC /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6AFF9D3E17B2962EAE99225 /* AppEnvironment.swift */; };
 		C5EF7D89863A823AEC36B81F /* FloeAgentApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D634AA3DDD1E8456E1FB49 /* FloeAgentApp.swift */; };
+		C63D9D6BF88731D83B4F005F /* SkillConfiguredShellSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85D5C073B42BD95A86F4612F /* SkillConfiguredShellSessionTests.swift */; };
 		C660090A98040A3735D3A8AE /* LinuxPortForwardSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37B1EBEA9DC6FD42605416B0 /* LinuxPortForwardSettingsView.swift */; };
 		C6CD25F689A569EBCC25BDF6 /* marked.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 35BE65ADB5F2AA44F63AFCDB /* marked.min.js */; };
 		C7051607961D03C6E8BA402D /* MailTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF4D24163BFC581647517C5C /* MailTools.swift */; };
@@ -2139,6 +2140,7 @@
 		852EC3ACD9A408BB393899CA /* SpeechInputSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechInputSettingsView.swift; sourceTree = "<group>"; };
 		857283D5BF6E741DD727418D /* ProviderEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderEditorViewModel.swift; sourceTree = "<group>"; };
 		85B917B643B922C86500E787 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		85D5C073B42BD95A86F4612F /* SkillConfiguredShellSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillConfiguredShellSessionTests.swift; sourceTree = "<group>"; };
 		86170DEFDF34F4E46569FBF7 /* OfficePresentationOpeningTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficePresentationOpeningTests.swift; sourceTree = "<group>"; };
 		8653275E52A5FE7091322BAE /* FloeScheduledTaskIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeScheduledTaskIntents.swift; sourceTree = "<group>"; };
 		865DDA4AD19CECD65CEF230F /* WebSearchServiceIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchServiceIntegrationTests.swift; sourceTree = "<group>"; };
@@ -4965,6 +4967,7 @@
 				7CACC7AB097E832502440E22 /* RuntimeV2TemplateTests.swift */,
 				87D11C32C126ECBBEBD5D113 /* SearchProviderCatalogTests.swift */,
 				C77E44933245EB5AA1228BEB /* ShellExecutionDeadlinePolicyTests.swift */,
+				85D5C073B42BD95A86F4612F /* SkillConfiguredShellSessionTests.swift */,
 				1AE7B323354F4C9307EAA5CC /* SkillDependencyExecutionTests.swift */,
 				951E4559DE7BAC0CAEB76029 /* TaskScheduleToolTests.swift */,
 				E276D6AEE59639A0A823A15F /* VolcengineDirectGatewayEnvelopeTests.swift */,
@@ -6508,6 +6511,7 @@
 				43350F0AA2C6BD216888FB7B /* SkillAuthoringPackageTests.swift in Sources */,
 				4784A3887226D623A88E2788 /* SkillAuthoringStoreTests.swift in Sources */,
 				62A5076970C09ED9C6F302BC /* SkillBulkUpdatePlanTests.swift in Sources */,
+				C63D9D6BF88731D83B4F005F /* SkillConfiguredShellSessionTests.swift in Sources */,
 				7DDC1E13E8E69F07E265772F /* SkillCreateToolTests.swift in Sources */,
 				8753821DFEDB31F4AD41E6D8 /* SkillDependencyExecutionTests.swift in Sources */,
 				C3FBF1E304F1EFDB0A6288F3 /* SkillDependencyGuestQualificationTests.swift in Sources */,
