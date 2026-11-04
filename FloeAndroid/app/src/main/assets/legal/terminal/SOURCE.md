@@ -70,8 +70,8 @@ non-shipped JVM smoke driver fed the emulator through an external byte pipe
 (TerminalOutput abstract class) only: ANSI+bold parsed, CJK double-width
 advanced the cursor by 8 columns, DSR `ESC[6n` answered back OUT through the
 external pipe, resize applied — with NO Termux process class (TerminalSession,
-JNI, termux.c) present. Transcript + driver:
-`Local/Private/android-g04-20261024/r1/terminal-lsp/probes/external-pty-smoke/`.
+JNI, termux.c) present. This local qualification used a non-shipped smoke
+driver; the driver and operational transcript are not part of the public package.
 
 ## Patched file
 
