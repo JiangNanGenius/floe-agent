@@ -1,4 +1,4 @@
-// FloeApp — Linux guest backend assembly (TinyEMU RV64).
+// FloeApp — shared resident ARM64 Linux backend assembly.
 //
 // Linux environments run their shell, Python and services inside one TinyEMU
 // guest. This file builds the app-side backend:
@@ -114,14 +114,16 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
             }
         }
 
-        let imageID = await pinnedImageSource.baseImageID(for: record.id) ?? defaultImageID
+        // One physical ARM64 base is shared. Legacy template pins cannot select
+        // an incompatible RISC-V image for this machine.
+        let imageID = defaultImageID
         // An accepted IDE script-run shape armed for the start in flight is
         // what this descriptor must carry: the typed vCPU/RAM request travels
         // to the registry's typed admission (and from there to the pool) as an
         // explicit environment-policy request, never as a hardcoded one-hart
         // default. With no armed shape the descriptor keeps its previous
         // nil values (worker default: one hart, the configured RAM default).
-        let armed = armedRunShape?(record.id)
+        let armed: ShellGuestRunShapeIntent? = nil
         return LinuxGuestEnvironmentDescriptor(
             id: record.id,
             ownerID: record.ownerID,
@@ -151,6 +153,10 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
         environmentID: String,
         descriptor: LinuxGuestEnvironmentDescriptor
     ) async throws -> LinuxGuestShareAccessLease? {
+        if let record = await registry.record(id: environmentID),
+           record.requiresRebuild || record.pendingRuntimeResetID != nil {
+            throw LinuxGuestError.startFailed("The runtime needs to be restored before starting")
+        }
         guard let workspace = descriptor.shares.first(where: { $0.tag == LinuxGuestShare.workspaceTag })
         else { return nil }
         do {
@@ -248,6 +254,13 @@ struct LinuxGuestRuntimeV2ImageStatus: Sendable {
 }
 
 /// Builds the single injected Linux guest service for the app.
+private struct UnavailableLinuxGuestSessionFactory: LinuxGuestSessionCreating {
+    func makeSession(descriptor: LinuxGuestEnvironmentDescriptor, image: LinuxGuestImage,
+                     limits: LinuxGuestLimits) throws -> LinuxGuestSessionHandle {
+        throw LinuxGuestError.invalidConfiguration("Runtime storage is unavailable")
+    }
+}
+
 enum LinuxGuestBackendAssembly {
     /// Manifest id expected under `<artifact root>/LinuxGuest/images/<id>/`.
     /// The manifest must carry a passing modern-guest qualification record.
@@ -299,113 +312,13 @@ enum LinuxGuestBackendAssembly {
             environments: environmentProvider,
             images: wiring.images,
             limits: .standard,
-            factory: TinyEMUGuestSessionFactory(),
-            runtimeV2: wiring.runtimeV2,
-            // Immutable construction-time auto-adoption callback. It runs at
-            // the top of every REAL start path (ordinary start and the
-            // hard-restart transaction's replacement start) before that
-            // start's boot-asset lease, resolves the verified updater
-            // through the existing FloePlatformServices seam at call time,
-            // and receives the registry as an argument — so the registry
-            // never captures itself and the wiring has no retain cycle. A
-            // start that somehow precedes publication simply defers adoption
-            // to a later start; every refusal stays closed by default.
-            bootAssetAutoAdoption: { registry, imageID in
-                guard let bootAssets = FloePlatformServices.shared.linuxBootAssetUpdaterService() else {
-                    return
-                }
-                do {
-                    _ = try await bootAssets.installUpdate(
-                        imageID: imageID,
-                        environmentIDs: LinuxBootAssetUpdatePolicy.environmentIDs(
-                            registry: registry,
-                            environments: environmentProvider
-                        ),
-                        origin: .automatic
-                    )
-                } catch let error as LinuxGuestBootAssetUpdateError {
-                    // Closed by default: every path here keeps the current
-                    // pair and a later start retries; a running guest is
-                    // never stopped for this. Expected deferrals (image not
-                    // installed yet, a sibling running, an older/equal bundle,
-                    // an explicit rollback, or a busy image) are routine and
-                    // stay quiet. A real verification, bundle or
-                    // file-operation failure leaves a redacted stage
-                    // diagnostic through the existing logger instead of
-                    // vanishing; no boot-asset content or path is logged.
-                    switch error {
-                    case .imageNotInstalled, .imageBusy, .notOffered,
-                         .environmentsNotQuiet:
-                        break
-                    case .artifactVerificationFailed(let role):
-                        FloeLogger(category: .tools).warning(
-                            "Linux boot-asset auto-adoption kept the current pair: \(role) failed size/hash verification"
-                        )
-                    case .ioFailure:
-                        FloeLogger(category: .tools).warning(
-                            "Linux boot-asset auto-adoption kept the current pair: boot-asset file operation failed"
-                        )
-                    case .bundleUnavailable:
-                        FloeLogger(category: .tools).warning(
-                            "Linux boot-asset auto-adoption kept the current pair: bundled boot pair unavailable"
-                        )
-                    case .bundleMismatch:
-                        FloeLogger(category: .tools).warning(
-                            "Linux boot-asset auto-adoption kept the current pair: bundled boot pair did not match the pinned manifest"
-                        )
-                    case .enumerationUnavailable:
-                        FloeLogger(category: .tools).warning(
-                            "Linux boot-asset auto-adoption kept the current pair: the environments using this image could not be enumerated"
-                        )
-                    }
-                } catch {
-                    FloeLogger(category: .tools).warning(
-                        "Linux boot-asset auto-adoption kept the current pair: unexpected error"
-                    )
-                }
-            }
+            factory: artifactRoot.map { ARM64ResidentGuestSessionFactory(
+                root: $0.appendingPathComponent("LinuxGuest/ResidentARM64", isDirectory: true)
+            ) as any LinuxGuestSessionCreating } ?? UnavailableLinuxGuestSessionFactory(),
+            runtimeV2: wiring.runtimeV2
         )
         let service = TinyEMULinuxCommandService(registry: guestRegistry)
-        // Verified modern boot-pair updater: the generated bundled resource
-        // pinned by boot-pair-v2.manifest.json, quiet-gated on this
-        // registry's own facts, serialized against starts by the shared
-        // gate. Auto-adoption runs at the top of every start (before the
-        // lease), so a fresh or updated install boots the modern kernel at
-        // the first quiet opportunity; a running sibling defers the
-        // upgrade to a later start and is never stopped for it. The quiet
-        // probe holds the registry weakly: the registry owns the adoption
-        // callback that resolves this service, and a strong probe capture
-        // would close that loop.
-        if let artifactRoot {
-            // The boot pair must be written where the boot resolves it: every
-            // real start resolves boot paths against Runtime v2's expanded
-            // (verified, rebuildable) image directory when that substrate is
-            // configured — the legacy images root is only the fallback. The
-            // resolver below asks the SAME substrate (it also performs the
-            // one-time legacy migration), so an adopted pair can never land
-            // in a directory the start does not read (or that the migration
-            // moves aside). Without a substrate it answers nil and the
-            // updater keeps the legacy root, exactly as before.
-            let runtimeV2 = wiring.runtimeV2
-            let bootAssets = LinuxGuestBootAssetUpdateService(
-                imagesRoot: artifactRoot
-                    .appendingPathComponent("LinuxGuest", isDirectory: true)
-                    .appendingPathComponent("images", isDirectory: true),
-                bundleProvider: {
-                    Bundle.main.url(forResource: "bundled-boot-pair", withExtension: nil)
-                },
-                quietProbe: { [weak guestRegistry] environmentID in
-                    guard let guestRegistry else { return nil }
-                    return await guestRegistry.bootAssetReconciliation(environmentID: environmentID)
-                },
-                gate: .default,
-                imageDirectoryResolver: { imageID in
-                    guard let runtimeV2 else { return nil }
-                    return try? await runtimeV2.expandedImageDirectory(imageID: imageID)
-                }
-            )
-            FloePlatformServices.shared.setLinuxBootAssetUpdater(bootAssets)
-        }
+        // ARM64 firmware, kernel and supervisor are verified together with the image.
         // The runtime's own session table is the authoritative source for the
         // core count an already-running guest was granted; the run-shape claim
         // compares an explicit request against it instead of guessing.

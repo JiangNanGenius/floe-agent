@@ -44,7 +44,7 @@ private func makeComponentTemporaryDirectory(_ label: String) -> URL {
 
 private func makeELF64Bytes(
     eType: UInt16 = 2,
-    eMachine: UInt16 = 243,
+    eMachine: UInt16 = 183,
     phnum: UInt16 = 1,
     programHeaders: [(type: UInt32, offset: Int)] = [(1, 64)]
 ) -> Data {
@@ -84,7 +84,7 @@ private func makeComponentFixture(engineBytes: Data? = nil, contractVersion: Int
         """.utf8)
     let version = "0.1.17+floe.1.0.0"
     let descriptorJSON = """
-        {"artifact":{"path":"engines/impeccable/dist/impeccable-\(version)/riscv64gc-unknown-linux-musl/floe-impeccable","sha256":"\(FloeDigest.sha256Hex(engine))","size":\(engine.count)},"captureContract":{"sha256":"\(FloeDigest.sha256Hex(contract))","version":\(contractVersion)},"componentID":"impeccable-engine","componentVersion":"\(version)","minimumAppVersion":"1.7.59","schemaVersion":1,"target":{"arch":"riscv64","format":"elf64-little-riscv-exec-static","os":"linux","triple":"riscv64gc-unknown-linux-musl"}}
+        {"artifact":{"path":"engines/impeccable/dist/impeccable-\(version)/aarch64-unknown-linux-musl/floe-impeccable","sha256":"\(FloeDigest.sha256Hex(engine))","size":\(engine.count)},"captureContract":{"sha256":"\(FloeDigest.sha256Hex(contract))","version":\(contractVersion)},"componentID":"impeccable-engine","componentVersion":"\(version)","minimumAppVersion":"1.7.59","schemaVersion":1,"target":{"arch":"arm64","format":"elf64-little-aarch64-exec-static","os":"linux","triple":"aarch64-unknown-linux-musl"}}
         """
     let descriptorBytes = Data(descriptorJSON.utf8)
     return ComponentFixture(
@@ -435,11 +435,11 @@ private func makeHarness(
 private let componentID = SkillRuntimeDependency.knownComponentID
 
 private func expectedEngineGuestPath(_ version: String) -> String {
-    "/floe/env/runtime-components/impeccable-engine/\(version)/riscv64gc-unknown-linux-musl/floe-impeccable"
+    "/floe/env/runtime-components/impeccable-engine/\(version)/aarch64-unknown-linux-musl/floe-impeccable"
 }
 
 private func stagedHostPath(layer: URL, version: String) -> URL {
-    layer.appendingPathComponent("runtime-components/impeccable-engine/\(version)/riscv64gc-unknown-linux-musl/floe-impeccable", isDirectory: false)
+    layer.appendingPathComponent("runtime-components/impeccable-engine/\(version)/aarch64-unknown-linux-musl/floe-impeccable", isDirectory: false)
 }
 
 /// Happy-path wiring shared by the end-to-end tests: fixture + plan recorded,
@@ -1544,7 +1544,7 @@ private func makePreparedChain(
     @Test func taskPinnedSnapshotIsNotSilentlyReplacedByCurrentInstalledRevision() async throws {
         let component = try makeComponentFixture()
         let declaration = """
-        {"schemaVersion":1,"profiles":[{"id":"engine","target":{"os":"linux","architectures":["riscv64"]},"requirements":[{"kind":"runtimeComponent","componentDescriptorPath":"references/engine-dependency.json","purpose":"Engine.","required":true}]}]}
+        {"schemaVersion":1,"profiles":[{"id":"engine","target":{"os":"linux","architectures":["arm64"]},"requirements":[{"kind":"runtimeComponent","componentDescriptorPath":"references/engine-dependency.json","purpose":"Engine.","required":true}]}]}
         """
         let pinned = try await makeStagedSkillFixture(
             descriptorBytes: component.descriptorBytes,
@@ -1660,7 +1660,7 @@ private func makePreparedChain(
     @Test func routingBackendExportsNativeBindingsForTheRunAndOverridesCallerValues() async {
         let runner = FakeComponentRunner()
         let native = StubNativeShellBackend()
-        let expectedEngine = "/floe/env/runtime-components/impeccable-engine/0.1.17+floe.1.0.0/riscv64gc-unknown-linux-musl/floe-impeccable"
+        let expectedEngine = "/floe/env/runtime-components/impeccable-engine/0.1.17+floe.1.0.0/aarch64-unknown-linux-musl/floe-impeccable"
         let backend = RoutingLocalShellBackend(
             native: native,
             guests: runner,

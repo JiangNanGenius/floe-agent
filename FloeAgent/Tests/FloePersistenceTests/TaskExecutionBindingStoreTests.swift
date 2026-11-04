@@ -26,6 +26,42 @@ import Testing
 struct TaskExecutionBindingStoreTests: Sendable {
     private static let baseDate = Date(timeIntervalSince1970: 1_761_400_000)
 
+    @Test("runtime reset updates resumable pins atomically and retains historical identity")
+    func runtimeResetPinsAndRollback() async throws {
+        for malformed in [false, true] {
+            let database = try await makeDatabase()
+            let conversationID = UUID(), active = UUID(), completed = UUID()
+            try await insertConversation(database, id: conversationID)
+            let original = makeBinding(conversationID, target: .init(environmentID: "linux-project", backend: .linuxVM,
+                operatingSystem: "linux", architecture: "riscv64"))
+            let store = TaskExecutionBindingStore(database: database)
+            _ = try await store.bindInitial(original)
+            try await insertRun(database, id: active, conversationID: conversationID, state: "paused", binding: original)
+            try await insertRun(database, id: completed, conversationID: conversationID, state: "completed", binding: original)
+            try await insertCheckpoint(database, runID: active, conversationID: conversationID,
+                body: malformed ? "invalid JSON" : "{\"kept\":true}")
+            let target = TaskExecutionTarget(environmentID: "linux-project", backend: .linuxVM,
+                operatingSystem: "linux", architecture: "arm64", runtimeGeneration: "reset-complete")
+            var failed = false
+            do {
+                let next = try await store.refreshResetLinuxBinding(original, target: target)
+                #expect(!malformed)
+                #expect(next.generation == 2 && next.target == target)
+            } catch { failed = true }
+            #expect(failed == malformed)
+            let binding = try await store.binding(conversationID: conversationID)
+            #expect(binding?.target == (malformed ? original.target : target))
+            let pins = try await database.reader { db in
+                try Row.fetchAll(db, sql: "SELECT id,execution_binding_json FROM runs WHERE conversation_id=?", arguments: [conversationID.uuidString])
+                    .map { row in (row["id"] as String, row["execution_binding_json"] as String) }
+            }
+            for (id, body) in pins {
+                let pin = try TaskExecutionBinding.decoded(body)
+                #expect(pin.target == (id == completed.uuidString || malformed ? original.target : target))
+            }
+        }
+    }
+
     // MARK: - Fixtures
 
     private func makeDatabase() async throws -> DatabaseManager {

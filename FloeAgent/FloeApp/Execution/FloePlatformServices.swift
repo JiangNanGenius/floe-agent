@@ -16,7 +16,7 @@ import AVFoundation
 final class FloePlatformServices: @unchecked Sendable {
     static let shared = FloePlatformServices()
     // Bump only when bundled runtime ABI/layer compatibility changes, never for an App build.
-    static let environmentBaseRevision = "ios-v1-cpython313-node18204-wasi1"
+    static let environmentBaseRevision = "linux-arm64-debian13-resident-v1"
 
     private let lock = NSLock()
     private var registry: EnvironmentRegistry?
@@ -601,6 +601,67 @@ final class FloePlatformServices: @unchecked Sendable {
         )
     }
 
+    func redownloadLinuxImage(imageID: String) async throws {
+        _ = try await prepareLinuxImage(imageID: imageID, cancellation: CancellationToken(),
+            onProgress: { _, _ in }, forceDownload: true)
+    }
+
+    func stopSharedLinuxRuntime() async throws {
+        guard let guests = currentLinuxCommandService() as? any LinuxGuestControlling else {
+            throw FloeError.invalidConfiguration(String(localized: "execution.runtime_reset.unavailable"))
+        }
+        _ = try await EnvironmentPackageJobs.shared.runShared(id: "linux-shared-stop",
+            title: String(localized: "execution.shared.stopping"), cancellation: CancellationToken()) { _, _ in
+            let ids = await guests.runtimeStates().map(\.environmentID)
+            await guests.stopSharedGuest()
+            guard await guests.runtimeStates().allSatisfy({ !$0.running }) else {
+                throw FloeError.validationFailed(String(localized: "execution.shared.stop_failed"))
+            }
+            for id in ids {
+                await LinuxPortForwardCenter.shared.guestStopped(environmentID: id)
+                await self.reportLinuxRuntimeEndedIfStopped(guests, environmentID: id)
+            }
+            return String(localized: "execution.shared.stopped")
+        }
+    }
+
+    /// Service-owned restore: the registry fences all new guest work while
+    /// existing lifecycle hooks cancel/join workers. User project folders,
+    /// chat storage and installed Skill records are outside these layers.
+    func restoreLinuxInitialState() async throws {
+        guard let registry = lock.withLock({ registry }),
+              let lifecycle = lock.withLock({ lifecycle }),
+              let guests = currentLinuxCommandService() as? any LinuxGuestControlling else {
+            throw FloeError.invalidConfiguration(String(localized: "execution.runtime_reset.unavailable"))
+        }
+        _ = try await EnvironmentPackageJobs.shared.runShared(id: "linux-runtime-reset",
+            title: String(localized: "execution.runtime_reset.progress"), cancellation: CancellationToken()) { _, cancellation in
+            let resetID = UUID().uuidString
+            let receipt = try await guests.restoreInitialState(imageID: LinuxGuestImageDistributionCatalog.defaultImageID) {
+                let records = try await registry.beginRuntimeReset(id: resetID)
+                // Descendants release their work before their project/shared
+                // dependencies are replaced. The durable fences already cover all.
+                let order = records.sorted { first, second in
+                    func rank(_ value: ContainerKind) -> Int { value == .session ? 0 : value == .project ? 1 : 2 }
+                    return rank(first.kind) < rank(second.kind)
+                }
+                for record in order {
+                    try cancellation.throwIfCancelled()
+                    try await lifecycle.resetDependencies(containerID: record.id, resetID: resetID)
+                }
+            }
+            // Once the physical swap committed, finish the atomic metadata
+            // publication even if the initiating view has gone away.
+            try await registry.finishRuntimeReset(id: resetID)
+            for id in receipt.environmentIDs {
+                await LinuxPortForwardCenter.shared.guestStopped(environmentID: id)
+                await self.reportLinuxRuntimeEndedIfStopped(guests, environmentID: id)
+            }
+            StorageMutationHooks.invalidate(.environmentChanged)
+            return String(localized: "execution.runtime_reset.complete")
+        }
+    }
+
     /// SMP capability PROVEN by the verified image manifest for `id`, from
     /// the Runtime v2 verified store — never the engine's capability query and
     /// never a loose manifest claim. False when the image is missing,
@@ -892,19 +953,9 @@ final class FloePlatformServices: @unchecked Sendable {
         guard await ensureLinuxImageService() else {
             throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
         }
-        // Resolve the image this environment actually boots: its pinned
-        // template base when one exists, otherwise the shared default. A
-        // private/pinned base is never silently substituted for the default
-        // (or vice versa): the id comes from the registry probe, never user
-        // text or an offered URL.
-        let resolvedImageID: String
-        if let environmentID,
-           let pinned = await linuxPinnedImageSource.baseImageID(for: environmentID),
-           !pinned.isEmpty {
-            resolvedImageID = pinned
-        } else {
-            resolvedImageID = LinuxGuestImageDistributionCatalog.defaultImageID
-        }
+        // One resident ARM64 base serves every project. Legacy template pins
+        // cannot trigger a RISC-V download after the architecture cutover.
+        let resolvedImageID = LinuxGuestImageDistributionCatalog.defaultImageID
         try cancellation.throwIfCancelled()
         try Task.checkCancellation()
         // Fast path: a verified installed image is answered before any task
@@ -1004,7 +1055,8 @@ final class FloePlatformServices: @unchecked Sendable {
         imageID: String,
         cancellation: CancellationToken,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void,
-        activityID: UUID? = nil
+        activityID: UUID? = nil,
+        forceDownload: Bool = false
     ) async throws -> String {
         let jobID = "linux-image:" + imageID
         // Register this waiter BEFORE any awaits: a settings-level global
@@ -1017,7 +1069,7 @@ final class FloePlatformServices: @unchecked Sendable {
             throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
         }
         try cancellation.throwIfCancelled()
-        if let current = try await linuxImageStatusChecked(
+        if !forceDownload, let current = try await linuxImageStatusChecked(
             id: imageID, isCancelled: { cancellation.isCancelled || Task.isCancelled }
         ), current.installed && current.verificationIssue == nil {
             return "Linux image \(imageID) is already installed"
@@ -1083,12 +1135,12 @@ final class FloePlatformServices: @unchecked Sendable {
                 // A coalesced caller may have repaired the image while this
                 // job was queued: re-check the real bytes under the job. The
                 // check honours this job's cancel token.
-                if let current = try await self.linuxImageStatusChecked(
+                if !forceDownload, let current = try await self.linuxImageStatusChecked(
                     id: imageID, isCancelled: cancelCheck
                 ), current.installed && current.verificationIssue == nil {
                     return "Linux image \(imageID) is already installed"
                 }
-                if let repaired = try await self.reconstructLinuxImageIfRebuildable(
+                if !forceDownload, let repaired = try await self.reconstructLinuxImageIfRebuildable(
                     imageID: imageID, cancellation: jobCancellation, reportPhase: reportPhase
                 ) {
                     return repaired
@@ -1098,6 +1150,7 @@ final class FloePlatformServices: @unchecked Sendable {
                     image = try await images.installTrustedImage(
                         id: imageID,
                         downloader: LinuxGuestImageHTTPDownloader(),
+                        forceDownload: forceDownload,
                         onProgress: reportProgress,
                         onPhase: reportPhase,
                         isCancelled: { jobCancellation.isCancelled || Task.isCancelled }

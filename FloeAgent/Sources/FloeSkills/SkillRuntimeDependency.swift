@@ -1,7 +1,7 @@
 // FloeSkills — managed runtime component descriptor v1 (strict, fail-closed).
 //
 // Frozen contract of the Skill Hub "runtime component" channel (currently the
-// allowlisted `impeccable-engine` RISC-V Linux binary). This file owns the
+// allowlisted `impeccable-engine` ARM64 Linux binary). This file owns the
 // strict decoding gate and the structural ELF gate for that artifact.
 //
 // Trust rules (descriptor is DATA, never authority):
@@ -111,9 +111,9 @@ public enum SkillRuntimeDependency {
 
     public static let frozenSchemaVersion = 1
     public static let frozenTargetOS = "linux"
-    public static let frozenTargetArch = "riscv64"
-    public static let frozenTargetTriple = "riscv64gc-unknown-linux-musl"
-    public static let frozenTargetFormat = "elf64-little-riscv-exec-static"
+    public static let frozenTargetArch = "arm64"
+    public static let frozenTargetTriple = "aarch64-unknown-linux-musl"
+    public static let frozenTargetFormat = "elf64-little-aarch64-exec-static"
     public static let frozenEngineFileName = "floe-impeccable"
     public static let captureContractName = "floe.impeccable.snapshot"
 
@@ -271,11 +271,12 @@ public enum SkillRuntimeDependency {
     // MARK: - Static ELF gate
 
     /// Structural gate for the allowlisted artifact: ELF64 little-endian,
-    /// RISC-V (`e_machine == 243`), `ET_EXEC`, bounded program-header table
+    /// AArch64 (`e_machine == 183`), `ET_EXEC`, bounded program-header table
     /// and NO `PT_INTERP` (fully static, no dynamic loader dependency).
     /// This is a shape check for the explicitly allowlisted component, never
-    /// a general "any executable" bypass.
-    public static func verifyStaticRISCVExecELF(_ bytes: Data) throws {
+    /// a general "any executable" bypass. A legacy RISC-V (`e_machine == 243`)
+    /// artifact can never pass this gate.
+    public static func verifyStaticAArch64ExecELF(_ bytes: Data) throws {
         struct ELFValidation: Error, LocalizedError {
             let reason: String
             var errorDescription: String? { reason }
@@ -303,7 +304,7 @@ public enum SkillRuntimeDependency {
         }
         guard let values else { throw reject("missing ELF magic / class / endianness / version") }
         guard values.type == 2 else { throw reject("e_type is \(values.type), expected 2 (ET_EXEC)") }
-        guard values.machine == 243 else { throw reject("e_machine is \(values.machine), expected 243 (EM_RISCV)") }
+        guard values.machine == 183 else { throw reject("e_machine is \(values.machine), expected 183 (EM_AARCH64)") }
         guard values.version == 1 else { throw reject("e_version is not EV_CURRENT") }
         let phentsize = Int(values.phentsize)
         let phnum = Int(values.phnum)

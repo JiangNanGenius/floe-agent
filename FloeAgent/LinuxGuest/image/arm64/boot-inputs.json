@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "architecture": "arm64",
+  "oci": "docker.io/library/debian@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4",
+  "busybox": {
+    "url": "https://snapshot.debian.org/file/46f11bd08b89588cbf6199dd82ab637a6efcf08d",
+    "packageSHA256": "6d144e5012d47ec3a6f2102ba6fac644ad34c989373fed30c1bb7264f5cd3616",
+    "binarySHA256": "bc338600c18b317bcd0d958c1c64e7b374f3df6e63e2b0306a51397164e62f54",
+    "source": "busybox 1:1.37.0-6",
+    "builtUsing": "glibc 2.41-12+deb13u3"
+  },
+  "firmware": {
+    "url": "https://deb.debian.org/debian/pool/main/e/edk2/qemu-efi-aarch64_2025.02-8+deb13u1_all.deb",
+    "packageSHA256": "a00b2411a79c8aeafd95a7c868ac3cd1aab592f1af9fff965f02d81a625276ed",
+    "binarySHA256": "86493b7dc94bb917347116c600e7e94c12ee9b295aef990bed00a101237e0d69"
+  },
+  "kernel": {
+    "url": "https://deb.debian.org/debian/dists/trixie/main/installer-arm64/current/images/netboot/debian-installer/arm64/linux",
+    "sha256": "9c37ace54ef7e1919411fd912e9f34d6982ddd7f4c8ef3c8aee56f4c4d70db67",
+    "source": "linux 6.12.107-1"
+  },
+  "kernelModules": {
+    "url": "https://deb.debian.org/debian-security/pool/updates/main/l/linux-signed-arm64/linux-image-6.12.107+deb13-arm64_6.12.107-1_arm64.deb",
+    "packageSHA256": "20c92f3f97dd466e0400a6fcb792bde85af842fbb5e8b471370065e3de9d9fc9"
+  },
+  "modules": [
+    {
+      "name": "lib/modules/00-virtio_mmio.ko",
+      "sha256": "1b99584431392b5201ce0334cf0209390aea3f54e8ca23254b5b89f7aaf7c8f5"
+    },
+    {
+      "name": "lib/modules/01-virtio_blk.ko",
+      "sha256": "e20a5d9facf58c81ad3d45fd89e3248b9a5083c26a20ddaddd88d443066012bb"
+    },
+    {
+      "name": "lib/modules/02-crc32c_generic.ko",
+      "sha256": "413e44e7566d5d49bddde454f31fd5f9b17ba4602482a8a5f3ca4eef78689e73"
+    },
+    {
+      "name": "lib/modules/03-crc16.ko",
+      "sha256": "845f60b94052cbfa534c92e23944741d7bd8e78c66f346fded17aa583122d86e"
+    },
+    {
+      "name": "lib/modules/04-mbcache.ko",
+      "sha256": "e5eadc3e426f64fdc742dc51330875268c531cc8f0a539bb1dd573aca23a4e08"
+    },
+    {
+      "name": "lib/modules/05-jbd2.ko",
+      "sha256": "9fc7f1be231a7655788949079e4b3f4d82c7fd43083d20545651dfb671b2729c"
+    },
+    {
+      "name": "lib/modules/06-ext4.ko",
+      "sha256": "bbc5a04c06a86ce8a1a13305a52b34e329d1fc0af5af66317fd3ba1eedda1b9d"
+    },
+    {
+      "name": "lib/modules/07-virtio-rng.ko",
+      "sha256": "cc1ce9ccf7a61db7a459b476e7471c192ebec5a0484fc3fef8d103648a4dd33d"
+    },
+    {
+      "name": "lib/modules/10-failover.ko",
+      "sha256": "175fc4f616c841f61a5661094d1309130567506ad2d2c2277c38187112b70f3e"
+    },
+    {
+      "name": "lib/modules/11-net_failover.ko",
+      "sha256": "027b08dc6a7513a4206ad923c9d9fccaf7cb947bcdbfb0a788da7b1fb879644a"
+    },
+    {
+      "name": "lib/modules/12-virtio_net.ko",
+      "sha256": "0bb5322acbf82c08bef46f0ee9c7dcc8de4dac1cc7276bd536942deb4b1bd2e3"
+    },
+    {
+      "name": "lib/modules/20-netfs.ko",
+      "sha256": "3c331497b1e30c9665027296d88e810dc4a8b5ea55dd54cc6c5cd33b7c457264"
+    },
+    {
+      "name": "lib/modules/21-9pnet.ko",
+      "sha256": "25555ed3776007e22f0fd7f4a64f87f6385d15eafb7301fc6b8d15280901557f"
+    },
+    {
+      "name": "lib/modules/22-9p.ko",
+      "sha256": "83f6fd4c7b39ec1503be4fc3474cf916fe7b178fb490150978cb542538a4e900"
+    },
+    {
+      "name": "lib/modules/23-9pnet_virtio.ko",
+      "sha256": "e1380b8fb62b3f6f00d9dc43c8099b6f1708ff5171d08c84a83d4734310370bc"
+    },
+    {
+      "name": "lib/modules/24-overlay.ko",
+      "sha256": "59e8538d3afec61e831af1c49237dcedfb3dde045bc77711f7f93d35052eba7e"
+    }
+  ]
+}

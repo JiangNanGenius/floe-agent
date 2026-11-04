@@ -1,5 +1,8 @@
 import Foundation
 import FloeCore
+#if canImport(Darwin)
+import Darwin
+#endif
 
 /// Persistent registry of containers. JSON-backed for the first layer format;
 /// the schema is versioned so a later SQLite migration can adopt it.
@@ -155,12 +158,19 @@ public actor EnvironmentRegistry {
             throw FloeError.validationFailed("Migration path escapes environment storage")
         }
         var cursor = candidate
-        while cursor != base {
+        // URL equality also compares the directory hint. A caller-created
+        // folder URL can differ from its parent even for the same path.
+        // Compare filesystem paths and require progress to keep this bounded.
+        while cursor.path != base.path {
             if let attributes = try? fileManager.attributesOfItem(atPath: cursor.path),
                attributes[.type] as? FileAttributeType == .typeSymbolicLink {
                 throw FloeError.validationFailed("Migration metadata must not be a symbolic link")
             }
-            cursor.deleteLastPathComponent()
+            let parent = cursor.deletingLastPathComponent()
+            guard parent.path != cursor.path else {
+                throw FloeError.validationFailed("Migration path escapes environment storage")
+            }
+            cursor = parent
         }
     }
 
@@ -660,6 +670,9 @@ public actor EnvironmentRegistry {
     @discardableResult
     public func remove(id: String) throws -> ContainerRecord? {
         try prepare()
+        guard records[id]?.pendingRuntimeResetID == nil else {
+            throw FloeError.validationFailed("Finish restoring the runtime before removing this environment")
+        }
         // Validate the mapping before changing the record; unreadable or
         // unknown data must not be discarded during environment cleanup.
         let mappingURL = roots.rootURL.appendingPathComponent("workspace-containers.json")
@@ -733,6 +746,7 @@ public actor EnvironmentRegistry {
     public func setExecutionBackend(id: String, backend: EnvironmentExecutionBackend?) throws {
         try prepare()
         guard var record = records[id] else { throw FloeError.notFound("Execution environment \(id)") }
+        guard record.pendingRuntimeResetID == nil else { throw FloeError.validationFailed("Finish restoring the runtime before changing its execution location") }
         record.executionBackend = backend
         try saveRecord(record)
     }
@@ -759,10 +773,105 @@ public actor EnvironmentRegistry {
 
     public func clearRebuild(id: String) throws {
         guard var record = records[id] else { return }
+        guard record.pendingRuntimeResetID == nil else {
+            throw FloeError.validationFailed("Runtime restoration is incomplete. Retry restoring the initial state.")
+        }
         record.requiresRebuild = false
         record.rebuildReason = nil
         record.baseRevision = baseRevision
         try saveRecord(record)
+    }
+
+    /// Persist every admission fence before stopping workers or changing any
+    /// dependency files. A crash leaves these records stopped and retryable.
+    public func beginRuntimeReset(id resetID: String) throws -> [ContainerRecord] {
+        try prepare()
+        guard UUID(uuidString: resetID) != nil else { throw FloeError.validationFailed("Invalid runtime reset identity") }
+        let selected = records.values.filter {
+            $0.effectiveExecutionBackend == .linuxVM && $0.kind != .template
+        }
+        guard !selected.contains(where: { $0.state == .deleting }) else {
+            throw FloeError.validationFailed("An environment is being removed. Retry when it finishes.")
+        }
+        let previous = records
+        for var record in selected {
+            if record.pendingRuntimeResetID == nil { record.runtimeResetRestoreState = record.state }
+            record.state = .stopped
+            record.pendingRuntimeResetID = resetID
+            record.requiresRebuild = true
+            record.rebuildReason = "Runtime restoration is incomplete. Retry restoring the initial state."
+            records[record.id] = record
+        }
+        do { try persist() } catch { records = previous; throw error }
+        return Array(selected)
+    }
+
+    /// Replaces one App-managed dependency layer; project folders are separate
+    /// references and are never copied, removed or traversed by this operation.
+    public func resetManagedLayer(id: String, resetID: String) throws -> [String] {
+        guard let record = records[id], record.state == .stopped,
+              record.pendingRuntimeResetID == resetID,
+              record.effectiveExecutionBackend == .linuxVM, record.kind != .template else {
+            throw FloeError.validationFailed("The environment is not owned by this reset")
+        }
+        let current = roots.layerURL(id: record.id, kind: record.kind)
+        try validateMigrationPath(current)
+        let canonicalCurrent = current.resolvingSymlinksInPath().standardizedFileURL.path
+        for project in records.values where project.kind == .project {
+            if let workspace = try workspaceRoot(for: project.id),
+               workspace.path == canonicalCurrent || workspace.path.hasPrefix(canonicalCurrent + "/") {
+                throw FloeError.validationFailed("Project files are inside this dependency layer; existing files were retained")
+            }
+        }
+        let oldReferences = (try? LayerManifest.loadChecked(from: current))?.casRefs ?? []
+        let fresh = roots.trashURL.appendingPathComponent("reset-" + UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: fresh, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: fresh) }
+        try roots.materializeContainerLayout(at: fresh)
+        let kind: LayerKind = record.kind == .session ? .session : record.kind == .project ? .project : .shared
+        try LayerManifest(id: id, kind: kind, baseRevision: baseRevision).write(to: fresh)
+        try Task.checkCancellation()
+        if fileManager.fileExists(atPath: current.path) {
+            #if canImport(Darwin)
+            let result = fresh.path.withCString { first in
+                current.path.withCString { second in
+                    renameatx_np(AT_FDCWD, first, AT_FDCWD, second, UInt32(RENAME_SWAP))
+                }
+            }
+            guard result == 0 else { throw FloeError.validationFailed("The dependency layer could not be restored; existing data was retained") }
+            #else
+            throw FloeError.validationFailed("Atomic dependency-layer replacement is unavailable")
+            #endif
+        } else {
+            try fileManager.createDirectory(at: current.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fileManager.moveItem(at: fresh, to: current)
+        }
+        return oldReferences
+    }
+
+    /// Publish usability only after every host layer and the physical guest
+    /// have been restored successfully. One atomic registry write clears all
+    /// matching fences; a partial failure never reactivates a subset.
+    public func finishRuntimeReset(id resetID: String) throws {
+        let pending = records
+        let selected = records.values.filter { $0.pendingRuntimeResetID == resetID }
+        guard selected.allSatisfy({ $0.state == .stopped }) else {
+            throw FloeError.validationFailed("The runtime reset ownership changed")
+        }
+        for var record in selected {
+            record.baseRevision = baseRevision
+            record.requiresRebuild = false; record.rebuildReason = nil
+            record.pendingRuntimeResetID = nil
+            record.templateID = nil; record.templateVersion = nil; record.templateDigest = nil
+            record.layerFormat = ContainerRecord.currentLayerFormat
+            record.packageCount = 0; record.bytes = 0
+            record.runtimeGeneration = UUID().uuidString.lowercased()
+            record.operatingSystem = "linux"; record.architecture = "arm64"
+            record.state = record.runtimeResetRestoreState == .active ? .active : .stopped
+            record.runtimeResetRestoreState = nil
+            records[record.id] = record
+        }
+        do { try persist() } catch { records = pending; throw error }
     }
 
     // MARK: - Layer stack resolution

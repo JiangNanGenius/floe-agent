@@ -50,6 +50,24 @@ struct ExecutionEnvironmentView: View {
     /// owner's session table (never inferred from the image or the quota).
     /// nil while stopped or when the service cannot answer.
     @State private var guestVCPUs: Int?
+    @ObservedObject private var packageJobs = EnvironmentPackageJobs.shared
+    @State private var runtimeRecovery: RuntimeRecovery?
+    @State private var runtimeRecoveryNotice: String?
+    @State private var sharedConfiguration: LinuxGuestLifecycleConfig?
+    @State private var sharedCPUs = 2
+    @State private var sharedMemoryMB = 512
+    @State private var sharedRuntimeRunning = false
+    @State private var sharedRunningIDs: Set<String> = []
+
+    private enum RuntimeRecovery: Equatable {
+        case restore, redownload, stopShared
+        var titleKey: String {
+            switch self { case .restore: "execution.runtime_reset.title"; case .redownload: "execution.runtime_redownload.title"; case .stopShared: "execution.shared.stop" }
+        }
+        var messageKey: String {
+            switch self { case .restore: "execution.runtime_reset.confirm"; case .redownload: "execution.runtime_redownload.confirm"; case .stopShared: "execution.shared.stop_confirm" }
+        }
+    }
 
     var body: some View {
         Form {
@@ -63,6 +81,29 @@ struct ExecutionEnvironmentView: View {
             }
             Section("settings.exec.linux.section") {
                 linuxComponentSection
+            }
+
+            if sharedConfiguration != nil {
+                Section {
+                    Picker("execution.shared.cpus", selection: $sharedCPUs) {
+                        ForEach(1...3, id: \.self) { Text("\($0)").tag($0) }
+                    }.disabled(sharedRuntimeRunning)
+                    Picker("execution.shared.memory", selection: $sharedMemoryMB) {
+                        ForEach([256, 512, 768, 1024], id: \.self) { value in
+                            Text(value == 1024 ? "1 GB" : "\(value) MB").tag(value)
+                        }
+                    }.disabled(sharedRuntimeRunning)
+                    if sharedRuntimeRunning {
+                        LabeledContent("execution.shared.projects", value: String(sharedRunningIDs.count))
+                        Button("execution.shared.stop", role: .destructive) { runtimeRecovery = .stopShared }
+                    }
+                    if sharedConfiguration != .init(vcpus: sharedCPUs, memoryMB: sharedMemoryMB) {
+                        Button("execution.shared.save") { Task { await saveSharedConfiguration() } }
+                            .disabled(linuxBusy || sharedRuntimeRunning)
+                    }
+                } header: { Text("execution.shared.title") }
+                  footer: { Text(sharedRuntimeRunning ? "execution.shared.stop_first" : "execution.shared.detail") }
+                  .disabled(linuxBusy)
             }
 
             if let environmentID = linuxEnvironmentID, linuxGuestStatus?.running == true {
@@ -138,6 +179,18 @@ struct ExecutionEnvironmentView: View {
                 stopEnvironmentID = nil
             }
         } message: { Text(stopImpact) }
+        .confirmationDialog(
+            String(localized: String.LocalizationValue(runtimeRecovery?.titleKey ?? "execution.runtime_reset.title")),
+            isPresented: Binding(get: { runtimeRecovery != nil }, set: { if !$0 { runtimeRecovery = nil } }),
+            titleVisibility: .visible, presenting: runtimeRecovery
+        ) { action in
+            Button(String(localized: String.LocalizationValue(action.titleKey)), role: action != .redownload ? .destructive : nil) {
+                runtimeRecovery = nil
+                Task { await performRuntimeRecovery(action) }
+            }
+        } message: { action in
+            Text(String(localized: String.LocalizationValue(action.messageKey)))
+        }
         .navigationTitle(FloeL10n.l("settings.section.execution"))
         .task {
             async let settings: Void = center.load()
@@ -295,9 +348,20 @@ struct ExecutionEnvironmentView: View {
         if let model = linuxImageModel {
             LinuxImageInstallCard(
                 model: model,
-                onInstalled: { await startLinuxEnvironment() },
-                allowsManualStart: false
+                allowsManualStart: false,
+                embeddedInForm: true
             )
+        }
+        if linuxImageStatus?.installed == true {
+            Menu {
+                Button("execution.runtime_reset.title", systemImage: "arrow.counterclockwise", role: .destructive) {
+                    runtimeRecovery = .restore
+                }
+                Button("execution.runtime_redownload.title", systemImage: "arrow.down.circle") {
+                    runtimeRecovery = .redownload
+                }
+            } label: { Label("execution.runtime.manage", systemImage: "ellipsis.circle") }
+            .disabled(linuxBusy || linuxImageModel?.running == true || packageJobs.running.contains("linux-runtime-reset"))
         }
         if let environmentID = linuxEnvironmentID, let status = linuxGuestStatus, status.running {
             LabeledContent("environment.backend.status", value: String(localized: "environment.backend.status.running"))
@@ -349,13 +413,49 @@ struct ExecutionEnvironmentView: View {
             }
             .disabled(linuxBusy)
         }
-        if linuxBusy { ProgressView("environment.backend.checking") }
+        if packageJobs.running.contains("linux-runtime-reset") {
+            ProgressView("execution.runtime_reset.progress")
+        } else if linuxBusy { ProgressView("environment.backend.checking") }
+        if let runtimeRecoveryNotice {
+            Label(runtimeRecoveryNotice, systemImage: "checkmark.circle")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
         if let linuxError {
             Label(linuxError, systemImage: "exclamationmark.triangle")
                 .font(.caption)
                 .foregroundStyle(FloeTheme.destructive)
                 .textSelection(.enabled)
         }
+    }
+
+    @MainActor private func performRuntimeRecovery(_ action: RuntimeRecovery) async {
+        guard !linuxBusy else { return }
+        linuxBusy = true; linuxError = nil; runtimeRecoveryNotice = nil
+        defer { linuxBusy = false }
+        do {
+            switch action {
+            case .restore:
+                try await FloePlatformServices.shared.restoreLinuxInitialState()
+                runtimeRecoveryNotice = String(localized: "execution.runtime_reset.complete")
+            case .redownload:
+                try await FloePlatformServices.shared.redownloadLinuxImage(imageID: LinuxGuestImageDistributionCatalog.defaultImageID)
+                runtimeRecoveryNotice = String(localized: "execution.runtime_redownload.complete")
+            case .stopShared:
+                try await FloePlatformServices.shared.stopSharedLinuxRuntime()
+                runtimeRecoveryNotice = String(localized: "execution.shared.stopped")
+            }
+        } catch { linuxError = error.localizedDescription }
+        await refreshLinux(force: true)
+    }
+
+    @MainActor private func saveSharedConfiguration() async {
+        guard !linuxBusy, let service = center.environment.linuxGuestService else { return }
+        linuxBusy = true; linuxError = nil
+        defer { linuxBusy = false }
+        do {
+            try await service.configureSharedGuest(.init(vcpus: sharedCPUs, memoryMB: sharedMemoryMB))
+            sharedConfiguration = await service.sharedGuestConfiguration()
+        } catch { linuxError = error.localizedDescription }
     }
 
     /// The honest per-release core ceiling for a running Linux environment.
@@ -397,6 +497,13 @@ struct ExecutionEnvironmentView: View {
         await linuxImageModel?.probeOnce()
         linuxImageStatus = await FloePlatformServices.shared.linuxImageStatus(id: imageID, force: force)
         linuxUpdateNotice = await FloePlatformServices.shared.linuxComponentUpdateNeeded(id: imageID)
+        if let service = center.environment.linuxGuestService {
+            sharedConfiguration = await service.sharedGuestConfiguration()
+            sharedCPUs = sharedConfiguration?.vcpus ?? 2
+            sharedMemoryMB = sharedConfiguration?.memoryMB ?? 512
+            sharedRunningIDs = Set(await service.runtimeStates().filter(\.running).map(\.environmentID))
+            sharedRuntimeRunning = !sharedRunningIDs.isEmpty
+        }
         guard let reports = try? await FloePlatformServices.shared.environmentReports() else { return }
         let linuxReports = reports.filter {
             $0.record.effectiveExecutionBackend == .linuxVM && $0.record.state != .deleting
@@ -404,7 +511,8 @@ struct ExecutionEnvironmentView: View {
         // A notification deep link focuses its own environment; otherwise the
         // first Linux environment is the only honest choice (never a temporary
         // directory or a native fallback).
-        let linux = linuxReports.first { $0.id == initialEnvironmentID } ?? linuxReports.first
+        let linux = linuxReports.first { $0.id == initialEnvironmentID }
+            ?? linuxReports.first { sharedRunningIDs.contains($0.id) } ?? linuxReports.first
         linuxEnvironmentID = linux?.id
         if let name = linux?.record.name, !name.isEmpty {
             linuxEnvironmentTitle = name

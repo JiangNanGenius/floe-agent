@@ -1,5 +1,8 @@
 import Foundation
 import FloeCore
+#if canImport(Darwin)
+import Darwin
+#endif
 
 /// Production session seam: eight independently owned project runners on one
 /// physical ARM64 Linux. The existing registry retains command/PTY/job policy.
@@ -42,6 +45,12 @@ public final class ARM64ResidentGuestSessionFactory: LinuxGuestSessionCreating, 
     }
 
     public func shutdown() async { await resident.shutdown() }
+    public func configureSharedMachine(_ configuration: LinuxGuestLifecycleConfig) async throws {
+        try await resident.configure(configuration)
+    }
+    public func restoreInitialState(image: LinuxGuestImage, imageDirectory: URL) async throws {
+        try await resident.restoreInitialState(image: image, directory: imageDirectory)
+    }
 }
 
 /// A handle never owns the physical machine or a sibling's stream. Closing
@@ -93,6 +102,23 @@ private actor ARM64ResidentGuestOwner {
     private var lifecycleWaiters: [(UUID, CheckedContinuation<Void, Error>)] = []
 
     init(root: URL) { self.root = root }
+
+    func configure(_ configuration: LinuxGuestLifecycleConfig) async throws {
+        guard let cores = configuration.vcpus, (1...3).contains(cores),
+              let memory = configuration.memoryMB, [256, 512, 768, 1024].contains(memory) else {
+            throw LinuxGuestError.invalidConfiguration("Choose 1–3 CPUs and 256–1024 MiB of memory")
+        }
+        try await acquireLifecycle()
+        defer { releaseLifecycle() }
+        guard projects.isEmpty else {
+            throw LinuxGuestError.invalidConfiguration("Stop active projects before changing the shared runtime")
+        }
+        if let machine {
+            guard case .stopped = await machine.stop() else { throw ARM64MachineError.stopTimeout }
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try configuration.save(to: root)
+    }
 
     private func acquireLifecycle(cancellable: Bool = true) async throws {
         if cancellable { try Task.checkCancellation() }
@@ -205,9 +231,12 @@ private actor ARM64ResidentGuestOwner {
         guard let firmware = try asset(.bios, prepared.biosPath), let disk = prepared.diskPath else {
             throw LinuxGuestError.invalidConfiguration("The runtime image is incomplete")
         }
+        var bootArguments = (prepared.cmdline ?? "").split(whereSeparator: \.isWhitespace)
+            .map(String.init).filter { !$0.hasPrefix("maxcpus=") }
+        bootArguments.append("maxcpus=\(requested.vcpus ?? 2)")
         let config = ARM64MachineConfig(firmware: firmware,
             kernel: try asset(.kernel, prepared.kernelPath), initrd: try asset(.initrd, prepared.initrdPath),
-            commandLine: prepared.cmdline, privateWritableDiskPath: disk,
+            commandLine: bootArguments.joined(separator: " "), privateWritableDiskPath: disk,
             ramMiB: requested.memoryMB ?? 512, possibleVCPUs: requested.vcpus ?? 2,
             virtioConsoles: 9, networkEnabled: true)
         let created = try ARM64GuestMachine(ownership: .init(label: "resident"), config: config)
@@ -311,5 +340,45 @@ private actor ARM64ResidentGuestOwner {
         for project in Array(projects.values) { await closeUnlocked(project.lease) }
         do { try await stopPhysicalMachine() }
         catch { FloeLogger(category: .tools).warning("ARM64 machine stop incomplete; disk retained") }
+    }
+
+    func restoreInitialState(image: LinuxGuestImage, directory: URL) async throws {
+        try await acquireLifecycle()
+        defer { releaseLifecycle() }
+        guard projects.isEmpty else { throw LinuxGuestError.guestBusy(environmentID: "shared") }
+        try await stopPhysicalMachine()
+        let fm = FileManager.default
+        let staging = root.appendingPathComponent("reset-" + UUID().uuidString, isDirectory: true)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: staging) }
+        _ = try LinuxGuestRuntimeImagePreparer().prepare(image: image, imageDirectory: directory,
+            environmentID: "resident-arm64", writableDirectory: staging)
+        let fresh = LinuxGuestRuntimeImagePreparer.environmentDiskDirectory(writableDirectory: staging,
+            environmentID: "resident-arm64")
+        let current = LinuxGuestRuntimeImagePreparer.environmentDiskDirectory(writableDirectory: root,
+            environmentID: "resident-arm64")
+        try Task.checkCancellation()
+        if fm.fileExists(atPath: current.path) {
+            guard (try fm.attributesOfItem(atPath: current.path))[.type] as? FileAttributeType == .typeDirectory else {
+                throw LinuxGuestError.invalidConfiguration("The runtime storage is not a managed directory")
+            }
+            #if canImport(Darwin)
+            let swapped = fresh.path.withCString { first in
+                current.path.withCString { second in
+                    renameatx_np(AT_FDCWD, first, AT_FDCWD, second, UInt32(RENAME_SWAP))
+                }
+            }
+            guard swapped == 0 else {
+                throw LinuxGuestError.startFailed("The initial state could not be committed; the current runtime was retained")
+            }
+            #else
+            throw LinuxGuestError.invalidConfiguration("Atomic runtime replacement is unavailable")
+            #endif
+        } else {
+            try fm.createDirectory(at: current.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fm.moveItem(at: fresh, to: current)
+        }
+        // Commit is complete. Deferred cleanup removes only the retired
+        // managed VM directory; no project file or installed Skill is here.
     }
 }

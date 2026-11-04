@@ -20,8 +20,10 @@ extension AppEnvironment {
         case .native: return .appNative(runID: runID)
         case .linuxVM:
             let generation = await linuxGuestService?.runtimeStates().first { $0.environmentID == environmentID && $0.running }?.identity.launchGeneration
+            // The resident local Linux backend is ARM64; this is the verified
+            // guest fact, never the client CPU.
             return SkillRuntimeTarget(runID: runID, environmentID: environmentID, operatingSystem: .linux,
-                architectures: ["riscv64"], backend: .linuxVM, distribution: "debian",
+                architectures: ["arm64"], backend: .linuxVM, distribution: "debian",
                 launchGeneration: generation, isConnected: linuxGuestService != nil, resolution: .resolved)
         case .macBridge:
             guard LocalBridgePlatform.current.supportsMacBridge else { return nil }

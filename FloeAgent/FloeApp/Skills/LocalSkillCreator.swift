@@ -7,6 +7,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
 import FloeSkills
+import FloeTools
 
 @MainActor
 struct LocalSkillCreator: SkillCreating, SkillManaging {
@@ -27,5 +28,11 @@ struct LocalSkillCreator: SkillCreating, SkillManaging {
         try await center.readSkills(id: id, runID: runID, resourceContext: resourceContext)
     }
     func manage(_ request: SkillManageTool.Arguments) async throws -> String { try await center.manageSkill(request) }
+    func manage(_ request: SkillManageTool.Arguments, context: ToolContext) async throws -> String {
+        switch request.action {
+        case .update, .setEnabled, .remove: return try await center.manageSkill(request)
+        default: return try await center.managePackage(request, context: context)
+        }
+    }
 }
 #endif

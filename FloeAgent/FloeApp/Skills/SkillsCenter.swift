@@ -1518,26 +1518,29 @@ final class SkillsCenter: ObservableObject {
     }
 
     func rollbackLatestUpgrade(skill: PersistedSkill) async {
-        await perform {
-            guard !self.packageMutationInProgress else { throw SkillUpgradeError.localConflict }
-            self.packageMutationInProgress = true
-            defer { self.packageMutationInProgress = false }
-            let journals = try self.upgradeJournals().filter { $0.1.oldSkill.id == skill.id && $0.1.phase == "complete" }.sorted { $0.1.createdAt > $1.1.createdAt }
-            guard let (path, journal) = journals.first, skill.rewrittenDigest == journal.newDigest,
-                  let current = try await self.environment.skillStore.all().first(where: { $0.id == skill.id }), current.rewrittenDigest == journal.newDigest
-            else { throw SkillUpgradeError.localConflict }
-            _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest, manifestOverride: Self.manifestOverride(fromJSON: journal.newManifestJSON))
-            try await self.restoreUpgrade(journal, at: path)
-            // Rollback restores the previous immutable package + descriptor
-            // pair; the ownership record re-persists from those exact bytes.
-            // Dependencies the current environments cannot satisfy after the
-            // rollback are reported honestly per requirement at the next
-            // invocation — nothing is removed automatically.
-            if let restored = try? SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(skill.id), expectedDigest: journal.oldSkill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: journal.oldSkill)),
-               restored.files[SkillDependency.packagePath] != nil {
-                _ = await self.dependencyPreparation?.declareInstalledPackage(skillID: skill.id)
-            }
+        await perform { try await self.rollbackUpgradeCore(skill: skill) }
+    }
+
+    private func rollbackUpgradeCore(skill: PersistedSkill) async throws {
+        guard !self.packageMutationInProgress else { throw SkillUpgradeError.localConflict }
+        self.packageMutationInProgress = true
+        defer { self.packageMutationInProgress = false }
+        let journals = try self.upgradeJournals().filter { $0.1.oldSkill.id == skill.id && $0.1.phase == "complete" }.sorted { $0.1.createdAt > $1.1.createdAt }
+        guard let (path, journal) = journals.first, skill.rewrittenDigest == journal.newDigest,
+              let current = try await self.environment.skillStore.all().first(where: { $0.id == skill.id }), current.rewrittenDigest == journal.newDigest
+        else { throw SkillUpgradeError.localConflict }
+        _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest, manifestOverride: Self.manifestOverride(fromJSON: journal.newManifestJSON))
+        try await self.restoreUpgrade(journal, at: path)
+        // Rollback restores the previous immutable package + descriptor
+        // pair; the ownership record re-persists from those exact bytes.
+        // Dependencies the current environments cannot satisfy after the
+        // rollback are reported honestly per requirement at the next
+        // invocation — nothing is removed automatically.
+        if let restored = try? SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(skill.id), expectedDigest: journal.oldSkill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: journal.oldSkill)),
+           restored.files[SkillDependency.packagePath] != nil {
+            _ = await self.dependencyPreparation?.declareInstalledPackage(skillID: skill.id)
         }
+        await load()
     }
 
     private func writeJournal(_ journal: UpgradeJournal, at root: URL) throws {
@@ -3511,6 +3514,59 @@ final class SkillsCenter: ObservableObject {
         return results
     }
 
+    func managePackage(_ request: SkillManageTool.Arguments, context: ToolContext) async throws -> String {
+        try SkillManageTool(manager: LocalSkillCreator(center: self)).validate(request)
+        try context.cancellation.throwIfCancelled()
+        guard canStartUpdateOperation,
+              let skill = try await environment.skillStore.all().first(where: { $0.id == request.id }),
+              skill.rewrittenDigest == request.expectedDigest else { throw SkillStoreConflict.changedOrMissing }
+        var result: [String: Any] = ["id": skill.id]
+        switch request.action {
+        case .checkUpdates:
+            guard updateSource(for: skill) != nil else { throw FloeError.validationFailed("This Skill has no saved update source") }
+            await refreshOfficialCatalog(force: true, applyAutomaticUpdates: false)
+            await refreshCuratedCatalog(force: true)
+            await runUpdateBatch(ids: [skill.id], applying: false)
+        case .updatePackage:
+            // Reviewed Hub updates reuse the current task's existing approval
+            // transaction. External sources use the same conflict-aware updater
+            // as the UI; additional access is reported instead of self-approved.
+            if Self.curatedReceipt(for: skill) != nil,
+               let entry = try await verifiedHubCatalogEntries(context: context).first(where: { $0.id == skill.id }),
+               let publication = entry.provenance?.publicationCommit {
+                let receipt = try await installHubSkill(
+                    SkillHubInstallRequest(id: entry.id, publicationCommit: publication), context: context)
+                result["status"] = receipt.status.rawValue
+            } else {
+                guard updateSource(for: skill) != nil else { throw FloeError.validationFailed("This Skill has no saved update source") }
+                await runUpdateBatch(ids: [skill.id], applying: true)
+            }
+        case .rollback:
+            try await rollbackUpgradeCore(skill: skill)
+            result["status"] = "restored"
+        case .prepareDependencies:
+            guard let dependencyPreparation else { throw FloeError.validationFailed("Dependency preparation is unavailable") }
+            switch await dependencyPreparation.prepareAtInstall(skillID: skill.id, environmentID: context.environmentID,
+                runID: context.runID, cancellation: context.cancellation) {
+            case .ready(let annotation): result["status"] = "ready"; result["note"] = annotation
+            case .refused(let reason): result["status"] = "needsAttention"; result["reason"] = reason
+            case nil: result["status"] = "sharedResourcesPrepared"; result["environmentReady"] = false
+            }
+        default: throw FloeError.validationFailed("Use the instruction or enable/remove operation for this action")
+        }
+        guard let current = try await environment.skillStore.all().first(where: { $0.id == skill.id }) else {
+            throw SkillStoreConflict.changedOrMissing
+        }
+        result["version"] = current.version
+        result["currentDigest"] = current.rewrittenDigest
+        if let update = updateState(for: current) {
+            result["updateStatus"] = String(describing: update.phase)
+            if let error = update.error { result["error"] = error }
+            if let version = update.version { result["availableVersion"] = version }
+        }
+        return String(decoding: try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]), as: UTF8.self)
+    }
+
     func manageSkill(_ request: SkillManageTool.Arguments) async throws -> String {
         try SkillManageTool(manager: LocalSkillCreator(center: self)).validate(request)
         guard !packageMutationInProgress else { throw FloeError.validationFailed("Another skill change is in progress") }
@@ -3529,6 +3585,8 @@ final class SkillsCenter: ObservableObject {
         }
         let packageURL = installationRoot.appendingPathComponent(skill.id, isDirectory: true)
         switch request.action {
+        case .checkUpdates, .updatePackage, .rollback, .prepareDependencies:
+            throw FloeError.validationFailed("This operation requires its current task context")
         case .setEnabled:
             try await environment.skillStore.setEnabled(request.enabled!, id: skill.id, expectedDigest: request.expectedDigest)
         case .remove:

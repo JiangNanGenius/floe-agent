@@ -1,7 +1,7 @@
 // FloeApp — trusted lazy deployment of allowlisted runtime components.
 //
 // The app-side half of the frozen "runtime component" channel (today exactly
-// the allowlisted `impeccable-engine` static RISC-V Linux binary). The chain
+// the allowlisted `impeccable-engine` static ARM64 Linux binary). The chain
 // has four strictly separated states, and none of them is implied by another:
 //
 //   source install — an installed + ENABLED official curated skill whose typed
@@ -201,7 +201,7 @@ enum SkillRuntimeComponentReason {
     static let hubUnavailable = "the trusted Hub artifact could not be downloaded and no verified cache exists"
     static let artifactSizeMismatch = "the downloaded artifact size does not match the descriptor"
     static let artifactDigestMismatch = "the downloaded artifact bytes do not match the descriptor sha256"
-    static let artifactRejected = "the downloaded artifact is not a static RISC-V Linux executable"
+    static let artifactRejected = "the downloaded artifact is not a static ARM64 Linux executable"
     static let existingRootConflict = "the reserved runtime-component root conflicts with existing entries"
     static let stagedPathBlocked = "an existing entry occupies the staged component path and does not match the pinned artifact"
     static let writeFailed = "staging the component into the environment write layer failed"
@@ -1425,7 +1425,7 @@ actor SkillRuntimeComponentCenter {
             throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.artifactDigestMismatch)
         }
         do {
-            try SkillRuntimeDependency.verifyStaticRISCVExecELF(bytes)
+            try SkillRuntimeDependency.verifyStaticAArch64ExecELF(bytes)
         } catch {
             throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.artifactRejected)
         }

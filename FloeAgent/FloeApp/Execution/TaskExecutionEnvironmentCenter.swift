@@ -113,7 +113,7 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
             } else {
                 switch choice.kind {
                 case .linux:
-                    target = .linuxGuest(environmentID: "preview", architecture: "riscv64", isConnected: environment.linuxGuestService != nil)
+                    target = .linuxGuest(environmentID: "preview", architecture: "arm64", isConnected: environment.linuxGuestService != nil)
                 case .mac:
                     target = .macBridge(environmentID: "preview", isConnected: await MacBridgeClient.shared.isConnected())
                 case .ssh(let host):
@@ -157,10 +157,12 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
             throw FloeError.validationFailed(copy("请先完成或取消此任务的迁移。", "Finish or cancel this task’s move before continuing."))
         }
         if let run = try await environment.runStore.run(id: runID), let pin = run.executionBinding {
-            try await validate(pin.target)
-            return pin
+            let current = try await refreshedResetBinding(pin)
+            try await validate(current.target)
+            return current
         }
         if let pin = try await store.binding(conversationID: conversationID) {
+            let pin = try await refreshedResetBinding(pin)
             if let override, override != pin.target.environmentID {
                 throw FloeError.validationFailed(copy("计划与任务的运行位置不同，请先迁移任务。", "The plan and task use different environments. Move the task first."))
             }
@@ -222,7 +224,7 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
         return TaskExecutionTarget(environmentID: record.id, backend: backend,
             remoteHostID: record.remoteHostID, remoteRootPath: record.remoteRootPath,
             operatingSystem: record.operatingSystem ?? (backend == .linuxVM ? "linux" : backend == .macBridge ? "macos" : "unknown"),
-            architecture: record.architecture ?? (backend == .linuxVM ? "riscv64" : backend == .macBridge ? "arm64" : "unknown"),
+            architecture: record.architecture ?? (backend == .linuxVM ? "arm64" : backend == .macBridge ? "arm64" : "unknown"),
             runtimeGeneration: record.runtimeGeneration)
     }
 
@@ -232,6 +234,15 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
               try self.sameIdentity(self.target(record), target) else {
             throw TaskExecutionAvailabilityError(message: copy("原运行位置不可用，请重新连接或迁移任务。", "The saved environment is unavailable. Reconnect or move this task."))
         }
+    }
+
+    private func refreshedResetBinding(_ pin: TaskExecutionBinding) async throws -> TaskExecutionBinding {
+        guard pin.target.backend == .linuxVM,
+              let record = await environment.environmentRegistry.record(id: pin.target.environmentID),
+              record.effectiveExecutionBackend == .linuxVM, !record.requiresRebuild,
+              record.pendingRuntimeResetID == nil, record.architecture == "arm64",
+              record.runtimeGeneration != nil, record.runtimeGeneration != pin.target.runtimeGeneration else { return pin }
+        return try await store.refreshResetLinuxBinding(pin, target: target(record))
     }
 
     private func sameIdentity(_ first: TaskExecutionTarget, _ second: TaskExecutionTarget) -> Bool {
@@ -247,8 +258,15 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
         let record: ContainerRecord
         switch choice.kind {
         case .linux:
-            record = try await registry.ensureSessionContainer(conversationID: conversationID.uuidString,
-                workspaceID: workspaceID, workspaceRootPath: root.path, executionBackend: .linuxVM, forceNew: fresh)
+            if fresh {
+                record = try await registry.ensureSessionContainer(conversationID: conversationID.uuidString,
+                    workspaceID: workspaceID, workspaceRootPath: root.path, executionBackend: .linuxVM, forceNew: true)
+            } else {
+                // Tasks in the same explicitly resolved project reuse its dependency
+                // environment. Task permissions and command cgroups remain separate.
+                record = try await registry.ensureProjectContainer(workspaceID: workspaceID,
+                    workspaceRootPath: root.path, executionBackend: .linuxVM)
+            }
         case .mac:
             guard LocalBridgePlatform.current.supportsMacBridge else {
                 throw FloeError.invalidConfiguration(String(localized: "execution.location.unavailable_on_device"))

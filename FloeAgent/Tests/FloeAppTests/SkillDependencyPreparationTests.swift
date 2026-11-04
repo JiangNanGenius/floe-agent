@@ -11,7 +11,7 @@
 //   * plan binding: an immutable (environmentID, runID)-bound plan pinning
 //     package version + contentDigest + declaration digest;
 //   * target selection: profile architectures are matched against the real
-//     local Linux backend (riscv64, injectable): non-matching profiles never
+//     local Linux backend (arm64, injectable): non-matching profiles never
 //     plan/prefetch/mutate, contradicting exact pins across matching profiles
 //     refuse before any transaction, identical duplicates reuse;
 //   * wheel store: verified bytes persist under the REAL canonical PEP 427
@@ -56,7 +56,7 @@ private func makeTempDirectory(_ label: String) -> URL {
     return url
 }
 
-/// A canonical-shape static ELF64 RISC-V ET_EXEC fixture for the
+/// A canonical-shape static ELF64 AArch64 ET_EXEC fixture for the
 /// runtime-component prefetch gate (same shape the component tests use).
 private func makeELF64Bytes() -> Data {
     var bytes = Data(count: 64 + 56)
@@ -71,26 +71,31 @@ private func makeELF64Bytes() -> Data {
     func put64(_ offset: Int, _ value: UInt64) {
         put32(offset, UInt32(value & 0xFFFFFFFF)); put32(offset + 4, UInt32((value >> 32) & 0xFFFFFFFF))
     }
-    put16(16, 2); put16(18, 243); put32(20, 1)
+    put16(16, 2); put16(18, 183); put32(20, 1)
     put64(32, 64); put16(54, 56); put16(56, 1)
     put32(64, 1) // PT_LOAD
     return bytes
 }
 
-private func makeEngineDescriptorBytes(engine: Data) throws -> Data {
+private func makeEngineDescriptorBytes(engine: Data, targetArch: String = "arm64") throws -> Data {
+    // targetArch is test data only: "arm64" builds the canonical fixture the
+    // frozen gate accepts; "riscv64" rebuilds the historical published target
+    // so legacy-rejection tests can prove old bytes fail closed.
     let version = "0.1.17+floe.1.0.0"
+    let triple = targetArch == "riscv64" ? "riscv64gc-unknown-linux-musl" : "aarch64-unknown-linux-musl"
+    let format = targetArch == "riscv64" ? "elf64-little-riscv-exec-static" : "elf64-little-aarch64-exec-static"
     let object: [String: Any] = [
         "schemaVersion": 1,
         "componentID": "impeccable-engine",
         "componentVersion": version,
         "minimumAppVersion": "1.7.59",
         "target": [
-            "os": "linux", "arch": "riscv64",
-            "triple": "riscv64gc-unknown-linux-musl",
-            "format": "elf64-little-riscv-exec-static"
+            "os": "linux", "arch": targetArch,
+            "triple": triple,
+            "format": format
         ],
         "artifact": [
-            "path": "engines/impeccable/dist/impeccable-\(version)/riscv64gc-unknown-linux-musl/floe-impeccable",
+            "path": "engines/impeccable/dist/impeccable-\(version)/\(triple)/floe-impeccable",
             "size": engine.count,
             "sha256": FloeDigest.sha256Hex(engine)
         ],
@@ -692,7 +697,7 @@ struct SkillDependencyPreparationTests {
 
     @Test func aptCollisionRefusesBeforeAnyTransaction() async throws {
         let json = """
-        {"schemaVersion":1,"profiles":[{"id":"debian","target":{"os":"linux","architectures":["riscv64"]},"requirements":[{"kind":"apt","name":"python3-scipy","version":"1.15.3-1","purpose":"Numeric.","required":true},{"kind":"font","name":"fonts-noto-cjk","version":"1:20240730+repack1-1","purpose":"CJK labels.","required":false}]}]}
+        {"schemaVersion":1,"profiles":[{"id":"debian","target":{"os":"linux","architectures":["arm64"]},"requirements":[{"kind":"apt","name":"python3-scipy","version":"1.15.3-1","purpose":"Numeric.","required":true},{"kind":"font","name":"fonts-noto-cjk","version":"1:20240730+repack1-1","purpose":"CJK labels.","required":false}]}]}
         """
         let harness = makeHarness(requirementsJSON: json)
         harness.operations.setAptInitial(["python3-scipy": "1.11.4-1"])
@@ -854,7 +859,7 @@ struct SkillDependencyPreparationTests {
 
     @Test func runtimeComponentReadinessIsObservedNotForced() async throws {
         let json = """
-        {"schemaVersion":1,"profiles":[{"id":"engine","target":{"os":"linux","architectures":["riscv64"]},"requirements":[{"kind":"runtimeComponent","componentDescriptorPath":"references/engine-dependency.json","purpose":"Engine.","required":true}]}]}
+        {"schemaVersion":1,"profiles":[{"id":"engine","target":{"os":"linux","architectures":["arm64"]},"requirements":[{"kind":"runtimeComponent","componentDescriptorPath":"references/engine-dependency.json","purpose":"Engine.","required":true}]}]}
         """
         let harness = makeHarness(requirementsJSON: json)
         let runID = UUID()
@@ -1035,7 +1040,7 @@ struct SkillDependencyPreparationTests {
         let cacheFile = storeRoot
             .appendingPathComponent("impeccable-engine", isDirectory: true)
             .appendingPathComponent("0.1.17+floe.1.0.0", isDirectory: true)
-            .appendingPathComponent("riscv64gc-unknown-linux-musl", isDirectory: true)
+            .appendingPathComponent("aarch64-unknown-linux-musl", isDirectory: true)
             .appendingPathComponent("floe-impeccable")
         let cached = try Data(floeContentsOf: cacheFile)
         #expect(cached == harness.engine)
@@ -1093,7 +1098,7 @@ struct SkillDependencyPreparationTests {
 
     @Test func prefetchedCacheIsReusedAndReverifiedAcrossRestart() async throws {
         let json = """
-        {"schemaVersion":1,"profiles":[{"id":"engine","target":{"os":"linux","architectures":["riscv64"]},"requirements":[{"kind":"runtimeComponent","componentDescriptorPath":"references/engine-dependency.json","purpose":"Engine.","required":false}]}]}
+        {"schemaVersion":1,"profiles":[{"id":"engine","target":{"os":"linux","architectures":["arm64"]},"requirements":[{"kind":"runtimeComponent","componentDescriptorPath":"references/engine-dependency.json","purpose":"Engine.","required":false}]}]}
         """
         let harness = makeHarness(requirementsJSON: json)
         let storeRoot = makeTempDirectory("component-cache")
@@ -1143,18 +1148,18 @@ struct SkillDependencyPreparationTests {
         #expect(info.contains("Commands without skillID are unchanged"))
     }
 
-    // MARK: - Profile target selection (arm64-only must not mutate riscv64)
+    // MARK: - Profile target selection (riscv64-only must not mutate arm64)
 
     @Test func nonMatchingArchitectureProfileRefusesPlanAndPrefetchHonestly() async throws {
         let json = """
-        {"schemaVersion":1,"profiles":[{"id":"mac","target":{"os":"linux","architectures":["arm64"]},"requirements":[{"kind":"pip","name":"pypdf","version":"5.4.0","purpose":"PDF.","required":true}]}]}
+        {"schemaVersion":1,"profiles":[{"id":"risc","target":{"os":"linux","architectures":["riscv64"]},"requirements":[{"kind":"pip","name":"pypdf","version":"5.4.0","purpose":"PDF.","required":true}]}]}
         """
         let harness = makeHarness(requirementsJSON: json)
         let plan = await harness.center.recordPlan(
             skillID: "dep-skill", environmentID: harness.environmentID, runID: UUID(),
             authority: harness.authorityBox.value
         )
-        guard case .rejected(let reason) = plan else { Issue.record("arm64-only must refuse the plan"); return }
+        guard case .rejected(let reason) = plan else { Issue.record("riscv64-only must refuse the plan"); return }
         #expect(reason.contains("architecture"))
         let invoke = await harness.center.invoke(
             skillID: "dep-skill", environmentID: harness.environmentID, runID: UUID(), cancellation: nil
@@ -1164,7 +1169,7 @@ struct SkillDependencyPreparationTests {
         _ = await harness.center.prepareAtInstall(skillID: "dep-skill", environmentID: nil, runID: nil, cancellation: nil)
         let status = await harness.center.sharedPreparationStatus(skillID: "dep-skill")
         try #require(status != nil)
-        #expect(status!.contains("profile targets arm64, not this Linux backend (riscv64)"))
+        #expect(status!.contains("profile targets riscv64, not this Linux backend (arm64)"))
         #expect(status!.contains("host wheel fetch not wired") == false)
         let counts = harness.operations.counts
         #expect(counts.python == 0 && counts.apt == 0 && counts.npm == 0 && counts.font == 0)
@@ -1172,7 +1177,7 @@ struct SkillDependencyPreparationTests {
 
     @Test func matchingProfilesPrepareAndForeignArchStaysUntouched() async throws {
         let json = """
-        {"schemaVersion":1,"profiles":[{"id":"linux-guest","target":{"os":"linux","architectures":["any"]},"requirements":[{"kind":"pip","name":"pypdf","version":"5.4.0","purpose":"PDF.","required":true}]},{"id":"risc","target":{"os":"linux","architectures":["riscv64"]},"requirements":[{"kind":"apt","name":"hello","version":"2.10-3","purpose":"Smoke binary.","required":true}]},{"id":"mac","target":{"os":"linux","architectures":["arm64"]},"requirements":[{"kind":"npm","name":"typescript","version":"5.9.3","purpose":"Type-check.","required":true}]}]}
+        {"schemaVersion":1,"profiles":[{"id":"linux-guest","target":{"os":"linux","architectures":["any"]},"requirements":[{"kind":"pip","name":"pypdf","version":"5.4.0","purpose":"PDF.","required":true}]},{"id":"arm","target":{"os":"linux","architectures":["arm64"]},"requirements":[{"kind":"apt","name":"hello","version":"2.10-3","purpose":"Smoke binary.","required":true}]},{"id":"risc","target":{"os":"linux","architectures":["riscv64"]},"requirements":[{"kind":"npm","name":"typescript","version":"5.9.3","purpose":"Type-check.","required":true}]}]}
         """
         let harness = makeHarness(requirementsJSON: json)
         let runID = UUID()
@@ -1183,7 +1188,7 @@ struct SkillDependencyPreparationTests {
         let outcome = await harness.center.invoke(
             skillID: "dep-skill", environmentID: harness.environmentID, runID: runID, cancellation: nil
         )
-        // The arm64-only npm requirement would make this required and
+        // The riscv64-only npm requirement would make this required and
         // un-preparable; the correct behavior is that it never participates.
         guard case .ready(let annotation) = outcome else { Issue.record("expected ready: \(outcome)"); return }
         #expect(annotation.contains("pip:pypdf@5.4.0"))
@@ -1194,7 +1199,7 @@ struct SkillDependencyPreparationTests {
 
     @Test func overlappingMatchingProfilesContradictingPinsRefuseBeforeMutation() async throws {
         let json = """
-        {"schemaVersion":1,"profiles":[{"id":"a","target":{"os":"linux","architectures":["any"]},"requirements":[{"kind":"apt","name":"python3-scipy","version":"1.15.3-1","purpose":"Numeric.","required":true}]},{"id":"b","target":{"os":"linux","architectures":["riscv64"]},"requirements":[{"kind":"apt","name":"python3-scipy","version":"1.16.0-1","purpose":"Numeric.","required":true}]}]}
+        {"schemaVersion":1,"profiles":[{"id":"a","target":{"os":"linux","architectures":["any"]},"requirements":[{"kind":"apt","name":"python3-scipy","version":"1.15.3-1","purpose":"Numeric.","required":true}]},{"id":"b","target":{"os":"linux","architectures":["arm64"]},"requirements":[{"kind":"apt","name":"python3-scipy","version":"1.16.0-1","purpose":"Numeric.","required":true}]}]}
         """
         let harness = makeHarness(requirementsJSON: json)
         let plan = await harness.center.recordPlan(
@@ -1213,7 +1218,7 @@ struct SkillDependencyPreparationTests {
 
     @Test func identicalExactDuplicateAcrossMatchingProfilesReuses() async throws {
         let json = """
-        {"schemaVersion":1,"profiles":[{"id":"a","target":{"os":"linux","architectures":["any"]},"requirements":[{"kind":"pip","name":"pypdf","version":"5.4.0","purpose":"PDF.","required":true}]},{"id":"b","target":{"os":"linux","architectures":["riscv64"]},"requirements":[{"kind":"pip","name":"pypdf","version":"5.4.0","purpose":"PDF.","required":true}]}]}
+        {"schemaVersion":1,"profiles":[{"id":"a","target":{"os":"linux","architectures":["any"]},"requirements":[{"kind":"pip","name":"pypdf","version":"5.4.0","purpose":"PDF.","required":true}]},{"id":"b","target":{"os":"linux","architectures":["arm64"]},"requirements":[{"kind":"pip","name":"pypdf","version":"5.4.0","purpose":"PDF.","required":true}]}]}
         """
         let harness = makeHarness(requirementsJSON: json)
         let runID = UUID()
@@ -1554,7 +1559,7 @@ struct SkillDependencyPreparationTests {
         #expect(status!.contains("transitive closure member of pypdf"))
     }
 
-    // MARK: - Actual target facts (injected; no legacy riscv64 fallback)
+    // MARK: - Actual target facts (injected; no legacy fallback)
 
     private func targetProfileJSON(architectures: [String], requirementKind: String = "pip") -> String {
         let requirement: String
@@ -1750,13 +1755,13 @@ struct SkillDependencyPreparationTests {
         #expect(operations.counts.python == 0)
     }
 
-    @Test func riscvRuntimeComponentIsNotStagedOnArm64Target() async {
+    @Test func foreignArchRuntimeComponentIsNotStagedOnActualTarget() async {
         let operations = FakeOperations()
         let harness = makeHarness(
-            requirementsJSON: targetProfileJSON(architectures: ["arm64"], requirementKind: "runtimeComponent"),
+            requirementsJSON: targetProfileJSON(architectures: ["any"], requirementKind: "runtimeComponent"),
             operations: operations,
             targetProvider: { environmentID, _ in
-                .linuxGuest(environmentID: environmentID, architecture: "arm64", distribution: "debian")
+                .linuxGuest(environmentID: environmentID, architecture: "x86_64", distribution: "debian")
             }
         )
         let plan = await harness.center.recordPlan(
@@ -1766,7 +1771,45 @@ struct SkillDependencyPreparationTests {
         guard case .rejected(let reason) = plan else {
             Issue.record("foreign runtime component must not plan: \(plan)"); return
         }
-        #expect(reason.contains("built for linux riscv64"))
+        #expect(reason.contains("built for linux arm64"))
+        #expect(operations.counts.python == 0 && operations.counts.apt == 0)
+    }
+
+    @Test func legacyRISCVComponentDescriptorRefusesClosedOnARM64Backend() async throws {
+        // A package still embedding the historical RISC-V descriptor fails the
+        // frozen ARM64 descriptor gate at validation: an old RISC artifact can
+        // never pass as ready on the new backend.
+        let operations = FakeOperations()
+        let engine = makeELF64Bytes()
+        let legacyDescriptor = try makeEngineDescriptorBytes(engine: engine, targetArch: "riscv64")
+        let harness = makeHarness(
+            requirementsJSON: targetProfileJSON(architectures: ["arm64"], requirementKind: "runtimeComponent"),
+            operations: operations,
+            targetProvider: { environmentID, _ in
+                .linuxGuest(environmentID: environmentID, architecture: "arm64", distribution: "debian")
+            }
+        )
+        let original = try #require(harness.authorityBox.value)
+        var files = original.packageFiles
+        files["references/engine-dependency.json"] = legacyDescriptor
+        let authority = SkillDependencyAuthority(
+            skillID: original.skillID, packageVersion: original.packageVersion,
+            contentDigest: original.contentDigest, packageSHA256: original.packageSHA256,
+            catalogSHA256: original.catalogSHA256, reviewSHA256: original.reviewSHA256,
+            publicationCommit: original.publicationCommit, feedStatus: original.feedStatus,
+            reviewDecision: original.reviewDecision, feedSignatureKeyID: original.feedSignatureKeyID,
+            reviewKeyID: original.reviewKeyID, hubRepository: original.hubRepository,
+            declarationBytes: original.declarationBytes, declarationSHA256: original.declarationSHA256,
+            packageFiles: files
+        )
+        let plan = await harness.center.recordPlan(
+            skillID: "dep-skill", environmentID: harness.environmentID, runID: UUID(),
+            authority: authority
+        )
+        guard case .rejected(let reason) = plan else {
+            Issue.record("legacy RISC-V descriptor must refuse closed: \(plan)"); return
+        }
+        #expect(reason == SkillDependencyReason.declarationRejected)
         #expect(operations.counts.python == 0 && operations.counts.apt == 0)
     }
 

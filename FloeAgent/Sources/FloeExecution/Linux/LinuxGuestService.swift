@@ -996,7 +996,20 @@ public struct LinuxGuestLifecycleTransaction: Sendable, Equatable {
 /// Lifecycle surface layered on top of `LinuxCommandRunning`. The package UI
 /// and shell consume the command protocol; the app uses this to start, stop
 /// and delete the guest that owns an environment.
+public struct LinuxGuestInitialResetReceipt: Sendable, Equatable {
+    public var imageID: String
+    public var environmentIDs: [String]
+    public init(imageID: String, environmentIDs: [String]) {
+        self.imageID = imageID; self.environmentIDs = environmentIDs
+    }
+}
+
 public protocol LinuxGuestControlling: Sendable {
+    func sharedGuestConfiguration() async -> LinuxGuestLifecycleConfig?
+    func configureSharedGuest(_ configuration: LinuxGuestLifecycleConfig) async throws
+    func stopSharedGuest() async
+    func restoreInitialState(imageID: String,
+        prepareForReset: @escaping @Sendable () async throws -> Void) async throws -> LinuxGuestInitialResetReceipt
     func preferredGuestConfiguration(environmentID: String) async -> LinuxGuestLifecycleConfig?
     /// Starts the environment's guest. Returns false when this service does
     /// not own the environment (native environments are untouched). Throws
@@ -1144,6 +1157,18 @@ public protocol LinuxGuestControlling: Sendable {
 }
 
 public extension LinuxGuestControlling {
+    func sharedGuestConfiguration() async -> LinuxGuestLifecycleConfig? { nil }
+    func stopSharedGuest() async {}
+    func configureSharedGuest(_ configuration: LinuxGuestLifecycleConfig) async throws {
+        throw LinuxGuestError.invalidConfiguration("This runtime does not use shared resource settings")
+    }
+    func restoreInitialState(imageID: String,
+        prepareForReset: @escaping @Sendable () async throws -> Void) async throws -> LinuxGuestInitialResetReceipt {
+        throw LinuxGuestError.invalidConfiguration("This runtime does not support restoring its initial state")
+    }
+    func restoreInitialState(imageID: String) async throws -> LinuxGuestInitialResetReceipt {
+        try await restoreInitialState(imageID: imageID, prepareForReset: {})
+    }
     func preferredGuestConfiguration(environmentID: String) async -> LinuxGuestLifecycleConfig? { nil }
     /// Default explicit-shape start: nil shape forwards to the shape-less
     /// start; a non-nil shape is refused honestly by a backend that cannot

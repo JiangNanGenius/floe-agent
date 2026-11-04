@@ -3157,14 +3157,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             guard let value else { return String(localized: "background.value.unavailable") }
             return String(format: "%.0f%%", value * 100)
         }
-        // Short, stable VM identity: the runtime token when the lease
-        // exposes one, else the environment id — never a full uuid.
-        let identitySource = snapshot.runtimeID ?? snapshot.environmentID
-        let shortIdentity = identitySource.prefix(6)
         var lines: [String] = []
         lines.append(
             "\(snapshot.title) · \(snapshot.state.surfaceLabel)"
-                + " · VM \(shortIdentity)"
         )
         lines.append(
             String(

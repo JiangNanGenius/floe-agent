@@ -122,8 +122,8 @@ struct SkillRuntimeTarget: Codable, Sendable, Equatable {
         )
     }
 
-    /// The pinned local Linux guest (TinyEMU today; a future ARM64 guest passes
-    /// its own architecture here, so no RISC-V constant leaks into planning).
+    /// The resolved local ARM64 Linux target; architecture remains an explicit
+    /// fact carried with the environment rather than inferred from a Skill.
     static func linuxGuest(
         environmentID: String,
         runID: UUID? = nil,
@@ -285,10 +285,10 @@ struct SkillRuntimeTarget: Codable, Sendable, Equatable {
             guard hasExternalExecution else { return false }
             return operatingSystem == .linux || operatingSystem == .macOS
         case "runtimeComponent":
-            // The reviewed engine descriptor is frozen to Linux/RISC-V; the
+            // The reviewed engine descriptor is frozen to Linux/ARM64; the
             // descriptor cross-check in the preparation center is the final
             // authority, this is only the coarse family gate.
-            return isResolved && operatingSystem == .linux && normalizedArchitectures.contains("riscv64")
+            return isResolved && operatingSystem == .linux && normalizedArchitectures.contains("arm64")
         default:
             return false
         }

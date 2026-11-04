@@ -130,14 +130,11 @@
 // Generation: decimal u64 text, so 20 digits.
 #define FLOE_MAX_GENERATION 24
 
-// Per-task cgroup ceilings. These are fixed supervisor constants applied to
-// every task cgroup; a task that exceeds them is throttled/OOM-killed by
-// the kernel, never by a heuristic, and one runaway task cannot starve the
-// other projects sharing the machine. cpu.max is written "<quota> <period>".
+// Task cgroups retain bounded process cardinality and subtree cancellation.
+// CPU and memory inherit the user's one physical-machine allocation rather
+// than silently imposing a second 1-core / 256-MiB task limit.
 #define FLOE_TASK_CPU_PERIOD_US 100000
-#define FLOE_TASK_CPU_QUOTA_MAX_US 100000 // 1.0 core ceiling per task
 #define FLOE_TASK_PIDS_MAX 64
-#define FLOE_TASK_MEMORY_MAX_BYTES (256LL * 1024 * 1024)
 
 // Settled user direction (2026-11-05): CPU and RAM are unified settings on
 // the ONE shared local Linux runtime; project screens manage their own

@@ -32,6 +32,50 @@ public struct TaskExecutionBindingStore: Sendable {
         }
     }
 
+    /// A completed, user-authorized runtime reset retains the same environment
+    /// and files but replaces its ABI/generation. Update resumable pins in one
+    /// transaction; completed and cancelled runs retain their historical facts.
+    public func refreshResetLinuxBinding(_ expected: TaskExecutionBinding,
+                                         target: TaskExecutionTarget) async throws -> TaskExecutionBinding {
+        guard expected.target.backend == .linuxVM, target.backend == .linuxVM,
+              target.environmentID == expected.target.environmentID,
+              target.operatingSystem == "linux", target.architecture == "arm64",
+              let generation = target.runtimeGeneration, !generation.isEmpty,
+              expected.generation > 0, expected.generation < Int64.max else {
+            throw FloeError.validationFailed("The restored environment identity is invalid")
+        }
+        return try await database.writer { db in
+            guard let current = try Self.decode(TaskExecutionBinding.self, String.fetchOne(db,
+                sql: "SELECT body_json FROM task_execution_bindings WHERE conversation_id=?",
+                arguments: [expected.conversationID.uuidString])) else { throw FloeError.notFound("Task binding") }
+            if current.target == target { return current }
+            guard current == expected else { throw FloeError.validationFailed("The task environment changed") }
+            let activeMoves = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM task_environment_migrations WHERE conversation_id=? AND phase NOT IN ('completed','cancelled')",
+                arguments: [expected.conversationID.uuidString]) ?? 0
+            guard activeMoves == 0 else { throw FloeError.validationFailed("Finish or cancel the environment move first") }
+            let next = TaskExecutionBinding(conversationID: expected.conversationID, target: target,
+                generation: expected.generation + 1)
+            let body = try Self.encode(next)
+            try db.execute(sql: "UPDATE task_execution_bindings SET generation=?,body_json=? WHERE conversation_id=? AND generation=?",
+                arguments: [next.generation, body, next.conversationID.uuidString, expected.generation])
+            guard db.changesCount == 1 else { throw FloeError.validationFailed("The task environment changed") }
+            try db.execute(sql: "UPDATE runs SET execution_binding_json=? WHERE conversation_id=? AND \(Self.rebindableRunFilter)",
+                arguments: [body, next.conversationID.uuidString])
+            let pin = try JSONSerialization.jsonObject(with: Data(body.utf8))
+            for row in try Row.fetchAll(db, sql: "SELECT c.run_id,c.body_json FROM checkpoints c JOIN runs r ON r.id=c.run_id WHERE r.conversation_id=? AND r.\(Self.rebindableRunFilter)",
+                arguments: [next.conversationID.uuidString]) {
+                let source: String = row["body_json"]
+                guard var object = try JSONSerialization.jsonObject(with: Data(source.utf8)) as? [String: Any] else {
+                    throw FloeError.storageCorrupted("The task recovery point is unreadable")
+                }
+                object["executionBinding"] = pin
+                let updated = String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), as: UTF8.self)
+                try db.execute(sql: "UPDATE checkpoints SET body_json=? WHERE run_id=?", arguments: [updated, row["run_id"] as String])
+            }
+            return next
+        }
+    }
+
     /// First writer wins. A later default or project setting never changes an existing task.
     public func bindInitial(_ proposed: TaskExecutionBinding) async throws -> TaskExecutionBinding {
         guard proposed.generation > 0, proposed.generation < Int64.max else {

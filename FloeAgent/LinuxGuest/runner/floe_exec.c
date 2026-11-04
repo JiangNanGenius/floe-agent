@@ -1493,7 +1493,7 @@ static int task_iso_write_file(const char *path, const char *value) {
     return wrote == (ssize_t)len ? 0 : -1;
 }
 
-// Creates <root>/<token> with the fixed per-task ceilings. Called by the
+// Creates <root>/<token> under the shared machine's CPU/RAM budget. Called by the
 // parent before the workload fork; the child is moved into the cgroup right
 // after the fork (children inherit it from there).
 static int task_iso_pre_fork(const char *token, char *dir_out) {
@@ -1503,14 +1503,13 @@ static int task_iso_pre_fork(const char *token, char *dir_out) {
     char path[TASK_ISO_DIR_MAX + 64];
     char value[64];
     snprintf(path, sizeof path, "%s/cpu.max", dir_out);
-    snprintf(value, sizeof value, "%d %d",
-             FLOE_TASK_CPU_QUOTA_MAX_US, FLOE_TASK_CPU_PERIOD_US);
+    snprintf(value, sizeof value, "max %d", FLOE_TASK_CPU_PERIOD_US);
     if (task_iso_write_file(path, value) != 0) return -1;
     snprintf(path, sizeof path, "%s/pids.max", dir_out);
     snprintf(value, sizeof value, "%d", FLOE_TASK_PIDS_MAX);
     if (task_iso_write_file(path, value) != 0) return -1;
     snprintf(path, sizeof path, "%s/memory.max", dir_out);
-    snprintf(value, sizeof value, "%lld", (long long)FLOE_TASK_MEMORY_MAX_BYTES);
+    snprintf(value, sizeof value, "max");
     if (task_iso_write_file(path, value) != 0) return -1;
     return 0;
 }

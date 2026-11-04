@@ -97,9 +97,11 @@ public protocol SkillManaging: Sendable {
     /// production wrapper MUST override this to pass the context through.
     func read(id: String, runID: UUID, resourceContext: SkillResourceContext) async throws -> [ManagedSkill]
     func manage(_ request: SkillManageTool.Arguments) async throws -> String
+    func manage(_ request: SkillManageTool.Arguments, context: ToolContext) async throws -> String
 }
 
 public extension SkillManaging {
+    func manage(_ request: SkillManageTool.Arguments, context: ToolContext) async throws -> String { try await manage(request) }
     func read(id: String?, runID: UUID) async throws -> [ManagedSkill] { try await read(id: id) }
     func read(id: String, runID: UUID, resourceContext: SkillResourceContext) async throws -> [ManagedSkill] {
         try await read(id: id, runID: runID)
@@ -387,7 +389,9 @@ public struct SkillReadTool: AgentTool {
 }
 
 public struct SkillManageTool: AgentTool {
-    public enum Action: String, Codable, Sendable { case update, setEnabled, remove }
+    public enum Action: String, Codable, Sendable {
+        case update, setEnabled, remove, checkUpdates, updatePackage, rollback, prepareDependencies
+    }
     public struct Arguments: Decodable, Sendable {
         public var action: Action
         public var id: String
@@ -400,8 +404,8 @@ public struct SkillManageTool: AgentTool {
         }
     }
     public static let name = "skill.manage"
-    public static let toolDescription = "Update an installed skill's instruction body, enable/disable it, or remove it. Preinstalled skills cannot be removed; disable them instead. Removal retains a filesystem backup of the package for manual recovery; there is no automatic restore tool. For expectedDigest use currentDigest from skill.read(id:), or digest from current skill.list metadata; the exact read's digest may be an older task-pinned version. Requires approval. Update preserves frontmatter, scripts, manifest and capability grants; it does not edit executable code or broaden permissions."
-    public static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["update","setEnabled","remove"]},"id":{"type":"string"},"expectedDigest":{"type":"string"},"instructions":{"type":"string","description":"New Markdown body without frontmatter; update only"},"enabled":{"type":"boolean","description":"Required only for setEnabled"}},"required":["action","id","expectedDigest"],"additionalProperties":false}"#
+    public static let toolDescription = "Manage an installed Skill: update edits only its instruction body; checkUpdates checks its saved upstream; updatePackage installs an available upstream package; rollback restores a real saved upgrade; prepareDependencies prepares declared official dependencies in the current task environment. Also enable/disable or remove a Skill. Package changes preserve permission review and local-change conflicts. Preinstalled skills cannot be removed; disable them instead. Removal retains a filesystem backup of the package for manual recovery; rollback applies to verified upgrade backups, not deleted packages. For expectedDigest use currentDigest from skill.read(id:), or digest from current skill.list metadata; the exact read's digest may be an older task-pinned version. Requires approval. Update preserves frontmatter, scripts, manifest and capability grants; it does not edit executable code or broaden permissions."
+    public static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["update","setEnabled","remove","checkUpdates","updatePackage","rollback","prepareDependencies"]},"id":{"type":"string"},"expectedDigest":{"type":"string"},"instructions":{"type":"string","description":"New Markdown body without frontmatter; update only"},"enabled":{"type":"boolean","description":"Required only for setEnabled"}},"required":["action","id","expectedDigest"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles, .changesAgentBehavior]
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
@@ -422,14 +426,17 @@ public struct SkillManageTool: AgentTool {
                   body.utf8.count <= 256 * 1024, args.enabled == nil else { throw FloeError.validationFailed("Update requires instructions only, at most 256 KiB") }
         case .setEnabled:
             guard args.enabled != nil, args.instructions == nil else { throw FloeError.validationFailed("setEnabled requires enabled only") }
-        case .remove:
+        case .remove, .checkUpdates, .updatePackage, .rollback, .prepareDependencies:
             guard args.enabled == nil, args.instructions == nil else { throw FloeError.validationFailed("remove accepts no update fields") }
         }
     }
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try validate(args); try context.cancellation.throwIfCancelled()
         guard context.approvalGrantID != nil else { throw FloeError.validationFailed("Skill changes require approval") }
-        return skillOutput(try await manager.manage(args))
+        guard !context.temporaryReadOnly, !context.publicWebOnly else {
+            throw FloeError.validationFailed("Skill management requires a saved task")
+        }
+        return skillOutput(try await manager.manage(args, context: context))
     }
 }
 

@@ -78,6 +78,7 @@ public struct LinuxGuestSessionHandle: Sendable {
 public protocol LinuxGuestSessionCreating: Sendable {
     var usesResidentMachine: Bool { get }
     var preferredSharedConfiguration: LinuxGuestLifecycleConfig? { get }
+    func configureSharedMachine(_ configuration: LinuxGuestLifecycleConfig) async throws
     func makeSession(
         descriptor: LinuxGuestEnvironmentDescriptor,
         image: LinuxGuestImage,
@@ -86,16 +87,23 @@ public protocol LinuxGuestSessionCreating: Sendable {
     func makeSession(descriptor: LinuxGuestEnvironmentDescriptor, image: LinuxGuestImage,
                      imageDirectory: URL?, limits: LinuxGuestLimits) throws -> LinuxGuestSessionHandle
     func shutdown() async
+    func restoreInitialState(image: LinuxGuestImage, imageDirectory: URL) async throws
 }
 
 public extension LinuxGuestSessionCreating {
     var usesResidentMachine: Bool { false }
     var preferredSharedConfiguration: LinuxGuestLifecycleConfig? { nil }
+    func configureSharedMachine(_ configuration: LinuxGuestLifecycleConfig) async throws {
+        throw LinuxGuestError.invalidConfiguration("This runtime does not use shared resource settings")
+    }
     func makeSession(descriptor: LinuxGuestEnvironmentDescriptor, image: LinuxGuestImage,
                      imageDirectory: URL?, limits: LinuxGuestLimits) throws -> LinuxGuestSessionHandle {
         try makeSession(descriptor: descriptor, image: image, limits: limits)
     }
     func shutdown() async {}
+    func restoreInitialState(image: LinuxGuestImage, imageDirectory: URL) async throws {
+        throw LinuxGuestError.invalidConfiguration("This runtime does not support restoring its initial state")
+    }
 }
 
 extension TinyEMUGuestSessionFactory: LinuxGuestSessionCreating {}
@@ -347,6 +355,7 @@ public actor TinyEMULinuxGuestRegistry {
     /// used by focused registry tests.
     private var runtimeV2: (any LinuxGuestRuntimeV2Integrating)?
     private var sessions: [String: Session] = [:]
+    private var restoringInitialState = false
     /// Boot-asset lifecycle latch: start leases vs adoption/rollback
     /// exclusive passes (LinuxGuestBootAssetGate). Shared with the update
     /// service so both sides serialize against the same gate.
@@ -906,7 +915,7 @@ public actor TinyEMULinuxGuestRegistry {
     }
 
     private func requireGuestWorkAdmission(environmentID: String) throws {
-        guard !teardownsInFlight.contains(environmentID),
+        guard !restoringInitialState, !teardownsInFlight.contains(environmentID),
               !isLifecycleTransactionInFlight(environmentID: environmentID),
               !isShapeChangeInFlight(environmentID: environmentID) else {
             throw LinuxGuestError.guestBusy(environmentID: environmentID)
@@ -1138,10 +1147,18 @@ public actor TinyEMULinuxGuestRegistry {
             // A reconnect is between resolver swap and hook publication.
             throw LinuxGuestError.guestBusy(environmentID: environmentID)
         }
+        guard !restoringInitialState else { throw LinuxGuestError.guestBusy(environmentID: environmentID) }
         guard var descriptor = await environments.linuxGuestEnvironment(id: environmentID) else {
             return false
         }
-        if let saved = factory.preferredSharedConfiguration
+        if factory.usesResidentMachine, let saved = factory.preferredSharedConfiguration {
+            descriptor.vcpus = saved.vcpus
+            descriptor.ramMB = saved.memoryMB
+            if let explicitShape,
+               explicitShape.vcpus.count != saved.vcpus || explicitShape.memory.mb != saved.memoryMB {
+                throw LinuxGuestError.invalidConfiguration("Change CPU and memory in the shared runtime settings")
+            }
+        } else if let saved = factory.preferredSharedConfiguration
             ?? LinuxGuestLifecycleConfig.load(from: descriptor.writableDirectory) {
             if descriptor.vcpus == nil { descriptor.vcpus = saved.vcpus }
             if descriptor.ramMB == nil { descriptor.ramMB = saved.memoryMB }
@@ -2779,10 +2796,56 @@ public actor TinyEMULinuxGuestRegistry {
     }
 
     public func stopAll() async {
+        let previousFence = restoringInitialState
+        restoringInitialState = true
+        defer { restoringInitialState = previousFence }
         for id in Set(sessions.keys).union(startingEnvironments) {
             await stop(environmentID: id)
         }
         await factory.shutdown()
+    }
+
+    public func sharedConfiguration() -> LinuxGuestLifecycleConfig? { factory.preferredSharedConfiguration }
+
+    public func configureSharedMachine(_ configuration: LinuxGuestLifecycleConfig) async throws {
+        guard factory.usesResidentMachine, !restoringInitialState,
+              sessions.isEmpty, startingEnvironments.isEmpty, quarantinedEnvironments.isEmpty else {
+            throw LinuxGuestError.invalidConfiguration("Stop active projects before changing the shared runtime")
+        }
+        restoringInitialState = true
+        defer { restoringInitialState = false }
+        try await factory.configureSharedMachine(configuration)
+    }
+
+    /// Restores only the shared physical runtime. App-owned workspaces,
+    /// installed Skill records and shared downloads are outside this disk.
+    public func restoreInitialState(imageID: String,
+        prepareForReset: @escaping @Sendable () async throws -> Void = {}) async throws -> LinuxGuestInitialResetReceipt {
+        guard factory.usesResidentMachine, !restoringInitialState else {
+            throw LinuxGuestError.invalidConfiguration("The shared runtime cannot be restored right now")
+        }
+        restoringInitialState = true
+        defer { restoringInitialState = false }
+        guard let image = await images.linuxGuestImage(id: imageID),
+              await images.linuxGuestImageVerificationFailure(id: imageID) == nil else {
+            throw LinuxGuestError.imageNotQualified(environmentID: "shared", reason: "The initial runtime image is unavailable")
+        }
+        let directory: URL
+        if let runtimeV2 { directory = try await runtimeV2.expandedImageDirectory(imageID: imageID) }
+        else if let root = images.imageRoot { directory = root.appendingPathComponent(imageID, isDirectory: true) }
+        else { throw LinuxGuestError.invalidConfiguration("The initial runtime image is unavailable") }
+        if let failure = image.qualificationFailure(imageDirectory: directory) {
+            throw LinuxGuestError.imageNotQualified(environmentID: "shared", reason: failure)
+        }
+        let affected = Set(sessions.keys).union(startingEnvironments)
+        try await prepareForReset()
+        await stopAll()
+        guard sessions.isEmpty, startingEnvironments.isEmpty, quarantinedEnvironments.isEmpty else {
+            throw LinuxGuestError.stopFailed(environmentID: "shared", detail: "Running work has not stopped; existing data was retained")
+        }
+        try Task.checkCancellation()
+        try await factory.restoreInitialState(image: image, imageDirectory: directory)
+        return LinuxGuestInitialResetReceipt(imageID: imageID, environmentIDs: affected.sorted())
     }
 
     // MARK: logical-run ownership / scoped transient release
@@ -3311,6 +3374,7 @@ public actor TinyEMULinuxGuestRegistry {
     /// change can never restart the old handle, rebook a released reservation
     /// or overwrite a replacement session.
     public func setShape(environmentID: String, ramMB: Int, vcpus: Int) async throws {
+        guard !restoringInitialState else { throw LinuxGuestError.guestBusy(environmentID: environmentID) }
         if isLifecycleTransactionInFlight(environmentID: environmentID) {
             // A hard restart owns the environment across its stop → start
             // window: a shape change must not preempt (or queue behind) it.
@@ -3941,8 +4005,23 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
     // MARK: LinuxGuestControlling
 
     public func preferredGuestConfiguration(environmentID: String) async -> LinuxGuestLifecycleConfig? {
+        if let shared = await registry.sharedConfiguration() { return shared }
         let descriptor = await registry.guestDescriptor(environmentID: environmentID)
         return LinuxGuestLifecycleConfig.load(from: descriptor?.writableDirectory)
+    }
+
+    public func sharedGuestConfiguration() async -> LinuxGuestLifecycleConfig? { await registry.sharedConfiguration() }
+
+    public func configureSharedGuest(_ configuration: LinuxGuestLifecycleConfig) async throws {
+        try await registry.configureSharedMachine(configuration)
+    }
+
+    public func stopSharedGuest() async { await shutdown() }
+
+    public func restoreInitialState(imageID: String,
+        prepareForReset: @escaping @Sendable () async throws -> Void) async throws -> LinuxGuestInitialResetReceipt {
+        await localServices.stopAllLocalServices()
+        return try await registry.restoreInitialState(imageID: imageID, prepareForReset: prepareForReset)
     }
 
     public func startGuest(environmentID: String, taskID: String?) async throws -> Bool {

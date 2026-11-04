@@ -1,0 +1,19 @@
+#!/bin/busybox sh
+/bin/busybox --install -s /bin
+fail() { echo "FLOE_PROJECT_BOOT_FAILED $*" >/dev/console; exec /bin/sh; }
+mount -t proc proc /proc || fail proc
+mount -t sysfs sysfs /sys || fail sys
+mount -t devtmpfs devtmpfs /dev || fail dev
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts || fail devpts
+for module in /lib/modules/*.ko; do echo "FLOE_INSMOD $module"; insmod "$module" || fail "$module"; done
+mount -t ext4 /dev/vda /mnt || fail disk
+mkdir -p /mnt/state
+mount --bind /mnt/base /mnt/base || fail bind-base
+mount -o remount,bind,ro /mnt/base || fail readonly-base
+printf 'nameserver 10.0.2.3
+' > /etc/resolv.conf
+export PATH=/usr/local/bin:/bin:/usr/bin:/sbin HOME=/root TERM=dumb
+stty -F /dev/hvc0 raw -echo || fail control-tty
+echo FLOE_PROJECT_READY
+exec /usr/local/bin/floe-supervisord </dev/hvc0 >/dev/hvc0 2>/dev/console

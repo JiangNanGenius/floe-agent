@@ -682,85 +682,20 @@ public struct LinuxGuestTrustedImage: Sendable, Equatable {
 public enum LinuxGuestImageDistributionCatalog {
     /// One fixed component release. Keep the App default and download entry aligned.
     ///
-    /// Runner 2.1 on the unchanged verified three-hart base. The real SMP
-    /// guest protocol and App RuntimeV2 upgrade/capture paths were qualified
-    /// locally; the published archive and corresponding source are pinned.
-    /// Existing environments keep their exact base and private work disk.
-    /// A catalog update never rebases or overwrites an existing environment.
-    public static let defaultImageID = "floe-debian13-riscv64-basic-runner210-20261102-r36882693"
+    /// Shared ARM64 Linux. Real three-core boot, project separation, process-
+    /// tree cancellation, loopback forwarding and initial-state restore passed.
+    /// Legacy RISC-V images are not executable candidates for this backend.
+    public static let defaultImageID = "floe-debian13-arm64-basic-resident-20261105-v1"
     public static let bundled: [LinuxGuestTrustedImage] = [
         LinuxGuestTrustedImage(
             id: defaultImageID,
-            archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-runner21-20261102.1-candidate/floe-linux-guest-floe-debian13-riscv64-basic-runner210-20261102-r36882693.zip")!,
+            archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-arm64-20261105.1/floe-linux-guest-floe-debian13-arm64-basic-resident-20261105-v1.zip")!,
             mirrors: [],
-            archiveSHA512: "0fddc375127f5ce585ff0e36946d78882dee76f1148da9668ba2ddb7c6d9c20251dd5f6affa31aa1592214f4345cd27ec81e6180d5481db42c03d7fdae1743e3",
+            archiveSHA512: "9ceea1bcf9ecac6ac70def3b1877025c9959c3afbc75be632c5d82e312231643ec146f5779326499f4d00df991e639f15933a62aaebb5f8b9a3c112ed771bce9",
             provenance: LinuxGuestImageProvenance(
-                sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-runner21-20261102.1-candidate",
-                buildConfigurationURL: "https://github.com/JiangNanGenius/floe-agent/tree/368826932a4dab19fc1822dd40d421af0f56d689/FloeAgent/scripts/linux-guest-runner-update",
-                license: "Floe runner MPL-2.0; guest userland under its own Debian package licenses; kernel GPL-2.0 (CONFIG_SMP=y, NR_CPUS=3); bbl BSD-3-Clause; static glibc LGPL-2.1",
-                distributionAllowed: true
-            )
-        ),
-        LinuxGuestTrustedImage(
-            id: "floe-debian13-riscv64-202609202607-basic-r572a77382feb-b37171053949-1",
-            archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-smp3-20261004.1/floe-linux-guest-floe-debian13-riscv64-202609202607-basic-r572a77382feb-b37171053949-1.zip")!,
-            mirrors: [],
-            archiveSHA512: "5db1567ecd357c33763c42ad27dd8ce74b5d1ab073939d4f8338a8b06a3b6467a73a02472828f439aa3829ede7eaa96c21bf690eda21665f665d4d896124c6a8",
-            provenance: LinuxGuestImageProvenance(
-                sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-smp3-20261004.1",
-                buildConfigurationURL: "https://github.com/JiangNanGenius/floe-agent/tree/fef6139f43b9b20b4693617e533580a4ac0bb66f/FloeAgent/ThirdParty/TinyEMU/guest-image",
-                license: "Floe runner MPL-2.0; guest userland under its own Debian package licenses; kernel GPL-2.0 (CONFIG_SMP=y, NR_CPUS=3); bbl BSD-3-Clause; static glibc LGPL-2.1",
-                distributionAllowed: true
-            )
-        ),
-        LinuxGuestTrustedImage(
-            id: "floe-debian13-riscv64-202609202607-basic-r572a77382feb-b36330566148-1",
-            archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-smp-20260928.1/floe-linux-guest-floe-debian13-riscv64-202609202607-basic-r572a77382feb-b36330566148-1.zip")!,
-            mirrors: [
-                // Established anonymous GitHub-archive accelerator. The
-                // complete 587,162,397-byte archive was fetched anonymously
-                // and verified byte-for-byte against the pinned SHA-512
-                // before this URL was pinned (Build 238 mirror verification);
-                // long-term public operating history is recorded upstream.
-                // Contacted only after the primary fails with a bounded
-                // availability error, and the result is re-verified here
-                // against the same digest.
-                LinuxGuestImageMirror(
-                    archiveURL: URL(string: "https://gh-proxy.com/https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-smp-20260928.1/floe-linux-guest-floe-debian13-riscv64-202609202607-basic-r572a77382feb-b36330566148-1.zip")!
-                ),
-                // Independently operated established accelerator. The complete
-                // archive was likewise fetched anonymously (no proxy env) and
-                // verified byte-for-byte against the pinned SHA-512 before
-                // pinning (Build 238 mirror verification). Second in order:
-                // contacted only after the primary and the first mirror fail
-                // with bounded availability errors; bytes are re-verified
-                // against the same digest.
-                LinuxGuestImageMirror(
-                    archiveURL: URL(string: "https://ghproxy.net/https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-smp-20260928.1/floe-linux-guest-floe-debian13-riscv64-202609202607-basic-r572a77382feb-b36330566148-1.zip")!
-                )
-            ],
-            archiveSHA512: "4f19064f764ed400194a830b38af57236c5cd3145f463f2352834c0c834c90f7d4c6df078cd7d831acf42b6620de09d758c62dc3dbed90694f5ea63ff21d84a8",
-            provenance: LinuxGuestImageProvenance(
-                sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-smp-20260928.1",
-                buildConfigurationURL: "https://github.com/JiangNanGenius/floe-agent/tree/0ed79ce8d4fe3fe7fef545275e0a0f22ae9d53e4/FloeAgent/ThirdParty/TinyEMU/guest-image",
-                license: "Floe runner MPL-2.0; guest userland under its own Debian package licenses; kernel GPL-2.0 (CONFIG_SMP=y); bbl BSD-3-Clause; static glibc LGPL-2.1",
-                distributionAllowed: true
-            )
-        ),
-        LinuxGuestTrustedImage(
-            id: "floe-debian13-riscv64-20260922.2",
-            archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-guest-20260922.2/floe-linux-guest-floe-debian13-riscv64-20260922.2.zip")!,
-            // No preinstalled fallback URLs: only established, independently
-            // verified anonymous mirrors may be pinned here, and this legacy
-            // single-hart image currently has none. A candidate mirror is
-            // added only after its endpoint and operating history are
-            // verified; the GitHub release stays the trust-bearing primary.
-            mirrors: [],
-            archiveSHA512: "bde2b2198bf5f70411b12587b9e6b4b42a183671b5564b90319eae7bbd2ae7eb09f686e0d4009096eba0da3b75a89c65bc7c45ac31ac61146482377fc0bdae04",
-            provenance: LinuxGuestImageProvenance(
-                sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-guest-20260922.2",
-                buildConfigurationURL: "https://github.com/JiangNanGenius/floe-agent/tree/ba739b71f902507da2382d52ba6393eb6cba5afb/FloeAgent/scripts/linux-guest-runner-update",
-                license: "Floe runner MPL-2.0; guest userland under its own Debian package licenses; kernel GPL-2.0; bbl BSD-3-Clause; static glibc LGPL-2.1",
+                sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-arm64-20261105.1",
+                buildConfigurationURL: "https://github.com/JiangNanGenius/floe-agent/tree/floe-linux-arm64-20261105.1/FloeAgent/LinuxGuest/image/arm64",
+                license: "Floe runner MPL-2.0; musl MIT; EDK2 per-file BSD/MIT; kernel GPL-2.0; Debian per-package licenses, with corresponding sources",
                 distributionAllowed: true
             )
         )
@@ -1170,6 +1105,7 @@ public actor LinuxGuestImageInstallationService {
     public func installTrustedImage(
         id: String,
         downloader: any LinuxGuestImageDownloading,
+        forceDownload: Bool = false,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in },
         onPhase: (@Sendable (LinuxGuestImageTransferPhase) -> Void)? = nil,
         isCancelled: (@Sendable () -> Bool)? = nil,
@@ -1180,7 +1116,7 @@ public actor LinuxGuestImageInstallationService {
         // check itself is cancellation-aware, so an owner that left during a
         // large disk re-hash stops here instead of after it.
         let current = try await status(id: id, isCancelled: isCancelled)
-        if current.installed && current.verificationFailure == nil, let image = current.image {
+        if !forceDownload, current.installed && current.verificationFailure == nil, let image = current.image {
             return image
         }
         // A second request while a download is running shares the in-flight

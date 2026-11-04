@@ -141,11 +141,6 @@ targets:
       - path: FloeApp/Resources/EngineeringViewers
         type: folder
         buildPhase: resources
-      # Generated from the pinned guest-image manifest by stage-boot-pair.sh.
-      # Verified firmware/kernel bytes are distribution resources, never Git blobs.
-      - path: ThirdParty/TinyEMU/guest-image/bundled-boot-pair
-        type: folder
-        buildPhase: resources
       # Resources/IDE is intentionally NOT packaged: the CodeBlitz/Monaco web
       # workbench was retired when IDE text editing became native-only. The
       # NOTICE and vendor license files stay in the tree as attribution only
@@ -374,10 +369,6 @@ targets:
         embed: true
       - target: FloeFileProvider
         embed: true
-    preBuildScripts:
-      - name: Verify bundled Linux boot pair
-        script: bash "$SRCROOT/ThirdParty/TinyEMU/guest-image/stage-boot-pair.sh" --check
-        basedOnDependencyAnalysis: false
     postBuildScripts:
       - name: Embed verified native Office host
         script: /usr/bin/python3 -B "${SRCROOT}/scripts/embed_office_host.py"

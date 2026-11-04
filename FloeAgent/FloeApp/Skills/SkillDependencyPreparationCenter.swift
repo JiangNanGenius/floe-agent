@@ -234,8 +234,9 @@ enum SkillDependencyReason {
     }
     static let planStale = "the installed package changed since this run's verified read; re-read the skill with skill.read before invoking it"
     /// Architecture is part of the ORIGINAL declaration contract: a profile
-    /// that does not target the actual local Linux backend (TinyEMU riscv64
-    /// today — deliberately NOT the native Mac CPU) never installs here.
+    /// that does not target the actual local Linux backend (the resident
+    /// ARM64 guest today — deliberately NOT the native Mac CPU) never
+    /// installs here.
     static func noMatchingProfile(architectures: [String]) -> String {
         "none of the reviewed profiles targets this Linux environment's architecture (\(architectures.joined(separator: ", "))); nothing was installed or prefetched for the non-matching profiles"
     }
@@ -680,11 +681,11 @@ actor SkillDependencyPreparationCenter {
     let pipWheels: (@Sendable ([String]) async throws -> [SkillDependencyWheelBundle])?
     let wheelStoreURL: URL?
     let wheelStoreGuestPath: String?
-    /// Architectures the ACTUAL local Linux backend executes (the pinned
-    /// TinyEMU guest is riscv64 — never the native Mac CPU, which would let
-    /// arm64-labelled profiles mutate this guest). Injectable for tests and
-    /// future backends; profiles whose target does not intersect this set
-    /// are filtered before any plan, prefetch or mutation.
+    /// Architectures the ACTUAL local Linux backend executes (the resident
+    /// ARM64 guest — never the native Mac CPU, which would let foreign-
+    /// labelled profiles mutate this guest). Injectable for tests and future
+    /// backends; profiles whose target does not intersect this set are
+    /// filtered before any plan, prefetch or mutation.
     let localLinuxArchitectures: [String]
 
     private var plans: [PlanKey: Plan] = [:]
@@ -710,7 +711,7 @@ actor SkillDependencyPreparationCenter {
         appVersion: @escaping @Sendable () -> String = { "0.0.0" },
         bindings: SkillDependencyLateBindings = SkillDependencyLateBindings(),
         persistenceRoot: URL?,
-        localLinuxArchitectures: [String] = ["riscv64"]
+        localLinuxArchitectures: [String] = ["arm64"]
     ) {
         self.authorityProvider = authorityProvider
         self.environmentResolver = environmentResolver
@@ -728,7 +729,7 @@ actor SkillDependencyPreparationCenter {
         self.pipWheels = pipWheels
         self.wheelStoreURL = wheelStoreURL
         self.wheelStoreGuestPath = wheelStoreGuestPath
-        // Injected backend fact (default = the pinned TinyEMU RISC-V guest).
+        // Injected backend fact (default = the resident ARM64 Linux guest).
         // An explicitly EMPTY set fails closed: `profileMatches` refuses every
         // target until a real architecture is known — never a silent guess.
         self.localLinuxArchitectures = localLinuxArchitectures
@@ -751,7 +752,7 @@ actor SkillDependencyPreparationCenter {
     /// target ("any" always participates).
     ///
     /// Legacy overload used ONLY by the pre-integration fallback and the
-    /// unbound shared prefetch. It keeps the historical Linux/riscv64 fact.
+    /// unbound shared prefetch. It keeps the current Linux/arm64 fact.
     nonisolated static func profileMatches(_ profile: SkillDependencyProfile, architectures supported: [String]) -> Bool {
         guard profile.os == "linux", !supported.isEmpty else { return false }
         return profile.architectures.contains("any")
@@ -1578,7 +1579,7 @@ actor SkillDependencyPreparationCenter {
         guard bytes.count == descriptor.artifact.size,
               bytes.count <= SkillRuntimeDependency.maximumArtifactBytes,
               FloeDigest.sha256Hex(bytes) == descriptor.artifact.sha256,
-              (try? SkillRuntimeDependency.verifyStaticRISCVExecELF(bytes)) != nil else {
+              (try? SkillRuntimeDependency.verifyStaticAArch64ExecELF(bytes)) != nil else {
             return SkillDependencyPrefetchEntry(
                 kind: "runtimeComponent", name: descriptor.componentID, version: descriptor.componentVersion,
                 state: .failed, detail: "the downloaded bytes failed the existing size/digest/static-ELF gate"
@@ -1819,8 +1820,8 @@ actor SkillDependencyPreparationCenter {
         guard !trimmed.isEmpty else {
             return .unavailable(reason: SkillDependencyReason.noEnvironment)
         }
-        // A migration must use actual target facts. The legacy riscv64
-        // pre-integration fallback is never acceptable for a target switch.
+        // A migration must use actual target facts. The legacy pre-
+        // integration fallback is never acceptable for a target switch.
         guard targetProvider != nil else {
             return .unavailable(reason: SkillDependencyReason.targetUnavailable)
         }

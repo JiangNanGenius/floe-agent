@@ -6,11 +6,16 @@
 //   * unknown/missing/foreign fields (URL/repository/command/approval/
 //     environment overrides can never exist) fail closed;
 //   * numeric segments are ASCII digits only (Unicode numerals rejected);
-//   * the ELF gate accepts only ELF64 LE RISC-V ET_EXEC with a bounded
-//     program-header table and NO PT_INTERP — never a general executable bypass.
+//   * the ELF gate accepts only ELF64 LE AArch64 ET_EXEC with a bounded
+//     program-header table and NO PT_INTERP — never a general executable bypass;
+//   * a legacy RISC-V descriptor or ELF can never pass the new frozen gate.
 //
-// The positive fixture is the byte-exact published descriptor (its content is
-// public; no private material is embedded).
+// The positive fixture is a byte-exact CANONICAL ARM64 contract fixture, not a
+// published artifact: the real ARM64 component (exact bytes, size and digests)
+// is established against the real cross-build and Hub publication later, so
+// the published-descriptor digest assertion stays pending real artifacts (see
+// Local/Private/arm64-transition-20261105/skill-arm64/HANDOFF.json). Its
+// componentVersion is test data, never a publication record.
 
 import Foundation
 import FloeCore
@@ -19,12 +24,16 @@ import Testing
 
 // MARK: - Fixtures
 
-/// The byte-exact frozen descriptor (published at the Hub repository).
-private let frozenDescriptorBytes = Data("""
-    {"artifact":{"path":"engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/riscv64gc-unknown-linux-musl/floe-impeccable","sha256":"af8795bf9636e763541c58ef90ee889941e468f453ec6580c32a89a5a758b87b","size":5579704},"captureContract":{"sha256":"baf2453164be6162703af9d671be16da152fa874db53ce95ad5b3516d40de4a3","version":1},"componentID":"impeccable-engine","componentVersion":"0.1.17+floe.1.0.0","minimumAppVersion":"1.7.59","schemaVersion":1,"target":{"arch":"riscv64","format":"elf64-little-riscv-exec-static","os":"linux","triple":"riscv64gc-unknown-linux-musl"}}
+/// The byte-exact canonical ARM64 contract fixture (NOT a published artifact;
+/// publication is pending the real cross-built component — see HANDOFF.json).
+private let arm64ContractFixtureBytes = Data("""
+    {"artifact":{"path":"engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/aarch64-unknown-linux-musl/floe-impeccable","sha256":"af8795bf9636e763541c58ef90ee889941e468f453ec6580c32a89a5a758b87b","size":5579704},"captureContract":{"sha256":"baf2453164be6162703af9d671be16da152fa874db53ce95ad5b3516d40de4a3","version":1},"componentID":"impeccable-engine","componentVersion":"0.1.17+floe.1.0.0","minimumAppVersion":"1.7.59","schemaVersion":1,"target":{"arch":"arm64","format":"elf64-little-aarch64-exec-static","os":"linux","triple":"aarch64-unknown-linux-musl"}}
     """.utf8)
 
-private let frozenDescriptorSHA256 = "cec4a7fade52f6383f74bc9e15972b911552b2672eada138d890e353899be50a"
+/// Digest of the canonical fixture body above. Synthetic fixture authority
+/// only: replace with the byte-exact published ARM64 descriptor + digest once
+/// the Hub publishes the ARM64 component (tracked in HANDOFF.json).
+private let arm64ContractFixtureSHA256 = "a015424b200edf1ce3906febd4cb82832d24f836aa90d7501087d3010634296c"
 
 private let frozenArtifactSHA256 = "af8795bf9636e763541c58ef90ee889941e468f453ec6580c32a89a5a758b87b"
 private let frozenContractSHA256 = "baf2453164be6162703af9d671be16da152fa874db53ce95ad5b3516d40de4a3"
@@ -37,12 +46,12 @@ private func makeDescriptorDictionary(
     componentVersion: Any = "0.1.17+floe.1.0.0",
     minimumAppVersion: Any = "1.7.59",
     target: Any = [
-        "os": "linux", "arch": "riscv64",
-        "triple": "riscv64gc-unknown-linux-musl",
-        "format": "elf64-little-riscv-exec-static"
+        "os": "linux", "arch": "arm64",
+        "triple": "aarch64-unknown-linux-musl",
+        "format": "elf64-little-aarch64-exec-static"
     ],
     artifact: Any = [
-        "path": "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/riscv64gc-unknown-linux-musl/floe-impeccable",
+        "path": "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/aarch64-unknown-linux-musl/floe-impeccable",
         "size": 5579704,
         "sha256": frozenArtifactSHA256
     ],
@@ -72,7 +81,7 @@ private func makeELF64(
     eiData: UInt8 = 1,
     eiVersion: UInt8 = 1,
     eType: UInt16 = 2,
-    eMachine: UInt16 = 243,
+    eMachine: UInt16 = 183,
     eVersion: UInt32 = 1,
     phoff: UInt64 = 64,
     phentsize: UInt16 = 56,
@@ -108,17 +117,17 @@ private func makeELF64(
 
 /// Explicit suite identity for deterministic App-host test selection.
 @Suite struct SkillRuntimeDependencyTests {
-    @Test func frozenDescriptorDecodesExactly() throws {
-        let descriptor = try SkillRuntimeDependency.decode(frozenDescriptorBytes)
+    @Test func arm64ContractFixtureDecodesExactly() throws {
+        let descriptor = try SkillRuntimeDependency.decode(arm64ContractFixtureBytes)
         #expect(descriptor.schemaVersion == 1)
         #expect(descriptor.componentID == "impeccable-engine")
         #expect(descriptor.componentVersion == "0.1.17+floe.1.0.0")
         #expect(descriptor.minimumAppVersion == "1.7.59")
         #expect(descriptor.target.os == "linux")
-        #expect(descriptor.target.arch == "riscv64")
-        #expect(descriptor.target.triple == "riscv64gc-unknown-linux-musl")
-        #expect(descriptor.target.format == "elf64-little-riscv-exec-static")
-        #expect(descriptor.artifact.path == "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/riscv64gc-unknown-linux-musl/floe-impeccable")
+        #expect(descriptor.target.arch == "arm64")
+        #expect(descriptor.target.triple == "aarch64-unknown-linux-musl")
+        #expect(descriptor.target.format == "elf64-little-aarch64-exec-static")
+        #expect(descriptor.artifact.path == "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/aarch64-unknown-linux-musl/floe-impeccable")
         #expect(descriptor.artifact.size == 5_579_704)
         #expect(descriptor.artifact.sha256 == frozenArtifactSHA256)
         #expect(descriptor.captureContract.version == 1)
@@ -126,9 +135,37 @@ private func makeELF64(
         #expect(SkillRuntimeDependency.isCaptureContractVersionSupported(descriptor.captureContract.version))
     }
 
-    @Test func frozenDescriptorDigestMatchesPublication() {
-        #expect(FloeDigest.sha256Hex(frozenDescriptorBytes) == frozenDescriptorSHA256)
-        #expect(SkillRuntimeDependency.isCanonicalLowercaseHexSHA256(frozenDescriptorSHA256))
+    @Test func arm64ContractFixtureIsCanonicalAndMatchesRecordedDigest() throws {
+        // The fixture JSON body must be the canonical encoding (sorted keys,
+        // tight separators, no duplicate keys) and must match the recorded
+        // digest. Publication-pending: this is the synthetic fixture digest,
+        // NOT a published-descriptor claim; replace both with the byte-exact
+        // Hub publication once the real ARM64 component is published.
+        guard let text = String(data: arm64ContractFixtureBytes, encoding: .utf8) else {
+            Issue.record("the fixture must be UTF-8"); return
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = Data(trimmed.utf8)
+        let reparsed = try JSONSerialization.jsonObject(with: body, options: [])
+        let reencoded = try JSONSerialization.data(withJSONObject: reparsed, options: [.sortedKeys])
+        #expect(reencoded == body)
+        #expect(FloeDigest.sha256Hex(body) == arm64ContractFixtureSHA256)
+        #expect(SkillRuntimeDependency.isCanonicalLowercaseHexSHA256(arm64ContractFixtureSHA256))
+    }
+
+    @Test func legacyRISCVDescriptorFailsClosedUnderTheFrozenARM64Gate() throws {
+        // The exact byte string of the historical published RISC-V descriptor
+        // must be refused by the new frozen target constants — an old RISC-V
+        // artifact can never pass the new gate.
+        let legacy = Data("""
+            {"artifact":{"path":"engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/riscv64gc-unknown-linux-musl/floe-impeccable","sha256":"af8795bf9636e763541c58ef90ee889941e468f453ec6580c32a89a5a758b87b","size":5579704},"captureContract":{"sha256":"baf2453164be6162703af9d671be16da152fa874db53ce95ad5b3516d40de4a3","version":1},"componentID":"impeccable-engine","componentVersion":"0.1.17+floe.1.0.0","minimumAppVersion":"1.7.59","schemaVersion":1,"target":{"arch":"riscv64","format":"elf64-little-riscv-exec-static","os":"linux","triple":"riscv64gc-unknown-linux-musl"}}
+            """.utf8)
+        #expect(throws: SkillRuntimeDependencyError.self) {
+            _ = try SkillRuntimeDependency.decode(legacy)
+        }
+        #expect(throws: SkillRuntimeDependencyError.invalidField("target")) {
+            _ = try SkillRuntimeDependency.decode(legacy)
+        }
     }
 
     // MARK: - Decode: structural negatives
@@ -196,7 +233,7 @@ private func makeELF64(
     @Test func componentVersionPatterns() throws {
         for valid in ["0.1.17+floe.1.0.0", "1.0.0+floe.0.0.1", "10.20.30+floe.40.50.60"] {
             let object = makeDescriptorDictionary(componentVersion: valid, artifact: [
-                "path": "engines/impeccable/dist/impeccable-\(valid)/riscv64gc-unknown-linux-musl/floe-impeccable",
+                "path": "engines/impeccable/dist/impeccable-\(valid)/aarch64-unknown-linux-musl/floe-impeccable",
                 "size": 5579704, "sha256": frozenArtifactSHA256
             ])
             let descriptor = try SkillRuntimeDependency.decode(try encode(object))
@@ -232,10 +269,12 @@ private func makeELF64(
 
     @Test func targetConstantsAreFixed() throws {
         for target in [
-            ["os": "macos", "arch": "riscv64", "triple": "riscv64gc-unknown-linux-musl", "format": "elf64-little-riscv-exec-static"],
-            ["os": "linux", "arch": "arm64", "triple": "riscv64gc-unknown-linux-musl", "format": "elf64-little-riscv-exec-static"],
-            ["os": "linux", "arch": "riscv64", "triple": "aarch64-linux-gnu", "format": "elf64-little-riscv-exec-static"],
-            ["os": "linux", "arch": "riscv64", "triple": "riscv64gc-unknown-linux-musl", "format": "elf64-little-arm"]
+            ["os": "macos", "arch": "arm64", "triple": "aarch64-unknown-linux-musl", "format": "elf64-little-aarch64-exec-static"],
+            ["os": "linux", "arch": "riscv64", "triple": "aarch64-unknown-linux-musl", "format": "elf64-little-aarch64-exec-static"],
+            ["os": "linux", "arch": "arm64", "triple": "aarch64-linux-gnu", "format": "elf64-little-aarch64-exec-static"],
+            ["os": "linux", "arch": "arm64", "triple": "aarch64-unknown-linux-musl", "format": "elf64-little-riscv-exec-static"],
+            // The exact historical RISC-V target tuple can never pass.
+            ["os": "linux", "arch": "riscv64", "triple": "riscv64gc-unknown-linux-musl", "format": "elf64-little-riscv-exec-static"]
         ] {
             let object = makeDescriptorDictionary(target: target)
             #expect(throws: SkillRuntimeDependencyError.self, "Unexpectedly accepted target: \(String(describing: target))") {
@@ -244,8 +283,8 @@ private func makeELF64(
         }
         // Unknown nested key is rejected too.
         let extra = makeDescriptorDictionary(target: [
-            "os": "linux", "arch": "riscv64", "triple": "riscv64gc-unknown-linux-musl",
-            "format": "elf64-little-riscv-exec-static", "cc": "riscv64-linux-musl-gcc"
+            "os": "linux", "arch": "arm64", "triple": "aarch64-unknown-linux-musl",
+            "format": "elf64-little-aarch64-exec-static", "cc": "aarch64-linux-musl-gcc"
         ])
         #expect(throws: SkillRuntimeDependencyError.self) {
             _ = try SkillRuntimeDependency.decode(try encode(extra))
@@ -254,13 +293,15 @@ private func makeELF64(
 
     @Test func artifactPathCrossFieldDriftFailsClosed() throws {
         for path in [
-            "engines/impeccable/dist/impeccable-0.1.18+floe.1.0.0/riscv64gc-unknown-linux-musl/floe-impeccable",
+            "engines/impeccable/dist/impeccable-0.1.18+floe.1.0.0/aarch64-unknown-linux-musl/floe-impeccable",
             "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/aarch64-linux-gnu/floe-impeccable",
-            "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/riscv64gc-unknown-linux-musl/floe-impeccable2",
+            "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/aarch64-unknown-linux-musl/floe-impeccable2",
             "engines/impeccable/dist/floe-impeccable",
-            "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/riscv64gc-unknown-linux-musl/../floe-impeccable",
-            "/engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/riscv64gc-unknown-linux-musl/floe-impeccable",
-            "engines\\impeccable\\dist\\impeccable-0.1.17+floe.1.0.0\\riscv64gc-unknown-linux-musl\\floe-impeccable"
+            "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/aarch64-unknown-linux-musl/../floe-impeccable",
+            "/engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/aarch64-unknown-linux-musl/floe-impeccable",
+            "engines\\impeccable\\dist\\impeccable-0.1.17+floe.1.0.0\\aarch64-unknown-linux-musl\\floe-impeccable",
+            // The historical RISC-V layout can never satisfy the frozen path.
+            "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/riscv64gc-unknown-linux-musl/floe-impeccable"
         ] {
             let object = makeDescriptorDictionary(artifact: [
                 "path": path, "size": 5579704, "sha256": frozenArtifactSHA256
@@ -290,7 +331,7 @@ private func makeELF64(
         }
         // Non-integral JSON number is not an exact integer size.
         let fractional = makeDescriptorDictionary(artifact: [
-            "path": "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/riscv64gc-unknown-linux-musl/floe-impeccable",
+            "path": "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/aarch64-unknown-linux-musl/floe-impeccable",
             "size": 5.5, "sha256": frozenArtifactSHA256
         ])
         #expect(throws: SkillRuntimeDependencyError.self, "A fractional artifact size must be rejected") {
@@ -298,7 +339,7 @@ private func makeELF64(
         }
         // Booleans are not integers.
         let boolean = makeDescriptorDictionary(artifact: [
-            "path": "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/riscv64gc-unknown-linux-musl/floe-impeccable",
+            "path": "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/aarch64-unknown-linux-musl/floe-impeccable",
             "size": true, "sha256": frozenArtifactSHA256
         ])
         #expect(throws: SkillRuntimeDependencyError.self) {
@@ -307,7 +348,7 @@ private func makeELF64(
         // Range edges decode.
         for edge in [1, SkillRuntimeDependency.maximumArtifactBytes] {
             let object = makeDescriptorDictionary(artifact: [
-                "path": "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/riscv64gc-unknown-linux-musl/floe-impeccable",
+                "path": "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/aarch64-unknown-linux-musl/floe-impeccable",
                 "size": edge, "sha256": frozenArtifactSHA256
             ])
             let descriptor = try SkillRuntimeDependency.decode(try encode(object))
@@ -319,7 +360,7 @@ private func makeELF64(
         for sha in [frozenArtifactSHA256.uppercased(), String(frozenArtifactSHA256.dropFirst()),
                     String(frozenArtifactSHA256 + "0"), String(repeating: "g", count: 64)] {
             let object = makeDescriptorDictionary(artifact: [
-                "path": "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/riscv64gc-unknown-linux-musl/floe-impeccable",
+                "path": "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/aarch64-unknown-linux-musl/floe-impeccable",
                 "size": 5579704, "sha256": sha
             ])
             #expect(throws: SkillRuntimeDependencyError.self) {
@@ -357,33 +398,41 @@ private func makeELF64(
 
     @Test func expectedHelpersAreExact() {
         #expect(SkillRuntimeDependency.expectedArtifactPath(
-            componentVersion: "0.1.17+floe.1.0.0", triple: "riscv64gc-unknown-linux-musl"
-        ) == "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/riscv64gc-unknown-linux-musl/floe-impeccable")
+            componentVersion: "0.1.17+floe.1.0.0", triple: "aarch64-unknown-linux-musl"
+        ) == "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/aarch64-unknown-linux-musl/floe-impeccable")
         #expect(SkillRuntimeDependency.expectedProbeStdout(componentVersion: "0.1.17+floe.1.0.0")
                 == "impeccable-engine 0.1.17+floe.1.0.0\n")
     }
 
     // MARK: - ELF gate
 
-    @Test func elfAcceptsStaticRISCVExec() throws {
+    @Test func elfAcceptsStaticAArch64Exec() throws {
         let bytes = makeELF64()
-        try SkillRuntimeDependency.verifyStaticRISCVExecELF(bytes)
+        try SkillRuntimeDependency.verifyStaticAArch64ExecELF(bytes)
+    }
+
+    @Test func elfRejectsLegacyRISCVArtifact() {
+        // The historical RISC-V machine type (243) must never pass the new gate.
+        let bytes = makeELF64(eMachine: 243)
+        #expect(throws: SkillRuntimeDependencyError.self) {
+            try SkillRuntimeDependency.verifyStaticAArch64ExecELF(bytes)
+        }
     }
 
     @Test func elfRejectsNonExecTypes() {
         for type: UInt16 in [1, 3] { // ET_REL, ET_DYN
             let bytes = makeELF64(eType: type)
             #expect(throws: SkillRuntimeDependencyError.self) {
-                try SkillRuntimeDependency.verifyStaticRISCVExecELF(bytes)
+                try SkillRuntimeDependency.verifyStaticAArch64ExecELF(bytes)
             }
         }
     }
 
     @Test func elfRejectsForeignMachines() {
-        for machine: UInt16 in [0x28, 62, 183] { // ARM, x86-64, AArch64
+        for machine: UInt16 in [0x28, 62, 243] { // ARM, x86-64, RISC-V
             let bytes = makeELF64(eMachine: machine)
             #expect(throws: SkillRuntimeDependencyError.self) {
-                try SkillRuntimeDependency.verifyStaticRISCVExecELF(bytes)
+                try SkillRuntimeDependency.verifyStaticAArch64ExecELF(bytes)
             }
         }
     }
@@ -391,52 +440,52 @@ private func makeELF64(
     @Test func elfRejectsInterpreter() {
         let bytes = makeELF64(phnum: 2, programHeaders: [(1, 64), (3, 64 + 56)])
         #expect(throws: SkillRuntimeDependencyError.self) {
-            try SkillRuntimeDependency.verifyStaticRISCVExecELF(bytes)
+            try SkillRuntimeDependency.verifyStaticAArch64ExecELF(bytes)
         }
     }
 
     @Test func elfRejectsMalformedHeaders() {
         // Truncated.
         #expect(throws: SkillRuntimeDependencyError.self) {
-            try SkillRuntimeDependency.verifyStaticRISCVExecELF(Data(count: 32))
+            try SkillRuntimeDependency.verifyStaticAArch64ExecELF(Data(count: 32))
         }
         // Bad magic.
         var badMagic = makeELF64(); badMagic[0] = 0x00
         #expect(throws: SkillRuntimeDependencyError.self) {
-            try SkillRuntimeDependency.verifyStaticRISCVExecELF(badMagic)
+            try SkillRuntimeDependency.verifyStaticAArch64ExecELF(badMagic)
         }
         // ELF32 class.
         #expect(throws: SkillRuntimeDependencyError.self) {
-            try SkillRuntimeDependency.verifyStaticRISCVExecELF(makeELF64(eiClass: 1))
+            try SkillRuntimeDependency.verifyStaticAArch64ExecELF(makeELF64(eiClass: 1))
         }
         // Big-endian data encoding.
         #expect(throws: SkillRuntimeDependencyError.self) {
-            try SkillRuntimeDependency.verifyStaticRISCVExecELF(makeELF64(eiData: 2))
+            try SkillRuntimeDependency.verifyStaticAArch64ExecELF(makeELF64(eiData: 2))
         }
         // Wrong e_ident version.
         #expect(throws: SkillRuntimeDependencyError.self) {
-            try SkillRuntimeDependency.verifyStaticRISCVExecELF(makeELF64(eiVersion: 2))
+            try SkillRuntimeDependency.verifyStaticAArch64ExecELF(makeELF64(eiVersion: 2))
         }
         // e_version mismatch.
         #expect(throws: SkillRuntimeDependencyError.self) {
-            try SkillRuntimeDependency.verifyStaticRISCVExecELF(makeELF64(eVersion: 2))
+            try SkillRuntimeDependency.verifyStaticAArch64ExecELF(makeELF64(eVersion: 2))
         }
         // Program-header entry size must be 56.
         #expect(throws: SkillRuntimeDependencyError.self) {
-            try SkillRuntimeDependency.verifyStaticRISCVExecELF(makeELF64(phentsize: 64))
+            try SkillRuntimeDependency.verifyStaticAArch64ExecELF(makeELF64(phentsize: 64))
         }
         // phnum bounds.
         for phnum: UInt16 in [0, 257] {
             #expect(throws: SkillRuntimeDependencyError.self) {
-                try SkillRuntimeDependency.verifyStaticRISCVExecELF(makeELF64(phnum: phnum))
+                try SkillRuntimeDependency.verifyStaticAArch64ExecELF(makeELF64(phnum: phnum))
             }
         }
         // Program-header table outside the file.
         #expect(throws: SkillRuntimeDependencyError.self) {
-            try SkillRuntimeDependency.verifyStaticRISCVExecELF(makeELF64(phoff: 4096))
+            try SkillRuntimeDependency.verifyStaticAArch64ExecELF(makeELF64(phoff: 4096))
         }
         #expect(throws: SkillRuntimeDependencyError.self) {
-            try SkillRuntimeDependency.verifyStaticRISCVExecELF(makeELF64(phnum: 3, programHeaders: [(1, 64)]))
+            try SkillRuntimeDependency.verifyStaticAArch64ExecELF(makeELF64(phnum: 3, programHeaders: [(1, 64)]))
         }
     }
 }

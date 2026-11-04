@@ -72,6 +72,10 @@ public struct ContainerRecord: Codable, Sendable, Identifiable, Hashable {
     public var runtimeGeneration: String?
     public var templateVersion: Int?
     public var templateDigest: String?
+    /// Persisted fence for a user-requested initial-state restore. Optional
+    /// for existing registries; only the owning reset may clear it.
+    public var pendingRuntimeResetID: String? = nil
+    public var runtimeResetRestoreState: ContainerState? = nil
 
     /// Effective backend with the decode-compatibility default applied.
     public var effectiveExecutionBackend: EnvironmentExecutionBackend { executionBackend ?? .native }
@@ -118,7 +122,8 @@ public struct ContainerRecord: Codable, Sendable, Identifiable, Hashable {
         self.templateVersion = templateVersion
         self.templateDigest = templateDigest
         self.remoteHostID = remoteHostID; self.remoteRootPath = remoteRootPath
-        self.operatingSystem = operatingSystem; self.architecture = architecture
+        self.operatingSystem = operatingSystem ?? (executionBackend == .linuxVM ? "linux" : nil)
+        self.architecture = architecture ?? (executionBackend == .linuxVM ? "arm64" : nil)
         self.distribution = distribution; self.runtimeGeneration = runtimeGeneration
     }
 

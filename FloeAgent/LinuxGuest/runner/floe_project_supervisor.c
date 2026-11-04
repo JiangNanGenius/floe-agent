@@ -1119,8 +1119,8 @@ static int project_cgroup_create(floe_project *p) {
         diag("floe-supervisor: project %s: pids.max: %s\n", p->id, strerror(errno));
         return -1;
     }
-    // Per-task ceilings are fixed constants (shared-machine model); the
-    // runner recreates task dirs with the same values for every task. Both
+    // Tasks inherit the physical machine's CPU/RAM budget; process counts
+    // remain bounded. Both
     // the project cgroup and the tasks dir stay process-free (task procs go
     // into tasks/<token>), satisfying the cgroup v2 no-internal-process
     // rule for subtree_control.

@@ -53,6 +53,7 @@ public actor ContainerLifecycle {
     @discardableResult
     public func destroy(containerID: String, orphaned: Bool = false) async throws -> DestroyReport? {
         guard let record = await registry.record(id: containerID) else { return nil }
+        guard record.pendingRuntimeResetID == nil else { throw FloeError.validationFailed("Finish restoring the runtime before removing this environment") }
         guard record.kind == .session || record.kind == .project else {
             return DestroyReport(
                 containerID: containerID,
@@ -173,6 +174,7 @@ public actor ContainerLifecycle {
         guard let record = await registry.record(id: containerID) else {
             throw FloeError.notFound("container \(containerID)")
         }
+        guard record.pendingRuntimeResetID == nil else { throw FloeError.validationFailed("Retry restoring the initial state to finish this operation") }
         let url = roots.layerURL(id: record.id, kind: record.kind)
         try roots.materializeContainerLayout(at: url)
         var manifest = LayerManifest.load(from: url)
@@ -193,6 +195,19 @@ public actor ContainerLifecycle {
             try? await registry.transition(id: containerID, state: record.state)
             throw error
         }
+    }
+
+    public func resetDependencies(containerID: String, resetID: String) async throws {
+        guard let record = await registry.record(id: containerID), record.state == .stopped,
+              record.pendingRuntimeResetID == resetID else {
+            throw FloeError.validationFailed("The environment is not owned by this reset")
+        }
+        try await stopWork(containerID: containerID)
+        let references = try await registry.resetManagedLayer(id: containerID, resetID: resetID)
+        // Uninstalling a layer releases ownership only. Shared package blobs
+        // stay available to other tasks and are not eagerly garbage-collected.
+        do { try await cas.release(references) }
+        catch { FloeLogger(category: .persistence).warning("Runtime reset retained package cache references") }
     }
 
     /// Refreshes cached size/package counters for every container.

@@ -164,7 +164,6 @@
 		1C180DB0E38DFB1891B3B258 /* SubagentSimulatorExecutionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3041BDC9EDFAE2D2785E5788 /* SubagentSimulatorExecutionTests.swift */; };
 		1C1AC109E05E0200DE4EADD0 /* CADTexturePaintBakeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5606C42BEE92303753D50C2D /* CADTexturePaintBakeTests.swift */; };
 		1C349C8D48389E1A37CF0AC1 /* CADMaterialCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9A28E6122BFB7081D975E9A /* CADMaterialCoreTests.swift */; };
-		1C4F84541CA62FFCD884726C /* bundled-boot-pair in Resources */ = {isa = PBXBuildFile; fileRef = 9E2C477C0FDB25F6328AC0EB /* bundled-boot-pair */; };
 		1C6D1BB9A02E42A96C1694DD /* FloeShortcutRunIntentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5AACAD1C7FF9BA2CB6B0BC0 /* FloeShortcutRunIntentTests.swift */; };
 		1C8178D7E152DA84A1519F0F /* ContinuousVoicePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00AF52C2BED7ED23F79257 /* ContinuousVoicePresentationTests.swift */; };
 		1C968088D28B2BC832002398 /* NotesAnswerSaveSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA08CA7F04B80584CF249E25 /* NotesAnswerSaveSheet.swift */; };
@@ -2253,7 +2252,6 @@
 		9D3F41AA3EFDF6F065F64FBB /* ImageEditorViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageEditorViewModel.swift; sourceTree = "<group>"; };
 		9D8FAEF1503644BD831B03F7 /* CameraPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPickerView.swift; sourceTree = "<group>"; };
 		9D90343FE68CA734976CE0AF /* CADCurveConstraintSolvingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADCurveConstraintSolvingTests.swift; sourceTree = "<group>"; };
-		9E2C477C0FDB25F6328AC0EB /* bundled-boot-pair */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "bundled-boot-pair"; path = "ThirdParty/TinyEMU/guest-image/bundled-boot-pair"; sourceTree = SOURCE_ROOT; };
 		9E7484DF188E2D750D6F5E1D /* AllWorkspacesFilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AllWorkspacesFilesView.swift; sourceTree = "<group>"; };
 		9E86A8E54493DBC09A0A8BD0 /* ContinuousVoicePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContinuousVoicePresentation.swift; sourceTree = "<group>"; };
 		9E885F81241D7E8EC4489BB6 /* SkillPackageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillPackageTests.swift; sourceTree = "<group>"; };
@@ -3358,14 +3356,6 @@
 			path = FloeScreenShare;
 			sourceTree = "<group>";
 		};
-		1D7F5812548AD8433A22FAFC /* guest-image */ = {
-			isa = PBXGroup;
-			children = (
-				9E2C477C0FDB25F6328AC0EB /* bundled-boot-pair */,
-			);
-			path = "guest-image";
-			sourceTree = "<group>";
-		};
 		20D89574F460EBD323C07AC4 /* Fixtures */ = {
 			isa = PBXGroup;
 			children = (
@@ -4016,14 +4006,6 @@
 			path = RoyalVNCKit;
 			sourceTree = "<group>";
 		};
-		5E19016351AE4B8F464485F3 /* TinyEMU */ = {
-			isa = PBXGroup;
-			children = (
-				1D7F5812548AD8433A22FAFC /* guest-image */,
-			);
-			path = TinyEMU;
-			sourceTree = "<group>";
-		};
 		5F88DD1F13C82F2B405FA801 /* Settings */ = {
 			isa = PBXGroup;
 			children = (
@@ -4361,7 +4343,6 @@
 			children = (
 				56C7F96EE76B70BE370CAEBF /* FloeCADKit */,
 				5DBB570906C287634081D825 /* RoyalVNCKit */,
-				5E19016351AE4B8F464485F3 /* TinyEMU */,
 			);
 			path = ThirdParty;
 			sourceTree = "<group>";
@@ -5024,7 +5005,6 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = B1532B1CAF0880096576D78A /* Build configuration list for PBXNativeTarget "FloeAgent" */;
 			buildPhases = (
-				1D6AD30D608AF4F32FB0CFCA /* Verify bundled Linux boot pair */,
 				635456F5C5F24F3879B481C5 /* Sources */,
 				22D9CE5B0F8FCF5F1DDC40F7 /* Resources */,
 				DB3143927DF1F8F8F1F9C9EF /* Frameworks */,
@@ -5311,7 +5291,6 @@
 				E9075DDE4B9BCC5B1C61D735 /* Whisper in Resources */,
 				85FE596AA078AE1512E4FD3A /* ZLImageEditor-LICENSE.txt in Resources */,
 				B52C3EFD71389DCC522FD3DA /* basic-machining-backend-0.2.0.zip in Resources */,
-				1C4F84541CA62FFCD884726C /* bundled-boot-pair in Resources */,
 				B64AAD73B34ED0DC62DB552E /* commandDictionary.plist in Resources */,
 				72F687318496A3451661FD31 /* dayjs.min.js in Resources */,
 				4C05485830F52842CAD2CBE2 /* dotnet-LICENSE.txt in Resources */,
@@ -5389,25 +5368,6 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		1D6AD30D608AF4F32FB0CFCA /* Verify bundled Linux boot pair */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "Verify bundled Linux boot pair";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "bash \"$SRCROOT/ThirdParty/TinyEMU/guest-image/stage-boot-pair.sh\" --check";
-		};
 		F210E408ECEE4FD397A223EE /* Embed verified native Office host */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;

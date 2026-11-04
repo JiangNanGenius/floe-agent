@@ -307,22 +307,32 @@ struct LinuxImageInstallCard: View {
     /// suggests the user must boot a VM by hand before running anything.
     /// The Terminal keeps its explicit start affordance.
     var allowsManualStart: Bool = true
+    /// A Form already owns row chrome and padding. Keep the same status and
+    /// actions without drawing another material card inside the settings row.
+    var embeddedInForm: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             // The title follows the DERIVED state: a fixed "isn't installed"
             // label here rendered "未安装 Linux" even while a verified guest
             // was running (Build 240 device feedback). Only the genuine
             // not-installed states keep that wording; every other state —
             // including running and installed-stopped — carries the neutral
             // component title.
-            Label(Self.title(for: model.state), systemImage: "shippingbox")
+            Label(Self.title(for: model.state), systemImage: statusSymbol)
                 .font(.subheadline.weight(.semibold))
             content
         }
-        .padding(12)
+        .controlSize(.small)
+        .padding(embeddedInForm ? 0 : 14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial)
+        .background {
+            if !embeddedInForm {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemGroupedBackground))
+            }
+        }
+        .accessibilityElement(children: .contain)
         .onChange(of: EnvironmentPackageJobs.shared.revision) { _, _ in
             // Refresh first, then continue only when THIS image's own shared
             // job completed with a verified status. An unrelated package job
@@ -342,6 +352,16 @@ struct LinuxImageInstallCard: View {
             // presentation immediately; byte updates themselves only need the
             // job object above.
             Task { await model.refresh() }
+        }
+    }
+
+    private var statusSymbol: String {
+        switch model.state {
+        case .running, .installedStopped: "terminal"
+        case .downloading, .needsDownload: "arrow.down.circle"
+        case .imageRepairRequired, .repairRequired: "exclamationmark.triangle"
+        case .updateAvailable: "arrow.triangle.2.circlepath"
+        case .storageInitializing, .storageUnavailable: "externaldrive"
         }
     }
 
@@ -463,6 +483,7 @@ struct LinuxImageInstallCard: View {
             Label("environment.backend.status.running", systemImage: "checkmark.seal.fill")
                 .font(.caption)
                 .foregroundStyle(FloeTheme.success)
+            if model.running { downloadingContent(cancelling: model.cancelling) }
         }
     }
 
