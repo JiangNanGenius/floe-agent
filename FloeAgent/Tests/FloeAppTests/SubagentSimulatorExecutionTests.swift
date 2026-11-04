@@ -7104,7 +7104,9 @@ private struct ImpeccableCurrentInputs {
         }
         // Preserve the production download gate's static-ELF check even when
         // the exact signed bytes are delivered from the pinned host artifact.
-        try SkillRuntimeDependency.verifyStaticRISCVExecELF(engine)
+        // Historical 1.1.1 RISC-V fixtures intentionally fail the current ARM64
+        // production gate; never reuse them as this release's execution proof.
+        try SkillRuntimeDependency.verifyStaticAArch64ExecELF(engine)
         return Self(
             snapshot: try read("snapshot-needs-hit-tests.v1.json",
                                bytes: ImpeccableCurrentPins.fixtureSnapshotBytes,
