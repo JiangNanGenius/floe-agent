@@ -339,7 +339,8 @@ class MediaEditorController internal constructor(
         layerOperation = LayerOperationState()
     }
 
-    fun clearGallerySave() {
+    fun clearGallerySave(jobID: String) {
+        if (gallerySave.busy || gallerySave.jobID != jobID) return
         gallerySave = GallerySaveState()
     }
 
@@ -663,6 +664,7 @@ class MediaEditorController internal constructor(
         if (port == null || gallerySave.busy) return
         if (receipt.binding.projectID != projectID) {
             gallerySave = GallerySaveState(
+                jobID = jobID,
                 failure = MediaFailure(MediaFailureKind.OWNER_BLOCKED, "galleryOwnerMismatch"),
             )
             return
@@ -670,6 +672,7 @@ class MediaEditorController internal constructor(
         val job = r2?.exports?.job(jobID)
         if (job != null && !job.owner.matches(r2Context)) {
             gallerySave = GallerySaveState(
+                jobID = jobID,
                 failure = MediaFailure(MediaFailureKind.OWNER_BLOCKED, "galleryOwnerMismatch"),
             )
             return
@@ -679,18 +682,21 @@ class MediaEditorController internal constructor(
         } else {
             MediaGalleryCollection.VIDEO
         }
+        // Claim synchronously before dispatch so rapid taps cannot launch
+        // two saves before the coroutine first runs.
+        gallerySave = GallerySaveState(jobID = jobID, busy = true)
         scope.launch {
-            gallerySave = GallerySaveState(busy = true)
             try {
                 when (val outcome = port.saveToGallery(r2Context, receipt, collection)) {
                     is MediaGallerySaveOutcome.Saved -> {
-                        gallerySave = GallerySaveState(savedDisplayName = outcome.displayName)
+                        gallerySave = GallerySaveState(jobID = jobID, savedDisplayName = outcome.displayName)
                     }
                     is MediaGallerySaveOutcome.PermissionRequired -> {
-                        gallerySave = GallerySaveState(permission = outcome.permission)
+                        gallerySave = GallerySaveState(jobID = jobID, permission = outcome.permission)
                     }
                     is MediaGallerySaveOutcome.Failed -> {
                         gallerySave = GallerySaveState(
+                            jobID = jobID,
                             failure = MediaFailure(
                                 when (outcome.code) {
                                     "galleryOwnerMismatch", "galleryRootRefused",
@@ -714,7 +720,7 @@ class MediaEditorController internal constructor(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
-                gallerySave = GallerySaveState(failure = MediaFailures.from(error))
+                gallerySave = GallerySaveState(jobID = jobID, failure = MediaFailures.from(error))
             }
         }
     }
@@ -1727,4 +1733,5 @@ data class GallerySaveState(
     val permission: String? = null,
     val failure: MediaFailure? = null,
     val pendingCleaned: Boolean = true,
+    val jobID: String? = null,
 )

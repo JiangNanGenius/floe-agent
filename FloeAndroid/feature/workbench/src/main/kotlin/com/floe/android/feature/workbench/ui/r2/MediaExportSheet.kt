@@ -616,7 +616,7 @@ private fun VerifiedReceipt(
 ) {
     val scope = rememberCoroutineScope()
     var notice by remember(jobID) { mutableStateOf<Int?>(null) }
-    LaunchedEffect(jobID) { controller.clearGallerySave() }
+    val gallerySave = controller.gallerySave.takeIf { it.jobID == jobID }
     Column(
         Modifier
             .fillMaxWidth()
@@ -690,7 +690,7 @@ private fun VerifiedReceipt(
                 color = Floe.colors.secondaryLabel,
             )
         }
-        controller.gallerySave.savedDisplayName?.let { name ->
+        gallerySave?.savedDisplayName?.let { name ->
             FloeText(
                 if (java.util.Locale.getDefault().language == "zh") {
                     "已保存到相册：$name"
@@ -706,11 +706,11 @@ private fun VerifiedReceipt(
                 } else {
                     "Dismiss"
                 },
-                onClick = { controller.clearGallerySave() },
+                onClick = { controller.clearGallerySave(jobID) },
                 showHairline = false,
             )
         }
-        controller.gallerySave.permission?.let {
+        gallerySave?.permission?.let {
             FloeText(
                 if (java.util.Locale.getDefault().language == "zh") {
                     "保存到系统相册需要存储权限。请从系统设置允许后重试。"
@@ -721,7 +721,7 @@ private fun VerifiedReceipt(
                 color = Floe.colors.pending,
             )
         }
-        controller.gallerySave.failure?.let { _ ->
+        gallerySave?.failure?.let { _ ->
             FloeText(
                 if (java.util.Locale.getDefault().language == "zh") {
                     "保存到相册失败，已验证的导出文件仍保留。"

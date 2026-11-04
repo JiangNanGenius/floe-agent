@@ -27,7 +27,9 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
-internal fun MediaFailure.titleRes(): Int = when (kind) {
+internal fun MediaFailure.titleRes(): Int = if (code == "unsupportedSourceFormat") {
+    R.string.media_r2_source_format_title
+} else when (kind) {
     MediaFailureKind.NEEDS_CORE_UPDATE -> R.string.media_core_update_title
     MediaFailureKind.RUNTIME_NOT_READY -> R.string.media_runtime_waiting_title
     MediaFailureKind.REVISION_CONFLICT -> R.string.media_failure_revision_title
@@ -47,7 +49,9 @@ internal fun MediaFailure.titleRes(): Int = when (kind) {
     MediaFailureKind.UNKNOWN -> R.string.media_operation_failed_title
 }
 
-internal fun MediaFailure.bodyRes(): Int = when (kind) {
+internal fun MediaFailure.bodyRes(): Int = if (code == "unsupportedSourceFormat") {
+    R.string.media_r2_source_format_body
+} else when (kind) {
     MediaFailureKind.NEEDS_CORE_UPDATE -> R.string.media_core_update_body
     MediaFailureKind.RUNTIME_NOT_READY -> R.string.media_runtime_waiting_body
     MediaFailureKind.REVISION_CONFLICT -> R.string.media_failure_revision_body

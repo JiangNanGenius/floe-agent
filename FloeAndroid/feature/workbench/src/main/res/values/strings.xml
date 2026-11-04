@@ -466,4 +466,6 @@
     <string name="media_enhancement_failure_super_resolution">Super resolution failed. Check the backend setup and the source, then try again.</string>
     <string name="media_enhancement_failure_generic">Enhancement failed. Please try again.</string>
     <string name="media_r2_export_source_fps_hint">Choose an export frame rate no higher than your clips.</string>
+    <string name="media_r2_source_format_title">Source and settings do not match</string>
+    <string name="media_r2_source_format_body">Try a lower export frame rate, a different format, or another source.</string>
 </resources>

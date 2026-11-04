@@ -464,4 +464,6 @@
     <string name="media_enhancement_failure_super_resolution">超分辨率失败。请检查后端设置与源文件后重试。</string>
     <string name="media_enhancement_failure_generic">增强失败，请重试。</string>
     <string name="media_r2_export_source_fps_hint">导出帧率不能高于素材帧率。</string>
+    <string name="media_r2_source_format_title">素材与设置不兼容</string>
+    <string name="media_r2_source_format_body">请尝试降低导出帧率、调整格式，或更换素材。</string>
 </resources>
