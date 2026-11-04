@@ -225,7 +225,7 @@ public struct RuntimeV2Layout: Sendable {
         self.root = root.standardizedFileURL
     }
 
-    /// Production root: `<Application Support>/Floe/Runtime/v2`. Distinct from
+    /// Production ARM64 root: `<Application Support>/Floe/Runtime/arm64-v1`. Distinct from
     /// the legacy `<Application Support>/FloeAgent` artifact store; migration
     /// reads the legacy tree, never writes it in place.
     public static func production(fileManager: FileManager = .default) throws -> RuntimeV2Layout {
@@ -241,7 +241,7 @@ public struct RuntimeV2Layout: Sendable {
             root: support
                 .appendingPathComponent("Floe", isDirectory: true)
                 .appendingPathComponent("Runtime", isDirectory: true)
-                .appendingPathComponent("v2", isDirectory: true)
+                .appendingPathComponent("arm64-v1", isDirectory: true)
         )
     }
 

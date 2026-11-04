@@ -367,6 +367,9 @@ struct LinuxImageInstallCard: View {
 
     @ViewBuilder
     private var content: some View {
+        if model.running {
+            downloadingContent(cancelling: model.cancelling)
+        } else {
         switch model.state {
         case .storageUnavailable:
             Text("environment.backend.image_store_unavailable")
@@ -484,6 +487,7 @@ struct LinuxImageInstallCard: View {
                 .font(.caption)
                 .foregroundStyle(FloeTheme.success)
             if model.running { downloadingContent(cancelling: model.cancelling) }
+        }
         }
     }
 

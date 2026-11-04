@@ -1299,7 +1299,7 @@ import FloeTools
             let submitted = try await jobs.submit(runID: runID, toolCallID: "static-qualification-" + UUID().uuidString,
                 targetTool: "exec.localService", payloadJSON: JSONEncoder().encode(invocation), scope: .local,
                 workspaceRootURL: root, allowedWorkspacePaths: [], environmentID: id,
-                waitForCompletion: false)
+                submissionSource: .nativeService, waitForCompletion: false)
             jobID = submitted.id; evidence["jobID"] = submitted.id.uuidString
             retainEvidence("submitted-once")
             let preview = try await waitForPreview(jobs, id: submitted.id)

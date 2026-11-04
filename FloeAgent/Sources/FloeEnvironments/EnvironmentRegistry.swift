@@ -19,6 +19,7 @@ public actor EnvironmentRegistry {
     public static let sharedContainerName = "shared"
 
     private let compatibleBaseRevisions: Set<String>
+    private let retiredLinuxBaseRevisions: Set<String>
     private let roots: EnvironmentRoots
     private let fileManager = FileManager.default
     private var records: [String: ContainerRecord] = [:]
@@ -35,11 +36,13 @@ public actor EnvironmentRegistry {
         roots: EnvironmentRoots = .shared,
         baseRevision: String,
         compatibleBaseRevisions: Set<String> = [],
+        retiredLinuxBaseRevisions: Set<String> = [],
         defaultExecutionBackend: EnvironmentExecutionBackend = .linuxVM
     ) {
         self.roots = roots
         self.baseRevision = baseRevision
         self.compatibleBaseRevisions = compatibleBaseRevisions
+        self.retiredLinuxBaseRevisions = retiredLinuxBaseRevisions
         self.defaultExecutionBackend = defaultExecutionBackend
     }
 
@@ -86,8 +89,55 @@ public actor EnvironmentRegistry {
             try materialize(shared)
         }
         try migrateLegacyExecutionBackends()
+        try replaceRetiredLinuxDependenciesAtStartup()
         try persist()
         loaded = true
+    }
+
+    /// An explicitly declared architecture retirement is destructive only to
+    /// App-managed dependencies. This runs synchronously before this registry
+    /// admits any workers; ordinary base changes retain the existing rebuild
+    /// gate. Crash fences remain durable until the whole batch commits.
+    private func replaceRetiredLinuxDependenciesAtStartup() throws {
+        let selected = records.values.filter {
+            retiredLinuxBaseRevisions.contains($0.baseRevision)
+                && $0.effectiveExecutionBackend == .linuxVM
+                && $0.kind != .template && $0.state != .deleting
+        }
+        guard !selected.isEmpty else { return }
+        let workspaces = try protectedWorkspacePaths()
+        // Validate the complete batch before replacing even its first layer.
+        for record in selected { try validateDependencyReplacement(record, workspaces: workspaces) }
+        let resetID = UUID().uuidString
+        let previous = records
+        for var record in selected {
+            if record.runtimeResetRestoreState == nil { record.runtimeResetRestoreState = record.state }
+            record.state = .stopped; record.pendingRuntimeResetID = resetID
+            record.requiresRebuild = true
+            record.rebuildReason = "Runtime architecture replacement is incomplete. Retry restoring the initial state."
+            records[record.id] = record
+        }
+        do { try persist() } catch { records = previous; throw error }
+        for record in selected {
+            _ = try replaceManagedLayer(id: record.id, resetID: resetID, workspaces: workspaces)
+        }
+        try finishRuntimeReset(id: resetID)
+    }
+
+    private func protectedWorkspacePaths() throws -> [String] {
+        let mapping = try workspaceMappings()
+        return records.values.filter { $0.kind == .project }.compactMap {
+            workspaceRootFromLoadedRecords(for: $0.id, mapping: mapping)?.path
+        }
+    }
+
+    private func validateDependencyReplacement(_ record: ContainerRecord, workspaces: [String]) throws {
+        let current = roots.layerURL(id: record.id, kind: record.kind)
+        try validateMigrationPath(current)
+        let path = current.resolvingSymlinksInPath().standardizedFileURL.path
+        guard !workspaces.contains(where: { $0 == path || $0.hasPrefix(path + "/") }) else {
+            throw FloeError.validationFailed("Project files are inside this dependency layer; existing files were retained")
+        }
     }
 
     /// Phase 2 (Linux runtime migration): records that never made an explicit
@@ -809,20 +859,17 @@ public actor EnvironmentRegistry {
     /// Replaces one App-managed dependency layer; project folders are separate
     /// references and are never copied, removed or traversed by this operation.
     public func resetManagedLayer(id: String, resetID: String) throws -> [String] {
+        try replaceManagedLayer(id: id, resetID: resetID, workspaces: protectedWorkspacePaths())
+    }
+
+    private func replaceManagedLayer(id: String, resetID: String, workspaces: [String]) throws -> [String] {
         guard let record = records[id], record.state == .stopped,
               record.pendingRuntimeResetID == resetID,
               record.effectiveExecutionBackend == .linuxVM, record.kind != .template else {
             throw FloeError.validationFailed("The environment is not owned by this reset")
         }
+        try validateDependencyReplacement(record, workspaces: workspaces)
         let current = roots.layerURL(id: record.id, kind: record.kind)
-        try validateMigrationPath(current)
-        let canonicalCurrent = current.resolvingSymlinksInPath().standardizedFileURL.path
-        for project in records.values where project.kind == .project {
-            if let workspace = try workspaceRoot(for: project.id),
-               workspace.path == canonicalCurrent || workspace.path.hasPrefix(canonicalCurrent + "/") {
-                throw FloeError.validationFailed("Project files are inside this dependency layer; existing files were retained")
-            }
-        }
         let oldReferences = (try? LayerManifest.loadChecked(from: current))?.casRefs ?? []
         let fresh = roots.trashURL.appendingPathComponent("reset-" + UUID().uuidString, isDirectory: true)
         try fileManager.createDirectory(at: fresh, withIntermediateDirectories: true)
@@ -1008,13 +1055,25 @@ public actor EnvironmentRegistry {
     /// Resolve this exact container's project, never an arbitrary first project.
     public func workspaceRoot(for containerID: String) throws -> URL? {
         try prepare()
+        return workspaceRootFromLoadedRecords(for: containerID, mapping: try workspaceMappings())
+    }
+
+    private func workspaceMappings() throws -> [String: [String: String]] {
+        let file = roots.rootURL.appendingPathComponent("workspace-containers.json")
+        guard fileManager.fileExists(atPath: file.path) else { return [:] }
+        return try JSONDecoder().decode([String: [String: String]].self, from: Data(contentsOf: file))
+    }
+
+    /// Also used synchronously during startup, after records are decoded but
+    /// before prepare completes. Never re-enters prepare or guesses ownership.
+    private func workspaceRootFromLoadedRecords(
+        for containerID: String, mapping: [String: [String: String]]
+    ) -> URL? {
         guard let record = records[containerID] else { return nil }
         let project = record.kind == .session ? record.parentID.flatMap { records[$0] } : record
-        guard let project, project.kind == .project, let owner = project.ownerID else { return nil }
-        let mappingURL = roots.rootURL.appendingPathComponent("workspace-containers.json")
-        guard fileManager.fileExists(atPath: mappingURL.path) else { return nil }
-        let mapping = try JSONDecoder().decode([String: [String: String]].self, from: Data(contentsOf: mappingURL))
-        guard let entry = mapping[owner], entry["containerID"] == project.id, let path = entry["path"] else { return nil }
+        guard let project, project.kind == .project, let owner = project.ownerID,
+              let entry = mapping[owner], entry["containerID"] == project.id,
+              let path = entry["path"] else { return nil }
         let root = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
         guard FloeDigest.sha256Hex(Data(root.path.utf8)) == owner else { return nil }
         return root

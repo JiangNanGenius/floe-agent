@@ -309,6 +309,7 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
 
     private let store: RuntimeV2Store
     private let legacyImagesRoot: URL?
+    private let allowsLegacyEnvironmentMigration: Bool
     private let build: String
     private let seams: Seams
     private var fileManager: FileManager { .default }
@@ -336,12 +337,14 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
     public init(
         store: RuntimeV2Store,
         legacyImagesRoot: URL? = nil,
+        allowsLegacyEnvironmentMigration: Bool = true,
         build: String? = nil,
         seams: Seams = .production,
         preparationStageHandler: (@Sendable (RuntimeV2Store.RecoveryStage) -> Void)? = nil
     ) {
         self.store = store
         self.legacyImagesRoot = legacyImagesRoot
+        self.allowsLegacyEnvironmentMigration = allowsLegacyEnvironmentMigration
         self.seams = seams
         self.build = build
             ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String)
@@ -850,7 +853,7 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         }
         try await ensureImageMigrated(imageID)
         if (try await store.registry.environment(id: environmentID)) == nil {
-            let legacyDiskDirectory = legacyWritableDirectory?
+            let legacyDiskDirectory = (allowsLegacyEnvironmentMigration ? legacyWritableDirectory : nil)?
                 .appendingPathComponent(LinuxGuestRuntimeImagePreparer.writableDirectoryName, isDirectory: true)
                 .appendingPathComponent("disks", isDirectory: true)
                 .appendingPathComponent(environmentID, isDirectory: true)
@@ -884,7 +887,7 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
                 name: nil,
                 baseImageID: migrationBaseImageID,
                 legacyDiskDirectory: legacyDiskDirectory,
-                legacyLayerDirectory: legacyWritableDirectory
+                legacyLayerDirectory: allowsLegacyEnvironmentMigration ? legacyWritableDirectory : nil
             )
         }
         // Existing environments and immutable template pins keep their real

@@ -853,6 +853,7 @@ targets:
       - path: Tests/FloePersistenceTests/ConversationPinningStoreTests.swift
       - path: Tests/FloeSkillsTests/GitHubDirectoryUpdateTests.swift
       - path: Tests/FloeSkillsTests/SkillWorkspaceInstallToolTests.swift
+      - path: Tests/FloePackagesTests/ARM64DependencyCutoverTests.swift
       - path: Tests/FloeSkillsTests/SkillHubTransportBudgetTests.swift
       - path: Tests/FloeSkillsTests/SkillHubToolContractTests.swift
       - path: Tests/FloeSkillsTests/CuratedSkillHubTests.swift

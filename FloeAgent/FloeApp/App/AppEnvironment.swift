@@ -918,7 +918,8 @@ final class AppEnvironment: ObservableObject {
         let environmentRoots = EnvironmentRoots()
         let environmentRegistry = EnvironmentRegistry(
             baseRevision: FloePlatformServices.environmentBaseRevision,
-            compatibleBaseRevisions: []
+            compatibleBaseRevisions: [],
+            retiredLinuxBaseRevisions: ["ios-v1-cpython313-node18204-wasi1"]
         )
         self.environmentRegistry = environmentRegistry
         let containerCAS = ContainerCAS(roots: environmentRoots)

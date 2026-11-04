@@ -353,6 +353,7 @@ enum LinuxGuestBackendAssembly {
         let integrator = RuntimeV2GuestIntegrator(
             store: store,
             legacyImagesRoot: legacyRoot,
+            allowsLegacyEnvironmentMigration: false,
             preparationStageHandler: stageReport
         )
         let images = RuntimeV2CompositeImageResolver(
