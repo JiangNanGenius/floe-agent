@@ -1,0 +1,16 @@
+Floe Agent 1.7.70 (Build 311)
+
+This build replaces the previous on-device Linux engine with a shared ARM64 runtime. Projects share CPU and memory settings while retaining separate files and dependency ownership. Project files, conversations and installed Skill records are preserved when Restore Initial State resets the runtime and dependencies. There is no migration of the old engine's installed binaries.
+
+No Floe account is required. Cloud AI uses the user's own provider configuration; no provider credentials are embedded. Tests can consume the selected provider's allowance. Saving provider settings does not generate paid media, and billing channels do not silently switch.
+
+Suggested checks:
+1. Open Settings > Execution Environment. The resource controls apply to the shared local runtime. Manage Runtime offers Restore Initial State and Re-download; both explain their effect before starting. Download and preparation states describe actual progress.
+2. Start a local web service in a task, then open its forwarded address in the task browser. Browser loopback access uses the task's resolved execution environment. Stopping a service closes its endpoint.
+3. Install an official Skill from Skill Hub. Required resources are prepared by the existing download service. The same installed ARM64 binary component can be reused by another task; environment readiness is checked again after a restart.
+4. On a Mac running the iPad App, Settings > Execution Environment provides the optional same-Mac Floe Bridge connection flow, including pairing, retry and disconnect. Bridge installation is initiated by the user and its local connection is authenticated. These Mac controls are hidden on iPad and iPhone. A missing or disconnected Bridge does not automatically download a virtual machine or replay commands.
+5. Enter a long message on New Task or in a conversation. Text wraps, keeps the caret visible, shows up to three complete lines and offers the expanded editor. Existing browser, speech and native 3D improvements are retained.
+6. Advanced browser data access requires explicit risk confirmation. Permissions for model providers are persistent and individually revocable. Authorized configured model services may receive cookies and private page information. Temporary chat retains its read-only public-web boundary.
+7. Background audio is user controlled. Choose an available sound and audible volume in background settings to check playback after returning to the Home Screen. Screen-recording permission is requested for an actual recording. Local native features do not require downloading Linux.
+
+The App is free to download. Floe does not sell model-provider subscriptions. Mac Bridge is optional; ordinary App features remain available without it.
