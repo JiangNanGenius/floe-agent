@@ -53502,13 +53502,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Install and open Floe Bridge, then connect below. Confirm the matching code in both apps."
+            "value": "Install and open Floe Bridge, then choose Connect. Confirm the matching code in both apps."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "安装并打开 Floe Bridge，再点击下方连接，在两个 App 中确认相同的配对码。"
+            "value": "安装并打开 Floe Bridge，再点“连接这台 Mac”，在两个 App 中确认相同的配对码。"
           }
         }
       }

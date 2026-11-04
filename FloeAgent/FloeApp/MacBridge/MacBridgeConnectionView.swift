@@ -217,6 +217,12 @@ struct MacBridgePairingSection: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
+        if MacBridgeConnectionCenter.isMac {
+            connectionSection
+        }
+    }
+
+    private var connectionSection: some View {
         Section("mac.bridge.title") {
             LabeledContent("mac.bridge.status", value: center.connected ? center.host : String(localized: "mac.bridge.disconnected"))
             if center.connected {
