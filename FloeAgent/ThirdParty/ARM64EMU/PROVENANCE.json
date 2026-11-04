@@ -99,10 +99,6 @@
       "sha256": "22ef7e1e998ce2da85f0795460cdb1b27552568d13a84a29ea92fdf4286f4e48"
     },
     {
-      "path": "Source/README.md",
-      "sha256": "22aec1566361fc742e6a6e9dfabc8b7f1bce457911e99a52d878ca9ebeb5ba03"
-    },
-    {
       "path": "Source/src/console.h",
       "sha256": "1290539904077329fb5b9e4ffdce7b9cfc176828ee449ce39304b1b0a355a4fc"
     },
@@ -115,8 +111,12 @@
       "sha256": "e86328e36c9fe0d236104b38cd9baaa778e2dd62d79ab6507385270677bf267e"
     },
     {
+      "path": "Source/src/crc32_tables.h",
+      "sha256": "5cf6dbc67c924eb8e776d5c4448060d283de9c2385db3ceda2f81a359e5bf3ec"
+    },
+    {
       "path": "Source/src/decode.c",
-      "sha256": "4af5e1d8b787d9686ffd5da7bc17d4c407d1d2cfb1b846ff4172e944be66b468"
+      "sha256": "17eb87d00a48215f51a632797a94309c0cc014c43a7ffd5266e3706cb434f7b9"
     },
     {
       "path": "Source/src/devices/fwcfg.c",
@@ -345,6 +345,25 @@
     {
       "path": "include/floe_arm64emu.h",
       "sha256": "10cd4b70064bdc3bba42c1b6e690e20fa32e6122ec641097d5cb6f9e8c76b317"
+    }
+  ],
+  "patches": [
+    {
+      "name": "Immutable CRC32/CRC32C tables",
+      "base": "A6",
+      "scope": "Source/src/decode.c and Source/src/crc32_tables.h only; no A8 RO-data cache",
+      "sourceArchiveSHA256": "e41d4c5687fc6e306f32892354f0eacb2293faf888cd1370abb757a53e6ed86a",
+      "files": [
+        {
+          "path": "Core/Source/src/decode.c",
+          "sha256": "17eb87d00a48215f51a632797a94309c0cc014c43a7ffd5266e3706cb434f7b9"
+        },
+        {
+          "path": "Core/Source/src/crc32_tables.h",
+          "sha256": "5cf6dbc67c924eb8e776d5c4448060d283de9c2385db3ceda2f81a359e5bf3ec"
+        }
+      ],
+      "qualification": "Owner Mac A8b normal/TSan; selected A6+CRC Apple SDK object/link qualification recorded separately. No App or guest result implied."
     }
   ]
 }

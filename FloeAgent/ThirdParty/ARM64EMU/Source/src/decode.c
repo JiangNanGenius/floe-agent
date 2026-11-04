@@ -4,6 +4,7 @@
 /* A64 instruction decoder/executor — integer/branch/load-store (M1).
  * FP/SIMD lives in exec_fpsimd.c (M4). System regs in sysreg.c (M2). */
 #include "cpu.h"
+#include "crc32_tables.h"
 #include "machine.h"
 #include <string.h>
 #include "mmu.h"
@@ -97,27 +98,13 @@ static u64 shift_reg(u64 v, unsigned type, unsigned amount, bool is64) {
 /* ARMv8 CRC32/CRC32C: bit-reflected CRC over `bytes` low bytes of `data`,
  * accumulator `acc`. poly is the reflected polynomial (0xEDB88320 for CRC32,
  * 0x82F63B78 for CRC32C). Matches the hardware instruction the kernel uses.
- * Slicing-by-8 (lazily built 8x256 tables per polynomial): CRC32X consumes
+ * Slicing-by-8 (immutable 8x256 tables per polynomial): CRC32X consumes
  * its 8 bytes in one combined lookup instead of 64 bit-steps — ext4 metadata
  * checksumming leans on this, and all three tiers execute CRC32 through this
  * helper (predecode leaves the family GENERIC). */
-static void crc32_tab_init(u32 t[8][256], u32 poly) {
-    for (unsigned i = 0; i < 256; i++) {
-        u32 c = i;
-        for (int k = 0; k < 8; k++)
-            c = (c >> 1) ^ (poly & (u32)(-(s32)(c & 1)));
-        t[0][i] = c;
-    }
-    for (unsigned i = 0; i < 256; i++)
-        for (unsigned j = 1; j < 8; j++)
-            t[j][i] = (t[j - 1][i] >> 8) ^ t[0][t[j - 1][i] & 0xff];
-}
-
 static u32 crc32_step(u32 acc, u64 data, unsigned bytes, u32 poly) {
-    static u32 tab[2][8][256];
     unsigned p = (poly == 0x82F63B78u);
-    if (tab[p][0][1] == 0) crc32_tab_init(tab[p], poly);
-    const u32 (*t)[256] = tab[p];
+    const u32 (*t)[256] = a64_crc32_slicing_tables[p];
     if (bytes == 8) {
         acc ^= (u32)data;
         u32 hi = (u32)(data >> 32);
