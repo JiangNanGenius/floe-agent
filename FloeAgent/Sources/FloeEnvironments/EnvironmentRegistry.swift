@@ -1075,6 +1075,19 @@ public actor EnvironmentRegistry {
         return workspaceRootFromLoadedRecords(for: containerID, mapping: try workspaceMappings())
     }
 
+    /// Native task binding callers supply the currently leased task root.
+    /// Shared project dependencies do not make another project's files owned.
+    public func ownsExecutionLocation(containerID: String, conversationID: UUID, taskRoot: URL) throws -> Bool {
+        try prepare()
+        guard let record = records[containerID], record.state == .active,
+              !record.requiresRebuild, record.pendingRuntimeResetID == nil else { return false }
+        if record.kind == .session { return record.ownerID == conversationID.uuidString }
+        guard record.kind == .project,
+              let registered = workspaceRootFromLoadedRecords(for: containerID, mapping: try workspaceMappings()) else { return false }
+        return registered.resolvingSymlinksInPath().standardizedFileURL.path
+            == taskRoot.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
     private func workspaceMappings() throws -> [String: [String: String]] {
         let file = roots.rootURL.appendingPathComponent("workspace-containers.json")
         guard fileManager.fileExists(atPath: file.path) else { return [:] }

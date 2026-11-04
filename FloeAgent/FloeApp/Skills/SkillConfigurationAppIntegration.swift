@@ -216,7 +216,8 @@ extension AppEnvironment {
                   current.generation == pin.generation, current.target == pin.target,
                   let record = await environmentRegistry.record(id: pin.target.environmentID),
                   record.state == .active, !record.requiresRebuild,
-                  record.ownerID == run.conversationID.uuidString,
+                  try await taskExecutionEnvironments.ownsConfigurationLocation(conversationID: run.conversationID,
+                      environmentID: pin.target.environmentID),
                   try SkillConfigurationTargets.name(for: pin.target) == request.target else {
                 return .denied("The task's authorized execution location changed.")
             }

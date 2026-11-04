@@ -320,6 +320,12 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
             distribution: lines.first { $0.hasPrefix("ID=") }.map { String($0.dropFirst(3)).trimmingCharacters(in: CharacterSet(charactersIn: "\"'")) }, generation: generation)
     }
 
+    func ownsConfigurationLocation(conversationID: UUID, environmentID: String) async throws -> Bool {
+        let lease = try await root(conversationID); defer { lease.release() }
+        return try await environment.environmentRegistry.ownsExecutionLocation(containerID: environmentID,
+            conversationID: conversationID, taskRoot: lease.url)
+    }
+
     private func root(_ conversationID: UUID) async throws -> WorkspaceCenter.TaskRootLease {
         guard let conversation = try await environment.conversationStore.conversation(id: conversationID), conversation.purpose == .ordinary else {
             throw FloeError.validationFailed(copy("请选择普通任务。", "Choose a saved task."))

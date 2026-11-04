@@ -9,6 +9,25 @@ import FloePersistence
 @Suite("Task environment migration ownership")
 struct TaskEnvironmentOwnershipTests {
 
+    @Test func sharedProjectConfigurationRequiresTheLeasedTaskRoot() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("project"), other = root.appendingPathComponent("other")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        let registry = EnvironmentRegistry(roots: .init(rootURL: root.appendingPathComponent("environments")), baseRevision: "fixture")
+        let owner = FloeDigest.sha256Hex(Data(project.resolvingSymlinksInPath().standardizedFileURL.path.utf8))
+        let record = try await registry.ensureProjectContainer(workspaceID: owner, workspaceRootPath: project.path, executionBackend: .linuxVM)
+        #expect(try await registry.ownsExecutionLocation(containerID: record.id, conversationID: UUID(), taskRoot: project))
+        #expect(try await registry.ownsExecutionLocation(containerID: record.id, conversationID: UUID(), taskRoot: other) == false)
+        #expect(try await registry.ownsExecutionLocation(containerID: "missing", conversationID: UUID(), taskRoot: project) == false)
+        let taskID = UUID()
+        let session = try await registry.ensureSessionContainer(conversationID: taskID.uuidString,
+            workspaceID: owner, workspaceRootPath: project.path, executionBackend: .linuxVM)
+        #expect(try await registry.ownsExecutionLocation(containerID: session.id, conversationID: taskID, taskRoot: project))
+        #expect(try await registry.ownsExecutionLocation(containerID: session.id, conversationID: UUID(), taskRoot: project) == false)
+    }
+
     @Test("The task pin survives an authorized working-folder change without giving another task its environment")
     func pinnedSessionFollowsTaskRatherThanOldWorkingFolder() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

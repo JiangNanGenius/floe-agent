@@ -21,7 +21,7 @@ private actor ConfiguredSessionBackend: LocalShellBackend {
     func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
         runs += 1; receivedOrdinary = request.environment
         receivedSensitiveNames = request.sensitiveEnvironment?.names ?? []
-        return .exited(code: 0, stdout: "ok", stderr: "", truncated: false, durationMs: 1)
+        return .exited(code: 0, stdout: "ok", stderr: "", truncated: false, stderrTruncated: false, durationMs: 1)
     }
     func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
         opens += 1
