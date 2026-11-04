@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.core.workbenchmedia.export
 
+import android.util.Log
+
 import com.floe.android.core.workbenchmedia.AuthorityDecision
 import com.floe.android.core.workbenchmedia.WorkbenchLeaseAuthority
 import com.floe.android.core.workbenchmedia.WorkbenchMediaPlatformConfig
@@ -49,6 +51,7 @@ internal class MediaExportEngine(
     private val videoExporter = Media3VideoExporter(config.context, config.progressPollMillis)
 
     suspend fun execute(job: ExportJob, runtime: ExportRuntime) {
+        var phase = "admission"
         try {
             if (job.terminal) return
             if (job.cancelRequested.get()) {
@@ -65,11 +68,13 @@ internal class MediaExportEngine(
                     progress = 0.01,
                 ),
             )
+            phase = "authority"
             val decision = authority.validateRenderBinding(job.binding)
             val grant = when (decision) {
                 is AuthorityDecision.Accepted -> decision.grant
                 is AuthorityDecision.Refused -> throw refusal(decision.code, decision.reason, decision.retryable)
             }
+            phase = "snapshot"
             val snapshot = SnapshotVerifier.verify(
                 SnapshotExpectation(
                     epoch = grant.epoch,
@@ -83,6 +88,7 @@ internal class MediaExportEngine(
                 grant,
                 clock,
             )
+            phase = "render"
             when (val request = job.request) {
                 is MediaExportRequest.Video -> exportVideo(job, runtime, request, snapshot)
                 is MediaExportRequest.Image -> exportImage(job, runtime, request, snapshot)
@@ -97,6 +103,7 @@ internal class MediaExportEngine(
             }
             throw CancellationException("Export job cancelled")
         } catch (failure: MediaRefusal) {
+            Log.w("FloeMediaExport", "Export failed at $phase", failure)
             if (job.terminal) return
             when {
                 job.interrupted -> runtime.finish(
@@ -122,6 +129,7 @@ internal class MediaExportEngine(
                 )
             }
         } catch (failure: OutOfMemoryError) {
+            Log.w("FloeMediaExport", "Export failed at $phase", failure)
             if (!job.terminal) {
                 runtime.finish(
                     job,
@@ -131,6 +139,7 @@ internal class MediaExportEngine(
                 )
             }
         } catch (failure: Throwable) {
+            Log.w("FloeMediaExport", "Export failed at $phase", failure)
             if (!job.terminal) {
                 runtime.finish(
                     job,

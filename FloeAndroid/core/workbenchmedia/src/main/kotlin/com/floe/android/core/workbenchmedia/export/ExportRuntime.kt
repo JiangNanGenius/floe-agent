@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.core.workbenchmedia.export
 
+import android.util.Log
+
 import com.floe.android.core.workbenchmedia.AuthorityDecision
 import com.floe.android.core.workbenchmedia.MAX_RECOVERED_EXPORT_LIST
 import com.floe.android.core.workbenchmedia.MediaLifecycleKind
@@ -359,6 +361,9 @@ internal class ExportRuntime(
     }
 
     fun publish(job: ExportJob, status: MediaExportStatus, persist: Boolean = true) {
+        if (status.errorCode != null) {
+            Log.w("FloeMediaExport", "Export state ${status.state}: ${status.errorCode}")
+        }
         synchronized(job) {
             if (job.terminal) return
             if (status.state == MediaExportState.COMPLETED ||
