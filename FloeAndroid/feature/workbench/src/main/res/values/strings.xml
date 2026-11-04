@@ -465,4 +465,5 @@
     <string name="media_enhancement_failure_verification">The output did not pass verification. The source is unchanged.</string>
     <string name="media_enhancement_failure_super_resolution">Super resolution failed. Check the backend setup and the source, then try again.</string>
     <string name="media_enhancement_failure_generic">Enhancement failed. Please try again.</string>
+    <string name="media_r2_export_source_fps_hint">Choose an export frame rate no higher than your clips.</string>
 </resources>

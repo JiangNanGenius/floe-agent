@@ -12,6 +12,8 @@ import com.floe.android.feature.workbench.CreativeProjectContext
 import com.floe.android.feature.workbench.ImageExportSettings
 import com.floe.android.feature.workbench.ImagePreviewRequest
 import com.floe.android.feature.workbench.MediaExportBinding
+import com.floe.android.feature.workbench.MediaAssetProbeRequest
+import com.floe.android.feature.workbench.MediaAssetReference
 import com.floe.android.feature.workbench.MediaExportKind
 import com.floe.android.feature.workbench.MediaExportReceipt
 import com.floe.android.feature.workbench.MediaExportRequest
@@ -26,6 +28,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -173,6 +178,36 @@ class MediaR2Editor internal constructor(
     fun preparePlayback(revision: Long, playheadSeconds: Double) {
         if (retiredProvider()) return
         playback.prepare(revision, playheadSeconds)
+    }
+
+    /** Probe through the existing native-owned root; editor JSON grants no path access. */
+    suspend fun exportSourceFrameRates(assets: List<MediaAssetReference>): List<Double> {
+        if (retiredProvider() || assets.isEmpty()) return emptyList()
+        val revision = revisionProvider()
+        val binding = withContext(NonCancellable) {
+            ports.renderBindings.prepareRenderBinding(
+                context, revision, "rate-probe-${UUID.randomUUID()}")
+        }
+        try {
+            currentCoroutineContext().ensureActive()
+            val rates = assets.distinctBy { it.id }.mapNotNull { asset ->
+                if (retiredProvider() || revisionProvider() != revision) {
+                    throw CancellationException("Media project changed during source probe")
+                }
+                ports.platform.probe(MediaAssetProbeRequest(
+                    context, binding.mediaRootPath, asset.relativePath))
+                    .frameRate?.takeIf { it.isFinite() && it > 0.0 }
+            }
+            currentCoroutineContext().ensureActive()
+            if (retiredProvider() || revisionProvider() != revision) {
+                throw CancellationException("Media project changed during source probe")
+            }
+            return rates
+        } finally {
+            withContext(NonCancellable) {
+                runCatching { ports.releaseRenderBinding.releaseRenderBinding(binding) }
+            }
+        }
     }
 
     // MARK: - Image preview (real platform renderer)

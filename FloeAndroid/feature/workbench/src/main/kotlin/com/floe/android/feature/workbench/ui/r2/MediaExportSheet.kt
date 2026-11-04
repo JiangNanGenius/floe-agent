@@ -47,6 +47,9 @@ import com.floe.android.feature.workbench.ui.MediaSliderRow
 import com.floe.android.feature.workbench.ui.R
 import com.floe.android.feature.workbench.ui.formatBytes
 import com.floe.android.feature.workbench.ui.state.MediaEditorController
+import com.floe.android.feature.workbench.ui.presentation.MediaFailure
+import com.floe.android.feature.workbench.ui.presentation.MediaFailures
+import kotlinx.coroutines.CancellationException
 import java.util.Locale
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -195,16 +198,35 @@ private fun VideoExportForm(
         (encoders.firstOrNull { it.mimeType == codecMime }?.maxFrameRate ?: 0.0)
             .takeIf { it > 0.0 } ?: Double.MAX_VALUE,
     )
-    val fpsChoices = listOf(24.0, 25.0, 30.0, 50.0, 60.0)
-        .filter { maxFps <= 0.0 || it <= maxFps + 0.001 }
-        .ifEmpty { listOf((maxFps.takeIf { it > 0.0 } ?: 30.0)) }
-    var frameRate by remember(capabilities.probedAt) {
-        mutableFloatStateOf(
-            (canvas?.frameRate ?: 30.0).toFloat().let { value ->
-                if (fpsChoices.any { kotlin.math.abs(it - value) < 0.01 }) value
-                else fpsChoices.first().toFloat()
-            },
-        )
+    val sourceAssets = timeline?.clips.orEmpty().mapNotNull { clip ->
+        controller.project.assets.firstOrNull { it.id == clip.assetID }
+    }.distinctBy { it.id }
+    val sourceProbeKey = sourceAssets.map { it.id to it.relativePath }
+    var sourceRates by remember(r2, controller.project.revision, sourceProbeKey) {
+        mutableStateOf<List<Double>?>(null)
+    }
+    var sourceFailure by remember(r2, controller.project.revision, sourceProbeKey) {
+        mutableStateOf<MediaFailure?>(null)
+    }
+    LaunchedEffect(r2, controller.project.revision, sourceProbeKey) {
+        try {
+            sourceRates = r2.exportSourceFrameRates(sourceAssets)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            sourceFailure = MediaFailures.from(error)
+            sourceRates = emptyList()
+        }
+    }
+    val fpsChoices = videoExportFrameRates(maxFps, sourceRates.orEmpty())
+    var frameRate by remember(r2) {
+        mutableFloatStateOf(initialVideoExportFrameRate(canvas?.frameRate, fpsChoices).toFloat())
+    }
+    var frameRateEdited by remember(r2) { mutableStateOf(false) }
+    LaunchedEffect(sourceRates, maxFps) {
+        if (sourceRates != null && !frameRateEdited) {
+            frameRate = initialVideoExportFrameRate(canvas?.frameRate, fpsChoices).toFloat()
+        }
     }
     var quality by remember { mutableFloatStateOf(0.9f) }
     var fileName by remember(controller.projectID) {
@@ -233,6 +255,10 @@ private fun VideoExportForm(
         }
         if (maxFps > 0.0 && frameRate > maxFps + 0.001) {
             add(stringResource(R.string.media_r2_export_fps_limit, maxFps.roundToInt()))
+        }
+        val sourceLimit = sourceRates?.minOrNull()
+        if (sourceLimit != null && frameRate > sourceLimit + 0.5) {
+            add(stringResource(R.string.media_r2_export_source_fps_hint))
         }
         if (dissolveUnsupported) add(stringResource(R.string.media_r2_export_block_dissolve))
         if (tooManyClips) {
@@ -298,7 +324,17 @@ private fun VideoExportForm(
         label = stringResource(R.string.media_r2_frame_rate),
         values = fpsChoices.map { it.roundToInt().toString() },
         selected = frameRate.roundToInt().toString(),
-        onSelect = { label -> label.toFloatOrNull()?.let { frameRate = it } },
+        onSelect = { label -> label.toFloatOrNull()?.let {
+            frameRateEdited = true
+            frameRate = it
+        } },
+    )
+    if (sourceRates == null) FloeActivityIndicator()
+    sourceFailure?.let { MediaInlineFailure(failure = it, onRetry = null) }
+    FloeText(
+        stringResource(R.string.media_r2_export_source_fps_hint),
+        style = Floe.typography.metadata,
+        color = Floe.colors.secondaryLabel,
     )
     MediaSliderRow(
         label = stringResource(R.string.media_r2_quality),
@@ -335,7 +371,7 @@ private fun VideoExportForm(
                     ),
                 )
             },
-            enabled = blockers.isEmpty() && !r2.exportBusy,
+            enabled = blockers.isEmpty() && sourceRates != null && !r2.exportBusy,
             tint = Floe.colors.accent,
         )
     }
@@ -532,12 +568,8 @@ private fun ExportJobsSection(controller: MediaEditorController) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (job.status.errorCode != null) {
-                FloeText(
-                    stringResource(R.string.media_r2_request_failed),
-                    style = Floe.typography.metadata,
-                    color = Floe.colors.pending,
-                )
+            MediaFailures.fromCode(job.status.errorCode)?.let { failure ->
+                MediaInlineFailure(failure = failure, onRetry = null)
             }
             if (job.recovered && job.verifiedReceipt == null) {
                 FloeText(
