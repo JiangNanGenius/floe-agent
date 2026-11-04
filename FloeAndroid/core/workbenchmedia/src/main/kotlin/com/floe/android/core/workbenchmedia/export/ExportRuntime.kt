@@ -194,7 +194,10 @@ internal class ExportRuntime(
                     context = binding.context,
                     kind = MediaLifecycleKind.EXPORT,
                     epoch = grant.epoch,
-                    mediaRootPath = root.path,
+                    // Echo the native-issued binding path exactly. The IO
+                    // root is separately canonicalized above; Android aliases
+                    // must not change the identity of the prepared pin.
+                    mediaRootPath = binding.mediaRootPath,
                     attemptID = binding.attemptID,
                     jobID = jobID,
                 ),
