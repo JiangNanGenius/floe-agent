@@ -14,6 +14,9 @@
 #include <time.h>
 #include <poll.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <pthread/qos.h>
+#endif
 /* Qualification-only observation; defaults erase at preprocessing, with no
  * production callback/extra per-boundary function call or synchronization. */
 #ifndef AE_FASTPOLL_OBSERVE
@@ -348,6 +351,15 @@ static int ensure_worker(AEParallel *p,unsigned i){
     AEHart *h=&p->hart[i];if(h->started)return 0;
     pthread_attr_t attr;if(pthread_attr_init(&attr))return FLOE_AE_FAULT;
     int error=pthread_attr_setstacksize(&attr,512*1024);
+#if defined(__APPLE__)
+    /* pthread defaults do not inherit the initiating thread's QoS. Carry the
+     * owner's public scheduler class to its bounded workers, capped below UI
+     * work. An explicit utility/background owner keeps that lower class. */
+    qos_class_t qos=qos_class_self();
+    if(qos==QOS_CLASS_USER_INTERACTIVE)qos=QOS_CLASS_USER_INITIATED;
+    if(!error&&qos!=QOS_CLASS_UNSPECIFIED)
+        error=pthread_attr_set_qos_class_np(&attr,qos,0);
+#endif
     if(!error)error=pthread_create(&h->thread,&attr,hart_main,h);
     pthread_attr_destroy(&attr);if(error)return FLOE_AE_FAULT;h->started=true;return 0;
 }

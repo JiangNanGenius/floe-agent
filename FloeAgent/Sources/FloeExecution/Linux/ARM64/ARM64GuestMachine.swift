@@ -208,6 +208,9 @@ public final class ARM64GuestMachine: @unchecked Sendable {
             self.workerMain(generation: myGeneration)
         }
         thread.name = "floe.arm64.machine.\(ownership.label)"
+        // User-requested execution must not depend on the QoS of the task
+        // that happened to start this persistent owner. Idle VMs still park.
+        thread.qualityOfService = .userInitiated
         thread.stackSize = 1 * 1024 * 1024
         workerThread = thread
         thread.start()

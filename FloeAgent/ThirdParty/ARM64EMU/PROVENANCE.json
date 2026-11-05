@@ -95,7 +95,7 @@
     },
     {
       "path": "Bridge/parallel_runtime.c",
-      "sha256": "7cfc0d70a9955c1231a1a485c8126a343f14fcdb08766c59f680abc9b6b1ad9a"
+      "sha256": "925f89b067cb97dc82f3f49893f9b88a6ff96d78ca1848f6974378333604bde0"
     },
     {
       "path": "Bridge/parallel_runtime.h",

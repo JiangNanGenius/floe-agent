@@ -60,3 +60,26 @@ saved preference changed to 0 or 0.25. Both parameter cases failed on the frozen
 315 host and passed after applying gain before resume; zero-gain playback
 continues running. CAD observation now also accepts named standard views and
 returns actionable validation for unknown names.
+
+## Follow-up scheduler candidate
+
+Apple worker threads now explicitly carry their owner's public QoS class;
+interactive owners are capped at user-initiated, while utility/background
+owners retain their lower class. The persistent Swift VM owner is marked
+user-initiated before starting. Idle parking, worker counts, cancellation and
+architectural synchronization remain unchanged.
+
+A new native contract executes real guest instructions on twelve workers across
+utility, user-initiated and interactive owners. The unchanged 316 archive fails
+the QoS contract while still executing and joining correctly; the candidate
+passes all twelve observations. The existing parallel-worker, budget-gap and
+fast-poll components also pass, both normally and with ThreadSanitizer. These
+results establish scheduling and lifecycle behavior, not physical-iPad speed.
+
+ThinLTO was separately measured on one unchanged Linux crypto/compression pair
+and rejected: both throughput changes were approximately -0.1%. No ThinLTO
+build flag is included. Physical-device comparison of the released 316 build
+and qualification of this newer scheduling candidate remain separate work.
+
+The local Linux graphical-program startup/display/input chain is still absent;
+the existing text terminal and remote VNC support do not establish that feature.
