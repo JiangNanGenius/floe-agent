@@ -169,6 +169,41 @@ struct CadDocumentObserveContractTests {
         #expect(forwarded === token, "the host must receive the exact per-call token")
     }
 
+    @Test("the reported named-view request reaches the native observer as real camera angles")
+    func namedViewsReachNativeObserver() async throws {
+        let host = ObserveRecordingHost()
+        let tool = CadDocumentTool(host: host)
+        let args = try observeArguments(path: "gear20.floecad", payload: [
+            "views": ["isometric", "top", "front"],
+            "projection": "orthographic", "includeImages": false,
+        ])
+        try tool.validate(args)
+        _ = try await tool.execute(args, context: context())
+        let request = try #require(await host.observeRequests.first?.request)
+        #expect(request.views == [
+            .init(azimuthDegrees: 36, elevationDegrees: 180 / 7),
+            .init(azimuthDegrees: 0, elevationDegrees: 90),
+            .init(azimuthDegrees: 0, elevationDegrees: 0),
+        ])
+        #expect(request.projection == .orthographic)
+        let encoded = try JSONEncoder().encode(request)
+        let reopened = try JSONDecoder().decode(CadModelObservationRequest.self, from: encoded)
+        #expect(reopened == request)
+    }
+
+    @Test("unknown view names produce actionable validation instead of a generic decoder error")
+    func unknownViewNamesAreActionable() throws {
+        let tool = CadDocumentTool(host: ObserveRecordingHost())
+        let args = try observeArguments(path: "p.floecad", payload: ["views": ["sideways"]])
+        do {
+            try tool.validate(args)
+            Issue.record("Unknown view name was accepted")
+        } catch let error as FloeError {
+            #expect(error.localizedDescription.contains("azimuthDegrees"))
+            #expect(error.localizedDescription.contains("front"))
+        }
+    }
+
     @Test("the top-level revision actually reaches the host as the native generation pin")
     func topLevelRevisionReachesHost() async throws {
         let host = ObserveRecordingHost()

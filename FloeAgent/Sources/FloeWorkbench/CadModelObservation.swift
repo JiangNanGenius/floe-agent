@@ -30,10 +30,28 @@ public struct CadModelObservationRequest: Codable, Sendable, Equatable {
 
         enum CodingKeys: String, CodingKey { case azimuthDegrees, elevationDegrees, distanceScale }
         public init(from decoder: any Decoder) throws {
+            if let name = try? decoder.singleValueContainer().decode(String.self) {
+                // Match the workbench's Y-up standard views. Observation can
+                // render exact poles, so top/bottom use 90 rather than the
+                // interactive turntable's near-pole clamp.
+                switch name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+                case "isometric": self.init(azimuthDegrees: 36, elevationDegrees: 180 / 7)
+                case "front": self.init(azimuthDegrees: 0, elevationDegrees: 0)
+                case "back": self.init(azimuthDegrees: 180, elevationDegrees: 0)
+                case "right": self.init(azimuthDegrees: 90, elevationDegrees: 0)
+                case "left": self.init(azimuthDegrees: -90, elevationDegrees: 0)
+                case "top": self.init(azimuthDegrees: 0, elevationDegrees: 90)
+                case "bottom": self.init(azimuthDegrees: 0, elevationDegrees: -90)
+                default:
+                    throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                        debugDescription: "Unknown view. Use isometric, front, back, right, left, top, bottom, or an object with azimuthDegrees and elevationDegrees."))
+                }
+                return
+            }
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            azimuthDegrees = try c.decode(Double.self, forKey: .azimuthDegrees)
-            elevationDegrees = try c.decode(Double.self, forKey: .elevationDegrees)
-            distanceScale = try c.decodeIfPresent(Double.self, forKey: .distanceScale) ?? 1
+            self.init(azimuthDegrees: try c.decode(Double.self, forKey: .azimuthDegrees),
+                      elevationDegrees: try c.decode(Double.self, forKey: .elevationDegrees),
+                      distanceScale: try c.decodeIfPresent(Double.self, forKey: .distanceScale) ?? 1)
         }
     }
 
