@@ -110,6 +110,7 @@ internal class PlatformToolHostPump(
         val nextPollMillis: Int = 250,
         val settleWaitMillis: Long = 8_000,
         val operationTimeoutMillis: Long = 25_000,
+        val phoneInteractionTimeoutMillis: Long = 145_000,
     )
 
     private data class Session(val epoch: Long) {
@@ -256,7 +257,8 @@ internal class PlatformToolHostPump(
         }
         target.inFlight.set(call)
         val outcome = try {
-            withTimeout(timing.operationTimeoutMillis) { handler(call) }
+            withTimeout(if (call.tool in setOf("phone.observe", "phone.act", "phone.screenshot"))
+                timing.phoneInteractionTimeoutMillis else timing.operationTimeoutMillis) { handler(call) }
         } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
             PlatformToolOutcome.Failure("timeout")
         } catch (_: Throwable) {

@@ -161,6 +161,7 @@ internal class C04CadViewerController(
     private val generation = AtomicLong(0)
     private val registry = C04CadAssetRegistry()
     private val assetServer = C04CadWebAssetServer(context, registry)
+    private val previewComponents = com.floe.android.host.components.PreviewComponentStore.get(context)
     private val pendingCaptures = ConcurrentHashMap<String, CompletableDeferred<C04CadCapturePayload>>()
     private var jobs = LinkedHashSet<Job>()
     /** Capture/export jobs are Application-owned so view disposal cannot
@@ -618,6 +619,7 @@ internal class C04CadViewerController(
         try {
             if (!isCurrent(session)) throw SessionFailure(C04CadFailure.OWNER, "owner")
             client.handshake()
+            previewComponents.acquireCad("cad-view-${session.token}") { isCurrent(session) }
             if (session.format == C04CadFormat.FLOECAD) {
                 runFloecadSession(session)
                 return
@@ -1409,6 +1411,7 @@ internal class C04CadViewerController(
     }
 
     private fun cleanupSession(session: Session) {
+        previewComponents.releaseCad("cad-view-${session.token}")
         registry.remove(session.coreSessionID ?: "")
         val core = session.coreSessionID
         if (core != null) runCatching { client.end(core) }

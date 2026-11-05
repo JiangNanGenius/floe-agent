@@ -2596,15 +2596,17 @@ internal class DeviceAccessHost(
         val principal = phonePrincipal(call)
             ?: return PlatformToolOutcome.Failure("phone_arm_required")
         val observationId = call.arguments.optString("observationId")
-        if (observationId.isEmpty()) {
-            return PlatformToolOutcome.Failure("invalid_arguments")
-        }
         val action = parsePhoneAction(call.arguments)
             ?: return PlatformToolOutcome.Failure("invalid_arguments")
+        if (observationId.isEmpty() && action !is PhoneControlAction.Launch) {
+            return PlatformToolOutcome.Failure("invalid_arguments")
+        }
         bindPhoneCall(call)
         try {
             return when (val result = withTimeout(20_000) {
-                client.perform(principal, observationId, action)
+                if (action is PhoneControlAction.Launch && observationId.isEmpty())
+                    client.launchApplication(principal, action.packageName)
+                else client.perform(principal, observationId, action)
             }) {
                 is PhoneControlResult.Ok -> {
                     if (userStopped || armedOwner != ownerOf(call)) {

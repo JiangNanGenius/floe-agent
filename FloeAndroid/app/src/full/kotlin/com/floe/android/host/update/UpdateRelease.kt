@@ -30,6 +30,8 @@ internal data class AndroidRelease(
     val delta: ReleaseAsset? = null,
     /** Bounded name→asset map of this release (safe names and HTTPS URLs only). */
     val assets: Map<String, ReleaseAsset> = emptyMap(),
+    val knownIssues: String = "",
+    val intermediate: Boolean = false,
 )
 
 /**
@@ -87,6 +89,8 @@ internal object AndroidReleaseFeed {
                 tag = tag,
                 version = version,
                 summary = ReleaseSummary.bounded(release.stringOrNull("body")),
+                knownIssues = ReleaseKnownIssues.parse(release.stringOrNull("body")),
+                intermediate = release.booleanOrNull("prerelease") == true,
                 apk = apk,
                 checksums = checksums,
                 delta = byName[UpdateDeltaFormat.MANIFEST_ASSET]
@@ -128,4 +132,28 @@ internal object AndroidReleaseSelection {
             // exact tie the first feed entry (GitHub's newest-first order) wins.
             .sortedWith(compareByDescending<AndroidRelease> { it.version })
             .firstOrNull()
+}
+
+/** Public release text is presentation only and cannot affect install validation. */
+internal object ReleaseKnownIssues {
+    const val MAX_CHARS = 3_000
+    fun parse(body: String?): String {
+        if (body.isNullOrBlank()) return ""
+        val lines = ArrayList<String>()
+        var headingDepth = 0
+        for (raw in body.take(65_536).lineSequence()) {
+            val line = raw.trim()
+            val depth = line.takeWhile { it == '#' }.length
+            val heading = line.trimStart('#', ' ').lowercase(java.util.Locale.ROOT)
+            if (headingDepth == 0) {
+                if (depth > 0 && (heading.startsWith("known issues") || heading.startsWith("known limitations") ||
+                        heading.startsWith("已知问题") || heading.startsWith("已知限制"))) headingDepth = depth
+                continue
+            }
+            if (depth > 0 && depth <= headingDepth) break
+            lines += line.trimStart('-', '*', ' ').replace("**", "").replace("`", "")
+            if (lines.sumOf { it.length } > MAX_CHARS) break
+        }
+        return lines.joinToString("\n").trim().take(MAX_CHARS)
+    }
 }

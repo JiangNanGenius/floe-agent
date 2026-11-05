@@ -109,6 +109,8 @@ internal data class DownloadMeta(
     val deltaPatchName: String? = null,
     val deltaPatchSha256: String? = null,
     val deltaPatchBytes: Long = 0L,
+    val knownIssues: String = "",
+    val intermediate: Boolean = false,
 ) {
     fun toJson(): String = buildJsonObject {
         put("tag", tag)
@@ -121,6 +123,8 @@ internal data class DownloadMeta(
         put("receivedBytes", receivedBytes)
         put("etag", etag ?: "")
         put("completed", completed)
+        put("knownIssues", knownIssues.take(ReleaseKnownIssues.MAX_CHARS))
+        put("intermediate", intermediate)
         put("mode", mode.name)
         if (mode == DownloadMode.DELTA) {
             put("deltaBaseSha256", deltaBaseSha256 ?: "")
@@ -184,6 +188,8 @@ internal data class DownloadMeta(
                 deltaPatchName = patchName,
                 deltaPatchSha256 = patchSha,
                 deltaPatchBytes = patchBytes,
+                knownIssues = string("knownIssues").orEmpty().take(ReleaseKnownIssues.MAX_CHARS),
+                intermediate = (obj["intermediate"] as? JsonPrimitive)?.booleanOrNull ?: false,
             )
         }
     }
@@ -369,6 +375,7 @@ internal class UpdateDownloader(
                         receivedBytes = 0L,
                         etag = null,
                         completed = false,
+                        knownIssues = release.knownIssues, intermediate = release.intermediate,
                     )
                 }
                 beginWriter(meta, if (allowDelta) release else null)

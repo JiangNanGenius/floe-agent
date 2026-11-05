@@ -164,7 +164,7 @@ internal object DeviceAccessToolCatalog {
             "expired or replaced observation is refused.",
         schema = schema(
             properties = JSONObject()
-                .put("observationId", string("Observation id returned by phone.observe.", 1, 64))
+                .put("observationId", string("Observation id returned by phone.observe; optional only for launching an authorized app.", 1, 64))
                 .put("action", enum(
                     "Action to perform.",
                     listOf("click", "setText", "scroll", "swipe", "back", "home", "launch"),
@@ -176,7 +176,7 @@ internal object DeviceAccessToolCatalog {
                     listOf("forward", "backward", "up", "down", "left", "right"),
                 ))
                 .put("packageName", string("Target package for launch.", 1, 255)),
-            required = listOf("observationId", "action"),
+            required = listOf("action"),
         ),
         risks = listOf("controlsGUI", "sendsDataToProvider"),
         effect = "mutating",

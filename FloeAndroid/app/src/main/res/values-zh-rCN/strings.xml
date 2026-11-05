@@ -600,4 +600,17 @@
     <string name="linux_desktop_software">选择应用</string>
     <string name="linux_desktop_install_software">安装</string>
     <string name="linux_desktop_return">返回应用</string>
+    <string name="preview_components_title">按需预览组件</string>
+    <string name="preview_components_cad">CAD 与三维预览</string>
+    <string name="preview_components_installing">正在安装并校验预览组件…</string>
+    <string name="preview_components_in_use">正在使用，请关闭对应预览后再卸载。</string>
+    <string name="preview_components_offline">已安装，可离线使用。</string>
+    <string name="preview_components_on_demand">首次预览时安装，用户文件独立保留。</string>
+    <string name="preview_components_progress">下载进度</string>
+    <string name="preview_components_failed">操作未完成，请检查网络、存储和正在使用的预览。</string>
+    <string name="preview_components_uninstall">卸载组件</string>
+    <string name="preview_components_install">安装组件</string>
+    <string name="app_update_known_issues">已知问题</string>
+    <string name="app_update_intermediate_notice">中间测试版本，部分功能可能尚未完成。</string>
+    <string name="app_update_issues_not_listed">此版本未单独列出已知问题，安装前请查看发行说明。</string>
 </resources>

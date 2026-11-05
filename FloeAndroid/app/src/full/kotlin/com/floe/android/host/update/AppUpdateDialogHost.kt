@@ -112,6 +112,7 @@ private fun NewVersionContent(controller: AppUpdateController, ui: AppUpdateUiSt
         style = Floe.typography.bodyEmphasized,
         color = Floe.colors.label,
     )
+    KnownIssuesContent(release.knownIssues, release.intermediate)
     val summary = release.summary
     if (summary.isNotEmpty()) {
         FloeText(
@@ -205,6 +206,7 @@ private fun ProgressContent(controller: AppUpdateController, ui: AppUpdateUiStat
 @Composable
 private fun ReadyContent(controller: AppUpdateController, ui: AppUpdateUiState) {
     val state = ui.download as AppDownloadState.Ready
+    KnownIssuesContent(ui.knownIssues, ui.intermediate)
     FloeText(
         stringResource(R.string.app_update_ready),
         style = Floe.typography.bodyEmphasized,
@@ -494,4 +496,15 @@ private fun BusyContent(text: String) {
         FloeActivityIndicator()
         FloeText(text, style = Floe.typography.body, color = Floe.colors.label)
     }
+}
+
+@Composable
+private fun KnownIssuesContent(issues: String, intermediate: Boolean) {
+    if (!intermediate && issues.isBlank()) return
+    FloeText(stringResource(R.string.app_update_known_issues), style = Floe.typography.bodyEmphasized,
+        color = Floe.colors.label)
+    if (intermediate) FloeText(stringResource(R.string.app_update_intermediate_notice),
+        style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+    FloeText(issues.ifBlank { stringResource(R.string.app_update_issues_not_listed) },
+        style = Floe.typography.metadata, color = Floe.colors.label)
 }

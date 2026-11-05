@@ -36,6 +36,8 @@ internal data class AppUpdateUiState(
     val pendingSystemIntent: Intent? = null,
     /** A persisted PackageInstaller session still owns an install attempt. */
     val pendingInstall: Boolean = false,
+    val knownIssues: String = "",
+    val intermediate: Boolean = false,
 )
 
 /**
@@ -345,6 +347,10 @@ internal class AppUpdateController private constructor(
             blockingKinds = if (installBlocking) install.blockingKinds else emptySet(),
             pendingSystemIntent = intent,
             pendingInstall = PendingInstall.fromJson(store.pendingInstallJson) != null,
+            knownIssues = downloadRelease?.knownIssues
+                ?: DownloadMeta.fromJson(store.pendingDownloadJson)?.knownIssues.orEmpty(),
+            intermediate = downloadRelease?.intermediate
+                ?: DownloadMeta.fromJson(store.pendingDownloadJson)?.intermediate ?: false,
         )
     }
 

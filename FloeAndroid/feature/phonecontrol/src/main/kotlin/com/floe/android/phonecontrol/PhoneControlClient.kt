@@ -101,6 +101,24 @@ class PhoneControlClient internal constructor(
         }
     }
 
+    suspend fun launchApplication(principal: PhoneControlPrincipal, packageName: String): PhoneControlResult<PhoneControlActionResult> {
+        if (packageName.isBlank() || packageName.length > PhoneControlLimits.MAX_PACKAGE_CHARS)
+            return PhoneControlResult.Denied(PhoneControlDenial.INVALID_ARGUMENT)
+        val answer = authorization(principal)
+        if (answer !is PhoneControlResult.Ok) return when (answer) {
+            is PhoneControlResult.Denied -> answer
+            is PhoneControlResult.Unavailable -> answer
+            is PhoneControlResult.Failed -> answer
+            else -> PhoneControlResult.Denied(PhoneControlDenial.AUTHORIZATION_DENIED)
+        }
+        return dispatch { session, _, finish ->
+            when (val fresh = authorization(principal)) {
+                is PhoneControlResult.Ok -> finish(session.launchApplication(principal, fresh.value, packageName))
+                else -> finish(PhoneControlResult.Denied(PhoneControlDenial.AUTHORIZATION_DENIED))
+            }
+        }
+    }
+
     /**
      * A window-scoped screenshot requires a current [observationId]. Without
      * one, an explicit display capture is performed (API 30+). On API 30-33 a

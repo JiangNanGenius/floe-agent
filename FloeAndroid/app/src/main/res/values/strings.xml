@@ -600,4 +600,17 @@
     <string name="linux_desktop_software">Choose an application</string>
     <string name="linux_desktop_install_software">Install</string>
     <string name="linux_desktop_return">Return to application</string>
+    <string name="preview_components_title">Optional preview components</string>
+    <string name="preview_components_cad">CAD and 3D preview</string>
+    <string name="preview_components_installing">Installing verified preview components…</string>
+    <string name="preview_components_in_use">In use. Close its previews before uninstalling.</string>
+    <string name="preview_components_offline">Installed; available offline.</string>
+    <string name="preview_components_on_demand">Installs on first preview. Your files are kept separately.</string>
+    <string name="preview_components_progress">Download</string>
+    <string name="preview_components_failed">Could not finish. Check the connection, storage and active previews.</string>
+    <string name="preview_components_uninstall">Uninstall component</string>
+    <string name="preview_components_install">Install component</string>
+    <string name="app_update_known_issues">Known issues</string>
+    <string name="app_update_intermediate_notice">Intermediate test version. Some features may be incomplete.</string>
+    <string name="app_update_issues_not_listed">This release does not provide a separate known-issues list. Review its release notes before installing.</string>
 </resources>

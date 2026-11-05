@@ -380,6 +380,9 @@ android {
                 ?: error("Release key password environment variable ${floeReleaseKeyEnvName} is not set")
         }
     }
+    // CAD viewer bytes are immutable, hash-pinned optional data installed on
+    // first preview. Keep source assets for provenance without packing them.
+    sourceSets.getByName("main").assets.exclude("cad_viewer/**")
     compileSdk = 37
     ndkVersion = "30.0.16248370"
     defaultConfig {

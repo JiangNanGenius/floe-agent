@@ -59,6 +59,11 @@ public enum PlatformToolHostLimits {
     /// Phone actions may include one real foreground operation; the mailbox
     /// adds scheduling/settlement margin and never detaches claimed IO.
     public static let ticketBudgetMillis = 30_000
+    /// A phone call can wait for one explicit human takeover decision. The
+    /// deadline remains finite and the same live claim/cancellation is checked.
+    public static func budgetMillis(toolName: String) -> Int {
+        ["phone.observe", "phone.act", "phone.screenshot"].contains(toolName) ? 150_000 : ticketBudgetMillis
+    }
     public static let maximumSummaryCharacters = 2_048
     public static let maximumEvidenceEntries = 8
     public static let maximumEvidenceCharacters = 192

@@ -155,6 +155,33 @@ internal class PhoneControlSession(
         return PhoneControlResult.Ok(PhoneControlRuntime.snapshot())
     }
 
+    /** Launching an explicitly allowed app does not require reading the current
+     * window. This bootstraps from Floe/launcher without exposing either tree. */
+    fun launchApplication(principal: PhoneControlPrincipal, grant: PhoneControlGrant,
+                          packageName: String): PhoneControlResult<PhoneControlActionResult> {
+        if (closed) return PhoneControlResult.Denied(PhoneControlDenial.SERVICE_DISCONNECTED)
+        if (inFlightId != null) return PhoneControlResult.Denied(PhoneControlDenial.OPERATION_IN_FLIGHT)
+        lockedDenial()?.let { return it }
+        PhoneControlPolicy.grantDenial(principal, grant)?.let { return PhoneControlResult.Denied(it) }
+        if (packageName !in grant.allowedPackages) return PhoneControlResult.Denied(PhoneControlDenial.TARGET_PACKAGE_NOT_ALLOWED)
+        when (val claim = fence.claim(principal.owner)) {
+            is PhoneControlFence.Claim.Blocked -> return PhoneControlResult.Denied(PhoneControlPolicy.denialForBlocker(claim.blocker))
+            PhoneControlFence.Claim.ForeignRun -> return PhoneControlResult.Denied(PhoneControlDenial.FOREIGN_RUN)
+            PhoneControlFence.Claim.Ok -> Unit
+        }
+        val intent = service.packageManager.getLaunchIntentForPackage(packageName)
+            ?: return PhoneControlResult.Unavailable(PhoneControlUnavailable.LAUNCH_TARGET_UNAVAILABLE)
+        latest = null
+        fence.onPageChanged()
+        suppressOwnInput()
+        return try {
+            service.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED))
+            PhoneControlRuntime.publish()
+            PhoneControlResult.Ok(PhoneControlActionResult("launch", PhoneControlDispatch.ACCEPTED,
+                null, null, null, "Launch requested. Observe the target app before further actions."))
+        } catch (_: Exception) { PhoneControlResult.Failed(PhoneControlFailure.ACTION_REJECTED) }
+    }
+
     // ---------------------------------------------------------------------
     // Actions
     // ---------------------------------------------------------------------

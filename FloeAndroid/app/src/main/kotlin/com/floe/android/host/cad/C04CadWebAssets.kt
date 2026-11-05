@@ -68,7 +68,7 @@ internal class C04CadWebAssetServer(
     private val context: Context,
     private val registry: C04CadAssetRegistry,
 ) {
-    private val assets = context.applicationContext.assets
+    private val components = com.floe.android.host.components.PreviewComponentStore.get(context)
 
     fun serve(request: WebResourceRequest?): WebResourceResponse? {
         val uri = request?.url ?: return forbidden()
@@ -112,7 +112,7 @@ internal class C04CadWebAssetServer(
     private fun serveAsset(name: String): WebResourceResponse {
         val mime = ASSET_MIME[name] ?: return notFound()
         val stream: InputStream = try {
-            assets.open("cad_viewer/$name")
+            components.cadFile(name)?.inputStream() ?: return notFound()
         } catch (_: Throwable) {
             return notFound()
         }

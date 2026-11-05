@@ -659,7 +659,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
                 payload: argumentsJSON,
                 epoch: epoch,
                 deadline: DispatchTime.now()
-                    + .milliseconds(PlatformToolHostLimits.ticketBudgetMillis),
+                    + .milliseconds(PlatformToolHostLimits.budgetMillis(toolName: entry.name)),
                 cancellation: cancellation)
             ticket.continuation = continuation
             tickets[counter] = ticket
@@ -1091,7 +1091,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
             "scope": scopeObject,
             "argumentsBytes": arguments.count,
             "argumentsSHA256": FloeDigest.sha256Hex(arguments),
-            "budgetMs": PlatformToolHostLimits.ticketBudgetMillis,
+            "budgetMs": PlatformToolHostLimits.budgetMillis(toolName: entry.name),
             "replyLimitBytes": PlatformToolHostLimits.maximumReplyBytes,
             "failureLimitBytes": PlatformToolHostLimits.maximumFailureReplyBytes,
             "riskLabels": entry.riskLabels.map(\.rawValue).sorted(),
