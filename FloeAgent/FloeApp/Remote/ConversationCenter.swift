@@ -7072,10 +7072,10 @@ final class ConversationCenter: ObservableObject {
         // of holding this launch open until its deadline. An already frozen
         // decision is kept: a deliberate same-round Continue reuses it
         // without a new request.
-        await automaticReasoningEffortCoordinator.cancelPending(runID: runID)
         if let service = runServices[runID] {
             await service.cancel()
         }
+        await automaticReasoningEffortCoordinator.cancelPending(runID: runID)
     }
 
     /// A Notes restart retains every message and run, but stops the old owner before

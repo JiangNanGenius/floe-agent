@@ -206,9 +206,11 @@ public protocol LinuxGuestRuntimeV2Integrating: Sendable {
     /// exists or the preserved bytes cannot be proven; the preserved bytes and
     /// the exclusion are never touched on any failure path.
     func restoreRepair(environmentID: String) async throws -> RuntimeV2Store.RepairResolutionReport
+    func diskRepairRequired(environmentID: String) async -> Bool?
 }
 
 public extension LinuxGuestRuntimeV2Integrating {
+    func diskRepairRequired(environmentID: String) async -> Bool? { nil }
     func completeStoppedGuestResult(
         environmentID: String, runtimeID: String, imageID: String,
         filesystemSynchronized: Bool
@@ -1268,6 +1270,10 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
     /// failure leaves the exclusion and the bytes fully in place.
     public func restoreRepair(environmentID: String) async throws -> RuntimeV2Store.RepairResolutionReport {
         try await store.restoreRepair(environmentID: environmentID)
+    }
+
+    public func diskRepairRequired(environmentID: String) async -> Bool? {
+        await store.repairHoldStatus(environmentID: environmentID) != nil
     }
 
     /// Failed-capture retention. The complete stopped disk moves into

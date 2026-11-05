@@ -255,7 +255,7 @@ struct FileTreeView: View {
                     ) {
                         if selecting {
                             if !selection.insert(node.relativePath).inserted { selection.remove(node.relativePath) }
-                        } else if node.isDirectory {
+                        } else if node.isBrowsableDirectory {
                             Task { await viewModel.toggleDirectory(node) }
                         } else { onSelectFile(node.relativePath) }
                     }
@@ -272,7 +272,7 @@ struct FileTreeView: View {
 
     @ViewBuilder
     private func rowMenu(for node: FileTreeNode) -> some View {
-        if node.isDirectory {
+        if node.isBrowsableDirectory {
             Button {
                 newFolderParent = node.relativePath
                 newFolderName = ""
@@ -608,7 +608,7 @@ private struct FileTreeRow: View {
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 8) {
-                if node.isDirectory {
+                if node.isBrowsableDirectory {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
@@ -616,7 +616,7 @@ private struct FileTreeRow: View {
                 } else {
                     Color.clear.frame(width: 12, height: 1)
                 }
-                Image(systemName: node.isDirectory
+                Image(systemName: node.isCADDocumentPackage ? "cube.transparent" : node.isDirectory
                     ? (isExpanded ? "folder.fill" : "folder")
                     : "doc.text")
                     .foregroundStyle(node.isDirectory ? FloeTheme.primary : Color.secondary)
@@ -634,7 +634,7 @@ private struct FileTreeRow: View {
         .frame(minHeight: FloeTheme.minimumTarget)
         .accessibilityLabel(node.name)
         .accessibilityIdentifier("fileTree.row.\(node.name)")
-        .accessibilityAddTraits(node.isDirectory ? [] : .isButton)
+        .accessibilityAddTraits(node.isBrowsableDirectory ? [] : .isButton)
     }
 }
 private struct FileTreeShareSheet: UIViewControllerRepresentable {

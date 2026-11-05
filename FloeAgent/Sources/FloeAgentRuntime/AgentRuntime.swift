@@ -1462,16 +1462,18 @@ public actor FloeAgentRuntime {
             break
         }
         clearToolArgumentPhase()
-        await transition(to: .cancelling)
         // 1. Stop the model stream (URLSessionTask cancel → SSE terminates).
+        // Do this before the transition's persistence/liveness awaits: those
+        // sinks may be busy while a provider continues producing deltas.
         let activeRunTask = streamTask
         activeRunTask?.cancel()
         streamTask = nil
+        cancellationToken.cancel()
+        await transition(to: .cancelling)
         // 2. Stop the in-flight tool cooperatively. A parked user question is
         // not an approval and has no executor resource, but it must be
         // fenced exactly like every other wait: its tool result then reports
         // cancelled instead of leaving a late answer for a later run.
-        cancellationToken.cancel()
         await configuration.userQuestionRecovery?.cancelPendingQuestions(runID: runID)
         acceptingChildResumes = false
         for childTask in resumedChildTasks.values { childTask.cancel() }
@@ -3270,7 +3272,8 @@ public actor FloeAgentRuntime {
 
     private func handleStreamEvent(_ rawEvent: AgentEvent) async {
         // Never mutate after leaving streamingModel (cancel race safety).
-        guard case .streamingModel(var info) = state else { return }
+        guard case .streamingModel(var info) = state,
+              !Task.isCancelled, !cancellationToken.isCancelled else { return }
 
         // Any non-fragment outcome ends the pending argument phase. Text and
         // reasoning mean the model moved on; completion/error means the
@@ -3391,7 +3394,13 @@ public actor FloeAgentRuntime {
         } else {
             shouldPublishEvent = true
         }
+        // Earlier progress publications suspend this actor. Stop may have
+        // won during those awaits, so revalidate at the actual output edge.
+        guard case .streamingModel = state,
+              !Task.isCancelled, !cancellationToken.isCancelled else { return }
         if shouldPublishEvent { await emit(event) }
+        guard case .streamingModel = state,
+              !Task.isCancelled, !cancellationToken.isCancelled else { return }
         switch event {
         case .textDelta(let delta):
             let nextBytes = delta.text.utf8.count

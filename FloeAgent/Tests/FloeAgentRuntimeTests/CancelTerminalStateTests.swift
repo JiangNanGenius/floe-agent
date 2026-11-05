@@ -44,6 +44,7 @@ private final class CancelGatedAdapter: ProviderAdapter, @unchecked Sendable {
     let protocolKind: ModelProtocol = .openAIChatCompletions
     private let started: StreamCounter
     private let onStream: (@Sendable () -> Void)?
+    private let onExit: (@Sendable () -> Void)?
     /// Artificial engine wind-down after the stream observes cancellation:
     /// widens the `.cancelling` window exactly like an on-device prefill that
     /// keeps running after the consumer stopped.
@@ -52,11 +53,13 @@ private final class CancelGatedAdapter: ProviderAdapter, @unchecked Sendable {
     init(
         started: StreamCounter,
         onStream: (@Sendable () -> Void)? = nil,
-        teardownMilliseconds: UInt64 = 0
+        teardownMilliseconds: UInt64 = 0,
+        onExit: (@Sendable () -> Void)? = nil
     ) {
         self.started = started
         self.onStream = onStream
         self.teardownMilliseconds = teardownMilliseconds
+        self.onExit = onExit
     }
 
     var streamCount: Int { started.current }
@@ -70,6 +73,7 @@ private final class CancelGatedAdapter: ProviderAdapter, @unchecked Sendable {
         // the exact contract the on-device adapter keeps when a stop lands
         // mid-prefill, while the underlying engine winds down later.
         AsyncThrowingStream {
+            defer { self.onExit?() }
             self.started.increment()
             self.onStream?()
             while !Task.isCancelled {
@@ -213,8 +217,49 @@ private func awaitTrue(
 
 // MARK: - Suite
 
+private actor CancellingSinkBarrier: AgentEventSink {
+    let entered: StreamCounter
+    private var continuation: CheckedContinuation<Void, Never>?
+    init(entered: StreamCounter) { self.entered = entered }
+    func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async {
+        guard state.name == "cancelling" else { return }
+        entered.increment()
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func agentRuntime(_ runtime: FloeAgentRuntime, didEmit event: AgentEvent) async {}
+    func release() { continuation?.resume(); continuation = nil }
+}
+
 @Suite("Caller-stop terminal state")
 struct CancelTerminalStateTests {
+
+    @Test("Stop cancels the provider before a slow cancelling-state sink finishes")
+    @available(macOS 15.4, iOS 26.0, *)
+    func providerStopsBeforeCancellationPersistence() async throws {
+        let started = StreamCounter(), exited = StreamCounter(), entered = StreamCounter()
+        let sink = CancellingSinkBarrier(entered: entered)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("stop-provider-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let provider = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://example.invalid")!, displayName: "Synthetic cancellation")
+        let runtime = FloeAgentRuntime(configuration: .init(provider: provider,
+            model: cancelTerminalModel(providerID: provider.id), allowedToolNames: []),
+            adapter: CancelGatedAdapter(started: started, onExit: { exited.increment() }),
+            policy: HumanApprovalPolicy(), executor: TerminalStateNoExecution(),
+            checkpointStore: FileCheckpointStore(directory: directory), sink: sink)
+        let runner = Task { try await runtime.start(goal: "synthetic stream cancellation") }
+        #expect(await awaitTrue { started.current == 1 })
+        let stopper = Task { await runtime.cancel() }
+        let reachedSink = await awaitTrue { entered.current == 1 }
+        let stoppedBeforeSinkFinished = await awaitTrue(timeout: .seconds(1)) { exited.current == 1 }
+        await sink.release()
+        await stopper.value
+        try await runner.value
+        #expect(reachedSink)
+        #expect(stoppedBeforeSinkFinished)
+        #expect(await runtime.state.name == "checkpointed")
+    }
 
     @Test("A user stop mid-generation quiesces to the terminal checkpointed state")
     @available(macOS 15.4, iOS 26.0, *)

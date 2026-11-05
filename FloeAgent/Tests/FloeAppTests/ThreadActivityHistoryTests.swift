@@ -28,6 +28,28 @@ import FloePersistence
 @MainActor
 struct ThreadActivityHistoryTests {
 
+    @Test("Stop freezes already-buffered text while cancellation settles")
+    func stopFreezesPresentationBacklog() async throws {
+        let (environment, center, conversation) = try await makeEnvironment()
+        let run = makeRun(state: "streamingModel", conversationID: conversation.id, startedAt: Date())
+        try await environment.runStore.saveRun(run)
+        let model = ThreadDetailViewModel(conversationID: conversation.id, center: center)
+        await model.load()
+        model.stopLiveUpdates()
+        let received = String(repeating: "已接收但尚未播放的文字。", count: 120)
+        model.animator.update(target: received)
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(!model.animator.isSettled)
+        await model.cancel()
+        let stopped = model.animator.displayedText
+        #expect(!stopped.isEmpty)
+        #expect(stopped.count < received.count)
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(model.animator.displayedText == stopped)
+        #expect(!model.isRunning)
+        model.stopLiveUpdates()
+    }
+
     // MARK: - Helpers
 
     private func makeRun(state: String, conversationID: UUID, startedAt: Date) -> RunRecord {

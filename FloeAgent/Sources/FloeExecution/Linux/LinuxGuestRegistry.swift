@@ -663,6 +663,16 @@ public actor LinuxGuestRegistry {
         let admitted = guestReservations.count
         let reservedRAM = reservedGuestRAMMB
         let queued = await runtimeV2?.queuedStarts()
+        let diskRepairRequired: Bool?
+        if descriptor == nil {
+            diskRepairRequired = nil
+        } else if let runtimeV2 {
+            diskRepairRequired = await runtimeV2.diskRepairRequired(environmentID: environmentID)
+        } else {
+            // The resident ARM64 disk is not a per-project delta. An absent
+            // old recovery substrate is not evidence of a broken machine.
+            diskRepairRequired = factory.usesResidentMachine ? false : nil
+        }
         if let session = sessions[environmentID] {
             return LinuxGuestStatus(
                 environmentID: environmentID,
@@ -679,7 +689,8 @@ public actor LinuxGuestRegistry {
                 reservedGuestRAMMB: reservedRAM,
                 networkStatus: session.networkStatus,
                 diskResizeFailure: diskResizeFailures[environmentID],
-                queuedGuestCount: queued
+                queuedGuestCount: queued,
+                diskRepairRequired: diskRepairRequired
             )
         }
         return LinuxGuestStatus(
@@ -695,7 +706,8 @@ public actor LinuxGuestRegistry {
             activeGuestCount: admitted,
             reservedGuestRAMMB: reservedRAM,
             diskResizeFailure: diskResizeFailures[environmentID],
-            queuedGuestCount: queued
+            queuedGuestCount: queued,
+            diskRepairRequired: diskRepairRequired
         )
     }
 

@@ -1357,6 +1357,9 @@ public struct LinuxGuestStatus: Sendable, Equatable {
     /// the UI exposes this as a repair/update state instead of pretending the
     /// full disk is available.
     public var diskResizeFailure: String?
+    /// Recorded disk-recovery exclusion, independent of whether Linux is
+    /// powered on. nil means the backend cannot inspect this fact.
+    public var diskRepairRequired: Bool?
 
     public init(
         environmentID: String,
@@ -1373,7 +1376,8 @@ public struct LinuxGuestStatus: Sendable, Equatable {
         reservedGuestRAMMB: Int? = nil,
         networkStatus: LinuxGuestNetworkStatus? = nil,
         diskResizeFailure: String? = nil,
-        queuedGuestCount: Int? = nil
+        queuedGuestCount: Int? = nil,
+        diskRepairRequired: Bool? = nil
     ) {
         self.environmentID = environmentID
         self.running = running
@@ -1390,6 +1394,7 @@ public struct LinuxGuestStatus: Sendable, Equatable {
         self.networkStatus = networkStatus
         self.diskResizeFailure = diskResizeFailure
         self.queuedGuestCount = queuedGuestCount
+        self.diskRepairRequired = diskRepairRequired
     }
 }
 

@@ -26,6 +26,14 @@ struct FileTreeNode: Identifiable, Hashable, Sendable {
     var children: [FileTreeNode]?
 
     var id: String { relativePath }
+
+    /// Native CAD is a directory on disk, but one editable document in the
+    /// browser. Keep its physical kind for copy/delete/archive operations.
+    var isCADDocumentPackage: Bool {
+        isDirectory && (name as NSString).pathExtension.lowercased() == "floecad"
+    }
+
+    var isBrowsableDirectory: Bool { isDirectory && !isCADDocumentPackage }
 }
 
 struct VisibleFileTreeNode: Identifiable, Sendable {
@@ -68,7 +76,8 @@ final class FileTreeViewModel: ObservableObject {
         func append(_ nodes: [FileTreeNode], depth: Int, into result: inout [VisibleFileTreeNode]) {
             for node in nodes {
                 result.append(VisibleFileTreeNode(node: node, depth: depth))
-                if expandedDirectoryPaths.contains(node.relativePath), let children = node.children {
+                if node.isBrowsableDirectory,
+                   expandedDirectoryPaths.contains(node.relativePath), let children = node.children {
                     append(children, depth: depth + 1, into: &result)
                 }
             }
@@ -101,7 +110,7 @@ final class FileTreeViewModel: ObservableObject {
 
     /// Lazily loads a directory's children on first disclosure.
     func loadChildren(of node: FileTreeNode) async -> [FileTreeNode] {
-        guard node.isDirectory, center.fileService != nil else { return [] }
+        guard node.isBrowsableDirectory, center.fileService != nil else { return [] }
         do {
             let page = try await center.listDirectory(relativePath: node.relativePath)
             return page.entries.map(Self.node(from:))
@@ -112,7 +121,7 @@ final class FileTreeViewModel: ObservableObject {
     }
 
     func toggleDirectory(_ node: FileTreeNode) async {
-        guard node.isDirectory else { return }
+        guard node.isBrowsableDirectory else { return }
         if expandedDirectoryPaths.contains(node.relativePath) {
             expandedDirectoryPaths.remove(node.relativePath)
             return

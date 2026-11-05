@@ -112,6 +112,7 @@ private actor FakeLifecycleController: LinuxGuestControlling {
     /// Scripted verified-repair outcome (nil = refuse like a substrate-less
     /// backend).
     var scriptedRepair: RuntimeV2Store.RepairResolutionReport?
+    var diskRepairRequired: Bool?
     private(set) var repairCalls = 0
     /// Optional scripted suspend points inside start/stop, used by the
     /// reconciliation probe races to hold a lifecycle operation in flight
@@ -222,12 +223,14 @@ private actor FakeLifecycleController: LinuxGuestControlling {
         if let guest = active[environmentID] {
             return LinuxGuestStatus(
                 environmentID: environmentID, running: true,
-                imageID: ownedImages[environmentID], ramMB: guest.ramMB
+                imageID: ownedImages[environmentID], ramMB: guest.ramMB,
+                diskRepairRequired: diskRepairRequired
             )
         }
         return LinuxGuestStatus(
             environmentID: environmentID, running: false,
-            imageID: ownedImages[environmentID], ramMB: nil
+            imageID: ownedImages[environmentID], ramMB: nil,
+            diskRepairRequired: diskRepairRequired
         )
     }
 
@@ -294,6 +297,7 @@ private actor FakeLifecycleController: LinuxGuestControlling {
     func setScriptedRepair(_ report: RuntimeV2Store.RepairResolutionReport?) {
         scriptedRepair = report
     }
+    func setDiskRepairRequired(_ required: Bool?) { diskRepairRequired = required }
     func setServices(_ environmentID: String, _ count: Int) {
         active[environmentID]?.services = count
     }
@@ -941,6 +945,40 @@ final class LinuxLifecycleToolDispatchTests: XCTestCase {
             cancellation: CancellationToken(),
             environmentID: environmentID
         )
+    }
+
+    func testHealthyRunningRepairIsNoOpAndKeepsPowerState() async throws {
+        let controller = FakeLifecycleController()
+        await controller.own(environmentID)
+        await controller.setDiskRepairRequired(false)
+        let manager = LinuxGuestLifecycleManager(controller: controller)
+        _ = try await manager.start(environmentID: environmentID, config: .init(), ownerTaskID: "run-healthy")
+        let before = try await manager.status(environmentID: environmentID)
+        let tool = AnyAgentTool(RepairLinuxGuestLifecycleTool(lifecycle: manager))
+        let output = try await tool.run(Data("{}".utf8), context())
+        XCTAssertEqual(output.exitStatus, 0)
+        XCTAssertTrue(output.summary.contains("resolution=notRequired"))
+        let after = try await manager.status(environmentID: environmentID)
+        XCTAssertEqual(after.phase, .running)
+        XCTAssertEqual(after.launchGeneration, before.launchGeneration)
+        let calls = await controller.repairCalls
+        XCTAssertEqual(calls, 0, "A healthy ARM64 runtime must never enter the old disk-restore path")
+    }
+
+    func testStoppedRepairIsNoOpWithoutBootOrReset() async throws {
+        let controller = FakeLifecycleController()
+        await controller.own(environmentID)
+        await controller.setDiskRepairRequired(false)
+        let manager = LinuxGuestLifecycleManager(controller: controller)
+        let tool = RepairLinuxGuestLifecycleTool(lifecycle: manager)
+        let output = try await tool.execute(.init(), context: context())
+        XCTAssertEqual(output.exitStatus, 0)
+        XCTAssertTrue(output.summary.contains("resolution=notRequired"))
+        XCTAssertTrue(output.summary.contains("being stopped is not disk damage"))
+        let after = try await manager.status(environmentID: environmentID)
+        XCTAssertEqual(after.phase, .stopped)
+        let calls = await controller.repairCalls
+        XCTAssertEqual(calls, 0)
     }
 
     func testStartToolDispatchesThroughManager() async throws {

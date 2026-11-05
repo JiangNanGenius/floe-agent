@@ -103,6 +103,9 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var runs: [RunRecord] = [] { didSet { timelineRevision &+= 1 } }
     /// The run currently displayed (the one the user expanded / latest).
     @Published var selectedRunID: UUID? { didSet { timelineRevision &+= 1 } }
+    /// Explicit Stop wins over queued deltas and presentation animation.
+    /// A deliberate Continue/Retry reopens this same run's display boundary.
+    private var locallyStoppedRunIDs = Set<UUID>()
     /// Persisted events of the selected run, in sequence order.
     @Published private(set) var events: [RunEventRecord] = [] {
         didSet { cachedImportantFiles = nil }
@@ -1331,6 +1334,7 @@ final class ThreadDetailViewModel: ObservableObject {
             // Subscribe before awaiting the provider loop so the UI no longer
             // waits for the first token or races a very fast completion.
             mergeRunHeaders(try await center.runStore(for: conversationID).recentRuns(conversationID: conversationID, limit: 30))
+            locallyStoppedRunIDs.remove(started.runID)
             selectedRunID = started.runID
             try await loadSelectedRunDetails()
             startLiveUpdates()
@@ -1633,6 +1637,10 @@ final class ThreadDetailViewModel: ObservableObject {
     /// Cancels the selected run.
     func cancel() async {
         guard let runID = selectedRun?.id else { return }
+        locallyStoppedRunIDs.insert(runID)
+        animator.cancel()
+        reasoningAnimator.cancel()
+        isDraining = false
         // Stop the composer immediately; persistence/live events will still
         // deliver the authoritative cancelled terminal state afterwards.
         isRunning = false
@@ -1945,6 +1953,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 startOrigin: .explicitUserAction
             )
             mergeRunHeaders(try await center.runStore(for: conversationID).recentRuns(conversationID: conversationID, limit: 30))
+            locallyStoppedRunIDs.remove(started.runID)
             selectedRunID = started.runID
             try await loadSelectedRunDetails()
             startLiveUpdates()
@@ -2041,6 +2050,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 executionMode: selectedExecution == .goal ? .goal : .agent,
                 startOrigin: .explicitUserAction
             )
+            locallyStoppedRunIDs.remove(started.runID)
             selectedRunID = started.runID
             await load()
         } catch { actionError = error.localizedDescription }
@@ -2088,6 +2098,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 executionMode: .goal,
                 startOrigin: .explicitUserAction
             )
+            locallyStoppedRunIDs.remove(started.runID)
             selectedRunID = started.runID
             await load()
         } catch {
@@ -2287,12 +2298,16 @@ final class ThreadDetailViewModel: ObservableObject {
             // inferring a phase from the state name.
             self.applyLiveCompression(snapshot.contextCompression)
             var answerTarget = snapshot.streamedText
-            self.animator.update(target: answerTarget)
+            if !self.locallyStoppedRunIDs.contains(run.id) {
+                self.animator.update(target: answerTarget)
+            }
             var reasoningTarget = snapshot.reasoningText
-            self.reasoningAnimator.update(target: reasoningTarget)
+            if !self.locallyStoppedRunIDs.contains(run.id) {
+                self.reasoningAnimator.update(target: reasoningTarget)
+            }
             self.hasProviderActivity = snapshot.hasProviderActivity
             self.liveStateName = snapshot.stateName
-            self.isRunning = !snapshot.isTerminal
+            self.isRunning = !snapshot.isTerminal && !self.locallyStoppedRunIDs.contains(run.id)
             if snapshot.isTerminal {
                 await self.finishLiveRun(runID: run.id, center: center, generation: feedbackGeneration)
                 return
@@ -2308,6 +2323,7 @@ final class ThreadDetailViewModel: ObservableObject {
                       feedbackGeneration == self.liveFeedbackGeneration else { break liveEvents }
                 switch event {
                 case .answerDelta(let delta):
+                    guard !self.locallyStoppedRunIDs.contains(run.id) else { continue liveEvents }
                     // The reasoning segment ended the instant the answer
                     // began; the service already persisted it. Drop the live
                     // reasoning buffer now so it never duplicates the
@@ -2321,6 +2337,7 @@ final class ThreadDetailViewModel: ObservableObject {
                     self.animator.update(target: answerTarget)
                     self.hasProviderActivity = true
                 case .reasoningDelta(let delta):
+                    guard !self.locallyStoppedRunIDs.contains(run.id) else { continue liveEvents }
                     // A fresh reasoning segment starts. The previous answer
                     // was already sealed at the last tool boundary; clear the
                     // live tail defensively so reasoning always renders after
@@ -2358,6 +2375,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 case .stateChanged(let state):
                     self.liveStateName = state.rawValue
                     self.isRunning = ![.completed, .cancelled, .failed, .interrupted].contains(state)
+                        && !self.locallyStoppedRunIDs.contains(run.id)
                     await self.refreshLiveCompression(
                         service: service, runID: run.id, generation: feedbackGeneration)
                     guard !Task.isCancelled,
@@ -2473,8 +2491,10 @@ final class ThreadDetailViewModel: ObservableObject {
         }
         isCompacting = false
         isDraining = true
-        await animator.drain(maximumDuration: .milliseconds(750))
-        await reasoningAnimator.drain(maximumDuration: .milliseconds(500))
+        if !locallyStoppedRunIDs.contains(runID) {
+            await animator.drain(maximumDuration: .milliseconds(750))
+            await reasoningAnimator.drain(maximumDuration: .milliseconds(500))
+        }
         isDraining = false
         // Refresh persisted state even if the selection moved on during the
         // drain. A finished run must never strand the UI in a non-terminal

@@ -420,7 +420,7 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
 
     /// Capability summary carried by every receipt of this release.
     public static let capabilitySummary =
-        "up to three guest cores when the verified image proves that count (three-hart boot verified by component-image-ci run 37171053949); four cores total across the pool; choose cores and RAM for the workload before the first shell call; omitted parameters restore the last successful configuration; performance depends on workload; memory, lease and stop guards unchanged"
+        "shared ARM64 Linux supports 1–4 online CPUs when the verified image provides CPU hotplug; omitted resources preserve the shared configuration; CPU-only changes do not restart Linux; RAM changes require a stopped runtime; project ownership and stop guards remain enforced; no workload speedup is promised"
 
     /// The engine's worker default for a start that requests no RAM
     /// (`LinuxGuestLimits.defaultRAMMB`, 256 MiB). Kept in parity so a
@@ -839,7 +839,7 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
                 snapshot: current,
                 reused: true,
                 imageID: status.imageID,
-                detail: "guest is running"
+                detail: "guest is running; diskRecoveryRequired=\(status.diskRepairRequired.map(String.init) ?? "unknown")"
             )
         }
         // A controller without a runtime-state snapshot can still prove the
@@ -858,7 +858,7 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
             )
         }
         let saved = await controller.preferredGuestConfiguration(environmentID: environmentID)
-        var detail = "guest is stopped"
+        var detail = "guest is stopped; diskRecoveryRequired=\(status.diskRepairRequired.map(String.init) ?? "unknown")"
         if let cores = saved?.vcpus, let memory = saved?.memoryMB {
             detail += "; saved startup configuration: \(cores) vCPU, \(memory) MiB"
         }
@@ -1411,6 +1411,21 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
         // A repairRequired environment owns NO guest capacity, so a missing
         // activity fact is the normal case; only a live or starting guest
         // (or a quarantined survivor of a stop that never confirmed) refuses.
+        let status = await controller.guestStatus(environmentID: environmentID)
+        try Self.throwIfCancelled(cancellation)
+        if status.diskRepairRequired == false {
+            let imageNote: String
+            if let failure = status.imageVerificationFailure {
+                imageNote = " The installed image needs verification/preparation: \(failure)."
+            } else if status.imageInstalled == false {
+                imageNote = " The base image has not been installed; prepare it before starting Linux."
+            } else {
+                imageNote = status.running ? " Linux is running." : " Linux is stopped; being stopped is not disk damage."
+            }
+            return LinuxGuestRepairReceipt(environmentID: environmentID,
+                resolution: "notRequired",
+                detail: "No recorded environment-disk recovery is required. No files, dependencies or power state were changed." + imageNote)
+        }
         let detail = await activity(environmentID)
         if detail?.running == true || detail?.starting == true {
             throw LinuxGuestLifecycleError.capabilityUnsupported(
