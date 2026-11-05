@@ -77,6 +77,16 @@ workers. It was rejected and is not in the production source. Subsequent
 interpreter-efficiency changes require their own correctness and before/after
 measurements; CPU-state separation cannot be counted twice.
 
+A SHA256-helper acceleration experiment also passed 20,480 decoded-state
+comparisons, scalar-fallback comparison and sanitizer checks. Its SHA-specific
+native instruction workload improved approximately 17% at one worker, but the
+actual Linux crypto workload regressed 26.5% and compression regressed 3.4%
+against the unchanged, verified separated-CPU baseline. It was rejected; the
+production source retains the original SHA implementation. An initial archive
+replacement used the wrong object member name and was explicitly invalidated;
+the corrected run and the original failure are both retained. Neither
+microbenchmark gain is presented as a general interpreter improvement.
+
 The retained historical TinyEMU result is a different three-process `dd`
 workload on the Mac host: 1.21/0.68/0.45 seconds at one/two/three harts, or
 2.689× three-hart scaling. No retained matched physical-iPad four-hart 3.5×

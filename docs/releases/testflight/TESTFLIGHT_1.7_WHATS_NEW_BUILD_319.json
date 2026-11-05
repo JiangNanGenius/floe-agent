@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "319：优化本机运行环境的多核效率，减少核心之间的相互干扰。新增设备存储空间提醒和恢复指引；修复终端启动时切换全屏导致连接取消。包含背景音音量恢复修复，保留项目、文件、设置和已安装内容。请对照单核、双核和四核任务，检查终端切换、长命令、停止与重连，以及存储提醒。性能收益因设备和负载而异。",
+  "en-US": "319: Improved local runtime multicore efficiency by reducing interference between cores. Added device storage warnings and recovery guidance. Fixed terminal startup being cancelled when switching to full screen. Includes the background sound volume restoration fix, preserving projects, files, settings and installed content. Please compare single-, two- and four-core tasks and check terminal transitions, long commands, stop, reconnect and storage notices. Gains vary by device and workload."
+}
