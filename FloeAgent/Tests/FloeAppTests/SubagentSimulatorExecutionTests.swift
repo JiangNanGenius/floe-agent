@@ -8460,6 +8460,8 @@ extension SubagentSimulatorExecutionTests {
                 from pathlib import Path
                 with tempfile.TemporaryDirectory(prefix="eda-symlink-preflight-") as raw:
                     tree = Path(raw)
+                    assert tree.parent == Path("/floe/env/tmp"), "tempfile fell back outside the shared TMPDIR"
+                    print("DATA_ARM64_SCRATCH_ROOT=" + str(tree.parent), flush=True)
                     parent = tree / "root" / "nested"
                     parent.mkdir(parents=True)
                     target = tree / "outside.csv"
