@@ -614,6 +614,9 @@ dependencies {
     implementation(project(":core:safgateway"))
     implementation(project(":core:officeengine"))
     implementation("com.google.android.play:feature-delivery:2.1.0")
+    // Feature Delivery brings Fragment 1.0 transitively; modern ActivityResult
+    // permission callbacks require a supported Fragment runtime.
+    implementation("androidx.fragment:fragment:1.9.1")
     implementation("com.getkeepsafe.relinker:relinker:1.4.4")
     implementation(project(":feature:ide"))
     implementation(project(":feature:terminal"))
