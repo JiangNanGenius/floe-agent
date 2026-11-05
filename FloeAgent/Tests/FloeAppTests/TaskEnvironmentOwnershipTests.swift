@@ -5,9 +5,69 @@ import FloeEnvironments
 import FloeTools
 import FloeModels
 import FloePersistence
+#if canImport(UIKit)
+@testable import FloeApp
+#endif
 
 @Suite("Task environment migration ownership")
 struct TaskEnvironmentOwnershipTests {
+
+#if canImport(UIKit)
+    @MainActor @Test("A saved Linux pin loads the cold registry without starting or replacing its environment")
+    func savedLinuxPinLoadsColdRegistry() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = root.appendingPathComponent("workspace")
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        let roots = EnvironmentRoots(rootURL: root.appendingPathComponent("environments"))
+        let original = EnvironmentRegistry(roots: roots, baseRevision: "arm64")
+        let owner = FloeDigest.sha256Hex(Data(workspace.resolvingSymlinksInPath().standardizedFileURL.path.utf8))
+        let record = try await original.ensureProjectContainer(workspaceID: owner, workspaceRootPath: workspace.path)
+        let dependency = roots.layerURL(id: record.id, kind: record.kind).appendingPathComponent("retained-dependency")
+        try Data("installed once".utf8).write(to: dependency)
+        let saved = TaskExecutionTarget(environmentID: record.id, backend: .linuxVM,
+            operatingSystem: "linux", architecture: "arm64")
+        let originalIDs = await original.all().map(\.id).sorted()
+        let cold = EnvironmentRegistry(roots: roots, baseRevision: "arm64")
+        #expect(await cold.record(id: record.id) == nil)
+        try await TaskExecutionEnvironmentCenter.validateSavedTarget(saved, registry: cold)
+        #expect(await cold.record(id: record.id)?.ownerID == owner)
+        #expect(await cold.all().map(\.id).sorted() == originalIDs)
+        #expect(try await cold.ownsExecutionLocation(containerID: record.id, conversationID: UUID(), taskRoot: workspace))
+        #expect(try Data(contentsOf: dependency) == Data("installed once".utf8))
+        // This performs metadata restoration only: no runtime service or
+        // replacement target participates in restoring the saved pin.
+        try await TaskExecutionEnvironmentCenter.validateSavedTarget(saved, registry: cold)
+    }
+
+    @MainActor @Test("Loading a saved pin retains missing, incompatible and rebuild validation")
+    func coldSavedPinDoesNotBypassUnavailableTargets() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let roots = EnvironmentRoots(rootURL: root.appendingPathComponent("environments"))
+        let original = EnvironmentRegistry(roots: roots, baseRevision: "arm64")
+        try await original.prepare()
+        let id = EnvironmentRegistry.sharedContainerID
+        let wrong = TaskExecutionTarget(environmentID: id, backend: .linuxVM,
+            operatingSystem: "linux", architecture: "x86_64")
+        let cold = EnvironmentRegistry(roots: roots, baseRevision: "arm64")
+        await #expect(throws: TaskExecutionAvailabilityError.self) {
+            try await TaskExecutionEnvironmentCenter.validateSavedTarget(wrong, registry: cold)
+        }
+        var missing = wrong
+        missing.environmentID = "missing"
+        await #expect(throws: TaskExecutionAvailabilityError.self) {
+            try await TaskExecutionEnvironmentCenter.validateSavedTarget(missing, registry: cold)
+        }
+        var valid = wrong
+        valid.architecture = "arm64"
+        let changedABI = EnvironmentRegistry(roots: roots, baseRevision: "different-ABI")
+        await #expect(throws: TaskExecutionAvailabilityError.self) {
+            try await TaskExecutionEnvironmentCenter.validateSavedTarget(valid, registry: changedABI)
+        }
+        #expect(await changedABI.record(id: id)?.requiresRebuild == true)
+    }
+#endif
 
     @Test func sharedProjectConfigurationRequiresTheLeasedTaskRoot() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

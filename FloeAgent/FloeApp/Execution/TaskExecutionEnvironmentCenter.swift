@@ -68,6 +68,7 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
         var value = snapshots[conversationID] ?? Snapshot(); value.checking = true
         snapshots[conversationID] = value
         do {
+            try await environment.environmentRegistry.prepare()
             value.choices = try await choices()
             value.binding = try await store.binding(conversationID: conversationID)
             value.migration = try await store.activeMigration(conversationID: conversationID)
@@ -153,6 +154,11 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
     /// Called before any executable tool. Existing run/task pins beat all later defaults.
     func resolveBinding(conversationID: UUID, runID: UUID, root: URL,
                         workspace: WorkspaceRecord?, override: String? = nil) async throws -> TaskExecutionBinding {
+        // Restored tasks already have a pin and skip prepareTarget. Load the
+        // registry before reading that pin's record or refreshing its reset
+        // generation; otherwise a cold launch mistakes an unloaded registry
+        // for a missing machine and freezes the run without execution tools.
+        try await environment.environmentRegistry.prepare()
         if let migration = try await store.activeMigration(conversationID: conversationID), !migration.phase.isCommitted {
             throw FloeError.validationFailed(copy("请先完成或取消此任务的迁移。", "Finish or cancel this task’s move before continuing."))
         }
@@ -210,6 +216,10 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
     }
 
     func target(_ record: ContainerRecord) throws -> TaskExecutionTarget {
+        try Self.executionTarget(record)
+    }
+
+    private static func executionTarget(_ record: ContainerRecord) throws -> TaskExecutionTarget {
         let backend: TaskExecutionTarget.Backend
         switch record.effectiveExecutionBackend {
         case .linuxVM: backend = .linuxVM
@@ -219,7 +229,7 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
             }
             backend = .macBridge
         case .remoteSSH: backend = .remoteSSH
-        case .native: throw FloeError.validationFailed(copy("请先选择可用的运行环境。", "Choose an available execution environment first."))
+        case .native: throw FloeError.validationFailed(IDELanguageRunText.t("请先选择可用的运行环境。", "Choose an available execution environment first."))
         }
         return TaskExecutionTarget(environmentID: record.id, backend: backend,
             remoteHostID: record.remoteHostID, remoteRootPath: record.remoteRootPath,
@@ -229,10 +239,15 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
     }
 
     private func validate(_ target: TaskExecutionTarget) async throws {
-        guard let record = await environment.environmentRegistry.record(id: target.environmentID),
+        try await Self.validateSavedTarget(target, registry: environment.environmentRegistry)
+    }
+
+    static func validateSavedTarget(_ target: TaskExecutionTarget, registry: EnvironmentRegistry) async throws {
+        try await registry.prepare()
+        guard let record = await registry.record(id: target.environmentID),
               record.state == .active, !record.requiresRebuild,
-              try self.sameIdentity(self.target(record), target) else {
-            throw TaskExecutionAvailabilityError(message: copy("原运行位置不可用，请重新连接或迁移任务。", "The saved environment is unavailable. Reconnect or move this task."))
+              try sameIdentity(executionTarget(record), target) else {
+            throw TaskExecutionAvailabilityError(message: IDELanguageRunText.t("原运行位置不可用，请重新连接或迁移任务。", "The saved environment is unavailable. Reconnect or move this task."))
         }
     }
 
@@ -245,7 +260,7 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
         return try await store.refreshResetLinuxBinding(pin, target: target(record))
     }
 
-    private func sameIdentity(_ first: TaskExecutionTarget, _ second: TaskExecutionTarget) -> Bool {
+    private static func sameIdentity(_ first: TaskExecutionTarget, _ second: TaskExecutionTarget) -> Bool {
         var first = first, second = second
         first.runtimeGeneration = nil; second.runtimeGeneration = nil
         return first == second
