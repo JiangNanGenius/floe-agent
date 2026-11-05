@@ -8340,4 +8340,125 @@ extension SubagentSimulatorExecutionTests {
     }
 }
 
+// MARK: - Current ARM64 data candidates (not an official installation receipt)
+
+extension SubagentSimulatorExecutionTests {
+    @Test("ARM64 data candidates: exact declared APT dependencies and full golden scripts in the real guest",
+          .enabled(if: ProcessInfo.processInfo.environment["FLOE_DATA_ARM64_CANDIDATE"] == "1"))
+    func dataARM64CandidateQualification() async throws {
+        let root = try makeWorkspaceRoot()
+        let support = try FileManager.default.url(for: .applicationSupportDirectory,
+            in: .userDomainMask, appropriateFor: nil, create: true)
+        let input = support.appendingPathComponent("FloeAgent/QualificationInputs/DataARM64")
+        let runID = UUID(), conversationID = UUID()
+        let exported = support.appendingPathComponent("FloeAgent/QualificationEvidence/DataARM64/" + runID.uuidString)
+        var evidence: [String: String] = ["kind": "candidate-real-guest-not-official-install", "runID": runID.uuidString]
+        let pins: [(String, Int, String)] = [
+            ("run.py", 4775, "6b081a45c3bd309ff66697f15f492da1244ac030ba396c5c20c40c78f0bad99f"),
+            ("manifest.json", 4083, "1fc794ee9f4c73714ab3cf813011317c6a682dd1128e698b625175c010d50104"),
+            ("packages/exploratory-data-analysis.zip", 238892, "d4f91adf6a88bece6a1a94d9b0f072d1d93f53c3629c7bd1815063dd1054c3f2"),
+            ("packages/statistical-analysis.zip", 213134, "68ff909ed701f3228ce84fe231bc152486f9b2041a23fdb2bd72cb002036fbd3"),
+            ("packages/scientific-visualization.zip", 276241, "15f9c78512cf38d1ef0e67d4a32bde7ab5782db0cf3690d11a8deeb47fd19d17"),
+            ("packages/markitdown.zip", 117735, "5d7716a7d71b2557a06f1f2cc08381dff4bf25e98b3e6ae0b0487d9ae0251fb5"),
+        ]
+        var ownedEnvironmentID: String?
+        var ownedRuntime: FloeAgentRuntime?
+        var parentHold: CancellationToken?
+        var parentTask: Task<Void, Error>?
+        var jobIDs: [UUID] = []
+        var app: AppEnvironment?
+        var recordsCreated = false
+        func finish() async {
+            // Export success AND original failure artifacts before removing only
+            // this qualification's workspace/environment/records.
+            do {
+                try FileManager.default.createDirectory(at: exported, withIntermediateDirectories: true)
+                try JSONEncoder().encode(evidence).write(to: exported.appendingPathComponent("evidence.json"), options: .atomic)
+                let output = root.appendingPathComponent("qualification")
+                if FileManager.default.fileExists(atPath: output.path) {
+                    try FileManager.default.copyItem(at: output, to: exported.appendingPathComponent("qualification"))
+                }
+                print("FLOE_DATA_ARM64_EVIDENCE=\(exported.path)")
+            } catch {
+                Issue.record("Data ARM64 evidence export failed; preserve owned workspace: \(root.path): \(error)")
+                await ownedRuntime?.cancel()
+                parentHold?.cancel()
+                parentTask?.cancel()
+                return
+            }
+            await skillHubCleanup(runtime: ownedRuntime, parentHold: parentHold, parentTask: parentTask,
+                jobs: app?.backgroundJobService, jobIDs: jobIDs, environmentID: ownedEnvironmentID,
+                root: root, conversationID: recordsCreated ? conversationID : nil, app: app)
+        }
+        do {
+            var staged: [SkillHubStagedFile] = []
+            for (path, count, hash) in pins {
+                let bytes = try Data(contentsOf: input.appendingPathComponent(path))
+                try #require(bytes.count == count && FloeDigest.sha256Hex(bytes) == hash,
+                    "Current ARM64 input changed: \(path)")
+                try SkillHubStager.stageBytes(bytes, to: root, path: "qualification/" + path, into: &staged)
+            }
+            try SkillHubStager.writeManifest(staged, at: root)
+            let liveApp = try await appQualificationEnvironment()
+            app = liveApp
+            let booted = try await bootGuestWithShape(root: root, memoryMB: 1024) { ownedEnvironmentID = $0 }
+            let environmentID = booted.environmentID
+            evidence["environmentID"] = environmentID
+            evidence["actualMemoryMB"] = String(booted.receipt.actualMemoryMB)
+            try await skillHubCreateRunRows(app: liveApp, conversationID: conversationID, runID: runID,
+                title: "ARM64 data candidate qualification", goal: "Four pinned candidates, real declared dependencies and full golden scripts; no model")
+            recordsCreated = true
+            let ceiling: Set<String> = ["exec.shell"]
+            let hold = CancellationToken()
+            parentHold = hold
+            let runtime = makeRuntime(root: root, conversationID: conversationID, runID: runID,
+                allowedToolNames: ceiling, environmentID: environmentID,
+                adapter: QualificationHoldingProviderAdapter(hold: hold))
+            ownedRuntime = runtime
+            parentTask = Task { try await runtime.start(goal: "Qualify current ARM64 data candidates") }
+            try #require(await waitForAsync(timeout: 20) {
+                if case .streamingModel = await runtime.state { return true }; return false
+            })
+            let identity = ChildExecutionIdentity(parentRunID: runID, rootTaskID: conversationID,
+                delegateCallID: "data-arm64-candidate")
+            let context = ToolContext(runID: runID, scope: .local, allowedToolNames: ceiling,
+                workspaceRootURL: root, cancellation: CancellationToken(), environmentID: environmentID,
+                conversationID: conversationID)
+            try await requireQualifiedKernel(runtime: runtime, identity: identity, context: context)
+            let verify = try await skillHubShell(runtime: runtime, identity: identity, context: context,
+                tag: "data-arm64-stage", command: """
+                python3 -c 'import json,hashlib,pathlib,platform; p=pathlib.Path("."); m=json.loads((p/"skill-hub-staging.json").read_bytes()); assert platform.machine()=="aarch64"; [(lambda b,r: (len(b)==r["bytes"] and hashlib.sha256(b).hexdigest()==r["sha256"]) or (_ for _ in ()).throw(AssertionError(r["path"])))((p/r["path"]).read_bytes(),r) for r in m["files"]]; print("DATA_ARM64_STAGE_OK")'
+                """, timeout: 120)
+            try #require(verify.status == .ok && sevenDeepOutput(verify).contains("DATA_ARM64_STAGE_OK"))
+            evidence["guestStage"] = sevenDeepOutput(verify)
+            let jobs = try #require(liveApp.backgroundJobService)
+            for sid in ["exploratory-data-analysis", "statistical-analysis", "scientific-visualization", "markitdown"] {
+                print("FLOE_DATA_ARM64_PHASE=\(sid)")
+                let id = try await skillHubSubmitShell(jobs: jobs, runID: runID, environmentID: environmentID,
+                    root: root, name: "data-arm64-" + sid,
+                    command: "PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python3 qualification/run.py " + sid,
+                    timeout: 600)
+                jobIDs.append(id)
+                let terminal = try await skillHubWaitTerminalCooperative(jobs, id: id, progressLabel: sid)
+                evidence[sid + ".jobState"] = terminal.job.state.rawValue
+                evidence[sid + ".elapsedMs"] = String(terminal.elapsedMs)
+                try #require(terminal.job.state == .completed, "ARM64 candidate failed: \(sid); inspect original exported receipt/log")
+                let receipt = try sevenDeepJSON(root, "qualification/results/" + sid + "/receipt.json")
+                try #require(receipt["passed"] as? Bool == true
+                    && receipt["kind"] as? String == "candidate-real-guest-not-official-install")
+                let golden = try sevenDeepJSON(root, "qualification/results/" + sid + "/source/golden.json")
+                evidence[sid + ".checks"] = String(try sevenDeepRequireAllChecksPass(golden, label: sid))
+                print("FLOE_DATA_ARM64_CASE_PASSED=\(sid) checks=\(evidence[sid + ".checks"] ?? "unknown")")
+            }
+            evidence["passed"] = "true"
+            await finish()
+        } catch {
+            evidence["passed"] = "false"
+            evidence["error"] = String(describing: error)
+            await finish()
+            throw error
+        }
+    }
+}
+
 #endif
