@@ -128,6 +128,10 @@ typedef struct CPU {
     u64  cur_insn_pc;  /* address of the instruction currently executing */
 
     struct Machine *m;
+    /* A neighboring hart must not share the cache line containing this
+     * hart's per-instruction run-control writes. Padding, not over-alignment:
+     * existing calloc and embedded Machine allocation remain valid. */
+    u8 host_cacheline_gap[128];
 } CPU;
 
 /* ---- Register access helpers (XZR vs SP semantics) ---- */
