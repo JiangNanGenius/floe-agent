@@ -8461,4 +8461,189 @@ extension SubagentSimulatorExecutionTests {
     }
 }
 
+// MARK: - Current signed data packages through the official installation path
+
+private struct DataARM64OfficialSpec {
+    let id: String
+    let packageSHA256: String
+    let contentDigest: String
+    let verifier: String
+    let flags: String
+    static let all: [Self] = [
+        .init(id: "exploratory-data-analysis", packageSHA256: "d4f91adf6a88bece6a1a94d9b0f072d1d93f53c3629c7bd1815063dd1054c3f2", contentDigest: "43d05c4a0146e3a021362288622d96bd0694477c04f23aa0c68b67f2375a9628", verifier: "eda_verify.py", flags: "--require-optional"),
+        .init(id: "statistical-analysis", packageSHA256: "68ff909ed701f3228ce84fe231bc152486f9b2041a23fdb2bd72cb002036fbd3", contentDigest: "47fb1d4a71e1756aab4229e7ed60092f78b57e580e4c94bd3bfd30768993c243", verifier: "stats_verify.py", flags: "--require-layer"),
+        .init(id: "scientific-visualization", packageSHA256: "15f9c78512cf38d1ef0e67d4a32bde7ab5782db0cf3690d11a8deeb47fd19d17", contentDigest: "a24fb055e33907928c02acb341852047ca2c8f9e732472585933516a27de1f1b", verifier: "viz_verify.py", flags: "--require-layer --require-cjk"),
+        .init(id: "markitdown", packageSHA256: "5d7716a7d71b2557a06f1f2cc08381dff4bf25e98b3e6ae0b0487d9ae0251fb5", contentDigest: "d26a5a82af83366d4423e275a5335b2218d9dc11a0a4844c6bff027782e20094", verifier: "md_verify.py", flags: "--require-layer"),
+    ]
+}
+
+extension SubagentSimulatorExecutionTests {
+    private func makeDataARM64OfficialRuntime(root: URL, conversationID: UUID, runID: UUID,
+        environmentID: String, hold: CancellationToken, tools: Set<String>) -> FloeAgentRuntime {
+        let provider = ProviderProfile(kind: .openAI, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://child-guest.example/v1")!, displayName: "Qualification scripted provider")
+        let model = ModelProfile(providerID: provider.id, remoteModelID: "qualification-no-model",
+            displayName: "Qualification scripted model", limits: ModelLimits(contextTokens: 8192, maxOutputTokens: 1024), capabilities: [.tools])
+        return FloeAgentRuntime(configuration: .init(conversationID: conversationID, provider: provider, model: model,
+                allowedToolNames: tools, workspaceRootURL: root, environmentID: environmentID, environmentLifecycleWait: 30),
+            adapter: QualificationHoldingProviderAdapter(hold: hold), policy: TaskFullAccessPolicy(),
+            executor: CatalogToolExecutor(), auditSink: DiscardingAuditSink(),
+            checkpointStore: EphemeralCheckpointStore(), runID: runID)
+    }
+
+    @Test("ARM64 signed data packages: official install/update, automatic declared dependencies and full installed golden workflows",
+          .enabled(if: ProcessInfo.processInfo.environment["FLOE_DATA_ARM64_OFFICIAL"] == "1"))
+    func dataARM64OfficialWorkflow() async throws {
+        let root = try makeWorkspaceRoot(), runID = UUID(), conversationID = UUID()
+        let app = try await appQualificationEnvironment()
+        let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let exported = support.appendingPathComponent("FloeAgent/QualificationEvidence/DataARM64Official/" + runID.uuidString)
+        var evidence: [String: String] = ["kind": "signed-official-install-and-real-guest-no-model", "runID": runID.uuidString]
+        var ownedEnvironmentID: String?
+        var runtime: FloeAgentRuntime?
+        let hold = CancellationToken()
+        var parent: Task<Void, Error>?
+        var recordsCreated = false
+        func finish() async {
+            do {
+                try FileManager.default.createDirectory(at: exported, withIntermediateDirectories: true)
+                try JSONEncoder().encode(evidence).write(to: exported.appendingPathComponent("evidence.json"), options: .atomic)
+                let output = root.appendingPathComponent("qualification")
+                if FileManager.default.fileExists(atPath: output.path) {
+                    try FileManager.default.copyItem(at: output, to: exported.appendingPathComponent("qualification"))
+                }
+                print("FLOE_DATA_ARM64_OFFICIAL_EVIDENCE=\(exported.path)")
+            } catch {
+                Issue.record("Official data evidence export failed; preserve owned workspace \(root.path): \(error)")
+                await runtime?.cancel(); hold.cancel(); parent?.cancel()
+                return
+            }
+            await skillHubCleanup(runtime: runtime, parentHold: hold, parentTask: parent,
+                jobs: app.backgroundJobService, jobIDs: [], environmentID: ownedEnvironmentID,
+                root: root, conversationID: recordsCreated ? conversationID : nil, app: app)
+        }
+        do {
+            await app.skillsCenter.seedBuiltinDomainSkills()
+            let publication = try await impeccableCurrentLoadLivePublication(app: app)
+            let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+            let cards = CuratedSkillHub.cards(feed: publication.feed, mode: .production, appVersion: appVersion)
+            evidence["publicationCommit"] = publication.publicationCommit
+            evidence["catalogSHA256"] = publication.verifiedFeed.catalogSHA256
+            // Refuse before any install if the signed public feed is not the
+            // exact newly qualified set. No candidate receipt is manufactured.
+            for spec in DataARM64OfficialSpec.all {
+                let card = try #require(cards.first { $0.entry.id == spec.id })
+                guard case .installable = card.offer else { throw FloeError.validationFailed("Official offer unavailable: \(spec.id)") }
+                let entry = card.entry
+                try #require(entry.version == "1.2.0" && entry.status.published && entry.status.qualified && entry.status.executionVerified
+                    && entry.package?.sha256 == spec.packageSHA256 && entry.package?.contentDigest == spec.contentDigest
+                    && entry.review?.keyID == CuratedSkillHub.productionKeyID)
+                let removed = try await app.skillStore.wasExplicitlyRemoved(id: spec.id)
+                try #require(!removed)
+            }
+            let selected = Set(DataARM64OfficialSpec.all.map(\.id))
+            let before = try await app.skillStore.all()
+            let unrelated = Dictionary(uniqueKeysWithValues: before.filter { !selected.contains($0.id) }
+                .map { ($0.id, impeccableCurrentRowFingerprint($0, full: false)) })
+            let boot = try await bootGuestWithShape(root: root, memoryMB: 1024) { ownedEnvironmentID = $0 }
+            let envID = boot.environmentID
+            evidence["environmentID"] = envID
+            try await skillHubCreateRunRows(app: app, conversationID: conversationID, runID: runID,
+                title: "Official ARM64 data Skills", goal: "Install signed packages and run installed scripts after native automatic dependency preparation; no model")
+            recordsCreated = true
+            let ceiling: Set<String> = ["skill.install", "skill.manage", "skill.read", "exec.shell"]
+            let liveRuntime = makeDataARM64OfficialRuntime(root: root, conversationID: conversationID, runID: runID,
+                environmentID: envID, hold: hold, tools: ceiling)
+            runtime = liveRuntime
+            parent = Task { try await liveRuntime.start(goal: "Verify signed ARM64 data Skills through normal tools") }
+            try #require(await waitForAsync(timeout: 20) {
+                if case .streamingModel = await liveRuntime.state { return true }; return false
+            })
+            let identity = ChildExecutionIdentity(parentRunID: runID, rootTaskID: conversationID, delegateCallID: "data-arm64-official")
+            let context = ToolContext(runID: runID, scope: .local, allowedToolNames: ceiling,
+                workspaceRootURL: root, cancellation: CancellationToken(), environmentID: envID, conversationID: conversationID)
+            try await requireQualifiedKernel(runtime: liveRuntime, identity: identity, context: context)
+            for spec in DataARM64OfficialSpec.all {
+                print("FLOE_DATA_ARM64_OFFICIAL_PHASE=\(spec.id)")
+                let old = try await app.skillStore.all().first { $0.id == spec.id }
+                if let old {
+                    try #require(old.status == "enabled")
+                    let receipt = try #require(SkillsCenter.curatedReceipt(for: old))
+                    try #require(receipt.feedSignatureKeyID == CuratedSkillHub.productionKeyID
+                        && receipt.reviewKeyID == CuratedSkillHub.productionKeyID && receipt.reviewDecision == .approve)
+                    _ = try SkillContentSnapshot(root: try impeccableCurrentSkillRoot().appendingPathComponent(spec.id), expectedDigest: old.rewrittenDigest)
+                }
+                let updating = old != nil && old?.version != "1.2.0"
+                let args: [String: Any] = updating
+                    ? ["action": "updatePackage", "id": spec.id, "expectedDigest": old!.rewrittenDigest]
+                    : ["source": "hub", "id": spec.id, "publicationCommit": publication.publicationCommit]
+                let install = try toolCall(id: "data-install-" + spec.id, toolName: updating ? "skill.manage" : "skill.install", arguments: try Self.json(args))
+                let installed = await liveRuntime.dispatchChildTool(install, identity: identity, childContext: context)
+                evidence[spec.id + ".install"] = sevenDeepOutput(installed)
+                try #require(installed.status == .ok, "Official install failed: \(spec.id): \(installed.outputSummary)")
+                let row = try #require(try await app.skillStore.all().first { $0.id == spec.id })
+                let receipt = try #require(SkillsCenter.curatedReceipt(for: row))
+                try #require(row.version == "1.2.0" && row.status == "enabled" && row.rewrittenDigest == spec.contentDigest
+                    && receipt.contentDigest == spec.contentDigest && receipt.packageSHA256 == spec.packageSHA256
+                    && receipt.feedSignatureKeyID == CuratedSkillHub.productionKeyID && receipt.reviewKeyID == CuratedSkillHub.productionKeyID
+                    && receipt.reviewDecision == .approve)
+                let readCall = try toolCall(id: "data-read-" + spec.id, toolName: "skill.read", arguments: try Self.json(["id": spec.id]))
+                let read = await liveRuntime.dispatchChildTool(readCall, identity: identity, childContext: context)
+                try #require(read.status == .ok)
+                let managed = try #require(try JSONDecoder().decode([ManagedSkill].self, from: Data(read.outputSummary.utf8)).first { $0.id == spec.id })
+                let guestRoot = try #require(managed.resources?.guestRoot)
+                try #require(guestRoot.hasPrefix("/workspace/.floe/skills/") && !guestRoot.contains("'"))
+                let relative = "qualification/official/" + spec.id
+                try FileManager.default.createDirectory(at: root.appendingPathComponent(relative), withIntermediateDirectories: true)
+                // The exact officially staged package runs here. There is no
+                // manual apt/pip transaction in this phase: skillID activates
+                // the production preparation gate in THIS resolved target.
+                let command = """
+                set -eu
+                output="$PWD/\(relative)"
+                cd '\(guestRoot)'
+                PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python3 scripts/\(spec.verifier) \(spec.flags) --output "$output/golden.json" > "$output/golden.log" 2>&1
+                dpkg-query -W -f='${Package}|${Version}|${Architecture}\\n' > "$output/dpkg-inventory.txt"
+                echo DATA_ARM64_OFFICIAL_OK_\(spec.id)
+                """
+                let execute = try toolCall(id: "data-golden-" + spec.id, toolName: "exec.shell", arguments: try Self.json([
+                    "command": command, "skillID": spec.id, "timeout": 600, "maxOutputBytes": 32768]))
+                let result = await liveRuntime.dispatchChildTool(execute, identity: identity, childContext: context)
+                evidence[spec.id + ".execution"] = sevenDeepOutput(result)
+                try #require(result.status == .ok && sevenDeepOutput(result).contains("DATA_ARM64_OFFICIAL_OK_" + spec.id))
+                let state = await app.executionDependencyPreparation.state(environmentID: envID, skillID: spec.id)
+                try #require(state.planRecorded && state.sourceAuthorized && state.prepared && state.readbackVerified)
+                evidence[spec.id + ".nativeDependencyState"] = String(describing: state)
+                let golden = try sevenDeepJSON(root, relative + "/golden.json")
+                evidence[spec.id + ".checks"] = String(try sevenDeepRequireAllChecksPass(golden, label: spec.id))
+                let installedRoot = try impeccableCurrentSkillRoot().appendingPathComponent(spec.id)
+                _ = try SkillContentSnapshot(root: installedRoot, expectedDigest: spec.contentDigest)
+                let declaration = try sevenDeepJSON(installedRoot, "references/dependencies.json")
+                let profiles = try #require(declaration["profiles"] as? [[String: Any]])
+                let profile = try #require(profiles.first { $0["id"] as? String == "debian13-arm64" })
+                let requirements = try #require(profile["requirements"] as? [[String: Any]])
+                let inventory = try String(contentsOf: root.appendingPathComponent(relative + "/dpkg-inventory.txt"), encoding: .utf8)
+                let lines = Set(inventory.split(separator: "\n").map(String.init))
+                for requirement in requirements {
+                    let name = try #require(requirement["name"] as? String)
+                    let version = try #require(requirement["version"] as? String)
+                    try #require(lines.contains(name + "|" + version + "|arm64") || lines.contains(name + "|" + version + "|all"),
+                        "Declared package did not read back exactly: \(spec.id)/\(name)=\(version)")
+                }
+                print("FLOE_DATA_ARM64_OFFICIAL_PASSED=\(spec.id)")
+            }
+            let after = try await app.skillStore.all()
+            let unrelatedAfter = Dictionary(uniqueKeysWithValues: after.filter { !selected.contains($0.id) }
+                .map { ($0.id, impeccableCurrentRowFingerprint($0, full: false)) })
+            try #require(unrelated == unrelatedAfter, "Official workflow changed an unrelated installed Skill")
+            evidence["passed"] = "true"
+            await finish()
+        } catch {
+            evidence["passed"] = "false"; evidence["error"] = String(describing: error)
+            await finish()
+            throw error
+        }
+    }
+}
+
 #endif
