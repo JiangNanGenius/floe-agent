@@ -6,7 +6,8 @@ PID, IPC, UTS, network and task-cgroup lifecycle. This separates dependency,
 data and process lifetimes; it is not a native-code security sandbox.
 Commands retain the existing shell, PTY and background-job services.
 
-CPU and RAM are shared settings: 1–3 cores and 256–1024 MiB. A task inherits
+CPU topology is reserved at boot; the online CPU count can change without reboot.
+RAM changes require stopping the shared runtime. CPU and RAM are shared settings: 1–4 online cores and 256–1024 MiB. A task inherits
 that physical budget, with a bounded process count and whole-tree
 cancellation. There are at most eight concurrent project runners. Project
 files and dependency shares are distinct; shared downloads are read-only.
@@ -32,7 +33,7 @@ basic image adds no science stack beyond the existing NumPy.
    It verifies and selects only the declared boot files.
 6. Record SHA-512 and sizes for firmware, kernel, initrd and clean disk in
    the existing LinuxGuestImage manifest. Declare smp_capable=true and
-   max_vcpus=3 only after a real three-core boot passes.
+   max_vcpus=4 only after a real four-core boot and online CPU adjustment pass.
 7. Run package-image.py. The App pins the resulting complete ZIP digest.
 
 Kernel command line (the owner replaces maxcpus with the saved core count):

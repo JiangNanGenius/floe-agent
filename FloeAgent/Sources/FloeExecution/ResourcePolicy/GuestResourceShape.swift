@@ -92,12 +92,10 @@ public struct GuestReleaseShapePolicy: Sendable, Equatable {
         self.syntheticProvenance = provenance
     }
 
-    /// The release policy: up to three harts, granted only for a verified image
-    /// whose manifest proves the requested count (the pool's image gate). An untyped
-    /// request still answers the one-hart worker default (`resolve(nil)`), so
-    /// ordinary shells are unchanged; dual remains correct-but-slower than
-    /// one hart on the S5 equal-work benchmark, which the UI states.
-    public static let production = GuestReleaseShapePolicy(maximumSupportedVCPUs: 3, synthetic: false, provenance: nil)
+    /// Up to four online CPUs. Image capability and actual runtime readback
+    /// remain separate checks; the shared ARM64 owner reserves its possible
+    /// topology once and adjusts online CPUs without resetting projects.
+    public static let production = GuestReleaseShapePolicy(maximumSupportedVCPUs: 4, synthetic: false, provenance: nil)
 
     /// Explicit internal test configuration: unlocks the engine ladder for
     /// SYNTHETIC SMP engine/admission experiments. There is intentionally no
@@ -150,6 +148,7 @@ public enum GuestVCPUCount: Int, Sendable, CaseIterable, Codable, Comparable {
     case one = 1
     case two = 2
     case three = 3
+    case four = 4
 
     public static func < (lhs: GuestVCPUCount, rhs: GuestVCPUCount) -> Bool {
         lhs.rawValue < rhs.rawValue

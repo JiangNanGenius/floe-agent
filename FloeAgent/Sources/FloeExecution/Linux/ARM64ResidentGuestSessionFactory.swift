@@ -104,18 +104,27 @@ private actor ARM64ResidentGuestOwner {
     init(root: URL) { self.root = root }
 
     func configure(_ configuration: LinuxGuestLifecycleConfig) async throws {
-        guard let cores = configuration.vcpus, (1...3).contains(cores),
+        guard let cores = configuration.vcpus, (1...4).contains(cores),
               let memory = configuration.memoryMB, [256, 512, 768, 1024].contains(memory) else {
-            throw LinuxGuestError.invalidConfiguration("Choose 1–3 CPUs and 256–1024 MiB of memory")
+            throw LinuxGuestError.invalidConfiguration("Choose 1–4 CPUs and 256–1024 MiB of memory")
         }
         try await acquireLifecycle()
         defer { releaseLifecycle() }
-        guard projects.isEmpty else {
-            throw LinuxGuestError.invalidConfiguration("Stop active projects before changing the shared runtime")
+        if let machine, machine.state == .running {
+            guard let current = shape, current.memoryMB == memory else {
+                throw LinuxGuestError.invalidConfiguration("Stop active projects before changing memory; CPU changes do not require a restart")
+            }
+            if current.vcpus == cores { return }
+            guard let supervisor else { throw ARM64MachineError.notRunning }
+            // Persist first, before hardware mutation. Restore the preference
+            // on failure; never stop the guest to satisfy a CPU-only request.
+            try configuration.save(to: root)
+            do { try await supervisor.setOnlineCPUs(cores) }
+            catch { try? current.save(to: root); throw error }
+            shape = configuration
+            return
         }
-        if let machine {
-            guard case .stopped = await machine.stop() else { throw ARM64MachineError.stopTimeout }
-        }
+        guard projects.isEmpty else { throw LinuxGuestError.guestBusy(environmentID: "shared") }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try configuration.save(to: root)
     }
@@ -237,7 +246,7 @@ private actor ARM64ResidentGuestOwner {
         let config = ARM64MachineConfig(firmware: firmware,
             kernel: try asset(.kernel, prepared.kernelPath), initrd: try asset(.initrd, prepared.initrdPath),
             commandLine: bootArguments.joined(separator: " "), privateWritableDiskPath: disk,
-            ramMiB: requested.memoryMB ?? 512, possibleVCPUs: requested.vcpus ?? 2,
+            ramMiB: requested.memoryMB ?? 512, possibleVCPUs: 4,
             virtioConsoles: 9, networkEnabled: true)
         let created = try ARM64GuestMachine(ownership: .init(label: "resident"), config: config)
         machine = created; imageID = image.id; shape = requested

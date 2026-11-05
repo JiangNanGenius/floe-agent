@@ -170,6 +170,33 @@ private final class EventObservationBox: @unchecked Sendable {
 }
 
 final class LinuxGuestProjectSupervisorTests: XCTestCase {
+    func testCPUHotplugNegotiatesAndRequiresActualReceipt() async throws {
+        let console = SupervisorTestConsole()
+        console.enqueue("HELLO") { token in
+            supervisorCaps(token).map { Data(String(decoding: $0, as: UTF8.self)
+                .replacingOccurrences(of: "net=up", with: "net=up cpuset=1").utf8) }
+        }
+        console.enqueue("CPUSET") { token in
+            [Data(("\u{1e}FLOE-BEGIN \(token)\u{1e}\u{1e}FLOE-OUT \(token)\u{1e}"
+                + "online=4 possible=4 boot=12345678-1234-1234-1234-123456789abc\n"
+                + "\u{1e}FLOE-END \(token) 0\u{1e}").utf8)]
+        }
+        let supervisor = LinuxGuestProjectSupervisor(transport: console, limits: .init())
+        try await supervisor.setOnlineCPUs(4)
+        XCTAssertTrue(console.writtenText.contains("FLOE-CPUSET"))
+        XCTAssertFalse(console.writtenText.contains("PROJCLOSE"))
+        await supervisor.close()
+    }
+
+    func testOldImageRefusesHotplugWithoutSendingUnknownControl() async throws {
+        let console = SupervisorTestConsole()
+        console.enqueue("HELLO") { supervisorCaps($0) }
+        let supervisor = LinuxGuestProjectSupervisor(transport: console, limits: .init())
+        do { try await supervisor.setOnlineCPUs(4); XCTFail("Old image must not claim hotplug") }
+        catch { XCTAssertFalse(console.writtenText.contains("FLOE-CPUSET")) }
+        await supervisor.close()
+    }
+
 
     func testControlResponseSurvivesSeparateTextAndSplitMarkers() throws {
         let token = "split-control"

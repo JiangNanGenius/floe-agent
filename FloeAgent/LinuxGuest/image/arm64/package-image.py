@@ -25,8 +25,8 @@ def main():
     artifacts = manifest["artifacts"]
     if not manifest.get("qualified") or not manifest.get("qualificationRun"):
         raise ValueError("Actual image qualification is required")
-    if manifest.get("max_vcpus") != 3 or not manifest.get("smp_capable"):
-        raise ValueError("Missing three-core qualification declaration")
+    if manifest.get("max_vcpus") != 4 or not manifest.get("smp_capable"):
+        raise ValueError("Missing four-core qualification declaration")
     if {item["role"] for item in artifacts} != {"bios", "kernel", "initrd", "disk"}:
         raise ValueError("Unexpected or missing image roles")
     paths = []

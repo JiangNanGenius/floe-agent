@@ -44,7 +44,7 @@ import FloeTools
 /// Typed start/restart configuration. Absent fields mean "no explicit choice":
 /// reuse the running or last successful shape; new environments use one vCPU/256 MiB.
 public struct LinuxGuestLifecycleConfig: Sendable, Equatable, Codable {
-    /// Explicit vCPU count (1, 2 or 3). nil preserves the environment selection.
+    /// Explicit online vCPU count (1...4). nil preserves the shared selection.
     public var vcpus: Int?
     /// Explicit guest RAM in MiB (the 256…2048 ladder). nil preserves the environment selection.
     public var memoryMB: Int?
@@ -60,7 +60,7 @@ public struct LinuxGuestLifecycleConfig: Sendable, Equatable, Codable {
         guard let directory,
               let data = try? Data(contentsOf: directory.appendingPathComponent("guest-launch-shape.json")),
               let value = try? JSONDecoder().decode(Self.self, from: data),
-              let cores = value.vcpus, (1...3).contains(cores),
+              let cores = value.vcpus, (1...4).contains(cores),
               let memory = value.memoryMB, [256, 512, 768, 1024, 1536, 2048].contains(memory)
         else { return nil }
         return value
@@ -907,6 +907,15 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
         // Server-side authority: an out-of-ladder configuration is refused
         // before anything is read or started, never silently rounded.
         try validate(config, environmentID: environmentID)
+
+        if let shared = await controller.sharedGuestConfiguration() {
+            let requested = LinuxGuestLifecycleConfig(vcpus: config.vcpus ?? shared.vcpus,
+                memoryMB: config.memoryMB ?? shared.memoryMB)
+            if requested != shared {
+                _ = try resolvedRequest(requested, environmentID: environmentID)
+                try await controller.configureSharedGuest(requested)
+            }
+        }
 
         let running = await snapshot(environmentID)
         let engineRunning = await controller.guestIsRunning(environmentID: environmentID)

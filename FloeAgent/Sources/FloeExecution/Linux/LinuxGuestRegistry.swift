@@ -2816,12 +2816,18 @@ public actor LinuxGuestRegistry {
 
     public func configureSharedMachine(_ configuration: LinuxGuestLifecycleConfig) async throws {
         guard factory.usesResidentMachine, !restoringInitialState,
-              sessions.isEmpty, startingEnvironments.isEmpty, quarantinedEnvironments.isEmpty else {
-            throw LinuxGuestError.invalidConfiguration("Stop active projects before changing the shared runtime")
+              startingEnvironments.isEmpty, quarantinedEnvironments.isEmpty else {
+            throw LinuxGuestError.invalidConfiguration("The shared runtime is busy; try again when it finishes starting")
         }
         restoringInitialState = true
         defer { restoringInitialState = false }
         try await factory.configureSharedMachine(configuration)
+        // All projects share the same online CPUs. Preserve session/boot
+        // generations, streams, forwards and task ownership when publishing it.
+        for id in Array(sessions.keys) {
+            sessions[id]?.descriptor.vcpus = configuration.vcpus
+            sessions[id]?.descriptor.ramMB = configuration.memoryMB
+        }
     }
 
     /// Restores only the shared physical runtime. App-owned workspaces,

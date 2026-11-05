@@ -682,19 +682,19 @@ public struct LinuxGuestTrustedImage: Sendable, Equatable {
 public enum LinuxGuestImageDistributionCatalog {
     /// One fixed component release. Keep the App default and download entry aligned.
     ///
-    /// Shared ARM64 Linux. Real three-core boot, project separation, process-
+    /// Shared ARM64 Linux. Real four-core hotplug, project separation, process-
     /// tree cancellation, loopback forwarding and initial-state restore passed.
     /// Legacy RISC-V images are not executable candidates for this backend.
-    public static let defaultImageID = "floe-debian13-arm64-basic-resident-20261105-v1"
+    public static let defaultImageID = "floe-debian13-arm64-basic-resident-20261105-v2"
     public static let bundled: [LinuxGuestTrustedImage] = [
         LinuxGuestTrustedImage(
             id: defaultImageID,
-            archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-arm64-20261105.1/floe-linux-guest-floe-debian13-arm64-basic-resident-20261105-v1.zip")!,
+            archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-arm64-20261105.2/floe-linux-guest-floe-debian13-arm64-basic-resident-20261105-v2.zip")!,
             mirrors: [],
-            archiveSHA512: "9ceea1bcf9ecac6ac70def3b1877025c9959c3afbc75be632c5d82e312231643ec146f5779326499f4d00df991e639f15933a62aaebb5f8b9a3c112ed771bce9",
+            archiveSHA512: "8fc26f56804e29e03cfcfd10af621e223879544ee3a3fbdc9438b39ebae9750c99812ee8cf55d26f5b5d3d1c0d473ad5879b1f9a277751ef5765188e534fd3c2",
             provenance: LinuxGuestImageProvenance(
-                sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-arm64-20261105.1",
-                buildConfigurationURL: "https://github.com/JiangNanGenius/floe-agent/tree/floe-linux-arm64-20261105.1/FloeAgent/LinuxGuest/image/arm64",
+                sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-arm64-20261105.2",
+                buildConfigurationURL: "https://github.com/JiangNanGenius/floe-agent/tree/floe-linux-arm64-20261105.2/FloeAgent/LinuxGuest/image/arm64",
                 license: "Floe runner MPL-2.0; musl MIT; EDK2 per-file BSD/MIT; kernel GPL-2.0; Debian per-package licenses, with corresponding sources",
                 distributionAllowed: true
             )

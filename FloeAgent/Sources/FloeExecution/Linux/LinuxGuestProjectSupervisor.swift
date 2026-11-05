@@ -267,6 +267,7 @@ public struct LinuxGuestProjectSupervisorCapabilities: Sendable, Equatable {
     public let baseRootfs: String
     public let stateRoot: String
     public let network: NetworkState
+    public var supportsCPUHotplug: Bool = false
 
     public enum NetworkState: String, Sendable, Equatable {
         case up
@@ -615,6 +616,7 @@ public actor LinuxGuestProjectSupervisor {
         var base: String?
         var state: String?
         var net: String?
+        var cpuHotplug = false
         for field in payload.split(separator: " ") {
             if field.hasPrefix("runner=") {
                 runner = String(field.dropFirst("runner=".count))
@@ -632,6 +634,8 @@ public actor LinuxGuestProjectSupervisor {
                 state = String(field.dropFirst("state=".count))
             } else if field.hasPrefix("net=") {
                 net = String(field.dropFirst("net=".count))
+            } else if field == "cpuset=1" {
+                cpuHotplug = true
             }
         }
         guard let runner, let protocolVersion,
@@ -651,7 +655,8 @@ public actor LinuxGuestProjectSupervisor {
             maximumProjectSessions: sessions,
             baseRootfs: base,
             stateRoot: state,
-            network: network
+            network: network,
+            supportsCPUHotplug: cpuHotplug
         )
     }
 
@@ -983,6 +988,27 @@ public actor LinuxGuestProjectSupervisor {
     }
 
     // MARK: parsing + validation helpers
+
+    /// Adjust the physical guest's online CPUs without changing its boot or
+    /// project identity. Old images refuse immediately rather than timing out.
+    public func setOnlineCPUs(_ count: Int, timeout: TimeInterval = 30) async throws {
+        try await channel.ensureNegotiated()
+        guard (1...4).contains(count),
+              let payload = await channel.negotiatedRunnerCapabilityPayload,
+              let capabilities = Self.parseCapabilities(payload),
+              capabilities.protocolVersion == Self.requiredProtocol,
+              capabilities.supportsCPUHotplug else {
+            throw LinuxGuestError.invalidConfiguration("This runtime image cannot adjust CPUs while running; update the runtime first")
+        }
+        let outcome = try await channel.supervisorControlExchange(
+            name: "CPUSET", arguments: [String(count)], timeout: timeout, cancellation: nil)
+        let fields = outcome.text.split(whereSeparator: \.isWhitespace)
+        guard outcome.exit == 0, fields.contains("online=\(count)"),
+              fields.contains(where: { $0.hasPrefix("boot=") && $0.count == 41 }) else {
+            throw LinuxGuestProjectSupervisorError.unexpectedExit(
+                exchange: "CPUSET", code: outcome.exit, detail: outcome.text)
+        }
+    }
 
     /// PROJOPEN ack line:
     /// `project=<id> generation=<gen> console=hvc<N> root=<path> workspace=<path> share=floe-ws`.

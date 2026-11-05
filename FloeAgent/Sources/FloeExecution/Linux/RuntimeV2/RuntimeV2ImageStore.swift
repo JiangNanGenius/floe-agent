@@ -72,7 +72,7 @@ public actor RuntimeV2ImageStore {
 
             public var verifiedMaximumVCPUs: Int {
                 guard smp == true else { return 1 }
-                return maxVCPUs == 3 ? 3 : 2
+                return maxVCPUs.flatMap { (3...4).contains($0) ? $0 : nil } ?? 2
             }
         }
 
@@ -248,15 +248,15 @@ public actor RuntimeV2ImageStore {
                     + (capabilities.declaredBy.map { " (\($0))" } ?? "")
             )
         }
-        if capabilities.maxVCPUs == 3 {
+        if let maximum = capabilities.maxVCPUs, maximum >= 3 {
             // A stored lifted capability alone must not widen an older image:
             // the authenticated embedded manifest must carry the same
             // explicit three-hart declaration and matching artifact digests.
             guard let embedded = try? Self.decoder.decode(
                 LinuxGuestImage.self, from: manifest.legacyManifestData
             ), Self.manifestDigestsMatch(manifest: manifest, image: embedded),
-                Self.declaredCapabilities(legacyManifestData: manifest.legacyManifestData)?.maxVCPUs == 3 else {
-                return (true, 2, "three-hart claim does not match the verified embedded manifest; capped at two")
+                Self.declaredCapabilities(legacyManifestData: manifest.legacyManifestData)?.maxVCPUs == maximum else {
+                return (true, 2, "CPU capability does not match the verified embedded manifest; capped at two")
             }
         }
         return (true, capabilities.verifiedMaximumVCPUs,
@@ -1075,7 +1075,7 @@ public actor RuntimeV2ImageStore {
         guard let object = try? JSONSerialization.jsonObject(with: legacyManifestData) as? [String: Any] else {
             return nil
         }
-        let maxVCPUs = (object["max_vcpus"] as? Int) == 3 ? 3 : nil
+        let maxVCPUs = (object["max_vcpus"] as? Int).flatMap { (3...4).contains($0) ? $0 : nil }
         if let smp = object["smp_capable"] as? Bool {
             return Manifest.Capabilities(smp: smp, maxVCPUs: smp ? maxVCPUs : nil,
                                          declaredBy: "legacy manifest smp_capable")

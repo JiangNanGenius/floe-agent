@@ -242,7 +242,7 @@ static int emit_caps(const char *token, const char *base, const char *state) {
     char buf[900];
     int n = snprintf(buf, sizeof buf,
                      "\x1e" "FLOE-CAPS %s runner=floe-supervisor/" FLOE_SUPERVISOR_VERSION
-                     " protocol=%d projects=%d tasks=%d sessions=%d base=%s state=%s net=%s\x1e",
+                     " protocol=%d projects=%d tasks=%d sessions=%d base=%s state=%s net=%s cpuset=1\x1e",
                      token, FLOE_SUPERVISOR_PROTOCOL, FLOE_MAX_PROJECTS,
                      FLOE_MAX_PROJECT_TASKS, FLOE_MAX_PROJECT_SESSIONS, base, state,
                      floe_net_status_text(g_net_status));
@@ -1546,6 +1546,65 @@ static void do_ping(const char *token) {
     (void)emit_end(token, 0);
 }
 
+// Machine-wide CPU policy belongs to the trusted control console, never to
+// a project runner. No shell, arbitrary path or process restart is involved.
+static void do_cpuset(const char *token, const unsigned char *args, size_t len) {
+#ifdef __linux__
+    if (len != 1 || args[0] < '1' || args[0] > '4') {
+        emit_failure(token, 125, "floe-supervisor: CPUSET requires 1..4 online CPUs");
+        return;
+    }
+    unsigned wanted = args[0] - '0', last = 0;
+    char possible[64], before[64], after[64], value[16], path[128];
+    if (read_small_file("/sys/devices/system/cpu/possible", possible, sizeof possible) != 0 ||
+        (sscanf(possible, "0-%u", &last) != 1 && strcmp(possible, "0\n") != 0) ||
+        last > 4 || wanted > last + 1 ||
+        read_small_file("/proc/sys/kernel/random/boot_id", before, sizeof before) != 0) {
+        emit_failure(token, 126, "floe-supervisor: CPU topology unavailable; guest preserved");
+        return;
+    }
+    int original[5] = {1, 0, 0, 0, 0}, failed = 0;
+    for (unsigned cpu = 1; cpu <= last; cpu++) {
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%u/online", cpu);
+        if (read_small_file(path, value, sizeof value) != 0 || (value[0] != '0' && value[0] != '1')) {
+            emit_failure(token, 126, "floe-supervisor: CPU state unreadable; guest preserved");
+            return;
+        }
+        original[cpu] = value[0] == '1';
+    }
+    // Offline high IDs first; bring low IDs online first. CPU0 stays online.
+    for (unsigned step = 0; step < last * 2; step++) {
+        unsigned cpu = step < last ? last - step : step - last + 1;
+        int desired = cpu < wanted;
+        if ((step < last && desired) || (step >= last && !desired)) continue;
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%u", cpu);
+        if (write_cgroup_value(path, "online", desired ? "1" : "0") != 0) { failed = 1; break; }
+    }
+    for (unsigned cpu = 1; cpu <= last && !failed; cpu++) {
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%u/online", cpu);
+        if (read_small_file(path, value, sizeof value) != 0 || (value[0] == '1') != (cpu < wanted)) failed = 1;
+    }
+    if (read_small_file("/proc/sys/kernel/random/boot_id", after, sizeof after) != 0 || strcmp(before, after) != 0) failed = 1;
+    if (failed) {
+        for (unsigned cpu = 1; cpu <= last; cpu++) {
+            snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%u", cpu);
+            (void)write_cgroup_value(path, "online", original[cpu] ? "1" : "0");
+        }
+        emit_failure(token, 126, "floe-supervisor: CPU adjustment failed; original state restoration attempted, guest not restarted");
+        return;
+    }
+    before[strcspn(before, "\r\n")] = '\0';
+    char line[160];
+    snprintf(line, sizeof line, "online=%u possible=%u boot=%s\n", wanted, last + 1, before);
+    section_open(token);
+    emit_line(token, line);
+    (void)emit_end(token, 0);
+#else
+    (void)args; (void)len;
+    emit_failure(token, 126, "floe-supervisor: CPU hotplug requires Linux");
+#endif
+}
+
 static void do_taskkill(const char *token, const char *project,
                         const char *generation, const char *task) {
     if (!project_identity_ok(project, generation) || !floe_task_id_valid(task)) {
@@ -1936,6 +1995,10 @@ static void handle_frame(const unsigned char *body, size_t len) {
     }
     if (name_len == 4 && memcmp(body, "PING", 4) == 0) {
         do_ping(token);
+        return;
+    }
+    if (name_len == 6 && memcmp(body, "CPUSET", 6) == 0) {
+        do_cpuset(token, args, args_len);
         return;
     }
     if (name_len == 8 && memcmp(body, "PROJSTAT", 8) == 0) {

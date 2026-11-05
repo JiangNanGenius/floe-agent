@@ -66,6 +66,21 @@ private actor FakeLifecycleController: LinuxGuestControlling {
     private var ownedImages: [String: String] = [:]
     private var nextGeneration: UInt64 = 0
     private var savedConfiguration: LinuxGuestLifecycleConfig?
+    private var sharedConfiguration: LinuxGuestLifecycleConfig?
+    func enableSharedConfiguration(_ value: LinuxGuestLifecycleConfig) {
+        sharedConfiguration = value
+        savedConfiguration = value
+    }
+    func sharedGuestConfiguration() async -> LinuxGuestLifecycleConfig? { sharedConfiguration }
+    func configureSharedGuest(_ value: LinuxGuestLifecycleConfig) async throws {
+        guard let previous = sharedConfiguration,
+              active.isEmpty || value.memoryMB == previous.memoryMB else {
+            throw LinuxGuestError.invalidConfiguration("Memory changes require stopping the shared runtime")
+        }
+        for id in Array(active.keys) { active[id]?.vcpus = value.vcpus ?? previous.vcpus ?? 2 }
+        sharedConfiguration = value
+        savedConfiguration = value
+    }
     func setSavedConfiguration(_ value: LinuxGuestLifecycleConfig) { savedConfiguration = value }
     func preferredGuestConfiguration(environmentID: String) async -> LinuxGuestLifecycleConfig? {
         if let gate = preferredConfigGate {
@@ -302,6 +317,30 @@ private actor FakeLifecycleController: LinuxGuestControlling {
 // MARK: - manager behavior tests
 
 final class LinuxGuestLifecycleTests: XCTestCase {
+    func testRunningSharedCPUChangeReusesBootAndUpdatesOtherProjects() async throws {
+        let controller = FakeLifecycleController()
+        await controller.own("shared-A")
+        await controller.own("shared-B")
+        await controller.enableSharedConfiguration(.init(vcpus: 1, memoryMB: 512))
+        await controller.bootDirectly(environmentID: "shared-A", vcpus: 1, ramMB: 512)
+        await controller.bootDirectly(environmentID: "shared-B", vcpus: 1, ramMB: 512)
+        let generation = await controller.activeGeneration("shared-A")
+        let manager = makeManager(controller: controller)
+        let receipt = try await manager.start(environmentID: "shared-A", config: .init(vcpus: 4), ownerTaskID: nil)
+        XCTAssertTrue(receipt.reused)
+        XCTAssertEqual(receipt.actualVCPUs, 4)
+        XCTAssertEqual(receipt.actualMemoryMB, 512)
+        let after = await controller.activeGeneration("shared-A")
+        XCTAssertEqual(generation, after)
+        let states = await controller.runtimeStates()
+        XCTAssertTrue(states.allSatisfy { $0.vcpus == 4 })
+        do {
+            _ = try await manager.start(environmentID: "shared-A", config: .init(vcpus: 2, memoryMB: 1024), ownerTaskID: nil)
+            XCTFail("A RAM change cannot implicitly restart Linux")
+        } catch {}
+        let unchanged = await controller.runtimeStates()
+        XCTAssertTrue(unchanged.allSatisfy { $0.vcpus == 4 && $0.ramMB == 512 })
+    }
     private let environmentID = "env-life"
 
     private func makeManager(
@@ -381,10 +420,10 @@ final class LinuxGuestLifecycleTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let configured = LinuxGuestLifecycleConfig(vcpus: 3, memoryMB: 512)
+        let configured = LinuxGuestLifecycleConfig(vcpus: 4, memoryMB: 512)
         try configured.save(to: root)
         XCTAssertEqual(LinuxGuestLifecycleConfig.load(from: root), configured)
-        try LinuxGuestLifecycleConfig(vcpus: 4, memoryMB: 512).save(to: root)
+        try LinuxGuestLifecycleConfig(vcpus: 5, memoryMB: 512).save(to: root)
         XCTAssertNil(LinuxGuestLifecycleConfig.load(from: root))
     }
 
@@ -768,10 +807,10 @@ final class LinuxGuestLifecycleTests: XCTestCase {
         do {
             _ = try await manager.start(
                 environmentID: environmentID,
-                config: .init(vcpus: 4),
+                config: .init(vcpus: 5),
                 ownerTaskID: nil
             )
-            XCTFail("vcpus=4 must be rejected")
+            XCTFail("vcpus=5 must be rejected")
         } catch let error as LinuxGuestLifecycleError {
             guard case .invalidConfiguration = error else {
                 return XCTFail("expected invalidConfiguration, got \(error)")
