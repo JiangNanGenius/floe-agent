@@ -149,6 +149,6 @@ Android 更接近电脑上的 Agent 工作台：Floe 负责任务、文件、授
 
 ## 7. 本次规划交付
 
-QA01–QA24 以及“任务异常不自动上传”“三星为主、模拟器参考”“仅真实冲突再协调”的后续修正均已入表。本次仅新增计划和链接，没有开始功能实现、调用付费服务、构建 APK 或发布新版本。
+QA01–QA24 以及“任务异常不自动上传”“三星为主、模拟器参考”“仅真实冲突再协调”的后续修正均已入表。规划创建时仅新增计划和链接。随后已推进 N01–N08 代码接线；源码检查点 `c9a5f5fc2664151af8a63f863e72aa171c02dcfc` 已推送并读回。该检查点尚未通过集中编译、三星实测或 APK 发行；这些状态分别记录，不以源码提交代替可用版本。候选采用 Alpha26/code45，App 与 Linux 组件共用递增版本，防止旧运行组件接受新文件修订协议。
 
 English: Android remains a lightweight Agent workspace. Prefer external Android editors, then project-scoped ARM64 Linux graphical applications; retain local preview, Notes, a lightweight IDE and quick edits. Implement the whole agreed code scope before per-feature Samsung testing and repairs. Intermediate GitHub prereleases may expose known limitations. Reporting is consented for App crashes/internal faults, never automatic for ordinary task errors; screenshots are opt-in. Emulator evidence is primarily for layout and remains separate from physical-device acceptance.

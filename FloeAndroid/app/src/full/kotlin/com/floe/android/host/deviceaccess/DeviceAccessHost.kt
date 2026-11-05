@@ -3,7 +3,6 @@ package com.floe.android.host.deviceaccess
 
 import android.app.Activity
 import android.app.KeyguardManager
-import com.floe.android.credentials.AndroidKeystoreCredentialStore
 import com.floe.android.phonecontrol.PhoneUnlockResult
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock

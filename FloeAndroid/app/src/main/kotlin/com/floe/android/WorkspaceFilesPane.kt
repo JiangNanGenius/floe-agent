@@ -547,7 +547,7 @@ internal fun WorkspaceFilesPane(
                 WorkspaceMenuItem(stringResource(R.string.linux_desktop_title), enabled = !busy) {
                     toolbarMenu = null
                     linuxDesktopVisible = true
-                }
+                },
                 WorkspaceMenuItem(stringResource(R.string.external_edit_title), enabled = !busy) {
                     toolbarMenu = null
                     if (externalEditorPath.isBlank()) externalEditorPath = activeDocumentPath.orEmpty()

@@ -20,8 +20,8 @@ android {
     }
     val producer = project(":core:officeengine")
     sourceSets.getByName("main") {
-        assets.srcDir(producer.layout.buildDirectory.dir("office-engine/assets"))
-        jniLibs.srcDir(producer.layout.buildDirectory.dir("office-engine/jniLibs"))
+        assets.srcDir(producer.layout.buildDirectory.dir("office-engine/assets").get().asFile)
+        jniLibs.srcDir(producer.layout.buildDirectory.dir("office-engine/jniLibs").get().asFile)
     }
     packaging {
         jniLibs.keepDebugSymbols += "**/*.so"
