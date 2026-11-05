@@ -51,6 +51,17 @@ public enum AtomicFileCommitter {
         to destination: URL,
         policy: FileCommitPolicy = FileCommitPolicy()
     ) throws -> FileCommitReceipt {
+        do {
+            return try commitData(data, to: destination, policy: policy)
+        } catch {
+            StorageSpaceFailure.reportIfNeeded(error)
+            throw error
+        }
+    }
+
+    private static func commitData(
+        _ data: Data, to destination: URL, policy: FileCommitPolicy
+    ) throws -> FileCommitReceipt {
         try policy.checkCancellation?()
         if let maxBytes = policy.maxBytes, data.count > maxBytes {
             throw FloeError.validationFailed("Payload exceeds the \(maxBytes)-byte limit")
@@ -97,6 +108,17 @@ public enum AtomicFileCommitter {
         stagedFile: URL,
         to destination: URL,
         policy: FileCommitPolicy = FileCommitPolicy()
+    ) throws -> FileCommitReceipt {
+        do {
+            return try commitStaged(stagedFile: stagedFile, to: destination, policy: policy)
+        } catch {
+            StorageSpaceFailure.reportIfNeeded(error)
+            throw error
+        }
+    }
+
+    private static func commitStaged(
+        stagedFile: URL, to destination: URL, policy: FileCommitPolicy
     ) throws -> FileCommitReceipt {
         try policy.checkCancellation?()
         let byteCount = (try? stagedFile.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0

@@ -69,7 +69,9 @@ public enum LinuxGuestImageInstallError: Error, LocalizedError, Sendable, Equata
         case .notFound(let id):
             return "image '\(id)' is not installed"
         case .insufficientSpace(let required, let available):
-            return "not enough free space for the Linux image (\(required) bytes required, \(available) available)"
+            return FloeL10n.l("storage.capacity.download_required",
+                ByteCountFormatter.string(fromByteCount: required, countStyle: .file),
+                ByteCountFormatter.string(fromByteCount: available, countStyle: .file))
         case .cancelled:
             return "Linux image download was cancelled"
         }
@@ -191,9 +193,7 @@ enum LinuxGuestVolumeSpace {
     /// and promotion errors when the pre-check could not predict the need.
     static func outOfSpaceError(_ error: Error, required: Int64) -> LinuxGuestImageInstallError? {
         let ns = error as NSError
-        let isOutOfSpace = (ns.domain == NSCocoaErrorDomain && ns.code == 640 /* NSFileWriteOutOfSpaceErrorCode */)
-            || (ns.domain == NSPOSIXErrorDomain && ns.code == 28 /* ENOSPC */)
-        guard isOutOfSpace else {
+        guard StorageSpaceFailure.reportIfNeeded(error) else {
             return nil
         }
         let available = availableImportantBytes(

@@ -493,6 +493,7 @@ struct RootView: View {
         // a plain environment value so isolated hosts and pre-27.1 systems
         // need no provider.
         .environment(\.foldableDisplay, foldableSupport.snapshot)
+        .modifier(StorageAvailabilityNotice())
         .modifier(FoldableCapabilityProbeModifier(state: foldableSupport))
         .modifier(MacBridgeRecommendationModifier(
             presentationReady: launchPresentationReady && entryNavigationReady
@@ -1171,9 +1172,20 @@ struct RootView: View {
     private var persistenceState: some View {
         if let error = environment.bootstrapError {
             ContentUnavailableView {
-                Label("storage.unavailable", systemImage: "externaldrive.badge.exclamationmark")
+                Label(FloeL10n.l(environment.bootstrapStorageFull ? "storage.capacity.title" : "storage.unavailable"),
+                      systemImage: "externaldrive.badge.exclamationmark")
             } description: {
-                Text(error)
+                if environment.bootstrapStorageFull {
+                    Text("storage.capacity.startup_failed")
+                    Text("storage.capacity.guidance")
+                    if environment.isEphemeral { Text("storage.capacity.reopen") }
+                } else {
+                    Text(error)
+                }
+            } actions: {
+                if !environment.isEphemeral {
+                    Button("action.retry") { Task { await environment.bootstrap() } }
+                }
             }
             .background(FloeTheme.readingSurface)
         } else {

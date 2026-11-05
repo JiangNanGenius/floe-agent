@@ -198,6 +198,15 @@ public actor DatabaseManager {
 
     /// Serialized write access (GRDB guarantees a single writer at a time).
     public func writer<T: Sendable>(_ block: @Sendable (Database) throws -> T) async throws -> T {
+        do {
+            return try await performWrite(block)
+        } catch {
+            StorageSpaceFailure.reportIfNeeded(error)
+            throw error
+        }
+    }
+
+    private func performWrite<T: Sendable>(_ block: @Sendable (Database) throws -> T) async throws -> T {
         let lease = try await StorageOperationBudget.begin()
         defer { lease.finish() }
         try lease.check()

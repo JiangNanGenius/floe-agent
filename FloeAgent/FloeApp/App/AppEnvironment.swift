@@ -767,6 +767,7 @@ final class AppEnvironment: ObservableObject {
     /// workbench on this and shows an honest recovery state on failure.
     @Published private(set) var persistenceReady = false
     @Published private(set) var bootstrapError: String?
+    @Published private(set) var bootstrapStorageFull = false
     /// True only for the emergency in-memory environment. Production
     /// actions remain unavailable because this state is not durable.
     let isEphemeral: Bool
@@ -2477,6 +2478,7 @@ final class AppEnvironment: ObservableObject {
                     ?? .failClosed(reason: "Catastrophic-action rules are unavailable"),
                 isEphemeral: true
             )
+            environment.bootstrapStorageFull = StorageSpaceFailure.reportIfNeeded(error)
             environment.bootstrapError = error.localizedDescription
         }
         return environment
@@ -2878,6 +2880,7 @@ final class AppEnvironment: ObservableObject {
             } else {
                 persistenceReady = true
                 bootstrapError = nil
+                bootstrapStorageFull = false
             }
             // Inbound shares are app-owned (never View-owned). Start the
             // foreground refresh once launch reached a usable state; the
@@ -2982,6 +2985,7 @@ final class AppEnvironment: ObservableObject {
             #endif
         } catch {
             persistenceReady = false
+            bootstrapStorageFull = StorageSpaceFailure.reportIfNeeded(error)
             bootstrapError = error.localizedDescription
         }
         // Success means the WHOLE launch sequence above finished with durable

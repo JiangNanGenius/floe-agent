@@ -1,6 +1,214 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "storage.capacity.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Device storage is low"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备存储空间不足"
+          }
+        }
+      }
+    },
+    "storage.capacity.low_bytes": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Only %@ is available. Free up space to keep saving and downloading."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前可用 %@。请释放一些空间，以免影响保存和下载。"
+          }
+        }
+      }
+    },
+    "storage.capacity.write_failed_bytes": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An operation ran out of storage. Currently available: %@. Free up space, then retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "刚才的操作因存储空间不足而失败。当前可用 %@，释放空间后可重试。"
+          }
+        }
+      }
+    },
+    "storage.capacity.write_failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An operation ran out of storage. Free up space, then retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "刚才的操作因存储空间不足而失败。释放空间后可重试。"
+          }
+        }
+      }
+    },
+    "storage.capacity.help": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What to do"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如何处理"
+          }
+        }
+      }
+    },
+    "storage.capacity.dismiss": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dismiss storage notice"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭存储提醒"
+          }
+        }
+      }
+    },
+    "storage.capacity.guidance": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open system Settings, then General → Storage. Remove content you no longer need, then return to Floe."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请打开设备的系统设置，在“通用”中查看储存空间，清理不需要的内容后返回 Floe。"
+          }
+        }
+      }
+    },
+    "storage.capacity.manage_floe": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manage Floe storage"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "管理 Floe 存储"
+          }
+        }
+      }
+    },
+    "storage.capacity.check_again": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check available space"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新检查空间"
+          }
+        }
+      }
+    },
+    "storage.capacity.no_auto_delete": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe does not automatically delete your chats, projects or skills. After freeing space, retry the operation that failed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 不会自动删除你的聊天、项目或技能。释放空间后，请重试刚才失败的操作。"
+          }
+        }
+      }
+    },
+    "storage.capacity.startup_failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Device storage is full, so Floe cannot finish opening its local data. Free up space first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备存储空间已满，Floe 暂时无法完成本地数据的加载。请先释放空间。"
+          }
+        }
+      }
+    },
+    "storage.capacity.reopen": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "After freeing space, close and reopen Floe to load your saved data."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "释放空间后，请关闭并重新打开 Floe，以加载已保存的数据。"
+          }
+        }
+      }
+    },
+    "storage.capacity.download_required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not enough storage to prepare the environment. Required: %@; available: %@. Free up space and retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "准备运行环境所需空间不足：需要 %@，当前可用 %@。请释放空间后重试。"
+          }
+        }
+      }
+    },
     "cad.paint.storedTexture": {
       "localizations": {
         "en": {

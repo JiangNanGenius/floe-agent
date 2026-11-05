@@ -9,6 +9,33 @@
 import XCTest
 
 final class StorageDataManagementUITests: XCTestCase {
+    func testLowStorageNoticeKeepsWorkbenchUsableAndExplainsRecovery() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.terminate()
+        defer { app.terminate() }
+        XCUIDevice.shared.orientation = .landscapeLeft
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
+            "-ui-testing", "-ui-testing-ipad", "--ui-test-skip-onboarding", "--ui-test-low-storage"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["设备存储空间不足"].firstMatch.waitForExistence(timeout: 30))
+        XCTAssertTrue(app.staticTexts["sidebar.workbench.new_task"].waitForExistence(timeout: 30),
+                      "A capacity warning must not replace the usable workbench")
+        capture(app, "low-storage-workbench")
+        app.buttons["如何处理"].tap()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@",
+            "请打开设备的系统设置")).firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["重新检查空间"].exists)
+        capture(app, "low-storage-recovery-help")
+        app.buttons["完成"].firstMatch.tap()
+        let dismiss = app.buttons["关闭存储提醒"]
+        XCTAssertTrue(dismiss.waitForExistence(timeout: 10))
+        dismiss.tap()
+        XCTAssertTrue(waitUntil(timeout: 5) { !app.buttons["如何处理"].exists })
+        XCTAssertTrue(app.staticTexts["sidebar.workbench.new_task"].isHittable)
+        capture(app, "low-storage-dismissed")
+    }
+
     func testStoragePageSettlesAndWarmReopenServesTheSnapshot() throws {
         continueAfterFailure = false
         let app = launchApp()

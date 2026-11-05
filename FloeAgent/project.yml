@@ -1106,6 +1106,8 @@ targets:
       - path: Tests/FloeCoreTests/StorageAccountingTests.swift
       - path: Tests/FloeCoreTests/StorageReportBuilderTests.swift
       - path: Tests/FloeCoreTests/StorageSnapshotTests.swift
+      - path: Tests/FloeCoreTests/DeviceStorageAvailabilityTests.swift
+      - path: Tests/FloeAppTests/StorageAvailabilityNoticeTests.swift
       # K3 integration of the measured physical-extent union (public
       # fcntl F_LOG2PHYS_EXT): the union/probe suites run in the App host, and
       # the App-host probe gate answers the API-availability and exact-sum
