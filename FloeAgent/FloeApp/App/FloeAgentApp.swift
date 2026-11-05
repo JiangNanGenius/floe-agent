@@ -386,7 +386,6 @@ struct RootView: View {
     /// collapse handles compact), so fold/unfold never remounts the editor
     /// session identities below. Never persisted across hardware.
     @StateObject private var foldableSupport = FoldableDisplayState()
-    @State private var sidebarWidthObservation: CGFloat = 0
     @State private var iPadWindowWidth: CGFloat = 0
     /// Linux session/service deep link destination, optionally focused on the
     /// environment the notification came from.
@@ -1390,11 +1389,9 @@ struct RootView: View {
 
     @ViewBuilder
     private var iPadRoot: some View {
-        // Keep one stable two-column split. Replacing a two-column
-        // NavigationSplitView with a three-column instance while a WKWebView
-        // is first responder can leave the old UIKit hit-test surface above
-        // the newly-created sidebar and toolbar. The inspector is an explicit
-        // trailing pane inside the stable detail column instead.
+        // Keep the outer two-column split stable. Native inspector ownership
+        // gives each pane its own toolbar/title boundary without replacing
+        // the split or moving the task-owned WebView/session to a new owner.
         NavigationSplitView(columnVisibility: $router.columnVisibility) {
             sidebarColumn
                 .collapseSidebarOnRightSwipe {
@@ -1403,24 +1400,24 @@ struct RootView: View {
                     }
                 }
         } detail: {
-            HStack(spacing: 0) {
-                contentColumn
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if let inspectorRoute = presentableInspectorRoute {
-                    Divider()
-                    NavigationStack {
-                        // The inspector must be re-created per conversation:
-                        // its `.task` re-mounts the task workspace, but the
-                        // previous conversation's file tree/editor state must
-                        // never linger as a stale right-hand workspace.
-                        InspectorColumnView(route: inspectorRoute).id(inspectorRoute.id)
+            contentColumn
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .inspector(isPresented: Binding(
+                    get: { presentableInspectorRoute != nil },
+                    set: { if !$0 { router.hideInspector() } }
+                )) {
+                    if let inspectorRoute = presentableInspectorRoute {
+                        NavigationStack {
+                            // Each conversation remounts its own workspace;
+                            // the session service retains running resources.
+                            InspectorColumnView(route: inspectorRoute).id(inspectorRoute.id)
+                        }
+                        .inspectorColumnWidth(min: 360, ideal: 430, max: 520)
+                        .accessibilityIdentifier("ipad.inspector.column")
                     }
-                    .frame(minWidth: 360, idealWidth: 430, maxWidth: 520)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-                    .accessibilityIdentifier("ipad.inspector.column")
                 }
-            }
         }
+        .navigationSplitViewStyle(.balanced)
         .animation(.snappy, value: router.inspectorRoute)
         .onGeometryChange(for: CGFloat.self) { proxy in proxy.size.width } action: { width in
             iPadWindowWidth = width
@@ -1443,19 +1440,12 @@ struct RootView: View {
     /// as a first column on iPad and a native drawer on iPhone.
     private var sidebarColumn: some View {
         SidebarObservationHost(center: environment.conversationCenter, workspaces: environment.workspaceCenter) {
-            GeometryReader { proxy in
-                sidebarContent
-                    .onChange(of: proxy.size.width) { _, width in
-                        // Persist the user's chosen width (bounded) so the next
-                        // presentation restores it; ignore tiny layout noise.
-                        layoutPreferences.setSidebarWidth(Double(width))
-                    }
-            }
-            .navigationSplitViewColumnWidth(
-                min: LayoutSettings.sidebarMinimumWidth,
-                ideal: layoutPreferences.settings.sidebarWidth,
-                max: LayoutSettings.sidebarMaximumWidth)
+            sidebarContent
         }
+        .navigationSplitViewColumnWidth(
+            min: LayoutSettings.sidebarMinimumWidth,
+            ideal: layoutPreferences.settings.sidebarWidth,
+            max: LayoutSettings.sidebarMaximumWidth)
     }
 
     private var sidebarContent: some View {
@@ -2003,6 +1993,13 @@ private struct InspectorColumnView: View {
             }
         }
         .toolbar {
+            if let title = inspectorTitle {
+                ToolbarItem(placement: .principal) {
+                    Text(title).font(.headline).lineLimit(1)
+                        .accessibilityAddTraits(.isHeader)
+                        .accessibilityIdentifier("inspector.title")
+                }
+            }
             ToolbarItem(placement: .topBarLeading) {
                 Button("chat.thread_detail_view.hide_inspector", systemImage: "sidebar.trailing") {
                     withAnimation(.snappy) { router.hideInspector() }
@@ -2037,6 +2034,17 @@ private struct InspectorColumnView: View {
             case .progress, .childAgents, .permissions:
                 break
             }
+        }
+    }
+
+    private var inspectorTitle: String? {
+        switch route.content {
+        case .browser: IDELanguageRunText.t("浏览器", "Browser")
+        case .terminal: IDELanguageRunText.t("终端", "Terminal")
+        case .progress: IDELanguageRunText.t("执行进度", "Progress")
+        case .childAgents: IDELanguageRunText.t("子任务", "Subtasks")
+        case .permissions: IDELanguageRunText.t("权限", "Permissions")
+        case .changes, .workspaceFiles: nil // Document editors supply their own title.
         }
     }
 

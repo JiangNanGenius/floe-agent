@@ -99,4 +99,35 @@ struct FoldablePreferencesTests {
         #expect(defaults.object(forKey: "floe.layout.fileNameLines") as? Int == 2)
     }
 }
+
+@Suite("Sidebar preference migration")
+@MainActor
+struct SidebarPreferenceTests {
+    @Test("old automatic measurements do not force an oversized sidebar")
+    func legacyMeasurementUsesCompactDefault() {
+        let suite = "floe.tests.Sidebar.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(460.0, forKey: "floe.layout.sidebarWidth")
+        let preferences = LayoutPreferences(defaults: defaults)
+        #expect(preferences.settings.sidebarWidth == LayoutSettings.sidebarDefaultWidth)
+        #expect(defaults.double(forKey: "floe.layout.sidebarWidth") == 460)
+        #expect(defaults.object(forKey: "floe.layout.sidebarWidthWasChosen") == nil)
+    }
+
+    @Test("an explicit width survives relaunch and stays within bounds")
+    func explicitSelectionPersists() {
+        let suite = "floe.tests.Sidebar.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let preferences = LayoutPreferences(defaults: defaults)
+        preferences.setSidebarWidth(400)
+        #expect(LayoutPreferences(defaults: defaults).settings.sidebarWidth == 400)
+        preferences.setSidebarWidth(10_000)
+        #expect(LayoutPreferences(defaults: defaults).settings.sidebarWidth == LayoutSettings.sidebarMaximumWidth)
+        preferences.setSidebarWidth(LayoutSettings.sidebarDefaultWidth)
+        #expect(defaults.bool(forKey: "floe.layout.sidebarWidthWasChosen"))
+        #expect(LayoutPreferences(defaults: defaults).settings.sidebarWidth == LayoutSettings.sidebarDefaultWidth)
+    }
+}
 #endif

@@ -20,6 +20,7 @@ final class LayoutPreferences: ObservableObject {
         static let showFullPath = "floe.layout.showFullPath"
         static let showFileExtension = "floe.layout.showFileExtension"
         static let sidebarWidth = "floe.layout.sidebarWidth"
+        static let sidebarWidthWasChosen = "floe.layout.sidebarWidthWasChosen"
         static let foldableAdaptationEnabled = "floe.layout.foldableAdaptationEnabled"
     }
 
@@ -35,8 +36,12 @@ final class LayoutPreferences: ObservableObject {
             }
         }
         let storedLines = defaults.object(forKey: Keys.fileNameLines) as? Int ?? 1
-        let storedWidth = defaults.object(forKey: Keys.sidebarWidth) as? Double
-            ?? LayoutSettings.sidebarDefaultWidth
+        // Earlier versions saved every system layout measurement as a width.
+        // Those values must not defeat the new default or feed back into the
+        // split view. Only an explicit General settings choice is restored.
+        let storedWidth = defaults.bool(forKey: Keys.sidebarWidthWasChosen)
+            ? (defaults.object(forKey: Keys.sidebarWidth) as? Double ?? LayoutSettings.sidebarDefaultWidth)
+            : LayoutSettings.sidebarDefaultWidth
         self.settings = LayoutSettings(
             fontSizes: fontSizes,
             fileNameLines: storedLines,
@@ -76,7 +81,7 @@ final class LayoutPreferences: ObservableObject {
     func setSidebarWidth(_ width: Double) {
         let clamped = min(max(width, LayoutSettings.sidebarMinimumWidth),
                           LayoutSettings.sidebarMaximumWidth)
-        guard abs(clamped - settings.sidebarWidth) > 2 else { return }
+        defaults.set(true, forKey: Keys.sidebarWidthWasChosen)
         settings.sidebarWidth = clamped
         defaults.set(clamped, forKey: Keys.sidebarWidth)
         objectWillChange.send()

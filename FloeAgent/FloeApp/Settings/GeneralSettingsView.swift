@@ -33,6 +33,19 @@ struct GeneralSettingsView: View {
                 get: { center.appearance },
                 set: { center.setAppearance($0) }
             ))
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                Section {
+                    Picker(IDELanguageRunText.t("侧栏宽度", "Sidebar width"), selection: Binding(
+                        get: { layoutPreferences.settings.sidebarWidth },
+                        set: { layoutPreferences.setSidebarWidth($0) }
+                    )) {
+                        Text(IDELanguageRunText.t("紧凑", "Compact")).tag(280.0)
+                        Text(IDELanguageRunText.t("标准", "Standard")).tag(320.0)
+                        Text(IDELanguageRunText.t("宽", "Wide")).tag(400.0)
+                    }
+                    .accessibilityIdentifier("settings.general.sidebarWidth")
+                }
+            }
             Section("settings.general.language") {
                 Picker("settings.general.language", selection: Binding(
                     get: { center.languageOverride },

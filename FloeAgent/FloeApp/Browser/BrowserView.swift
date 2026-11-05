@@ -7,20 +7,18 @@ import WebKit
 struct BrowserView: View {
     @ObservedObject var center: BrowserSessionCenter
     @State private var expanded = false
-    @State private var showingPorts = false
 
     var body: some View {
         Group {
             if expanded { Color.clear }
             else {
-                BrowserSurfaceRoot(center: center, expanded: $expanded, showingPorts: $showingPorts)
+                BrowserSurfaceRoot(center: center, expanded: $expanded)
             }
         }
         .fullScreenCover(isPresented: $expanded) {
-            BrowserSurfaceRoot(center: center, expanded: $expanded, showingPorts: $showingPorts)
+            BrowserSurfaceRoot(center: center, expanded: $expanded)
         }
         .task(id: center.conversationID) { await center.recoverHandoff() }
-        .sheet(isPresented: $showingPorts) { NavigationStack { LinuxPortManagementView() } }
         .navigationTitle("browser.title")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -32,11 +30,10 @@ struct BrowserView: View {
 private struct BrowserSurfaceRoot: View {
     @ObservedObject var center: BrowserSessionCenter
     @Binding var expanded: Bool
-    @Binding var showingPorts: Bool
 
     var body: some View {
         if let session = center.visibleSession {
-            BrowserSurface(center: center, session: session, expanded: $expanded, showingPorts: $showingPorts)
+            BrowserSurface(center: center, session: session, expanded: $expanded)
                 .id(session.conversationID)
         } else {
             ContentUnavailableView {
@@ -52,28 +49,28 @@ private struct BrowserSurface: View {
     @ObservedObject var center: BrowserSessionCenter
     @ObservedObject var session: BrowserTaskSession
     @Binding var expanded: Bool
-    @Binding var showingPorts: Bool
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @State private var showingTabs = false
-    @State private var showingSettings = false
+    @State private var activeSheet: BrowserSheet?
+
+    private enum BrowserSheet: String, Identifiable {
+        case tabs, settings, ports
+        var id: Self { self }
+    }
 
     var body: some View {
         GeometryReader { geometry in
             content(wide: geometry.size.width >= 620 && !dynamicTypeSize.isAccessibilitySize)
         }
         .background(.background)
-        .sheet(isPresented: $showingTabs) {
-            BrowserTabOverview(session: session)
-        }
-        .sheet(isPresented: $showingSettings) {
-            NavigationStack {
-                BrowserSettingsView(settings: center.settingsService, browserCenter: center)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button(IDELanguageRunText.t("完成", "Done")) { showingSettings = false }
-                        }
-                    }
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .tabs:
+                BrowserTabOverview(session: session)
+            case .settings:
+                BrowserSettingsSheet(center: center)
+            case .ports:
+                BrowserPortsSheet()
             }
         }
         .alert(
@@ -91,19 +88,19 @@ private struct BrowserSurface: View {
 
     private func content(wide: Bool) -> some View {
         VStack(spacing: 0) {
-            if wide {
-                BrowserTabStrip(session: session)
-                Divider()
+            VStack(spacing: 0) {
+                BrowserAddressBar(
+                    center: center,
+                    session: session,
+                    compact: !wide,
+                    fullscreen: expanded,
+                    showTabs: { activeSheet = .tabs },
+                    showSettings: { activeSheet = .settings },
+                    showPorts: { activeSheet = .ports }
+                ) { expanded.toggle() }
+                if wide { BrowserTabStrip(session: session) }
             }
-            BrowserAddressBar(
-                center: center,
-                session: session,
-                compact: !wide,
-                fullscreen: expanded,
-                showTabs: { showingTabs = true },
-                showSettings: { showingSettings = true },
-                showPorts: { showingPorts = true }
-            ) { expanded.toggle() }
+            .background(.bar)
             BrowserProgressBar(session: session)
             if session.isUserControlling || center.handoffNeedsContinue || center.handoffError != nil {
                 HStack {
@@ -150,6 +147,37 @@ private struct BrowserSurface: View {
     }
 }
 
+private struct BrowserSettingsSheet: View {
+    @ObservedObject var center: BrowserSessionCenter
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            BrowserSettingsView(settings: center.settingsService, browserCenter: center)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(IDELanguageRunText.t("完成", "Done")) { dismiss() }
+                    }
+                }
+        }
+    }
+}
+
+private struct BrowserPortsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            LinuxPortManagementView()
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(IDELanguageRunText.t("完成", "Done")) { dismiss() }
+                    }
+                }
+        }
+    }
+}
+
 private struct BrowserProgressBar: View {
     @ObservedObject var session: BrowserTaskSession
 
@@ -183,14 +211,13 @@ private struct BrowserTabStrip: View {
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
                 .accessibilityLabel(IDELanguageRunText.t("新建标签页", "New tab"))
                 .accessibilityIdentifier("browser.newTab")
             }
             .padding(.horizontal, 8)
         }
         .frame(height: 44)
-        .background(.bar)
     }
 }
 
@@ -209,19 +236,6 @@ private struct BrowserTabChip: View {
     var body: some View {
         HStack(spacing: 0) {
             Button {
-                session.activate(tab.id)
-            } label: {
-                Text(title)
-                    .font(.subheadline)
-                    .lineLimit(1)
-                    .padding(.leading, 12)
-                    .frame(minWidth: 80, maxWidth: 180, minHeight: 44, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel(title)
-            .accessibilityAddTraits(active ? .isSelected : [])
-            Button {
                 session.close(tab.id)
             } label: {
                 Image(systemName: "xmark")
@@ -230,11 +244,25 @@ private struct BrowserTabChip: View {
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
             .accessibilityLabel(IDELanguageRunText.t("关闭标签页", "Close tab"))
+            Button {
+                session.activate(tab.id)
+            } label: {
+                Text(title)
+                    .font(.subheadline)
+                    .lineLimit(1)
+                    .foregroundStyle(active ? .primary : .secondary)
+                    .padding(.trailing, 16)
+                    .frame(minWidth: 80, maxWidth: 180, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(title)
+            .accessibilityAddTraits(active ? .isSelected : [])
         }
         .background(active ? Color(uiColor: .systemBackground) : .clear,
-                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    in: UnevenRoundedRectangle(topLeadingRadius: 10, topTrailingRadius: 10))
         .accessibilityElement(children: .contain)
     }
 }
@@ -319,16 +347,21 @@ private struct BrowserAddressBar: View {
         VStack(spacing: 0) {
             HStack(spacing: 4) {
                 if !compact { historyButtons }
+                if !compact { Spacer(minLength: 0) }
                 addressField
-                if !compact { fullscreenButton }
+                    .frame(maxWidth: compact ? .infinity : 720)
+                if !compact {
+                    Spacer(minLength: 0)
+                    shareButton
+                    fullscreenButton
+                }
                 browserMenu
             }
             if compact {
                 HStack(spacing: 0) {
                     historyButtons
-                    Text(session.activeTabTitle)
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .center)
+                    Spacer(minLength: 0)
+                    shareButton
                     Button(action: showTabs) {
                         Image(systemName: "square.on.square")
                             .overlay { Text("\(session.tabs.count)").font(.system(size: 9, weight: .semibold, design: .rounded)).offset(x: 2, y: -2) }
@@ -343,8 +376,8 @@ private struct BrowserAddressBar: View {
             }
         }
         .buttonStyle(.borderless)
+        .tint(.primary)
         .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(.bar)
     }
 
     private var addressField: some View {
@@ -352,15 +385,20 @@ private struct BrowserAddressBar: View {
             Image(systemName: "globe")
                 .foregroundStyle(.secondary).accessibilityHidden(true)
                 .padding(.leading, 12)
-            TextField("browser.address", text: $session.addressText)
+            TextField("browser.address", text: Binding(
+                get: { editing ? session.addressText : displayedAddress },
+                set: { session.addressText = $0 }
+            ))
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 .keyboardType(.URL).submitLabel(.go).textFieldStyle(.plain)
                 .font(.subheadline)
+                .multilineTextAlignment(editing ? .leading : .center)
                 .focused($editing)
                 .onChange(of: editing) { _, value in session.isEditingAddress = value }
                 .onChange(of: session.activeTabID) { _, _ in editing = false; session.isEditingAddress = false }
                 .onSubmit { editing = false; session.isEditingAddress = false; session.navigateFromAddressBar() }
                 .accessibilityIdentifier("browser.address")
+                .accessibilityValue(session.addressText)
             button(session.isLoading ? "xmark" : "arrow.clockwise",
                    session.isLoading ? IDELanguageRunText.t("停止载入", "Stop loading") : IDELanguageRunText.t("刷新", "Reload")) {
                 if session.isLoading { session.activeWebView?.stopLoading() }
@@ -369,8 +407,33 @@ private struct BrowserAddressBar: View {
             .accessibilityIdentifier("browser.reload")
         }
         .frame(minHeight: 44)
-        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Color(uiColor: .tertiarySystemFill), in: Capsule())
         .layoutPriority(1)
+    }
+
+    private var displayedAddress: String {
+        // Shorten presentation only. Editing, copying and accessibility retain
+        // the full address, including the path and a local service's port.
+        guard let url = session.activeWebView?.url,
+              url.absoluteString == session.addressText,
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              let host = url.host, !host.isEmpty else { return session.addressText }
+        let name = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+        return url.port.map { "\(name):\($0)" } ?? name
+    }
+
+    @ViewBuilder
+    private var shareButton: some View {
+        if let url = session.activeWebView?.url,
+           ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+            ShareLink(item: url) {
+                Image(systemName: "square.and.arrow.up")
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel(IDELanguageRunText.t("分享页面", "Share page"))
+            .accessibilityIdentifier("browser.share")
+        }
     }
 
     private var historyButtons: some View {

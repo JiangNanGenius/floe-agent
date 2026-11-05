@@ -112,9 +112,9 @@ public enum FileNameDisplay {
 /// Persisted layout values with explicit bounds. Stored through UserDefaults by
 /// the app layer; this value type owns the defaults and clamping rules.
 public struct LayoutSettings: Sendable, Equatable {
-    public static let sidebarMinimumWidth: Double = 260
+    public static let sidebarMinimumWidth: Double = 240
     public static let sidebarMaximumWidth: Double = 460
-    public static let sidebarDefaultWidth: Double = 320
+    public static let sidebarDefaultWidth: Double = 280
 
     public var fontSizes: [LayoutListKind: LayoutListFontSize]
     public var fileNameLines: Int

@@ -107,6 +107,35 @@ final class IDERunWebPreviewUITests: XCTestCase {
         XCTAssertTrue(waitForWebMarker(app, marker: marker, timeout: 10), "closing the blank tab must return to the existing page")
         capture("browser-existing-tab-restored")
 
+        let fullscreen = app.buttons["browser.fullscreen"].firstMatch
+        XCTAssertTrue(fullscreen.isHittable)
+        fullscreen.tap()
+        XCTAssertTrue(address.waitForExistence(timeout: 10))
+        XCTAssertEqual(address.value as? String, url, "fullscreen must keep the exact session address")
+        XCTAssertTrue(waitForWebMarker(app, marker: marker, timeout: 10))
+        XCTAssertTrue(app.buttons["browser.share"].isHittable)
+        capture("browser-fullscreen-safari-chrome")
+
+        // Sheets must be owned by the visible full-screen surface, rather
+        // than a hidden inspector underneath its fullScreenCover.
+        app.buttons["browser.menu"].firstMatch.tap()
+        let settings = app.buttons.matching(NSPredicate(format: "label IN %@", ["浏览器设置", "Browser settings"])).firstMatch
+        XCTAssertTrue(settings.waitForExistence(timeout: 5)); settings.tap()
+        let sheetDone = app.buttons.matching(NSPredicate(format: "label IN %@", ["完成", "Done"])).firstMatch
+        XCTAssertTrue(sheetDone.waitForExistence(timeout: 10)); sheetDone.tap()
+        XCTAssertTrue(app.buttons["browser.fullscreen"].waitForExistence(timeout: 10))
+        app.buttons["browser.menu"].firstMatch.tap()
+        let ports = app.buttons.containing(.image, identifier: "network").firstMatch
+        XCTAssertTrue(ports.waitForExistence(timeout: 5)); ports.tap()
+        XCTAssertTrue(sheetDone.waitForExistence(timeout: 10))
+        capture("browser-fullscreen-port-management")
+        sheetDone.tap()
+        XCTAssertTrue(app.buttons["browser.fullscreen"].waitForExistence(timeout: 10))
+        app.buttons["browser.fullscreen"].firstMatch.tap()
+        XCTAssertTrue(address.waitForExistence(timeout: 10))
+        XCTAssertEqual(address.value as? String, url)
+        XCTAssertTrue(waitForWebMarker(app, marker: marker, timeout: 10))
+
         let done = app.buttons["workspace.ide.service.preview.done"]
         XCTAssertTrue(done.waitForExistence(timeout: 10))
         done.tap()
