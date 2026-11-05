@@ -124,10 +124,11 @@ public struct LinuxLiveFilePage: Sendable, Equatable {
     /// size,mtime,digest). A consumer validates `digest` over the decoded
     /// bytes + strict UTF-8; the token only fences the exact page version.
     public var consistencyToken: String
+    public var fileRevision: String?
 
     public init(path: String, offset: Int64, bytes: Int, size: Int64, mtimeMillis: Int64,
                 digest: String, content: Data, truncated: Bool, generation: String,
-                consistencyToken: String) {
+                consistencyToken: String, fileRevision: String? = nil) {
         self.path = path
         self.offset = offset
         self.bytes = bytes
@@ -138,6 +139,7 @@ public struct LinuxLiveFilePage: Sendable, Equatable {
         self.truncated = truncated
         self.generation = generation
         self.consistencyToken = consistencyToken
+        self.fileRevision = fileRevision
     }
 }
 

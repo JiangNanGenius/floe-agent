@@ -44,6 +44,15 @@ public struct C01LinuxEnvironmentSnapshot: Sendable, Equatable {
         case failed
     }
 
+    public struct Graphics: Sendable, Equatable {
+        public var display: String
+        public var mode: String
+        public var width: Int
+        public var height: Int
+        public var workspaceID: String
+        public var runtimeGeneration: String
+    }
+    public var graphics: Graphics?
     public var phase: Phase
     /// The exact environment the host resolved, when one was in scope.
     public var environmentID: String?
@@ -74,7 +83,9 @@ public struct C01LinuxEnvironmentSnapshot: Sendable, Equatable {
                 installed: Bool = false,
                 installRequired: Bool = false,
                 retryable: Bool = false,
-                detail: String = "") {
+                detail: String = "",
+                graphics: Graphics? = nil) {
+        self.graphics = graphics
         self.phase = phase
         self.environmentID = environmentID
         self.runtimeActive = runtimeActive
@@ -189,6 +200,18 @@ public struct C01LinuxEnvironmentMailboxHost: C01LinuxEnvironmentHosting {
                 resolvedPhase = .pending
                 resolvedDetail = "The runtime is installed but not yet qualified for shell work; complete setup and wait for readiness."
             }
+            var graphics: C01LinuxEnvironmentSnapshot.Graphics?
+            if let value = object["graphics"] as? [String: Any],
+               let display = value["display"] as? String,
+               display.range(of: #"^:[0-9]{2,3}$"#, options: .regularExpression) != nil,
+               let mode = value["mode"] as? String, ["desktop", "singleApplication"].contains(mode),
+               let width = value["width"] as? Int, (640...2560).contains(width),
+               let height = value["height"] as? Int, (480...1600).contains(height),
+               let workspaceID = value["workspaceID"] as? String, UUID(uuidString: workspaceID) != nil,
+               let generation = value["runtimeGeneration"] as? String, !generation.isEmpty, generation.count <= 128 {
+                graphics = .init(display: display, mode: mode, width: width, height: height,
+                                 workspaceID: workspaceID, runtimeGeneration: generation)
+            }
             return C01LinuxEnvironmentSnapshot(
                 phase: resolvedPhase,
                 environmentID: object["environmentID"] as? String ?? environmentID,
@@ -200,7 +223,7 @@ public struct C01LinuxEnvironmentMailboxHost: C01LinuxEnvironmentHosting {
                 installed: object["installed"] as? Bool ?? (resolvedPhase == .installed || resolvedPhase == .ready),
                 installRequired: object["installRequired"] as? Bool ?? (resolvedPhase == .installRequired),
                 retryable: object["retryable"] as? Bool ?? false,
-                detail: resolvedDetail)
+                detail: resolvedDetail, graphics: graphics)
         } catch {
             return C01LinuxEnvironmentSnapshot(
                 phase: .refused, environmentID: environmentID,
@@ -308,6 +331,14 @@ enum C01LinuxEnvironmentRendering {
         }
         if let contract = snapshot.contractVersion, !contract.isEmpty {
             lines.append("contractVersion=\(contract)")
+        }
+        if let graphics = snapshot.graphics {
+            lines.append("graphics.display=\(graphics.display)")
+            lines.append("graphics.mode=\(graphics.mode)")
+            lines.append("graphics.viewport=\(graphics.width)x\(graphics.height)")
+            lines.append("graphics.workspaceID=\(graphics.workspaceID)")
+            lines.append("graphics.runtimeGeneration=\(graphics.runtimeGeneration)")
+            lines.append("graphics.usage=Use exec.shell in this same resolved environment with DISPLAY=\(graphics.display) to launch graphical software. A launched process is not proof the file was saved.")
         }
         if !snapshot.detail.isEmpty { lines.append("detail=\(snapshot.detail)") }
         return lines.joined(separator: "\n")

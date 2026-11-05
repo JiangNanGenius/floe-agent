@@ -67,6 +67,7 @@ internal class ExternalEditJournal(val root: File) {
             row.errorCode?.let { put("errorCode", it) }
             put("updatedAt", row.updatedAt)
             put("initialSHA256", row.initialSHA256)
+            row.linuxWorkingPath?.let { put("linuxWorkingPath", it) }
         }
 
         /** Single versioned decoder; unknown/corrupt entries are retained, never erased. */
@@ -89,6 +90,7 @@ internal class ExternalEditJournal(val root: File) {
                 conflictSHA256 = text("conflictSHA256"), editedSHA256 = text("editedSHA256"),
                 errorCode = text("errorCode"), updatedAt = requireNotNull(number("updatedAt")),
                 initialSHA256 = text("initialSHA256") ?: requireNotNull(text("baselineSHA256")),
+                linuxWorkingPath = text("linuxWorkingPath"),
             )
         }
     }

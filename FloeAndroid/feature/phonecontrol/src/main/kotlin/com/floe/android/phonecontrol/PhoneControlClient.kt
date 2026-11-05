@@ -185,6 +185,8 @@ class PhoneControlClient internal constructor(
         } finally { frozen.fill('\u0000') }
     }
 
+    fun lastUserInteractionWallMillis(): Long = PhoneControlRuntime.session()?.lastUserInteractionWallMillis ?: Long.MAX_VALUE
+
     fun userIsActive(idleMillis: Long = 15_000): Boolean {
         val session = PhoneControlRuntime.session() ?: return true
         return android.os.SystemClock.elapsedRealtime() - session.lastUserInteractionAt < idleMillis

@@ -377,7 +377,8 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
         conversationID: UUID,
         call: ToolCall
     ) async -> ToolResult? {
-        guard call.toolName == UserAskTool.name else { return nil }
+        let phoneWait = ["phone.observe", "phone.act", "phone.screenshot"].contains(call.toolName)
+        guard call.toolName == UserAskTool.name || phoneWait else { return nil }
         let snapshot: UserQuestionWaitingSnapshot?
         do {
             snapshot = try await store.snapshot(runID: runID, toolCallID: call.id)
@@ -400,6 +401,15 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
         }
         if receipt.status == .pending {
             returnedRequestIDs.insert(snapshot.requestID)
+        }
+        if phoneWait {
+            // A question receipt proves only the restored human decision. The
+            // process may have died before OR after a later UI dispatch; never
+            // turn that receipt into action success or replay the old action.
+            let summary = "The phone operation was interrupted. Its user decision was restored, but the action result is unconfirmed. Observe the current screen before planning any further UI action."
+            return ToolResult(callID: call.id,
+                status: receipt.status == .cancelled ? .cancelled : .failed,
+                outputSummary: summary, outputDigest: FloeDigest.sha256Hex(Data(summary.utf8)))
         }
         return Self.toolResult(callID: call.id, receipt: receipt)
     }

@@ -56,6 +56,8 @@ internal class PhoneControlSession(
     private var suppressUserTouchUntil = 0L
     @Volatile var lastUserInteractionAt: Long = SystemClock.elapsedRealtime()
         private set
+    @Volatile var lastUserInteractionWallMillis: Long = System.currentTimeMillis()
+        private set
     private val unlocker = PhoneControlUnlocker(service, mainHandler) { until ->
         suppressUserTouchUntil = until
     }
@@ -1001,11 +1003,13 @@ internal class PhoneControlSession(
         lastContentChangeAt = SystemClock.elapsedRealtime()
     }
 
-    fun onPlatformUserInteraction() {
+    fun onPlatformUserInteraction(eventUptimeMillis: Long? = null) {
         if (closed) return
         val now = SystemClock.elapsedRealtime()
         if (now <= suppressUserTouchUntil) return
         lastUserInteractionAt = now
+        val lag = eventUptimeMillis?.let { (SystemClock.uptimeMillis() - it).coerceIn(0, 60_000) } ?: 0
+        lastUserInteractionWallMillis = System.currentTimeMillis() - lag
         unlocker.userInteraction()
         if (fence.state().owner == null && inFlightId == null) return
         fence.block(PhoneControlBlocker.USER_TOUCH)

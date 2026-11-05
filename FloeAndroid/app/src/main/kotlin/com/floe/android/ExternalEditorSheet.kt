@@ -73,9 +73,9 @@ internal fun ExternalEditorSheet(host: RuntimeHost, taskID: String, workspaceID:
                     FloeText(stringResource(R.string.external_edit_conflict_description))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FloeCapsuleButton(stringResource(R.string.external_edit_use_copy), enabled = !busy,
-                            onClick = { service.resolve(row.id, true) })
+                            onClick = { service.resolve(row.id, true, row.editedSHA256, row.conflictSHA256) })
                         FloeCapsuleButton(stringResource(R.string.external_edit_keep_current), enabled = !busy,
-                            onClick = { service.resolve(row.id, false) })
+                            onClick = { service.resolve(row.id, false, row.editedSHA256, row.conflictSHA256) })
                     }
                 } else if (row.phase != ExternalEditPhase.FINISHED) {
                     FloeCapsuleButton(stringResource(R.string.external_edit_finish), enabled = !busy,

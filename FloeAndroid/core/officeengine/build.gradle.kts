@@ -1,6 +1,6 @@
 import java.security.MessageDigest
 
-// G05-R1 embedded Office engine module.
+// Office host API/UI module; the reviewed engine payload is delivered in :officepreview.
 //
 // This module never rebuilds the ~300 MB engine on the host (the official
 // native producer requires a Linux toolchain). It packages the pinned, already
@@ -53,10 +53,7 @@ android {
     }
     buildFeatures { buildConfig = true; compose = true }
     lint { disable += "MissingTranslation" }
-    // Generated assets/JNI are registered ONCE through the variant API below.
-    // Registering the same directory in main sourceSets as well creates
-    // overlapping AGP asset sets whose incremental merger can retain stale
-    // overlay bytes despite the producer task correctly updating its output.
+    // Heavy generated payloads are packaged only by the optional feature module.
 
 }
 
@@ -432,35 +429,9 @@ val prepareOfficeEngineAssets = tasks.register<PrepareOfficeAssetsTask>("prepare
     dependsOn(verifyOfficePayload)
 }
 
-// First wiring path: AGP variant sources (merge consumes the generated
-// directories through the official API, so packaging sees them without task
-// name guessing).
-androidComponents.onVariants { variant ->
-    variant.sources.assets?.addGeneratedSourceDirectory(
-        prepareOfficeEngineAssets,
-        PrepareOfficeAssetsTask::outDir,
-    )
-    variant.sources.jniLibs?.addGeneratedSourceDirectory(
-        stageOfficeEngineJniLibs,
-        StageOfficeJniLibsTask::outDir,
-    )
-}
-
-// Belt-and-braces on AGP internal task names: merges always wait for the
-// staged inputs (no-op if the variant API already wired them).
-tasks.configureEach {
-    if (name.startsWith("merge") && name.contains("JniLib")) {
-        dependsOn(stageOfficeEngineJniLibs)
-    } else if (name.startsWith("copy") && name.contains("JniLib")) {
-        dependsOn(stageOfficeEngineJniLibs)
-    } else if (name.startsWith("merge") && name.contains("Assets")) {
-        dependsOn(prepareOfficeEngineAssets)
-    } else if (name.contains("lint", ignoreCase = true)) {
-        // AGP's lint model reads generated asset directories directly; its
-        // variant source wiring does not carry the producing task dependency.
-        dependsOn(prepareOfficeEngineAssets, stageOfficeEngineJniLibs)
-    }
-}
+// Packaging belongs exclusively to :officepreview, the optional signed
+// feature split. Its merge tasks depend on these unchanged verification and
+// staging producers; the base AAR contains only the small host API/UI.
 
 // Fixture files in JVM tests are task-owned regenerable build output
 // (workspacebridge/safgateway convention).

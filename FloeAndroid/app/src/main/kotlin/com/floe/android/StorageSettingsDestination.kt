@@ -55,6 +55,8 @@ private fun StorageSettingsDestination(host: StorageSettingsHost, onDismiss: () 
                 if (state.busy) FloeActivityIndicator()
             }
             com.floe.android.host.components.PreviewComponentSettings()
+            com.floe.android.host.officecomponent.OfficeComponentSettings()
+            com.floe.android.host.linux.LinuxSoftwareSettings()
             FloeSettingsSectionCard(stringResource(R.string.storage_usage)) {
                 state.rows.forEach { row ->
                     val title = when (row.id) {

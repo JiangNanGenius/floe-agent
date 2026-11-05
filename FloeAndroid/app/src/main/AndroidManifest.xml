@@ -93,8 +93,6 @@
         android:usesCleartextTraffic="false" android:enableOnBackInvokedCallback="true">
         <receiver android:name="com.floe.android.schedule.TaskScheduleConditionReceiver" android:exported="false">
             <intent-filter>
-                <action android:name="android.intent.action.ACTION_POWER_CONNECTED" />
-                <action android:name="android.intent.action.ACTION_POWER_DISCONNECTED" />
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>

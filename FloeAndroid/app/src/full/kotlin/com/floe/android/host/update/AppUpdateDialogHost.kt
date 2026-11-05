@@ -207,6 +207,10 @@ private fun ProgressContent(controller: AppUpdateController, ui: AppUpdateUiStat
 private fun ReadyContent(controller: AppUpdateController, ui: AppUpdateUiState) {
     val state = ui.download as AppDownloadState.Ready
     KnownIssuesContent(ui.knownIssues, ui.intermediate)
+    if (ui.reinstallsOffice) FloeText(stringResource(R.string.app_update_office_reinstall),
+        style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+    if (ui.officeInstallBusy) FloeText(stringResource(R.string.app_update_component_busy),
+        style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
     FloeText(
         stringResource(R.string.app_update_ready),
         style = Floe.typography.bodyEmphasized,
@@ -232,6 +236,7 @@ private fun ReadyContent(controller: AppUpdateController, ui: AppUpdateUiState) 
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         FloeCapsuleAction(
             label = stringResource(R.string.app_update_install),
+            enabled = !ui.officeInstallBusy,
             onClick = { controller.installNow(force = false) },
             tint = Floe.colors.accent,
         )

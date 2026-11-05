@@ -29,10 +29,15 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
     var selectedApp by remember(workspaceID) { mutableStateOf("mousepad") }
     var filesFailed by remember { mutableStateOf(false) }
     var softwareVisible by remember { mutableStateOf(false) }
+    var stopRequested by remember { mutableStateOf(false) }
     DisposableEffect(service) {
         service.setVisible(true)
         onDispose { service.setVisible(false) }
     }
+    if (stopRequested) FloeConfirmDialog(title = stringResource(R.string.linux_desktop_stop),
+        message = stringResource(R.string.linux_desktop_stop_notice),
+        confirmLabel = stringResource(R.string.linux_desktop_stop), dismissLabel = stringResource(R.string.cancel),
+        onConfirm = { stopRequested = false; service.stop() }, onDismiss = { stopRequested = false })
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(
         usePlatformDefaultWidth = false, decorFitsSystemWindows = true)) {
         Column(Modifier.fillMaxSize().background(Floe.colors.readingSurface).safeDrawingPadding()) {
@@ -47,9 +52,12 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
                     FloeCapsuleButton(selectedApp, onClick = { softwareVisible = true })
                     if (selectedPath.isNotBlank()) FloeCapsuleButton(stringResource(R.string.linux_desktop_open_file),
                         onClick = { filesFailed = runCatching { service.openFile(selectedApp, selectedPath) }.isFailure })
-                    FloeCapsuleButton(stringResource(R.string.linux_desktop_stop), onClick = service::stop)
+                    FloeCapsuleButton(stringResource(R.string.linux_desktop_stop), onClick = { stopRequested = true })
                 }
-                if (filesFailed || state.failure != null) FloeText(stringResource(R.string.linux_desktop_operation_failed))
+                if (state.phase in setOf("save_pending", "close_pending")) {
+                    FloeText(stringResource(R.string.linux_desktop_save_pending))
+                    FloeCapsuleButton(stringResource(R.string.linux_desktop_retry_return), onClick = service::stop)
+                } else if (filesFailed || state.failure != null) FloeText(stringResource(R.string.linux_desktop_operation_failed))
                 Box(Modifier.weight(1f)) {
                     RemoteVncViewerPage(viewer, null, compact, onDismiss, service::setVisible,
                         { x, y -> service.input(C05VncInput.PointerMove(x, y)) },
@@ -80,7 +88,7 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
                     val busy = owned && state.phase in setOf("starting", "installing", "running")
                     FloeCapsuleButton(stringResource(R.string.linux_desktop_start),
                         onClick = { service.start(taskID, workspaceID, desktop, install) }, enabled = !busy, prominent = true)
-                    if (busy) FloeCapsuleButton(stringResource(R.string.linux_desktop_stop), onClick = service::stop)
+                    if (busy) FloeCapsuleButton(stringResource(R.string.linux_desktop_stop), onClick = { stopRequested = true })
                     if (!owned && state.workspaceID != null) FloeText(stringResource(R.string.linux_desktop_switch_notice))
                     FloeText(stringResource(R.string.linux_desktop_software))
                     for (app in LinuxDesktopCommands.applications) {

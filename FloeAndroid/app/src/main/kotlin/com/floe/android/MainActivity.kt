@@ -51,6 +51,7 @@ class MainActivity : ComponentActivity() {
         // returns from a system settings/pairing screen; PLAY is inert.
         (application as FloeApplication).onPlatformActivityResumed(this)
         (application as FloeApplication).runtimeHost?.externalEdits?.onForeground()
+        (application as FloeApplication).officeComponent.onForeground(this)
     }
     override fun onPause() {
         (application as FloeApplication).onPlatformActivityPaused()

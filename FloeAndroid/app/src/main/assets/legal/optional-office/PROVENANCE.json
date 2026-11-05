@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "relinker": {
+    "artifact": "com.getkeepsafe.relinker:relinker:1.4.4",
+    "source": "https://github.com/KeepSafe/ReLinker/tree/1.4.4",
+    "licenseURL": "https://raw.githubusercontent.com/KeepSafe/ReLinker/1.4.4/LICENSE",
+    "licenseSHA256": "91a9b0c4e997e34a8ff7206807d2da9b69a4fb979d417d6cdde550e0cf52aac4"
+  },
+  "featureDelivery": {
+    "artifact": "com.google.android.play:feature-delivery:2.1.0",
+    "documentation": "https://developer.android.com/guide/playcore/feature-delivery"
+  }
+}

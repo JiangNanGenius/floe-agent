@@ -89,7 +89,7 @@ class LOActivity(private val bridge: EngineBridge) {
             if (loadState == NATIVE_LOADED) return true
             if (loadState == NATIVE_FAILED) return false
             try {
-                System.loadLibrary("androidapp")
+                com.floe.android.core.officeengine.OfficeNativePayload.load()
                 loadState = NATIVE_LOADED
                 return true
             } catch (e: Throwable) {

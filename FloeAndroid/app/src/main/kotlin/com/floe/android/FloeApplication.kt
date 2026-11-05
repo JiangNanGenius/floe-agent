@@ -44,6 +44,13 @@ import kotlinx.coroutines.sync.withLock
  *  * onTerminate is never used as a shutdown/cleanup signal.
  */
 class FloeApplication : Application() {
+    override fun attachBaseContext(base: android.content.Context) {
+        super.attachBaseContext(base)
+        if (!android.os.Process.isIsolated()) com.google.android.play.core.splitcompat.SplitCompat.install(this)
+    }
+    internal val officeComponent by lazy {
+        com.floe.android.host.officecomponent.OfficeComponentController(this, hostScope)
+    }
     internal val diagnosticReporter by lazy {
         com.floe.android.host.reporting.DiagnosticReportService(this)
     }
@@ -434,6 +441,19 @@ class FloeApplication : Application() {
         // same-UID process. Starting another credential/store/Core owner here
         // would duplicate the main process's lifecycle and database writers.
         // Its standalone components must not access main-host lateinit state.
+        com.floe.android.core.officeengine.OfficeNativePayload.attachApk {
+            val info = packageManager.getPackageInfo(packageName, 0)
+            val index = info.splitNames.orEmpty().indexOf(com.floe.android.host.officecomponent.OfficeComponentController.MODULE)
+            if (index >= 0) info.applicationInfo?.splitSourceDirs?.getOrNull(index) ?: packageResourcePath
+            else packageResourcePath // Play emulated splits use the merged AssetManager.
+        }
+        com.floe.android.core.officeengine.OfficeNativePayload.attach {
+            check(com.floe.android.host.officecomponent.OfficeComponentController.installed(this)) {
+                "Office preview component is not installed"
+            }
+            com.getkeepsafe.relinker.ReLinker.recursively().loadLibrary(this, "androidapp",
+                com.floe.android.core.officeengine.BuildConfig.OFFICE_PAYLOAD_BUILD_ID)
+        }
         if (Application.getProcessName() == "$packageName:floe_office") return
         diagnosticReporter.attach()
         officePreviews = com.floe.android.host.OfficePreviewController(this, hostScope)
@@ -457,6 +477,7 @@ class FloeApplication : Application() {
         com.floe.android.host.linux.C01LinuxEnvironmentOwner.attach(
             context = this,
             setup = linuxSetup,
+            desktopMetadata = { id -> runtimeHost?.linuxDesktopMetadata(id) },
             requestRootStop = {
                 hostScope.launch { runtimeHost?.stop() }
             }

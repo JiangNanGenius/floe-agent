@@ -4132,7 +4132,7 @@ class OfficeEngineService : Service() {
             session.host.createCOOLWSD(
                 dataDir = dataDir,
                 cacheDir = cacheDir.absolutePath,
-                apkFile = packageResourcePath ?: "",
+                apkFile = OfficeNativePayload.apkFile(this),
                 assetManager = assets,
                 loadFileURL = urlToLoad,
                 uiMode = uiMode,

@@ -19,6 +19,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -38,6 +39,8 @@ internal data class AppUpdateUiState(
     val pendingInstall: Boolean = false,
     val knownIssues: String = "",
     val intermediate: Boolean = false,
+    val officeInstallBusy: Boolean = false,
+    val reinstallsOffice: Boolean = false,
 )
 
 /**
@@ -83,7 +86,7 @@ internal class AppUpdateController private constructor(
                 versionName = identity.versionName,
                 versionCode = identity.longVersionCode,
                 signerSha256 = identity.signerSha256,
-                hasSplitApks = reader.hasSplitApks() || !apk.isFile,
+                hasSplitApks = reader.hasNonOptionalSplits() || !apk.isFile,
                 sdkInt = android.os.Build.VERSION.SDK_INT,
             )
         }
@@ -121,6 +124,13 @@ internal class AppUpdateController private constructor(
     private var attached = false
     private val mutable = MutableStateFlow(build())
     val ui: StateFlow<AppUpdateUiState> = mutable.asStateFlow()
+    init {
+        scope.launch {
+            (context.applicationContext as? com.floe.android.FloeApplication)?.officeComponent?.state?.collect {
+                refresh()
+            }
+        }
+    }
     val downloadState: StateFlow<AppDownloadState> = downloader.state
 
     fun attach() {
@@ -207,6 +217,10 @@ internal class AppUpdateController private constructor(
     }
 
     fun installNow(force: Boolean) {
+        if (context.getSharedPreferences("office_component_install", Context.MODE_PRIVATE).contains("session")) {
+            refresh()
+            return
+        }
         val ready = downloader.state.value as? AppDownloadState.Ready ?: return
         val file = downloader.readyFile() ?: return
         installer.requestInstall(
@@ -347,6 +361,8 @@ internal class AppUpdateController private constructor(
             blockingKinds = if (installBlocking) install.blockingKinds else emptySet(),
             pendingSystemIntent = intent,
             pendingInstall = PendingInstall.fromJson(store.pendingInstallJson) != null,
+            officeInstallBusy = context.getSharedPreferences("office_component_install", Context.MODE_PRIVATE).contains("session"),
+            reinstallsOffice = com.floe.android.host.officecomponent.OfficeComponentController.installed(context),
             knownIssues = downloadRelease?.knownIssues
                 ?: DownloadMeta.fromJson(store.pendingDownloadJson)?.knownIssues.orEmpty(),
             intermediate = downloadRelease?.intermediate

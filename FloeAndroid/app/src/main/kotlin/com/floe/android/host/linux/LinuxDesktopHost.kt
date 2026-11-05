@@ -6,19 +6,25 @@ import android.os.SystemClock
 import com.floe.android.feature.remote.RemoteVncUi
 import com.floe.android.host.G04WorkspaceBridgeClient
 import com.floe.android.host.RuntimeHost
+import com.floe.android.host.TerminalActionReply
 import com.floe.android.host.remote.*
 import java.nio.ByteBuffer
 import java.security.SecureRandom
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import com.floe.android.host.externaledit.ExternalEditOwner
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+internal data class LinuxSoftwarePackage(val application: String, val installed: Boolean, val packageBytes: Long?)
+
 internal data class LinuxDesktopState(val phase: String = "idle", val taskID: String? = null,
     val workspaceID: String? = null, val environmentID: String? = null,
-    val desktop: Boolean = false, val vnc: RemoteVncUi? = null, val failure: String? = null)
+    val desktop: Boolean = false, val vnc: RemoteVncUi? = null, val failure: String? = null,
+    val software: List<LinuxSoftwarePackage> = emptyList(), val softwareOperation: String? = null)
 
 /** A graphical session is an owned native PTY plus a real authenticated loopback VNC client.
  * No host interpreter, guessed temporary environment, or view-owned process is used. */
@@ -40,8 +46,15 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
     private var credential: C05VncPasswordRef? = null
     private var remoteOwner: C05RemoteOwner? = null
     private var outputClose: (() -> Unit)? = null
+    private val editAcks = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
+    private val editWatchers = ConcurrentHashMap<String, Job>()
+    private val editReaders = ConcurrentHashMap<String, suspend (java.io.File) -> String>()
+    private val fileOpens = ConcurrentHashMap<String, Job>()
     @Volatile private var visible = false
-    private var epoch = 0L
+    @Volatile private var epoch = 0L
+    @Volatile private var displayNumber: Int? = null
+    @Volatile private var inventoryNonce: String? = null
+    @Volatile private var softwareNonce: String? = null
 
     fun start(taskID: String, workspaceID: String, desktop: Boolean, install: Boolean) {
         if (task?.isActive == true) return
@@ -49,7 +62,8 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
             visible = true; return
         }
         task = scope.launch(Dispatchers.IO) { serial.withLock {
-            cleanup()
+            stopped = true
+            if (!cleanup()) return@withLock
             stopped = false
             epoch = host.nativeRootEpoch() ?: return@withLock
             mutable.value = LinuxDesktopState("starting", taskID, workspaceID, desktop = desktop)
@@ -89,11 +103,38 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                             if (received.length > 65_536) received.delete(0, received.length - 32_768)
                             if (received.contains("FLOE_READ:$nonce")) read.complete(Unit)
                             if (received.contains("FLOE_READY:$nonce")) ready.complete(Unit)
-                            if (received.contains("FLOE_MISSING:") || received.contains("FLOE_INSTALL_FAILED:"))
+                            editAcks.forEach { (id, ack) ->
+                                if (received.contains("FLOE_EDIT_CREATED:$id")) ack.complete(true)
+                                else if (received.contains("FLOE_EDIT_REUSED:$id")) ack.complete(false)
+                            }
+                            inventoryNonce?.let { query ->
+                                val rows = Regex("FLOE_SOFTWARE:$query:([a-z0-9]+):(missing|[0-9]+)")
+                                    .findAll(received).mapNotNull { match ->
+                                        val app = match.groupValues[1]
+                                        if (app !in LinuxDesktopCommands.applications) null else LinuxSoftwarePackage(
+                                            app, match.groupValues[2] != "missing", match.groupValues[2].toLongOrNull())
+                                    }.associateBy { it.application }.values.toList()
+                                if (rows.isNotEmpty()) mutable.value = state.value.copy(software = rows)
+                            }
+                            val completion = when {
+                                received.contains("FLOE_INSTALLED:$softwareNonce") -> "installed"
+                                received.contains("FLOE_REMOVED:$softwareNonce") -> "removed"
+                                received.contains("FLOE_CACHE_CLEANED:$softwareNonce") -> "cache-cleaned"
+                                else -> null
+                            }
+                            if (completion != null && state.value.softwareOperation != null) {
+                                mutable.value = state.value.copy(softwareOperation = null)
+                            }
+                            if (received.contains("FLOE_REMOVE_FAILED:$softwareNonce") || received.contains("FLOE_CACHE_FAILED:$softwareNonce") || received.contains("FLOE_INSTALL_FAILED:$softwareNonce"))
+                                mutable.value = state.value.copy(softwareOperation = null, failure = "software_operation_failed")
+                            Regex("FLOE_MISSING:([a-z0-9]+)[\r\n]").find(received)?.let { missing ->
                                 mutable.value = state.value.copy(failure = "software_unavailable")
+                                received.delete(missing.range.first, missing.range.last + 1)
+                            }
                         }
                     }
                     val display = random.nextInt(200) + 10
+                    displayNumber = display
                     val port = 5900 + display
                     terminal.transportForTab(token).write(LinuxDesktopCommands.launch(nonce, display,
                         if (desktop) 1600 else 960, if (desktop) 1000 else 1280, install, desktop).toByteArray())
@@ -133,11 +174,12 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                         catch (cancelled: CancellationException) { throw cancelled }
                         catch (_: Exception) { mutable.value = state.value.copy(phase = "failed", failure = "desktop_disconnected") }
                     }
+                    refreshSoftware()
                     if (!desktop) application("mousepad", false)
                 } finally { password.fill(0) }
-            } catch (cancelled: CancellationException) { cleanup(); throw cancelled }
+            } catch (cancelled: CancellationException) { if (!stopped) cleanup(); throw cancelled }
             catch (_: Exception) {
-                cleanup()
+                if (!cleanup()) return@withLock
                 mutable.value = state.value.copy(phase = "failed", vnc = null, failure = "desktop_start_failed")
             }
         } }
@@ -145,6 +187,23 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
 
     private fun live() = !stopped && host.nativeRootEpoch() == epoch
     private fun checkLive() { check(live()) }
+    /** Read-only facts for the exact environment already resolved by Core.
+     * Publishing DISPLAY never grants authority to a different workspace. */
+    fun environmentMetadata(environmentID: String): org.json.JSONObject? {
+        val current = state.value
+        if (!live() || current.phase != "running" ||
+            current.environmentID != environmentID) return null
+        val session = terminalID?.let { host.workspaceTerminal?.snapshotFor(it) } ?: return null
+        if (session.environmentID != environmentID ||
+            !session.workspaceID.equals(current.workspaceID, ignoreCase = true)) return null
+        val display = displayNumber ?: return null
+        return org.json.JSONObject().put("display", ":$display")
+            .put("mode", if (current.desktop) "desktop" else "singleApplication")
+            .put("width", if (current.desktop) 1600 else 960)
+            .put("height", if (current.desktop) 1000 else 1280)
+            .put("workspaceID", session.workspaceID)
+            .put("runtimeGeneration", session.runtimeGeneration)
+    }
     fun setVisible(value: Boolean) { visible = value; if (!value) releaseInput() }
     fun input(event: C05VncInput) { if (live() && state.value.phase == "running") input?.offer(event) }
     fun releaseInput() {
@@ -152,44 +211,179 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
         val owner = remoteOwner ?: return
         scope.launch(Dispatchers.IO) { runCatching { vncClient.releaseAll(id, owner) } }
     }
-    fun application(name: String, install: Boolean) {
+    fun refreshSoftware() {
         if (!live() || state.value.phase != "running") return
         val token = terminalID ?: return
-        host.workspaceTerminal?.transportForTab(token)?.write(LinuxDesktopCommands.application(name, install))
+        val nonce = UUID.randomUUID().toString().replace("-", "")
+        inventoryNonce = nonce
+        host.workspaceTerminal?.transportForTab(token)?.write("inventory:$nonce\n".toByteArray())
+    }
+    fun application(name: String, install: Boolean) {
+        if (!live() || state.value.phase != "running" || state.value.softwareOperation != null) return
+        val token = terminalID ?: return
+        val nonce = if (install) UUID.randomUUID().toString().replace("-", "") else null
+        mutable.value = state.value.copy(failure = null)
+        if (install) {
+            softwareNonce = nonce
+            mutable.value = state.value.copy(softwareOperation = "install:$name", failure = null)
+        }
+        host.workspaceTerminal?.transportForTab(token)?.write(LinuxDesktopCommands.application(name, install, nonce))
+        if (install) refreshSoftware()
+    }
+    fun uninstallSoftware(name: String) {
+        require(name in LinuxDesktopCommands.applications)
+        if (!live() || state.value.phase != "running" || state.value.softwareOperation != null) return
+        val token = terminalID ?: return
+        val nonce = UUID.randomUUID().toString().replace("-", "")
+        softwareNonce = nonce
+        mutable.value = state.value.copy(softwareOperation = "remove:$name", failure = null)
+        host.workspaceTerminal?.transportForTab(token)?.write("uninstall:$name:$nonce\n".toByteArray())
+        refreshSoftware()
+    }
+    fun cleanSoftwareCache() {
+        if (!live() || state.value.phase != "running" || state.value.softwareOperation != null) return
+        val token = terminalID ?: return
+        val nonce = UUID.randomUUID().toString().replace("-", "")
+        softwareNonce = nonce
+        mutable.value = state.value.copy(softwareOperation = "clean-cache", failure = null)
+        host.workspaceTerminal?.transportForTab(token)?.write("clean-cache:$nonce\n".toByteArray())
+        refreshSoftware()
     }
     fun openFile(application: String, logicalPath: String) {
         require(application in LinuxDesktopCommands.applications)
         require(com.floe.android.host.externaledit.ExternalEditPolicy.validPath(logicalPath))
         if (!live() || state.value.phase != "running") return
+        check(state.value.softwareOperation == null)
         val token = terminalID ?: return
-        val encoded = java.util.Base64.getEncoder().encodeToString(logicalPath.toByteArray(Charsets.UTF_8))
-        host.workspaceTerminal?.transportForTab(token)?.write("open:$application:$encoded\n".toByteArray())
+        val ownerTask = state.value.taskID ?: return
+        val workspace = state.value.workspaceID ?: return
+        val terminal = host.workspaceTerminal ?: return
+        val admittedEpoch = epoch
+        val operationID = UUID.randomUUID().toString()
+        val opening = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            try {
+                val row = host.externalEdits.prepareLinux(ExternalEditOwner(ownerTask, workspace), logicalPath)
+                val path = checkNotNull(row.linuxWorkingPath)
+                val nonce = UUID.randomUUID().toString().replace("-", "")
+                fun encoded(value: String) = java.util.Base64.getEncoder().encodeToString(value.toByteArray(Charsets.UTF_8))
+                val ack = CompletableDeferred<Boolean>()
+                editAcks[nonce] = ack
+                val created = try {
+                    terminal.transportForTab(token).write("edit:$application:${encoded(logicalPath)}:${encoded(path)}:$nonce\n".toByteArray())
+                    withTimeout(15_000) { ack.await() }
+                } finally { editAcks.remove(nonce) }
+                check(live() && epoch == admittedEpoch && terminalID == token)
+                val metadata = checkNotNull(terminal.snapshotFor(token))
+                val bridge = LinuxDesktopFileBridge(terminal, ownerTask, token, metadata.runtimeGeneration) {
+                    host.nativeRootEpoch() == admittedEpoch && epoch == admittedEpoch && terminalID == token
+                }
+                var revision: String? = null
+                if (created) {
+                    // Verify the new guest working copy against the retained original
+                    // before accepting its first revision as an editable baseline.
+                    check(host.externalEdits.receiveLinuxSnapshot(row.id) { destination ->
+                        revision = bridge.copy(path, destination, row.baselineSHA256)
+                    })
+                }
+                check(live() && epoch == admittedEpoch && terminalID == token)
+                editReaders[row.id] = { destination -> bridge.copy(path, destination) }
+                terminal.transportForTab(token).write("open:$application:${encoded(path)}\n".toByteArray())
+                editWatchers.remove(row.id)?.cancelAndJoin()
+                editWatchers[row.id] = scope.launch(Dispatchers.IO) {
+                    while (isActive && live() && epoch == admittedEpoch && terminalID == token) {
+                        try {
+                            val next = bridge.probe(path)
+                            if (next.fileRevision != revision) {
+                                var copied: String? = null
+                                val accepted = host.externalEdits.receiveLinuxSnapshot(row.id) { destination ->
+                                    copied = bridge.copy(path, destination)
+                                }
+                                if (accepted) revision = copied
+                                else mutable.value = state.value.copy(failure = "save_conflict")
+                            }
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { mutable.value = state.value.copy(failure = "file_return_failed") }
+                        delay(2_000)
+                    }
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { mutable.value = state.value.copy(failure = "file_return_failed") }
+            finally { fileOpens.remove(operationID) }
+        }
+        fileOpens[operationID] = opening
+        opening.start()
     }
     fun stop() {
         stopped = true
         task?.cancel()
-        scope.launch(Dispatchers.IO) { serial.withLock { cleanup(); mutable.value = LinuxDesktopState() } }
+        scope.launch(Dispatchers.IO) { serial.withLock {
+            if (cleanup()) mutable.value = LinuxDesktopState()
+        } }
     }
-    suspend fun stopAndJoin() {
+    suspend fun stopAndJoin(): Boolean {
         stopped = true
         task?.cancelAndJoin()
-        serial.withLock { cleanup(); mutable.value = LinuxDesktopState() }
+        return serial.withLock {
+            val closed = cleanup()
+            if (closed) mutable.value = LinuxDesktopState()
+            closed
+        }
     }
 
-    private suspend fun cleanup() = withContext(NonCancellable + Dispatchers.IO) {
+    private suspend fun cleanup(): Boolean = withContext(NonCancellable + Dispatchers.IO) {
+        val opening = fileOpens.values.toList()
+        fileOpens.clear()
+        opening.forEach { it.cancel() }; opening.forEach { it.join() }
+        val watching = editWatchers.values.toList()
+        editWatchers.clear()
+        watching.forEach { it.cancel() }; watching.forEach { it.join() }
+        // Persist the latest actually saved editor bytes before closing its PTY.
+        // A failed transfer keeps the real session/recovery files instead of
+        // claiming success and destroying the only newest copy.
+        try {
+            withTimeout(120_000) {
+                for ((id, reader) in editReaders) {
+                    if (!host.externalEdits.hasActiveLinuxEdit(id)) continue
+                    check(host.externalEdits.receiveLinuxSnapshot(id) { reader(it) })
+                }
+            }
+        } catch (_: Exception) {
+            mutable.value = state.value.copy(phase = "save_pending", failure = "file_return_failed")
+            return@withContext false
+        }
+        editReaders.clear()
+        inventoryNonce = null
+        softwareNonce = null
         frames?.cancelAndJoin(); frames = null
+        editAcks.values.forEach { it.cancel() }; editAcks.clear()
         input?.close(); input = null
         inputJob?.cancelAndJoin(); inputJob = null
         outputClose?.invoke(); outputClose = null
-        val owner = remoteOwner
-        if (owner != null) {
-            vncID?.let { runCatching { vncClient.releaseAll(it, owner); vncClient.close(it, owner) } }
-            profileID?.let { runCatching { profiles.profileDelete(it, owner) } }
-            credential?.let { runCatching { vncClient.credentialDelete(it) } }
+        try {
+            val owner = remoteOwner
+            if (owner != null) {
+                vncID?.let { id ->
+                    vncClient.releaseAll(id, owner)
+                    check(vncClient.close(id, owner).complete)
+                    vncID = null
+                }
+                profileID?.let { id ->
+                    val deleted = runCatching { profiles.profileDelete(id, owner).deleted }.getOrDefault(false)
+                    check(deleted || profiles.profileList(owner).none { it.id == id })
+                    profileID = null
+                }
+                credential?.let { vncClient.credentialDelete(it); credential = null }
+            }
+            remoteOwner = null
+            terminalID?.let { token ->
+                check(host.workspaceTerminal?.closeTab(token) is TerminalActionReply.Success)
+                terminalID = null
+            }
+            true
+        } catch (_: Exception) {
+            mutable.value = state.value.copy(phase = "close_pending", failure = "desktop_stop_pending")
+            false
         }
-        vncID = null; profileID = null; credential = null; remoteOwner = null
-        terminalID?.let { runCatching { host.workspaceTerminal?.closeTab(it) } }
-        terminalID = null
     }
 
     private suspend fun readFrames(sessionID: String, owner: C05RemoteOwner) {

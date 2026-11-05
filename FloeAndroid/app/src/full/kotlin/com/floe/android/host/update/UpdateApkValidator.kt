@@ -83,6 +83,14 @@ internal class ApkIdentityReader(private val context: Context) {
         File(context.applicationInfo.sourceDir)
     }.getOrNull()
 
+    /** Optional Office data is outside the exact base-APK delta. Any other
+     * split layout still refuses the monolithic-base reconstruction path. */
+    fun hasNonOptionalSplits(): Boolean = runCatching {
+        context.applicationInfo.splitNames.orEmpty().any {
+            it != "officepreview" && !it.startsWith("officepreview.config.")
+        }
+    }.getOrDefault(true)
+
     fun hasSplitApks(): Boolean = runCatching {
         !context.applicationInfo.splitSourceDirs.isNullOrEmpty() ||
             !context.applicationInfo.splitNames.isNullOrEmpty()

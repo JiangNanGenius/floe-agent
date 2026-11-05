@@ -12,6 +12,10 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalContext
+import com.floe.android.host.officecomponent.OfficeComponentController
+import com.floe.android.host.officecomponent.OfficeComponentDialog
+import com.floe.android.host.officecomponent.OfficeComponentSystemConfirmation
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.*
 import com.floe.android.host.OfficePreviewController
@@ -34,6 +38,15 @@ import com.floe.android.host.PlatformLaunchOwnership
 @Composable
 internal fun OfficePreviewEffect(controller: OfficePreviewController, themeMode: FloeThemeMode) {
     val state by controller.state.collectAsState()
+    val app = LocalContext.current.applicationContext as FloeApplication
+    val module = app.officeComponent
+    val moduleState by module.state.collectAsState()
+    OfficeComponentSystemConfirmation(module)
+    val moduleReady = OfficeComponentController.installed(app) &&
+        moduleState.phase !in setOf("removing", "remove_pending", "confirm")
+    LaunchedEffect(state.viewer?.incarnation) {
+        if (state.viewer != null && !moduleReady) module.requestInstall()
+    }
     val pickerLedger = remember(controller) { PlatformLaunchOwnership.LaneLedger(controller.pickerNamespace) }
     var issuedPicker by rememberSaveable { mutableStateOf<String?>(null) }
     var issuedViewer by rememberSaveable { mutableStateOf<String?>(null) }
@@ -71,7 +84,7 @@ internal fun OfficePreviewEffect(controller: OfficePreviewController, themeMode:
 
     val viewerPending = state.viewer?.incarnation
     val viewerSlot = viewerSlotIdentity(controller.viewerNamespace, issuedViewer, viewerPending)
-    if (viewerSlot != null) {
+    if (viewerSlot != null && moduleReady) {
         key(controller.viewerNamespace, viewerSlot) {
             OfficeViewerLaunchSlot(
                 controller = controller,
@@ -85,6 +98,8 @@ internal fun OfficePreviewEffect(controller: OfficePreviewController, themeMode:
         }
     }
 
+    OfficeComponentDialog(visible = viewerPending != null && !moduleReady,
+        onCancel = controller::cancelUnopened)
     FloeActionSheet(visible = state.staging || state.error != null,
         onDismiss = { if (state.staging) controller.cancelUnopened() else controller.clearError() },
         maxCardWidth = 420.dp) {

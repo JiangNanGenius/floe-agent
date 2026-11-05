@@ -275,7 +275,16 @@ internal class DiagnosticReportService(private val context: Context) {
     private fun read(id: String): JSONObject? = runCatching {
         val target = file(id)
         require(target.length() <= 65_536)
-        JSONObject(AtomicFile(target).openRead().bufferedReader().use { it.readText() })
+        JSONObject(AtomicFile(target).openRead().bufferedReader().use { it.readText() }).also { row ->
+            require(row.getString("id") == id && row.getLong("created") > 0)
+            require(row.getString("kind") in setOf("manual", "app_fault"))
+            require(row.getString("state") in setOf("queued", "sent", "failed"))
+            row.getJSONObject("manifest").getJSONArray("events")
+            val images = row.getJSONArray("images")
+            require(images.length() <= 3)
+            for (index in 0 until images.length()) require(
+                images.getString(index).matches(Regex("[a-f0-9-]{36}-[0-2]\\.jpg")))
+        }
     }.getOrNull()
     private fun records(): List<JSONObject> = root.listFiles().orEmpty()
         .filter { it.name.endsWith(".json") }.mapNotNull { read(it.name.removeSuffix(".json")) }

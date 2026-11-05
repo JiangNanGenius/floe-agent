@@ -613,4 +613,25 @@
     <string name="app_update_known_issues">已知问题</string>
     <string name="app_update_intermediate_notice">中间测试版本，部分功能可能尚未完成。</string>
     <string name="app_update_issues_not_listed">此版本未单独列出已知问题，安装前请查看发行说明。</string>
+    <string name="office_module_title">Office 预览</string>
+    <string name="preview_components_cad_size">已安装包大小</string>
+    <string name="office_component_downloading">正在下载 Office 预览组件…</string>
+    <string name="office_component_installing">正在安装 Office 预览组件…</string>
+    <string name="office_component_confirmation">请在系统窗口中继续完成组件安装。</string>
+    <string name="office_component_removing">已请求卸载，系统可能在应用重启后完成。</string>
+    <string name="office_component_continue">继续</string>
+    <string name="app_update_office_reinstall">更新后可能需要重新下载 Office 预览组件，文档会保留。</string>
+    <string name="app_update_component_busy">请先完成或取消组件安装，再更新应用。</string>
+    <string name="linux_software_title">Linux 软件</string>
+    <string name="linux_software_size_hint">软件包大小为估算值，共享依赖计入环境总占用。</string>
+    <string name="linux_software_busy">正在处理… 可在会话终端查看进度。</string>
+    <string name="linux_software_not_installed">未安装</string>
+    <string name="linux_software_remove">卸载 %1$s</string>
+    <string name="linux_software_install">安装 %1$s</string>
+    <string name="linux_software_clean_cache">清理软件包下载缓存</string>
+    <string name="linux_software_start_first">启动项目的图形会话后可管理其中的软件，环境总占用见下方。</string>
+    <string name="linux_desktop_stop_notice">请先在 Linux 应用中保存修改。停止后软件将关闭，已保存文件会回传。</string>
+    <string name="linux_software_remove_notice">请先保存修改并关闭此软件。卸载软件包会保留项目文件和用户设置。</string>
+    <string name="linux_desktop_save_pending">文件回传或会话关闭尚未完成，已保留会话。请重试后再切换环境。</string>
+    <string name="linux_desktop_retry_return">重试回传并停止</string>
 </resources>

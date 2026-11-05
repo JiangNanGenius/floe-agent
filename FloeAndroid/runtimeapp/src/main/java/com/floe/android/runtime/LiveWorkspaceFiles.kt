@@ -167,6 +167,13 @@ internal class LiveWorkspaceFiles(
             .put("generation", generation())
     }
 
+    /** Stable across pages; full FileTime precision and inode identity fence a
+     * multi-page binary transfer without weakening the existing per-page checks. */
+    private fun fileRevision(path: String, attributes: BasicFileAttributes): String = sha256Hex(
+        generation() + "\n" + path + "\n" + attributes.fileKey().toString() + "\n" +
+            attributes.size() + "\n" + attributes.lastModifiedTime().toString() + "\n" +
+            attributes.creationTime().toString())
+
     /** Reads one bounded page of one regular file. */
     fun read(root: File, payload: JSONObject): JSONObject {
         val relative = payload.optString("relativePath", "")
@@ -182,6 +189,7 @@ internal class LiveWorkspaceFiles(
             return JSONObject().put("state", "ok").put("path", relative)
                 .put("offset", offset).put("bytes", 0).put("size", before.size())
                 .put("mtimeMillis", before.lastModifiedTime().toMillis())
+                .put("fileRevision", fileRevision(relative, before))
                 .put("digest", sha256Hex(""))
                 .put("consistencyToken", pageToken(generation(), relative, offset, 0,
                     before.size(), before.lastModifiedTime().toMillis(), sha256Hex("")))
@@ -228,6 +236,7 @@ internal class LiveWorkspaceFiles(
             .put("bytes", length)
             .put("size", before.size())
             .put("mtimeMillis", before.lastModifiedTime().toMillis())
+                .put("fileRevision", fileRevision(relative, before))
             .put("digest", digest)
             .put("consistencyToken", pageToken(generation(), relative, offset, length,
                 before.size(), before.lastModifiedTime().toMillis(), digest))

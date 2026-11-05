@@ -1117,6 +1117,7 @@ internal class G04TerminalHostController(
         val mtimeMillis: Long,
         val digest: String,
         val consistencyToken: String,
+        val fileRevision: String = "",
         val content: ByteArray,
         val truncated: Boolean,
     )
@@ -1222,6 +1223,7 @@ internal class G04TerminalHostController(
                     mtimeMillis = reply.fields["mtimeMillis"]?.jsonPrimitive?.longOrNull ?: 0L,
                     digest = reply.fields["digest"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                     consistencyToken = consistencyToken,
+                    fileRevision = reply.fields["fileRevision"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                     content = content,
                     truncated = reply.fields["truncated"]?.jsonPrimitive?.booleanOrNull ?: false))
             }

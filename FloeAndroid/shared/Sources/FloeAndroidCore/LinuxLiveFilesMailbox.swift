@@ -61,7 +61,8 @@ extension MailboxLinuxShellTransport: LinuxLiveFilesTransport {
             content: content,
             truncated: reply["truncated"] as? Bool ?? true,
             generation: generation,
-            consistencyToken: consistencyToken)
+            consistencyToken: consistencyToken,
+            fileRevision: reply["fileRevision"] as? String)
     }
 
     private func submitFiles(_ operation: String, _ request: LinuxLiveFilesRequest,

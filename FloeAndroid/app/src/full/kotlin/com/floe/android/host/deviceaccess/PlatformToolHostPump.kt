@@ -30,6 +30,7 @@ internal data class PlatformToolCall(
     val approvalGrantID: UUID?,
     val arguments: JSONObject,
     val argumentsBytes: ByteArray,
+    val presenceApprovedAtMillis: Long = 0,
 )
 
 internal sealed interface PlatformToolOutcome {
@@ -110,7 +111,7 @@ internal class PlatformToolHostPump(
         val nextPollMillis: Int = 250,
         val settleWaitMillis: Long = 8_000,
         val operationTimeoutMillis: Long = 25_000,
-        val phoneInteractionTimeoutMillis: Long = 145_000,
+        val phoneInteractionTimeoutMillis: Long = operationTimeoutMillis,
     )
 
     private data class Session(val epoch: Long) {
@@ -334,6 +335,9 @@ internal class PlatformToolHostPump(
             approvalGrantID = grant,
             arguments = arguments,
             argumentsBytes = payload,
+            presenceApprovedAtMillis = root.optLong("presenceApprovedAtMillis", 0).takeIf {
+                it in 0..System.currentTimeMillis() + 5_000
+            } ?: 0,
         )
     }
 

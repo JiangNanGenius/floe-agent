@@ -394,6 +394,7 @@ android {
         ndk { abiFilters += "arm64-v8a" }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
+    dynamicFeatures += setOf(":officepreview")
     flavorDimensions += "distribution"
     productFlavors {
         create("full") { dimension = "distribution"; applicationIdSuffix = ".full" }
@@ -609,6 +610,8 @@ dependencies {
     // G04 service/presentation modules; owner-bound host adapters gate use.
     implementation(project(":core:safgateway"))
     implementation(project(":core:officeengine"))
+    implementation("com.google.android.play:feature-delivery:2.1.0")
+    implementation("com.getkeepsafe.relinker:relinker:1.4.4")
     implementation(project(":feature:ide"))
     implementation(project(":feature:terminal"))
     implementation(project(":feature:browser"))

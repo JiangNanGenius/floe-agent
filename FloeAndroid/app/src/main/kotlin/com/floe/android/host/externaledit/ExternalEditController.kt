@@ -179,11 +179,14 @@ internal class ExternalEditController(private val context: Context, private val 
         snapshot.file.parentFile?.delete()
     }
 
-    private suspend fun prepare(owner: ExternalEditOwner, path: String): ExternalEditRecord = lock.withLock {
+    private suspend fun prepare(owner: ExternalEditOwner, path: String, linux: Boolean = false): ExternalEditRecord = lock.withLock {
         if (journal == null) throw Failure("journalUnavailable")
         if (!ExternalEditPolicy.validPath(path)) throw Failure("invalidPath")
         records.values.firstOrNull { sameOwner(it.owner, owner) && it.logicalPath == path &&
-            it.phase != ExternalEditPhase.FINISHED }?.let { return@withLock it }
+            it.phase != ExternalEditPhase.FINISHED }?.let {
+            if ((it.linuxWorkingPath != null) != linux) throw Failure("editorAlreadyOpen")
+            return@withLock it
+        }
         if (records.values.count { it.phase != ExternalEditPhase.FINISHED } >= ExternalEditPolicy.MAX_ACTIVE)
             throw Failure("sessionLimit")
         val binding = bind(owner)
@@ -194,7 +197,8 @@ internal class ExternalEditController(private val context: Context, private val 
                 val id = UUID.randomUUID().toString()
                 val name = path.substringAfterLast('/').filter { it.code >= 32 && it != '\\' }.takeLast(160)
                 val row = ExternalEditRecord(id, owner, path, name, source.sha256, source.bytes,
-                    source.sourceID, source.sourceRevision)
+                    source.sourceID, source.sourceRevision,
+                    linuxWorkingPath = if (linux) ".floe-edits/$id/$name" else null)
                 preserve(source.file, id, "versions")
                 val copy = working(row)
                 source.file.inputStream().use { input -> FileOutputStream(copy).use { output ->
@@ -222,6 +226,46 @@ internal class ExternalEditController(private val context: Context, private val 
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             if (edit) addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
         }
+    }
+
+    suspend fun hasActiveLinuxEdit(id: String): Boolean = lock.withLock {
+        records[id]?.let { it.linuxWorkingPath != null && it.phase != ExternalEditPhase.FINISHED } == true
+    }
+
+    suspend fun prepareLinux(owner: ExternalEditOwner, path: String): ExternalEditRecord =
+        prepare(owner, path, linux = true)
+
+    /** A trusted guest transfer writes a private candidate, never the authorized
+     * original. The same CAS/provider save path handles Android and Linux edits. */
+    suspend fun receiveLinuxSnapshot(id: String, transfer: suspend (File) -> Unit): Boolean {
+        val row = lock.withLock {
+            val value = records[id] ?: throw Failure("sessionMissing")
+            if (value.linuxWorkingPath == null || value.phase == ExternalEditPhase.FINISHED)
+                return false
+            bind(value.owner)
+            value
+        }
+        val directory = File(root, "linux-candidates").apply { mkdirs() }
+        val candidate = File(directory, "${UUID.randomUUID()}.part")
+        try {
+            transfer(candidate)
+            measured(candidate) // Stream limit/digest checked again by the common save path.
+            lock.withLock {
+                val current = records[id] ?: throw Failure("sessionMissing")
+                if (!sameOwner(row.owner, current.owner) || current.linuxWorkingPath != row.linuxWorkingPath ||
+                    current.phase == ExternalEditPhase.FINISHED) return false
+                val binding = bind(current.owner)
+                if (!binding.current()) throw Failure("ownerChanged")
+                if (current.phase == ExternalEditPhase.CONFLICT) preserve(working(current), id, "versions")
+                val incoming = measured(candidate)
+                Files.move(candidate.toPath(), working(current).toPath(),
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                if (current.phase == ExternalEditPhase.CONFLICT) save(current.copy(
+                    editedSHA256 = incoming.first, errorCode = "editedCopyChanged", updatedAt = System.currentTimeMillis()))
+            }
+            reconcile(id)
+            return true
+        } finally { candidate.delete() }
     }
 
     /** Android first. No external handler is an actionable result, not a fake Linux launch. */
@@ -384,7 +428,7 @@ internal class ExternalEditController(private val context: Context, private val 
     }
 
     /** The user's decision binds both versions they were shown, never a force overwrite. */
-    fun resolve(id: String, useEdited: Boolean) {
+    fun resolve(id: String, useEdited: Boolean, reviewedEditedSHA: String?, reviewedOriginalSHA: String?) {
         host.scope.launch(host.ioDispatcher) {
             var proceed = false
             lock.withLock {
@@ -393,8 +437,14 @@ internal class ExternalEditController(private val context: Context, private val 
                     val binding = bind(row.owner)
                     val current = snapshot(row, binding)
                     try {
-                        if (current.sha256 != row.conflictSHA256 || measured(working(row)).first != row.editedSHA256)
-                            throw Failure("conflictChanged")
+                        val actualEditedSHA = measured(working(row)).first
+                        if (current.sha256 != row.conflictSHA256 || actualEditedSHA != row.editedSHA256 ||
+                            reviewedEditedSHA != row.editedSHA256 || reviewedOriginalSHA != row.conflictSHA256) {
+                            preserve(current.file, row.id, "versions")
+                            save(row.copy(conflictSHA256 = current.sha256, editedSHA256 = actualEditedSHA,
+                                errorCode = "conflictChanged", updatedAt = System.currentTimeMillis()))
+                            return@withLock
+                        }
                         if (useEdited) {
                             save(row.copy(baselineSHA256 = current.sha256, baselineBytes = current.bytes,
                                 phase = ExternalEditPhase.EDITING, conflictSHA256 = null, editedSHA256 = null,

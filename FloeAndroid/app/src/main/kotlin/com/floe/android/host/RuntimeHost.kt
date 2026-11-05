@@ -343,6 +343,8 @@ class RuntimeHost internal constructor(
     internal var workspaceGitTrust: G04GitTrustController? = null
     private val linuxDesktopOwner = lazy { com.floe.android.host.linux.LinuxDesktopHost(this) }
     internal val linuxDesktop get() = linuxDesktopOwner.value
+    internal fun linuxDesktopMetadata(environmentID: String): org.json.JSONObject? =
+        if (linuxDesktopOwner.isInitialized()) linuxDesktopOwner.value.environmentMetadata(environmentID) else null
     internal var workspaceTerminal: G04TerminalHostController? = null
 
     private var observationJob: Job? = null
@@ -920,7 +922,7 @@ class RuntimeHost internal constructor(
      * RB-1 owner stop. The host never cancels another owner's work.
      */
     suspend fun stop() {
-        if (linuxDesktopOwner.isInitialized()) linuxDesktopOwner.value.stopAndJoin()
+        if (linuxDesktopOwner.isInitialized() && !linuxDesktopOwner.value.stopAndJoin()) return
         if (!prepareC07DataExchangeForRootStop()) return
         if (!prepareFontsForRootStop()) return
         // C03 voice owns real microphone/TTS/cloud operations; fence and join

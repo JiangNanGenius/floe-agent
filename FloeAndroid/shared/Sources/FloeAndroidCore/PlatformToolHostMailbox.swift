@@ -34,6 +34,7 @@ import Foundation
 import FloeCore
 import FloeModels
 import FloeTools
+import FloeAgentRuntime
 
 // MARK: - Ownership
 
@@ -579,9 +580,44 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
         )
         let result: PlatformToolResult
         do {
-            result = try await submit(entry: entry, argumentsJSON: argumentsJSON,
-                                      owner: owner,
-                                      cancellation: context.cancellation)
+            do {
+                result = try await submit(entry: entry, argumentsJSON: argumentsJSON,
+                                          owner: owner, cancellation: context.cancellation)
+            } catch PlatformToolTransportError.remoteFailed(let code, _)
+                where ["phone_presence_required", "phone_unlock_required", "phone_unlock_needs_user"].contains(code)
+                    && ["phone.observe", "phone.act", "phone.screenshot"].contains(toolName) {
+                // No UI action was dispatched. Park through the SAME durable
+                // question coordinator, after the transport ticket has retired.
+                // Background jobs and other platform tickets remain independent.
+                guard let coordinator = UserQuestionHostAPI.shared.current(epoch: boundEpoch),
+                      !owner.toolCallID.isEmpty else { throw PlatformToolTransportError.hostFenced }
+                let chinese = Locale.current.identifier.lowercased().hasPrefix("zh")
+                let unlocking = code != "phone_presence_required"
+                let question = UserQuestionDraft(id: "phone-control-presence",
+                    question: unlocking
+                        ? (chinese ? "请在手机上解锁后选择继续。" : "Unlock the phone, then choose Continue.")
+                        : (chinese ? "你正在使用手机，允许任务接管屏幕吗？" : "Allow the task to use the screen while you are using the phone?"),
+                    options: [
+                        UserQuestionOption(id: "allow", label: chinese ? (unlocking ? "继续" : "允许") : (unlocking ? "Continue" : "Allow")),
+                        UserQuestionOption(id: "keep-control", label: chinese ? "保留我的控制权" : "Keep control")
+                    ], allowsFreeText: false)
+                let receipt = try await coordinator.ask(
+                    UserQuestionRequest(waitPolicy: .required, questions: [question]),
+                    runID: context.runID, conversationID: taskID, toolCallID: owner.toolCallID,
+                    cancellation: context.cancellation, temporaryReadOnly: context.temporaryReadOnly)
+                try context.cancellation.throwIfCancelled()
+                guard receipt.status == .answered,
+                      let answer = receipt.answers.first(where: { $0.source == .human }),
+                      answer.selectedOptionIDs == ["allow"], let answeredAt = answer.answeredAt,
+                      currentEpoch() == boundEpoch, isBound(to: boundEpoch) else {
+                    throw FloeError.validationFailed("Phone control was not allowed. Continue independent background work; do not retry UI control without a new user decision.")
+                }
+                // This timestamp is generated from the actual human CAS answer,
+                // not from model arguments. Existing task/approval ceilings remain.
+                result = try await submit(entry: entry, argumentsJSON: argumentsJSON,
+                    owner: owner, cancellation: context.cancellation,
+                    presenceApprovedAtMillis: Int64(answeredAt.timeIntervalSince1970 * 1_000))
+            }
         } catch let error as PlatformToolTransportError {
             if context.cancellation.isCancelled { throw FloeError.cancelled }
             throw Self.mapped(error)
@@ -601,7 +637,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
     public func submit(entry: PlatformToolCatalogEntry,
                        argumentsJSON: Data,
                        owner: PlatformToolOwner,
-                       cancellation: CancellationToken) async throws
+                       cancellation: CancellationToken, presenceApprovedAtMillis: Int64 = 0) async throws
         -> PlatformToolResult {
         guard argumentsJSON.count > 0,
               argumentsJSON.count <= PlatformToolHostLimits.maximumArgumentsBytes
@@ -611,7 +647,8 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
             throw PlatformToolTransportError.cancelled
         }
         guard let descriptor = Self.descriptorJSON(
-            entry: entry, owner: owner, arguments: argumentsJSON),
+            entry: entry, owner: owner, arguments: argumentsJSON,
+            presenceApprovedAtMillis: presenceApprovedAtMillis),
               descriptor.count <= PlatformToolHostLimits.maximumTicketDescriptorBytes
         else { throw PlatformToolTransportError.oversized }
 
@@ -1071,7 +1108,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
 
     private static func descriptorJSON(entry: PlatformToolCatalogEntry,
                                        owner: PlatformToolOwner,
-                                       arguments: Data) -> Data? {
+                                       arguments: Data, presenceApprovedAtMillis: Int64 = 0) -> Data? {
         let scopeData = (try? JSONEncoder().encode(owner.scope)) ?? Data()
         guard scopeData.count > 0,
               scopeData.count <= PlatformToolHostLimits.maximumScopeBytes,
@@ -1080,6 +1117,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
         let object: [String: Any] = [
             "version": 1,
             "operation": "platformTool.execute",
+            "presenceApprovedAtMillis": max(0, presenceApprovedAtMillis),
             "tool": entry.name,
             "epoch": String(owner.epoch),
             "taskID": owner.taskID.uuidString,

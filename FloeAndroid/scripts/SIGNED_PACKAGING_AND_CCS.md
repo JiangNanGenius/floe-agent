@@ -220,3 +220,36 @@ results. Reuse unchanged qualified components and the exact candidate artifact.
 * Publish only the accepted Full APK, its checksum and necessary corresponding
   source/license material. Verify the immutable source tag and downloaded
   assets; keep private transport, signing files, symbols and raw logs private.
+
+## 5. Optional Office preview module (N06)
+
+The `officepreview` dynamic feature carries the existing verified Office assets
+and fourteen pinned ARM64 libraries; the base App retains the small viewer,
+ownership and recovery services. Full uses an explicitly confirmed
+`PackageInstaller.MODE_INHERIT_EXISTING` split install. Play uses on-demand
+Feature Delivery (`feature-delivery:2.1.0`). Installed code is loaded through
+SplitCompat and recursively through ReLinker 1.4.4; its license is bundled under
+`app/src/main/assets/legal/optional-office/`. No remote library path is accepted.
+
+Build the base and feature from the same source, version and signer. Export the
+signed feature with `export-office-component.py --apk <signed-feature> --base-apk
+<signed-base> --prepared-assets <verified-producer-assets> --aapt2 <sdk-aapt2>
+--apksigner <sdk-apksigner> --source <commit> --output <private-saved-directory>`.
+The exporter verifies the split identity, matching signer/version, unchanged
+Office pins/assets, ARM64 linkage and 16 KiB compatibility. Keep its producer
+record private. Base qualification uses `prepare-stage-release.py` without
+`--office-pins`; the split exporter now owns the relocated payload check.
+
+After preparing the ordinary base release assets, pass their directory as
+`--release-assets` to the same exporter. It adds only the verified `.component`
+file and a bound line in `SHA256SUMS`, refusing a different base or conflicting
+component. The public release still has one main `.apk` installer. The combined
+corresponding-source producer accepts `--office-component <public-component>`
+and `--office-component-record <private-OFFICE_COMPONENT_SAVED.json>` to bind
+that optional payload to the same source offer. Publish the combined source
+and existing license files with the package; never publish private records.
+
+Samsung/API 33 may restart the App when the split changes. Treat installed
+package read-back and retained document recovery as separate from uninterrupted
+viewer continuation. On-demand availability, install, uninstall, offline reopen
+and source/public-byte read-back require actual artifact/device evidence.

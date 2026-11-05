@@ -1246,6 +1246,26 @@ def load_and_validate(args: argparse.Namespace) -> Dict[str, object]:
             "by producing this archive.",
         ],
     }
+    component_path = getattr(args, "office_component", None)
+    component_record_path = getattr(args, "office_component_record", None)
+    if bool(component_path) != bool(component_record_path):
+        raise OfficeSourceError("Office component bytes and producer record must be supplied together")
+    if component_path:
+        component = Path(component_path)
+        record = json.loads(Path(component_record_path).read_text(encoding="utf-8"))
+        expected_name = f"Floe-Office-Preview-{version}-full-arm64-v8a.component"
+        if (record.get("schema") != "floe-office-component/1" or record.get("module") != "officepreview"
+                or record.get("sourceCommit") != commit or record.get("versionName") != version
+                or record.get("baseApkSha256") != args.apk_sha256
+                or component.name != expected_name or component.is_symlink()
+                or record.get("sha256") != sha256_file(component)
+                or record.get("bytes") != component.stat().st_size):
+            raise OfficeSourceError("optional Office component is not bound to this exact release")
+        manifest["offer"]["officeComponent"] = {"name": expected_name,
+            "sha256": record["sha256"], "bytes": record["bytes"], "module": "officepreview"}
+        manifest["limitations"][0] = (
+            "Base APK qualification and export-office-component.py independently verify "
+            "the base and optional Office split; this source archive alone is not binary or runtime proof.")
     manifest_bytes = (json.dumps(manifest, indent=1) + "\n").encode("utf-8")
     files["MANIFEST.json"] = (manifest_bytes, 0o644)
 
@@ -1342,6 +1362,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                        help="public OWNER/REPO the release tag/archive URLs point at")
         p.add_argument("--apk-name", required=True,
                        help="exact release APK asset name")
+        p.add_argument("--office-component", help="exact optional .component public asset, when split packaging is used")
+        p.add_argument("--office-component-record", help="private OFFICE_COMPONENT_SAVED.json from the exact producer")
         p.add_argument("--apk-sha256", required=True,
                        help="sha256 of the FINAL signed Full APK")
 

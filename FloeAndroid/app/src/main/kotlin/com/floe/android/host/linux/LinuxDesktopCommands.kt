@@ -50,6 +50,20 @@ internal object LinuxDesktopCommands {
             printf '%s%s\n' 'FLOE_READY:' '$nonce'
             while IFS= read -r gui_action; do
               case "${'$'}gui_action" in
+                edit:*)
+                  gui_spec="${'$'}{gui_action#edit:}"
+                  gui_editor="${'$'}{gui_spec%%:*}"; gui_spec="${'$'}{gui_spec#*:}"
+                  gui_source="${'$'}{gui_spec%%:*}"; gui_spec="${'$'}{gui_spec#*:}"
+                  gui_target="${'$'}{gui_spec%%:*}"; gui_ack="${'$'}{gui_spec#*:}"
+                  case "${'$'}gui_editor" in mousepad|pcmanfm|xterm|libreoffice|gimp|inkscape|blender) ;; *) continue ;; esac
+                  gui_source=${'$'}(printf '%s' "${'$'}gui_source" | base64 -d) || continue
+                  gui_target=${'$'}(printf '%s' "${'$'}gui_target" | base64 -d) || continue
+                  if test ! -e "./${'$'}gui_target"; then
+                    mkdir -p -- "./${'$'}{gui_target%/*}"
+                    if ! cp -- "./${'$'}gui_source" "./${'$'}gui_target"; then continue; fi
+                    printf '%s%s\n' 'FLOE_EDIT_CREATED:' "${'$'}gui_ack"
+                  else printf '%s%s\n' 'FLOE_EDIT_REUSED:' "${'$'}gui_ack"; fi
+                  ;;
                 open:*)
                   gui_spec="${'$'}{gui_action#open:}"
                   gui_editor="${'$'}{gui_spec%%:*}"
@@ -57,24 +71,41 @@ internal object LinuxDesktopCommands {
                   gui_file=${'$'}(printf '%s' "${'$'}{gui_spec#*:}" | base64 -d) || continue
                   if test -f "./${'$'}gui_file"; then "${'$'}gui_editor" "./${'$'}gui_file" > /dev/null 2>&1 &
                   else printf '%s\n' 'FLOE_FILE_UNAVAILABLE'; fi ;;
+                inventory:*)
+                  gui_query="${'$'}{gui_action#inventory:}"
+                  for gui_package in mousepad pcmanfm xterm libreoffice gimp inkscape blender; do
+                    gui_sizes=${'$'}(dpkg-query -W -f='${'$'}{db:Status-Abbrev} ${'$'}{Installed-Size}\n' "${'$'}gui_package*" 2>/dev/null || true)
+                    gui_bytes=${'$'}(printf '%s\n' "${'$'}gui_sizes" | awk '${'$'}1 == "ii" {s += ${'$'}2; found=1} END {if(found) printf "%.0f", s*1024; else printf "missing"}')
+                    printf 'FLOE_SOFTWARE:%s:%s:%s\n' "${'$'}gui_query" "${'$'}gui_package" "${'$'}gui_bytes"
+                  done ;;
+                uninstall:mousepad:*|uninstall:pcmanfm:*|uninstall:xterm:*|uninstall:libreoffice:*|uninstall:gimp:*|uninstall:inkscape:*|uninstall:blender:*)
+                  gui_spec="${'$'}{gui_action#uninstall:}"; gui_package="${'$'}{gui_spec%%:*}"; gui_ack="${'$'}{gui_spec#*:}"
+                  mapfile -t gui_packages < <(dpkg-query -W -f='${'$'}{db:Status-Abbrev} ${'$'}{binary:Package}\n' "${'$'}gui_package*" 2>/dev/null | awk '${'$'}1 == "ii" {print ${'$'}2}')
+                  if test "${'$'}{#gui_packages[@]}" = 0 || apt-get remove -y -- "${'$'}{gui_packages[@]}"; then
+                    printf '%s%s\n' 'FLOE_REMOVED:' "${'$'}gui_ack"
+                  else printf '%s%s\n' 'FLOE_REMOVE_FAILED:' "${'$'}gui_ack"; fi ;;
+                clean-cache:*)
+                  gui_ack="${'$'}{gui_action#clean-cache:}"
+                  if apt-get clean; then printf '%s%s\n' 'FLOE_CACHE_CLEANED:' "${'$'}gui_ack"; else printf '%s%s\n' 'FLOE_CACHE_FAILED:' "${'$'}gui_ack"; fi ;;
                 stop) exit 0 ;;
                 mousepad|pcmanfm|xterm|libreoffice|gimp|inkscape|blender)
                   if command -v "${'$'}gui_action" >/dev/null; then
                     "${'$'}gui_action" > /dev/null 2>&1 &
                   else printf '%s%s\n' 'FLOE_MISSING:' "${'$'}gui_action"; fi ;;
-                install:mousepad|install:libreoffice|install:gimp|install:inkscape|install:blender)
-                  gui_package="${'$'}{gui_action#install:}"
+                install:mousepad:*|install:pcmanfm:*|install:xterm:*|install:libreoffice:*|install:gimp:*|install:inkscape:*|install:blender:*)
+                  gui_spec="${'$'}{gui_action#install:}"; gui_package="${'$'}{gui_spec%%:*}"; gui_ack="${'$'}{gui_spec#*:}"
                   if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${'$'}gui_package"; then
-                    printf '%s%s\n' 'FLOE_INSTALLED:' "${'$'}gui_package"
-                  else printf '%s%s\n' 'FLOE_INSTALL_FAILED:' "${'$'}gui_package"; fi ;;
+                    printf '%s%s\n' 'FLOE_INSTALLED:' "${'$'}gui_ack"
+                  else printf '%s%s\n' 'FLOE_INSTALL_FAILED:' "${'$'}gui_ack"; fi ;;
               esac
             done
         """.trimIndent()
         return "bash -c ${quote(script)}\n"
     }
 
-    fun application(name: String, install: Boolean): ByteArray {
+    fun application(name: String, install: Boolean, nonce: String? = null): ByteArray {
         require(name in applications)
-        return ((if (install) "install:" else "") + name + "\n").toByteArray(Charsets.UTF_8)
+        if (install) require(nonce?.matches(Regex("[a-f0-9]{32}")) == true)
+        return (if (install) "install:$name:$nonce\n" else "$name\n").toByteArray(Charsets.UTF_8)
     }
 }

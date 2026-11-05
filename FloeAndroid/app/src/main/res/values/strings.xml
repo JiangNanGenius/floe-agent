@@ -613,4 +613,25 @@
     <string name="app_update_known_issues">Known issues</string>
     <string name="app_update_intermediate_notice">Intermediate test version. Some features may be incomplete.</string>
     <string name="app_update_issues_not_listed">This release does not provide a separate known-issues list. Review its release notes before installing.</string>
+    <string name="office_module_title">Office preview</string>
+    <string name="preview_components_cad_size">Installed package size</string>
+    <string name="office_component_downloading">Downloading the Office preview component…</string>
+    <string name="office_component_installing">Installing the Office preview component…</string>
+    <string name="office_component_confirmation">Continue in the system window to finish installing the component.</string>
+    <string name="office_component_removing">Removal requested. The system may finish it after the app restarts.</string>
+    <string name="office_component_continue">Continue</string>
+    <string name="app_update_office_reinstall">Office preview may need to be downloaded again after updating. Your documents are kept.</string>
+    <string name="app_update_component_busy">Finish or cancel the component installation before updating the app.</string>
+    <string name="linux_software_title">Linux software</string>
+    <string name="linux_software_size_hint">Package sizes are estimates. Shared dependencies remain in the environment total.</string>
+    <string name="linux_software_busy">Working… Progress is available in the session terminal.</string>
+    <string name="linux_software_not_installed">Not installed</string>
+    <string name="linux_software_remove">Uninstall %1$s</string>
+    <string name="linux_software_install">Install %1$s</string>
+    <string name="linux_software_clean_cache">Clear package download cache</string>
+    <string name="linux_software_start_first">Start a project’s graphical session to manage its software. Environment totals are shown below.</string>
+    <string name="linux_desktop_stop_notice">Save your changes in Linux applications first. Stopping closes the applications and returns saved files.</string>
+    <string name="linux_software_remove_notice">Close this application and save your work first. Package removal keeps your project files and user settings.</string>
+    <string name="linux_desktop_save_pending">File return or session shutdown is incomplete. The session is retained; retry before switching environments.</string>
+    <string name="linux_desktop_retry_return">Retry file return and stop</string>
 </resources>

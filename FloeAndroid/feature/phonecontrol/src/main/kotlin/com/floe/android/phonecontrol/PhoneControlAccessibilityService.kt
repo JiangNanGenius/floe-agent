@@ -43,7 +43,7 @@ class PhoneControlAccessibilityService : AccessibilityService() {
             // platform's TYPE_TOUCH_INTERACTION_START events.
             AccessibilityEvent.TYPE_VIEW_SCROLLED,
             AccessibilityEvent.TYPE_VIEW_CLICKED,
-            AccessibilityEvent.TYPE_TOUCH_INTERACTION_START -> session.onPlatformUserInteraction()
+            AccessibilityEvent.TYPE_TOUCH_INTERACTION_START -> session.onPlatformUserInteraction(event.eventTime)
         }
     }
 

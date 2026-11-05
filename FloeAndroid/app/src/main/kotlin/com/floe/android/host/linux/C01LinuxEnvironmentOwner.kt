@@ -30,6 +30,7 @@ object C01LinuxEnvironmentOwner {
         val noForeignOwnedWork: (suspend () -> Boolean)?,
         /** Existing Root stop/drain request. It must not be a model-only path. */
         val requestRootStop: (() -> Unit)?,
+        val desktopMetadata: ((String) -> JSONObject?)?,
     )
 
     @Volatile
@@ -41,8 +42,9 @@ object C01LinuxEnvironmentOwner {
         setup: LocalRuntimeSetupHost,
         noForeignOwnedWork: (suspend () -> Boolean)? = null,
         requestRootStop: (() -> Unit)? = null,
+        desktopMetadata: ((String) -> JSONObject?)? = null,
     ) {
-        attachment = Attachment(context.applicationContext, setup, noForeignOwnedWork, requestRootStop)
+        attachment = Attachment(context.applicationContext, setup, noForeignOwnedWork, requestRootStop, desktopMetadata)
         // Load the REAL install/component phase into the existing setup flow
         // even if the Settings card was never opened. This is a read/refresh;
         // it starts no download or install.
@@ -112,6 +114,12 @@ object C01LinuxEnvironmentOwner {
             .put("retryable", phase == "installing" || phase == "pending" || phase == "stopping")
             .put("contractVersion", runtime?.optString("workloadContractVersion")?.take(64) ?: "")
             .put("detail", detailFor(phase))
+            .also { receipt ->
+                val environmentID = control.optString("environmentID").take(128)
+                if (environmentID.isNotEmpty()) attached.desktopMetadata?.invoke(environmentID)?.let {
+                    receipt.put("graphics", it)
+                }
+            }
     }
 
     private fun start(attached: Attachment, control: JSONObject): JSONObject {

@@ -36,10 +36,13 @@ internal data class ExternalEditRecord(
     val errorCode: String? = null,
     val updatedAt: Long = System.currentTimeMillis(),
     val initialSHA256: String = baselineSHA256,
+    val linuxWorkingPath: String? = null,
 ) {
     init {
         require(ExternalEditOwner.validUUID(id))
         require(ExternalEditPolicy.validPath(logicalPath))
+        require(linuxWorkingPath == null || (ExternalEditPolicy.validPath(linuxWorkingPath) &&
+            linuxWorkingPath.startsWith(".floe-edits/$id/")))
         require(displayName.isNotBlank() && displayName.length <= 160 &&
             displayName.none { it == '/' || it == '\\' || it.code < 32 })
         require(ExternalEditPolicy.validSHA(baselineSHA256))

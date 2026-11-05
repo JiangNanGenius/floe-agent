@@ -487,7 +487,6 @@ internal class DeviceAccessHost(
     }
 
     fun onActivityResumed(activity: Activity) {
-        automationControls.attach(activity)
         if (closed) return
         // The permission broker belongs to the main/platform lane. Read its
         // CURRENT state on the main thread; never touch it from the IO worker.
@@ -503,7 +502,7 @@ internal class DeviceAccessHost(
         }
     }
 
-    fun onActivityPaused() { automationControls.attach(null) }
+    fun onActivityPaused() = Unit
 
     /**
      * Explicit presentation entry: the stateless settings page was composed.
@@ -2485,9 +2484,9 @@ internal class DeviceAccessHost(
         val keyguard = context.getSystemService(KeyguardManager::class.java)
         automationControls.show(owner, titleFor(owner), settings.floatingControls)
         automatedOwner = owner
-        if (!keyguard.isKeyguardLocked && client.userIsActive()) {
-            if (!automationControls.confirmWhileInUse())
-                return@withLock PlatformToolOutcome.Failure("phone_waiting_for_user")
+        if (!keyguard.isKeyguardLocked && client.userIsActive() &&
+            call.presenceApprovedAtMillis < client.lastUserInteractionWallMillis()) {
+            return@withLock PlatformToolOutcome.Failure("phone_presence_required")
         }
         armingOwner = owner
         bindPhoneCall(call)

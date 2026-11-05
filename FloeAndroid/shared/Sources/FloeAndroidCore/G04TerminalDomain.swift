@@ -1129,6 +1129,7 @@ public actor G04TerminalStore {
                 "mtimeMillis": page.mtimeMillis,
                 "digest": page.digest,
                 "consistencyToken": page.consistencyToken,
+                "fileRevision": page.fileRevision ?? "",
                 "contentBase64": page.content.base64EncodedString(),
                 "truncated": page.truncated,
             ])
