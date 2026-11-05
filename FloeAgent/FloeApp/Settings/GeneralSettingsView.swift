@@ -13,6 +13,8 @@ import FloeCore
 
 struct GeneralSettingsView: View {
     @ObservedObject var center: SettingsCenter
+    @AppStorage(ComposerHardwareReturnBehavior.defaultsKey)
+    private var hardwareReturnBehavior = ComposerHardwareReturnBehavior.newline.rawValue
     @AppStorage(VoiceRecognitionPreferences.methodKey) private var voiceMethod = VoiceRecognitionPreferences.Method.automatic.rawValue
     @EnvironmentObject private var speechSettings: TTSSettingsService
     /// Scene foldable capability snapshot. A plain environment value with an
@@ -90,6 +92,22 @@ struct GeneralSettingsView: View {
                     ))
                     .accessibilityIdentifier(FoldableLayoutIdentifiers.settingsToggle)
                 }
+            }
+
+            Section {
+                Picker("settings.general.keyboard.return", selection: Binding(
+                    get: { (ComposerHardwareReturnBehavior(rawValue: hardwareReturnBehavior) ?? .newline).rawValue },
+                    set: { hardwareReturnBehavior = $0 }
+                )) {
+                    Text("settings.general.keyboard.return.newline").tag(ComposerHardwareReturnBehavior.newline.rawValue)
+                    Text("settings.general.keyboard.return.send").tag(ComposerHardwareReturnBehavior.send.rawValue)
+                }
+                .accessibilityIdentifier("settings.general.hardwareReturn")
+            } header: {
+                Text("settings.general.hardware_keyboard")
+            } footer: {
+                Text(LocalizedStringKey(hardwareReturnBehavior == ComposerHardwareReturnBehavior.send.rawValue
+                    ? "settings.general.keyboard.send_help" : "settings.general.keyboard.newline_help"))
             }
 
             Section("settings.general.accessibility") {

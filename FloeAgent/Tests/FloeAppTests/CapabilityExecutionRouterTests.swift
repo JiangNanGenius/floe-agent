@@ -19,7 +19,9 @@ struct CapabilityExecutionRouterTests {
         let names = [
             "exec.shell", "shell.open", "shell.exchange", "shell.close", "shell.signal",
             "exec.localPython", "exec.localService", "apt", "python.packages",
-            "environment.prepareLinux",
+            "environment.prepareLinux", "environment.linuxStatus", "environment.startLinux",
+            "environment.stopLinux", "environment.softRestartLinux", "environment.hardRestartLinux",
+            "environment.repairLinux", "environment.powerLinux",
         ]
         for name in names {
             let decision = CapabilityExecutionRouter.decision(for: name)
@@ -37,12 +39,17 @@ struct CapabilityExecutionRouterTests {
         #expect(CapabilityExecutionRouter.decision(for: "exec.shell").workload == .cli)
     }
 
-    @Test("Versioned shell names still route through the guest prefix rule")
-    func versionedShellPrefixesRouteToGuest() {
-        // A retired/renamed suffix must still resolve to the guest, never to a
-        // native substrate and never to a temporary directory.
-        #expect(CapabilityExecutionRouter.decision(for: "shell.echo").backend == .linuxGuest)
-        #expect(CapabilityExecutionRouter.decision(for: "exec.shell.session").backend == .linuxGuest)
+    @Test("Unknown shell-like names do not claim a registered guest executor")
+    func unregisteredShellNamesDoNotMintGuestRoutes() {
+        // The current router uses exact registered execution identities.
+        // A name that merely resembles a shell tool cannot create a backend.
+        // Catalog admission still rejects these unregistered names entirely.
+        for name in ["shell.echo", "exec.shell.session"] {
+            let decision = CapabilityExecutionRouter.decision(for: name)
+            #expect(decision.backend == .nativeApple)
+            #expect(decision.reason == "compiled Swift tool")
+            #expect(decision.toolName == name)
+        }
     }
 
     @Test("Retired generic interpreter surfaces converge on the Linux guest")

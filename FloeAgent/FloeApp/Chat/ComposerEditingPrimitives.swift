@@ -14,12 +14,31 @@ import Foundation
 import UIKit
 import FloeModels
 
+/// Saved preference applies to hardware Return in both message composers.
+/// Software Return and document editors keep their own keyboard behavior.
+enum ComposerHardwareReturnBehavior: String, CaseIterable {
+    case newline, send
+    static let defaultsKey = "floe.settings.hardwareReturnBehavior"
+}
+
 /// Hardware-key send policy for the shared composer.
 enum ComposerSendKeyPolicy {
+    enum HardwareAction: Equatable { case send, newline, system }
+    static func hardwareReturnAction(behavior: ComposerHardwareReturnBehavior,
+                                     modifiers: UIKeyModifierFlags,
+                                     hasMarkedText: Bool) -> HardwareAction {
+        guard !hasMarkedText else { return .system }
+        let editing = modifiers.intersection([.shift, .control, .alternate, .command])
+        if editing == .command { return .send }
+        if editing == .shift { return .newline }
+        guard editing.isEmpty else { return .system }
+        return behavior == .send ? .send : .newline
+    }
+
     /// Cmd+Return on a hardware keyboard sends only while sending is allowed
-    /// and no input method composition is in flight. Plain Return (hardware
-    /// or software) always inserts a newline — during and after composition —
-    /// so a half-confirmed IME candidate can never trigger a send.
+    /// and no input method composition is in flight. Hardware Return uses
+    /// the separate saved-choice policy above; unconfirmed IME text never
+    /// triggers a send.
     static func commandReturnSends(canSend: Bool, hasMarkedText: Bool) -> Bool {
         canSend && !hasMarkedText
     }

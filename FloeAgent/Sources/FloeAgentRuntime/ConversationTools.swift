@@ -418,7 +418,8 @@ public func registerConversationTools(
     reader: any ConversationHistoryReader,
     currentConversationID: @escaping @Sendable (UUID) async throws -> UUID?,
     hasExplicitUserAuthority: @escaping @Sendable (UUID) async throws -> Bool,
-    spawner: @escaping ConversationSpawner
+    spawner: @escaping ConversationSpawner,
+    messenger: ConversationCoordinationMessenger? = nil
 ) {
     ToolCatalog.register(ConversationSearchTool.self)
     ToolCatalog.register(ConversationReadTool.self)
@@ -432,4 +433,8 @@ public func registerConversationTools(
         hasExplicitUserAuthority: hasExplicitUserAuthority,
         spawner: spawner
     ))
+    if let messenger {
+        ToolCatalog.register(ConversationMessageTool.self)
+        registry.register(ConversationMessageTool(messenger: messenger))
+    }
 }

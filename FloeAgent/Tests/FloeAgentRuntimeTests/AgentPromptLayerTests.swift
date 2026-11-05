@@ -46,6 +46,20 @@ struct AgentPromptLayerTests {
         #expect(prompt.contains("authoritative directives issued by the Floe runtime"))
     }
 
+    @Test func localLinuxGuidanceUsesActualOwnershipWithoutStaleResourceLimits() {
+        let prompt = AgentPromptComposer.compose(mode: .chat, runtimeContext: "ctx", compactForLocal: true)
+        #expect(prompt.contains("reuse a running environment"))
+        #expect(prompt.contains("conversation.message"))
+        #expect(prompt.contains("verify release"))
+        #expect(!prompt.contains("guest max 3"))
+        #expect(!prompt.contains("then call environment.startLinux"))
+        let full = AgentPromptComposer.compose(mode: .chat, runtimeContext: "ctx")
+        #expect(full.contains("need not restart for a CPU change"))
+        #expect(full.contains("1–4 online CPUs"))
+        #expect(!full.contains("at most three per guest"))
+        #expect(!full.contains("Changing a running guest requires environment.hardRestartLinux"))
+    }
+
     @Test func localContractCarriesTheSameDisciplineInBrief() {
         let prompt = AgentPromptComposer.compose(
             mode: .chat,

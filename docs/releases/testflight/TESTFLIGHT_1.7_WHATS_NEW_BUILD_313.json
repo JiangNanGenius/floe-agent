@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "请重点检查：停止后文字立即停止更新；从任务文件区打开和重新打开 3D 文档；长按自己或助手的文字选择并复制。共享 Linux 新增整机关机、重启和运行任务间协调；其他任务占用时先协调，文件和依赖保留。正常环境的修复不再触发重置，在线核心调整也不会被提示为重启。 通用设置可选实体键盘回车发送或换行；发送模式请检查 Shift＋回车换行。",
+  "en-US": "Please check that Stop freezes incoming text, task files open and reopen native 3D documents, and long-press selects and copies text in user and assistant messages. Shared Linux adds machine power controls and live-task coordination. Other active work requires coordination; files and dependencies remain. Repair does not reset a normal environment, and CPU adjustment no longer suggests an unnecessary restart. General settings offers hardware Return as Send or New Line; please check Shift–Return adds a line in Send mode."
+}

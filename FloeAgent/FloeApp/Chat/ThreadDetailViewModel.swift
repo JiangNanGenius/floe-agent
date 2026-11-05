@@ -2367,6 +2367,7 @@ final class ThreadDetailViewModel: ObservableObject {
                     }
                     self.hasProviderActivity = true
                 case .userInputConsumed:
+                    guard !self.locallyStoppedRunIDs.contains(run.id) else { continue liveEvents }
                     answerTarget = ""
                     reasoningTarget = ""
                     self.animator.reset()

@@ -465,6 +465,7 @@ extension ConversationCenter {
     /// requires the dedicated execution mode (which only the trusted ingress
     /// writes). The caller decides retention/retirement separately.
     nonisolated static func isInternalNoticeDelivery(_ input: PendingUserInput) -> Bool {
+        if input.executionMode == ConversationRunService.taskCoordinationExecutionMode { return true }
         if input.executionMode == DesignConfirmationNoticeProjection.deliveryExecutionMode,
            DesignConfirmationNoticeProjection.parse(input.content) != nil {
             return true
@@ -495,6 +496,9 @@ extension ConversationCenter {
               mirror.role == "system",
               mirror.content == input.content
         else { return false }
+        if input.executionMode == ConversationRunService.taskCoordinationExecutionMode {
+            return input.targetRunID != nil && mirror.runID == input.targetRunID
+        }
         if input.executionMode == DesignConfirmationNoticeProjection.deliveryExecutionMode {
             guard let event = DesignConfirmationNoticeProjection.parse(input.content),
                   let mode = DesignAdoptMode(rawValue: event.modeRaw),
@@ -1228,6 +1232,11 @@ final class ConversationCenter: ObservableObject {
     /// in this process. The check is proof-gated and one-time per conversation
     /// so a repeatedly polled session never re-reads the store for it.
     private var internalNoticeQueueReconciled: Set<UUID> = []
+    private lazy var taskCoordinationDelivery = ConversationCoordinationService(
+        conversations: environment.conversationStore, runs: environment.runStore,
+        inputs: environment.runningInputStore,
+        liveService: { [weak self] runID in await self?.service(for: runID) }
+    )
     /// Any run created after this center instance belongs to the current
     /// process and must never be classified as a crash-leftover, even if its
     /// deferred provider service is still assembling history or images.
@@ -7076,6 +7085,29 @@ final class ConversationCenter: ObservableObject {
             await service.cancel()
         }
         await automaticReasoningEffortCoordinator.cancelPending(runID: runID)
+    }
+
+    func sendTaskCoordination(_ request: ConversationCoordinationRequest,
+                              cancellation: CancellationToken) async throws -> ConversationCoordinationReceipt {
+        let receipt = try await taskCoordinationDelivery.deliver(request, cancellation: cancellation)
+        if let conversationID = runServices[request.recipientRunID]?.conversationID {
+            publishSession(conversationID)
+        }
+        return receipt
+    }
+
+    func activeLinuxRuntimeOwners(environmentIDs: Set<String>) async -> [LinuxSharedRuntimeOwner] {
+        var result: [LinuxSharedRuntimeOwner] = []
+        for service in Array(runServices.values) {
+            guard let target = service.executionBinding?.target, target.backend == .linuxVM,
+                  environmentIDs.contains(target.environmentID),
+                  !isTemporaryConversation(service.conversationID) else { continue }
+            let snapshot = await service.snapshot()
+            guard !snapshot.isTerminal, runServices[service.runID] === service else { continue }
+            let title = try? await environment.conversationStore.conversation(id: service.conversationID)?.title
+            result.append(.init(runID: service.runID, environmentID: target.environmentID, title: title))
+        }
+        return result.sorted { $0.runID.uuidString < $1.runID.uuidString }
     }
 
     /// A Notes restart retains every message and run, but stops the old owner before

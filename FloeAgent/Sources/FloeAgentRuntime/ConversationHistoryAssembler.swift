@@ -49,8 +49,9 @@ public struct ConversationHistoryAssembler: Sendable {
                 return part.metadata["name"].map { "[Attachment: \($0)]" }
             }
             let reasoning = message.parts.filter { $0.kind == .reasoning }.compactMap(\.text).joined()
-            return ConversationMessage(id: message.id, role: message.role,
-                content: ([message.content] + attachmentNames).joined(separator: "\n"),
+            let peerContent = TaskCoordinationProjection.contentForHistory(message)
+            return ConversationMessage(id: message.id, role: peerContent == nil ? message.role : "user",
+                content: ([peerContent ?? message.content] + attachmentNames).joined(separator: "\n"),
                 createdAt: message.createdAt, reasoningContent: reasoning.isEmpty ? nil : reasoning)
         }
         // A durable checkpoint selects the active history before any bounded

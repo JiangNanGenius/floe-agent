@@ -1397,12 +1397,22 @@ final class AppEnvironment: ObservableObject {
         }
         // Unified tool registration: every tool the model can see is
         // registered here in one place, in a deterministic order.
+        let linuxSharedPower = LinuxSharedPowerService(controller: linuxGuests,
+            lifecycle: linuxGuestLifecycle,
+            onStopped: { ids in
+                await FloePlatformServices.shared.sharedLinuxRuntimeDidStop(
+                    guests: linuxGuests, environmentIDs: ids)
+            }, activeRuns: { [weak self] ids in
+                guard let self else { return [] }
+                return await self.conversationCenter.activeLinuxRuntimeOwners(environmentIDs: ids)
+            })
         registerAllAgentTools(
             localPythonService: localPythonService,
             sshCommandService: sshCommandService,
             cloudWorkspaceService: cloudWorkspaceService,
             linuxPreparation: linuxPreparation,
-            linuxLifecycle: linuxGuestLifecycle
+            linuxLifecycle: linuxGuestLifecycle,
+            linuxSharedPower: linuxSharedPower
         )
         // App Intents join the single live environment from FloeAgentApp.init
         // (AppDependencyManager registration + FloeShortcutsRuntime install).
@@ -1636,7 +1646,8 @@ final class AppEnvironment: ObservableObject {
         sshCommandService: SSHCommandService?,
         cloudWorkspaceService: CloudWorkspaceService?,
         linuxPreparation: LinuxPreparationHandler?,
-        linuxLifecycle: any LinuxGuestLifecycleControlling
+        linuxLifecycle: any LinuxGuestLifecycleControlling,
+        linuxSharedPower: LinuxSharedPowerService
     ) {
         let credentialVault = self.credentialVault
         // Workspace file tools (T04/T05).
@@ -1934,7 +1945,8 @@ final class AppEnvironment: ObservableObject {
             webSearchService: WebSearchService(configurations: WebSearchSettingsCenter.resolvedConfigurations),
             webSearchAvailability: WebSearchSettingsCenter.toolIsAvailable,
             linuxPreparation: linuxPreparation,
-            linuxLifecycle: linuxLifecycle
+            linuxLifecycle: linuxLifecycle,
+            linuxSharedPower: linuxSharedPower
         )
         // First-time/manage SSH host tools share the exact store, vault,
         // reference deleter and VNC writer above. ssh.verifyHost uses the
@@ -2198,6 +2210,12 @@ final class AppEnvironment: ObservableObject {
                     workspaceID: request.workspaceID,
                     wasCreated: existing == nil
                 )
+            }, messenger: { [weak self] request, cancellation in
+                guard let self else {
+                    return ConversationCoordinationReceipt(accepted: false, messageID: request.id,
+                        status: "unavailable", reason: "The application task owner is unavailable")
+                }
+                return try await self.conversationCenter.sendTaskCoordination(request, cancellation: cancellation)
             }
         )
         // Supervisor-Worker delegation.

@@ -146,6 +146,32 @@ final class ThreadSearchScheduleUITests: XCTestCase {
         return removed
     }
 
+    func testLongPressUserAndAssistantTextUsesSystemSelection() {
+        XCUIDevice.shared.orientation = .portrait
+        // Keep app actions localized as 复制 while the UIKit edit menu uses
+        // 拷贝/Copy. This prevents matching the assistant's existing copy-all
+        // button and mistaking it for native selection.
+        let app = launch(arguments: ["--ui-test-temporary-chat-fixture", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"])
+        defer { app.terminate() }
+        openSavedSyntheticChat(app)
+        for index in [0, 1] {
+            let text = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "合成历史消息-\(index)")).firstMatch
+            XCTAssertTrue(text.waitForExistence(timeout: 10))
+            text.press(forDuration: 1.2)
+            XCTAssertFalse(app.buttons["thread.find.fromMessage"].exists,
+                           "The message must not intercept native selection with a search context menu")
+            let nativeCopy = NSPredicate(format: "label IN %@", ["拷贝", "Copy"])
+            let menu = app.menuItems.matching(nativeCopy).firstMatch
+            let button = app.buttons.matching(nativeCopy).firstMatch
+            XCTAssertTrue(menu.waitForExistence(timeout: 2) || button.waitForExistence(timeout: 5),
+                          "The system selection menu must offer Copy, not the assistant's copy-all action")
+            let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            attachment.name = index == 0 ? "native-user-message-selection" : "native-assistant-message-selection"
+            attachment.lifetime = .keepAlways; add(attachment)
+            if menu.exists { menu.tap() } else { button.tap() }
+        }
+    }
+
     func testInChatFindCountsNavigatesAndPreservesDraft() {
         let app = launch(arguments: ["--ui-test-temporary-chat-fixture"])
         openSavedSyntheticChat(app)

@@ -16,7 +16,7 @@ public enum CapabilityBackend: String, Sendable, Codable, Hashable {
     /// Native Swift implementation using Apple frameworks
     /// (Vision/CoreImage/Metal/CoreML/PDFKit/AVFoundation/…).
     case nativeApple = "native-apple"
-    /// TinyEMU RISC-V Linux guest (shell, Python/Node, apt packages, servers).
+    /// Shared ARM64 Linux guest (shell, Python/Node, apt packages, servers).
     case linuxGuest = "linux-guest"
     /// A user-configured remote host reached over SSH.
     case remoteHost = "remote-host"
@@ -80,7 +80,8 @@ public enum CapabilityExecutionRouter {
         // Explicit Linux lifecycle.
         "environment.prepareLinux",
         "environment.startLinux", "environment.linuxStatus", "environment.stopLinux", "linux.port",
-        "environment.softRestartLinux", "environment.hardRestartLinux"
+        "environment.softRestartLinux", "environment.hardRestartLinux",
+        "environment.repairLinux", "environment.powerLinux"
     ]
 
     /// Prefixes owned by the Linux guest (covers versioned/namespaced names).

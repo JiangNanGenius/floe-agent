@@ -6,6 +6,14 @@
 
 On-device execution uses one resident ARM64 Linux machine with global CPU/RAM settings and explicit project-owned files and dependency layers. Shared download caches are reused read-only. Existing shell, job and port-forwarding services remain the entry points. Restore Initial State joins owned work before atomically replacing runtime storage and dependencies; project files, chats, installed Skill records and shared downloaded resources remain. Re-download promotes only verified base resources. It does not execute tasks or migrate retired RISC-V binaries. The retired implementation remains in the separate repository linked above.
 
+### 任务间协调与整机电源 / Task coordination and machine power
+
+`environment.linuxStatus(scope: "shared")` 只读返回物理机器状态、实际项目占用及当前运行会话的 `runID`。`conversation.message` 通过现有持久化输入队列，在对方下一安全边界投递有界协调消息；保留系统消息身份，不伪造用户指令、不扩大权限、不重启已结束任务。相同 `clientMessageID` 的重试复用消息身份。
+
+流程为：检查占用 → 向占用会话请求保存和释放 → 再检查实际占用 → `environment.powerLinux(action: "shutdown" | "restart")` → 通知原会话继续。已送达不等于对方已处理或资源已释放。默认发现其他运行任务或活动工作时只返回 `coordinationRequired`；主动中断仍走现有真实用户批准，执行前重新核对占用变化。关机需要原生机器确认停止，重启只启动请求方已绑定的项目，不重放命令；停止后的取消不得让机器复活。文件与依赖层保留。`repairLinux` 没有检测到磁盘恢复要求时只报告无需修复，不因未启动就重置环境。
+
+Shared status reports measured physical power, project activity and live owner run IDs without starting Linux. `conversation.message` reuses durable running inputs to deliver bounded, untrusted coordination at the recipient's next safe boundary. It retains the system notice, preserves existing authority, deduplicates retries and never restarts a finished task. Inspect ownership, request release, verify actual release, perform the shared power operation, then notify owners to resume. Delivery is not acknowledgement or release evidence. Other active work produces `coordinationRequired` by default; forced interruption uses the existing human approval and rechecks ownership. Power off requires native machine confirmation. Restart opens only the caller's bound project, never replays commands, and cancellation after shutdown leaves it off. Project files and dependencies remain. Repair reports no repair needed when no disk-recovery requirement exists; a stopped environment is not evidence of damage.
+
 ## 当前执行入口 / Current execution entry points (2026-10-17)
 
 模型代码统一使用任务所属 Linux 环境中的 `exec.shell`：Python、JavaScript 和其他语言通过实际安装的命令运行。耗时工作使用现有 `jobs.submit`，网页服务使用 `exec.localService`；HTML 静态预览使用 `runtime=static`。`exec.localPython`、`exec.javascript`、`exec.compatEvaluator`、`exec.wasm`、`python.packages` 和 `wasm.packages` 不再注册，旧任务不会自动重放。缺少 Linux 环境或运行时返回明确错误，不回退执行宿主代码。内部文档处理服务和用户既有安装不因工具退役被删除。

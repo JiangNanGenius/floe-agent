@@ -67,6 +67,27 @@ private actor FakeLifecycleController: LinuxGuestControlling {
     private var nextGeneration: UInt64 = 0
     private var savedConfiguration: LinuxGuestLifecycleConfig?
     private var sharedConfiguration: LinuxGuestLifecycleConfig?
+    private var physicalPhase: LinuxSharedMachinePhase?
+    private(set) var sharedStops = 0
+    func enableSharedPower() { physicalPhase = active.isEmpty ? .poweredOff : .running }
+    func sharedMachinePhase() async -> LinuxSharedMachinePhase? { physicalPhase }
+    func stopSharedGuest(allowing activities: [LinuxGuestActivityDetail]) async throws -> [String] {
+        let observed = Dictionary(uniqueKeysWithValues: activities.map { ($0.environmentID, $0) })
+        let actual = await guestActivityDetails()
+        guard Set(active.keys).isSubset(of: Set(observed.keys)), actual.allSatisfy({ current in
+            observed[current.environmentID].map { current.hasNoNewWork(since: $0) } == true
+        }) else {
+            throw LinuxGuestError.guestBusy(environmentID: "shared")
+        }
+        sharedStops += 1
+        guard !stopIsIneffective else {
+            throw LinuxGuestError.stopFailed(environmentID: "shared", detail: "synthetic physical stop failure")
+        }
+        let stopped = active.keys.sorted()
+        active.removeAll()
+        physicalPhase = .poweredOff
+        return stopped
+    }
     func enableSharedConfiguration(_ value: LinuxGuestLifecycleConfig) {
         sharedConfiguration = value
         savedConfiguration = value
@@ -99,6 +120,7 @@ private actor FakeLifecycleController: LinuxGuestControlling {
         active[environmentID] = Guest(
             vcpus: vcpus, ramMB: ramMB, generation: nextGeneration, services: 0, terminals: 0
         )
+        if physicalPhase != nil { physicalPhase = .running }
     }
     /// When true a start fails with imageNotQualified (used to test the
     /// prepare-and-retry path).
@@ -187,6 +209,7 @@ private actor FakeLifecycleController: LinuxGuestControlling {
             services: 0,
             terminals: 0
         )
+        if physicalPhase != nil { physicalPhase = .running }
         return true
     }
 
@@ -398,8 +421,8 @@ final class LinuxGuestLifecycleTests: XCTestCase {
         XCTAssertFalse(receipt.reused)
         XCTAssertNil(receipt.requestedVCPUs)
         XCTAssertEqual(receipt.launchGeneration, 1)
-        XCTAssertTrue(receipt.capability.contains("three guest cores"))
-        XCTAssertTrue(receipt.capability.contains("performance depends on workload"))
+        XCTAssertTrue(receipt.capability.contains("1–4 online CPUs"))
+        XCTAssertTrue(receipt.capability.contains("no workload speedup is promised"))
     }
 
     /// Explicit single-core start is carried to the runtime descriptor.
@@ -1457,5 +1480,145 @@ final class LinuxReconciliationProbeRaceTests: XCTestCase {
         XCTAssertFalse(snapshot.isQuietlyStopped)
         XCTAssertTrue(snapshot.instanceRegistered && snapshot.engineRunning)
         XCTAssertTrue(snapshot.probeConsistent)
+    }
+}
+
+
+// Whole-machine operations use real tool dispatch and the lifecycle manager;
+// the controller supplies measured physical power and project ownership.
+final class LinuxSharedPowerTests: XCTestCase {
+    private func fixture(activeRuns: @escaping @Sendable (Set<String>) async -> [LinuxSharedRuntimeOwner] = { _ in [] },
+                         onStopped: @escaping @Sendable ([String]) async -> Void = { _ in }) async -> (FakeLifecycleController, LinuxSharedPowerService) {
+        let controller = FakeLifecycleController()
+        await controller.own("power-A"); await controller.own("power-B")
+        await controller.enableSharedConfiguration(.init(vcpus: 4, memoryMB: 512))
+        await controller.enableSharedPower()
+        return (controller, LinuxSharedPowerService(controller: controller,
+            lifecycle: LinuxGuestLifecycleManager(controller: controller),
+            onStopped: onStopped, activeRuns: activeRuns))
+    }
+
+    func testForeignLiveRunRequiresCoordinationAndCannotBeSilentlyInterrupted() async throws {
+        let other = UUID()
+        let (controller, service) = await fixture(activeRuns: { _ in
+            [.init(runID: other, environmentID: "power-B", title: "Another task")]
+        })
+        await controller.bootDirectly(environmentID: "power-B")
+        let output = try await AnyAgentTool(LinuxSharedPowerTool(service: service))
+            .run(Data(#"{"action":"shutdown"}"#.utf8), ToolContext(runID: UUID(),
+                cancellation: CancellationToken(), environmentID: "power-A"))
+        XCTAssertEqual(output.exitStatus, 75)
+        XCTAssertTrue(output.summary.contains("coordinationRequired"))
+        XCTAssertTrue(output.summary.contains(other.uuidString))
+        let stops = await controller.sharedStops
+        XCTAssertEqual(stops, 0)
+        let active = await controller.isActive("power-B")
+        XCTAssertTrue(active)
+    }
+
+    func testForceRequiresCanonicalHumanDecisionAndDenialKeepsOtherWork() async throws {
+        let (controller, service) = await fixture()
+        await controller.bootDirectly(environmentID: "power-B")
+        await controller.setServices("power-B", 1)
+        let tool = AnyAgentTool(LinuxSharedPowerTool(service: service))
+        let args = Data(#"{"action":"shutdown","force":true}"#.utf8)
+        let missing = try await tool.run(args, ToolContext(runID: UUID(),
+            cancellation: CancellationToken(), environmentID: "power-A"))
+        XCTAssertEqual(missing.exitStatus, 77)
+        let denied = try await tool.run(args, ToolContext(runID: UUID(),
+            cancellation: CancellationToken(), environmentID: "power-A",
+            nestedApproval: .init(escalate: { _ in .denied(reason: "Keep running") })))
+        XCTAssertEqual(denied.exitStatus, 77)
+        let stops = await controller.sharedStops
+        XCTAssertEqual(stops, 0)
+        let allowed = try await tool.run(args, ToolContext(runID: UUID(),
+            cancellation: CancellationToken(), environmentID: "power-A",
+            nestedApproval: .init(escalate: { _ in .allowed })))
+        XCTAssertEqual(allowed.exitStatus, 0)
+        let phase = await controller.sharedMachinePhase()
+        XCTAssertEqual(phase, .poweredOff)
+    }
+
+    func testRestartOnlyReopensTheResolvedProjectAndKeepsSharedResources() async throws {
+        let (controller, service) = await fixture()
+        await controller.bootDirectly(environmentID: "power-A", vcpus: 4, ramMB: 512)
+        await controller.bootDirectly(environmentID: "power-B", vcpus: 4, ramMB: 512)
+        let result = try await service.perform(.restart, environmentID: "power-A", ownerRunID: UUID(),
+            allowingActiveEnvironmentIDs: ["power-A", "power-B"], allowingActiveRunIDs: [],
+            cancellation: CancellationToken())
+        XCTAssertEqual(result.restartedEnvironmentID, "power-A")
+        XCTAssertEqual(result.stoppedEnvironmentIDs, ["power-A", "power-B"])
+        XCTAssertEqual(result.after.phase, .running)
+        XCTAssertEqual(result.after.vcpus, 4)
+        XCTAssertEqual(result.after.memoryMB, 512)
+        let active = await controller.environmentsWithGuestActivity()
+        XCTAssertEqual(active, ["power-A"], "Do not replay or reopen another task's work")
+    }
+
+    func testNewLiveOwnerAfterInspectionRefusesOldAuthorization() async throws {
+        let other = UUID()
+        let (controller, service) = await fixture(activeRuns: { _ in
+            [.init(runID: other, environmentID: "power-B")]
+        })
+        await controller.bootDirectly(environmentID: "power-B")
+        do {
+            _ = try await service.perform(.shutdown, environmentID: "power-A", ownerRunID: UUID(),
+                allowingActiveEnvironmentIDs: ["power-B"], allowingActiveRunIDs: [],
+                cancellation: CancellationToken())
+            XCTFail("A stale task-ownership decision cannot authorize power off")
+        } catch {}
+        let stops = await controller.sharedStops
+        XCTAssertEqual(stops, 0)
+    }
+
+    func testCancellationAfterShutdownNeverRevivesMachine() async throws {
+        let token = CancellationToken()
+        let (controller, service) = await fixture(onStopped: { _ in token.cancel() })
+        await controller.bootDirectly(environmentID: "power-A")
+        let result = try await service.perform(.restart, environmentID: "power-A", ownerRunID: UUID(),
+            allowingActiveEnvironmentIDs: ["power-A"], allowingActiveRunIDs: [], cancellation: token)
+        XCTAssertTrue(result.cancelledAfterShutdown)
+        XCTAssertNil(result.restartedEnvironmentID)
+        XCTAssertEqual(result.after.phase, .poweredOff)
+    }
+
+    func testNewTerminalAfterObservationRefusesOldPowerDecision() async throws {
+        let (controller, service) = await fixture()
+        await controller.bootDirectly(environmentID: "power-B")
+        let observed = try await service.inspect()
+        await controller.setTerminals("power-B", 1)
+        do {
+            _ = try await service.perform(.shutdown, environmentID: "power-A", ownerRunID: UUID(),
+                allowingActiveEnvironmentIDs: ["power-B"], allowingActiveRunIDs: [],
+                observedActivities: observed.activities, cancellation: CancellationToken())
+            XCTFail("New work on the same project must invalidate old power authorization")
+        } catch LinuxGuestError.guestBusy(environmentID: _) { }
+        let stops = await controller.sharedStops
+        XCTAssertEqual(stops, 0)
+    }
+
+    func testUnownedTaskCannotPowerOffTheSharedMachine() async throws {
+        let (controller, service) = await fixture()
+        await controller.bootDirectly(environmentID: "power-A")
+        do {
+            _ = try await service.perform(.shutdown, environmentID: "remote-unowned", ownerRunID: UUID(),
+                allowingActiveEnvironmentIDs: ["power-A"], allowingActiveRunIDs: [], cancellation: CancellationToken())
+            XCTFail("Power operations require the caller's native resolved Linux ownership")
+        } catch LinuxGuestError.notOwned(environmentID: _) { }
+        let stops = await controller.sharedStops
+        XCTAssertEqual(stops, 0)
+    }
+
+    func testFailedPhysicalStopIsNotReportedAsSuccess() async throws {
+        let (controller, service) = await fixture()
+        await controller.bootDirectly(environmentID: "power-A")
+        await controller.makeStopsIneffective()
+        let output = try await AnyAgentTool(LinuxSharedPowerTool(service: service))
+            .run(Data(#"{"action":"shutdown"}"#.utf8), ToolContext(runID: UUID(),
+                cancellation: CancellationToken(), environmentID: "power-A"))
+        XCTAssertNotEqual(output.exitStatus, 0)
+        XCTAssertTrue(output.summary.contains("powerFailed"))
+        let active = await controller.isActive("power-A")
+        XCTAssertTrue(active)
     }
 }

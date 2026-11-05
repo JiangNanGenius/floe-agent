@@ -1,0 +1,20 @@
+Floe Agent 1.7.72 (Build 313)
+
+This update fixes stopping streamed text, opening native 3D packages from task files, and text selection in chat. It adds shared Linux power controls with live-task coordination and avoids unnecessary environment repair or reboot. Files and installed dependencies are preserved by power operations.
+
+No Floe account is required. Cloud AI uses the user's own provider configuration; no provider credentials are embedded. Provider tests may consume the user's allowance. Saving a provider does not generate paid media or silently change billing channels.
+
+Suggested checks:
+- Settings > General > Hardware Keyboard offers Return as New Line or Send. Shift-Return inserts a new line in Send mode; onscreen keyboard behavior is unchanged.
+- Long-press a user or assistant message to select and copy text. Find in Chat is in the conversation menu. Stop ends both the provider stream consumer and buffered text animation.
+1. Open or create a 3D document, edit it, save, close and reopen it. Native document features do not require a Linux download.
+2. Open an existing task and send a new message. A disconnected terminal location does not disable native documents or public web tools, and does not silently select another execution target.
+3. In Settings > Execution Environment, online CPU changes preserve running tasks and project files. Memory changes require a stopped runtime. Restore Initial State resets the runtime and dependencies while preserving project files, conversations and installed Skill records.
+4. The task toolbar has a Files button. A .floecad package opens as a native document rather than a browsable directory. Its right-hand panel includes a collapse control.
+5. Background audio is user controlled and independent of Picture in Picture. Select an available sound and audible volume in background settings to check playback. Closing Picture in Picture is not a command to stop the runtime. Screen-recording permission is requested for an actual recording.
+6. Advanced browser data access requires explicit risk confirmation. Model-provider permissions are persistent and individually revocable. Authorized providers may receive cookies and private page content. Temporary chat remains read-only and permits only public web and enabled, authorized basic device reads.
+7. On a Mac running the iPad App, Settings > Execution Environment provides the optional same-Mac Floe Bridge pairing, retry and disconnect flow. Mac connection controls are hidden on iPad and iPhone. A missing Bridge does not automatically download a VM or replay commands.
+
+Shared-machine power controls report current work before acting. Task coordination messages use existing task authority, do not grant permissions, and do not restart finished conversations. Forced interruption uses the existing human approval. A normal stopped environment does not require repair.
+
+The App is free to download. Floe does not sell model-provider subscriptions. Mac Bridge is optional; ordinary App features remain available without it.

@@ -1008,6 +1008,8 @@ public protocol LinuxGuestControlling: Sendable {
     func sharedGuestConfiguration() async -> LinuxGuestLifecycleConfig?
     func configureSharedGuest(_ configuration: LinuxGuestLifecycleConfig) async throws
     func stopSharedGuest() async
+    func sharedMachinePhase() async -> LinuxSharedMachinePhase?
+    func stopSharedGuest(allowing observedActivities: [LinuxGuestActivityDetail]) async throws -> [String]
     func restoreInitialState(imageID: String,
         prepareForReset: @escaping @Sendable () async throws -> Void) async throws -> LinuxGuestInitialResetReceipt
     func preferredGuestConfiguration(environmentID: String) async -> LinuxGuestLifecycleConfig?
@@ -1159,6 +1161,10 @@ public protocol LinuxGuestControlling: Sendable {
 public extension LinuxGuestControlling {
     func sharedGuestConfiguration() async -> LinuxGuestLifecycleConfig? { nil }
     func stopSharedGuest() async {}
+    func sharedMachinePhase() async -> LinuxSharedMachinePhase? { nil }
+    func stopSharedGuest(allowing observedActivities: [LinuxGuestActivityDetail]) async throws -> [String] {
+        throw LinuxGuestError.invalidConfiguration("This backend cannot verify shared-machine power off")
+    }
     func configureSharedGuest(_ configuration: LinuxGuestLifecycleConfig) async throws {
         throw LinuxGuestError.invalidConfiguration("This runtime does not use shared resource settings")
     }

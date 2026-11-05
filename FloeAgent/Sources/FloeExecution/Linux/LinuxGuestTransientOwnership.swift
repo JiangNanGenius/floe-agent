@@ -26,7 +26,7 @@ import Foundation
 /// `ownerRunID` is the durable task UUID string recorded when the guest was
 /// started on demand for that run's tool, `starting`/`quarantined` mirror the
 /// real lifecycle state, and the counters describe real in-flight work.
-public struct LinuxGuestActivityDetail: Sendable, Equatable {
+public struct LinuxGuestActivityDetail: Sendable, Equatable, Codable {
     public var environmentID: String
     /// Logical run (durable task UUID string) whose tool started this guest;
     /// nil when the guest was started by the user or outside a tool run, and
@@ -110,6 +110,20 @@ public enum LinuxGuestTransientReleaseOutcome: Sendable, Equatable {
 }
 
 public extension LinuxGuestActivityDetail {
+    /// Native power authorization permits only work already observed (or
+    /// less work). A newly opened terminal/command/owner requires a new read.
+    func hasNoNewWork(since observed: Self) -> Bool {
+        environmentID == observed.environmentID
+            && (ownerRunID == observed.ownerRunID || Self.runIDsMatch(ownerRunID, observed.ownerRunID))
+            && (!running || observed.running)
+            && (!starting || observed.starting)
+            && (!quarantined || observed.quarantined)
+            && activeCommandCount <= observed.activeCommandCount
+            && activeTerminalCount <= observed.activeTerminalCount
+            && activeServiceCount <= observed.activeServiceCount
+            && requestedForwardCount <= observed.requestedForwardCount
+    }
+
     /// Case-insensitive logical-run identity match. Both sides use the durable
     /// run UUID string; parsing normalizes formatting so a differently cased id
     /// can never silently mismatch.

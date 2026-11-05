@@ -117,7 +117,7 @@ public actor ConversationRunService {
     /// Immutable execution contract copied into the durable run and live UI
     /// projection. Recovery must never infer this from mutable conversation UI.
     public nonisolated let conversationMode: ConversationMode
-    private let executionBinding: TaskExecutionBinding?
+    public nonisolated let executionBinding: TaskExecutionBinding?
     /// Push channel for UI projections. Durable writes remain coalesced, but
     /// token/reasoning display no longer polls actor snapshots at 20 Hz.
     public nonisolated let eventChannel = HarnessEventChannel(bufferLimit: 512)
@@ -882,11 +882,12 @@ public actor ConversationRunService {
     /// (`ProposalDecisionNoticeProjection.deliveryExecutionMode`) exposes the
     /// same value and a regression test locks the two literals together.
     public static let proposalDecisionExecutionMode = "proposalDecision"
+    public static let taskCoordinationExecutionMode = "taskCoordination"
 
     /// Every dedicated internal delivery mode the runtime treats as
     /// fail-closed. A persisted row without one of these stays ordinary.
     static let internalDeliveryExecutionModes: Set<String> = [
-        designConfirmationExecutionMode, proposalDecisionExecutionMode,
+        designConfirmationExecutionMode, proposalDecisionExecutionMode, taskCoordinationExecutionMode,
     ]
 
     /// Recoverable-failure text for a dedicated internal delivery whose
@@ -944,6 +945,10 @@ public actor ConversationRunService {
             logger.error("internalDeliveryLinkageInvalid run=\(runID.uuidString) input=\(input.id.uuidString)")
             return
         case .ordinary:
+            if case .taskCoordination = input.origin {
+                durabilityFailure = Self.invalidInternalDeliveryMessage
+                return
+            }
             break
         }
         // Insert the text row first, then bind attachments, then upsert typed

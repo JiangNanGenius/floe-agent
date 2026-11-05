@@ -171,26 +171,42 @@ public struct StartLinuxGuestLifecycleTool: AgentTool {
 
 public struct LinuxGuestStatusLifecycleTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
-        public init() {}
+        public var scope: String?
+        public init(scope: String? = nil) { self.scope = scope }
     }
 
     public static let name = "environment.linuxStatus"
     public static let toolDescription =
-        "Read the truthful status of this environment's Linux guest: running or stopped, the actual granted vCPU count and RAM, the image id and launch generation, and any last error. Read-only; it never starts, stops or reconfigures the guest."
-    public static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
+        "Read Linux power and resources without changing them. Default scope=task reports this environment's project session, actual CPUs/RAM, image, generation, last error and recorded disk-recovery requirement; stopped does not mean damaged. scope=shared reports the physical ARM64 machine, actual project leases, live owner runIDs, commands, terminals, services and forwards. Use those runIDs with conversation.message to coordinate before environment.powerLinux; verify real ownership again after any acknowledgement."
+    public static let parametersJSON = #"{"type":"object","properties":{"scope":{"type":"string","enum":["task","shared"],"description":"Default task. shared inspects physical power and all current project/task owners; never starts Linux."}},"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = []
     public static let isSideEffecting = false
     public static let toolEffect: ToolEffect = .readOnly
 
     private let lifecycle: any LinuxGuestLifecycleControlling
+    private let sharedPower: LinuxSharedPowerService?
 
-    public init(lifecycle: any LinuxGuestLifecycleControlling) {
+    public init(lifecycle: any LinuxGuestLifecycleControlling, sharedPower: LinuxSharedPowerService? = nil) {
         self.lifecycle = lifecycle
+        self.sharedPower = sharedPower
     }
 
-    public func validate(_ args: Arguments) throws {}
+    public func validate(_ args: Arguments) throws {
+        guard args.scope == nil || args.scope == "task" || args.scope == "shared" else {
+            throw FloeError.validationFailed("Unknown Linux status scope")
+        }
+    }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        if args.scope == "shared" {
+            guard let sharedPower else {
+                return ToolExecutionOutput(digesting: "status=unsupported\nShared-machine inspection is unavailable", exitStatus: 125)
+            }
+            try context.cancellation.throwIfCancelled()
+            let snapshot = try await sharedPower.inspect()
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            return ToolExecutionOutput(digesting: String(decoding: try encoder.encode(snapshot), as: UTF8.self), exitStatus: 0)
+        }
         guard let environmentID = LinuxLifecycleToolSupport.environmentID(context) else {
             return ToolExecutionOutput(
                 digesting: "status=notOwned\nno environment is in scope for this Linux lifecycle call",
@@ -298,7 +314,7 @@ public struct HardRestartLinuxGuestLifecycleTool: AgentTool {
 
     public static let name = "environment.hardRestartLinux"
     public static let toolDescription =
-        "Hard-restart this environment's Linux guest: stop the ACTUAL TinyEMU instance/threads, close its handles and verify it left and its lease was released, then reacquire a safe lease and boot a fresh instance at the requested shape (omitted dimensions preserve the running or last successful configuration). The environment is never deleted, and a command reboot inside the guest cannot do this. Open interactive terminals block it; managed services are terminated (count reported). A failed stop quarantines and no new guest boots. vcpus=The installed image must support that core count; otherwise the tool explicitly refuses and never silently boots fewer cores. The pool has four cores total, with at most three per guest."
+        "Restart the resolved project's Linux session, preserving its files and dependencies. On the shared ARM64 backend this closes and reopens that project's runner; it is not a physical-machine reboot and does not replay commands. Omitted resource values preserve saved shared settings. A running CPU count supports online updates through environment.startLinux; no restart is needed just to change CPUs. For physical shared-machine shutdown/restart use environment.powerLinux after inspecting and coordinating actual owners. Open interactive terminals block project restart; managed services are terminated and reported. A failed stop retains the quarantine and refuses a replacement."
     public static let parametersJSON = #"""
     {"type":"object","properties":{"vcpus":{"type":"integer","enum":[1,2,3,4],"description":"Requested cores for the new instance. The installed image must support that core count; otherwise the call is refused with the image reason."},"memoryMB":{"type":"integer","enum":[256,512,768,1024,1536,2048],"description":"Requested guest RAM in MiB. Omit to preserve the running or last successful value; a new shared runtime uses 512."}},"additionalProperties":false}
     """#

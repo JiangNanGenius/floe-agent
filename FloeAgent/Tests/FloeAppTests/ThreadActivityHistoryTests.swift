@@ -22,6 +22,7 @@ import UIKit
 import Testing
 @testable import FloeApp
 import FloeModels
+import FloeAgentRuntime
 import FloePersistence
 
 @Suite("FloeApp.ThreadActivityHistory", .serialized)
@@ -48,6 +49,39 @@ struct ThreadActivityHistoryTests {
         #expect(model.animator.displayedText == stopped)
         #expect(!model.isRunning)
         model.stopLiveUpdates()
+    }
+
+    @Test("An orphaned peer notice can be retired only with its exact system mirror")
+    func orphanedCoordinationRetainsNativeRole() {
+        let id = UUID(), conversation = UUID(), run = UUID()
+        let body = "Coordination from another live task"
+        let row = PendingUserInput(id: id, conversationID: conversation, targetRunID: run,
+            content: body, mode: .steer, status: .queued,
+            executionMode: ConversationRunService.taskCoordinationExecutionMode)
+        let mirror = PersistedMessage(id: id, conversationID: conversation, role: "system", content: body,
+            createdAt: Date(), runID: run)
+        #expect(ConversationCenter.isInternalNoticeDelivery(row))
+        #expect(ConversationCenter.isRetirableInternalNoticeRow(row, messages: [mirror]))
+        #expect(!ConversationCenter.isRetirableInternalNoticeRow(row, messages: []))
+        var user = mirror; user.role = "user"
+        #expect(!ConversationCenter.isRetirableInternalNoticeRow(row, messages: [user]))
+        var stale = mirror; stale.runID = UUID()
+        #expect(!ConversationCenter.isRetirableInternalNoticeRow(row, messages: [stale]))
+        var ordinary = row; ordinary.executionMode = "agent"
+        #expect(!ConversationCenter.isInternalNoticeDelivery(ordinary))
+        #expect(!ConversationCenter.isRetirableInternalNoticeRow(ordinary, messages: [user]))
+    }
+
+    @Test("Repeated message rendering preserves selectable text and credential segment identity")
+    func userMessageSegmentsKeepSelectionIdentity() {
+        let text = "Before ⟨credential:00000000-0000-0000-0000-000000000001⟩ after"
+        let first = CredentialMessagePart.parse(text), second = CredentialMessagePart.parse(text)
+        #expect(first.map(\.id) == second.map(\.id))
+        #expect(Set(first.map(\.id)).count == first.count)
+        #expect(first.map(\.value).joined() == text)
+        #expect(first.count == 3)
+        #expect(CredentialMessagePart.parse("ordinary message").map(\.id)
+            == CredentialMessagePart.parse("ordinary message").map(\.id))
     }
 
     // MARK: - Helpers

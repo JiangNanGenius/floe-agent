@@ -271,6 +271,19 @@ final class FullEditorUITextView: UITextView {
     /// true only when the send actually fired, so an unavailable press keeps
     /// the default newline behavior.
     var commandSendHandler: (() -> Bool)?
+    var hardwareReturnBehavior: ComposerHardwareReturnBehavior = .newline
+
+    @discardableResult
+    func handleHardwareReturn(modifiers: UIKeyModifierFlags) -> Bool {
+        switch ComposerSendKeyPolicy.hardwareReturnAction(behavior: hardwareReturnBehavior,
+            modifiers: modifiers, hasMarkedText: markedTextRange != nil) {
+        case .send:
+            let sent = commandSendHandler?() == true
+            return sent || modifiers.intersection([.shift, .control, .alternate, .command]).isEmpty
+        case .newline: insertText("\n"); return true
+        case .system: return false
+        }
+    }
     /// Composer-owned undo manager shared with the inline field.
     var sharedUndoManager: UndoManager?
 
@@ -284,7 +297,7 @@ final class FullEditorUITextView: UITextView {
             guard let key = press.key, key.keyCode == .keyboardReturnOrEnter else { continue }
             let modifiers = key.modifierFlags
                 .intersection([.shift, .control, .alternate, .command])
-            guard modifiers == .command, commandSendHandler?() == true else { continue }
+            guard handleHardwareReturn(modifiers: modifiers) else { continue }
             consumed.insert(press)
         }
         let remaining = presses.subtracting(consumed)
@@ -295,6 +308,8 @@ final class FullEditorUITextView: UITextView {
 
 /// Scrollable UITextView backing the full editor.
 private struct FullEditorTextView: UIViewRepresentable {
+    @AppStorage(ComposerHardwareReturnBehavior.defaultsKey)
+    private var storedHardwareReturn = ComposerHardwareReturnBehavior.newline.rawValue
     @Binding var text: String
     var restoredSelection: NSRange?
     var undoManager: UndoManager?
@@ -323,6 +338,7 @@ private struct FullEditorTextView: UIViewRepresentable {
         view.isFindInteractionEnabled = true
         view.accessibilityIdentifier = "composer.editor.input"
         view.sharedUndoManager = undoManager
+        view.hardwareReturnBehavior = ComposerHardwareReturnBehavior(rawValue: storedHardwareReturn) ?? .newline
         controller.sendAllowed = canSend
         // Text first, selection second: a non-zero caret restored onto an
         // empty view would be clamped to 0 and then silently lost.
@@ -335,6 +351,7 @@ private struct FullEditorTextView: UIViewRepresentable {
     func updateUIView(_ uiView: FullEditorUITextView, context: Context) {
         context.coordinator.parent = self
         uiView.sharedUndoManager = undoManager
+        uiView.hardwareReturnBehavior = ComposerHardwareReturnBehavior(rawValue: storedHardwareReturn) ?? .newline
         // Mirror the composer's live guard; never re-derive a second rule.
         controller.sendAllowed = canSend
         // Never clobber in-flight IME composition or echo the user's edit —

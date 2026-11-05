@@ -77,6 +77,51 @@ final class TaskLifecycleInspectorUITests: XCTestCase {
         attach(app, "ipad-task-files-inspector-collapsed")
     }
 
+    func testCADPackageReopensFromTheTaskFileBrowser() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = launch()
+        defer { app.terminate() }
+        openFixtureThread(app)
+        let files = app.buttons["thread.files.open"].firstMatch
+        XCTAssertTrue(files.waitForExistence(timeout: 15))
+        files.tap()
+        let createMenu = app.buttons["fileTree.createMenu"].firstMatch
+        // The reused simulator legitimately restores its last selected file.
+        // Return through the real preview control instead of erasing state.
+        if !createMenu.waitForExistence(timeout: 2) {
+            let back = app.buttons.matching(NSPredicate(format: "label IN %@", ["返回", "Back"])).firstMatch
+            XCTAssertTrue(back.waitForExistence(timeout: 10)); back.tap()
+        }
+        XCTAssertTrue(createMenu.waitForExistence(timeout: 15))
+        createMenu.tap()
+        app.buttons["fileTree.newCADDocument"].tap()
+        let alert = app.alerts.firstMatch
+        XCTAssertTrue(alert.waitForExistence(timeout: 10))
+        let name = "UITEST-ReopenCAD-" + String(UUID().uuidString.prefix(8))
+        alert.textFields.firstMatch.tap()
+        alert.textFields.firstMatch.typeText(name)
+        alert.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "Create", "创建")).firstMatch.tap()
+        // The outer iPad inspector's accessibility identifier propagates to
+        // its descendants. Use the actual native view-cube and editor controls
+        // instead of an identifier overwritten by that unchanged container.
+        func assertNativeWorkbench() {
+            XCTAssertTrue(app.staticTexts["Front"].firstMatch.waitForExistence(timeout: 30))
+            XCTAssertTrue(app.staticTexts["Right"].firstMatch.exists)
+            XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label IN %@", ["草图", "Sketch"])).firstMatch.exists)
+            XCTAssertTrue(app.staticTexts["\(name).floecad"].firstMatch.exists)
+        }
+        assertNativeWorkbench()
+        let identifiedBack = app.buttons["fileInspector.back"].firstMatch
+        let back = identifiedBack.exists ? identifiedBack : app.buttons.matching(NSPredicate(format: "label IN %@", ["返回", "Back"])).firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 10)); back.tap()
+        XCTAssertTrue(app.staticTexts["Front"].firstMatch.waitForNonExistence(timeout: 10))
+        let row = app.buttons.matching(NSPredicate(format: "label == %@", "\(name).floecad")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 15), "the package must be a document row")
+        row.tap()
+        assertNativeWorkbench()
+        attach(app, "task-file-browser-native-cad-reopen")
+    }
+
     func testDelegateCardOpensTheSpecificChildTranscriptAndExpandsTheFinding() {
         let app = launch()
         openFixtureThread(app)

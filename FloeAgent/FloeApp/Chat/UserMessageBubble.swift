@@ -53,6 +53,7 @@ struct AttachmentChipRow: View {
     let items: [AttachmentChipItem]
     var alignment: HorizontalAlignment = .trailing
     var onOpen: ((AttachmentChipItem) -> Void)? = nil
+    var onDesign: ((AttachmentChipItem) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: alignment, spacing: 4) {
@@ -67,6 +68,18 @@ struct AttachmentChipRow: View {
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .contextMenu {
+                    if let onDesign, let id = item.attachmentID {
+                        Button { onDesign(item) } label: {
+                            Label {
+                                Text("design.owner.from_attachment_named \(item.name)")
+                            } icon: {
+                                Image(systemName: "square.on.square.dashed")
+                            }
+                        }
+                        .accessibilityIdentifier("design.owner.fromAttachment.\(id.uuidString)")
+                    }
+                }
                 .disabled(onOpen == nil)
                 .accessibilityLabel(Text("chat.attachment.open_named \(item.name)"))
                 .accessibilityIdentifier("thread.attachment.\(item.id)")
@@ -81,6 +94,7 @@ struct UserMessageBubble: View {
     /// Real attachment parts of the message (names + file/image kind).
     var attachments: [AttachmentChipItem] = []
     var onOpenAttachment: ((AttachmentChipItem) -> Void)? = nil
+    var onDesignAttachment: ((AttachmentChipItem) -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .top) {
@@ -90,7 +104,7 @@ struct UserMessageBubble: View {
                     credentialAwareContent
                 }
                 if !attachments.isEmpty {
-                    AttachmentChipRow(items: attachments, alignment: .trailing, onOpen: onOpenAttachment)
+                    AttachmentChipRow(items: attachments, alignment: .trailing, onOpen: onOpenAttachment, onDesign: onDesignAttachment)
                 }
             }
         }
@@ -136,16 +150,16 @@ struct UserMessageBubble: View {
     }
 }
 
-private struct CredentialMessagePart: Identifiable {
+struct CredentialMessagePart: Identifiable {
     enum Kind { case text, credential }
-    let id = UUID()
+    let id: Int
     let kind: Kind
     let value: String
 
     static func parse(_ text: String) -> [Self] {
         let pattern = #"⟨credential:[0-9A-Fa-f-]{36}⟩"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return [.init(kind: .text, value: text)]
+            return [.init(id: 0, kind: .text, value: text)]
         }
         let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
         var result: [Self] = []
@@ -153,15 +167,15 @@ private struct CredentialMessagePart: Identifiable {
         for match in regex.matches(in: text, range: nsRange) {
             guard let range = Range(match.range, in: text) else { continue }
             if cursor < range.lowerBound {
-                result.append(.init(kind: .text, value: String(text[cursor..<range.lowerBound])))
+                result.append(.init(id: result.count, kind: .text, value: String(text[cursor..<range.lowerBound])))
             }
-            result.append(.init(kind: .credential, value: String(text[range])))
+            result.append(.init(id: result.count, kind: .credential, value: String(text[range])))
             cursor = range.upperBound
         }
         if cursor < text.endIndex {
-            result.append(.init(kind: .text, value: String(text[cursor...])))
+            result.append(.init(id: result.count, kind: .text, value: String(text[cursor...])))
         }
-        return result.isEmpty ? [.init(kind: .text, value: text)] : result
+        return result.isEmpty ? [.init(id: 0, kind: .text, value: text)] : result
     }
 }
 #endif

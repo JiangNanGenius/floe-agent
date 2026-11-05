@@ -30,7 +30,8 @@ public func registerExecutionTools(
     webSearchService: WebSearchService = WebSearchService(),
     webSearchAvailability: @escaping @Sendable (String) -> Bool = { _ in false },
     linuxPreparation: LinuxPreparationHandler? = nil,
-    linuxLifecycle: (any LinuxGuestLifecycleControlling)? = nil
+    linuxLifecycle: (any LinuxGuestLifecycleControlling)? = nil,
+    linuxSharedPower: LinuxSharedPowerService? = nil
 ) -> any ScriptExecutionService {
     // Compile-time catalog descriptors.
     if sshCommandService != nil {
@@ -197,11 +198,15 @@ public func registerExecutionTools(
         ToolCatalog.register(HardRestartLinuxGuestLifecycleTool.self)
         ToolCatalog.register(RepairLinuxGuestLifecycleTool.self)
         registry.register(StartLinuxGuestLifecycleTool(lifecycle: linuxLifecycle))
-        registry.register(LinuxGuestStatusLifecycleTool(lifecycle: linuxLifecycle))
+        registry.register(LinuxGuestStatusLifecycleTool(lifecycle: linuxLifecycle, sharedPower: linuxSharedPower))
         registry.register(StopLinuxGuestLifecycleTool(lifecycle: linuxLifecycle))
         registry.register(SoftRestartLinuxGuestLifecycleTool(lifecycle: linuxLifecycle))
         registry.register(HardRestartLinuxGuestLifecycleTool(lifecycle: linuxLifecycle))
         registry.register(RepairLinuxGuestLifecycleTool(lifecycle: linuxLifecycle))
+    }
+    if let linuxSharedPower {
+        ToolCatalog.register(LinuxSharedPowerTool.self)
+        registry.register(LinuxSharedPowerTool(service: linuxSharedPower))
     }
     return service
 }

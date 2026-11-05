@@ -2,6 +2,50 @@ import XCTest
 
 @MainActor
 final class CloudRecognitionSettingsUITests: XCTestCase {
+    func testGeneralHardwareReturnChoicePersists() {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-test-skip-onboarding", "-ui-testing", "-ui-testing-ipad",
+                               "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        func openGeneral() {
+            app.launch()
+            let settings = app.buttons["sidebar.settings"].firstMatch
+            XCTAssertTrue(settings.waitForExistence(timeout: 15)); settings.tap()
+            let general = app.descendants(matching: .any)["settings.section.general"].firstMatch
+            XCTAssertTrue(general.waitForExistence(timeout: 10)); general.tap()
+        }
+        func row() -> XCUIElement { app.buttons["settings.general.hardwareReturn"].firstMatch }
+        func revealRow() {
+            for _ in 0..<6 {
+                if row().exists && row().isHittable { return }
+                guard let form = app.collectionViews.allElementsBoundByIndex.last(where: {
+                    $0.exists && $0.isHittable && $0.frame.width > 300
+                }) else { break }
+                form.swipeUp()
+            }
+        }
+        func choose(_ label: String) {
+            revealRow()
+            XCTAssertTrue(row().waitForExistence(timeout: 10)); row().tap()
+            let item = app.buttons[label].firstMatch
+            XCTAssertTrue(item.waitForExistence(timeout: 5)); item.tap()
+        }
+        func assertValue(_ value: String) {
+            let match = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", value, value), object: row())
+            XCTAssertEqual(XCTWaiter.wait(for: [match], timeout: 5), .completed)
+        }
+        openGeneral(); revealRow()
+        XCTAssertTrue(row().waitForExistence(timeout: 10))
+        let original = (row().value as? String ?? row().label).contains("Send") ? "Send" : "New Line"
+        defer { if row().exists { choose(original) }; app.terminate() }
+        choose("Send"); assertValue("Send")
+        app.terminate(); openGeneral(); revealRow(); assertValue("Send")
+        let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        image.name = "General hardware Return preference"; image.lifetime = .keepAlways; add(image)
+        choose("New Line"); assertValue("New Line")
+    }
+
     func testEveryProviderOpensAFormAndCancelLeavesTheSavedListUnchanged() {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .landscapeLeft

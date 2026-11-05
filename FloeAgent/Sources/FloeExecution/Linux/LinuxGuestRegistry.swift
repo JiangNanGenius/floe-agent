@@ -87,6 +87,8 @@ public protocol LinuxGuestSessionCreating: Sendable {
     func makeSession(descriptor: LinuxGuestEnvironmentDescriptor, image: LinuxGuestImage,
                      imageDirectory: URL?, limits: LinuxGuestLimits) throws -> LinuxGuestSessionHandle
     func shutdown() async
+    func sharedMachinePhase() async -> LinuxSharedMachinePhase?
+    func powerOffSharedMachine() async throws
     func restoreInitialState(image: LinuxGuestImage, imageDirectory: URL) async throws
 }
 
@@ -101,6 +103,10 @@ public extension LinuxGuestSessionCreating {
         try makeSession(descriptor: descriptor, image: image, limits: limits)
     }
     func shutdown() async {}
+    func sharedMachinePhase() async -> LinuxSharedMachinePhase? { nil }
+    func powerOffSharedMachine() async throws {
+        throw LinuxGuestError.invalidConfiguration("This runtime cannot verify shared-machine power off")
+    }
     func restoreInitialState(image: LinuxGuestImage, imageDirectory: URL) async throws {
         throw LinuxGuestError.invalidConfiguration("This runtime does not support restoring its initial state")
     }
@@ -2824,6 +2830,35 @@ public actor LinuxGuestRegistry {
         await factory.shutdown()
     }
 
+    public func sharedMachinePhase() async -> LinuxSharedMachinePhase? {
+        await factory.sharedMachinePhase()
+    }
+
+    public func stopAll(allowing observedActivities: [LinuxGuestActivityDetail]) async throws -> [String] {
+        guard factory.usesResidentMachine, !restoringInitialState else {
+            throw LinuxGuestError.guestBusy(environmentID: "shared")
+        }
+        restoringInitialState = true
+        defer { restoringInitialState = false }
+        let observed = Dictionary(uniqueKeysWithValues: observedActivities.map { ($0.environmentID, $0) })
+        let current = await guestActivityDetails()
+        let active = Set(sessions.keys).union(startingEnvironments).union(quarantinedEnvironments)
+        guard active.isSubset(of: Set(observed.keys)), current.allSatisfy({ actual in
+            observed[actual.environmentID].map { actual.hasNoNewWork(since: $0) } == true
+        }) else {
+            throw LinuxGuestError.invalidConfiguration("Shared runtime ownership changed; inspect and coordinate with its current owners again")
+        }
+        for id in active { await stop(environmentID: id) }
+        guard sessions.isEmpty, startingEnvironments.isEmpty, quarantinedEnvironments.isEmpty else {
+            throw LinuxGuestError.stopFailed(environmentID: "shared", detail: "Some running work did not stop; the machine and files were retained")
+        }
+        try await factory.powerOffSharedMachine()
+        guard await factory.sharedMachinePhase() == .poweredOff else {
+            throw LinuxGuestError.stopFailed(environmentID: "shared", detail: "Physical power off was not confirmed")
+        }
+        return active.sorted()
+    }
+
     public func sharedConfiguration() -> LinuxGuestLifecycleConfig? { factory.preferredSharedConfiguration }
 
     public func configureSharedMachine(_ configuration: LinuxGuestLifecycleConfig) async throws {
@@ -4042,6 +4077,16 @@ public struct LinuxGuestCommandService: LinuxCommandRunning, LinuxGuestControlli
     }
 
     public func stopSharedGuest() async { await shutdown() }
+
+    public func sharedMachinePhase() async -> LinuxSharedMachinePhase? {
+        await registry.sharedMachinePhase()
+    }
+
+    public func stopSharedGuest(allowing observedActivities: [LinuxGuestActivityDetail]) async throws -> [String] {
+        let stopped = try await registry.stopAll(allowing: observedActivities)
+        for id in stopped { await localServices.environmentDidStop(environmentID: id) }
+        return stopped
+    }
 
     public func restoreInitialState(imageID: String,
         prepareForReset: @escaping @Sendable () async throws -> Void) async throws -> LinuxGuestInitialResetReceipt {

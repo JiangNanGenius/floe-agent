@@ -26,6 +26,7 @@ struct AssistantMessageView: View {
     /// (image parts keep the image icon), never through a second path.
     var attachments: [AttachmentChipItem] = []
     var onOpenAttachment: ((AttachmentChipItem) -> Void)? = nil
+    var onDesignAttachment: ((AttachmentChipItem) -> Void)? = nil
 
     @EnvironmentObject private var speechService: SpeechService
     @Environment(\.continuousVoiceActive) private var continuousVoiceActive
@@ -37,7 +38,7 @@ struct AssistantMessageView: View {
         VStack(alignment: .leading, spacing: 6) {
             MarkdownRendererView(source: text, isStreaming: isStreaming)
             if !attachments.isEmpty {
-                AttachmentChipRow(items: attachments, alignment: .leading, onOpen: onOpenAttachment)
+                AttachmentChipRow(items: attachments, alignment: .leading, onOpen: onOpenAttachment, onDesign: onDesignAttachment)
             }
             if !isStreaming, !text.isEmpty {
                 HStack(spacing: 12) {

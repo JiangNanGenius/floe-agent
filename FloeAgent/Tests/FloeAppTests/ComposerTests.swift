@@ -404,6 +404,67 @@ struct ComposerDraftStoreTests {
 @MainActor
 struct ComposerEditingPrimitivesTests {
 
+    @Test("Hardware Return follows the saved choice; Shift and IME keep their own semantics")
+    func hardwareReturnChoicePolicy() {
+        for behavior in ComposerHardwareReturnBehavior.allCases {
+            #expect(ComposerSendKeyPolicy.hardwareReturnAction(behavior: behavior, modifiers: .shift, hasMarkedText: false) == .newline)
+            #expect(ComposerSendKeyPolicy.hardwareReturnAction(behavior: behavior, modifiers: .command, hasMarkedText: false) == .send)
+            let modifiersToCheck: [UIKeyModifierFlags] = [[], .shift, .command]
+            for modifiers in modifiersToCheck {
+                #expect(ComposerSendKeyPolicy.hardwareReturnAction(behavior: behavior, modifiers: modifiers, hasMarkedText: true) == .system)
+            }
+        }
+        #expect(ComposerSendKeyPolicy.hardwareReturnAction(behavior: .newline, modifiers: [], hasMarkedText: false) == .newline)
+        #expect(ComposerSendKeyPolicy.hardwareReturnAction(behavior: .send, modifiers: [], hasMarkedText: false) == .send)
+        #expect(ComposerSendKeyPolicy.hardwareReturnAction(behavior: .send, modifiers: .alphaShift, hasMarkedText: false) == .send)
+    }
+
+    @Test("Real inline text input sends once and Shift inserts a line even on a software-send surface")
+    func inlineHardwareReturnDrivesNativeTextView() {
+        var draft = "draft", sends = 0
+        let field = ComposerReturnField(text: Binding(get: { draft }, set: { draft = $0 }),
+            placeholder: "", canSend: true, softwareReturnSends: true, onReturn: { sends += 1 })
+        let coordinator = ComposerReturnField.Coordinator(field: field)
+        let view = HardwareReturnTextView.makeComposerTextView()
+        field.configure(view: view, coordinator: coordinator)
+        // Observe the native key-routing callback. The real coordinator's
+        // software-return path still points at onReturn, so an accidental
+        // Shift-to-send falls through to a second observable send and fails.
+        view.commandReturnHandler = { sends += 1; return true }
+        view.text = draft; view.selectedRange = NSRange(location: draft.utf16.count, length: 0)
+        view.hardwareReturnBehavior = .send
+        #expect(view.handleHardwareReturn(modifiers: []))
+        #expect(sends == 1)
+        #expect(view.text == "draft")
+        #expect(view.handleHardwareReturn(modifiers: .shift))
+        #expect(sends == 1, "Shift Return must bypass software-return sending")
+        #expect(view.text == "draft\n")
+        view.markedTextProbe = { true }
+        #expect(!view.handleHardwareReturn(modifiers: []))
+        #expect(sends == 1)
+        view.markedTextProbe = nil
+        view.commandReturnHandler = { false }
+        let before = view.text
+        #expect(view.handleHardwareReturn(modifiers: []))
+        #expect(view.text == before, "A disabled send must neither send nor insert an unexpected line")
+    }
+
+    @Test("The expanded composer uses the same hardware Return choice")
+    func expandedHardwareReturnDrivesNativeTextView() {
+        let view = FullEditorUITextView()
+        var sends = 0
+        view.text = "expanded"; view.selectedRange = NSRange(location: 8, length: 0)
+        view.hardwareReturnBehavior = .send
+        view.commandSendHandler = { sends += 1; return true }
+        #expect(view.handleHardwareReturn(modifiers: []))
+        #expect(sends == 1 && view.text == "expanded")
+        #expect(view.handleHardwareReturn(modifiers: .shift))
+        #expect(sends == 1 && view.text == "expanded\n")
+        view.hardwareReturnBehavior = .newline
+        #expect(view.handleHardwareReturn(modifiers: []))
+        #expect(view.text == "expanded\n\n")
+    }
+
     @Test("Cmd+Return sends only when allowed and no marked text is pending")
     func commandReturnPolicy() {
         #expect(ComposerSendKeyPolicy.commandReturnSends(canSend: true, hasMarkedText: false))

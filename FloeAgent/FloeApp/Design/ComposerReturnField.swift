@@ -9,7 +9,7 @@
 // third of the height available to the hosting page — then switches to
 // internal scrolling with the caret kept visible.
 //
-// Keyboard contract (both keyboards): plain Return inserts a newline.
+// Hardware Return follows the saved choice; Shift+Return always adds a line.
 // Hardware Cmd+Return sends, and only while sending is allowed and no
 // input method composition is in flight — a half-confirmed IME candidate
 // can never trigger a send. Callers that previously used
@@ -71,6 +71,26 @@ final class HardwareReturnTextView: UITextView {
     /// Asks whether a Cmd+Return press may send right now. Returns false
     /// when sending is disabled or an input method still has marked text.
     var commandReturnHandler: (() -> Bool)?
+    var hardwareReturnBehavior: ComposerHardwareReturnBehavior = .newline
+    private(set) var isHandlingHardwareNewline = false
+    private(set) var isHandlingHardwareReturn = false
+
+    @discardableResult
+    func handleHardwareReturn(modifiers: UIKeyModifierFlags) -> Bool {
+        switch ComposerSendKeyPolicy.hardwareReturnAction(behavior: hardwareReturnBehavior,
+            modifiers: modifiers, hasMarkedText: hasActiveComposition) {
+        case .send:
+            let sent = commandReturnHandler?() == true
+            // Disabled plain-Return send does not unexpectedly add a line.
+            return sent || modifiers.intersection([.shift, .control, .alternate, .command]).isEmpty
+        case .newline:
+            isHandlingHardwareNewline = true
+            defer { isHandlingHardwareNewline = false }
+            insertText("\n")
+            return true
+        case .system: return false
+        }
+    }
 
     /// A composer-owned undo manager shared with the full editor, so
     /// undo/redo continues across the inline ↔ expanded surfaces instead of
@@ -196,6 +216,8 @@ final class HardwareReturnTextView: UITextView {
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        isHandlingHardwareReturn = presses.contains { $0.key?.keyCode == .keyboardReturnOrEnter }
+        defer { isHandlingHardwareReturn = false }
         var consumed = Set<UIPress>()
         for press in presses {
             guard let key = press.key, key.keyCode == .keyboardReturnOrEnter else { continue }
@@ -203,7 +225,7 @@ final class HardwareReturnTextView: UITextView {
             // four editing modifiers decide whether this is Cmd+Return.
             let modifiers = key.modifierFlags
                 .intersection([.shift, .control, .alternate, .command])
-            guard modifiers == .command, commandReturnHandler?() == true else { continue }
+            guard handleHardwareReturn(modifiers: modifiers) else { continue }
             consumed.insert(press)
         }
         let remaining = presses.subtracting(consumed)
@@ -220,6 +242,8 @@ final class HardwareReturnTextView: UITextView {
 /// `softwareReturnSends` is true (the surfaces that previously used
 /// `.submitLabel(.send)`).
 struct ComposerReturnField: UIViewRepresentable {
+    @AppStorage(ComposerHardwareReturnBehavior.defaultsKey)
+    private var storedHardwareReturn = ComposerHardwareReturnBehavior.newline.rawValue
     @Binding var text: String
     let placeholder: String
     /// Mirrors the send button's enabled state; when false, hardware
@@ -309,6 +333,7 @@ struct ComposerReturnField: UIViewRepresentable {
     /// order). `makeUIView` and the behavior tests drive exactly this
     /// production setup, so tests never re-state the configuration.
     func configure(view: HardwareReturnTextView, coordinator: Coordinator) {
+        view.hardwareReturnBehavior = ComposerHardwareReturnBehavior(rawValue: storedHardwareReturn) ?? .newline
         view.delegate = coordinator
         view.backgroundColor = .clear
         view.font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: view.traitCollection)
@@ -356,6 +381,7 @@ struct ComposerReturnField: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: HardwareReturnTextView, context: Context) {
+        uiView.hardwareReturnBehavior = ComposerHardwareReturnBehavior(rawValue: storedHardwareReturn) ?? .newline
         // Coordinators outlive individual SwiftUI value snapshots. Refresh
         // the snapshot so send availability and the callback track the
         // current draft/model state instead of the initial empty field.
@@ -928,7 +954,9 @@ struct ComposerReturnField: UIViewRepresentable {
             shouldChangeTextIn range: NSRange,
             replacementText text: String
         ) -> Bool {
-            guard text == "\n", textView.markedTextRange == nil else { return true }
+            guard text == "\n", textView.markedTextRange == nil,
+                  (textView as? HardwareReturnTextView)?.isHandlingHardwareNewline != true,
+                  (textView as? HardwareReturnTextView)?.isHandlingHardwareReturn != true else { return true }
             // Sending moved to Cmd+Return; the software return key sends
             // only on the surfaces that opted in. Everything else — plain
             // Return, Shift+Return, IME commit — inserts a newline.

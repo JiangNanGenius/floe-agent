@@ -194,25 +194,33 @@ public extension AgentEventSink {
 }
 
 /// Input accepted for delivery at a safe model/tool step boundary.
+public enum RuntimeSteerOrigin: Sendable, Hashable {
+    case user
+    case taskCoordination(senderRunID: UUID)
+}
+
 public struct RuntimeSteerInput: Sendable, Hashable, Identifiable {
     public var id: UUID
     public var content: String
     public var images: [ConversationImagePart]
     public var attachments: [AttachmentRef]
     public var createdAt: Date
+    public var origin: RuntimeSteerOrigin
 
     public init(
         id: UUID,
         content: String,
         images: [ConversationImagePart] = [],
         attachments: [AttachmentRef] = [],
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        origin: RuntimeSteerOrigin = .user
     ) {
         self.id = id
         self.content = content
         self.images = images
         self.attachments = attachments
         self.createdAt = createdAt
+        self.origin = origin
     }
 }
 
@@ -2037,7 +2045,7 @@ public actor FloeAgentRuntime {
             acceptedSteerIDs.insert(input.id)
             // Fresh user guidance is explicit progress. Previous unchanged
             // retry evidence must not block the newly steered route.
-            loopGuard.advanceProgressEpoch()
+            if case .user = input.origin { loopGuard.advanceProgressEpoch() }
             return .accepted
         case .idle, .cancelling, .checkpointed, .verifying, .completed, .failed:
             return .rejected(reason: "The target run is no longer accepting guidance")
@@ -2198,6 +2206,7 @@ public actor FloeAgentRuntime {
         "environment.softRestartLinux",
         "environment.hardRestartLinux",
         "environment.repairLinux",
+        "environment.powerLinux",
     ]
 
     /// Runtime-issued stable identity of the client that owns a call: the
@@ -2341,7 +2350,7 @@ public actor FloeAgentRuntime {
     /// subsequent turn by setting `modelTurnContinuationRequested`; it must
     /// never call this method recursively.
     private func runSingleModelTurn() async {
-        let hasFreshSteer = !pendingSteers.isEmpty
+        let hasFreshSteer = pendingSteers.contains { if case .user = $0.origin { return true }; return false }
         if hasFreshSteer, !streamText.isEmpty {
             messages.append(ConversationMessage(role: "assistant", content: modelInputProjection?.redacted(streamText) ?? streamText, reasoningContent: modelInputProjection?.redacted(responseReasoning) ?? responseReasoning))
             await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
@@ -3576,10 +3585,16 @@ public actor FloeAgentRuntime {
         let inputs = pendingSteers
         pendingSteers.removeAll(keepingCapacity: true)
         for input in inputs {
+            let content: String
+            if case .taskCoordination(let sender) = input.origin {
+                content = TaskCoordinationProjection.modelContent(senderRunID: sender, content: input.content)
+            } else {
+                content = input.content
+            }
             messages.append(ConversationMessage(
                 id: input.id,
                 role: "user",
-                content: input.content,
+                content: content,
                 createdAt: input.createdAt,
                 images: input.images
             ))

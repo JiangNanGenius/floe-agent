@@ -133,6 +133,7 @@ struct FileInspectorView: View {
                     }
                     .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                     .accessibilityLabel("inspector.back")
+                    .accessibilityIdentifier("fileInspector.back")
                     Text((previewPath as NSString).lastPathComponent)
                         .font(FloeTheme.Typography.section)
                         .lineLimit(1)

@@ -713,7 +713,7 @@ struct ThreadDetailView: View {
                 MessageBubble(message: message, onOpenAttachment: { item in
                     selectedAttachment = ChatAttachmentOpenRequest(conversationID: message.conversationID,
                         messageID: message.id, attachmentID: item.attachmentID)
-                }, onFind: beginSearch)
+                })
             }
 
         case .assistantMessage(let text, let idSuffix):
@@ -747,7 +747,7 @@ struct ThreadDetailView: View {
                     onOpenAttachment: { item in
                         selectedAttachment = ChatAttachmentOpenRequest(conversationID: persisted.conversationID,
                             messageID: persisted.id, attachmentID: item.attachmentID)
-                    }, onFind: beginSearch)
+                    })
             } else {
                 AssistantMessageView(
                     text: text, isStreaming: false,
@@ -759,14 +759,6 @@ struct ThreadDetailView: View {
                     speechOwnerID: UUID(uuidString: idSuffix),
                     onSaveToNotes: onSaveToNotes
                 )
-                .contextMenu {
-                    Button {
-                        beginSearch()
-                    } label: {
-                        Label(ThreadSearchCopy.placeholder, systemImage: "magnifyingglass")
-                    }
-                    .accessibilityIdentifier("thread.find.fromMessage")
-                }
             }
 
         case .event(let event):
@@ -1823,8 +1815,6 @@ private struct MessageBubble: View {
     var displayedText: String? = nil
     var onSaveToNotes: ((String) -> Void)? = nil
     var onOpenAttachment: ((AttachmentChipItem) -> Void)? = nil
-    var onFind: (() -> Void)? = nil
-    @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var router: AppRouter
     /// Explicit design entrance: one chosen attachment of this message as a typed
     /// chat-attachment target (original task + exact attachment identity).
@@ -1844,53 +1834,27 @@ private struct MessageBubble: View {
             attachmentID: attachmentID)
     }
 
-    private var attachmentDesignEntries: [(id: UUID, name: String)] {
-        message.parts.compactMap { part in
-            guard part.kind == .file || part.kind == .image,
-                  let attachmentID = part.attachmentID else { return nil }
-            // Same name resolution as the visible attachment chips.
-            let name = part.metadata["name"] ?? part.text ?? attachmentID.uuidString
-            return (attachmentID, name)
-        }
+    private func openAttachmentDesign(_ item: AttachmentChipItem) {
+        guard let id = item.attachmentID else { return }
+        designTarget = attachmentDesignTarget(attachmentID: id)
     }
 
     var body: some View {
         Group {
             if message.role == "user" {
-                UserMessageBubble(text: displayedText ?? message.content, attachments: attachmentItems, onOpenAttachment: onOpenAttachment)
+                UserMessageBubble(text: displayedText ?? message.content, attachments: attachmentItems,
+                    onOpenAttachment: onOpenAttachment, onDesignAttachment: openAttachmentDesign)
             } else {
                 AssistantMessageView(
                     text: displayedText ?? message.content, isStreaming: false,
                     speechOwnerID: message.id,
-                    onSaveToNotes: onSaveToNotes, attachments: attachmentItems, onOpenAttachment: onOpenAttachment)
+                    onSaveToNotes: onSaveToNotes, attachments: attachmentItems,
+                    onOpenAttachment: onOpenAttachment, onDesignAttachment: openAttachmentDesign)
             }
         }
-        .contextMenu {
-            if let onFind {
-                Button {
-                    onFind()
-                } label: {
-                    Label(ThreadSearchCopy.placeholder, systemImage: "magnifyingglass")
-                }
-                .accessibilityIdentifier("thread.find.fromMessage")
-            }
-            // Per-attachment explicit entry/selection: with several
-            // attachments each one gets its own design item bound to its
-            // exact attachment identity.
-            ForEach(attachmentDesignEntries, id: \.id) { entry in
-                Button {
-                    designTarget = attachmentDesignTarget(attachmentID: entry.id)
-                } label: {
-                    Label {
-                        Text("design.owner.from_attachment_named \(entry.name)")
-                    } icon: {
-                        Image(systemName: "square.on.square.dashed")
-                    }
-                }
-                .accessibilityIdentifier("design.owner.fromAttachment.\(entry.id.uuidString)")
-            }
-        }
-.onChange(of: designTarget, initial: false) { _, target in
+        // Keep the text-selection gesture owned by the rendered text.
+        // Attachment actions live on each attachment chip, not the message.
+        .onChange(of: designTarget, initial: false) { _, target in
             // The per-attachment design entry opens the SAME conversation's
             // design page (preview + conversation), never a second chat and
             // never the old form — presented from the stable app root.

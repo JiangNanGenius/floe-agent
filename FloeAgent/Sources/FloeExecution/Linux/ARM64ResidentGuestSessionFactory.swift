@@ -45,6 +45,8 @@ public final class ARM64ResidentGuestSessionFactory: LinuxGuestSessionCreating, 
     }
 
     public func shutdown() async { await resident.shutdown() }
+    public func sharedMachinePhase() async -> LinuxSharedMachinePhase? { await resident.machinePhase() }
+    public func powerOffSharedMachine() async throws { try await resident.powerOff() }
     public func configureSharedMachine(_ configuration: LinuxGuestLifecycleConfig) async throws {
         try await resident.configure(configuration)
     }
@@ -343,12 +345,27 @@ private actor ARM64ResidentGuestOwner {
     }
 
     func shutdown() async {
-        do { try await acquireLifecycle(cancellable: false) }
-        catch { return }
+        do { try await powerOff() }
+        catch { FloeLogger(category: .tools).warning("ARM64 machine stop incomplete; disk retained") }
+    }
+
+    func machinePhase() -> LinuxSharedMachinePhase {
+        guard let machine else { return .poweredOff }
+        switch machine.state {
+        case .idle, .stopped: return .poweredOff
+        case .starting: return .starting
+        case .running: return .running
+        case .stopping: return .stopping
+        case .failed: return .failed
+        }
+    }
+
+    func powerOff() async throws {
+        try await acquireLifecycle(cancellable: false)
         defer { releaseLifecycle() }
         for project in Array(projects.values) { await closeUnlocked(project.lease) }
-        do { try await stopPhysicalMachine() }
-        catch { FloeLogger(category: .tools).warning("ARM64 machine stop incomplete; disk retained") }
+        guard projects.isEmpty else { throw LinuxGuestError.guestBusy(environmentID: "shared") }
+        try await stopPhysicalMachine()
     }
 
     func restoreInitialState(image: LinuxGuestImage, directory: URL) async throws {

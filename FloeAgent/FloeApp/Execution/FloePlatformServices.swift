@@ -594,16 +594,20 @@ final class FloePlatformServices: @unchecked Sendable {
         }
         _ = try await EnvironmentPackageJobs.shared.runShared(id: "linux-shared-stop",
             title: String(localized: "execution.shared.stopping"), cancellation: CancellationToken()) { _, _ in
-            let ids = await guests.runtimeStates().map(\.environmentID)
-            await guests.stopSharedGuest()
+            let observed = await guests.guestActivityDetails()
+            let stopped = try await guests.stopSharedGuest(allowing: observed)
             guard await guests.runtimeStates().allSatisfy({ !$0.running }) else {
                 throw FloeError.validationFailed(String(localized: "execution.shared.stop_failed"))
             }
-            for id in ids {
-                await LinuxPortForwardCenter.shared.guestStopped(environmentID: id)
-                await self.reportLinuxRuntimeEndedIfStopped(guests, environmentID: id)
-            }
+            await self.sharedLinuxRuntimeDidStop(guests: guests, environmentIDs: stopped)
             return String(localized: "execution.shared.stopped")
+        }
+    }
+
+    func sharedLinuxRuntimeDidStop(guests: any LinuxGuestControlling, environmentIDs: [String]) async {
+        for id in environmentIDs {
+            await LinuxPortForwardCenter.shared.guestStopped(environmentID: id)
+            await reportLinuxRuntimeEndedIfStopped(guests, environmentID: id)
         }
     }
 
