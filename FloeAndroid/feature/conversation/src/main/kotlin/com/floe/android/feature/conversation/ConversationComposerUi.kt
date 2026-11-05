@@ -95,6 +95,7 @@ fun ConversationComposerSection(
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
     paneGeometry: ConversationPaneGeometry? = null,
+    onOpenExecutionTarget: (() -> Unit)? = null,
 ) {
     val state = holder.snapshot.value ?: return
     val attachDescription = stringResource(R.string.composer_attach)
@@ -203,7 +204,7 @@ fun ConversationComposerSection(
             } else {
                 null
             },
-            chips = { ConversationContextChips(holder, state, offerFullEditor) },
+            chips = { ConversationContextChips(holder, state, offerFullEditor, onOpenExecutionTarget) },
         )
     }
 }
@@ -297,6 +298,7 @@ private fun RowScope.ConversationContextChips(
     holder: ConversationFlowHolder,
     state: ThreadUiState,
     offerFullEditor: Boolean,
+    onOpenExecutionTarget: (() -> Unit)?,
 ) {
     // ⇄ composer.expand entry: appears only while the draft no longer fits
     // the inline field's line cap (the iOS isInlineFieldOverflowing rule).
@@ -374,19 +376,19 @@ private fun RowScope.ConversationContextChips(
             }
         }
 
-        // Workspace + target chips report (never change) the locked scope.
+        // Open existing scoped surfaces; tapping a chip never reassigns the task.
         val projectName = state.projects.firstOrNull { it.id == holder.selectedProjectId.value }?.name
             ?: stringResource(R.string.composer_project_none)
         FloeComposerChip(
             icon = FloeIcons.Folder,
             text = projectName,
-            onClick = { /* ⇄ projectSelectionLocked: thread scope is immutable */ },
+            onClick = holder::requestWorkspaceFilesInspector,
             description = stringResource(R.string.composer_project),
         )
-        FloeComposerChip(
+        if (onOpenExecutionTarget != null) FloeComposerChip(
             icon = FloeIcons.DeviceLocal,
-            text = stringResource(R.string.composer_target_local),
-            onClick = { },
+            text = stringResource(R.string.composer_target),
+            onClick = onOpenExecutionTarget,
             description = stringResource(R.string.composer_target),
         )
     }

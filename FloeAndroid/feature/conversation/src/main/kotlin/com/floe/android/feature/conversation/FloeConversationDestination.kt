@@ -160,6 +160,7 @@ fun FloeConversationDestination(
                     onSend = { holder.send() },
                     onStop = { holder.cancel() },
                     paneGeometry = paneGeometry,
+                    onOpenExecutionTarget = onOpenExecutionTarget,
                 )
             }
         }

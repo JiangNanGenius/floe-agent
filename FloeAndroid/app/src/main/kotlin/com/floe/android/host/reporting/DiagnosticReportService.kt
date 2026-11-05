@@ -217,6 +217,12 @@ internal class DiagnosticReportService(private val context: Context) {
                     }
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: ReportReceiptRejected) {
+                synchronized(gate) {
+                    if (file(row.getString("id")).exists())
+                        save(row.put("state", "failed").put("error", "invalid_receipt"))
+                }
+            }
             catch (failure: ReportRejected) {
                 synchronized(gate) {
                     if (file(row.getString("id")).exists()) save(row.put("state", "failed").put("error", "http_${failure.status}"))
@@ -269,13 +275,21 @@ internal class DiagnosticReportService(private val context: Context) {
                 }
                 output.toString("UTF-8")
             }
-            val receipt = JSONObject(data)
+            val receipt = try { JSONObject(data) } catch (_: org.json.JSONException) { throw ReportReceiptRejected() }
             val reportID = receipt.optString("report_id")
             val eventID = row.getJSONObject("manifest").getJSONArray("events").getJSONObject(0).getString("client_event_id")
-            val acknowledged = listOf("accepted", "duplicates").any { key ->
-                receipt.optJSONArray(key)?.let { ids -> (0 until ids.length()).any { ids.optString(it) == eventID } } == true
-            }
-            require(reportID.matches(Regex("[A-Za-z0-9_-]{8,128}")) && acknowledged)
+            // One event is submitted per report. Fresh accepted IDs are server
+            // storage IDs; duplicate IDs echo client_event_id (the server contract).
+            val accepted = receipt.optJSONArray("accepted")
+            val duplicates = receipt.optJSONArray("duplicates")
+            val rejected = receipt.optJSONArray("rejected")
+            val fresh = accepted?.length() == 1 &&
+                accepted.optString(0).matches(Regex("[A-Za-z0-9_-]{8,128}"))
+            val duplicate = duplicates?.let { ids ->
+                (0 until ids.length()).any { ids.optString(it) == eventID }
+            } == true
+            if (!reportID.matches(Regex("[A-Za-z0-9_-]{8,128}")) ||
+                rejected == null || rejected.length() != 0 || !(fresh || duplicate)) throw ReportReceiptRejected()
             return reportID
         } finally { connection.disconnect() }
     }
@@ -337,6 +351,7 @@ internal class DiagnosticReportService(private val context: Context) {
         ExistingWorkPolicy.APPEND_OR_REPLACE, OneTimeWorkRequestBuilder<DiagnosticReportWorker>()
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.MINUTES).build()) }
+    private class ReportReceiptRejected : Exception()
     private class ReportRejected(val status: Int) : Exception()
     companion object {
         private const val ENDPOINT = "https://www.floe-agent.com/api/v1/public/reports"
