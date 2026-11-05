@@ -17,6 +17,9 @@ struct FloeMacBridgeApp: App {
             BridgeSettingsView(model: model).frame(width: 520, height: 560)
         }
         .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { model.openSettings() }.keyboardShortcut(",")
+            }
             CommandGroup(replacing: .appTermination) {
                 Button("Quit Floe Bridge") { model.quit() }.keyboardShortcut("q")
             }
@@ -25,18 +28,12 @@ struct FloeMacBridgeApp: App {
 }
 
 private struct BridgeStatusLabel: View {
-    @Environment(\.openSettings) private var openSettings
     @ObservedObject var model: BridgeAppModel
     var body: some View {
         BridgeBrandMark(template: true)
             .frame(width: 18, height: 18)
             .accessibilityLabel("Floe Bridge")
-            .onAppear { consumeWindowRequest() }
-            .onChange(of: model.settingsRequest) { _, _ in consumeWindowRequest() }
-    }
-    private func consumeWindowRequest() {
-        guard let request = model.settingsRequest else { return }
-        openSettings(); model.didOpenSettings(request)
+            .accessibilityValue(model.connectionStatus)
     }
 }
 
@@ -47,7 +44,7 @@ private struct BridgeMenuView: View {
     var body: some View {
         Text("Floe Bridge").font(.headline)
         Text(model.connectionStatus)
-        SettingsLink { Text("Settings…") }
+        Button("Settings…") { model.openSettings() }
         Button("Check for Updates…") { updates.checkForUpdates() }.disabled(!updates.canCheckForUpdates)
         Divider()
         Button("Quit Floe Bridge") { model.quit() }
@@ -63,7 +60,7 @@ final class BridgeAppModel: ObservableObject {
     @Published var permissions: [String: Bool] = [:]
     @Published private(set) var listenerReady = false
     @Published private(set) var listenerError: String?
-    @Published private(set) var settingsRequest: UUID?
+    private var settingsWindow: NSWindow?
     let updates: BridgeUpdaterModel
     private(set) var paths: BridgePaths?
     private var service: BridgeService?
@@ -92,6 +89,7 @@ final class BridgeAppModel: ObservableObject {
     }
     func applicationDidFinishLaunching() {
         applicationLaunched = true; startUpdaterWhenReady()
+        if !UserDefaults.standard.bool(forKey: "bridge.setupWindowShown") { openSettings() }
     }
     private func startUpdaterWhenReady() {
         // Only the process that owns the loopback listener may update this
@@ -147,11 +145,30 @@ final class BridgeAppModel: ObservableObject {
         return listenerReady ? String(localized: "Ready to connect") : String(localized: "Starting…")
     }
     func openSettings() {
-        NSApp.activate(ignoringOtherApps: true)
-        settingsRequest = UUID()
+        // A MenuBarExtra label is not a persistent settings presentation
+        // host. Own the window explicitly and present after menu tracking
+        // returns, so opening from Finder or the connection URL is reliable.
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            self?.presentSettingsWindow()
+        }
     }
-    func didOpenSettings(_ request: UUID) {
-        if settingsRequest == request { settingsRequest = nil }
+    private func presentSettingsWindow() {
+        let window: NSWindow
+        if let existing = settingsWindow { window = existing }
+        else {
+            window = NSWindow(contentViewController: NSHostingController(
+                rootView: BridgeSettingsView(model: self).frame(width: 520, height: 560)))
+            window.title = "Floe Bridge"
+            window.styleMask = [.titled, .closable, .miniaturizable]
+            window.isReleasedWhenClosed = false
+            window.setFrameAutosaveName("FloeBridgeSettings")
+            window.center()
+            settingsWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        if window.isVisible { UserDefaults.standard.set(true, forKey: "bridge.setupWindowShown") }
     }
     func stopListenerForTermination() { server?.stop() }
     func quit() {

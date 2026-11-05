@@ -5,6 +5,11 @@ import AppKit
 final class BridgeApplicationDelegate: NSObject, NSApplicationDelegate {
     static weak var model: BridgeAppModel?
     func applicationDidFinishLaunching(_ notification: Notification) { Self.model?.applicationDidFinishLaunching() }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        Self.model?.openSettings()
+        return true
+    }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func application(_ application: NSApplication, open urls: [URL]) {
         if urls.contains(where: { $0.scheme == "floe-bridge" && $0.host == "connect" }) {
             Self.model?.openSettings()
