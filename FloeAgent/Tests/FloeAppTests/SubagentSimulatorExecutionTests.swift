@@ -8399,7 +8399,10 @@ extension SubagentSimulatorExecutionTests {
                 && Set(resume.completedCases).isSubset(of: Set(allCases))
                 && Set(resume.completedCases).isDisjoint(with: Set(selectedCases)), "Completed cases must not be replayed")
         } else { root = try makeWorkspaceRoot() }
+        let requireSharedPackages = ProcessInfo.processInfo.environment["FLOE_DATA_ARM64_REQUIRE_SHARED_PACKAGES"] == "1"
         let keepEnvironment = ProcessInfo.processInfo.environment["FLOE_DATA_ARM64_KEEP_ENVIRONMENT"] == "1"
+        try #require(!requireSharedPackages || (!scratchOnly && resume == nil && !keepEnvironment && selectedCases.count == 1),
+            "Shared-system qualification requires one fresh, short-lived project")
         try #require((resume == nil && !keepEnvironment) || selectedCases.count == 1,
             "Retained qualifications yield the shared window after exactly one case")
         let input = support.appendingPathComponent("FloeAgent/QualificationInputs/DataARM64")
@@ -8409,6 +8412,8 @@ extension SubagentSimulatorExecutionTests {
             "kind": scratchOnly ? "platform-shared-tempfile-preflight-not-skill-qualification" : "candidate-real-guest-not-official-install",
             "runID": runID.uuidString, "conversationID": conversationID.uuidString,
             "workspaceName": root.lastPathComponent, "resumed": resume == nil ? "false" : "true",
+            "dataContainerID": support.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent,
+            "requiresSharedPackages": requireSharedPackages ? "true" : "false",
             "selectedCases": scratchOnly ? "" : selectedCases.joined(separator: ",")]
         let pins: [(String, Int, String)] = [
             ("run.py", 4775, "6b081a45c3bd309ff66697f15f492da1244ac030ba396c5c20c40c78f0bad99f"),
@@ -8547,6 +8552,30 @@ extension SubagentSimulatorExecutionTests {
                 """, timeout: 120)
                 try #require(verify.status == .ok && sevenDeepOutput(verify).contains("DATA_ARM64_STAGE_OK"))
                 evidence["guestStage"] = sevenDeepOutput(verify)
+            }
+            if requireSharedPackages {
+                // A new native project must reuse the existing resident system.
+                // Read only: missing prior dependencies stop before any APT job.
+                let shared = try await skillHubShell(runtime: runtime, identity: identity, context: context,
+                    tag: "data-arm64-shared-system", command: """
+                    python3 - <<'PY'
+                    import json, pathlib, subprocess
+                    manifest = json.loads(pathlib.Path("qualification/manifest.json").read_bytes())
+                    requirements = next(s for s in manifest["skills"] if s["id"] == "statistical-analysis")["requirements"]
+                    assert len(requirements) == 5
+                    installed = []
+                    for requirement in requirements:
+                        assert requirement["kind"] == "apt" and requirement["required"] is True
+                        row = subprocess.check_output(["dpkg-query", "-W", "-f=${db:Status-Status}\t${Version}\t${Architecture}", requirement["name"]], text=True).split("\t")
+                        installed.append(dict(name=requirement["name"], status=row[0], version=row[1], architecture=row[2]))
+                        print(json.dumps(installed[-1], sort_keys=True), flush=True)
+                        assert row[0] == "installed" and row[1] == requirement["version"] and row[2] in ("arm64", "all"), requirement["name"]
+                    print("DATA_ARM64_SHARED_SYSTEM_REUSED=" + json.dumps(installed, sort_keys=True), flush=True)
+                    PY
+                    """, timeout: 120)
+                evidence["sharedSystemReadback"] = sevenDeepOutput(shared)
+                try #require(shared.status == .ok && sevenDeepOutput(shared).contains("DATA_ARM64_SHARED_SYSTEM_REUSED="),
+                    "Prior shared dependencies are missing or changed; stop without reinstalling them")
             }
             // Fail before expensive dependency work if the real shared TMPDIR
             // cannot preserve symlink metadata and remove directories. The
