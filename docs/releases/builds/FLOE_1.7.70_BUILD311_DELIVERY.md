@@ -43,8 +43,8 @@ FloeAppTests/TaskEnvironmentOwnershipTests
 | 内部 TestFlight／Floe QA | Apple 上传完成；独立读回 `VALID`、未过期、`IN_BETA_TESTING`，中英文测试说明一致 |
 | GitHub | stable、latest、非 draft、非 prerelease；公开 IPA 实际下载，来源、tag 对象、摘要、大小及 arm64 iPhoneOS 可执行文件通过发布核验 |
 | Feather | 同一发布流程等待的下游任务成功；实际读回地址、版本、来源、摘要、大小与 GitHub 资产一致 |
-| 公开 TestFlight／publictest1 | 尚未提交成功。更新审核说明的 Apple API 请求返回 403；保留失败，需要恢复网页登录后继续，不算作审核拒绝或公开可安装 |
-| 正式 App Store | 尚未替换。需先读取现有提交状态；仅按用户授权在未进入审核时替换，不自动公开发布 |
+| 公开 TestFlight／publictest1 | Safari 保存 311 审核说明并提交成功；独立 GET 读回唯一 `pending_review`、`WAITING_FOR_BETA_REVIEW`、群组已关联及双语说明一致。仍待审核，不算公开可安装 |
+| 正式 App Store | 实时确认 310 仍在等待审核后，按授权撤回并替换为 1.7.70（311），重新提交成功。审核详情读回 311「等待审核」；保留审核录像和手动发布，不自动公开发布 |
 | Bridge 1.1.1 | Developer ID 签名、公证、装订及 Gatekeeper 通过；更新签名对最终 DMG 验证通过。实际配对验收待完成，分发草稿未公开，更新源未切换 |
 
 公开 App 安装包：
@@ -60,7 +60,8 @@ FloeAppTests/TaskEnvironmentOwnershipTests
 - [Apple 签名与上传](https://github.com/JiangNanGenius/floe-agent/actions/runs/41937799704)：成功。
 - [Apple 独立读取](https://github.com/JiangNanGenius/floe-agent/actions/runs/41941124932)：成功。
 - [GitHub 与 Feather](https://github.com/JiangNanGenius/floe-agent/actions/runs/41941586264)：成功。首次 Feather 网络连接被重置，保留失败后仅重跑失败的下游；没有重新编译或替换安装包。
-- [公开 TestFlight 提交](https://github.com/JiangNanGenius/floe-agent/actions/runs/41941701969)：API 权限失败，未报作完成。
+- [首次公开 TestFlight 提交](https://github.com/JiangNanGenius/floe-agent/actions/runs/41941701969)：API 权限失败，原始记录保留；随后通过 Safari 完成同一构建的提交。
+- [公开测试独立读回](https://github.com/JiangNanGenius/floe-agent/actions/runs/41946943734)：GET-only 验证通过，待审核，尚不可公开安装。
 
 ## 源码与清理
 
@@ -68,8 +69,12 @@ FloeAppTests/TaskEnvironmentOwnershipTests
 
 TinyEMU 上游基线、许可证、Floe 改动及历史实验来源已移交独立 [floe-tinyemu](https://github.com/JiangNanGenius/floe-tinyemu) 仓库并逐项核验；本地退役实现、旧镜像及缓存按精确范围清理，Git 历史与用户数据保留。
 
-本轮清理分别记录实际磁盘变化：旧安装包／重复 App 36 项约 28.6 GB，指定模拟器旧镜像、系统层和缓存约 6.1 GB，311 归档后的派生构建目录约 4.2 GB。原始符号、证据、当前 311 安装包和恢复材料保留；不同卷和不同时段的测量不作为单次总量承诺。
+本轮清理分别记录实际磁盘变化：两批旧安装包／重复 App 共 48 项，分别约 28.6 GB、14.1 GB；指定模拟器旧镜像、系统层和缓存约 6.1 GB；311 归档后的派生构建目录约 4.2 GB；六处完成的原生验证缓存约 3.0 GB。原始符号、证据、当前 311 安装包和恢复材料保留；不同卷和不同时段的测量不作为单次总量承诺。
+
+## 后续反馈
+
+送审后收到的用户反馈继续在后续未占用 build 修复：环境暂不可用时的新一轮恢复点绑定、冷启动首次发送的准备状态、更新后的设置加载、运行中 CPU 调整与右侧面板收起入口。311 的来源、标签和安装包保持不变，不把尚未完成的修复计入本版验证。
 
 ## English status
 
-Build 311 is compiled, archived, uploaded and available in the existing internal Floe QA group. The stable/latest GitHub IPA and the awaited Feather feed were independently verified against the immutable source and actual downloaded bytes. Public TestFlight submission remains blocked by an Apple API permission error; the conditional App Store replacement and real Bridge pairing acceptance remain pending. No production App Store release or public Bridge update has been claimed.
+Build 311 is available in the existing internal Floe QA group, and the stable/latest GitHub IPA and awaited Feather feed were independently verified. Public TestFlight was submitted through Safari after the API permission failure; independent readback confirms pending review. The authorized App Store replacement was submitted with build 311 and manual release, and its review page confirms waiting for review. Real Bridge pairing acceptance remains pending. New user-reported defects are being addressed in a later build without changing the immutable 311 delivery.
