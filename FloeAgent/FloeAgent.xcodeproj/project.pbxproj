@@ -1055,6 +1055,7 @@
 		C289286498042D0530D1590B /* MossTTSNano in Frameworks */ = {isa = PBXBuildFile; productRef = EE62AE60895CE30400FEC899 /* MossTTSNano */; };
 		C2A979185D804135CE278ADA /* FloeTools in Frameworks */ = {isa = PBXBuildFile; productRef = 8E8F4CD97A741A8F515EC80E /* FloeTools */; };
 		C30921010A21205EC24153B1 /* ProfessionalSearchPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83ED634632BADFEE2FE81B74 /* ProfessionalSearchPolicyTests.swift */; };
+		C310E8DCA8FE9AA5C58A0D8B /* ShellSessionOwnershipTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A831627CF82E59101ED6FAE /* ShellSessionOwnershipTests.swift */; };
 		C3492863C2659762AD635D2B /* CADPresentationFlowUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BAD4D2116F3695FB0355486 /* CADPresentationFlowUITests.swift */; };
 		C36C227381DC08BFDD08D141 /* IOSBridgeTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55D2C5C5CB70229E08D5220A /* IOSBridgeTools.swift */; };
 		C39FAC792663397BA01CA132 /* LocalSpeech in Resources */ = {isa = PBXBuildFile; fileRef = 1526E471861D1AF02837E8A3 /* LocalSpeech */; };
@@ -1774,6 +1775,7 @@
 		39F2247D245D328853961490 /* FloeFileProvider.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FloeFileProvider.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		3A22339D9DF9B765C547CE9E /* CADViewportHandoffTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADViewportHandoffTests.swift; sourceTree = "<group>"; };
 		3A2936FC99BDF0B602AD6C5B /* CloudWorkspaceToolContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudWorkspaceToolContractTests.swift; sourceTree = "<group>"; };
+		3A831627CF82E59101ED6FAE /* ShellSessionOwnershipTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellSessionOwnershipTests.swift; sourceTree = "<group>"; };
 		3AF0DC903D0169E2F4A70799 /* CADSketchEditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADSketchEditTests.swift; sourceTree = "<group>"; };
 		3B059395E1B792724231FED3 /* UserQuestionPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserQuestionPanel.swift; sourceTree = "<group>"; };
 		3B87DFCBA3F761A6B096C481 /* WorkbenchPanels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchPanels.swift; sourceTree = "<group>"; };
@@ -4976,6 +4978,7 @@
 				7CACC7AB097E832502440E22 /* RuntimeV2TemplateTests.swift */,
 				87D11C32C126ECBBEBD5D113 /* SearchProviderCatalogTests.swift */,
 				C77E44933245EB5AA1228BEB /* ShellExecutionDeadlinePolicyTests.swift */,
+				3A831627CF82E59101ED6FAE /* ShellSessionOwnershipTests.swift */,
 				85D5C073B42BD95A86F4612F /* SkillConfiguredShellSessionTests.swift */,
 				1AE7B323354F4C9307EAA5CC /* SkillDependencyExecutionTests.swift */,
 				951E4559DE7BAC0CAEB76029 /* TaskScheduleToolTests.swift */,
@@ -6515,6 +6518,7 @@
 				63D6BA6441EF7669C65C48F8 /* SharedEnvironmentConcurrencyTests.swift in Sources */,
 				6120F47170CBD36FD1EB9CFF /* ShellCoreUtilityTests.swift in Sources */,
 				986B663558304D55FEB07816 /* ShellExecutionDeadlinePolicyTests.swift in Sources */,
+				C310E8DCA8FE9AA5C58A0D8B /* ShellSessionOwnershipTests.swift in Sources */,
 				097FCE34E514874A9E8CE370 /* ShortcutInboxHandoffTests.swift in Sources */,
 				9DA83029502B914F3C0E691E /* ShortcutInboxStoreTests.swift in Sources */,
 				DFF078C8D377847A32A9038A /* SilentSpeechPlaybackTests.swift in Sources */,

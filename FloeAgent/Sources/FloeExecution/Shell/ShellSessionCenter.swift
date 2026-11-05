@@ -50,6 +50,9 @@ public actor ShellSessionCenter {
         var expiresAt: Date
         var buffer: String
         var alive: Bool
+        /// Fixed by the trusted opener. Native terminals send control bytes
+        /// through their PTY; tool sessions retain cooperative signal routing.
+        var terminalInput: Bool
         var skillConfiguration: SkillProcessConfiguration?
     }
 
@@ -182,6 +185,7 @@ public actor ShellSessionCenter {
             expiresAt: Date().addingTimeInterval(configuration.sessionLifetime),
             buffer: "",
             alive: result.alive,
+            terminalInput: forTerminal,
             skillConfiguration: skillConfiguration
         )
         if result.alive {
@@ -232,13 +236,15 @@ public actor ShellSessionCenter {
         // line). The policy boundary stays where it belongs — the session's
         // opening command and one-shot exec.shell are still screened.
         var routedInput = input
-        if routedInput == "\u{3}" {
+        if routedInput == "\u{3}", !entry.terminalInput {
             // Ctrl-C over a pipe is a byte, not a signal: route it to the
             // backend's cooperative interruption instead of writing it, so
             // the documented shell.exchange contract works without a PTY.
             await backend.signalSession(sessionID: sessionID, signal: .interrupt)
             routedInput = nil
         }
+        // For a native terminal, ETX belongs to the ordered PTY input stream.
+        // Signalling the session instead also kills its interactive shell.
         if let input = routedInput {
             try ShellInputValidation.validate(command: "", cwd: ".", environment: [:], stdin: input)
         }

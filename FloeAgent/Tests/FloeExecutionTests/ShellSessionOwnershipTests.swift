@@ -33,6 +33,7 @@ import FloeTools
 private actor RecordingSessionBackend: LocalShellBackend {
     private(set) var opened: [String] = []
     private(set) var exchanges: [String] = []
+    private(set) var inputs: [String?] = []
     private(set) var closes: [String] = []
     private(set) var signals: [String] = []
     private(set) var resizes: [String] = []
@@ -48,6 +49,7 @@ private actor RecordingSessionBackend: LocalShellBackend {
 
     func exchangeSession(_ request: ShellExchangeRequest, cancellation: CancellationToken?) async throws -> ShellExchangeResult {
         exchanges.append(request.sessionID)
+        inputs.append(request.input)
         return ShellExchangeResult(
             output: "backend:\(request.sessionID)", alive: true, exitCode: nil,
             bytesRead: 1, bytesWritten: 2
@@ -93,6 +95,48 @@ private func ownershipContext(
 // MARK: - same-run client ownership
 
 final class ShellSessionOwnershipTests: XCTestCase {
+    func testNativeTerminalInterruptStaysInPTYInputWithoutEndingSession() async throws {
+        let root = try ownershipRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = RecordingSessionBackend()
+        let center = ShellSessionCenter(backend: backend)
+        let runID = UUID()
+        let opened = try await center.open(command: "", cwd: ".", environment: [:],
+            columns: 80, rows: 24, runID: runID, rootURL: root,
+            cancellation: nil, forTerminal: true)
+        for input in ["\u{3}", "echo ready\r\u{3}"] {
+            let result = try await center.exchange(sessionID: opened.sessionID,
+                input: input, waitMs: 50, maxBytes: 1024, runID: runID,
+                cancellation: nil, forTerminal: true)
+            XCTAssertTrue(result.alive)
+        }
+        let inputs = await backend.inputs
+        let signals = await backend.signals
+        let live = await center.activeSessionIDs(runID: runID)
+        XCTAssertEqual(inputs, ["\u{3}", "echo ready\r\u{3}"])
+        XCTAssertTrue(signals.isEmpty)
+        XCTAssertEqual(live, [opened.sessionID])
+        await center.closeAll(runID: runID)
+    }
+
+    func testToolInterruptPolicyCannotBeChangedByExchangePresentationFlag() async throws {
+        let root = try ownershipRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = RecordingSessionBackend()
+        let center = ShellSessionCenter(backend: backend)
+        let runID = UUID()
+        let opened = try await center.open(command: "", cwd: ".", environment: [:],
+            columns: 80, rows: 24, runID: runID, rootURL: root, cancellation: nil)
+        _ = try await center.exchange(sessionID: opened.sessionID, input: "\u{3}",
+            waitMs: 50, maxBytes: 1024, runID: runID, cancellation: nil,
+            forTerminal: true)
+        let inputs = await backend.inputs
+        let signals = await backend.signals
+        XCTAssertEqual(inputs, [nil])
+        XCTAssertEqual(signals, ["\(opened.sessionID):INT"])
+        await center.closeAll(runID: runID)
+    }
+
     /// Parent + two full-power children of ONE task, all with the same raw
     /// provider call id `call_1`: sessions are per client, cross-client
     /// exchange/close/signal is denied before the backend sees anything, and
