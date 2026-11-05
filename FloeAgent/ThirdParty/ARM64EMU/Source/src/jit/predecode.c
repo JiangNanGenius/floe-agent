@@ -484,26 +484,19 @@ void pd_fill(PDEnt *e, u32 insn) {
     }
 }
 
-/* The predecoded tier's fill: pd_fill plus the one demotion that belongs to
- * executing straight out of a PDEnt.
- *
- * SP-alignment faults (SCTLR_EL1.SA/SA0) are raised only on the exec_a64 path
- * (decode.c sp_align_ok), and this tier's native handlers do not check, so an
- * SP-based memory op has to run through L_GENERIC to stay byte-identical to
- * the interpreter when a misaligned SP is used as a base. Literal loads are
- * PC-relative, never SP, so they keep their handlers.
- *
- * The JIT deliberately does NOT take this demotion: both backends emit an
- * inline alignment check (emit_spchk) ahead of every memory op whose base is
- * VREG_SP, so they can translate these natively and still fault identically.
- * It matters more than it looks — SP-based load/store is every function
- * prologue and epilogue, and demoting it was the single largest source of
- * helper calls in a guest boot. */
+/* The tier retains a live SP guard rather than demoting every stack access.
+ * Only an aligned SP uses the already-validated native memory handlers. A
+ * misaligned SP still executes the original decoder, preserving SA/SA0 and
+ * FP-access exception ordering. Literal loads do not use SP.
+ * rn is otherwise always 31 for this tier-only entry, so it can save the old
+ * opcode without widening PDEnt or retaining a CPU/stack snapshot. */
 static void pd_fill_tier(PDEnt *e, u32 insn) {
     pd_fill(e, insn);
     if (e->rn == 31 && e->op >= PD_LDR64U && e->op <= PD_STPDPOST &&
-        e->op != PD_LDRLIT64 && e->op != PD_LDRLIT32 && e->op != PD_LDRLITV)
-        e->op = PD_GENERIC;
+        e->op != PD_LDRLIT64 && e->op != PD_LDRLIT32 && e->op != PD_LDRLITV) {
+        e->rn = e->op;
+        e->op = PD_SP_ALIGNED;
+    }
 }
 
 /* ================= -pd interpreter tier ================= */
@@ -621,6 +614,7 @@ StepResult pd_step(CPU *c, u64 slice, u64 max_insn) {
     static void *const pd_tab[256] = {
         [0 ... 255] = &&L_GENERIC,
         [PD_NOP] = &&L_NOP,
+        [PD_SP_ALIGNED] = &&L_SP_ALIGNED,
         [PD_B] = &&L_B,
         [PD_BL] = &&L_BL,
         [PD_BCOND] = &&L_BCOND,
@@ -841,6 +835,7 @@ StepResult pd_step(CPU *c, u64 slice, u64 max_insn) {
     }
     void **dispatch=state->dispatch;
     PDEnt *e;
+    PDEnt aligned_sp_entry; /* this invocation only; never stored in the bank */
     u32 insn;
 
     /* Each handler ends in NEXT: bump icount, run the cheap per-insn rare-event
@@ -876,6 +871,19 @@ StepResult pd_step(CPU *c, u64 slice, u64 max_insn) {
     if (UNLIKELY(e->insn != insn)) pd_fill_tier(e, insn);
     goto *dispatch[e->op];
 
+L_SP_ALIGNED:
+    if (UNLIKELY(reg_xsp(c,31) & 15)) {
+        exec_a64(c,insn);
+        NEXT_MODE(true);
+    }
+    /* Restore the original shape on this frame. Cached entries remain pure
+     * instruction metadata; SP, EL, FPEN and MMU state are read live. Honor
+     * the existing dispatch demotion policy when selecting the old handler. */
+    aligned_sp_entry = *e;
+    aligned_sp_entry.op = e->rn;
+    aligned_sp_entry.rn = 31;
+    e = &aligned_sp_entry;
+    goto *dispatch[e->op];
 L_GENERIC:
     /* GENERIC never inherits the optimized selector: preserve its full poll
      * even though its architectural tail shares the original NEXT body. */

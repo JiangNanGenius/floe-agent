@@ -10,8 +10,8 @@
  * of this repo's). Two engines consume it: the --jit translator, and the
  * predecoded tier (pd_run, same file), which executes straight out of a
  * PDEnt. They do not want quite the same classification — the tier applies
- * one extra demotion in pd_fill_tier, for SP-based memory ops it cannot
- * alignment-check itself — so pd_fill stays pure classification and each
+ * a live stack-alignment guard in pd_fill_tier, keeping instruction metadata
+ * independent of CPU state — so pd_fill stays pure classification and each
  * engine adds what it needs on top.
  *
  * Coverage rule: pd_fill must never classify an encoding this repo's
@@ -144,6 +144,8 @@ enum {
     PD_STPQ, PD_STPQPRE, PD_STPQPOST,
     PD_LDPD, PD_LDPDPRE, PD_LDPDPOST,
     PD_STPD, PD_STPDPRE, PD_STPDPOST,
+
+    PD_SP_ALIGNED,    /* tier only: rn saves the original memory opcode */
 
     PD_NOPS_
 };

@@ -208,7 +208,7 @@ static unsigned walk(CPU *c, u64 va, u64 *pa_page, u8 *ap, u8 *uxn, u8 *pxn,
 }
 
 bool mmu_translate(CPU *c, u64 va, AccType acc, u64 *pa_out) {
-    if(!mmu_bind_cpu(c))return false;
+    if(!mmu_cache_ready(c))return false;
     /* MMU off -> identity map. SCTLR_EL1.M is bit 0. */
     if ((c->sctlr[1] & 1) == 0) { *pa_out = va; return true; }
 
@@ -280,7 +280,7 @@ static void dtlb_fill(CPU *c, u64 va, u64 pa) {
 }
 
 bool mem_read(CPU *c, u64 va, unsigned size, u64 *out) {
-    if(!mmu_bind_cpu(c))return false;
+    if(!mmu_cache_ready(c))return false;
     u64 off = va & 0xfffULL;
     if (off + size > 0x1000 && (c->sctlr[1] & 1)) {       /* spans two pages */
         unsigned first = 0x1000u - (unsigned)off;
@@ -313,7 +313,7 @@ bool mem_read(CPU *c, u64 va, unsigned size, u64 *out) {
 }
 
 bool mem_write(CPU *c, u64 va, unsigned size, u64 val) {
-    if(!mmu_bind_cpu(c))return false;
+    if(!mmu_cache_ready(c))return false;
     if (__builtin_expect(g_vawatch != 0, 0) &&    /* #16: single hook guard */
         va < g_vawatch + 8 && va + size > g_vawatch) {
         static _Thread_local int vn = 0;
@@ -364,7 +364,7 @@ bool mem_write(CPU *c, u64 va, unsigned size, u64 val) {
 /* Non-faulting translate+read for diagnostics: returns false if the VA does not
  * translate (instead of raising an abort). Ignores permissions. */
 bool mem_peek(CPU *c, u64 va, unsigned size, u64 *out) {
-    if(!mmu_bind_cpu(c))return false;
+    if(!mmu_cache_ready(c))return false;
     if ((c->sctlr[1] & 1) == 0) { *out = phys_read_cpu(c, va, size);
         return machine_bus_status(c->m) == BUS_OK; }
     u64 pa_page; u8 ap, uxn, pxn;
@@ -374,7 +374,7 @@ bool mem_peek(CPU *c, u64 va, unsigned size, u64 *out) {
 }
 
 bool mmu_probe_pa(CPU *c, u64 va, u64 *pa_out) {
-    if(!mmu_bind_cpu(c))return false;
+    if(!mmu_cache_ready(c))return false;
     if ((c->sctlr[1] & 1) == 0) { *pa_out = va; return true; }
     TLBEntry *e = &c->exec.mmu->tlb[tlb_idx(va)];
     if (e->valid && e->gen == c->exec.mmu->tlb_gen && e->va_page == (va & ~0xfffULL)
@@ -395,7 +395,7 @@ bool mmu_probe_pa(CPU *c, u64 va, u64 *pa_out) {
  * selects, SH[8:7] from the descriptor, NS[9] = 1 (non-secure-only machine).
  * PAR_EL1 (F==1): FST[6:1], PTW=0, S=0 (stage 1), bit 11 RES1. */
 u64 mmu_at_s1(CPU *c, u64 va, bool is_write, bool as_el0) {
-    if(!mmu_bind_cpu(c))return 1;
+    if(!mmu_cache_ready(c))return 1;
     /* Stage 1 disabled: flat translation (attributes: ATTR/SH left 0). */
     if ((c->sctlr[1] & 1) == 0)
         return (va & 0x0000FFFFFFFFF000ULL) | (1ULL << 9);
@@ -423,7 +423,7 @@ static u8 *host_page_ptr(Machine *m, u64 pa_page) {
 }
 
 bool mem_ifetch_slow(CPU *c, u64 va, u32 *insn_out) {
-    if(!mmu_bind_cpu(c))return false;
+    if(!mmu_cache_ready(c))return false;
     if (va & 3) {                       /* PC-alignment fault (EC 0x22), no ISS */
         cpu_raise_sync(c, esr_make(EC_PC_ALIGN, 0), va);
         return false;
@@ -535,7 +535,7 @@ bool mem_ifetch_refill_unheld(CPU *c,FetchCache *f,u64 va,u32 *insn_out) {
  * empty then — and JIT code pages, whose W bit the D-TLB refuses): both
  * orders write/read the same bytes and fault at the same split VA. */
 bool mem_read128(CPU *c, u64 va, V128 *out) {
-    if(!mmu_bind_cpu(c))return false;
+    if(!mmu_cache_ready(c))return false;
     u64 off = va & 0xfffULL;
     DTlbEnt *de = dtlb_ent(c,va);
     if (off <= 0xff0 && de->tag == dtlb_tag(c, va) && (de->pte & DTLB_R)) {
@@ -553,7 +553,7 @@ bool mem_read128(CPU *c, u64 va, V128 *out) {
 }
 
 bool mem_write128(CPU *c, u64 va, const V128 *val) {
-    if(!mmu_bind_cpu(c))return false;
+    if(!mmu_cache_ready(c))return false;
     u64 off = va & 0xfffULL;
     DTlbEnt *de = dtlb_ent(c,va);
     if (off <= 0xff0 && de->tag == dtlb_tag(c, va) && (de->pte & DTLB_W)) {

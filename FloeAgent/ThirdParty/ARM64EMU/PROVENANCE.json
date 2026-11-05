@@ -223,11 +223,11 @@
     },
     {
       "path": "Source/src/jit/predecode.c",
-      "sha256": "fb941b711e04d2fed9e6191c184ff7052c3d0eb118cf49f4dd7de0e6ab376045"
+      "sha256": "fd04f6a9e48adb9233d16f4a586b932d1afb97d4cea17dfcfde5c85870b09e67"
     },
     {
       "path": "Source/src/jit/predecode.h",
-      "sha256": "6c01dd7793df87e899e46ea5da770ee32d995f449aaff39143fd68e9a768e71d"
+      "sha256": "6dddb0401db39ff06ce06952a5f4ac7da3d597bb98f52f2f004a56872c66c1af"
     },
     {
       "path": "Source/src/machine.h",
@@ -247,11 +247,11 @@
     },
     {
       "path": "Source/src/mmu.c",
-      "sha256": "e2b139f973d1881b669c60118fb21b30376e43d466b0bb813dbce8ba7400a64d"
+      "sha256": "8fcd0f9e06100a8619f15cbf1bebb1986db54bf458166a1e9fa832d67cd8b3b1"
     },
     {
       "path": "Source/src/mmu.h",
-      "sha256": "0abb4244c576d3c45a39751bd5fab95d011ac7a3a80700e2b694b289570b05ed"
+      "sha256": "89dce0175d04c9e72e431a571ee1ac4815f62a5234d795b0362ade44b6738d0c"
     },
     {
       "path": "Source/src/net/usernet.h",
@@ -453,6 +453,11 @@
       "name": "Bound parallel handoffs and coalesce already-deasserted IRQ publications",
       "scope": "Bridge/parallel_runtime.c publish_irq and grant only; uniform 16K maximum ticket, unchanged total-budget fairness and per-instruction stop/IRQ/TLBI checks",
       "qualification": "Actual IRQ/fast-poll publication, 1-5 worker/lifecycle, SMP and exact 100ms/1024-budget regressions passed; selected real paths also passed ThreadSanitizer. One matched real Linux component pair passed fixed PBKDF2 and zlib result checks. See docs/ARM64_PARALLEL_PERFORMANCE_20261105.md; no iPad or integrated App acceptance implied."
+    },
+    {
+      "name": "Guarded SP memory tier and bound-MMU fast check",
+      "scope": "Source/src/jit/predecode.c/.h and Source/src/mmu.c/.h; live aligned-SP dispatch to existing handlers, misaligned-SP decoder fallback, per-hart lazy allocator retained. No JIT, synchronization, interrupt or ticket-policy changes.",
+      "qualification": "Private actual macOS arm64 build: 1056 stack/FP/alignment and192 MMU/fault comparisons;10 normal components;30-TU ThreadSanitizer build with12 component passes. Original stale fixture and selector failures retained. One actual Linux PBKDF2/zlib pair improved4.14%/1.74%; synthetic stack gains are not whole-VM or iPad claims. Integrated App and iPad checks pending."
     }
   ],
   "capabilityMeaning": "Implemented C ABI surface; not a claim of real Linux or App runtime acceptance.",

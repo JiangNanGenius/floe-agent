@@ -13,6 +13,12 @@ typedef enum { ACC_READ, ACC_WRITE, ACC_EXEC } AccType;
 /* Per-hart cache ownership. Binding ensures this CPU has a lazy cache;
  * switching harts never flushes another hart's translations. */
 bool mmu_bind_cpu(CPU *c);
+/* A bound bank remains owned by this hart until its quiet reset/destroy.
+ * Keep the original lazy allocator and its failure result on the cold path,
+ * without an out-of-line bind call for every instruction or data access. */
+static inline bool mmu_cache_ready(CPU *c) {
+    return c->exec.mmu != NULL || mmu_bind_cpu(c);
+}
 void ae_mmu_reset_cpu(CPU *c);
 void ae_mmu_destroy_cpu(CPU *c);
 size_t ae_mmu_cache_bytes(const CPU *c);
@@ -212,7 +218,7 @@ static inline bool mem_ifetch_page(CPU *c,FetchCache *f,u64 va,u32 *insn_out) {
 }
 
 static inline bool mem_ifetch(CPU *c, u64 va, u32 *insn_out) {
-    if(!mmu_bind_cpu(c))return false;
+    if(!mmu_cache_ready(c))return false;
     u64 page = va & ~0xfffULL;
     FetchCache *f = &c->exec.mmu->fcache[c->el == 0];
     /* A misaligned PC (only reachable via a bad indirect branch) takes the slow
@@ -276,7 +282,7 @@ static inline bool mem_ifetch_page_slot(CPU *c,FetchCache *f,u64 va,u32 *out,
     memory_guard_end(&guard);return true;
 }
 static inline bool mem_ifetch_slot(CPU *c,u64 va,u32 *out,const PDGuardSlotView *view) {
-    if(!mmu_bind_cpu(c))return false;
+    if(!mmu_cache_ready(c))return false;
     u64 page=va&~0xfffULL;FetchCache *f=&c->exec.mmu->fcache[c->el==0];
     if(f->host&&f->page==page&&!(va&3)&&f->mmu==(u8)(c->sctlr[1]&1))
         return mem_ifetch_page_slot(c,f,va,out,view);
