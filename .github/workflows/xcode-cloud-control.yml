@@ -235,6 +235,19 @@ jobs:
             > "$RUNNER_TEMP/build-uploads.json"
           jq -c '.data[] | {uploadID:.id,version:.attributes.cfBundleShortVersionString,build:.attributes.cfBundleVersion,created:.attributes.createdDate,uploaded:.attributes.uploadedDate,state:.attributes.state,buildID:.relationships.build.data.id}' \
             "$RUNNER_TEMP/build-uploads.json"
+          jq -r '"candidate-exact-upload-records=\(.data | length)"' "$RUNNER_TEMP/build-uploads.json"
+          # A future candidate must be absent from the exact build query as
+          # well as upload processing. A latest-build list alone is not an
+          # exact uniqueness proof, especially after delayed processing.
+          api_get /v1/builds \
+            --data-urlencode "filter[app]=$app_id" \
+            --data-urlencode "filter[version]=$build_number" \
+            --data-urlencode 'limit=200' \
+            --data-urlencode 'fields[builds]=version,uploadedDate,processingState' \
+            > "$RUNNER_TEMP/candidate-builds.json"
+          jq -r '"candidate-exact-build-records=\(.data | length)"' "$RUNNER_TEMP/candidate-builds.json"
+          jq -c '.data[] | {buildID:.id,build:.attributes.version,processing:.attributes.processingState}' \
+            "$RUNNER_TEMP/candidate-builds.json"
           # Read the actual latest uploads before choosing a new build number.
           api_get /v1/builds \
             --data-urlencode "filter[app]=$app_id" \
