@@ -153,7 +153,7 @@ static inline int p9_err(int host_errno) {
 #ifdef ESTALE
         case ESTALE: return 116;
 #endif
-        case ELOOP: return 62;
+        case ELOOP: return 40;
 #ifdef ENODATA
         case ENODATA: return 61;
 #endif

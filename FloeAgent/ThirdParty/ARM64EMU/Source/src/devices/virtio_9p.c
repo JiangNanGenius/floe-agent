@@ -34,9 +34,9 @@
  *  - Linux-wire open flags and errno are translated explicitly
  *    (virtio_9p_port.h); unsupported bits refuse with EOPNOTSUPP rather
  *    than degrade silently. See the port header for the exact tables.
- *  - Symlinks may be created, read and walked only while they resolve
- *    inside the share root. A walk stops at a link (lstat semantics, as
- *    upstream); an open that would follow a link first resolves the target
+ *  - Symlink nodes may be created, inspected and removed without following
+ *    their targets. A walk stops at the final link (lstat semantics, as
+ *    upstream); traversal or an open that follows a link resolves the target
  *    lexically and refuses (EACCES) anything pointing outside the root;
  *    chains deeper than 8 refuse with ELOOP. Absolute targets must sit
  *    under the root realpath.
@@ -468,23 +468,25 @@ static u32 h_walk(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
             if (i == 0) return mk_lerror(v, tag, EINVAL, cap);
             break;
         }
+        /* Resolve only the parent: the final element must retain its own
+         * qid/type for lstat, readlink and unlink, including dangling or
+         * escaping links. The next walk element (if any) resolves this
+         * element as a parent and still refuses an escaping traversal. */
+        char parent[PATH_MAX];
+        if (p9_resolve_rel(v, cur, parent, sizeof(parent)) != 0) {
+            if (i == 0) return mk_lerror(v, tag, errno, cap);
+            break;
+        }
         char child[PATH_MAX];
-        if (!p9_path_child(cur, names[i], child, sizeof(child))) {
+        if (!p9_path_child(parent, names[i], child, sizeof(child))) {
             if (i == 0) return mk_lerror(v, tag, ENAMETOOLONG, cap);
             break;
         }
-        /* Contain the accumulated path: a symlink component may redirect
-         * only to a target inside the root; an escaping walk stops here. */
-        char resolved[PATH_MAX];
-        if (p9_resolve_rel(v, child, resolved, sizeof(resolved)) != 0) {
+        if (qid_of(v, child, &qt[i], &qv[i], &qp[i])) {
             if (i == 0) return mk_lerror(v, tag, errno, cap);
             break;
         }
-        if (qid_of(v, resolved, &qt[i], &qv[i], &qp[i])) {
-            if (i == 0) return mk_lerror(v, tag, errno, cap);
-            break;
-        }
-        snprintf(cur, sizeof(cur), "%s", resolved);
+        snprintf(cur, sizeof(cur), "%s", child);
         nqid++;
     }
     if (nqid == nw) {                          /* full walk: (re)assign newfid */
@@ -897,12 +899,19 @@ static u32 h_rename(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     P9Fid *f = fid_find_live(v, fid), *df = fid_find_live(v, dfid);
     if (!f || !df) return mk_lerror(v, tag, EBADF, cap);
     if (!p9_elem_ok(name)) return mk_lerror(v, tag, EINVAL, cap);
+    /* A final symlink fid is a node, never an implicit directory. Pin the
+     * destination directory without following it, like the create ops. */
+    int dfd = p9_open_dir_fd(v, df->path);
+    if (dfd < 0) return mk_lerror(v, tag, errno, cap);
     char child[PATH_MAX];
-    if (!p9_path_child(df->path, name, child, sizeof(child))) return mk_lerror(v, tag, ENAMETOOLONG, cap);
+    if (!p9_path_child(df->path, name, child, sizeof(child))) {
+        close(dfd); return mk_lerror(v, tag, ENAMETOOLONG, cap);
+    }
     /* Contain both ends on the pinned root descriptor. */
-    if (renameat(v->rootfd, f->path[0] ? f->path : ".",
-                 v->rootfd, child[0] ? child : "."))
-        return mk_lerror(v, tag, errno, cap);
+    int result = renameat(v->rootfd, f->path[0] ? f->path : ".", dfd, name);
+    int error = errno;
+    close(dfd);
+    if (result) return mk_lerror(v, tag, error, cap);
     snprintf(f->path, sizeof(f->path), "%s", child);   /* fid follows the file */
     Cur o = resp_begin(v, P9_RRENAME, tag, cap);
     return resp_finish(&o, v, tag, cap);
@@ -918,11 +927,14 @@ static u32 h_renameat(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     P9Fid *of = fid_find_live(v, od), *nf = fid_find_live(v, nd);
     if (!of || !nf) return mk_lerror(v, tag, EBADF, cap);
     if (!p9_elem_ok(oldn) || !p9_elem_ok(newn)) return mk_lerror(v, tag, EINVAL, cap);
-    char op[PATH_MAX], np[PATH_MAX];
-    if (!p9_path_child(of->path, oldn, op, sizeof(op))) return mk_lerror(v, tag, ENAMETOOLONG, cap);
-    if (!p9_path_child(nf->path, newn, np, sizeof(np))) return mk_lerror(v, tag, ENAMETOOLONG, cap);
-    if (renameat(v->rootfd, op[0] ? op : ".", v->rootfd, np[0] ? np : "."))
-        return mk_lerror(v, tag, errno, cap);
+    int ofd = p9_open_dir_fd(v, of->path);
+    if (ofd < 0) return mk_lerror(v, tag, errno, cap);
+    int nfd = p9_open_dir_fd(v, nf->path);
+    if (nfd < 0) { int error = errno; close(ofd); return mk_lerror(v, tag, error, cap); }
+    int result = renameat(ofd, oldn, nfd, newn);
+    int error = errno;
+    close(ofd); close(nfd);
+    if (result) return mk_lerror(v, tag, error, cap);
     Cur o = resp_begin(v, P9_RRENAMEAT, tag, cap);
     return resp_finish(&o, v, tag, cap);
 }
@@ -936,10 +948,12 @@ static u32 h_unlinkat(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     P9Fid *f = fid_find_live(v, dfid);
     if (!f) return mk_lerror(v, tag, errno, cap);
     if (!p9_elem_ok(name)) return mk_lerror(v, tag, EINVAL, cap);
-    char child[PATH_MAX];
-    if (!p9_path_child(f->path, name, child, sizeof(child))) return mk_lerror(v, tag, ENAMETOOLONG, cap);
-    int r = unlinkat(v->rootfd, child[0] ? child : ".", flags & AT_REMOVEDIR ? AT_REMOVEDIR : 0);
-    if (r) return mk_lerror(v, tag, errno, cap);
+    int dfd = p9_open_dir_fd(v, f->path);
+    if (dfd < 0) return mk_lerror(v, tag, errno, cap);
+    int r = unlinkat(dfd, name, flags & AT_REMOVEDIR ? AT_REMOVEDIR : 0);
+    int error = errno;
+    close(dfd);
+    if (r) return mk_lerror(v, tag, error, cap);
     Cur o = resp_begin(v, P9_RUNLINKAT, tag, cap);
     return resp_finish(&o, v, tag, cap);
 }
