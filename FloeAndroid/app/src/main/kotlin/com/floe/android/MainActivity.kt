@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
         // FULL: reconcile real Accessibility/ADB/Root status after the user
         // returns from a system settings/pairing screen; PLAY is inert.
         (application as FloeApplication).onPlatformActivityResumed(this)
+        (application as FloeApplication).runtimeHost?.externalEdits?.onForeground()
     }
     override fun onPause() {
         (application as FloeApplication).onPlatformActivityPaused()

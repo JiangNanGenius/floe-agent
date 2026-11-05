@@ -31,6 +31,27 @@ private final class GateRecorder: @unchecked Sendable {
 @Suite("Workspace guarded binary replacement")
 struct WorkspaceBinaryReplacementTests {
 
+    @Test func explicitlyAdmittedExternalEditCanSaveEmptyTextWithoutWideningDefault() throws {
+        try fixture { root, source, service in
+            let original = Data("original".utf8)
+            _ = try service.createBinaryFile("draft.txt", data: original, overwrite: false)
+            try Data().write(to: source)
+            #expect(throws: (any Error).self) {
+                try service.replaceBinaryFile("draft.txt", from: source,
+                    expectedOriginalSHA256: FloeDigest.sha256Hex(original),
+                    expectedSourceSHA256: FloeDigest.sha256Hex(Data()), expectedSourceBytes: 0)
+            }
+            #expect(try Data(contentsOf: root.appendingPathComponent("draft.txt")) == original)
+            let saved = try service.replaceBinaryFile("draft.txt", from: source,
+                expectedOriginalSHA256: FloeDigest.sha256Hex(original),
+                expectedSourceSHA256: FloeDigest.sha256Hex(Data()), expectedSourceBytes: 0,
+                allowEmptySource: true)
+            #expect(saved.bytesWritten == 0)
+            #expect(saved.sha256 == FloeDigest.sha256Hex(Data()))
+            #expect(try Data(contentsOf: root.appendingPathComponent("draft.txt")).isEmpty)
+        }
+    }
+
     // MARK: - Success and receipt honesty
 
     @Test func byteExactNonTextReplacementKeepsSourceAndReceiptMatchesDisk() throws {

@@ -308,6 +308,9 @@ internal fun WorkspaceFilesPane(
         }
     }
     var sourcesVisible by remember(owner) { mutableStateOf(false) }
+    var externalEditorVisible by remember(owner) { mutableStateOf(false) }
+    var linuxDesktopVisible by remember(owner) { mutableStateOf(false) }
+    var externalEditorPath by remember(owner) { mutableStateOf("") }
     var recoveryVisible by remember(owner) { mutableStateOf(false) }
     var networkVisible by remember(owner) { mutableStateOf(false) }
     var action by remember(owner) { mutableStateOf<WorkspaceAction?>(null) }
@@ -366,6 +369,7 @@ internal fun WorkspaceFilesPane(
      * request, not that rendering succeeded).
      */
     fun openDocument(path: String): Boolean {
+        externalEditorPath = path
         val surface = WorkspaceDocumentRouter.surfaceFor(path)
         if (surface == WorkspaceDocumentSurface.OFFICE) {
             if (openOffice(path)) return true
@@ -540,6 +544,15 @@ internal fun WorkspaceFilesPane(
             anchorBounds = moreAnchor,
             tag = "workspace.moreMenu",
             items = listOf(
+                WorkspaceMenuItem(stringResource(R.string.linux_desktop_title), enabled = !busy) {
+                    toolbarMenu = null
+                    linuxDesktopVisible = true
+                }
+                WorkspaceMenuItem(stringResource(R.string.external_edit_title), enabled = !busy) {
+                    toolbarMenu = null
+                    if (externalEditorPath.isBlank()) externalEditorPath = activeDocumentPath.orEmpty()
+                    externalEditorVisible = true
+                },
                 WorkspaceMenuItem(stringResource(R.string.workspace_file_actions), enabled = !busy) {
                     toolbarMenu = null
                     source = ""; destination = ""; operationError = null
@@ -565,6 +578,13 @@ internal fun WorkspaceFilesPane(
             onDismiss = { toolbarMenu = null },
         )
     }
+    if (linuxDesktopVisible) LinuxDesktopSheet(host, bound.client.taskID, bound.client.workspaceID,
+        activeDocumentPath.orEmpty(), onDismiss = { linuxDesktopVisible = false })
+    ExternalEditorSheet(host, bound.client.taskID, bound.client.workspaceID,
+        externalEditorPath, externalEditorVisible, onDismiss = {
+            externalEditorVisible = false
+            if (bound.isCurrent()) presenter.refreshTreeKeepingExpansion()
+        })
     livePreviewSession?.let { sessionID ->
         if (liveController != null) WorkspaceLiveFilesDialog(liveController, bound.client.taskID, sessionID,
             onDismiss = {

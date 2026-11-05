@@ -3,6 +3,10 @@
     <permission android:name="${applicationId}.permission.LINUX_RUNTIME" android:protectionLevel="signature" />
     <uses-permission android:name="${applicationId}.permission.LINUX_RUNTIME" />
     <queries>
+        <intent>
+            <action android:name="android.intent.action.EDIT" />
+            <data android:mimeType="*/*" />
+        </intent>
         <package android:name="com.floe.agent.runtime" />
         <package android:name="com.floe.agent.runtime.dev" />
         <package android:name="com.floe.agent.runtime.full" />
@@ -87,10 +91,23 @@
     <application android:name=".FloeApplication" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/Theme.Floe" android:allowBackup="false" android:supportsRtl="true"
         android:usesCleartextTraffic="false" android:enableOnBackInvokedCallback="true">
+        <receiver android:name="com.floe.android.schedule.TaskScheduleConditionReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.ACTION_POWER_CONNECTED" />
+                <action android:name="android.intent.action.ACTION_POWER_DISCONNECTED" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
         <provider android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.taskexports"
             android:exported="false" android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/task_export_paths" />
+        </provider>
+        <provider android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.externaledits"
+            android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/external_edit_paths" />
         </provider>
         <activity android:name="com.floe.android.notesplatform.NotesEngineeringPreviewActivity"
             android:exported="false" />

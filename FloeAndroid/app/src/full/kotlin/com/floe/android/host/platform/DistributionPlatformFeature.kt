@@ -67,7 +67,7 @@ private class FullRuntimePlatformExtension(
     }
 
     override fun onActivityResumed(activity: Activity) {
-        device?.onActivityResumed()
+        device?.onActivityResumed(activity)
     }
 
     override fun onActivityPaused() {

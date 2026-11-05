@@ -488,7 +488,7 @@ Java_com_floe_android_bridge_WorkspaceSourceNative_saveOriginal(
         !host_ascii_arg(env, expected_original, 64, &original_value) ||
         !host_ascii_arg(env, expected_source, 64, &source_value) ||
         !host_utf8_arg(env, source_path, 4096, &source_path_value)) return -105;
-    if (expected_source_bytes < 1 || expected_source_bytes > 256LL * 1024 * 1024) return -105;
+    if (expected_source_bytes < 0 || expected_source_bytes > 256LL * 1024 * 1024) return -105;
     return host_reply_call(env, reply, [epoch, task_value, workspace_value, path_value,
                                         original_value, source_value, expected_source_bytes,
                                         source_path_value](char *buffer, int32_t capacity) {

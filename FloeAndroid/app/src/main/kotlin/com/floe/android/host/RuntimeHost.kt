@@ -115,6 +115,9 @@ class RuntimeHost internal constructor(
     val taskContinuity = TaskContinuityHostController(this)
     /** Ordinary-task editor projections outlive Activity/inspector views. */
     internal val workspaceEditors = G04WorkspaceEditorController(this)
+    internal val externalEdits by lazy {
+        com.floe.android.host.externaledit.ExternalEditController(appContext, this)
+    }
     internal val browser = BrowserHostController(this)
     internal val workspaceGit = G04GitHostController(this)
     internal val workspaceActions = G04ActionsHostController(this)
@@ -338,6 +341,8 @@ class RuntimeHost internal constructor(
     internal val c07DataExchange: C07DataExchangeHostController
         get() = c07DataExchangeDelegate.value
     internal var workspaceGitTrust: G04GitTrustController? = null
+    private val linuxDesktopOwner = lazy { com.floe.android.host.linux.LinuxDesktopHost(this) }
+    internal val linuxDesktop get() = linuxDesktopOwner.value
     internal var workspaceTerminal: G04TerminalHostController? = null
 
     private var observationJob: Job? = null
@@ -915,6 +920,7 @@ class RuntimeHost internal constructor(
      * RB-1 owner stop. The host never cancels another owner's work.
      */
     suspend fun stop() {
+        if (linuxDesktopOwner.isInitialized()) linuxDesktopOwner.value.stopAndJoin()
         if (!prepareC07DataExchangeForRootStop()) return
         if (!prepareFontsForRootStop()) return
         // C03 voice owns real microphone/TTS/cloud operations; fence and join

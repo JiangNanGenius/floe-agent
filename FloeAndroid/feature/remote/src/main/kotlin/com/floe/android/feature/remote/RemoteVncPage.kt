@@ -85,7 +85,7 @@ data class RemoteVncActions(
 )
 
 @Composable
-internal fun RemoteVncViewerPage(
+fun RemoteVncViewerPage(
     vnc: RemoteVncUi,
     error: RemoteHostUiError?,
     compact: Boolean,

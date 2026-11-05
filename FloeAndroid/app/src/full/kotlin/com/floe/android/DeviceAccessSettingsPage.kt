@@ -216,6 +216,10 @@ data class DeviceAccessPresentationState(
     val pairingDiscovery: DeviceAccessPairingDiscoveryUi = DeviceAccessPairingDiscoveryUi.IDLE,
     /** True after the real controller's USB bootstrap command was copied. */
     val usbBootstrapExported: Boolean = false,
+    val automaticPhoneControl: Boolean = false,
+    val autoUnlock: Boolean = false,
+    val unlockConfigured: Boolean = false,
+    val floatingControls: Boolean = false,
 )
 
 /**
@@ -228,6 +232,11 @@ class DeviceAccessCallbacks(
     val onRefresh: () -> Unit = {},
     /** USER-ONLY: allows phone control for the exact visible task/run. */
     val onArmPhoneControl: () -> Unit = {},
+    val onAutomaticControlChange: (Boolean) -> Unit = {},
+    val onAutoUnlockChange: (Boolean) -> Unit = {},
+    val onSaveUnlockCredential: (String) -> Unit = {},
+    val onForgetUnlockCredential: () -> Unit = {},
+    val onFloatingControlsChange: (Boolean) -> Unit = {},
     val onStopActiveTask: () -> Unit = {},
     val onTakeOverActiveTask: () -> Unit = {},
     val onAllowedPackagesChange: (Set<String>) -> Unit = {},
@@ -496,6 +505,10 @@ fun DeviceAccessSettingsPage(
     var revealPairingCode by remember { mutableStateOf(false) }
     var confirmForget by remember { mutableStateOf(false) }
     var confirmRootCheck by remember { mutableStateOf(false) }
+    var confirmAutomatic by remember { mutableStateOf(false) }
+    var confirmUnlock by remember { mutableStateOf(false) }
+    var unlockDraft by remember { mutableStateOf("") }
+    var revealUnlock by remember { mutableStateOf(false) }
     // FULL-only inline notification permission. The notification is what lets
     // the user enter the six-digit code while Android's pairing dialog stays
     // in front; when it is unavailable the page says so and keeps the manual
@@ -578,6 +591,51 @@ fun DeviceAccessSettingsPage(
             style = Floe.typography.metadata,
             color = colors.secondaryLabel,
         )
+
+        FloeSettingsSectionCard(title = stringResource(R.string.phone_automation_title)) {
+            FloeSectionRow(title = { FloeText(stringResource(R.string.phone_automation_automatic)) }, trailing = {
+                FloeInlineSwitch(state.automaticPhoneControl,
+                    { if (it) confirmAutomatic = true else callbacks.onAutomaticControlChange(false) },
+                    description = stringResource(R.string.phone_automation_automatic))
+            })
+            FloeSectionRow(title = {
+                FloeText(stringResource(R.string.phone_automation_automatic_hint),
+                    style = Floe.typography.metadata, color = colors.secondaryLabel)
+            })
+            FloeSectionRow(title = { FloeText(stringResource(R.string.phone_automation_unlock)) }, trailing = {
+                FloeInlineSwitch(state.autoUnlock,
+                    { if (it) confirmUnlock = true else callbacks.onAutoUnlockChange(false) },
+                    description = stringResource(R.string.phone_automation_unlock))
+            })
+            if (confirmUnlock) {
+                FloeSectionRow(title = {
+                    FloeText(stringResource(R.string.phone_automation_unlock_hint),
+                        style = Floe.typography.metadata, color = colors.secondaryLabel)
+                })
+                FloeSecureFormField(label = stringResource(R.string.phone_automation_credential),
+                    value = unlockDraft, onValueChange = { unlockDraft = it.take(64) },
+                    revealed = revealUnlock, onRevealedChange = { revealUnlock = it },
+                    revealOnLabel = stringResource(R.string.notes_pdf_unlock_show),
+                    revealOffLabel = stringResource(R.string.notes_pdf_unlock_hide))
+                FloeActionRow(label = stringResource(R.string.phone_automation_consent_unlock),
+                    enabled = unlockDraft.isNotEmpty() || state.unlockConfigured,
+                    onClick = {
+                        if (unlockDraft.isNotEmpty()) callbacks.onSaveUnlockCredential(unlockDraft)
+                        else callbacks.onAutoUnlockChange(true)
+                        unlockDraft = ""; revealUnlock = false; confirmUnlock = false
+                    })
+                FloeActionRow(label = stringResource(R.string.cancel), onClick = {
+                    unlockDraft = ""; revealUnlock = false; confirmUnlock = false
+                })
+            }
+            if (state.unlockConfigured) FloeActionRow(
+                label = stringResource(R.string.phone_automation_forget),
+                onClick = callbacks.onForgetUnlockCredential)
+            FloeSectionRow(title = { FloeText(stringResource(R.string.phone_automation_floating)) }, trailing = {
+                FloeInlineSwitch(state.floatingControls, callbacks.onFloatingControlsChange,
+                    description = stringResource(R.string.phone_automation_floating))
+            })
+        }
 
         // ------------------------------------------------ accessibility layer
         FloeSettingsSectionCard(title = stringResource(R.string.device_access_accessibility_section)) {
@@ -1263,6 +1321,15 @@ fun DeviceAccessSettingsPage(
         }
     }
 
+    if (confirmAutomatic) {
+        FloeConfirmDialog(
+            title = stringResource(R.string.phone_automation_automatic),
+            message = stringResource(R.string.phone_automation_automatic_hint),
+            confirmLabel = stringResource(R.string.phone_automation_allow),
+            dismissLabel = stringResource(R.string.cancel),
+            onConfirm = { confirmAutomatic = false; callbacks.onAutomaticControlChange(true) },
+            onDismiss = { confirmAutomatic = false })
+    }
     if (confirmForget) {
         FloeConfirmDialog(
             title = stringResource(R.string.device_access_adb_forget_title),

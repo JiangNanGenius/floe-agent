@@ -67,6 +67,9 @@ data class TerminalSessionSnapshot(
     val prepareCopiedBytes: Long = 0L,
     val importMillis: Long = 0L,
     val importedEntries: Long = 0L,
+    val environmentID: String = "",
+    val runtimeGeneration: String = "",
+    val workspaceID: String = "",
 )
 
 sealed class TerminalActionReply {
@@ -2048,6 +2051,9 @@ internal class G04TerminalHostController(
                     prepareCopiedBytes = descriptor["prepareCopiedBytes"]?.jsonPrimitive?.longOrNull ?: 0L,
                     importMillis = descriptor["importMillis"]?.jsonPrimitive?.longOrNull ?: 0L,
                     importedEntries = descriptor["importedEntries"]?.jsonPrimitive?.longOrNull ?: 0L,
+                    environmentID = descriptor["environmentID"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    runtimeGeneration = descriptor["generation"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    workspaceID = descriptor["workspaceID"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                 )
                 if (snapshot.sessionToken.isNotEmpty()) {
                     tabSnapshots[snapshot.sessionToken] = snapshot

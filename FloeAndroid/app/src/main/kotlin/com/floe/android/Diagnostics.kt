@@ -54,6 +54,7 @@ fun DiagnosticsSettingsPage(onOpenPreview: () -> Unit) {
         result.fold(onSuccess = { status = it }, onFailure = { failure = true })
     }
     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        com.floe.android.host.reporting.DiagnosticReportingSettings()
         // The sheet's independent detail header owns the 34sp section title.
         FloeSettingsSectionCard(title = stringResource(R.string.shared_core)) {
             FloeValueRow(

@@ -125,4 +125,7 @@
     <string name="schedule_pending_title">Scheduled task is pending</string>
     <string name="schedule_pending_body">%1$s could not start in the background. Open Floe to retry.</string>
     <string name="schedule_use_flexible_action">Use flexible schedule</string>
+    <string name="schedule_cadence_charging">When charging starts</string>
+    <string name="schedule_cadence_network">When internet connects</string>
+    <string name="schedule_condition_waiting">Waiting for the system condition</string>
 </resources>

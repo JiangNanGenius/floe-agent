@@ -1031,6 +1031,35 @@ public actor G073TaskScheduleService: G073ScheduleCompletionRecording {
             reason: "The task is queued and starts when the background dispatcher admits it.")
     }
 
+    /// Android platform condition transport. A persistent event UUID is replayed
+    /// after process death; the existing occurrence dedupe index is authoritative.
+    public func systemEvent(id: UUID, eventID: UUID, condition: TaskScheduleCadence,
+                            observedAt: Date, expectedRevision: String) async -> G073ScheduleDispatchOutcome {
+        guard condition == .charging || condition == .networkConnected,
+              let record = try? await store.schedule(id: id), record.isEnabled,
+              record.cadence == condition,
+              G073ScheduleRevision.digest(record) == expectedRevision else {
+            return G073ScheduleDispatchOutcome(state: .failed, scheduleID: id,
+                code: .revisionMismatch, reason: "The condition schedule changed or is disabled.")
+        }
+        let now = dependencies.now()
+        guard observedAt <= now.addingTimeInterval(60) else {
+            return G073ScheduleDispatchOutcome(state: .failed, scheduleID: id,
+                code: .cadenceInvalid, reason: "The event timestamp is invalid.")
+        }
+        let occurrence = TaskScheduleOccurrence(id: G073ScheduleIdentity.digestUUID("system:\(id.uuidString):\(eventID.uuidString)"), scheduleID: id,
+            scheduledFor: observedAt, dedupeKey: "system:\(condition.rawValue):\(eventID.uuidString)",
+            createdAt: now, updatedAt: now)
+        do { _ = try await store.enqueueOccurrence(occurrence) }
+        catch {
+            return G073ScheduleDispatchOutcome(state: .failed, scheduleID: id,
+                code: .launchRefused, reason: "The condition event could not be recorded.")
+        }
+        RunForegroundChange.notifyOwnedWorkChanged()
+        return G073ScheduleDispatchOutcome(state: .queued, scheduleID: id,
+            reason: "The condition event is durably recorded.")
+    }
+
     // MARK: Dispatch
 
     public struct DispatchRequest: Sendable {
@@ -1271,7 +1300,7 @@ public actor G073TaskScheduleService: G073ScheduleCompletionRecording {
         let now = date ?? dependencies.now()
         guard let records = try? await store.schedules() else { return [] }
         return records.prefix(200).map { record in
-            let eventDriven = record.cadence == .afterSuccess
+            let eventDriven = record.cadence.isEventDriven
             return G073ScheduleArmPlan(
                 scheduleID: record.id,
                 nextFireAt: record.isEnabled ? nextFire(record, now: now) : nil,
@@ -1380,7 +1409,7 @@ public actor G073TaskScheduleService: G073ScheduleCompletionRecording {
     private func dispatchDue(record: TaskScheduleRecord,
                              trigger: DispatchRequest.Trigger,
                              now: Date) async -> G073ScheduleDispatchOutcome {
-        guard record.cadence != .afterSuccess else {
+        guard !record.cadence.isEventDriven else {
             return G073ScheduleDispatchOutcome(
                 state: .waiting, scheduleID: record.id,
                 code: .waitingForUpstream,
@@ -1868,7 +1897,7 @@ public actor G073TaskScheduleService: G073ScheduleCompletionRecording {
             upstreamRunID: upstreamRunID, modelID: modelID,
             environmentID: environmentID,
             permissionJSON: G073SchedulePolicyCodec.encode(policy))
-        record.nextExpectedAt = cadence == .afterSuccess
+        record.nextExpectedAt = cadence.isEventDriven
             ? nil
             : (TaskSchedulePlanner.nextFireTime(after: now, record: record)
                 ?? record.scheduledAt)
@@ -1948,7 +1977,7 @@ public actor G073TaskScheduleService: G073ScheduleCompletionRecording {
     }
 
     private func nextFire(_ record: TaskScheduleRecord, now: Date) -> Date? {
-        guard record.isEnabled, record.cadence != .afterSuccess else { return nil }
+        guard record.isEnabled, !record.cadence.isEventDriven else { return nil }
         if let next = record.nextExpectedAt { return next }
         return TaskSchedulePlanner.nextFireTime(after: now, record: record)
             ?? record.scheduledAt

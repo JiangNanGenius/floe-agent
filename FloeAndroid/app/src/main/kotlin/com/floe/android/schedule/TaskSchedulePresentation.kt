@@ -37,7 +37,7 @@ object TaskSchedulePresentation {
         if (summary.needsAttention || transportNotice != null) {
             return TaskSchedulePresentationStatus.NEEDS_ATTENTION
         }
-        if (summary.cadence == TaskScheduleCadence.AFTER_SUCCESS) {
+        if (summary.cadence.isEventDriven) {
             return TaskSchedulePresentationStatus.EVENT_DRIVEN
         }
         if (!exactAlarmAllowed && !flexibleChosen) {

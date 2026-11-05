@@ -598,7 +598,7 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
             case .once:
                 record.isEnabled = false
                 record.nextExpectedAt = nil
-            case .afterSuccess:
+            case .afterSuccess, .charging, .networkConnected:
                 // Armed only by an upstream success; no clock schedule.
                 record.nextExpectedAt = nil
             case .daily, .weekly, .interval:
@@ -651,7 +651,7 @@ public actor SQLiteTaskScheduleStore: TaskScheduleStore {
         switch record.cadence {
         case .once:
             return record.scheduledAt > date ? record.scheduledAt : nil
-        case .afterSuccess:
+        case .afterSuccess, .charging, .networkConnected:
             return nil
         case .daily, .weekly, .interval:
             return TaskSchedulePlanner.nextFireTime(after: date, record: record)

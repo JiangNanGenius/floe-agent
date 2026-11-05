@@ -125,4 +125,7 @@
     <string name="schedule_pending_title">定时任务待运行</string>
     <string name="schedule_pending_body">“%1$s”无法在后台启动。请打开 Floe 重试。</string>
     <string name="schedule_use_flexible_action">改用弹性时间</string>
+    <string name="schedule_cadence_charging">开始充电时</string>
+    <string name="schedule_cadence_network">连接网络时</string>
+    <string name="schedule_condition_waiting">等待系统条件触发</string>
 </resources>

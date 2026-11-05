@@ -44,6 +44,9 @@ import kotlinx.coroutines.sync.withLock
  *  * onTerminate is never used as a shutdown/cleanup signal.
  */
 class FloeApplication : Application() {
+    internal val diagnosticReporter by lazy {
+        com.floe.android.host.reporting.DiagnosticReportService(this)
+    }
     // Lazy access occurs only from the ready main-process network destination.
     internal val diagnosticReports by lazy {
         com.floe.android.host.network.NetworkDiagnosticReportController(this)
@@ -432,6 +435,7 @@ class FloeApplication : Application() {
         // would duplicate the main process's lifecycle and database writers.
         // Its standalone components must not access main-host lateinit state.
         if (Application.getProcessName() == "$packageName:floe_office") return
+        diagnosticReporter.attach()
         officePreviews = com.floe.android.host.OfficePreviewController(this, hostScope)
         runOutputs = com.floe.android.host.output.RunOutputHostService(
             this, hostScope,
@@ -702,6 +706,10 @@ class FloeApplication : Application() {
     ) {
         var started = false
         state.collect { capability ->
+            if (capability is RuntimeBootstrapCapability.Failed && capability.reason in setOf(
+                    "gateway_readback_malformed", "store_readback_unreadable", "store_readback_mismatch")) {
+                diagnosticReporter.recordAppFault(capability.reason, IllegalStateException())
+            }
             runtimeHost?.onBootstrapCapability(capability)
             if (capability is RuntimeBootstrapCapability.OwnedStoreReady) {
                 // G03-R3 lane binding (Main steer 2026-10-23): the Linux

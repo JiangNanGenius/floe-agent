@@ -24,11 +24,16 @@ public enum TaskScheduleCadence: String, Sendable, Codable, CaseIterable, Hashab
     /// occurrence identity, so replayed completion callbacks cannot duplicate
     /// it).
     case afterSuccess
+    case charging
+    case networkConnected
+
+    public var isEventDriven: Bool { self == .afterSuccess || self == .charging || self == .networkConnected }
 
     /// True when the cadence repeats without an upstream event.
     public var isRepeating: Bool {
         switch self {
         case .once, .afterSuccess: false
+        case .charging, .networkConnected: true
         case .daily, .weekly, .interval: true
         }
     }
@@ -252,6 +257,8 @@ public enum TaskSchedulePlanner {
             )
         case .afterSuccess:
             return "afterSuccess"
+        case .charging, .networkConnected:
+            return "systemEvent"
         }
     }
 
@@ -267,7 +274,7 @@ public enum TaskSchedulePlanner {
         switch record.cadence {
         case .once:
             return anchor <= now ? [anchor] : []
-        case .afterSuccess:
+        case .afterSuccess, .charging, .networkConnected:
             // Armed only by a recorded upstream success; a clock pass must
             // never materialize a fire time for it.
             return []
@@ -313,7 +320,7 @@ public enum TaskSchedulePlanner {
         record: TaskScheduleRecord
     ) -> Date? {
         switch record.cadence {
-        case .once, .afterSuccess:
+        case .once, .afterSuccess, .charging, .networkConnected:
             return nil
         case .daily, .weekly:
             let step = record.cadence == .weekly ? 7 : 1

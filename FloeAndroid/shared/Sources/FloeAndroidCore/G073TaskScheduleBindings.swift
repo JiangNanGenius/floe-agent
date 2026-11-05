@@ -400,6 +400,7 @@ public enum G073TaskScheduleBindings {
         CommandSpec(name: "schedule.disable", revisionRequired: true),
         CommandSpec(name: "schedule.delete", revisionRequired: true),
         CommandSpec(name: "schedule.runNow", revisionRequired: true),
+        CommandSpec(name: "schedule.systemEvent", revisionRequired: true),
         CommandSpec(name: "schedule.history"),
         CommandSpec(name: "schedule.dispatch"),
         CommandSpec(name: "schedule.rearm"),
@@ -537,6 +538,8 @@ public enum G073TaskScheduleBindings {
             return await handleEnabled(envelope, service: service, enabled: false)
         case "schedule.delete":
             return await handleDelete(envelope, service: service)
+        case "schedule.systemEvent":
+            return await handleSystemEvent(envelope, service: service)
         case "schedule.runNow":
             return await handleRunNow(envelope, service: service)
         case "schedule.history":
@@ -718,6 +721,28 @@ public enum G073TaskScheduleBindings {
             return failure(outcome.code ?? .launchRefused,
                            outcome.reason ?? "The scheduled task could not be started.")
         }
+    }
+
+    private static func handleSystemEvent(_ envelope: G073ParsedEnvelope,
+                                           service: G073TaskScheduleService) async -> RuntimeCommandResult {
+        guard let object = G073ScheduleEnvelope.object(envelope.payload,
+                allowed: ["scheduleID", "eventID", "condition", "observedAt"]),
+              let id = try? object.uuid("scheduleID"),
+              let eventID = try? object.uuid("eventID"),
+              let raw = try? object.string("condition", maxBytes: 24),
+              let condition = TaskScheduleCadence(rawValue: raw),
+              let timeValue = object.optional("observedAt"),
+              let observedAt = G073WireDate.parse(timeValue),
+              let revision = envelope.revision,
+              revision.resourceID == G073ScheduleRevision.resourceID(scheduleID: id) else {
+            return failure(.revisionMismatch, "A valid condition event and schedule revision are required.")
+        }
+        let result = await service.systemEvent(id: id, eventID: eventID, condition: condition,
+            observedAt: observedAt, expectedRevision: revision.version)
+        guard result.state == .queued else {
+            return failure(result.code ?? .launchRefused, result.reason ?? "The condition event was refused.")
+        }
+        return success(G073WireValue.outcome(result))
     }
 
     private static func handleHistory(_ envelope: G073ParsedEnvelope,
@@ -1031,7 +1056,7 @@ public struct G073TaskScheduleTool: AgentTool {
     alarms can require a user-granted system permission; when it is missing the \
     schedule shows a waiting state instead of silently becoming best-effort.
     """
-    public static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["list","create","update","enable","disable","delete","runNow","history"]},"id":{"type":"string","description":"Schedule UUID (required for update/enable/disable/delete/runNow/history)"},"title":{"type":"string","maxLength":160},"prompt":{"type":"string","maxLength":16384,"description":"The task instruction that will run (required on create)"},"cadence":{"type":"string","enum":["once","daily","weekly","interval","afterSuccess"]},"scheduledAt":{"type":"string","description":"ISO-8601 start/anchor time"},"intervalHours":{"type":"integer","minimum":1,"maximum":8760},"intervalSeconds":{"type":"integer","minimum":60},"upstreamRunID":{"type":"string","description":"For afterSuccess: the concrete upstream run UUID whose SUCCESSFUL completion triggers this schedule exactly once"},"enable":{"type":"boolean"},"limit":{"type":"integer","minimum":1,"maximum":50}},"required":["action"],"additionalProperties":false}"#
+    public static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["list","create","update","enable","disable","delete","runNow","history"]},"id":{"type":"string","description":"Schedule UUID (required for update/enable/disable/delete/runNow/history)"},"title":{"type":"string","maxLength":160},"prompt":{"type":"string","maxLength":16384,"description":"The task instruction that will run (required on create)"},"cadence":{"type":"string","enum":["once","daily","weekly","interval","afterSuccess","charging","networkConnected"]},"scheduledAt":{"type":"string","description":"ISO-8601 start/anchor time"},"intervalHours":{"type":"integer","minimum":1,"maximum":8760},"intervalSeconds":{"type":"integer","minimum":60},"upstreamRunID":{"type":"string","description":"For afterSuccess: the concrete upstream run UUID whose SUCCESSFUL completion triggers this schedule exactly once"},"enable":{"type":"boolean"},"limit":{"type":"integer","minimum":1,"maximum":50}},"required":["action"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.persistsPersonalData, .changesAgentBehavior]
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating

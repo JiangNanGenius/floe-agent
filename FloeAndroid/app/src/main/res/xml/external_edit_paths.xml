@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Only explicitly granted working-copy URIs; journals/original versions stay private. -->
+    <files-path name="working" path="ExternalEdits/working/" />
+    <!-- Original versions are granted read-only, only after an explicit review tap. -->
+    <files-path name="versions" path="ExternalEdits/versions/" />
+</paths>

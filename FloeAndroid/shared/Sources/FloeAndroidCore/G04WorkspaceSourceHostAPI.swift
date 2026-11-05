@@ -1611,7 +1611,7 @@ public final class G04WorkspaceSourceHost: @unchecked Sendable {
         guard let taskID = Self.canonicalUUID(taskHex), let workspaceID = Self.canonicalUUID(workspaceHex),
               Self.validLogicalPath(logicalPath),
               isSHA256(expectedOriginalSHA256), isSHA256(expectedSourceSHA256),
-              expectedSourceBytes >= 1,
+              expectedSourceBytes >= 0,
               expectedSourceBytes <= WorkspaceFileService.officeBinaryReplacementBudget,
               !sourcePath.isEmpty, sourcePath.utf8.count <= 4096 else {
             return Int32(G04SourceHostStatus.invalidArguments)
@@ -1695,6 +1695,7 @@ public final class G04WorkspaceSourceHost: @unchecked Sendable {
                 expectedOriginalSHA256: expectedOriginal,
                 expectedSourceSHA256: expectedSource,
                 expectedSourceBytes: expectedBytes,
+                allowEmptySource: true,
                 cancellation: lease.cancellation)
         } catch {
             commitError = error

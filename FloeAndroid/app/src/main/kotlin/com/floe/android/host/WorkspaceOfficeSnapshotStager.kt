@@ -65,6 +65,16 @@ internal class WorkspaceOfficeSnapshotStager(
         formats: Set<String> = OFFICE_FORMAT_EXTENSIONS,
         maxBytes: Long = MAX_BYTES,
         isCurrent: () -> Boolean,
+    ): Snapshot = stageOwned(owner, relativePath, formats, maxBytes, false, isCurrent)
+
+    /** Trusted external-editor transport. File type is not an authority grant;
+     * the same native workspace egress revalidates task, path and source. */
+    fun stageForExternalEdit(owner: Owner, relativePath: String, isCurrent: () -> Boolean): Snapshot =
+        stageOwned(owner, relativePath, null, MAX_BYTES, true, isCurrent)
+
+    private fun stageOwned(
+        owner: Owner, relativePath: String, formats: Set<String>?, maxBytes: Long,
+        allowEmpty: Boolean, isCurrent: () -> Boolean,
     ): Snapshot {
         val parts = relativePath.split('/')
         val extension = relativePath.substringAfterLast('.', "").lowercase(Locale.ROOT)
@@ -72,8 +82,8 @@ internal class WorkspaceOfficeSnapshotStager(
         // Normalise the caller's set once: a lowercase extension is the only
         // shape ever compared, so a case/whitespace variant can never widen
         // the accepted purpose.
-        val allowed = formats.map { it.lowercase(Locale.ROOT) }.toSet()
-        if (extension !in allowed ||
+        val allowed = formats?.map { it.lowercase(Locale.ROOT) }?.toSet()
+        if ((allowed != null && extension !in allowed) ||
             relativePath.length > 4096 || relativePath.any { it == '\\' || it.code < 32 } ||
             parts.any { it.isEmpty() || it == "." || it == ".." }) throw Failure("invalidOfficePath")
         fun checkOwner() {
@@ -93,7 +103,7 @@ internal class WorkspaceOfficeSnapshotStager(
             val bytes = info.number("bytes") ?: throw Failure("snapshotInfoMissing")
             val sha = info.text("sha256")
             if (bytes > cap) throw Failure("contentTooLarge")
-            if (bytes !in 1..cap || !sha.matches(Regex("[0-9a-f]{64}")) ||
+            if (bytes !in (if (allowEmpty) 0L else 1L)..cap || !sha.matches(Regex("[0-9a-f]{64}")) ||
                 info.text("logicalPath") != relativePath || info.text("mode") != "export") {
                 throw Failure("invalidSnapshotInfo")
             }
@@ -105,7 +115,7 @@ internal class WorkspaceOfficeSnapshotStager(
             directory = File(root.canonicalFile, sessionID)
             Files.createDirectory(directory.toPath())
             val part = File(directory, "document.part")
-            val file = File(directory, "document.$extension")
+            val file = File(directory, if (extension.isEmpty()) "document" else "document.$extension")
             val digest = MessageDigest.getInstance("SHA-256")
             FileChannel.open(part.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { output ->
                 val page = ByteArray(CHUNK_BYTES)

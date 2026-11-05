@@ -199,7 +199,7 @@ fun TaskScheduleDestination(
         )
         val needsPermission = !exactAllowed && state.schedules.any {
             it.enabled && it.nextFireAtMillis != null &&
-                it.cadence != TaskScheduleCadence.AFTER_SUCCESS &&
+                !it.cadence.isEventDriven &&
                 !TaskSchedulePlatform.flexibleChosen(context, it.id)
         }
         if (needsPermission) {
@@ -607,6 +607,8 @@ private fun TaskScheduleEditorSheet(
         stringResource(R.string.schedule_cadence_weekly),
         stringResource(R.string.schedule_cadence_interval),
         stringResource(R.string.schedule_cadence_after_success),
+        stringResource(R.string.schedule_cadence_charging),
+        stringResource(R.string.schedule_cadence_network),
     )
     val cadences = TaskScheduleCadence.entries
     val timezone = base?.anchorTimezone ?: TimeZone.getDefault().id
@@ -791,7 +793,7 @@ private fun TaskScheduleEditorSheet(
                         )
                     }
                 }
-                if (cadence != TaskScheduleCadence.AFTER_SUCCESS) {
+                if (!cadence.isEventDriven) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -1128,6 +1130,9 @@ fun ScheduledTasksSummaryCard(
 @Composable
 private fun nextLine(summary: TaskScheduleSummary): String {
     if (!summary.enabled) return stringResource(R.string.schedule_no_next)
+    if (summary.cadence == TaskScheduleCadence.CHARGING || summary.cadence == TaskScheduleCadence.NETWORK_CONNECTED) {
+        return stringResource(R.string.schedule_condition_waiting)
+    }
     if (summary.cadence == TaskScheduleCadence.AFTER_SUCCESS) {
         return stringResource(R.string.schedule_after_success_line)
     }
@@ -1179,6 +1184,8 @@ private fun cadenceLabel(summary: TaskScheduleSummary): Int = when (summary.cade
     TaskScheduleCadence.WEEKLY -> R.string.schedule_cadence_weekly
     TaskScheduleCadence.INTERVAL -> R.string.schedule_cadence_interval
     TaskScheduleCadence.AFTER_SUCCESS -> R.string.schedule_cadence_after_success
+    TaskScheduleCadence.CHARGING -> R.string.schedule_cadence_charging
+    TaskScheduleCadence.NETWORK_CONNECTED -> R.string.schedule_cadence_network
 }
 
 private fun statusLabel(status: TaskSchedulePresentationStatus): Int = when (status) {

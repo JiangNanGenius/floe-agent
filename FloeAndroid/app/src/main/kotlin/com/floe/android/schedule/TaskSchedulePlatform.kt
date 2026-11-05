@@ -50,6 +50,7 @@ internal object TaskSchedulePlatform {
         this.environmentProvider = environmentProvider
         val created = TaskScheduleCoordinator(application, environmentProvider)
         coordinator = created
+        TaskScheduleConditions.attach(application)
         return created
     }
 
@@ -619,6 +620,30 @@ internal class TaskScheduleCoordinator(
             if (host !== boundHost || boundHost.nativeRootEpoch() != boundEpoch) return
             refreshWakeupsOnce(allowPendingDispatch = true)
         }
+    }
+
+    suspend fun submitConditionEvent(event: TaskScheduleConditions.Event): Boolean {
+        val current = waitForHost(HOST_WAIT_MILLIS) ?: return false
+        val commands = TaskScheduleCommands(current)
+        var offset = 0
+        repeat(20) {
+            val result = commands.listPage(limit = 20, offset = offset)
+            val page = (result as? TaskScheduleResult.Ok)?.value ?: return false
+            for (summary in page.schedules) {
+                if (!summary.enabled || summary.cadence.wire != event.condition) continue
+                val detail = (commands.detail(summary.id) as? TaskScheduleResult.Ok)?.value ?: return false
+                // A new schedule must not consume an event which predates it.
+                if ((detail.createdAtMillis ?: Long.MAX_VALUE) > event.at) continue
+                when (val accepted = commands.systemEvent(summary, event.id, event.at)) {
+                    is TaskScheduleResult.Ok -> if (accepted.value.accepted) enqueuePendingDispatch(summary.id) else return false
+                    is TaskScheduleResult.Failure -> return false
+                }
+            }
+            if (!page.hasMore) return true
+            if (page.nextOffset <= offset) return false
+            offset = page.nextOffset
+        }
+        return false
     }
 
     private suspend fun waitForHost(timeoutMillis: Long): RuntimeHost? {

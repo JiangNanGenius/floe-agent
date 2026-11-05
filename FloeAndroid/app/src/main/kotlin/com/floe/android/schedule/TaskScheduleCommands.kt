@@ -155,6 +155,14 @@ internal class TaskScheduleCommands(private val host: RuntimeHost) {
         TaskScheduleWire.objectOrNull(value)?.let(TaskScheduleWire::mutation)
     }
 
+    suspend fun systemEvent(summary: TaskScheduleSummary, eventID: String, observedAt: Long):
+        TaskScheduleResult<TaskScheduleDispatch> = execute(
+            "schedule.systemEvent", buildJsonObject {
+                put("scheduleID", summary.id); put("eventID", eventID)
+                put("condition", summary.cadence.wire); put("observedAt", TaskScheduleWire.isoUtc(observedAt))
+            }, revision = HostRevision("schedule.${summary.id.uppercase()}", summary.revision),
+        ) { TaskScheduleWire.objectOrNull(it)?.let(TaskScheduleWire::dispatch) }
+
     suspend fun delete(summary: TaskScheduleSummary): TaskScheduleResult<Unit> = execute(
         "schedule.delete",
         buildJsonObject { put("scheduleID", summary.id) },

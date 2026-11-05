@@ -54,6 +54,23 @@ internal class PhoneControlSession(
     private var lastWindowChangeAt = 0L
     private var lastContentChangeAt = 0L
     private var suppressUserTouchUntil = 0L
+    @Volatile var lastUserInteractionAt: Long = SystemClock.elapsedRealtime()
+        private set
+    private val unlocker = PhoneControlUnlocker(service, mainHandler) { until ->
+        suppressUserTouchUntil = until
+    }
+
+    fun unlockForTask(principal: PhoneControlPrincipal, operationToken: String, credential: CharArray,
+        isCurrent: () -> Boolean, complete: (PhoneUnlockResult) -> Unit) {
+        unlocker.unlock(principal.owner, operationToken, credential, isCurrent) { result ->
+            if (result == PhoneUnlockResult.UNLOCKED || result == PhoneUnlockResult.ALREADY_UNLOCKED) {
+                onScreenInteractive()
+            }
+            complete(result)
+        }
+    }
+
+    fun finishAutomation(owner: PhoneControlOwner) { unlocker.finish(owner) }
 
     private data class ObservationRecord(
         val observation: PhoneControlObservation,
@@ -907,7 +924,10 @@ internal class PhoneControlSession(
 
     fun stop() = applyGlobalBlocker(PhoneControlBlocker.STOPPED)
 
-    fun takeover() = applyGlobalBlocker(PhoneControlBlocker.TAKEN_OVER)
+    fun takeover() {
+        unlocker.userInteraction()
+        applyGlobalBlocker(PhoneControlBlocker.TAKEN_OVER)
+    }
 
     private fun applyGlobalBlocker(blocker: PhoneControlBlocker) {
         if (closed) return
@@ -958,6 +978,8 @@ internal class PhoneControlSession(
         if (closed) return
         val now = SystemClock.elapsedRealtime()
         if (now <= suppressUserTouchUntil) return
+        lastUserInteractionAt = now
+        unlocker.userInteraction()
         if (fence.state().owner == null && inFlightId == null) return
         fence.block(PhoneControlBlocker.USER_TOUCH)
         latest = null
@@ -974,6 +996,7 @@ internal class PhoneControlSession(
     fun shutdown(blocker: PhoneControlBlocker) {
         if (closed) return
         closed = true
+        unlocker.close()
         fence.block(blocker)
         latest = null
         abortInFlight(blocker, "the accessibility service is no longer connected")
@@ -1008,6 +1031,7 @@ internal class PhoneControlSession(
 
     /** Coroutine cancellation is not a fence: it aborts only this client's op. */
     fun cancelOperation(operationToken: String) {
+        unlocker.cancel(operationToken)
         if (closed || pendingClientToken != operationToken) return
         abortInFlight(null, "the caller cancelled the operation")
         PhoneControlRuntime.publish()

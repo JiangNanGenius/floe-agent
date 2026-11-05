@@ -25,7 +25,11 @@ enum class TaskScheduleCadence(val wire: String) {
     DAILY("daily"),
     WEEKLY("weekly"),
     INTERVAL("interval"),
-    AFTER_SUCCESS("afterSuccess");
+    AFTER_SUCCESS("afterSuccess"),
+    CHARGING("charging"),
+    NETWORK_CONNECTED("networkConnected");
+
+    val isEventDriven: Boolean get() = this in setOf(AFTER_SUCCESS, CHARGING, NETWORK_CONNECTED)
 
     companion object {
         fun fromWire(value: String?): TaskScheduleCadence? =

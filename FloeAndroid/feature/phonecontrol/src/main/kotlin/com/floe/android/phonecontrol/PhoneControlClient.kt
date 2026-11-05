@@ -146,6 +146,37 @@ class PhoneControlClient internal constructor(
         }
     }
 
+    /** Host-only: the model cannot supply, read or invoke stored unlock credentials. */
+    suspend fun unlockForTask(principal: PhoneControlPrincipal, credential: CharArray): PhoneUnlockResult {
+        val answer = authorization(principal)
+        if (answer !is PhoneControlResult.Ok) {
+            credential.fill('\u0000')
+            return PhoneUnlockResult.CANCELLED
+        }
+        val frozen = credential.copyOf()
+        return try {
+            when (val result = dispatch<PhoneUnlockResult> { session, token, finish ->
+                session.unlockForTask(principal, token, frozen,
+                    { !closed.get() && authorization(principal) is PhoneControlResult.Ok }) {
+                    finish(PhoneControlResult.Ok(it))
+                }
+            }) {
+                is PhoneControlResult.Ok -> result.value
+                else -> PhoneUnlockResult.FAILED
+            }
+        } finally { frozen.fill('\u0000') }
+    }
+
+    fun userIsActive(idleMillis: Long = 15_000): Boolean {
+        val session = PhoneControlRuntime.session() ?: return true
+        return android.os.SystemClock.elapsedRealtime() - session.lastUserInteractionAt < idleMillis
+    }
+
+    /** Relocks only when this exact task unlocked and no user subsequently took over. */
+    fun finishAutomation(owner: PhoneControlOwner) {
+        onMain { PhoneControlRuntime.session()?.finishAutomation(owner) }
+    }
+
     /** Always-available safety stop; idempotent and not gated on a grant. */
     fun stop() {
         if (closed.get()) return

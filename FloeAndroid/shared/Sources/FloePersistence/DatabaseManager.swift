@@ -94,6 +94,7 @@ public actor DatabaseManager {
         V50ConversationPinning.register(into: &migrator)
         V51MailAccounts.register(into: &migrator)
         V52AndroidCodeClosure.register(into: &migrator)
+        V53AndroidSystemConditions.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {

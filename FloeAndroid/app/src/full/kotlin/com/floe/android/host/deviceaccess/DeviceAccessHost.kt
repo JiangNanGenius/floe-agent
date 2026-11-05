@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.host.deviceaccess
 
+import android.app.Activity
+import android.app.KeyguardManager
+import com.floe.android.credentials.AndroidKeystoreCredentialStore
+import com.floe.android.phonecontrol.PhoneUnlockResult
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -101,11 +107,11 @@ import org.json.JSONObject
  *    the only source of operation identity;
  *  - user Settings are capability CEILINGS (selected target apps, shared file
  *    roots, screen scope, capture consent, package management);
- *  - phone control is armed ONLY by an explicit user gesture on the visible
- *    task, never by a model/tool call;
+ *  - phone control is armed by a visible user gesture or explicit saved automation
+ *    consent, always tied to the actual canonical task/run claim;
  *  - a user Stop/Takeover/disable fences queued platform work, cancels the real
  *    in-flight backend operation and sends run cancel through the existing
- *    conversation authority. No automatic re-arm exists.
+ *    conversation authority. Saved automation consent never clears a user stop.
  */
 internal class DeviceAccessHost(
     private val context: Context,
@@ -122,6 +128,9 @@ internal class DeviceAccessHost(
         val wholeScreenConsent: Boolean = false,
         val packageManagementAllowed: Boolean = false,
         val adbEnabled: Boolean = false,
+        val automaticPhoneControl: Boolean = false,
+        val autoUnlock: Boolean = false,
+        val floatingControls: Boolean = false,
     )
 
     private data class TaskCandidate(
@@ -188,6 +197,11 @@ internal class DeviceAccessHost(
 
     @Volatile
     private var settings = AccessSettings()
+    private val automationMutex = Mutex()
+    private val unlockCredentials = AndroidKeystoreCredentialStore(context, "phone-unlock")
+    private val automationControls = PhoneAutomationControls(context) { stopActiveTask(takeOver = true) }
+    @Volatile private var automatedOwner: PhoneControlOwner? = null
+    private var unlockConfigured = false
     @Volatile
     private var phoneStatus: PhoneControlStatus = PhoneControlModule.statusSnapshot()
     @Volatile
@@ -303,6 +317,19 @@ internal class DeviceAccessHost(
         onOpenAccessibilitySettings = ::openAccessibilitySettings,
         onRefresh = ::refreshFromUser,
         onArmPhoneControl = ::armVisibleTask,
+        onAutomaticControlChange = { enabled ->
+            settings = settings.copy(automaticPhoneControl = enabled)
+            persist()
+            if (!enabled) stopActiveTask(takeOver = true)
+            publish()
+        },
+        onAutoUnlockChange = { enabled ->
+            settings = settings.copy(autoUnlock = enabled && unlockConfigured)
+            persist(); publish()
+        },
+        onSaveUnlockCredential = ::saveUnlockCredential,
+        onForgetUnlockCredential = ::forgetUnlockCredential,
+        onFloatingControlsChange = ::setFloatingControls,
         onStopActiveTask = { stopActiveTask(takeOver = false) },
         onTakeOverActiveTask = { stopActiveTask(takeOver = true) },
         onAllowedPackagesChange = ::setAllowedPackages,
@@ -338,6 +365,12 @@ internal class DeviceAccessHost(
         pairingNotification.close()
         cancelPairingNotification()
         settings = loadSettings()
+        scope.launch(io) {
+            unlockConfigured = runCatching { unlockCredentials.read("device-lock")?.let {
+                it.fill(0); true
+            } ?: false }.getOrDefault(false)
+            publish()
+        }
         refreshRootCatalog()
         // Root is default-off after every process start. Previously selected
         // other-app data folders are NOT silently active again; they require
@@ -453,7 +486,8 @@ internal class DeviceAccessHost(
         publish()
     }
 
-    fun onActivityResumed() {
+    fun onActivityResumed(activity: Activity) {
+        automationControls.attach(activity)
         if (closed) return
         // The permission broker belongs to the main/platform lane. Read its
         // CURRENT state on the main thread; never touch it from the IO worker.
@@ -469,7 +503,7 @@ internal class DeviceAccessHost(
         }
     }
 
-    fun onActivityPaused() = Unit
+    fun onActivityPaused() { automationControls.attach(null) }
 
     /**
      * Explicit presentation entry: the stateless settings page was composed.
@@ -485,6 +519,8 @@ internal class DeviceAccessHost(
     fun close() {
         if (closed) return
         closed = true
+        automatedOwner?.let { phoneClient?.finishAutomation(it) }
+        automationControls.clear()
         closePairingSession()
         PairingNotificationRelay.detach(this)
         statusJobs.forEach { it.cancel() }
@@ -559,6 +595,9 @@ internal class DeviceAccessHost(
             wholeScreenConsent = preferences.getBoolean(KEY_WHOLE_SCREEN, false),
             packageManagementAllowed = preferences.getBoolean(KEY_MANAGEMENT, false),
             adbEnabled = preferences.getBoolean(KEY_ADB_ENABLED, false),
+            automaticPhoneControl = preferences.getBoolean("automatic_phone_control", false),
+            autoUnlock = preferences.getBoolean("automatic_unlock", false),
+            floatingControls = preferences.getBoolean("floating_controls", false),
         )
     }
 
@@ -571,7 +610,48 @@ internal class DeviceAccessHost(
             .putBoolean(KEY_WHOLE_SCREEN, settings.wholeScreenConsent)
             .putBoolean(KEY_MANAGEMENT, settings.packageManagementAllowed)
             .putBoolean(KEY_ADB_ENABLED, settings.adbEnabled)
+            .putBoolean("automatic_phone_control", settings.automaticPhoneControl)
+            .putBoolean("automatic_unlock", settings.autoUnlock)
+            .putBoolean("floating_controls", settings.floatingControls)
             .apply()
+    }
+
+    private fun saveUnlockCredential(value: String) {
+        if (value.isEmpty() || value.length > 64) return
+        val bytes = value.toByteArray(Charsets.UTF_8)
+        scope.launch(io) {
+            try {
+                unlockCredentials.write("device-lock", bytes)
+                unlockConfigured = true
+                settings = settings.copy(autoUnlock = true)
+                persist()
+                error = null
+            } catch (_: Exception) {
+                error = DeviceAccessUiError(context.getString(R.string.phone_automation_credential_failed), "unlock_storage")
+            } finally { bytes.fill(0); publish() }
+        }
+    }
+
+    private fun forgetUnlockCredential() {
+        settings = settings.copy(autoUnlock = false)
+        persist()
+        scope.launch(io) {
+            try { unlockCredentials.delete("device-lock"); unlockConfigured = false }
+            catch (_: Exception) {
+                error = DeviceAccessUiError(context.getString(R.string.phone_automation_credential_failed), "unlock_delete")
+            }
+            publish()
+        }
+    }
+
+    private fun setFloatingControls(enabled: Boolean) {
+        if (enabled && !Settings.canDrawOverlays(context)) {
+            runCatching { context.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                android.net.Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        }
+        settings = settings.copy(floatingControls = enabled)
+        persist()
+        publish()
     }
 
     private fun setAllowedPackages(packages: Set<String>) {
@@ -1171,6 +1251,12 @@ internal class DeviceAccessHost(
     private fun publish() {
         if (closed) return
         markStoppedOwnerSettled()
+        automatedOwner?.takeUnless { isOwnerRunLive(it) }?.let { ended ->
+            automatedOwner = null
+            if (armedOwner == ended) armedOwner = null
+            phoneClient?.finishAutomation(ended)
+            automationControls.clear()
+        }
         reconcileScreenShare()
         val candidate = currentCandidate()
         // Only the phone service's ACTUAL fence owner may be shown as armed.
@@ -1249,6 +1335,10 @@ internal class DeviceAccessHost(
             },
             pairingDiscovery = pairingDiscovery,
             usbBootstrapExported = usbBootstrapExported,
+            automaticPhoneControl = settings.automaticPhoneControl,
+            autoUnlock = settings.autoUnlock && unlockConfigured,
+            unlockConfigured = unlockConfigured,
+            floatingControls = settings.floatingControls,
         )
         pump?.publishAvailability()
     }
@@ -1437,7 +1527,7 @@ internal class DeviceAccessHost(
 
     private fun stopActiveTask(takeOver: Boolean) {
         if (busy != DeviceAccessBusyUi.NONE) return
-        val owner = armedOwner ?: currentCandidate()?.owner ?: return
+        val owner = armedOwner ?: armingOwner ?: currentCandidate()?.owner ?: return
         busy = if (takeOver) {
             DeviceAccessBusyUi.TASK_TAKE_OVER
         } else {
@@ -1449,6 +1539,7 @@ internal class DeviceAccessHost(
             // publishes the reduced availability mask; phone tools disappear
             // from discovery until a fresh USER arm).
             userStopped = true
+            automationControls.clear()
             lastStoppedOwner = owner
             stoppedOwnerSettled = false
             armedOwner = null
@@ -2379,6 +2470,56 @@ internal class DeviceAccessHost(
         if (candidate?.owner == owner) recentTitle = candidate.title
     }
 
+    /** Admission remains tied to the real platform claim; persisted user consent only
+     * replaces the repetitive per-run settings gesture, never canonical tool approval. */
+    private suspend fun preparePhoneAutomation(call: PlatformToolCall): PlatformToolOutcome? = automationMutex.withLock {
+        val owner = ownerOf(call)
+        val client = phoneClient ?: return@withLock null
+        if (userStopped || !settings.automaticPhoneControl) return@withLock null
+        if (!PlatformToolsNativeLive.isLive(call.claim) || PlatformToolsNativeLive.shouldStop(call.claim))
+            return@withLock PlatformToolOutcome.Failure("cancelled")
+        if (settings.allowedPackages.isEmpty() || !phoneServiceUsable()) return@withLock null
+        if (armedOwner == owner && phoneStatus.activeOwner == owner) return@withLock null
+        if (phoneStatus.activeOwner != null && phoneStatus.activeOwner != owner)
+            return@withLock PlatformToolOutcome.Failure("phone_busy")
+        val keyguard = context.getSystemService(KeyguardManager::class.java)
+        automationControls.show(owner, titleFor(owner), settings.floatingControls)
+        automatedOwner = owner
+        if (!keyguard.isKeyguardLocked && client.userIsActive()) {
+            if (!automationControls.confirmWhileInUse())
+                return@withLock PlatformToolOutcome.Failure("phone_waiting_for_user")
+        }
+        armingOwner = owner
+        bindPhoneCall(call)
+        try {
+            val principal = PhoneControlPrincipal(owner, call.epoch, settings.allowedPackages,
+                generation = call.epoch, grantID = call.approvalGrantID, callID = phoneBindingKey(call))
+            if (keyguard.isKeyguardLocked) {
+                if (!settings.autoUnlock || !unlockConfigured)
+                    return@withLock PlatformToolOutcome.Failure("phone_unlock_required")
+                val attemptID = "${owner.taskID}:${owner.runID}"
+                val attempts = preferences.getStringSet("unlock_attempted_runs", emptySet()).orEmpty()
+                if (attemptID in attempts) return@withLock PlatformToolOutcome.Failure("phone_unlock_needs_user")
+                // Commit before any input: process death cannot silently retry a credential.
+                if (!preferences.edit().putStringSet("unlock_attempted_runs",
+                        (attempts.toList().takeLast(63) + attemptID).toSet()).commit())
+                    return@withLock PlatformToolOutcome.Failure("phone_unlock_state_unavailable")
+                val stored = unlockCredentials.read("device-lock")
+                    ?: return@withLock PlatformToolOutcome.Failure("phone_unlock_required")
+                val secret = try { stored.toString(Charsets.UTF_8).toCharArray() } finally { stored.fill(0) }
+                val result = try { client.unlockForTask(principal, secret) } finally { secret.fill('\u0000') }
+                if (result != PhoneUnlockResult.UNLOCKED && result != PhoneUnlockResult.ALREADY_UNLOCKED)
+                    return@withLock PlatformToolOutcome.Failure("phone_unlock_needs_user")
+            }
+            when (val result = client.arm(principal)) {
+                is PhoneControlResult.Ok -> { armedOwner = owner; phoneStatus = result.value; publish(); null }
+                is PhoneControlResult.Denied -> deniedOutcome(result.reason)
+                is PhoneControlResult.Unavailable -> unavailableOutcome(result.reason)
+                is PhoneControlResult.Failed -> failedOutcome(result.reason)
+            }
+        } finally { armingOwner = null; unbindPhoneCall(call) }
+    }
+
     private fun phonePrecondition(call: PlatformToolCall, requireApproval: Boolean): PlatformToolOutcome? {
         rememberToolTask(call)
         val client = phoneClient
@@ -2414,6 +2555,7 @@ internal class DeviceAccessHost(
     }
 
     private suspend fun phoneObserve(call: PlatformToolCall): PlatformToolOutcome {
+        preparePhoneAutomation(call)?.let { return it }
         phonePrecondition(call, requireApproval = false)?.let { return it }
         val client = phoneClient ?: return PlatformToolOutcome.Failure("phone_unavailable")
         val principal = phonePrincipal(call)
@@ -2448,6 +2590,7 @@ internal class DeviceAccessHost(
     }
 
     private suspend fun phoneAct(call: PlatformToolCall): PlatformToolOutcome {
+        preparePhoneAutomation(call)?.let { return it }
         phonePrecondition(call, requireApproval = true)?.let { return it }
         val client = phoneClient ?: return PlatformToolOutcome.Failure("phone_unavailable")
         val principal = phonePrincipal(call)
@@ -2482,6 +2625,7 @@ internal class DeviceAccessHost(
     }
 
     private suspend fun phoneScreenshot(call: PlatformToolCall): PlatformToolOutcome {
+        preparePhoneAutomation(call)?.let { return it }
         phonePrecondition(call, requireApproval = false)?.let { return it }
         val client = phoneClient ?: return PlatformToolOutcome.Failure("phone_unavailable")
         val principal = phonePrincipal(call)

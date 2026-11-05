@@ -849,6 +849,7 @@ public struct WorkspaceFileService: Sendable {
         expectedOriginalSHA256: String,
         expectedSourceSHA256: String,
         expectedSourceBytes: Int,
+        allowEmptySource: Bool = false,
         cancellation: CancellationToken? = nil
     ) throws -> WriteOutcome {
         let lock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
@@ -865,8 +866,8 @@ public struct WorkspaceFileService: Sendable {
                 "expectedSourceSHA256 must be a full 64-hex-digit SHA-256"
             )
         }
-        guard expectedSourceBytes >= 1 else {
-            throw WorkspaceToolError.invalidArguments("expectedSourceBytes must be at least 1")
+        guard expectedSourceBytes >= (allowEmptySource ? 0 : 1) else {
+            throw WorkspaceToolError.invalidArguments("expectedSourceBytes is below the admitted minimum")
         }
         guard expectedSourceBytes <= Self.officeBinaryReplacementBudget else {
             throw WorkspaceToolError.tooLarge(limit: Self.officeBinaryReplacementBudget)
