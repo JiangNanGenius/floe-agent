@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "317：完善本机运行环境的工作线程调度，保留现有项目、文件和已安装内容。请留意长命令、多任务和终端持续输出时的响应与稳定性。多核效率仍在持续优化，本构建不承诺固定性能提升。包含316的背景音音量恢复修复。",
+  "en-US": "317: Improved local runtime worker scheduling while preserving projects, files and installed content. Please check responsiveness and stability with long commands, concurrent tasks and continuous terminal output. Multicore efficiency remains under active optimization; this build promises no fixed performance gain. Includes the background sound volume restoration fix from316."
+}

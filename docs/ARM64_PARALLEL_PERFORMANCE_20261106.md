@@ -83,3 +83,22 @@ and qualification of this newer scheduling candidate remain separate work.
 
 The local Linux graphical-program startup/display/input chain is still absent;
 the existing text terminal and remote VNC support do not establish that feature.
+
+## Physical M4 iPad follow-up
+
+The installed TestFlight 315 and 316 builds were compared on the same M4 iPad,
+using the unchanged sysbench 1.0.20 binary and fixture, four online guest CPUs,
+1 GiB RAM, and three counterbalanced trials of 1,000 total events per thread
+count. Median events/s for one/two/four threads were 121.69/208.01/182.80 on
+315 and 128.66/208.91/186.54 on 316: approximately +5.7%/+0.4%/+2.0%.
+Four-thread trials varied within each build; the small multicore differences
+do not establish a broad improvement. Four-thread scaling on 316 remains
+approximately 1.45x single-thread performance. This is not evidence of efficient
+four-core saturation or a thermal measurement.
+
+The actual 316 native terminal independently displayed all 120 flushed mixed
+Chinese/ASCII lines across two idle gaps, then the final completion marker and
+shell prompt, with no key or touch input after the successful start. Guest
+output checksums and the observed final marker were retained separately. This
+single real-device path did not reproduce the old keypress-gated output defect;
+background/reconnection variants remain outside that observation.

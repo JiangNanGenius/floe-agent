@@ -1,0 +1,9 @@
+Floe 1.7.76 (317) — TestFlight update
+
+This update improves worker scheduling in the existing local ARM64 runtime. It introduces no new permission categories or account requirements. Idle workers continue to wait for work, and existing cancellation and synchronization behavior is retained.
+
+This build also contains the background sound volume restoration fix and standard CAD view support from316. Background sound remains user controlled in Settings > Background Execution, with independent preview and volume controls.
+
+Floe is free to download. Cloud services use credentials configured by the user; saving settings does not generate paid images or video. Existing project files are retained.
+
+The existing Build315 App Store submission is not replaced by this TestFlight update.
