@@ -95,7 +95,7 @@
     },
     {
       "path": "Bridge/parallel_runtime.c",
-      "sha256": "66b4d3cedf438e0faeb74ebf1bbe7535e85a16bd481aa77020cc323d234a0023"
+      "sha256": "7cfc0d70a9955c1231a1a485c8126a343f14fcdb08766c59f680abc9b6b1ad9a"
     },
     {
       "path": "Bridge/parallel_runtime.h",
@@ -163,11 +163,11 @@
     },
     {
       "path": "Source/src/devices/virtio_9p.c",
-      "sha256": "8579cbfdbc315f9b0cce9016645287bd466c6b038007827ee0636323e5586921"
+      "sha256": "7e49a8f6cb3c3b85eb5760cbc75350d7914cf107615115d986ba5c51d8a11ca4"
     },
     {
       "path": "Source/src/devices/virtio_9p_port.h",
-      "sha256": "83df61404e2f6ae336f47ecdf5d6c0f343f94c065e8086800c5024621849921e"
+      "sha256": "a751f6c1e880f8d18c2e2d4efdb1ffe521780dd4233aea2a142178bdd05594cd"
     },
     {
       "path": "Source/src/devices/virtio_9p_share.h",
@@ -443,6 +443,16 @@
         }
       ],
       "qualification": "Owner Mac A8b normal/TSan; selected A6+CRC Apple SDK object/link qualification recorded separately. No App or guest result implied."
+    },
+    {
+      "name": "Preserve final 9P symlink identity and Linux ELOOP wire value",
+      "scope": "Source/src/devices/virtio_9p.c and virtio_9p_port.h; directory fid operations retain O_NOFOLLOW containment",
+      "qualification": "16 actual parser/native-filesystem checks with ASan/UBSan passed; original protocol failures retained. Integrated App Skill qualification pending."
+    },
+    {
+      "name": "Bound parallel handoffs and coalesce already-deasserted IRQ publications",
+      "scope": "Bridge/parallel_runtime.c publish_irq and grant only; uniform 16K maximum ticket, unchanged total-budget fairness and per-instruction stop/IRQ/TLBI checks",
+      "qualification": "Actual IRQ/fast-poll publication, 1-5 worker/lifecycle, SMP and exact 100ms/1024-budget regressions passed; selected real paths also passed ThreadSanitizer. One matched real Linux component pair passed fixed PBKDF2 and zlib result checks. See docs/ARM64_PARALLEL_PERFORMANCE_20261105.md; no iPad or integrated App acceptance implied."
     }
   ],
   "capabilityMeaning": "Implemented C ABI surface; not a claim of real Linux or App runtime acceptance.",

@@ -184,6 +184,13 @@ static void wake_harts(Machine *m,unsigned mask){
 static CPUPower hart_power(Machine *m,unsigned i){return (CPUPower)atomic_load_explicit(&parallel(m)->hart[i].power,memory_order_acquire);}
 static void publish_irq(Machine *m,unsigned i,bool level){
     AEParallel *p=parallel(m);AEHart *h=&p->hart[i];
+    /* GIC rescans publish every hart's level. An already deasserted line has
+     * no new value: avoid its mutex, full-poll request and readiness-pipe wake.
+     * Never clear pending here: a falling edge/event/TLBI may be unconsumed.
+     * Asserted levels still take the original path to wake a sleeping hart.
+     * The acquire load is the no-op's linearization point; a later assertion
+     * remains a later publication, with its own pending bit and wake. */
+    if(!level&&!atomic_load_explicit(&h->irq,memory_order_acquire))return;
     pthread_mutex_lock(&p->mutex);atomic_store_explicit(&h->irq,level,memory_order_release);
     /* Deassertion is a publication too; leaving a stale true IRQ is invalid. */
     atomic_store_explicit(&h->poll_pending,1,memory_order_release);
@@ -407,10 +414,13 @@ static int grant(AEParallel *p){
         if(h->busy||!runnable(h))continue;
         int error=ensure_worker(p,i);if(error)return error;
         /* A small total budget must reach every ready hart, rather than
-         * disappear into the first 4096-cap ticket. Keep <=128 RR pressure. */
+         * disappear into the first capped ticket. Keep <=128 RR pressure.
+         * Amortize coordinator/worker handoffs for compute-heavy runs with a
+         * bounded 16K ticket on every topology. Stop/IRQ/TLBI remain checked
+         * at instruction boundaries; device RPCs still yield immediately. */
         u64 ticket=p->remaining;
         if(!pressure&&ready>1)ticket=(ticket+ready-1)/ready;
-        if(ticket>4096)ticket=4096;
+        if(ticket>16384)ticket=16384;
         ready--;p->remaining-=ticket;
         h->ticket=ticket;h->busy=true;h->quiet_fp=false;pthread_cond_signal(&h->condition);
         m->next_hart=(i+1)%m->ncpus;
