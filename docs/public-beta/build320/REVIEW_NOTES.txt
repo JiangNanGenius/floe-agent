@@ -1,0 +1,9 @@
+Floe 1.7.79 (320) — TestFlight update
+
+This update refines the existing in-app browser and terminal interfaces. The browser adapts to the actual available panel width. Existing task-owned tabs, downloads, settings and full-screen presentation remain available. The terminal groups its existing display, clipboard and shortcut actions and moves port management into the status bar. Task files remain accessible from the original inspector menu instead of a duplicate folder button.
+
+This build retains the interpreted ARM64 runtime, synchronization, cancellation and saved environments from Build319. It does not introduce JIT or a new permission category. Performance gains vary by device and workload.
+
+Low device storage notices and user-controlled background sound remain available in Settings. Downloading or saving settings does not trigger paid generation. Floe is free to download; cloud services use credentials configured by the user.
+
+This TestFlight update does not replace the existing Build315 App Store submission or alter its automatic-release choice.

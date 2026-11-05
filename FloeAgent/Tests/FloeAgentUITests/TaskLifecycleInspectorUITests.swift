@@ -60,10 +60,7 @@ final class TaskLifecycleInspectorUITests: XCTestCase {
         let app = launch()
         defer { app.terminate() }
         openFixtureThread(app)
-        let files = app.buttons["thread.files.open"].firstMatch
-        XCTAssertTrue(files.waitForExistence(timeout: 15), "task files must have a direct entry")
-        XCTAssertTrue(files.isHittable)
-        files.tap()
+        let inspector = openFilesFromInspectorMenu(app)
         let collapse = app.buttons["inspector.collapse"].firstMatch
         XCTAssertTrue(collapse.waitForExistence(timeout: 15))
         XCTAssertTrue(collapse.isHittable)
@@ -73,7 +70,7 @@ final class TaskLifecycleInspectorUITests: XCTestCase {
         attach(app, "ipad-task-files-inspector-open")
         collapse.tap()
         XCTAssertTrue(collapse.waitForNonExistence(timeout: 10))
-        XCTAssertTrue(files.isHittable, "closing the inspector must retain the task")
+        XCTAssertTrue(inspector.isHittable, "closing the inspector must retain the task")
         attach(app, "ipad-task-files-inspector-collapsed")
     }
 
@@ -82,9 +79,7 @@ final class TaskLifecycleInspectorUITests: XCTestCase {
         let app = launch()
         defer { app.terminate() }
         openFixtureThread(app)
-        let files = app.buttons["thread.files.open"].firstMatch
-        XCTAssertTrue(files.waitForExistence(timeout: 15))
-        files.tap()
+        _ = openFilesFromInspectorMenu(app)
         let createMenu = app.buttons["fileTree.createMenu"].firstMatch
         // The reused simulator legitimately restores its last selected file.
         // Return through the real preview control instead of erasing state.
@@ -120,6 +115,18 @@ final class TaskLifecycleInspectorUITests: XCTestCase {
         row.tap()
         assertNativeWorkbench()
         attach(app, "task-file-browser-native-cad-reopen")
+    }
+
+    @discardableResult
+    private func openFilesFromInspectorMenu(_ app: XCUIApplication) -> XCUIElement {
+        XCTAssertFalse(app.buttons["thread.files.open"].exists, "files belong in the existing inspector menu")
+        let inspector = app.buttons["thread.inspector.menu"].firstMatch
+        XCTAssertTrue(inspector.waitForExistence(timeout: 15))
+        inspector.tap()
+        let files = app.buttons["thread.inspector.open.workspaceFiles"].firstMatch
+        XCTAssertTrue(files.waitForExistence(timeout: 10))
+        files.tap()
+        return inspector
     }
 
     func testDelegateCardOpensTheSpecificChildTranscriptAndExpandsTheFinding() {

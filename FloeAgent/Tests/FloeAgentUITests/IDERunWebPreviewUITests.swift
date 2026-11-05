@@ -83,6 +83,24 @@ final class IDERunWebPreviewUITests: XCTestCase {
         )
         capture("ide-service-browser-page")
 
+        XCTAssertGreaterThan(address.frame.width, 200, "browser navigation must leave a usable address field")
+        let menu = app.buttons["browser.menu"].firstMatch
+        XCTAssertTrue(menu.isHittable)
+        menu.tap()
+        let newTab = app.buttons["browser.menu.newTab"].firstMatch
+        XCTAssertTrue(newTab.waitForExistence(timeout: 5)); newTab.tap()
+        // UIKit exposes the placeholder as the value of an empty text field.
+        let blank = expectation(for: NSPredicate(format: "value != %@", url), evaluatedWith: address)
+        await fulfillment(of: [blank], timeout: 10)
+        capture("browser-new-tab-keeps-page-session")
+        menu.tap()
+        let closeTab = app.buttons["browser.menu.closeTab"].firstMatch
+        XCTAssertTrue(closeTab.waitForExistence(timeout: 5)); closeTab.tap()
+        let restored = expectation(for: NSPredicate(format: "value == %@", url), evaluatedWith: address)
+        await fulfillment(of: [restored], timeout: 10)
+        XCTAssertTrue(waitForWebMarker(app, marker: marker, timeout: 10), "closing the blank tab must return to the existing page")
+        capture("browser-existing-tab-restored")
+
         let done = app.buttons["workspace.ide.service.preview.done"]
         XCTAssertTrue(done.waitForExistence(timeout: 10))
         done.tap()

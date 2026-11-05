@@ -340,7 +340,7 @@ struct LocalTerminalView: View {
                             Button(role: .destructive) {
                                 Task { await owner.close() }
                             } label: { Label(String(localized: "terminal.end_session"), systemImage: "stop.circle") }
-                                .disabled(!owner.alive)
+                                .disabled(!owner.alive && !owner.opening)
                         }
                     }
             }
@@ -355,31 +355,39 @@ struct LocalTerminalView: View {
                     .frame(width: 8, height: 8)
                 Text(owner.status).font(.caption).lineLimit(1)
                 Spacer(minLength: 8)
+                Button("portforward.title", systemImage: "network") { showingPorts = true }
+                    .labelStyle(.iconOnly)
+                    .frame(width: 44, height: 44)
+                    .accessibilityIdentifier("terminal.ports")
                 if embedded {
                     Button { expanded = true } label: {
                         Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .frame(width: 44, height: 44)
                     }
                     .accessibilityLabel(IDELanguageRunText.t("全屏终端", "Full screen terminal"))
                     .accessibilityIdentifier("terminal.fullscreen")
                     Button {
                         Task { await owner.resetAndStart() }
-                    } label: { Image(systemName: "arrow.clockwise") }
+                    } label: { Image(systemName: "arrow.clockwise").frame(width: 44, height: 44) }
                         .buttonStyle(.borderless)
                         .disabled(owner.opening)
                         .accessibilityLabel(String(localized: "terminal.restart"))
                     Button(role: .destructive) {
                         Task { await owner.close() }
-                    } label: { Image(systemName: "stop.circle") }
+                    } label: { Image(systemName: "stop.circle").frame(width: 44, height: 44) }
                         .buttonStyle(.borderless)
-                        .disabled(!owner.alive)
+                        .disabled(!owner.alive && !owner.opening)
                         .accessibilityLabel(String(localized: "terminal.end_session"))
+                        .accessibilityIdentifier("terminal.stop")
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .buttonStyle(.borderless)
+            .padding(.leading, 12)
+            .padding(.trailing, 4)
+            .background(.bar)
             Divider()
-            Button("portforward.title", systemImage: "network") { showingPorts = true }.frame(minHeight: 44)
             TerminalControls(presentation: owner.presentation, interactive: owner.alive, send: owner.enqueue)
+            Divider()
             SSHEmulatorView(output: owner.output, byteEnd: owner.outputEnd, generation: owner.outputGeneration,
                 presentation: owner.presentation, isInteractive: owner.alive,
                 onSend: { data in owner.enqueue(data) },

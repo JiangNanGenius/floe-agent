@@ -31,12 +31,18 @@ struct TerminalView: View {
 
     private var content: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 0) {
                 statusBar
                 Button { expanded.toggle() } label: {
                     Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right").frame(width: 44, height: 44)
-                }.accessibilityLabel(IDELanguageRunText.t("切换全屏", "Toggle full screen"))
+                }
+                .accessibilityLabel(IDELanguageRunText.t("切换全屏", "Toggle full screen"))
+                .accessibilityIdentifier("terminal.fullscreen")
             }
+            .buttonStyle(.borderless)
+            .padding(.trailing, 4)
+            .background(.bar)
+            Divider()
             TerminalControls(presentation: viewModel.presentation, interactive: viewModel.isInteractive) { data in Task { await viewModel.send(data) } }
             if let error = viewModel.error { Text(error).font(.caption).foregroundStyle(.red) }
             Divider()
@@ -84,12 +90,12 @@ struct TerminalView: View {
                 .accessibilityHidden(true)
             Text(statusText)
                 .font(FloeTheme.Typography.metadata)
+                .lineLimit(1)
                 .foregroundStyle(.secondary)
             Spacer()
         }
-        .padding(.horizontal)
-        .padding(.vertical, 6)
-        .background(FloeTheme.chromeMaterial)
+        .padding(.leading, 12)
+        .frame(minHeight: 44)
     }
 
     private var statusText: String {
@@ -188,26 +194,57 @@ struct TerminalControls: View {
     let send: (Data) -> Void
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 0) {
+            HStack(spacing: 8) {
                 Menu {
-                    Button(IDELanguageRunText.t("放大字体", "Larger text")) { presentation.fontSize = min(28, presentation.fontSize + 1) }
-                    Button(IDELanguageRunText.t("缩小字体", "Smaller text")) { presentation.fontSize = max(10, presentation.fontSize - 1) }
-                    Button(IDELanguageRunText.t("复制输出", "Copy output")) {
-                        UIPasteboard.general.string = String(decoding: presentation.view.getTerminal().getBufferAsData(), as: UTF8.self).replacingOccurrences(of: "\u{0}", with: "")
+                    Section {
+                        Button(IDELanguageRunText.t("放大字体", "Larger text"), systemImage: "textformat.size.larger") { presentation.fontSize = min(28, presentation.fontSize + 1) }
+                            .disabled(presentation.fontSize >= 28)
+                        Button(IDELanguageRunText.t("缩小字体", "Smaller text"), systemImage: "textformat.size.smaller") { presentation.fontSize = max(10, presentation.fontSize - 1) }
+                            .disabled(presentation.fontSize <= 10)
                     }
-                    Button(IDELanguageRunText.t("粘贴", "Paste")) {
-                        if let text = UIPasteboard.general.string { send(Data(text.utf8)) }
-                    }.disabled(!interactive)
-                    Button(IDELanguageRunText.t("清屏", "Clear screen")) { presentation.clear() }
+                    Section {
+                        Button(IDELanguageRunText.t("复制输出", "Copy output"), systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = String(decoding: presentation.view.getTerminal().getBufferAsData(), as: UTF8.self).replacingOccurrences(of: "\u{0}", with: "")
+                        }
+                        Button(IDELanguageRunText.t("粘贴", "Paste"), systemImage: "doc.on.clipboard") {
+                            if let text = UIPasteboard.general.string { send(Data(text.utf8)) }
+                        }.disabled(!interactive)
+                    }
+                    Section {
+                        Button(IDELanguageRunText.t("清屏", "Clear screen"), systemImage: "clear") { presentation.clear() }
+                    }
                 } label: { Image(systemName: "textformat.size").frame(width: 44, height: 44) }
                 .accessibilityLabel(IDELanguageRunText.t("终端显示与剪贴板", "Terminal display and clipboard"))
-                key("Ctrl-C", "\u{03}"); key("Tab", "\t"); key("Esc", "\u{1b}")
-                key("←", "\u{1b}[D"); key("↓", "\u{1b}[B"); key("↑", "\u{1b}[A"); key("→", "\u{1b}[C")
-            }.font(.caption.monospaced())
+                .accessibilityIdentifier("terminal.display.options")
+                ControlGroup {
+                    key("Esc", "\u{1b}"); key("Tab", "\t"); key("Ctrl-C", "\u{03}")
+                }
+                ControlGroup {
+                    arrow("arrow.left", "\u{1b}[D", IDELanguageRunText.t("向左", "Left"))
+                    arrow("arrow.down", "\u{1b}[B", IDELanguageRunText.t("向下", "Down"))
+                    arrow("arrow.up", "\u{1b}[A", IDELanguageRunText.t("向上", "Up"))
+                    arrow("arrow.right", "\u{1b}[C", IDELanguageRunText.t("向右", "Right"))
+                }
+            }
+            .controlSize(.small)
+            .padding(.horizontal, 4)
+            .buttonStyle(.borderless)
         }
+        .background(.bar)
     }
     private func key(_ title: String, _ bytes: String) -> some View {
-        Button(title) { send(Data(bytes.utf8)) }.frame(minWidth: 44, minHeight: 44).disabled(!interactive)
+        Button { send(Data(bytes.utf8)) } label: {
+            Text(title).font(.subheadline.monospaced()).frame(minWidth: 44, minHeight: 44)
+        }
+        .disabled(!interactive)
+        .accessibilityIdentifier("terminal.key.\(title)")
+    }
+    private func arrow(_ symbol: String, _ bytes: String, _ label: String) -> some View {
+        Button { send(Data(bytes.utf8)) } label: {
+            Image(systemName: symbol).frame(width: 44, height: 44)
+        }
+        .disabled(!interactive)
+        .accessibilityLabel(label)
     }
 }
 

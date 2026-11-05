@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "320：整理浏览器地址栏、标签页和全屏操作，窄面板不再把网址挤在所有按钮之间；精简本机与远程终端操作条，整理显示、剪贴板和快捷键菜单；移除重复的文件夹按钮，文件仍从原有检查器菜单打开。保留319的多核、终端启动、存储提醒及背景音音量修复。请检查窄面板、大字体、标签切换、全屏、终端输入输出及停止与重连。315正式版审核保持不变。",
+  "en-US": "320: Refined browser address, tabs and full-screen controls, giving the address more room in narrow panels. Streamlined local and remote terminal controls and grouped display, clipboard and shortcut actions. Removed the duplicate folder button; task files remain in the existing inspector menu. Retains319 multicore, terminal startup, storage notice and background sound volume fixes. Please check narrow panels, larger text, tabs, full screen, terminal input/output, stop and reconnect. The existing Build315 App Store review is unchanged."
+}
