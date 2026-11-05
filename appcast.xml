@@ -1,0 +1,26 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <item>
+      <title>1.1.2</title>
+      <pubDate>Thu, 05 Nov 2026 14:10:27 +1100</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-bridge-v1.1.2</link>
+      <sparkle:version>5</sparkle:version>
+      <sparkle:shortVersionString>1.1.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>&lt;h3&gt;Floe Bridge 1.1.2&lt;/h3&gt;&lt;p&gt;修复设置窗口未出现的问题，支持关闭后重新打开。保留本机认证配对、终端、文件传输及自动更新。&lt;/p&gt;&lt;p&gt;Fixes the settings window failing to appear and supports reopening after closing. Retains authenticated local pairing, terminals, file transfer and automatic updates.&lt;/p&gt;</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-bridge-v1.1.2/Floe-Bridge-1.1.2.dmg" length="4646823" type="application/octet-stream" sparkle:edSignature="ytqYsAF8Rkb+rnvI+8It6Iih+VABQPYdJ94HMPoYsxyKKOKCy1R7umRzN4bfO88jFlBFsYFKmc9LDFRi7g61DQ==" />
+    </item>
+    <title>Floe Bridge</title>
+    <item>
+      <title>1.1.0</title>
+      <pubDate>Tue, 03 Nov 2026 18:29:17 +1100</pubDate>
+      <sparkle:version>3</sparkle:version>
+      <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-bridge-v1.1.0/Floe-Bridge-1.1.0.dmg" length="4656523" type="application/octet-stream" sparkle:edSignature="DnFM6rcpcSyvJM0ZEZdha2gpxmnwT2AFDY9Ek411rc9ddTEXjFM3kdgAx1JPcWOopMiZw7rOu60c6vAFylADAw==" />
+    </item>
+  </channel>
+</rss>
