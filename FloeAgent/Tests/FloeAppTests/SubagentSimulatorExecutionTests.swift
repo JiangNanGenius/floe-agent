@@ -8346,6 +8346,16 @@ extension SubagentSimulatorExecutionTests {
     @Test("ARM64 data candidates: exact declared APT dependencies and full golden scripts in the real guest",
           .enabled(if: ProcessInfo.processInfo.environment["FLOE_DATA_ARM64_CANDIDATE"] == "1"))
     func dataARM64CandidateQualification() async throws {
+        try await dataARM64Qualification(scratchOnly: false)
+    }
+
+    @Test("ARM64 shared tempfile symlink and directory-removal preflight, without dependency installation",
+          .enabled(if: ProcessInfo.processInfo.environment["FLOE_DATA_ARM64_SCRATCH"] == "1"))
+    func dataARM64SharedTempfilePreflight() async throws {
+        try await dataARM64Qualification(scratchOnly: true)
+    }
+
+    private func dataARM64Qualification(scratchOnly: Bool) async throws {
         let allCases = ["exploratory-data-analysis", "statistical-analysis", "scientific-visualization", "markitdown"]
         let selectedCases = ProcessInfo.processInfo.environment["FLOE_DATA_ARM64_CASES"]
             .map { $0.split(separator: ",", omittingEmptySubsequences: false).map(String.init) } ?? allCases
@@ -8357,8 +8367,9 @@ extension SubagentSimulatorExecutionTests {
         let input = support.appendingPathComponent("FloeAgent/QualificationInputs/DataARM64")
         let runID = UUID(), conversationID = UUID()
         let exported = support.appendingPathComponent("FloeAgent/QualificationEvidence/DataARM64/" + runID.uuidString)
-        var evidence: [String: String] = ["kind": "candidate-real-guest-not-official-install", "runID": runID.uuidString,
-            "selectedCases": selectedCases.joined(separator: ",")]
+        var evidence: [String: String] = [
+            "kind": scratchOnly ? "platform-shared-tempfile-preflight-not-skill-qualification" : "candidate-real-guest-not-official-install",
+            "runID": runID.uuidString, "selectedCases": scratchOnly ? "" : selectedCases.joined(separator: ",")]
         let pins: [(String, Int, String)] = [
             ("run.py", 4775, "6b081a45c3bd309ff66697f15f492da1244ac030ba396c5c20c40c78f0bad99f"),
             ("manifest.json", 4083, "1fc794ee9f4c73714ab3cf813011317c6a682dd1128e698b625175c010d50104"),
@@ -8398,7 +8409,7 @@ extension SubagentSimulatorExecutionTests {
         }
         do {
             var staged: [SkillHubStagedFile] = []
-            for (path, count, hash) in pins {
+            for (path, count, hash) in (scratchOnly ? [] : pins) {
                 let bytes = try Data(contentsOf: input.appendingPathComponent(path))
                 try #require(bytes.count == count && FloeDigest.sha256Hex(bytes) == hash,
                     "Current ARM64 input changed: \(path)")
@@ -8431,12 +8442,44 @@ extension SubagentSimulatorExecutionTests {
                 workspaceRootURL: root, cancellation: CancellationToken(), environmentID: environmentID,
                 conversationID: conversationID)
             try await requireQualifiedKernel(runtime: runtime, identity: identity, context: context)
-            let verify = try await skillHubShell(runtime: runtime, identity: identity, context: context,
+            if !scratchOnly {
+                let verify = try await skillHubShell(runtime: runtime, identity: identity, context: context,
                 tag: "data-arm64-stage", command: """
                 python3 -c 'import json,hashlib,pathlib,platform; p=pathlib.Path("."); m=json.loads((p/"skill-hub-staging.json").read_bytes()); assert platform.machine()=="aarch64"; [(lambda b,r: (len(b)==r["bytes"] and hashlib.sha256(b).hexdigest()==r["sha256"]) or (_ for _ in ()).throw(AssertionError(r["path"])))((p/r["path"]).read_bytes(),r) for r in m["files"]]; print("DATA_ARM64_STAGE_OK")'
                 """, timeout: 120)
-            try #require(verify.status == .ok && sevenDeepOutput(verify).contains("DATA_ARM64_STAGE_OK"))
-            evidence["guestStage"] = sevenDeepOutput(verify)
+                try #require(verify.status == .ok && sevenDeepOutput(verify).contains("DATA_ARM64_STAGE_OK"))
+                evidence["guestStage"] = sevenDeepOutput(verify)
+            }
+            // Fail before expensive dependency work if the real shared TMPDIR
+            // cannot preserve symlink metadata and remove directories. The
+            // complete shipped verifiers below remain unchanged.
+            let scratch = try await skillHubShell(runtime: runtime, identity: identity, context: context,
+                tag: "data-arm64-scratch", command: """
+                python3 - <<'PY'
+                import os, tempfile
+                from pathlib import Path
+                with tempfile.TemporaryDirectory(prefix="eda-symlink-preflight-") as raw:
+                    tree = Path(raw)
+                    parent = tree / "root" / "nested"
+                    parent.mkdir(parents=True)
+                    target = tree / "outside.csv"
+                    target.write_text("a,b\\n1,2\\n")
+                    link = parent / "link.csv"
+                    link.symlink_to(target)
+                    assert link.is_symlink()
+                    assert os.readlink(link) == str(target)
+                    assert target.read_text() == "a,b\\n1,2\\n"
+                assert not tree.exists()
+                print("DATA_ARM64_SCRATCH_OK")
+                PY
+                """, timeout: 120)
+            evidence["guestSymlinkPreflight"] = sevenDeepOutput(scratch)
+            try #require(scratch.status == .ok && sevenDeepOutput(scratch).contains("DATA_ARM64_SCRATCH_OK"))
+            if scratchOnly {
+                evidence["passed"] = "true"
+                await finish()
+                return
+            }
             let jobs = try #require(liveApp.backgroundJobService)
             for sid in selectedCases {
                 print("FLOE_DATA_ARM64_PHASE=\(sid)")

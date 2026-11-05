@@ -74,8 +74,11 @@ static void read_inside(VirtIO9P *v, u32 fid) {
     Cur r = response(v, &c, P9_RREAD); u32 n = c_u32(&r);
     CHECK(n == 6 && !memcmp(r.b+r.pos, "inside", 6));
 }
+static Cur unlink_flags_request(VirtIO9P *v, u32 parent, const char *name, u32 flags) {
+    Cur c = request(v, P9_TUNLINKAT); p_u32(&c,parent); p_str(&c,name); p_u32(&c,flags); return c;
+}
 static Cur unlink_request(VirtIO9P *v, u32 parent, const char *name) {
-    Cur c = request(v, P9_TUNLINKAT); p_u32(&c,parent); p_str(&c,name); p_u32(&c,0); return c;
+    return unlink_flags_request(v,parent,name,0);
 }
 static void host_write(const char *path, const char *body) {
     int fd = open(path, O_WRONLY|O_CREAT|O_EXCL, 0600); CHECK(fd>=0);
@@ -155,6 +158,20 @@ int main(int argc, char **argv) {
     c=request(v,P9_TRENAME);p_u32(&c,9);p_u32(&c,2);p_str(&c,"renamed.csv");(void)response(v,&c,P9_RRENAME);
     c=unlink_request(v,2,"renamed.csv");(void)response(v,&c,P9_RUNLINKAT);done();
 
+    check_case("Linux wire AT_REMOVEDIR removes an empty directory on Darwin");
+    c=request(v,P9_TMKDIR);p_u32(&c,2);p_str(&c,"remove-me");p_u32(&c,0700);p_u32(&c,0);(void)response(v,&c,P9_RMKDIR);
+    c=unlink_flags_request(v,2,"remove-me",0x200u);(void)response(v,&c,P9_RUNLINKAT);
+    struct stat deleted;CHECK(fstatat(v->rootfd,"nested/remove-me",&deleted,AT_SYMLINK_NOFOLLOW)<0 && errno==ENOENT);done();
+
+    check_case("directory-removal flag never unlinks a symlink node");
+    c=unlink_flags_request(v,1,"alias",0x200u);error_reply(v,&c,20,20);
+    CHECK(fstatat(v->rootfd,"alias",&deleted,AT_SYMLINK_NOFOLLOW)==0 && S_ISLNK(deleted.st_mode));done();
+
+    check_case("host-only and unsupported unlink flags refuse before mutation");
+    c=unlink_flags_request(v,1,"alias",0x80u);error_reply(v,&c,22,22);
+    c=unlink_flags_request(v,1,"alias",0x400u);error_reply(v,&c,22,22);
+    CHECK(fstatat(v->rootfd,"alias",&deleted,AT_SYMLINK_NOFOLLOW)==0 && S_ISLNK(deleted.st_mode));done();
+
     check_case("generation fence refuses old fid");
     CHECK(p9s_detach(&v->share,true)==0);CHECK(p9s_attach(&v->share,0,0,false)==0);
     c=request(v,P9_TGETATTR);p_u32(&c,1);p_u64(&c,P9_STATS_BASIC);error_reply(v,&c,116,116);done();
@@ -163,6 +180,7 @@ int main(int argc, char **argv) {
     CHECK(virtio_9p_detach_root(v,true)==0);CHECK(virtio_9p_attach_root(v,root,0,0,true)==0);attach(v,20);
     walk(v,20,21,"escape",P9_QTSYMLINK);link_metadata(v,21,outside);
     c=unlink_request(v,20,"escape");error_reply(v,&c,30,30);
+    c=unlink_flags_request(v,20,"nested",0x200u);error_reply(v,&c,30,30);
     c=request(v,P9_TRENAME);p_u32(&c,21);p_u32(&c,20);p_str(&c,"changed");error_reply(v,&c,30,30);
     c=request(v,P9_TRENAMEAT);p_u32(&c,20);p_str(&c,"escape");p_u32(&c,20);p_str(&c,"changed");error_reply(v,&c,30,30);
     c=open_request(v,21,1);error_reply(v,&c,30,30);host_body(victim,"outside-sentinel");done();

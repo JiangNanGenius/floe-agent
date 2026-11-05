@@ -26,10 +26,12 @@ xcrun clang -std=c11 -D_DARWIN_C_SOURCE -O1 -g -ffunction-sections \
 "$FLOE_NINEP_BUILD/protocol-tests" "$FLOE_NINEP_BUILD"
 ```
 
-Success prints `NINEP_PROTOCOL_OK checks=16`. The original implementation
+Success prints `NINEP_PROTOCOL_OK checks=19`. The original implementation
 fails the first final-link qid assertion. The initial walk repair also
 exposed the existing Darwin-to-Linux `ELOOP` translation defect; its assertion
-is retained. Generated `fixture-*` trees belong only to this executable and
+is retained. Directory removal also checks Linux's wire `AT_REMOVEDIR=0x200`
+against Darwin's host flag, rejects unsupported bits and preserves a symlink
+when directory removal is requested. Generated `fixture-*` trees belong only to this executable and
 can be removed after retaining required evidence.
 
 App-hosted ARM64 Skill workflows must be rerun after the release owner

@@ -132,6 +132,8 @@ enum {
 #ifndef AT_REMOVEDIR
 #define AT_REMOVEDIR 0x200
 #endif
+/* 9P2000.L carries Linux flags; Darwin's native AT_REMOVEDIR is 0x80. */
+#define P9_AT_REMOVEDIR 0x200u
 
 /* ---- fid table ---- */
 #define FID_BUCKETS 1024
@@ -944,13 +946,14 @@ static u32 h_unlinkat(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     char name[P9_NAME_MAX]; c_str(in, name, sizeof(name));
     u32 flags = c_u32(in);
     if (in->err) return mk_lerror(v, tag, EINVAL, cap);
+    if (flags & ~P9_AT_REMOVEDIR) return mk_lerror(v, tag, EINVAL, cap);
     if (v->share.ro) return mk_lerror(v, tag, EROFS, cap);
     P9Fid *f = fid_find_live(v, dfid);
     if (!f) return mk_lerror(v, tag, errno, cap);
     if (!p9_elem_ok(name)) return mk_lerror(v, tag, EINVAL, cap);
     int dfd = p9_open_dir_fd(v, f->path);
     if (dfd < 0) return mk_lerror(v, tag, errno, cap);
-    int r = unlinkat(dfd, name, flags & AT_REMOVEDIR ? AT_REMOVEDIR : 0);
+    int r = unlinkat(dfd, name, flags & P9_AT_REMOVEDIR ? AT_REMOVEDIR : 0);
     int error = errno;
     close(dfd);
     if (r) return mk_lerror(v, tag, error, cap);
