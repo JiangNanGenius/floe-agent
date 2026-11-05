@@ -1,0 +1,11 @@
+Floe 1.7.77 (318) — TestFlight update
+
+This update adds low device storage notices and clear recovery guidance when local data cannot open or a write fails because storage is full. Warnings do not automatically delete chats, projects or skills. Device capacity is measured locally and is not sent to a provider.
+
+Terminal startup now belongs to its persistent session owner, so changing between embedded and full-screen presentation does not cancel the connection. Explicit stop and reconnect remain available. The existing local ARM64 runtime and user files are retained; no JIT or new permission category is introduced.
+
+The update includes previous local runtime scheduling and background sound volume restoration fixes. Background sound remains user controlled in Settings > Background Execution, with independent preview and volume controls.
+
+Floe is free to download. Cloud services use credentials configured by the user; saving settings does not generate paid images or video.
+
+This TestFlight update does not replace the existing Build315 App Store submission or alter its automatic-release choice.

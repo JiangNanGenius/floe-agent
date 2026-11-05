@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "318：新增设备存储空间提醒，显示可用空间和处理方法；保存或下载因空间已满失败时，释放空间后可重试。修复终端启动时切换全屏导致连接取消。包含前版运行环境调度与背景音音量恢复修复，保留项目、文件和已安装内容。请留意存储提醒、终端切换、长命令和停止／重连。多核效率仍在优化，不承诺固定性能提升。",
+  "en-US": "318: Added device storage warnings with available space and recovery guidance. Free up space and retry saves or downloads that failed because storage was full. Fixed terminal startup being cancelled when switching to full screen. Includes runtime scheduling and background sound volume restoration fixes while preserving existing content. Please check storage notices, terminal transitions, long commands, stop and reconnect. Multicore efficiency remains under optimization; no fixed gain is promised."
+}
