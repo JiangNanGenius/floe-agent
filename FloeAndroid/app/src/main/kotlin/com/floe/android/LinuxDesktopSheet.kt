@@ -26,7 +26,14 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
     val compact = LocalConfiguration.current.screenWidthDp < 840
     var desktop by remember(workspaceID) { mutableStateOf(!compact) }
     var install by remember(workspaceID) { mutableStateOf(true) }
-    var selectedApp by remember(workspaceID) { mutableStateOf("mousepad") }
+    var selectedApp by remember(workspaceID, selectedPath) { mutableStateOf(
+        when (selectedPath.substringAfterLast('.', "").lowercase()) {
+            "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "rtf", "pdf" -> "libreoffice"
+            "svg" -> "inkscape"
+            "png", "jpg", "jpeg", "webp", "tif", "tiff", "xcf" -> "gimp"
+            "blend", "glb", "gltf", "obj", "stl" -> "blender"
+            else -> "mousepad"
+        }) }
     var filesFailed by remember { mutableStateOf(false) }
     var softwareVisible by remember { mutableStateOf(false) }
     var stopRequested by remember { mutableStateOf(false) }

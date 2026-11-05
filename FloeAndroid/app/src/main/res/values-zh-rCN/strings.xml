@@ -536,7 +536,7 @@
     <string name="external_edit_path">项目文件</string>
     <string name="external_edit_open">选择编辑器</string>
     <string name="external_edit_preparing">正在准备副本…</string>
-    <string name="external_edit_no_handler">未找到合适的编辑器。安装可编辑此文件的应用后重试。</string>
+    <string name="external_edit_no_handler">未找到合适的编辑器。可以使用 Linux 编辑器，或安装其他应用后重试。</string>
     <string name="external_edit_retry_error">修改已保留。文件和工作区可用后，可再次核对保存。</string>
     <string name="external_edit_waiting">等待编辑器保存</string>
     <string name="external_edit_saving">正在回传已保存的修改…</string>
@@ -634,4 +634,5 @@
     <string name="linux_software_remove_notice">请先保存修改并关闭此软件。卸载软件包会保留项目文件和用户设置。</string>
     <string name="linux_desktop_save_pending">文件回传或会话关闭尚未完成，已保留会话。请重试后再切换环境。</string>
     <string name="linux_desktop_retry_return">重试回传并停止</string>
+    <string name="external_edit_linux">使用 Linux 编辑器</string>
 </resources>

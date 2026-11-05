@@ -184,7 +184,19 @@ internal class ExternalEditController(private val context: Context, private val 
         if (!ExternalEditPolicy.validPath(path)) throw Failure("invalidPath")
         records.values.firstOrNull { sameOwner(it.owner, owner) && it.logicalPath == path &&
             it.phase != ExternalEditPhase.FINISHED }?.let {
-            if ((it.linuxWorkingPath != null) != linux) throw Failure("editorAlreadyOpen")
+            if ((it.linuxWorkingPath != null) != linux) {
+                // No handler means no Android editor received a write grant.
+                // Explicit Linux fallback may reuse that unchanged recovery copy.
+                if (linux && it.linuxWorkingPath == null && it.errorCode == "noEditor" &&
+                    it.phase == ExternalEditPhase.EDITING &&
+                    measured(working(it)) == (it.baselineSHA256 to it.baselineBytes)) {
+                    val handedOff = it.copy(linuxWorkingPath = ".floe-edits/${it.id}/${it.displayName}",
+                        errorCode = null, updatedAt = System.currentTimeMillis())
+                    save(handedOff)
+                    return@withLock handedOff
+                }
+                throw Failure("editorAlreadyOpen")
+            }
             return@withLock it
         }
         if (records.values.count { it.phase != ExternalEditPhase.FINISHED } >= ExternalEditPolicy.MAX_ACTIVE)

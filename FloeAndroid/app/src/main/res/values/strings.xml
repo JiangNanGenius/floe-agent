@@ -536,7 +536,7 @@
     <string name="external_edit_path">Project file</string>
     <string name="external_edit_open">Choose editor</string>
     <string name="external_edit_preparing">Preparing copy…</string>
-    <string name="external_edit_no_handler">No suitable editor was found. Install an app that can edit this file and try again.</string>
+    <string name="external_edit_no_handler">No suitable editor was found. Use a Linux editor, or install another app and try again.</string>
     <string name="external_edit_retry_error">Changes are kept. Check again when the file and its workspace are available.</string>
     <string name="external_edit_waiting">Waiting for saved changes</string>
     <string name="external_edit_saving">Returning saved changes…</string>
@@ -634,4 +634,5 @@
     <string name="linux_software_remove_notice">Close this application and save your work first. Package removal keeps your project files and user settings.</string>
     <string name="linux_desktop_save_pending">File return or session shutdown is incomplete. The session is retained; retry before switching environments.</string>
     <string name="linux_desktop_retry_return">Retry file return and stop</string>
+    <string name="external_edit_linux">Use Linux editor</string>
 </resources>

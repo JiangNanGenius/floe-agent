@@ -17,7 +17,7 @@ import com.floe.android.host.externaledit.ExternalEditPhase
 
 @Composable
 internal fun ExternalEditorSheet(host: RuntimeHost, taskID: String, workspaceID: String,
-    suggestedPath: String, visible: Boolean, onDismiss: () -> Unit) {
+    suggestedPath: String, visible: Boolean, onOpenLinux: (String) -> Unit, onDismiss: () -> Unit) {
     if (!visible) return
     val service = host.externalEdits
     val state by service.state.collectAsState()
@@ -38,6 +38,9 @@ internal fun ExternalEditorSheet(host: RuntimeHost, taskID: String, workspaceID:
             FloeCapsuleButton(stringResource(if (state.preparing) R.string.external_edit_preparing else R.string.external_edit_open),
                 enabled = activity != null && path.isNotBlank() && !state.preparing,
                 onClick = { activity?.let { service.openAndroid(it, owner, path.trim()) } })
+            FloeCapsuleButton(stringResource(R.string.external_edit_linux),
+                enabled = path.isNotBlank() && !state.preparing,
+                onClick = { onOpenLinux(path.trim()) })
             state.failure?.let { code ->
                 FloeText(stringResource(if (code == "noEditor") R.string.external_edit_no_handler else
                     R.string.external_edit_retry_error), color = Floe.colors.secondaryLabel)

@@ -310,6 +310,7 @@ internal fun WorkspaceFilesPane(
     var sourcesVisible by remember(owner) { mutableStateOf(false) }
     var externalEditorVisible by remember(owner) { mutableStateOf(false) }
     var linuxDesktopVisible by remember(owner) { mutableStateOf(false) }
+    var linuxDesktopPath by remember(owner) { mutableStateOf("") }
     var externalEditorPath by remember(owner) { mutableStateOf("") }
     var recoveryVisible by remember(owner) { mutableStateOf(false) }
     var networkVisible by remember(owner) { mutableStateOf(false) }
@@ -546,6 +547,7 @@ internal fun WorkspaceFilesPane(
             items = listOf(
                 WorkspaceMenuItem(stringResource(R.string.linux_desktop_title), enabled = !busy) {
                     toolbarMenu = null
+                    linuxDesktopPath = activeDocumentPath.orEmpty()
                     linuxDesktopVisible = true
                 },
                 WorkspaceMenuItem(stringResource(R.string.external_edit_title), enabled = !busy) {
@@ -579,9 +581,13 @@ internal fun WorkspaceFilesPane(
         )
     }
     if (linuxDesktopVisible) LinuxDesktopSheet(host, bound.client.taskID, bound.client.workspaceID,
-        activeDocumentPath.orEmpty(), onDismiss = { linuxDesktopVisible = false })
+        linuxDesktopPath, onDismiss = { linuxDesktopVisible = false })
     ExternalEditorSheet(host, bound.client.taskID, bound.client.workspaceID,
-        externalEditorPath, externalEditorVisible, onDismiss = {
+        externalEditorPath, externalEditorVisible, onOpenLinux = { path ->
+            externalEditorVisible = false
+            linuxDesktopPath = path
+            linuxDesktopVisible = true
+        }, onDismiss = {
             externalEditorVisible = false
             if (bound.isCurrent()) presenter.refreshTreeKeepingExpansion()
         })
