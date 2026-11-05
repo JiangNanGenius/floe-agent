@@ -334,7 +334,7 @@ enum OfficeDocumentRegionRenderer {
     /// Rasters ONE page of the real exported PDF into a bounded PNG. The
     /// reported geometry is the actual cropBox intersect of the requested
     /// rect — if the request was clamped, the response says so.
-    private static func render(pdfURL: URL, pageIndex: Int, rect: CGRect?,
+    static func render(pdfURL: URL, pageIndex: Int, rect: CGRect?,
                                pixelWidth: Int) throws -> Rendered {
         let pixelWidth = min(max(pixelWidth, minimumPixelWidth), maximumPixelDimension)
         var attempt = 0

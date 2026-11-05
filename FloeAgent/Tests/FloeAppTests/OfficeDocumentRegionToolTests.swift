@@ -21,6 +21,7 @@
 #if canImport(UIKit)
 import Foundation
 import Testing
+import UIKit
 import FloeCore
 import FloeModels
 import FloeNotes
@@ -32,6 +33,61 @@ import FloeNotes
     private let documentID = UUID()
     private let resourceID = UUID()
     private let anchorSHA = String(repeating: "ab", count: 32)
+
+    @Test("Office PDF page and upper-page crop preserve upright asymmetric landmarks")
+    func uprightRegionPixels() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OfficeRegionOrientation-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pdf = root.appendingPathComponent("landmarks.pdf")
+        let bounds = CGRect(x: 0, y: 0, width: 400, height: 600)
+        // UIKit's page coordinates define the independent visual expectation:
+        // red at top-left, green at bottom-right. No symmetry can hide a flip.
+        let data = UIGraphicsPDFRenderer(bounds: bounds).pdfData { renderer in
+            renderer.beginPage()
+            UIColor.white.setFill(); UIRectFill(bounds)
+            UIColor.red.setFill(); UIRectFill(CGRect(x: 20, y: 20, width: 80, height: 80))
+            UIColor.green.setFill(); UIRectFill(CGRect(x: 300, y: 500, width: 80, height: 80))
+        }
+        try data.write(to: pdf)
+        let full = try OfficeDocumentRegionRenderer.render(
+            pdfURL: pdf, pageIndex: 0, rect: nil, pixelWidth: 400)
+        #expect(full.pixelWidth == 400 && full.pixelHeight == 600)
+        let top = try regionPixel(full.pngData, x: 50, y: 50)
+        let bottom = try regionPixel(full.pngData, x: 350, y: 550)
+        #expect(top[0] > 220 && top[1] < 40 && top[2] < 40,
+                "Top-left must stay red, got \(top)")
+        #expect(bottom[1] > 220 && bottom[0] < 40 && bottom[2] < 40,
+                "Bottom-right must stay green, got \(bottom)")
+
+        // Tool rectangles use PDF points, y up: this is the upper-left quarter.
+        let crop = CGRect(x: 0, y: 300, width: 200, height: 300)
+        let region = try OfficeDocumentRegionRenderer.render(
+            pdfURL: pdf, pageIndex: 0, rect: crop, pixelWidth: 400)
+        #expect(region.renderedRectPoints == crop && region.pixelsPerPoint == 2)
+        #expect(region.pixelWidth == 400 && region.pixelHeight == 600)
+        let croppedTop = try regionPixel(region.pngData, x: 100, y: 100)
+        #expect(croppedTop[0] > 220 && croppedTop[1] < 40 && croppedTop[2] < 40,
+                "PDF crop must retain the same upright red landmark, got \(croppedTop)")
+    }
+
+    private func regionPixel(_ png: Data, x: Int, y: Int) throws -> [UInt8] {
+        let image = try #require(UIImage(data: png)?.cgImage)
+        let pixel = try #require(image.cropping(to: CGRect(x: x, y: y, width: 1, height: 1)))
+        var rgba = [UInt8](repeating: 0, count: 4)
+        let drawn = rgba.withUnsafeMutableBytes { bytes in
+            guard let context = CGContext(data: bytes.baseAddress, width: 1, height: 1,
+                                          bitsPerComponent: 8, bytesPerRow: 4,
+                                          space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                                            | CGBitmapInfo.byteOrder32Big.rawValue) else { return false }
+            context.draw(pixel, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            return true
+        }
+        try #require(drawn)
+        return rgba
+    }
 
     private func decode(_ json: String) throws -> NotesReadTool.Arguments {
         try JSONDecoder().decode(NotesReadTool.Arguments.self, from: Data(json.utf8))

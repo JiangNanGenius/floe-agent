@@ -1,0 +1,16 @@
+Floe Agent 1.7.74 (Build 315)
+
+This update reduces local Linux worker handoffs and redundant IRQ wakeups. It also fixes symbolic-link file operations used by dependency packages while retaining directory containment and read-only protection. Existing projects, dependencies and the runtime remain intact; no runtime reset or new image download is required.
+
+No Floe account is required. Cloud AI uses the user's own configured provider; no provider credentials are embedded. Calls may consume the user's allowance. Saving a provider does not generate paid media or silently change billing channels. The App is free to download and does not sell provider subscriptions.
+
+Suggested checks:
+1. Reopen an existing task and continue using its execution location without re-saving settings. Files and installed dependencies remain available. Missing or mismatched execution locations report an error rather than silently choosing another target.
+2. In Settings > Execution Environment, adjust online CPU count while the runtime is running. This preserves project files and does not reboot Linux. Memory changes require a stopped runtime. Stop or power controls report affected work and preserve files.
+3. Run a configured skill or local calculation and check its result and cancellation. Temporary chat remains read-only and cannot run code or install packages.
+4. Open a native 3D document from task Files, edit, save, close and reopen it. Native document features do not require downloading Linux.
+5. Background audio is user controlled and independent of Picture in Picture. Select an available sound and audible volume to check playback. Screen-recording permission is requested for an actual recording.
+6. Advanced browser access requires explicit risk confirmation. Model-provider browser-data permissions are persistent and individually revocable. Authorized providers may receive cookies and private page content.
+7. On a Mac running the iPad App, Settings > Execution Environment offers optional same-Mac Floe Bridge pairing, retry and disconnect. Mac controls are hidden on iPad and iPhone. A missing Bridge does not download a VM or replay commands.
+
+The existing attached background-audio video was captured on a physical M4 iPad using USB screen and device-audio capture. It shows audible ambient playback followed by the Home Screen while music continues. The footage is from build 308 and demonstrates the retained audio feature; it is not a build 315 recording. The 20-second preview ends automatically and there is no added soundtrack.
