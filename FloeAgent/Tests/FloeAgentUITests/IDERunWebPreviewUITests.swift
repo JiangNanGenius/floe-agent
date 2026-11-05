@@ -87,14 +87,20 @@ final class IDERunWebPreviewUITests: XCTestCase {
         let menu = app.buttons["browser.menu"].firstMatch
         XCTAssertTrue(menu.isHittable)
         menu.tap()
-        let newTab = app.buttons["browser.menu.newTab"].firstMatch
+        // UIKit's native menu omits SwiftUI item identifiers. Distinguish
+        // the create action from a tab also titled "New tab" by its icon.
+        let newTab = app.buttons.containing(.image, identifier: "plus")
+            .matching(NSPredicate(format: "label IN %@", ["新标签页", "New tab"]))
+            .firstMatch
         XCTAssertTrue(newTab.waitForExistence(timeout: 5)); newTab.tap()
         // UIKit exposes the placeholder as the value of an empty text field.
         let blank = expectation(for: NSPredicate(format: "value != %@", url), evaluatedWith: address)
         await fulfillment(of: [blank], timeout: 10)
         capture("browser-new-tab-keeps-page-session")
         menu.tap()
-        let closeTab = app.buttons["browser.menu.closeTab"].firstMatch
+        let closeTab = app.buttons.matching(
+            NSPredicate(format: "label IN %@", ["关闭标签页", "Close tab"])
+        ).firstMatch
         XCTAssertTrue(closeTab.waitForExistence(timeout: 5)); closeTab.tap()
         let restored = expectation(for: NSPredicate(format: "value == %@", url), evaluatedWith: address)
         await fulfillment(of: [restored], timeout: 10)
