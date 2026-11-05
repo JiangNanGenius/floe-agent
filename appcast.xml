@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>1.1.3</title>
+      <pubDate>Thu, 05 Nov 2026 07:44:26 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-bridge-v1.1.3</link>
+      <sparkle:version>6</sparkle:version>
+      <sparkle:shortVersionString>1.1.3</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>&lt;p&gt;自动更新源迁移到主分支，保留现有配对、设置和文件。&lt;/p&gt;&lt;p&gt;Moves automatic updates to the main branch, preserving pairing, settings and files.&lt;/p&gt;</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-bridge-v1.1.3/Floe-Bridge-1.1.3.dmg" length="4652365" type="application/octet-stream" sparkle:edSignature="33q0eKeGhmmfJPzSCDr1D2D1mSSeqNRQeeLs5/E1Eq3/+YXhBn9uKOJlsM40wmAG0EyfSpda4z2p71DDXAHGAQ==" />
+    </item>
+    <item>
       <title>1.1.2</title>
       <pubDate>Thu, 05 Nov 2026 14:10:27 +1100</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-bridge-v1.1.2</link>
