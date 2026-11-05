@@ -22,17 +22,6 @@ public struct DeviceStorageAvailability: Sendable, Equatable {
         return availableBytes < Self.lowBytes ? .low : .normal
     }
 
-    public static func read(at url: URL = URL(fileURLWithPath: NSHomeDirectory())) -> Self {
-        // Use currently free bytes for the warning; purgeable "important
-        // usage" capacity is not proof that SQLite can write right now.
-        if let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
-           let bytes = values.volumeAvailableCapacity {
-            return Self(availableBytes: Int64(bytes))
-        }
-        let attributes = try? FileManager.default.attributesOfFileSystem(forPath: url.path)
-        return Self(availableBytes: (attributes?[.systemFreeSize] as? NSNumber)?.int64Value)
-    }
-
     public var formattedAvailable: String? {
         availableBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
     }

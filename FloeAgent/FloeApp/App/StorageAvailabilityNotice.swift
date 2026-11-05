@@ -2,6 +2,21 @@
 import SwiftUI
 import FloeCore
 
+// Keep device-capacity APIs in the App that owns this feature and its privacy
+// declaration. Shared FloeCore is also linked by extensions without this UI.
+private extension DeviceStorageAvailability {
+    static func read(at url: URL = URL(fileURLWithPath: NSHomeDirectory())) -> Self {
+        // Currently free bytes; reclaimable capacity does not prove a write
+        // can succeed right now. A failed measurement remains unknown.
+        if let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
+           let bytes = values.volumeAvailableCapacity {
+            return Self(availableBytes: Int64(bytes))
+        }
+        let attributes = try? FileManager.default.attributesOfFileSystem(forPath: url.path)
+        return Self(availableBytes: (attributes?[.systemFreeSize] as? NSNumber)?.int64Value)
+    }
+}
+
 private func storageAvailabilityProbe() -> DeviceStorageAvailability {
     #if DEBUG
     let arguments = ProcessInfo.processInfo.arguments
