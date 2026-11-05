@@ -8343,6 +8343,7 @@ extension SubagentSimulatorExecutionTests {
 // MARK: - Current ARM64 data candidates (not an official installation receipt)
 
 private struct DataARM64ResumeCheckpoint: Decodable, Sendable {
+    let dataContainerID: String
     let workspaceName: String
     let environmentID: String
     let conversationID: UUID
@@ -8383,6 +8384,9 @@ extension SubagentSimulatorExecutionTests {
         } else { resume = nil }
         let root: URL
         if let resume {
+            let currentContainerID = support.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
+            try #require(currentContainerID == resume.dataContainerID,
+                "SDK relocated the App data container; preserve the original environment and stop before Linux execution")
             try #require(resume.workspaceName.hasPrefix("subagent-guest-")
                 && UUID(uuidString: String(resume.workspaceName.dropFirst("subagent-guest-".count))) != nil
                 && UUID(uuidString: resume.environmentID) != nil)
