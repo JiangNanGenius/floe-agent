@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "请在关闭并重新打开 App 后，直接进入已有任务继续执行本机工具，不要先打开运行环境设置或新建任务。检查原工作区和依赖保留；正常环境不应被误报为不可用。真正缺失、身份不匹配或需要重建的环境仍须准确提示。",
+  "en-US": "After reopening the App, continue a saved task directly without first visiting environment settings or creating a new task. Check that local tools remain available and existing files and dependencies are retained. Genuinely missing, mismatched or rebuild-required environments must still be reported accurately."
+}
