@@ -1,5 +1,7 @@
 # 安卓全应用代码收口
 
+下一轮范围已按用户 QA 重新确认，见 [Android 外部应用与 ARM64 Linux 工作台计划（2026-11-06）](FLOE_ANDROID_NEXT_ITERATION_QA_20261106.zh-CN.md)。该计划保留原编号，调整重型编辑器边界与验证节奏；下方 Alpha25 及历史证据继续按当时状态阅读。
+
 ## 当前交付与下一阶段（2026-11-04）
 
 [Android Alpha25 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.25) 已发布，版本码44，精确源码 `41c42d7f1fa4761461a36a443bea9ef6916fbd0e`。完整 APK 为287,048,403字节，SHA-256 `6663d4f0696021f469cf192a5555a0f5d102e926d2379dd3d7937905303850d2`。五项附件均已匿名下载并核对全部字节，标签／源码一致，iOS Latest 保持 `v1.7.69`。以下较早过程记录不代表当前发行状态。
