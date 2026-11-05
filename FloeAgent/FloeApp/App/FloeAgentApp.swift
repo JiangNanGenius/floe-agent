@@ -1943,33 +1943,86 @@ struct RootView: View {
     }
 }
 
-/// The on-demand inspector column (iPad third column / iPhone sheet).
-/// T05: renders the real workspace file inspector through WorkspaceCenter.
 /// Isolates navigation preferences without copying any task, browser or editor
-/// state. Pass the parent environment through on every update so settings and
-/// the existing service owners stay current inside the native child host.
+/// state. Forward the existing app services and public appearance values only;
+/// forwarding the entire environment also copies the outer navigation bridge.
 @MainActor
 private struct InspectorNavigationHost<Content: View>: UIViewControllerRepresentable {
     let content: Content
+    @EnvironmentObject private var environment: AppEnvironment
+    @EnvironmentObject private var router: AppRouter
 
     init(@ViewBuilder content: () -> Content) { self.content = content() }
 
     func makeUIViewController(context: Context) -> UIHostingController<InspectorNavigationEnvironment<Content>> {
-        UIHostingController(rootView: InspectorNavigationEnvironment(content: content, values: context.environment))
+        UIHostingController(rootView: hostedContent(context))
     }
 
     func updateUIViewController(_ controller: UIHostingController<InspectorNavigationEnvironment<Content>>, context: Context) {
-        controller.rootView = InspectorNavigationEnvironment(content: content, values: context.environment)
+        controller.rootView = hostedContent(context)
+    }
+
+    private func hostedContent(_ context: Context) -> InspectorNavigationEnvironment<Content> {
+        InspectorNavigationEnvironment(content: content, appearance: InspectorAppearance(context.environment),
+                                       environment: environment, router: router)
+    }
+}
+
+private struct InspectorAppearance {
+    let locale: Locale
+    let colorScheme: ColorScheme
+    let dynamicTypeSize: DynamicTypeSize
+    let layoutDirection: LayoutDirection
+    let scenePhase: ScenePhase
+    let horizontalSizeClass: UserInterfaceSizeClass?
+    let verticalSizeClass: UserInterfaceSizeClass?
+    let foldableDisplay: FoldableDisplaySnapshot
+    let continuousVoiceWindowID: String?
+    let continuousVoiceActive: Bool
+
+    init(_ values: EnvironmentValues) {
+        locale = values.locale
+        colorScheme = values.colorScheme
+        dynamicTypeSize = values.dynamicTypeSize
+        layoutDirection = values.layoutDirection
+        scenePhase = values.scenePhase
+        horizontalSizeClass = values.horizontalSizeClass
+        verticalSizeClass = values.verticalSizeClass
+        foldableDisplay = values.foldableDisplay
+        continuousVoiceWindowID = values.continuousVoiceWindowID
+        continuousVoiceActive = values.continuousVoiceActive
     }
 }
 
 private struct InspectorNavigationEnvironment<Content: View>: View {
     let content: Content
-    let values: EnvironmentValues
+    let appearance: InspectorAppearance
+    let environment: AppEnvironment
+    let router: AppRouter
 
-    var body: some View { content.environment(\.self, values) }
+    var body: some View {
+        content
+            .environmentObject(environment)
+            .environmentObject(router)
+            .environmentObject(environment.voiceInput)
+            .environmentObject(environment.speechService)
+            .environmentObject(environment.ttsSettingsService)
+            .environmentObject(environment.designEntryState)
+            .environmentObject(environment.skillAuthoring)
+            .environment(\.locale, appearance.locale)
+            .environment(\.colorScheme, appearance.colorScheme)
+            .environment(\.dynamicTypeSize, appearance.dynamicTypeSize)
+            .environment(\.layoutDirection, appearance.layoutDirection)
+            .environment(\.scenePhase, appearance.scenePhase)
+            .environment(\.horizontalSizeClass, appearance.horizontalSizeClass)
+            .environment(\.verticalSizeClass, appearance.verticalSizeClass)
+            .environment(\.foldableDisplay, appearance.foldableDisplay)
+            .environment(\.continuousVoiceWindowID, appearance.continuousVoiceWindowID)
+            .environment(\.continuousVoiceActive, appearance.continuousVoiceActive)
+    }
 }
 
+/// The on-demand inspector column (iPad third column / iPhone sheet).
 private struct InspectorColumnView: View {
     let route: AppRouter.InspectorRoute
     @EnvironmentObject private var environment: AppEnvironment
