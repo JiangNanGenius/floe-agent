@@ -8346,13 +8346,19 @@ extension SubagentSimulatorExecutionTests {
     @Test("ARM64 data candidates: exact declared APT dependencies and full golden scripts in the real guest",
           .enabled(if: ProcessInfo.processInfo.environment["FLOE_DATA_ARM64_CANDIDATE"] == "1"))
     func dataARM64CandidateQualification() async throws {
+        let allCases = ["exploratory-data-analysis", "statistical-analysis", "scientific-visualization", "markitdown"]
+        let selectedCases = ProcessInfo.processInfo.environment["FLOE_DATA_ARM64_CASES"]
+            .map { $0.split(separator: ",", omittingEmptySubsequences: false).map(String.init) } ?? allCases
+        try #require(!selectedCases.isEmpty && Set(selectedCases).count == selectedCases.count
+            && Set(selectedCases).isSubset(of: Set(allCases)), "Unknown or duplicate ARM64 candidate selection")
         let root = try makeWorkspaceRoot()
         let support = try FileManager.default.url(for: .applicationSupportDirectory,
             in: .userDomainMask, appropriateFor: nil, create: true)
         let input = support.appendingPathComponent("FloeAgent/QualificationInputs/DataARM64")
         let runID = UUID(), conversationID = UUID()
         let exported = support.appendingPathComponent("FloeAgent/QualificationEvidence/DataARM64/" + runID.uuidString)
-        var evidence: [String: String] = ["kind": "candidate-real-guest-not-official-install", "runID": runID.uuidString]
+        var evidence: [String: String] = ["kind": "candidate-real-guest-not-official-install", "runID": runID.uuidString,
+            "selectedCases": selectedCases.joined(separator: ",")]
         let pins: [(String, Int, String)] = [
             ("run.py", 4775, "6b081a45c3bd309ff66697f15f492da1244ac030ba396c5c20c40c78f0bad99f"),
             ("manifest.json", 4083, "1fc794ee9f4c73714ab3cf813011317c6a682dd1128e698b625175c010d50104"),
@@ -8432,7 +8438,7 @@ extension SubagentSimulatorExecutionTests {
             try #require(verify.status == .ok && sevenDeepOutput(verify).contains("DATA_ARM64_STAGE_OK"))
             evidence["guestStage"] = sevenDeepOutput(verify)
             let jobs = try #require(liveApp.backgroundJobService)
-            for sid in ["exploratory-data-analysis", "statistical-analysis", "scientific-visualization", "markitdown"] {
+            for sid in selectedCases {
                 print("FLOE_DATA_ARM64_PHASE=\(sid)")
                 let id = try await skillHubSubmitShell(jobs: jobs, runID: runID, environmentID: environmentID,
                     root: root, name: "data-arm64-" + sid,
