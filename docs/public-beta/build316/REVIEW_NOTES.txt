@@ -1,0 +1,9 @@
+Floe 1.7.75 (316) — TestFlight update
+
+This update repairs background audio volume restoration, improves the existing local ARM64 runtime, and accepts standard CAD observation view names. It introduces no new permission categories or account requirements.
+
+Background sound is user controlled in Settings > Background Execution. It can be previewed and its volume adjusted independently. After a pause or audio interruption, the current saved volume is applied before the loop resumes. Zero volume remains muted playback.
+
+Floe is free to download. Cloud services use credentials configured by the user; saving settings does not generate paid images or video. Existing project files are retained.
+
+The existing Build315 App Store submission is not replaced by this TestFlight update.

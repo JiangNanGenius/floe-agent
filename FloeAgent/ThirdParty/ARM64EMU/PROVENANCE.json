@@ -457,7 +457,7 @@
     {
       "name": "Guarded SP memory tier and bound-MMU fast check",
       "scope": "Source/src/jit/predecode.c/.h and Source/src/mmu.c/.h; live aligned-SP dispatch to existing handlers, misaligned-SP decoder fallback, per-hart lazy allocator retained. No JIT, synchronization, interrupt or ticket-policy changes.",
-      "qualification": "Private actual macOS arm64 build: 1056 stack/FP/alignment and192 MMU/fault comparisons;10 normal components;30-TU ThreadSanitizer build with12 component passes. Original stale fixture and selector failures retained. One actual Linux PBKDF2/zlib pair improved4.14%/1.74%; synthetic stack gains are not whole-VM or iPad claims. Integrated App and iPad checks pending."
+      "qualification": "Private actual macOS arm64 build: 1056 stack/FP/alignment and192 MMU/fault comparisons;10 normal components;30-TU ThreadSanitizer build with12 component passes. Original stale fixture and selector failures retained. One actual Linux PBKDF2/zlib pair improved4.14%/1.74%; synthetic stack gains are not whole-VM or iPad claims. Integrated Swift6 App/test build and52 audio/CAD contracts passed on canonical iPad Simulator. Physical iPad performance and listening remain separate."
     }
   ],
   "capabilityMeaning": "Implemented C ABI surface; not a claim of real Linux or App runtime acceptance.",

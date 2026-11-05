@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "316：修复背景音暂停后恢复时零音量未生效；优化本机运行性能；完善3D视觉检查的视角参数。请留意中断、语音输入或切换音频设备后，背景音是否始终遵循设置。现有项目和文件保留。",
+  "en-US": "316: Fixed muted background sound resuming at an old volume, improved local runtime performance, and added standard CAD observation views. Please check saved sound volume after interruptions, voice input and audio route changes. Existing projects and files are preserved."
+}
