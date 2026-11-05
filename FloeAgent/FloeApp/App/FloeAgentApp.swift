@@ -1954,12 +1954,19 @@ private struct InspectorNavigationHost<Content: View>: UIViewControllerRepresent
 
     init(@ViewBuilder content: () -> Content) { self.content = content() }
 
-    func makeUIViewController(context: Context) -> UIHostingController<InspectorNavigationEnvironment<Content>> {
-        UIHostingController(rootView: hostedContent(context))
+    func makeUIViewController(context: Context) -> UINavigationController {
+        let host = UIHostingController(rootView: hostedContent(context))
+        // A hosting view alone is still inside the outer UIKit navigation
+        // controller. Give the pane its own controller boundary as well.
+        let navigation = UINavigationController(rootViewController: host)
+        navigation.setNavigationBarHidden(true, animated: false)
+        return navigation
     }
 
-    func updateUIViewController(_ controller: UIHostingController<InspectorNavigationEnvironment<Content>>, context: Context) {
-        controller.rootView = hostedContent(context)
+    func updateUIViewController(_ controller: UINavigationController, context: Context) {
+        if let host = controller.viewControllers.first as? UIHostingController<InspectorNavigationEnvironment<Content>> {
+            host.rootView = hostedContent(context)
+        }
     }
 
     private func hostedContent(_ context: Context) -> InspectorNavigationEnvironment<Content> {
