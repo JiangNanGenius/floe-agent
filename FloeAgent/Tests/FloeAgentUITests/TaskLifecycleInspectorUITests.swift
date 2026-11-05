@@ -66,6 +66,7 @@ final class TaskLifecycleInspectorUITests: XCTestCase {
         XCTAssertTrue(collapse.isHittable)
         let input = app.textViews["composer.input"].firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 10))
+        XCTAssertTrue(input.isHittable, "the side-by-side inspector must leave the conversation interactive")
         XCTAssertGreaterThan(input.frame.width, 200, "the inspector must not squeeze the task input into a sliver")
         attach(app, "ipad-task-files-inspector-open")
         collapse.tap()
@@ -175,6 +176,15 @@ final class TaskLifecycleInspectorUITests: XCTestCase {
         let progress = app.descendants(matching: .any)["thread.inspector.open.progress"].firstMatch
         XCTAssertTrue(progress.waitForExistence(timeout: 8), "progress inspector entry")
         progress.tap()
+
+        let column = app.otherElements["ipad.inspector.column"].firstMatch
+        let title = app.staticTexts["inspector.title"].firstMatch
+        XCTAssertTrue(column.waitForExistence(timeout: 10))
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        XCTAssertEqual(title.frame.midX, column.frame.midX, accuracy: 16,
+                       "the inspector title must be centered over its own pane")
+        XCTAssertTrue(app.textViews["composer.input"].firstMatch.isHittable,
+                      "opening progress must not present a modal over the task")
 
         let openOutput = app.descendants(matching: .any)["inspector.job.fullOutput.\(jobID)"].firstMatch
         XCTAssertTrue(openOutput.waitForExistence(timeout: 15), "retained output action")

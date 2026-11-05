@@ -1389,9 +1389,10 @@ struct RootView: View {
 
     @ViewBuilder
     private var iPadRoot: some View {
-        // Keep the outer two-column split stable. Native inspector ownership
-        // gives each pane its own toolbar/title boundary without replacing
-        // the split or moving the task-owned WebView/session to a new owner.
+        // Keep the outer two-column split stable. The trailing pane owns a
+        // separate native navigation host: nested SwiftUI stacks otherwise
+        // merge their toolbar preferences into the task's navigation bar.
+        // Unlike `.inspector`, this remains side by side on a portrait iPad.
         NavigationSplitView(columnVisibility: $router.columnVisibility) {
             sidebarColumn
                 .collapseSidebarOnRightSwipe {
@@ -1400,22 +1401,20 @@ struct RootView: View {
                     }
                 }
         } detail: {
-            contentColumn
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .inspector(isPresented: Binding(
-                    get: { presentableInspectorRoute != nil },
-                    set: { if !$0 { router.hideInspector() } }
-                )) {
-                    if let inspectorRoute = presentableInspectorRoute {
+            HStack(spacing: 0) {
+                contentColumn.frame(maxWidth: .infinity, maxHeight: .infinity)
+                if let inspectorRoute = presentableInspectorRoute {
+                    Divider()
+                    InspectorNavigationHost {
                         NavigationStack {
-                            // Each conversation remounts its own workspace;
-                            // the session service retains running resources.
                             InspectorColumnView(route: inspectorRoute).id(inspectorRoute.id)
                         }
-                        .inspectorColumnWidth(min: 360, ideal: 430, max: 520)
-                        .accessibilityIdentifier("ipad.inspector.column")
                     }
+                    .frame(minWidth: 360, idealWidth: 430, maxWidth: 520)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .accessibilityIdentifier("ipad.inspector.column")
                 }
+            }
         }
         .navigationSplitViewStyle(.balanced)
         .animation(.snappy, value: router.inspectorRoute)
@@ -1946,6 +1945,31 @@ struct RootView: View {
 
 /// The on-demand inspector column (iPad third column / iPhone sheet).
 /// T05: renders the real workspace file inspector through WorkspaceCenter.
+/// Isolates navigation preferences without copying any task, browser or editor
+/// state. Pass the parent environment through on every update so settings and
+/// the existing service owners stay current inside the native child host.
+@MainActor
+private struct InspectorNavigationHost<Content: View>: UIViewControllerRepresentable {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+
+    func makeUIViewController(context: Context) -> UIHostingController<InspectorNavigationEnvironment<Content>> {
+        UIHostingController(rootView: InspectorNavigationEnvironment(content: content, values: context.environment))
+    }
+
+    func updateUIViewController(_ controller: UIHostingController<InspectorNavigationEnvironment<Content>>, context: Context) {
+        controller.rootView = InspectorNavigationEnvironment(content: content, values: context.environment)
+    }
+}
+
+private struct InspectorNavigationEnvironment<Content: View>: View {
+    let content: Content
+    let values: EnvironmentValues
+
+    var body: some View { content.environment(\.self, values) }
+}
+
 private struct InspectorColumnView: View {
     let route: AppRouter.InspectorRoute
     @EnvironmentObject private var environment: AppEnvironment
