@@ -163,7 +163,7 @@
     },
     {
       "path": "Source/src/devices/virtio_9p.c",
-      "sha256": "7e49a8f6cb3c3b85eb5760cbc75350d7914cf107615115d986ba5c51d8a11ca4"
+      "sha256": "1a7c679ce44cd996da2620c60392b3a6608c2887f1bd2f9f0b5285a9f8af03bc"
     },
     {
       "path": "Source/src/devices/virtio_9p_port.h",
@@ -445,9 +445,9 @@
       "qualification": "Owner Mac A8b normal/TSan; selected A6+CRC Apple SDK object/link qualification recorded separately. No App or guest result implied."
     },
     {
-      "name": "Preserve final 9P symlink identity and Linux ELOOP wire value",
-      "scope": "Source/src/devices/virtio_9p.c and virtio_9p_port.h; directory fid operations retain O_NOFOLLOW containment",
-      "qualification": "16 actual parser/native-filesystem checks with ASan/UBSan passed; original protocol failures retained. Integrated App Skill qualification pending."
+      "name": "Preserve 9P symlink identity and translate Linux wire removal/error values",
+      "scope": "Source/src/devices/virtio_9p.c and virtio_9p_port.h; final-link metadata, O_NOFOLLOW directory containment, Linux AT_REMOVEDIR and ELOOP wire conversion",
+      "qualification": "19 actual parser/native-filesystem checks with ASan/UBSan passed. Original symlink failure and the later real-App EDA directory-removal failure retained. Integrated shared-tempfile preflight pending; complete data Skill qualification is not claimed."
     },
     {
       "name": "Bound parallel handoffs and coalesce already-deasserted IRQ publications",
