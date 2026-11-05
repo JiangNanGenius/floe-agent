@@ -192,6 +192,20 @@ internal class DiagnosticReportService(private val context: Context) {
             if (row.getString("kind") != "manual" && !preferences.getBoolean("automatic", false)) continue
             val images = row.getJSONArray("images")
             if (images.length() > 0 && !row.optBoolean("any_network") && !onWifi()) return@withLock false
+            val attempts = row.optInt("attempts", 0)
+            val admitted = synchronized(gate) {
+                val current = read(row.getString("id"))
+                when {
+                    current == null || current.optString("state") != "queued" -> false
+                    row.getString("kind") != "manual" && !preferences.getBoolean("automatic", false) -> false
+                    attempts >= 5 -> {
+                        save(row.put("state", "failed").put("error", "retry_limit"))
+                        false
+                    }
+                    else -> { save(row.put("attempts", attempts + 1)); true }
+                }
+            }
+            if (!admitted) continue
             try {
                 val receipt = withContext(Dispatchers.IO) { upload(row) }
                 synchronized(gate) {
@@ -207,7 +221,14 @@ internal class DiagnosticReportService(private val context: Context) {
                 synchronized(gate) {
                     if (file(row.getString("id")).exists()) save(row.put("state", "failed").put("error", "http_${failure.status}"))
                 }
-            } catch (_: Exception) { refresh(); return@withLock false }
+            } catch (_: Exception) {
+                synchronized(gate) {
+                    if (file(row.getString("id")).exists() && attempts + 1 >= 5)
+                        save(row.put("state", "failed").put("error", "retry_limit"))
+                }
+                refresh()
+                return@withLock false
+            }
         }
         refresh()
         synchronized(gate) { records().none { it.optString("state") == "queued" } }
@@ -261,7 +282,7 @@ internal class DiagnosticReportService(private val context: Context) {
 
     fun retry(id: String) {
         synchronized(gate) { read(id)?.takeIf { it.optString("state") == "failed" }?.let {
-            save(it.put("state", "queued").apply { remove("error") })
+            save(it.put("state", "queued").put("attempts", 0).apply { remove("error") })
         } }
         refresh(); enqueue()
     }
