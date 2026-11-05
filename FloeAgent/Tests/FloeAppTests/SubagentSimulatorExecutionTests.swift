@@ -8342,6 +8342,16 @@ extension SubagentSimulatorExecutionTests {
 
 // MARK: - Current ARM64 data candidates (not an official installation receipt)
 
+private struct DataARM64ResumeCheckpoint: Decodable, Sendable {
+    let workspaceName: String
+    let environmentID: String
+    let conversationID: UUID
+    let runID: UUID
+    let jobIDs: [UUID]
+    let completedCases: [String]
+    let completedFileHashes: [String: String]
+}
+
 extension SubagentSimulatorExecutionTests {
     @Test("ARM64 data candidates: exact declared APT dependencies and full golden scripts in the real guest",
           .enabled(if: ProcessInfo.processInfo.environment["FLOE_DATA_ARM64_CANDIDATE"] == "1"))
@@ -8361,15 +8371,41 @@ extension SubagentSimulatorExecutionTests {
             .map { $0.split(separator: ",", omittingEmptySubsequences: false).map(String.init) } ?? allCases
         try #require(!selectedCases.isEmpty && Set(selectedCases).count == selectedCases.count
             && Set(selectedCases).isSubset(of: Set(allCases)), "Unknown or duplicate ARM64 candidate selection")
-        let root = try makeWorkspaceRoot()
         let support = try FileManager.default.url(for: .applicationSupportDirectory,
             in: .userDomainMask, appropriateFor: nil, create: true)
+        let resume: DataARM64ResumeCheckpoint?
+        if ProcessInfo.processInfo.environment["FLOE_DATA_ARM64_RESUME"] == "1" {
+            try #require(!scratchOnly)
+            let bytes = try Data(contentsOf: support.appendingPathComponent("FloeAgent/QualificationInputs/DataARM64Resume.json"))
+            try #require(FloeDigest.sha256Hex(bytes) == ProcessInfo.processInfo.environment["FLOE_DATA_ARM64_RESUME_SHA256"],
+                "Resume metadata must match the coordinator's exact exported checkpoint")
+            resume = try JSONDecoder().decode(DataARM64ResumeCheckpoint.self, from: bytes)
+        } else { resume = nil }
+        let root: URL
+        if let resume {
+            try #require(resume.workspaceName.hasPrefix("subagent-guest-")
+                && UUID(uuidString: String(resume.workspaceName.dropFirst("subagent-guest-".count))) != nil
+                && UUID(uuidString: resume.environmentID) != nil)
+            root = FileManager.default.temporaryDirectory.appendingPathComponent(resume.workspaceName, isDirectory: true)
+            let values = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            try #require(values.isDirectory == true && values.isSymbolicLink != true
+                && root.resolvingSymlinksInPath().deletingLastPathComponent().standardizedFileURL
+                    == FileManager.default.temporaryDirectory.resolvingSymlinksInPath().standardizedFileURL)
+            try #require(!resume.completedCases.isEmpty
+                && Set(resume.completedCases).isSubset(of: Set(allCases))
+                && Set(resume.completedCases).isDisjoint(with: Set(selectedCases)), "Completed cases must not be replayed")
+        } else { root = try makeWorkspaceRoot() }
+        let keepEnvironment = ProcessInfo.processInfo.environment["FLOE_DATA_ARM64_KEEP_ENVIRONMENT"] == "1"
+        try #require((resume == nil && !keepEnvironment) || selectedCases.count == 1,
+            "Retained qualifications yield the shared window after exactly one case")
         let input = support.appendingPathComponent("FloeAgent/QualificationInputs/DataARM64")
         let runID = UUID(), conversationID = UUID()
         let exported = support.appendingPathComponent("FloeAgent/QualificationEvidence/DataARM64/" + runID.uuidString)
         var evidence: [String: String] = [
             "kind": scratchOnly ? "platform-shared-tempfile-preflight-not-skill-qualification" : "candidate-real-guest-not-official-install",
-            "runID": runID.uuidString, "selectedCases": scratchOnly ? "" : selectedCases.joined(separator: ",")]
+            "runID": runID.uuidString, "conversationID": conversationID.uuidString,
+            "workspaceName": root.lastPathComponent, "resumed": resume == nil ? "false" : "true",
+            "selectedCases": scratchOnly ? "" : selectedCases.joined(separator: ",")]
         let pins: [(String, Int, String)] = [
             ("run.py", 4775, "6b081a45c3bd309ff66697f15f492da1244ac030ba396c5c20c40c78f0bad99f"),
             ("manifest.json", 4083, "1fc794ee9f4c73714ab3cf813011317c6a682dd1128e698b625175c010d50104"),
@@ -8403,9 +8439,24 @@ extension SubagentSimulatorExecutionTests {
                 parentTask?.cancel()
                 return
             }
-            await skillHubCleanup(runtime: ownedRuntime, parentHold: parentHold, parentTask: parentTask,
-                jobs: app?.backgroundJobService, jobIDs: jobIDs, environmentID: ownedEnvironmentID,
-                root: root, conversationID: recordsCreated ? conversationID : nil, app: app)
+            if keepEnvironment || (resume != nil && evidence["passed"] != "true") {
+                // Yield after one completed case while retaining this exact
+                // dependency layer. No running worker or parent survives.
+                await ownedRuntime?.cancel()
+                parentHold?.cancel()
+                parentTask?.cancel()
+                if let parentTask { _ = try? await parentTask.value }
+                do {
+                    if let jobs = app?.backgroundJobService { try await skillHubFinishJobs(jobs, jobIDs) }
+                    if let ownedEnvironmentID { try await FloePlatformServices.shared.stopEnvironment(id: ownedEnvironmentID) }
+                    if recordsCreated, let app { try await app.conversationStore.deleteConversation(id: conversationID) }
+                    print("FLOE_DATA_ARM64_RETAINED_ENVIRONMENT=\(ownedEnvironmentID ?? "not-started") workspace=\(root.lastPathComponent)")
+                } catch { Issue.record("Could not stop retained qualification cleanly: \(error)") }
+            } else {
+                await skillHubCleanup(runtime: ownedRuntime, parentHold: parentHold, parentTask: parentTask,
+                    jobs: app?.backgroundJobService, jobIDs: jobIDs, environmentID: ownedEnvironmentID,
+                    root: root, conversationID: recordsCreated ? conversationID : nil, app: app)
+            }
         }
         do {
             var staged: [SkillHubStagedFile] = []
@@ -8413,13 +8464,56 @@ extension SubagentSimulatorExecutionTests {
                 let bytes = try Data(contentsOf: input.appendingPathComponent(path))
                 try #require(bytes.count == count && FloeDigest.sha256Hex(bytes) == hash,
                     "Current ARM64 input changed: \(path)")
-                try SkillHubStager.stageBytes(bytes, to: root, path: "qualification/" + path, into: &staged)
+                if resume != nil {
+                    try #require(try Data(contentsOf: root.appendingPathComponent("qualification/" + path)) == bytes,
+                        "Retained input changed: \(path)")
+                } else {
+                    try SkillHubStager.stageBytes(bytes, to: root, path: "qualification/" + path, into: &staged)
+                }
             }
-            try SkillHubStager.writeManifest(staged, at: root)
+            if resume == nil { try SkillHubStager.writeManifest(staged, at: root) }
             let liveApp = try await appQualificationEnvironment()
             app = liveApp
+            if let resume {
+                let registeredRoot = try await liveApp.environmentRegistry.workspaceRoot(for: resume.environmentID)
+                let registeredID = await self.environmentID(forRoot: root, registry: liveApp.environmentRegistry)
+                try #require(registeredRoot?.resolvingSymlinksInPath().standardizedFileURL == root.resolvingSymlinksInPath().standardizedFileURL
+                    && registeredID == resume.environmentID,
+                    "Resume must keep the exact registered project/environment")
+                let expectedPaths = Set(resume.completedCases.flatMap { [
+                    "qualification/results/\($0)/receipt.json", "qualification/results/\($0)/source/golden.json"] })
+                try #require(Set(resume.completedFileHashes.keys) == expectedPaths)
+                for (path, hash) in resume.completedFileHashes {
+                    let completedBytes = try Data(contentsOf: root.appendingPathComponent(path))
+                    try #require(FloeDigest.sha256Hex(completedBytes) == hash,
+                        "Completed-case evidence changed: \(path)")
+                }
+                let oldJobs = try #require(liveApp.backgroundJobService)
+                for id in resume.jobIDs {
+                    let job = try #require(try await oldJobs.job(id: id))
+                    try #require(job.runID == resume.runID && job.environmentID == resume.environmentID)
+                }
+                try await skillHubFinishJobs(oldJobs, resume.jobIDs)
+                try await liveApp.conversationStore.deleteConversation(id: resume.conversationID)
+                ownedEnvironmentID = resume.environmentID
+                // Preserve, rather than overwrite, any next-case directory
+                // created in the small gap before the previous host stopped.
+                for sid in selectedCases {
+                    let partial = root.appendingPathComponent("qualification/results/" + sid)
+                    if FileManager.default.fileExists(atPath: partial.path) {
+                        if FileManager.default.fileExists(atPath: partial.appendingPathComponent("receipt.json").path) {
+                            let receipt = try sevenDeepJSON(root, "qualification/results/" + sid + "/receipt.json")
+                            try #require(receipt["passed"] as? Bool != true, "A completed case may not be replayed")
+                        }
+                        let archived = root.appendingPathComponent("qualification/interrupted/" + sid + "-" + UUID().uuidString)
+                        try FileManager.default.createDirectory(at: archived.deletingLastPathComponent(), withIntermediateDirectories: true)
+                        try FileManager.default.moveItem(at: partial, to: archived)
+                    }
+                }
+            }
             let booted = try await bootGuestWithShape(root: root, memoryMB: 1024) { ownedEnvironmentID = $0 }
             let environmentID = booted.environmentID
+            if let resume { try #require(environmentID == resume.environmentID, "Resume created a different environment") }
             evidence["environmentID"] = environmentID
             evidence["actualMemoryMB"] = String(booted.receipt.actualMemoryMB)
             try await skillHubCreateRunRows(app: liveApp, conversationID: conversationID, runID: runID,
