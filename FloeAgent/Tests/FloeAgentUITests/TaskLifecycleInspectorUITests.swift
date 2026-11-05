@@ -36,18 +36,18 @@ final class TaskLifecycleInspectorUITests: XCTestCase {
     /// Opens the fixture conversation from the sidebar (drawer-aware).
     private func openFixtureThread(_ app: XCUIApplication) {
         let row = app.descendants(matching: .any)[fixtureRow].firstMatch
-        if !row.isHittable {
+        let sidebar = app.collectionViews["sidebar.list"].firstMatch
+        if !sidebar.exists || !sidebar.isHittable {
             let drawer = app.buttons["phone.sidebar.open"]
             if drawer.waitForExistence(timeout: 5) { drawer.tap() }
         }
-        let sidebar = app.collectionViews.firstMatch
         var scrolls = 0
-        while !row.isHittable, sidebar.exists, scrolls < 6 {
+        while !row.exists || !row.isHittable, sidebar.exists, scrolls < 6 {
             sidebar.swipeUp()
             scrolls += 1
         }
         scrolls = 0
-        while !row.isHittable, sidebar.exists, scrolls < 8 {
+        while !row.exists || !row.isHittable, sidebar.exists, scrolls < 8 {
             sidebar.swipeDown()
             scrolls += 1
         }
@@ -179,9 +179,10 @@ final class TaskLifecycleInspectorUITests: XCTestCase {
         progress.tap()
 
         let column = app.otherElements["ipad.inspector.column"].firstMatch
-        let title = app.staticTexts["inspector.title"].firstMatch
+        let title = column.staticTexts.matching(NSPredicate(format: "label IN %@", ["执行进度", "Progress"])).firstMatch
         XCTAssertTrue(column.waitForExistence(timeout: 10))
         XCTAssertTrue(title.waitForExistence(timeout: 10))
+        attach(app, "ipad-inspector-title-geometry")
         XCTAssertEqual(title.frame.midX, column.frame.midX, accuracy: 16,
                        "the inspector title must be centered over its own pane")
         XCTAssertTrue(app.textViews["composer.input"].firstMatch.isHittable,

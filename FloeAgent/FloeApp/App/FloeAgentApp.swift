@@ -1389,10 +1389,8 @@ struct RootView: View {
 
     @ViewBuilder
     private var iPadRoot: some View {
-        // Keep the outer two-column split stable. The trailing pane owns a
-        // separate native navigation host: nested SwiftUI stacks otherwise
-        // merge their toolbar preferences into the task's navigation bar.
-        // Unlike `.inspector`, this remains side by side on a portrait iPad.
+        // Keep the stable outer split and the on-demand parallel pane. Its
+        // header belongs to the pane's layout, rather than the shared bar.
         NavigationSplitView(columnVisibility: $router.columnVisibility) {
             sidebarColumn
                 .collapseSidebarOnRightSwipe {
@@ -1405,14 +1403,26 @@ struct RootView: View {
                 contentColumn.frame(maxWidth: .infinity, maxHeight: .infinity)
                 if let inspectorRoute = presentableInspectorRoute {
                     Divider()
-                    InspectorNavigationHost {
+                    VStack(spacing: 0) {
+                        InspectorPaneHeader(content: inspectorRoute.content) {
+                            withAnimation(.snappy) { router.hideInspector() }
+                        }
                         NavigationStack {
-                            InspectorColumnView(route: inspectorRoute).id(inspectorRoute.id)
+                            InspectorColumnView(route: inspectorRoute, embedded: true).id(inspectorRoute.id)
                         }
                     }
                     .frame(minWidth: 360, idealWidth: 430, maxWidth: 520)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("ipad.inspector.column")
+                }
+            }
+            .toolbar {
+                if let route = presentableInspectorRoute {
+                    ToolbarItem(placement: .principal) {
+                        InspectorTaskTitle(center: environment.conversationCenter,
+                                           conversationID: route.conversationID)
+                    }
                 }
             }
         }
@@ -1943,95 +1953,58 @@ struct RootView: View {
     }
 }
 
-/// Isolates navigation preferences without copying any task, browser or editor
-/// state. Forward the existing app services and public appearance values only;
-/// forwarding the entire environment also copies the outer navigation bridge.
-@MainActor
-private struct InspectorNavigationHost<Content: View>: UIViewControllerRepresentable {
-    let content: Content
-    @EnvironmentObject private var environment: AppEnvironment
-    @EnvironmentObject private var router: AppRouter
+/// The on-demand inspector column (iPad third column / iPhone sheet).
+private struct InspectorTaskTitle: View {
+    @ObservedObject var center: ConversationCenter
+    let conversationID: UUID
 
-    init(@ViewBuilder content: () -> Content) { self.content = content() }
-
-    func makeUIViewController(context: Context) -> UINavigationController {
-        let host = UIHostingController(rootView: hostedContent(context))
-        // A hosting view alone is still inside the outer UIKit navigation
-        // controller. Give the pane its own controller boundary as well.
-        let navigation = UINavigationController(rootViewController: host)
-        navigation.setNavigationBarHidden(true, animated: false)
-        return navigation
+    var body: some View {
+        Text(center.conversations.first(where: { $0.id == conversationID })?.title
+             ?? IDELanguageRunText.t("任务", "Task"))
+            .font(.headline).lineLimit(1)
     }
+}
 
-    func updateUIViewController(_ controller: UINavigationController, context: Context) {
-        if let host = controller.viewControllers.first as? UIHostingController<InspectorNavigationEnvironment<Content>> {
-            host.rootView = hostedContent(context)
+private struct InspectorPaneHeader: View {
+    let content: AppRouter.InspectorContent
+    let collapse: () -> Void
+
+    private var title: String {
+        switch content {
+        case .browser: IDELanguageRunText.t("浏览器", "Browser")
+        case .terminal: IDELanguageRunText.t("终端", "Terminal")
+        case .progress: IDELanguageRunText.t("执行进度", "Progress")
+        case .childAgents: IDELanguageRunText.t("子任务", "Subtasks")
+        case .permissions: IDELanguageRunText.t("权限", "Permissions")
+        case .changes: IDELanguageRunText.t("修改", "Changes")
+        case .workspaceFiles: IDELanguageRunText.t("文件", "Files")
         }
     }
 
-    private func hostedContent(_ context: Context) -> InspectorNavigationEnvironment<Content> {
-        InspectorNavigationEnvironment(content: content, appearance: InspectorAppearance(context.environment),
-                                       environment: environment, router: router)
-    }
-}
-
-private struct InspectorAppearance {
-    let locale: Locale
-    let colorScheme: ColorScheme
-    let dynamicTypeSize: DynamicTypeSize
-    let layoutDirection: LayoutDirection
-    let scenePhase: ScenePhase
-    let horizontalSizeClass: UserInterfaceSizeClass?
-    let verticalSizeClass: UserInterfaceSizeClass?
-    let foldableDisplay: FoldableDisplaySnapshot
-    let continuousVoiceWindowID: String?
-    let continuousVoiceActive: Bool
-
-    init(_ values: EnvironmentValues) {
-        locale = values.locale
-        colorScheme = values.colorScheme
-        dynamicTypeSize = values.dynamicTypeSize
-        layoutDirection = values.layoutDirection
-        scenePhase = values.scenePhase
-        horizontalSizeClass = values.horizontalSizeClass
-        verticalSizeClass = values.verticalSizeClass
-        foldableDisplay = values.foldableDisplay
-        continuousVoiceWindowID = values.continuousVoiceWindowID
-        continuousVoiceActive = values.continuousVoiceActive
-    }
-}
-
-private struct InspectorNavigationEnvironment<Content: View>: View {
-    let content: Content
-    let appearance: InspectorAppearance
-    let environment: AppEnvironment
-    let router: AppRouter
-
     var body: some View {
-        content
-            .environmentObject(environment)
-            .environmentObject(router)
-            .environmentObject(environment.voiceInput)
-            .environmentObject(environment.speechService)
-            .environmentObject(environment.ttsSettingsService)
-            .environmentObject(environment.designEntryState)
-            .environmentObject(environment.skillAuthoring)
-            .environment(\.locale, appearance.locale)
-            .environment(\.colorScheme, appearance.colorScheme)
-            .environment(\.dynamicTypeSize, appearance.dynamicTypeSize)
-            .environment(\.layoutDirection, appearance.layoutDirection)
-            .environment(\.scenePhase, appearance.scenePhase)
-            .environment(\.horizontalSizeClass, appearance.horizontalSizeClass)
-            .environment(\.verticalSizeClass, appearance.verticalSizeClass)
-            .environment(\.foldableDisplay, appearance.foldableDisplay)
-            .environment(\.continuousVoiceWindowID, appearance.continuousVoiceWindowID)
-            .environment(\.continuousVoiceActive, appearance.continuousVoiceActive)
+        ZStack {
+            Text(title).font(.headline).lineLimit(1)
+                .padding(.horizontal, 52)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("inspector.title")
+            HStack {
+                Button("chat.thread_detail_view.hide_inspector", systemImage: "sidebar.trailing", action: collapse)
+                    .labelStyle(.iconOnly)
+                    .frame(width: 44, height: 44)
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("inspector.collapse")
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal, 8)
+        .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
     }
 }
 
-/// The on-demand inspector column (iPad third column / iPhone sheet).
 private struct InspectorColumnView: View {
     let route: AppRouter.InspectorRoute
+    var embedded = false
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var router: AppRouter
     @State private var workspaceMountState: WorkspaceMountState = .idle
@@ -2077,18 +2050,13 @@ private struct InspectorColumnView: View {
             }
         }
         .toolbar {
-            if let title = inspectorTitle {
-                ToolbarItem(placement: .principal) {
-                    Text(title).font(.headline).lineLimit(1)
-                        .accessibilityAddTraits(.isHeader)
-                        .accessibilityIdentifier("inspector.title")
+            if !embedded {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("chat.thread_detail_view.hide_inspector", systemImage: "sidebar.trailing") {
+                        withAnimation(.snappy) { router.hideInspector() }
+                    }
+                    .accessibilityIdentifier("inspector.collapse")
                 }
-            }
-            ToolbarItem(placement: .topBarLeading) {
-                Button("chat.thread_detail_view.hide_inspector", systemImage: "sidebar.trailing") {
-                    withAnimation(.snappy) { router.hideInspector() }
-                }
-                .accessibilityIdentifier("inspector.collapse")
             }
         }
         .task(id: "\(route.id).\(workspaceMountAttempt)") {
@@ -2118,17 +2086,6 @@ private struct InspectorColumnView: View {
             case .progress, .childAgents, .permissions:
                 break
             }
-        }
-    }
-
-    private var inspectorTitle: String? {
-        switch route.content {
-        case .browser: IDELanguageRunText.t("浏览器", "Browser")
-        case .terminal: IDELanguageRunText.t("终端", "Terminal")
-        case .progress: IDELanguageRunText.t("执行进度", "Progress")
-        case .childAgents: IDELanguageRunText.t("子任务", "Subtasks")
-        case .permissions: IDELanguageRunText.t("权限", "Permissions")
-        case .changes, .workspaceFiles: nil // Document editors supply their own title.
         }
     }
 
