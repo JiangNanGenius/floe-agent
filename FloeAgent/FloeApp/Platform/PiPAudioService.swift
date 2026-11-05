@@ -723,6 +723,9 @@ final class PiPAudioService: ObservableObject {
             } else if !ambient.isPlaying {
                 // Held by an earlier decision (transport/interruption/route/
                 // recording) that has now cleared: resume, no restart.
+                // Preferences can change while paused. Apply them before
+                // resuming, so a muted loop cannot reuse an old audible gain.
+                ambient.setGain(gain)
                 if ambient.resume() {
                     currentLoopGain = gain
                 }

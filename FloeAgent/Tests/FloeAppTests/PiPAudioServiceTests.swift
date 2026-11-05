@@ -25,6 +25,7 @@ private final class FakeAmbientPlayer: PiPAmbientPlaying {
     private(set) var stopCount = 0
     private(set) var pauseCount = 0
     private(set) var resumeCount = 0
+    private(set) var gainAtResume: [Double] = []
     private(set) var lastSound: PiPAmbientSound?
     private(set) var lastGain: Double = -1
     var failNextPlay = false
@@ -49,6 +50,7 @@ private final class FakeAmbientPlayer: PiPAmbientPlaying {
 
     func resume() -> Bool {
         resumeCount += 1
+        gainAtResume.append(lastGain)
         isPlaying = true
         return true
     }
@@ -260,6 +262,25 @@ struct PiPAudioServiceTests {
         #expect(harness.ambient.lastGain == 0.6) // instant, live
         #expect(harness.ambient.isPlaying)
         #expect(harness.service.state == .playing)
+    }
+
+    @Test("Paused preference changes reach the player before it resumes", arguments: [0.0, 0.25])
+    func resumeReappliesChangedGainBeforePlayback(gain: Double) {
+        var preferences = PiPAudioPreferences()
+        preferences.ambientGain = 0.6
+        let harness = PiPAudioHarness.make(preferences)
+        harness.service.handleTaskPiPActiveChanged(true)
+        harness.service.handleSessionEvent(.interruptionBegan)
+        #expect(!harness.ambient.isPlaying)
+        preferences.ambientGain = gain
+        harness.service.applyPreferences(preferences)
+        harness.service.handleSessionEvent(.interruptionEnded(shouldResume: true))
+        #expect(harness.ambient.gainAtResume == [gain])
+        #expect(harness.ambient.lastGain == gain)
+        #expect(harness.ambient.isPlaying)
+        #expect(harness.ambient.playCount == 1)
+        #expect(harness.service.state == (gain == 0 ? .muted : .playing))
+        harness.service.handleTaskPiPActiveChanged(false)
     }
 
     @Test("Stored preferences survive later opens — no reset-to-zero per session")
