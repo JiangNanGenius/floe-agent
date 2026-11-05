@@ -40,15 +40,26 @@ final class ARM64MachineConfigurationTests: XCTestCase {
         let factory = ARM64ResidentGuestSessionFactory(root: root)
         try await factory.configureSharedMachine(.init(vcpus: 3, memoryMB: 1024))
         XCTAssertEqual(factory.preferredSharedConfiguration, .init(vcpus: 3, memoryMB: 1024))
+        // The shared runtime supports four online CPUs. Its spare internal
+        // CPU slot does not expand the user-facing configuration boundary.
+        let fourCores = LinuxGuestLifecycleConfig(vcpus: 4, memoryMB: 1024)
+        try await factory.configureSharedMachine(fourCores)
+        XCTAssertEqual(factory.preferredSharedConfiguration, fourCores)
+        let reopened = ARM64ResidentGuestSessionFactory(root: root)
+        XCTAssertEqual(reopened.preferredSharedConfiguration, fourCores)
+        for cores in [0, 5] {
+            do {
+                try await factory.configureSharedMachine(.init(vcpus: cores, memoryMB: 1024))
+                XCTFail("Out-of-range core count must fail: \(cores)")
+            } catch {}
+            XCTAssertEqual(factory.preferredSharedConfiguration, fourCores)
+        }
         do {
-            try await factory.configureSharedMachine(.init(vcpus: 4, memoryMB: 1024))
-            XCTFail("Unqualified core count must fail")
-        } catch {}
-        do {
-            try await factory.configureSharedMachine(.init(vcpus: 3, memoryMB: 2048))
+            try await factory.configureSharedMachine(.init(vcpus: 4, memoryMB: 2048))
             XCTFail("Memory beyond the engine boundary must fail")
         } catch {}
-        XCTAssertEqual(factory.preferredSharedConfiguration, .init(vcpus: 3, memoryMB: 1024))
+        XCTAssertEqual(reopened.preferredSharedConfiguration, fourCores)
         await factory.shutdown()
+        await reopened.shutdown()
     }
 }
