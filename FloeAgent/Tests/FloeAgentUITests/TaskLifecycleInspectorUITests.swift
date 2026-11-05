@@ -167,6 +167,7 @@ final class TaskLifecycleInspectorUITests: XCTestCase {
     }
 
     func testProgressInspectorShowsTheRetainedJobOutput() {
+        XCUIDevice.shared.orientation = .landscapeLeft
         let app = launch()
         openFixtureThread(app)
 
