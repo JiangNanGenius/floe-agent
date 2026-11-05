@@ -2,6 +2,8 @@ Floe Agent 1.7.74 (Build 315)
 
 This update reduces local Linux worker handoffs and redundant IRQ wakeups. It also fixes symbolic-link file operations used by dependency packages while retaining directory containment and read-only protection. Existing projects, dependencies and the runtime remain intact; no runtime reset or new image download is required.
 
+Office page images read by the assistant now preserve their upright orientation, including cropped regions. This does not modify the source document.
+
 No Floe account is required. Cloud AI uses the user's own configured provider; no provider credentials are embedded. Calls may consume the user's allowance. Saving a provider does not generate paid media or silently change billing channels. The App is free to download and does not sell provider subscriptions.
 
 Suggested checks:

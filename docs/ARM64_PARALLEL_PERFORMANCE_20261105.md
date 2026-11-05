@@ -44,3 +44,19 @@ component evidence, not an iPad result, a universal speed claim or proof of
 3.5× four-core scaling. Normal and ThreadSanitizer regressions passed with the
 original concurrency, lifecycle and exact-budget assertions. Full-App and
 distribution qualification are recorded separately.
+
+## Integrated App checks / 集成 App 检查
+
+Xcode 27.1 (27A9275), Swift 6 completed the full simulator App and test-host
+object compilation and linking at `10f5fc5e88a2ad73a707a6eaede3fab47b7fe077`.
+On the existing canonical iPad simulator, the unchanged asymmetric Office
+pixel regression failed before the rendering fix and passed afterward,
+covering both a whole page and an offset crop. The actual shared-directory
+preflight also passed: Python used `/floe/env/tmp` and completed symlink and
+nested-directory cleanup without falling back to another temporary directory.
+Nineteen native 9P protocol checks cover the corresponding Linux-to-Darwin
+directory-removal flag conversion and retained read-only/containment behavior.
+
+完整 EDA 技能回归曾在临时目录清理处失败，原始失败保留。上述实际 App
+共享目录预检是修复后的局部验证，不代替完整 EDA 技能资格；本记录不宣称
+该技能已通过完整回归。315 的物理 iPad 性能对照与分发状态另行记录。
