@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "请在现有任务中运行本机计算及已安装技能，检查相同输入下的计算结果、停止响应、多核调整和文件/依赖保留。重点检查依赖包对符号链接文件的读取、清理，以及只读目录仍不能被写入。运行环境无需重新下载或重置。性能提升随设备及负载变化。",
+  "en-US": "Run local computation and installed skills in existing tasks. Check equal-input results, cancellation, online CPU changes and preservation of files/dependencies. In particular, check dependency-package symlink reads/cleanup and retained read-only directory protection. No runtime download or reset is needed. Performance varies by device and workload."
+}
