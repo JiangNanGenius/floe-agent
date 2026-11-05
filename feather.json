@@ -15,6 +15,17 @@
       "beta": true,
       "versions": [
         {
+          "version": "1.7.72",
+          "buildVersion": "313",
+          "date": "2026-11-05T06:25:49Z",
+          "localizedDescription": "Floe Agent 1.7.72 (build 313). Floe Agent: iPad-first AI tasks, Notes, Canvas and document editing. This beta IPA requires your own signing certificate and provisioning profile in Feather. It is separate from the signed TestFlight distribution.",
+          "downloadURL": "https://github.com/JiangNanGenius/floe-agent/releases/download/v1.7.72/Floe-Agent-1.7.72-build313-unsigned.ipa",
+          "size": 821386511,
+          "minOSVersion": "26.0",
+          "sha256": "9c21dd72d4378890065e34b612935104f812e018a1f533bbe4a9b0e0e77244e4",
+          "sourceCommit": "083b37d77ca83f2dd9ef087ac04616b8d8e38d6e"
+        },
+        {
           "version": "1.7.71",
           "buildVersion": "312",
           "date": "2026-11-05T03:43:21Z",
@@ -112,23 +123,12 @@
           "minOSVersion": "26.0",
           "sha256": "2863cc9613598327ea139e21d3ebe131cc2bea42b4832bac590fad4c483edb30",
           "sourceCommit": "f1307f0dabec5d4b30b01d5024bf411eacc770be"
-        },
-        {
-          "version": "1.7.59",
-          "buildVersion": "300",
-          "date": "2026-10-26T12:46:25Z",
-          "localizedDescription": "Floe Agent 1.7.59 (build 300). Floe Agent: iPad-first AI tasks, Notes, Canvas and document editing. This beta IPA requires your own signing certificate and provisioning profile in Feather. It is separate from the signed TestFlight distribution.",
-          "downloadURL": "https://github.com/JiangNanGenius/floe-agent/releases/download/v1.7.59/Floe-Agent-1.7.59-build300-unsigned.ipa",
-          "size": 813768015,
-          "minOSVersion": "26.0",
-          "sha256": "e24ec577e11eac8e9ce9e470c355826ed132621d4b4199def9c3e26fd08237e2",
-          "sourceCommit": "03bc1127d96bbab49a04d1957ae4c6fda5a4c473"
         }
       ],
-      "version": "1.7.71",
-      "versionDate": "2026-11-05T03:43:21Z",
-      "size": 821312196,
-      "downloadURL": "https://github.com/JiangNanGenius/floe-agent/releases/download/v1.7.71/Floe-Agent-1.7.71-build312-unsigned.ipa"
+      "version": "1.7.72",
+      "versionDate": "2026-11-05T06:25:49Z",
+      "size": 821386511,
+      "downloadURL": "https://github.com/JiangNanGenius/floe-agent/releases/download/v1.7.72/Floe-Agent-1.7.72-build313-unsigned.ipa"
     }
   ],
   "news": []
