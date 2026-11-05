@@ -32,8 +32,17 @@ One actual Linux pair using unchanged crypto/compression inputs and result
 goldens improved PBKDF2 throughput by **4.14%** and zlib by **1.74%**. These are
 shared-host observations, not statistically established universal gains or
 physical iPad performance. The local component results do not establish that
-four-core scaling is solved. A fixed-work Python/Linux pair is tracked
-separately, without replacing these smaller results.
+four-core scaling is solved.
+
+A second actual Linux/Python pair used 16 fixed units of 24,000 integer-loop
+iterations, unchanged inputs/checksums, and three counterbalanced repetitions
+per process count. Median runtime changed from 6.296274003 to 5.528852003 seconds
+with one process, and from 5.029819002 to 4.616245002 seconds with two processes:
+throughput improved **13.9%** and **9.0%**. Both variants used the same explicit
+shared-memory mount before timing and passed boot, result, reaping and original
+crypto/compression/lifecycle checks. The initial missing-shared-memory fixture
+failure remains recorded. These host measurements do not replace the smaller
+crypto/compression results or establish physical-iPad/four-core gains.
 
 The integrated Swift 6 App and test bundle compiled with Xcode 27.1 (27A9275).
 The canonical iPad simulator passed 52 audio/CAD-observation tests with no skips.
@@ -46,7 +55,7 @@ selector executed zero cases. Neither is reported as a pass. Current console
 readiness-pipe descriptors were accounted for in private compatibility fixtures
 without relaxing final leak checks or architectural assertions.
 
-The audio regression reproduced an audible gain of 0.6 at resume after the
+The audio regression observed a backend gain of 0.6 at resume after the
 saved preference changed to 0 or 0.25. Both parameter cases failed on the frozen
 315 host and passed after applying gain before resume; zero-gain playback
 continues running. CAD observation now also accepts named standard views and
