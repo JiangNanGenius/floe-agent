@@ -26,6 +26,57 @@ import FloeAgentRuntime
 struct SQLiteRunCheckpointStoreTests: Sendable {
     private static let baseDate = Date(timeIntervalSince1970: 1_761_400_000)
 
+    @Test("Unavailable command locations still allow a native run's first durable dispatch")
+    func nativeFallbackPinsPreparedRunBeforeCheckpoint() async throws {
+        let targets: [TaskExecutionTarget] = [
+            .init(environmentID: "saved-linux", backend: .linuxVM,
+                  operatingSystem: "linux", architecture: "arm64"),
+            .init(environmentID: "saved-mac", backend: .macBridge,
+                  operatingSystem: "macos", architecture: "arm64"),
+            makeTarget("saved-remote"),
+        ]
+        for target in targets {
+            let database = try await makeDatabase()
+            let (conversationID, runID) = try await makeConversationAndRun(database, binding: nil)
+            let bindings = TaskExecutionBindingStore(database: database)
+            let pin = try await bindings.bindInitial(.init(conversationID: conversationID,
+                target: target, generation: 7, updatedAt: Self.baseDate))
+            let checkpoints = SQLiteRunCheckpointStore(database: database, legacyDirectory: nil)
+            let checkpoint = makeCheckpoint(runID: runID, conversationID: conversationID,
+                marker: "Native follow-up while commands are unavailable", binding: pin)
+            // Keep the original guard: an in-memory pin alone is insufficient.
+            await #expect(throws: (any Error).self) { try await checkpoints.save(checkpoint) }
+            let retained = try await bindings.pinRetainedBinding(runID: runID, conversationID: conversationID)
+            #expect(retained == pin)
+            try await checkpoints.save(checkpoint)
+            let loaded = try await checkpoints.load(runID: runID)
+            let savedRun = try await SQLiteRunStore(database: database).run(id: runID)
+            #expect(loaded?.executionBinding == pin)
+            #expect(savedRun?.executionBinding == pin)
+            let repeated = try await bindings.pinRetainedBinding(runID: runID, conversationID: conversationID)
+            #expect(repeated == pin)
+        }
+    }
+
+    @Test("Fallback cannot replace a run's pin or borrow another task's location")
+    func retainedFallbackKeepsRunOwnership() async throws {
+        let database = try await makeDatabase()
+        let conversationID = UUID(), runID = UUID()
+        let original = makeBinding(conversationID, environmentID: "original", generation: 1)
+        _ = try await makeConversationAndRun(database, conversationID: conversationID,
+            runID: runID, binding: original)
+        let bindings = TaskExecutionBindingStore(database: database)
+        _ = try await bindings.bindInitial(makeBinding(conversationID,
+            environmentID: "later-choice", generation: 2))
+        let retained = try await bindings.pinRetainedBinding(runID: runID, conversationID: conversationID)
+        #expect(retained == original)
+        await #expect(throws: (any Error).self) {
+            _ = try await bindings.pinRetainedBinding(runID: runID, conversationID: UUID())
+        }
+        let savedRun = try await SQLiteRunStore(database: database).run(id: runID)
+        #expect(savedRun?.executionBinding == original)
+    }
+
     // MARK: - Fixtures
 
     private func makeDatabase() async throws -> DatabaseManager {

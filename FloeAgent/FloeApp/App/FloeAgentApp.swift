@@ -387,6 +387,7 @@ struct RootView: View {
     /// session identities below. Never persisted across hardware.
     @StateObject private var foldableSupport = FoldableDisplayState()
     @State private var sidebarWidthObservation: CGFloat = 0
+    @State private var iPadWindowWidth: CGFloat = 0
     /// Linux session/service deep link destination, optionally focused on the
     /// environment the notification came from.
     private struct ExecutionEnvironmentRequest: Identifiable {
@@ -743,6 +744,7 @@ struct RootView: View {
         }
         .onChange(of: router.inspectorRoute) { _, _ in
             reconcileTemporaryInspectorRoute()
+            keepInspectorColumnsReadable()
         }
         .onChange(of: environment.conversationCenter.temporarySession?.incarnation) { _, _ in
             reconcileTemporaryInspectorRoute()
@@ -1408,6 +1410,21 @@ struct RootView: View {
             }
         }
         .animation(.snappy, value: router.inspectorRoute)
+        .onGeometryChange(for: CGFloat.self) { proxy in proxy.size.width } action: { width in
+            iPadWindowWidth = width
+            keepInspectorColumnsReadable()
+        }
+    }
+
+    private func keepInspectorColumnsReadable() {
+        guard presentableInspectorRoute != nil, iPadWindowWidth > 0 else { return }
+        // Keep the existing split and editor identities. At a narrow iPad
+        // window, make room for the task and its inspector by collapsing the
+        // conversation list instead of squeezing the task to a few letters.
+        let requiredWidth = layoutPreferences.settings.sidebarWidth + 360 + 360
+        if Double(iPadWindowWidth) < requiredWidth, router.columnVisibility != .detailOnly {
+            router.columnVisibility = .detailOnly
+        }
     }
 
     /// Shared information architecture. NavigationSplitView projects this
@@ -1930,6 +1947,7 @@ struct RootView: View {
 private struct InspectorColumnView: View {
     let route: AppRouter.InspectorRoute
     @EnvironmentObject private var environment: AppEnvironment
+    @EnvironmentObject private var router: AppRouter
     @State private var workspaceMountState: WorkspaceMountState = .idle
     @State private var workspaceMountAttempt = 0
     @State private var terminalOwner: LocalTerminalOwner?
@@ -1970,6 +1988,14 @@ private struct InspectorColumnView: View {
                 ChildAgentsInspectorView(conversationID: route.conversationID)
             case .permissions:
                 TaskPermissionsInspectorView(conversationID: route.conversationID)
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("chat.thread_detail_view.hide_inspector", systemImage: "sidebar.trailing") {
+                    withAnimation(.snappy) { router.hideInspector() }
+                }
+                .accessibilityIdentifier("inspector.collapse")
             }
         }
         .task(id: "\(route.id).\(workspaceMountAttempt)") {

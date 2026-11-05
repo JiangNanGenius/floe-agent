@@ -418,6 +418,27 @@ final class LinuxSMPManifestHandoffTests: XCTestCase {
         XCTAssertEqual(refused.maximumVCPUs, 2)
     }
 
+    func testFourCoreClaimRequiresCoherentEmbeddedManifest() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedImage(
+            imageID: "quad-image", smpCapable: true, maxVCPUs: 4
+        )
+        let proven = try await store.images.smpCapability(imageID: manifest.imageID)
+        XCTAssertEqual(proven.maximumVCPUs, 4)
+
+        var tampered = manifest
+        tampered.capabilities = .init(smp: true, maxVCPUs: 4, declaredBy: "tampered")
+        let legacy = try JSONSerialization.jsonObject(with: manifest.legacyManifestData) as? [String: Any]
+        var downgraded = try XCTUnwrap(legacy)
+        downgraded.removeValue(forKey: "max_vcpus")
+        tampered.legacyManifestData = try JSONSerialization.data(withJSONObject: downgraded)
+        try RuntimeV2ImageStore.encoder.encode(tampered).write(
+            to: layout.imageManifestURL(imageID: manifest.imageID), options: .atomic
+        )
+        let refused = try await store.images.smpCapability(imageID: manifest.imageID)
+        XCTAssertEqual(refused.maximumVCPUs, 2)
+    }
+
     func testMigrationEarlyReturnRefreshesStaleCapabilities() async throws {
         _ = try await store.prepareAndRecover(build: "test")
         let manifest = try await makeVerifiedSMPImage()

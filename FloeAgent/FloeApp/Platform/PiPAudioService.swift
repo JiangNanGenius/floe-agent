@@ -287,6 +287,7 @@ final class PiPAudioService: ObservableObject {
     /// task, not a view, owns the session.
     private(set) var isPiPSurfaceOwnerActive = false
     private(set) var isStandaloneAudioOwnerActive = false
+    private var hasContinuousEnvironmentWork = false
     private var previewActive = false
     private var previewSoundSelection: PiPAmbientSound?
     private var previewGeneration: UInt64 = 0
@@ -383,9 +384,16 @@ final class PiPAudioService: ObservableObject {
     /// session. With a PiP surface also active the two inputs share one
     /// owner; the combined transition alone bumps the generation, so a
     /// surface handover cannot restart or stop the loop silently.
-    func handleStandaloneAudioOwnerChanged(_ active: Bool) {
-        guard active != isStandaloneAudioOwnerActive else { return }
+    func handleStandaloneAudioOwnerChanged(_ active: Bool, continuousEnvironmentWork: Bool = false) {
+        let continuous = active && continuousEnvironmentWork
+        let continuousChanged = continuous != hasContinuousEnvironmentWork
+        hasContinuousEnvironmentWork = continuous
+        // A just-finished model turn may race the runtime's live-state read.
+        // A verified running environment is still real work, even then.
+        if continuous { batchTerminal = false }
+        guard active != isStandaloneAudioOwnerActive || continuousChanged else { return }
         applyOwnerInputs(pip: isPiPSurfaceOwnerActive, standalone: active)
+        reconcile()
     }
 
     private func applyOwnerInputs(pip: Bool, standalone: Bool) {
@@ -454,7 +462,7 @@ final class PiPAudioService: ObservableObject {
     /// empty. Ambient stops even though the PiP surface may still show the
     /// completion dwell; queued speech/cue finish bounded first.
     func handleRunBatchTerminal() {
-        guard isTaskOwnerActive, !batchTerminal else { return }
+        guard isTaskOwnerActive, !batchTerminal, !hasContinuousEnvironmentWork else { return }
         batchTerminal = true
         reconcile()
         releaseSessionIfIdle()

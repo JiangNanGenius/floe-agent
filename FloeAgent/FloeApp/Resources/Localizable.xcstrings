@@ -45041,13 +45041,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This version allows up to %lld cores per guest and 4 cores across the pool. Two or three cores require an installed Linux image verified for that count; an unsupported request is refused without silently reducing it. In our tests two cores were slightly slower for the same work, so no speed-up is promised."
+            "value": "The shared runtime supports up to %lld cores. CPU changes apply while running; stop projects before changing memory. Additional cores help work that can run in parallel."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "本版本单台客户机最多使用 %lld 核，资源池总计 4 核。使用 2 核或 3 核需已安装镜像证明支持对应核数；不支持的请求会明确拒绝，不会静默降核。实测同等工作 2 核略慢，不承诺提速。"
+            "value": "共享环境最多使用 %lld 核。CPU 可在运行时调整，更改内存前需停止项目。更多核心只对能并行的任务有帮助。"
           }
         }
       }
@@ -140196,13 +140196,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Stop active projects before changing these settings."
+            "value": "CPU changes apply while running. Stop active projects before changing memory."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请先停止正在运行的项目，再调整资源。"
+            "value": "CPU 可在运行时调整；更改内存前请先停止正在运行的项目。"
           }
         }
       }

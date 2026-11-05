@@ -118,6 +118,47 @@ public struct TaskExecutionBindingStore: Sendable {
         }
     }
 
+    /// Retain a saved location when its command backend is temporarily
+    /// unavailable. Native chat/search/document work may still proceed, but
+    /// the runtime and its durable run must carry the SAME pin before the
+    /// first dispatch checkpoint. This does not validate a backend, start it
+    /// or grant any access. An existing run pin always wins; a conversation
+    /// pin can only fill an unpinned run belonging to that conversation.
+    public func pinRetainedBinding(runID: UUID, conversationID: UUID) async throws -> TaskExecutionBinding? {
+        try await database.writer { db in
+            guard let row = try Row.fetchOne(db,
+                sql: "SELECT conversation_id,execution_binding_json FROM runs WHERE id=?",
+                arguments: [runID.uuidString]) else {
+                throw FloeError.notFound("Task run")
+            }
+            guard row["conversation_id"] as String == conversationID.uuidString else {
+                throw FloeError.validationFailed("The run does not belong to this task")
+            }
+            let existing = try Self.decode(TaskExecutionBinding.self,
+                row["execution_binding_json"] as String?)
+            let retained: TaskExecutionBinding?
+            if let existing {
+                retained = existing
+            } else {
+                retained = try Self.decode(TaskExecutionBinding.self, String.fetchOne(db,
+                    sql: "SELECT body_json FROM task_execution_bindings WHERE conversation_id=?",
+                    arguments: [conversationID.uuidString]))
+            }
+            guard let retained else { return nil }
+            guard retained.conversationID == conversationID, retained.generation > 0 else {
+                throw FloeError.storageCorrupted("The task execution binding is unreadable")
+            }
+            if existing == nil {
+                try db.execute(sql: "UPDATE runs SET execution_binding_json=? WHERE id=? AND execution_binding_json IS NULL",
+                    arguments: [try Self.encode(retained), runID.uuidString])
+                guard db.changesCount == 1 else {
+                    throw FloeError.validationFailed("This run is bound to another execution environment")
+                }
+            }
+            return retained
+        }
+    }
+
     public func activeMigration(conversationID: UUID) async throws -> TaskEnvironmentMigration? {
         try await database.reader { db in
             try Self.decode(TaskEnvironmentMigration.self, String.fetchOne(db,

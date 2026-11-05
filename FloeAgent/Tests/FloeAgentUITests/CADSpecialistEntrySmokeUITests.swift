@@ -14,6 +14,19 @@ import XCTest
         app=XCUIApplication();app.launchArguments=common+flags;app.launch()
         XCTAssertTrue(any("CADFixtureHarness").waitForExistence(timeout:60),app.debugDescription)
     }
+    func testColdWorkbenchOpeningRendersViewportAndControlsTwice() {
+        for pass in 1...2 {
+            launch(["--ui-test-cad-uninstanced"])
+            XCTAssertTrue(any("CADEditorViewport").waitForExistence(timeout:30),app.debugDescription)
+            toolbar("HistoryButton", "History")
+            XCTAssertTrue(any("HistoryPanel").waitForExistence(timeout:15))
+            let image = XCTAttachment(screenshot: app.screenshot())
+            image.name = "CAD opening regression pass \(pass)"
+            image.lifetime = .keepAlways
+            add(image)
+            app.terminate()
+        }
+    }
     private func awaitValue(_ predicate:NSPredicate,_ object:Any?,timeout:TimeInterval=30) {
         XCTAssertEqual(XCTWaiter.wait(for:[XCTNSPredicateExpectation(predicate:predicate,object:object)],timeout:timeout),.completed,app.debugDescription)
     }

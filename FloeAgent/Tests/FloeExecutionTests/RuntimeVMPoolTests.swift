@@ -813,11 +813,12 @@ final class RuntimeVMPoolTests: XCTestCase {
     /// and synthetic policies, with no clamping in any direction.
     func testReleaseShapePolicyResolution() throws {
         let production = GuestReleaseShapePolicy.production
-        XCTAssertEqual(production.maximumSupportedVCPUs, 3)
+        XCTAssertEqual(production.maximumSupportedVCPUs, 4)
         XCTAssertEqual(try production.resolve(requestedVCPUs: nil), .one)
         XCTAssertEqual(try production.resolve(requestedVCPUs: 1), .one)
         XCTAssertEqual(try production.resolve(requestedVCPUs: 2), .two)
         XCTAssertEqual(try production.resolve(requestedVCPUs: 3), .three)
+        XCTAssertEqual(try production.resolve(requestedVCPUs: 4), .four)
         for bad in [0, -1, 6, 64] {
             XCTAssertThrowsError(try production.resolve(requestedVCPUs: bad)) {
                 guard case .invalidVCPUCount = $0 as? GuestReleaseShapeError else {

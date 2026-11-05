@@ -482,21 +482,31 @@ struct BackgroundRunCoordinatorTests {
             )
         ))
 
-        // The status-PiP release gate strips the visual flags (never the
-        // enhanced flag), so an ungated visual choice cannot re-enable the
-        // assist by itself.
+        // A visual release gate removes only visual flags. The independent
+        // audio choice survives and may own real background playback.
         let visualOnly = BackgroundExecutionOptions(
             enhancedBackgroundEnabled: false,
             pictureInPictureEnabled: true,
             screenFeedbackEnabled: true
         )
-        #expect(!BackgroundRunCoordinator.backgroundLocationSupportEnabled(
-            for: BackgroundRunCoordinator.honoredOptions(visualOnly, statusPiPEnabled: false)
-        ))
+        let honored = BackgroundRunCoordinator.honoredOptions(visualOnly, statusPiPEnabled: false)
+        #expect(!honored.pictureInPictureEnabled)
+        #expect(!honored.screenFeedbackEnabled)
+        #expect(honored.audioEnabled == visualOnly.audioEnabled)
         let enhanced = BackgroundExecutionOptions(enhancedBackgroundEnabled: true)
         #expect(BackgroundRunCoordinator.backgroundLocationSupportEnabled(
             for: BackgroundRunCoordinator.honoredOptions(enhanced, statusPiPEnabled: false)
         ))
+    }
+
+    @Test("Background audio survives a disabled visual surface")
+    func audioDoesNotRequirePictureInPicture() {
+        let options = BackgroundExecutionOptions(enhancedBackgroundEnabled: true,
+            audioEnabled: true, pictureInPictureEnabled: false, screenFeedbackEnabled: false)
+        let honored = BackgroundRunCoordinator.honoredOptions(options, statusPiPEnabled: false)
+        #expect(honored.audioEnabled)
+        #expect(!honored.pictureInPictureEnabled)
+        #expect(!honored.screenFeedbackEnabled)
     }
 
     @Test("Only actual local execution is eligible location work")

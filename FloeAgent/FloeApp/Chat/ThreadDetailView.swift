@@ -923,6 +923,14 @@ struct ThreadDetailView: View {
         if !embedded {
             temporaryToolbarItems
         }
+        if !viewModel.isTemporary {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("tab.files", systemImage: "folder") {
+                    router.showInspector(.workspaceFiles)
+                }
+                .accessibilityIdentifier("thread.files.open")
+            }
+        }
         ToolbarItem(placement: .topBarTrailing) {
             usageToolbarHost
         }

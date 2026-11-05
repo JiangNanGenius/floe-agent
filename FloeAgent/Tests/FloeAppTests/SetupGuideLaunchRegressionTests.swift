@@ -4,12 +4,46 @@
 import Foundation
 import Testing
 import FloeCore
+import FloePersistence
 import FloeTestSupport
 @testable import FloeApp
 
 @Suite("FloeApp.SetupGuideLaunch", .serialized)
 @MainActor
 struct SetupGuideLaunchRegressionTests {
+    @Test("Saved cloud configuration is published while optional local discovery waits")
+    func localDiscoveryDoesNotBlockSavedConfiguration() async throws {
+        let (environment, model) = try await configuredEnvironment()
+        var preferences = try await environment.configurationStore.preferences()
+        preferences.defaultAgentModelID = model.id
+        try await environment.configurationStore.savePreferences(preferences)
+        let pending = AsyncStream<Void>.makeStream()
+        let center = environment.conversationCenter
+        center.localModelDiscoveryOverrideForTesting = {
+            for await _ in pending.stream { }
+        }
+        await center.reload()
+        #expect(center.availableAgentModels.contains(where: { $0.id == model.id }))
+        #expect(center.modelPreferences.defaultAgentModelID == model.id)
+        pending.continuation.finish()
+        await center.finishLocalModelRefreshForTesting()
+        center.localModelDiscoveryOverrideForTesting = nil
+    }
+
+    @Test("Cold settings restore applies multiple saved values without another Save")
+    func savedSettingsApplyOnLaunch() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let store = SQLiteSettingsStore(database: environment.database)
+        try await store.setValue("900", forKey: AppSettingsKey.executionTimeoutSeconds)
+        try await store.setValue("131072", forKey: AppSettingsKey.maxOutputBytes)
+        let center = environment.settingsCenter
+        await center.loadLaunchPreferences()
+        #expect(center.launchPreferencesLoaded)
+        #expect(center.execution.timeoutSeconds == 900)
+        #expect(center.execution.maxOutputBytes == 131072)
+    }
+
     private func configuredEnvironment() async throws -> (AppEnvironment, ModelProfile) {
         let environment = AppEnvironment.preview()
         try await environment.database.migrate()

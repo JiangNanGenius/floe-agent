@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "改善打开 3D 模型及工作台时的稳定性，修复下一次发送被环境检查点阻断和启动设置未及时生效的问题。本机 ARM64 环境支持最多四核及在线核心调整；后台音频与画中画独立。恢复任务文件入口和右侧面板收起按钮。请关注冷启动发送、已有任务继续执行、3D 保存重开，以及运行中调整核心数。",
+  "en-US": "Improved stability when opening 3D models and the workbench. Fixed environment checkpoints blocking the next message and saved settings not applying promptly at launch. The local ARM64 runtime supports up to four cores and online CPU changes. Background audio is independent of Picture in Picture. Restored task-file access and the right panel's collapse button. Please check cold-launch sending, continuing existing tasks, reopening saved 3D models and changing cores while work is running."
+}

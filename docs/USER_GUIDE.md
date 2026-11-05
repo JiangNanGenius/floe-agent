@@ -297,15 +297,11 @@ task tools → Terminal → Local Workspace, with Remote SSH in the same panel. 
 
 Open the local terminal, install and verify the Linux image if prompted, and begin with read-only `pwd` and `ls`. Ask the assistant to inspect Linux status and choose cores/memory before its first shell call. Example: “Inspect Linux, select two cores for parallel compilation, start it and verify the actual core count.” Check granted resources in the receipt.
 
-| Work | Suggested cores | Constraint |
-| --- | --- | --- |
-| Inspection, light commands, small server | 1 | Avoid unnecessary resource use |
-| Parallel compilation or CPU workers | 2–3 | Work must benefit from parallelism; check memory separately |
-| Concurrent guests | Up to 4 total | 3+1, 2+2, 2+1+1 or 1+1+1+1 |
+The local runtime uses one shared ARM64 Linux machine, with **1–4 online CPUs** and shared memory configured under **Settings → Execution Environment**. Tasks in the same project reuse dependencies; different projects keep separate files and writable environments.
 
-One guest uses at most three cores. Three cores require a verified image; older images can remain limited to two. A four-core pool does not guarantee two guests on every device: memory and existing work still control admission.
+CPU-only changes use online adjustment and do not restart Linux or interrupt existing project sessions. Memory changes require stopping active projects first. Omitting resources preserves the saved configuration; a new shared runtime starts with 2 CPUs and 512 MiB. More CPUs help only workloads that can run in parallel.
 
-a successful launch saves its core/memory configuration for later resumption. Choose explicitly on first start. Changing an active guest may require a hard restart that interrupts commands/services. App upgrades prefer reusing valid local images; missing, damaged or incompatible images need appropriate repair. Do not delete environments as the first troubleshooting step. Stop unneeded services after work; closing a panel does not necessarily terminate its shell.
+Background audio can work independently of picture in picture. Closing the floating window does not stop Linux; use the runtime’s Stop action to stop it. System background restrictions still apply. App upgrades reuse verified resources and compatible project state; use repair or re-download when needed, rather than deleting project files.
 
 <!-- doc-anchor: section-25 -->
 ### Same-Mac companion

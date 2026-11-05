@@ -86,8 +86,8 @@ struct ExecutionEnvironmentView: View {
             if sharedConfiguration != nil {
                 Section {
                     Picker("execution.shared.cpus", selection: $sharedCPUs) {
-                        ForEach(1...3, id: \.self) { Text("\($0)").tag($0) }
-                    }.disabled(sharedRuntimeRunning)
+                        ForEach(1...4, id: \.self) { Text("\($0)").tag($0) }
+                    }
                     Picker("execution.shared.memory", selection: $sharedMemoryMB) {
                         ForEach([256, 512, 768, 1024], id: \.self) { value in
                             Text(value == 1024 ? "1 GB" : "\(value) MB").tag(value)
@@ -99,7 +99,7 @@ struct ExecutionEnvironmentView: View {
                     }
                     if sharedConfiguration != .init(vcpus: sharedCPUs, memoryMB: sharedMemoryMB) {
                         Button("execution.shared.save") { Task { await saveSharedConfiguration() } }
-                            .disabled(linuxBusy || sharedRuntimeRunning)
+                            .disabled(linuxBusy)
                     }
                 } header: { Text("execution.shared.title") }
                   footer: { Text(sharedRuntimeRunning ? "execution.shared.stop_first" : "execution.shared.detail") }

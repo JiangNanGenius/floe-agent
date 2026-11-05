@@ -217,6 +217,30 @@ private struct PiPAudioHarness {
 @Suite("FloeApp.PiPAudioService")
 @MainActor
 struct PiPAudioServiceTests {
+    @Test("A running environment keeps audio after the turn or PiP ends")
+    func continuousEnvironmentOwnsAudioIndependently() {
+        let harness = PiPAudioHarness.make(PiPAudioPreferences())
+        harness.service.handleStandaloneAudioOwnerChanged(true, continuousEnvironmentWork: true)
+        #expect(harness.ambient.isPlaying)
+        harness.service.handleTaskPiPActiveChanged(true)
+        harness.service.handleTaskPiPActiveChanged(false)
+        harness.service.handleRunBatchTerminal()
+        #expect(harness.ambient.isPlaying)
+        harness.service.handleStandaloneAudioOwnerChanged(false)
+        #expect(!harness.ambient.isPlaying)
+    }
+
+    @Test("Late runtime truth restores playback after a terminal-turn race")
+    func lateEnvironmentTruthReconcilesTerminalBatch() {
+        let harness = PiPAudioHarness.make(PiPAudioPreferences())
+        harness.service.handleStandaloneAudioOwnerChanged(true)
+        harness.service.handleRunBatchTerminal()
+        #expect(!harness.ambient.isPlaying)
+        harness.service.handleStandaloneAudioOwnerChanged(true, continuousEnvironmentWork: true)
+        #expect(harness.ambient.isPlaying)
+        harness.service.handleStandaloneAudioOwnerChanged(false)
+    }
+
 
     @Test("Ambient at gain 0 really plays; raising the gain never restarts the loop")
     func zeroGainPlaysAndRaisingGainDoesNotRestart() {

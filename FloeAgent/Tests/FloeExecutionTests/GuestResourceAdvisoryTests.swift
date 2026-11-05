@@ -298,13 +298,14 @@ final class GuestResourceAdvisoryTests: XCTestCase {
 
     // MARK: release policy
 
-    func testProductionPolicyQualifiesThreeHartsAndStillDefaultsToOne() throws {
-        XCTAssertEqual(GuestReleaseShapePolicy.production.maximumSupportedVCPUs, 3)
+    func testProductionPolicyQualifiesFourCPUsAndStillDefaultsToOne() throws {
+        XCTAssertEqual(GuestReleaseShapePolicy.production.maximumSupportedVCPUs, 4)
         // The worker default is unchanged: no explicit request ⇒ one hart.
         XCTAssertEqual(try GuestReleaseShapePolicy.production.resolve(requestedVCPUs: nil), .one)
         XCTAssertEqual(try GuestReleaseShapePolicy.production.resolve(requestedVCPUs: 1), .one)
         XCTAssertEqual(try GuestReleaseShapePolicy.production.resolve(requestedVCPUs: 2), .two)
         XCTAssertEqual(try GuestReleaseShapePolicy.production.resolve(requestedVCPUs: 3), .three)
+        XCTAssertEqual(try GuestReleaseShapePolicy.production.resolve(requestedVCPUs: 4), .four)
         XCTAssertThrowsError(try GuestReleaseShapePolicy.production.resolve(requestedVCPUs: 6)) {
             guard case .invalidVCPUCount = $0 as? GuestReleaseShapeError else {
                 return XCTFail("six must be invalid, not clamped: \($0)")

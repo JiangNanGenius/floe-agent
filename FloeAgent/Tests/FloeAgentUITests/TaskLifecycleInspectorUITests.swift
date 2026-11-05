@@ -55,6 +55,28 @@ final class TaskLifecycleInspectorUITests: XCTestCase {
         row.tap()
     }
 
+    func testTaskFilesEntryOpensAndCollapsesTheInspector() {
+        XCUIDevice.shared.orientation = .portrait
+        let app = launch()
+        defer { app.terminate() }
+        openFixtureThread(app)
+        let files = app.buttons["thread.files.open"].firstMatch
+        XCTAssertTrue(files.waitForExistence(timeout: 15), "task files must have a direct entry")
+        XCTAssertTrue(files.isHittable)
+        files.tap()
+        let collapse = app.buttons["inspector.collapse"].firstMatch
+        XCTAssertTrue(collapse.waitForExistence(timeout: 15))
+        XCTAssertTrue(collapse.isHittable)
+        let input = app.textViews["composer.input"].firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        XCTAssertGreaterThan(input.frame.width, 200, "the inspector must not squeeze the task input into a sliver")
+        attach(app, "ipad-task-files-inspector-open")
+        collapse.tap()
+        XCTAssertTrue(collapse.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(files.isHittable, "closing the inspector must retain the task")
+        attach(app, "ipad-task-files-inspector-collapsed")
+    }
+
     func testDelegateCardOpensTheSpecificChildTranscriptAndExpandsTheFinding() {
         let app = launch()
         openFixtureThread(app)

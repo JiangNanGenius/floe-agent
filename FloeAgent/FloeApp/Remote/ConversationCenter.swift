@@ -1372,6 +1372,12 @@ final class ConversationCenter: ObservableObject {
 
     // MARK: - Loading
 
+    private var localModelConfigurationRefresh: Task<Void, Never>?
+    #if DEBUG
+    var localModelDiscoveryOverrideForTesting: (@MainActor () async -> Void)?
+    func finishLocalModelRefreshForTesting() async { await localModelConfigurationRefresh?.value }
+    #endif
+
     /// Reloads conversations, providers and models from the stores.
     func reload() async {
         // Local model discovery can initialize a runtime. Publish persisted
@@ -1387,7 +1393,20 @@ final class ConversationCenter: ObservableObject {
         } catch {
             FloeLogger(category: .app).warning("conversationHistoryReloadFailed")
         }
-        await reconcileLocalModelConfiguration()
+        await reloadPersistedModelConfiguration(localDiscoveryPending: true)
+        // Optional local discovery may initialize a runtime. It cannot hold
+        // saved cloud choices or the cold-launch send path behind that work.
+        if localModelConfigurationRefresh == nil {
+            localModelConfigurationRefresh = Task { [weak self] in
+                guard let self else { return }
+                defer { self.localModelConfigurationRefresh = nil }
+                await self.reconcileLocalModelConfiguration()
+                await self.reloadPersistedModelConfiguration()
+            }
+        }
+    }
+
+    private func reloadPersistedModelConfiguration(localDiscoveryPending: Bool = false) async {
         async let loadedProviders = environment.configurationStore.providers()
         async let loadedModels = environment.configurationStore.models()
         async let loadedPreferences = environment.configurationStore.preferences()
@@ -1411,6 +1430,11 @@ final class ConversationCenter: ObservableObject {
         // hidden model) through the shared deterministic fallback policy. This
         // runs after preferences are published but never touches a running
         // request: every live run holds its own provider/model pair.
+        if localDiscoveryPending, let selected = modelPreferences.defaultAgentModelID,
+           let local = configuredModelsByProvider.values.joined().first(where: { $0.id == selected }),
+           configuredProviders.first(where: { $0.id == local.providerID })?.kind == .local {
+            return
+        }
         await reconcileDefaultAgentModelIfNeeded()
     }
 
@@ -1454,6 +1478,9 @@ final class ConversationCenter: ObservableObject {
     /// as remote models. Persist them before publishing the picker so a run
     /// can never reference an in-memory-only provider/model pair.
     private func reconcileLocalModelConfiguration() async {
+        #if DEBUG
+        if let override = localModelDiscoveryOverrideForTesting { await override(); return }
+        #endif
         let provider = LocalProviderAdapter.providerProfile
         let adapter = LocalProviderAdapter(
             runtime: environment.localModelRuntime,
@@ -3469,6 +3496,14 @@ final class ConversationCenter: ObservableObject {
         // stores, no workspace lease, no personalization/memory recall, and a
         // strict read-only tool ceiling — never a parallel runtime.
         let isTemporary = temporaryAuthority ?? isTemporaryConversation(conversationID)
+        // Join the saved settings at the actual launch boundary as well as
+        // bootstrap. An early failed read or a restored/synced configuration
+        // must not leave a run using defaults until a settings form is saved.
+        await environment.settingsCenter.loadLaunchPreferences()
+        guard environment.settingsCenter.launchPreferencesLoaded else {
+            throw FloeError.validationFailed(IDELanguageRunText.t(
+                "设置尚未载入，请重试。", "Settings could not be loaded. Please retry."))
+        }
         if !isTemporary, runSurface == .ordinary, environment.taskExecutionEnvironments.isMigrating(conversationID) {
             environmentMigrationWaitingLaunches.insert(runID)
             defer { environmentMigrationWaitingLaunches.remove(runID) }
@@ -3680,10 +3715,12 @@ final class ConversationCenter: ObservableObject {
                 // A disconnected command target does not disable App-native
                 // search, documents, browser or CAD, and never selects a VM.
                 externalEnvironmentUnavailable = unavailable.localizedDescription
-                var trusted = try await environment.runStore.run(id: runID)?.executionBinding
-                if trusted == nil {
-                    trusted = try await TaskExecutionBindingStore(database: environment.database).binding(conversationID: conversationID)
-                }
+                // Preserve the pin in BOTH the runtime configuration and the
+                // prepared run. Merely copying a conversation pin into memory
+                // leaves runs.execution_binding_json NULL and makes the very
+                // first dispatch checkpoint fail its ownership validation.
+                let trusted = try await TaskExecutionBindingStore(database: environment.database)
+                    .pinRetainedBinding(runID: runID, conversationID: conversationID)
                 runExecutionBinding = trusted
                 runExecutionEnvironmentID = trusted?.target.environmentID
             }

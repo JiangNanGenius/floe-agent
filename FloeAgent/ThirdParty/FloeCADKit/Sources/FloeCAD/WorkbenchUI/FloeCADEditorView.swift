@@ -1633,7 +1633,10 @@ struct FloeCADEditorView: View {
     /// Viewport + floating chrome + toolbar; the presentation modifiers
     /// (importers, exporters, sheets, alerts) attach in `editorContent`.
     /// Split keeps each expression type-checkable in reasonable time.
-    private func viewportChrome(_ viewModel: EditorViewModel) -> some View {
+    private func viewportChrome(_ viewModel: EditorViewModel) -> AnyView {
+        // Bound metadata depth to avoid the device opening crash in 311.
+        // These stable stages preserve every modifier and its original order.
+        let sketchSurface = AnyView(
         // On a phone the palette covers a sixth of the width: Zoom to Fit
         // frames, and the view centres, in the strip it leaves visible.
         ViewportView(viewModel: viewModel,
@@ -1691,6 +1694,8 @@ struct FloeCADEditorView: View {
                         .ignoresSafeArea()
                 }
             }
+        )
+        let gizmoSurface = AnyView(sketchSurface
             .overlay {
                 // Non-interactive projected overlays, grouped in one ZStack to
                 // keep the modifier chain type-checkable: cube face names
@@ -1774,6 +1779,8 @@ struct FloeCADEditorView: View {
             .onPreferenceChange(BottomBarHeightKey.self) { height in
                 bottomBarHeight = height
             }
+        )
+        let panelSurface = AnyView(gizmoSurface
             .overlay(alignment: .topTrailing) {
                 // Items Manager sidebar (spec §11).
                 if showItemsPanel {
@@ -1927,6 +1934,8 @@ struct FloeCADEditorView: View {
                     .padding(.bottom, bottomBarInset)
                 }
             }
+        )
+        let statusSurface = AnyView(panelSurface
             .overlay(alignment: .top) {
                 if let tool = viewModel.pendingCreateTool {
                     // Modify group armed (pick the operation, then the region).
@@ -2189,6 +2198,8 @@ struct FloeCADEditorView: View {
             // Transient explanation (e.g. a tool refusing a curved face). Its OWN
             // overlay, pushed below the status pill — sharing the pill's overlay
             // would stack the two at the same .top alignment, hiding this one.
+        )
+        let noticeSurface = AnyView(statusSurface
             .overlay(alignment: .top) {
                 if let notice = viewModel.notice {
                     Label(notice, systemImage: "exclamationmark.circle.fill")
@@ -2219,6 +2230,8 @@ struct FloeCADEditorView: View {
                     .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
                 }
             }
+        )
+        let toolbarSurface = AnyView(noticeSurface
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
                     if horizontalSizeClass != .compact {
@@ -2436,6 +2449,8 @@ struct FloeCADEditorView: View {
                     }
                 }
             }
+        )
+        return AnyView(toolbarSurface
             .sheet(isPresented: $showSettings) {
                 CADQuickSettingsSheet()
             }
@@ -2449,6 +2464,7 @@ struct FloeCADEditorView: View {
                 CADVersionsPanelView(document: document)
                     .presentationDetents([.medium, .large])
             }
+        )
     }
 
     /// Compact-width toolbar: the CAD tools entry stays a DIRECT 44pt button
@@ -2753,8 +2769,10 @@ struct FloeCADEditorView: View {
         }
     }
 
-    @ViewBuilder
-    private func editorContent(_ viewModel: EditorViewModel) -> some View {
+    private func editorContent(_ viewModel: EditorViewModel) -> AnyView {
+        // Bound metadata depth to avoid the device opening crash in 311.
+        // These stable stages preserve every modifier and its original order.
+        let importedSurface = AnyView(
         viewportChrome(viewModel)
             // Compact widths get an IN-CONTENT control strip: the system
             // navigation bar collapses whole toolbar groups into an
@@ -2844,6 +2862,8 @@ struct FloeCADEditorView: View {
                     }
                 }
             }
+        )
+        let selectedSurface = AnyView(importedSurface
             .sheet(
                 isPresented: $showScreenshotOptions,
                 onDismiss: {
@@ -2924,6 +2944,8 @@ struct FloeCADEditorView: View {
                                         viewModel: viewModel)
                     })
             }
+        )
+        let exportedSurface = AnyView(selectedSurface
             .fileExporter(
                 isPresented: Binding(
                     get: { exportItems != nil },
@@ -2988,6 +3010,8 @@ struct FloeCADEditorView: View {
                     viewModel.errorMessage = "Export failed — please try again."
                 }
             }
+        )
+        let confirmedSurface = AnyView(exportedSurface
             .confirmationDialog(
                 Text(FloeCADStrings.text(
                     "cad.ui.export.viewOnlyTitle",
@@ -3062,6 +3086,8 @@ struct FloeCADEditorView: View {
             } message: {
                 Text(viewModel.errorMessage ?? "")
             }
+        )
+        return AnyView(confirmedSurface
             .onChange(of: viewModel.session.lastSaveError) { _, saveError in
                 // A failed save means recent work isn't reaching disk — the one
                 // storage problem worth an alert mid-session. The document
@@ -3095,6 +3121,7 @@ struct FloeCADEditorView: View {
                     historyGeneration: inputs.historyGeneration)
                 observer.handler(context)
             }
+        )
     }
 
     // MARK: - Canvas actions (host-injected)

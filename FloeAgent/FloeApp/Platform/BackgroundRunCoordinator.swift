@@ -647,15 +647,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         statusPiPEnabled: Bool
     ) -> BackgroundExecutionOptions {
         guard !statusPiPEnabled else { return options }
-        // The gate degrades the app to the compliant standard path: the
-        // audio surface and both visual surfaces are stripped together
-        // (an ungated status PiP with a silent audio session was the
-        // audited 2.5.4 problem). Enhanced processing stays independent
-        // and is never gated, and the Live Activity choice is outside the
-        // hierarchy, so honoring neither strips nor implies it.
+        // Audio is an independent user-selected playback capability. A visual
+        // release gate cannot disable it or force a floating animation.
         return BackgroundExecutionOptions(
             enhancedBackgroundEnabled: options.enhancedBackgroundEnabled,
-            audioEnabled: false,
+            audioEnabled: options.audioEnabled,
             pictureInPictureEnabled: false,
             screenFeedbackEnabled: false,
             taskLiveActivityEnabled: options.taskLiveActivityEnabled
@@ -1522,7 +1518,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         case .cancelled: audioStage = .cancelled
         }
         environment.pipAudioService.handleTaskEvent(audioStage, runID: runID)
-        if activeRuns.isEmpty {
+        if activeRuns.isEmpty, locationLiveLinuxEnvironmentIDs.isEmpty {
             environment.pipAudioService.handleRunBatchTerminal()
         }
         reconcileStandaloneAudioOwner()
@@ -2421,6 +2417,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         liveSet.subtract(locationStoppingLinuxEnvironmentIDs)
         locationLiveLinuxEnvironmentIDs = liveSet
         evictStaleLinuxSurfaceEntries(keeping: liveSet)
+        reconcileStandaloneAudioOwner()
         return LocationAuthoritySnapshot(
             environmentIDs: liveSet.sorted(),
             generation: generation,
@@ -2522,6 +2519,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             return
         }
         let decision = linuxBackgroundHold.updateEligibleEnvironmentIDs(eligible)
+        // Membership/status and audio ownership are independent of whether a
+        // floating surface is enabled or currently suppressed.
+        publishLinuxSurfacePager()
         switch decision {
         case .none:
             break
@@ -2550,7 +2550,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private func prepareLinuxSurfaceIfPossible(environmentID: String) {
         // The opt-in release gate owns whether any status PiP controller may
         // exist; a disabled gate degrades to the compliant system path.
-        guard StatusPiPReleaseGate.isEnabled else {
+        guard StatusPiPReleaseGate.isEnabled,
+              visualSurfacePolicy.allowsVisualSurface(
+                for: effectiveBackgroundExecutionPreference) else {
             FloeLogger(category: .app).info(
                 "linuxBackgroundSurfaceSkipped reason=statusPiPDisabled environment=\(environmentID)"
             )
@@ -2975,6 +2977,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // must clear the location assist immediately instead of relying on a
         // later unrelated transition.
         reconcileLocationAssist()
+        reconcileStandaloneAudioOwner()
     }
 
     /// Publishes the surface state into the shared work registry so the PiP,
@@ -3324,27 +3327,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     /// A manual/system PiP close is respected for the current active batch.
     /// A later newly-started task will call `didStart` and request PiP again.
-    /// For a Linux background hold the close ends that hold: the VM the
-    /// surface showed is stopped and flushed safely, while the durable
-    /// per-environment "allow background running" preference is preserved.
+    /// A Linux background session and its audio owner survive closing this
+    /// visual surface; stopping the runtime remains an explicit operation.
     func didClosePictureInPicture() {
-        let holdDecision = linuxBackgroundHold.userClosedPictureInPicture()
-        if case .endHoldAndStop(let environmentID) = holdDecision {
-            // The physical stop starts in the Task below; fence the id now so a
-            // read cannot re-add it in between.
-            beginLocationLinuxStop(environmentID: environmentID)
-            linuxSurfaceEntries.removeValue(forKey: environmentID)
-            linuxUnverifiedMetricsReported.remove(environmentID)
-            linuxCommandCounts.removeValue(forKey: environmentID)
-            linuxPortCounts.removeValue(forKey: environmentID)
-            publishLinuxSurfacePager()
-            Task { [weak self] in
-                await self?.stopAndFlushLinuxEnvironment(
-                    environmentID: environmentID,
-                    reason: String(localized: "background.linux.stop_reason.pip_closed")
-                )
-            }
-        }
+        // Closing the presentation is not a command to stop a Linux project.
+        // Keep real-work/audio ownership; the batch policy suppresses PiP.
         surfacedRunID = nil
         // A scene cycle is not fresh user intent. Keep this decision for the
         // current task batch even if the user reopens Floe and leaves again.
@@ -3377,7 +3364,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         guard visualSurfacePolicy.allowsVisualSurface(
             for: options.legacyPreference
         ) else {
-            if !options.pictureInPictureEnabled, !linuxBackgroundHold.hasActiveHold {
+            if !options.pictureInPictureEnabled {
                 // Mode changes can happen while a failed run's visual surface
                 // is retained. A PiP-off configuration owns only its
                 // continued task and must not inherit an earlier PiP
@@ -3936,9 +3923,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         let honored = effectiveBackgroundExecutionOptions
         let hasOwnedTaskWork = activeRuns.values.contains { run in
             run.publishesContent && run.pendingQuestionRequestID == nil
-        }
+        } || !locationLiveLinuxEnvironmentIDs.isEmpty
         environment.pipAudioService.handleStandaloneAudioOwnerChanged(
-            honored.audioEnabled && hasOwnedTaskWork
+            honored.audioEnabled && hasOwnedTaskWork,
+            continuousEnvironmentWork: !locationLiveLinuxEnvironmentIDs.isEmpty
         )
     }
 
