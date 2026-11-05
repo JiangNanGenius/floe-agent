@@ -396,8 +396,10 @@ enum OfficeDocumentRegionRenderer {
                     }
                     context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
                     context.fill(CGRect(x: 0, y: 0, width: pixelW, height: pixelH))
-                    context.translateBy(x: 0, y: CGFloat(pixelH))
-                    context.scaleBy(x: CGFloat(scale), y: -CGFloat(scale))
+                    // A raw bitmap CGContext already uses PDF's lower-left
+                    // coordinate system. A UIKit-style Y flip mirrors both
+                    // the full page and nonzero-origin crops in the PNG.
+                    context.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
                     context.translateBy(x: -target.minX, y: -target.minY)
                     page.draw(with: .cropBox, to: context)
                     guard let cg = context.makeImage() else {
