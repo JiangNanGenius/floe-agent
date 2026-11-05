@@ -78,8 +78,8 @@ results establish scheduling and lifecycle behavior, not physical-iPad speed.
 
 ThinLTO was separately measured on one unchanged Linux crypto/compression pair
 and rejected: both throughput changes were approximately -0.1%. No ThinLTO
-build flag is included. Physical-device comparison of the released 316 build
-and qualification of this newer scheduling candidate remain separate work.
+build flag is included. Physical-device comparisons of the released 316 and 317 builds are recorded
+below; the native contract results do not establish a speedup.
 
 The local Linux graphical-program startup/display/input chain is still absent;
 the existing text terminal and remote VNC support do not establish that feature.
@@ -102,3 +102,22 @@ shell prompt, with no key or touch input after the successful start. Guest
 output checksums and the observed final marker were retained separately. This
 single real-device path did not reproduce the old keypress-gated output defect;
 background/reconnection variants remain outside that observation.
+
+
+The installed TestFlight 317 build was then measured with the same binary,
+fixture, four online CPUs, 1 GiB and all nine fixed-work trials. Independent
+raw-output checks give median one/two/four-thread events/s of
+**128.62 / 215.57 / 188.40**: approximately **-0.03% / +3.19% / +1.00%**
+against 316. Four-thread scaling is approximately **1.46x** single-thread.
+This is not a material multicore breakthrough or proof of physical-core
+saturation. A separate 316 guest accounting sample showed work on all four
+virtual CPUs; it did not measure physical M4 core utilization or temperature.
+
+Cold opening the 317 terminal and expanding it before connection completed
+exposed a view-cancellation failure. One explicit reconnect succeeded; the
+benchmark then ran once with output redirected to files and completed without
+further input. The original failure remains recorded. The follow-up terminal
+owner now retains startup independently of a view task, with a generation
+fence for explicit close and late results. Nine focused owner/cadence/viewport
+tests pass, including cancellation during open and explicit close during open.
+This repair is separate from the 317 performance measurements.

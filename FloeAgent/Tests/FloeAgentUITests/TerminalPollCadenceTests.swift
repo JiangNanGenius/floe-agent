@@ -99,6 +99,8 @@ struct TerminalPollCadenceTests {
         private let state = State()
         /// Compressed blocking window per exchange (ms).
         var simulatedWaitMs: Int = 5
+        var simulatedOpenDelay: Duration = .zero
+        var ignoresOpenCancellation = false
 
         func record(_ kind: String, bytes: Int) async {
             await state.appendLog(.init(kind: kind, bytes: bytes, at: .now))
@@ -113,6 +115,11 @@ struct TerminalPollCadenceTests {
 
         func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
             await record("open", bytes: 0)
+            if ignoresOpenCancellation {
+                try? await Task.sleep(for: simulatedOpenDelay)
+            } else {
+                try await Task.sleep(for: simulatedOpenDelay)
+            }
             return ShellOpenResult(sessionID: request.sessionID, initialOutput: "", alive: true)
         }
 
@@ -157,6 +164,48 @@ struct TerminalPollCadenceTests {
 
     private func makeOwner(backend: MockShellBackend) -> LocalTerminalOwner {
         makeOwnerAndCenter(backend: backend).0
+    }
+
+    @Test("View cancellation while opening does not cancel the persistent terminal owner")
+    func viewCancellationDuringStartup() async throws {
+        let backend = MockShellBackend()
+        backend.simulatedOpenDelay = .milliseconds(80)
+        let (owner, center) = makeOwnerAndCenter(backend: backend)
+        defer { try? FileManager.default.removeItem(at: owner.root) }
+        let viewTask = Task { await owner.startIfNeeded() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !owner.opening, ContinuousClock.now < deadline { await Task.yield() }
+        try #require(owner.opening)
+        viewTask.cancel() // Embedded content disappears when full screen opens.
+        await owner.startIfNeeded() // The new view joins the same open.
+        await viewTask.value
+        #expect(owner.alive)
+        #expect(!owner.opening)
+        #expect(await center.activeSessionIDs(runID: owner.id).count == 1)
+        #expect(await backend.events.filter { $0.kind == "open" }.count == 1)
+        await owner.close()
+    }
+
+    @Test("Explicit close during startup fences a late backend result")
+    func explicitCloseDuringStartupDoesNotResurrect() async throws {
+        let backend = MockShellBackend()
+        backend.simulatedOpenDelay = .milliseconds(80)
+        backend.ignoresOpenCancellation = true
+        let (owner, center) = makeOwnerAndCenter(backend: backend)
+        defer { try? FileManager.default.removeItem(at: owner.root) }
+        let opening = Task { await owner.startIfNeeded() }
+        // Wait for the backend rather than only the owner flag, so the close
+        // really intersects an in-flight service open.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while await backend.events.isEmpty, ContinuousClock.now < deadline { await Task.yield() }
+        try #require(await !backend.events.isEmpty)
+        await owner.close()
+        await opening.value
+        #expect(!owner.alive)
+        #expect(!owner.opening)
+        #expect(owner.sessionID == nil)
+        #expect(await center.activeSessionIDs(runID: owner.id).isEmpty)
+        #expect(await backend.events.contains { $0.kind == "close" })
     }
 
     /// Returns the owner AND the exact `ShellSessionCenter` that owns its

@@ -81,6 +81,8 @@ final class LocalTerminalOwner: Identifiable {
     /// running guest).
     private(set) var missingImageID: String?
     private var token = CancellationToken()
+    private var openingTask: Task<Void, Never>?
+    private var openingGeneration = UUID()
     private var exchangeInFlight = false
     private var pendingInput = Data()
     private var columns = 80
@@ -89,23 +91,45 @@ final class LocalTerminalOwner: Identifiable {
     init(root: URL, sessions: ShellSessionCenter) { self.root = root; self.sessions = sessions }
 
     func open() async {
-        guard !alive, !opening else { return }
+        guard !alive else { return }
+        if let openingTask { await openingTask.value; return }
+        let generation = UUID()
+        openingGeneration = generation
         opening = true
-        defer { opening = false }
         token = CancellationToken()
+        let openingToken = token
         sessionID = nil
         output = Data()
         outputEnd = 0
         outputGeneration = UUID()
         missingImageID = nil
         status = String(localized: "terminal.status.starting")
+        // Embedded/full-screen reconstruction cancels the view's .task.
+        // Startup belongs to this persistent owner; a view only joins it.
+        let task = Task { await self.performOpen(generation: generation, token: openingToken) }
+        openingTask = task
+        await task.value
+    }
+
+    private func performOpen(generation: UUID, token: CancellationToken) async {
+        defer {
+            if openingGeneration == generation {
+                openingTask = nil
+                opening = false
+            }
+        }
         do {
             let result = try await sessions.open(command: "", cwd: ".", environment: [:], columns: columns, rows: rows, runID: id, rootURL: root, cancellation: token, forTerminal: true)
+            guard openingGeneration == generation, !token.isCancelled, !Task.isCancelled else {
+                await sessions.close(sessionID: result.sessionID, runID: id)
+                return
+            }
             sessionID = result.sessionID
             alive = result.alive
             status = alive ? String(localized: "terminal.status.running") : String(localized: "terminal.status.exited")
             append(result.terminalOutput ?? Data(result.initialOutput.utf8))
         } catch let error as LinuxGuestError {
+            guard openingGeneration == generation, !token.isCancelled else { return }
             if case .imageNotQualified = error {
                 missingImageID = LinuxGuestImageDistributionCatalog.defaultImageID
                 status = String(localized: "environment.backend.image_missing")
@@ -113,6 +137,7 @@ final class LocalTerminalOwner: Identifiable {
                 status = String(describing: error)
             }
         } catch {
+            guard openingGeneration == generation, !token.isCancelled else { return }
             status = String(describing: error)
         }
     }
@@ -120,7 +145,7 @@ final class LocalTerminalOwner: Identifiable {
     /// The IDE embeds this view and expects a started shell; an already-live
     /// session is never restarted just because the panel was re-shown.
     func startIfNeeded() async {
-        guard sessionID == nil, !opening else { return }
+        guard sessionID == nil else { return }
         await open()
     }
 
@@ -192,11 +217,16 @@ final class LocalTerminalOwner: Identifiable {
 
     func close() async {
         token.cancel()
+        openingGeneration = UUID()
+        openingTask?.cancel()
+        openingTask = nil
+        opening = false
         pendingInput.removeAll()
-        if let sessionID { await sessions.close(sessionID: sessionID, runID: id) }
+        let closingSession = sessionID
         alive = false
         sessionID = nil
         status = String(localized: "terminal.status.closed")
+        if let closingSession { await sessions.close(sessionID: closingSession, runID: id) }
     }
 
     /// One visible-loop iteration (flush pending input / drain output), with
