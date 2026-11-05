@@ -1,8 +1,9 @@
 # ARM64 CPU state isolation — 2026-11-06
 
 Build 315's formal App Store review remains fixed. Follow-up App delivery is
-internal and external TestFlight only. The results below are native component
-measurements on the M5 Pro host; physical M4 iPad acceptance is separate.
+internal and external TestFlight only. Native component measurements on the
+M5 Pro host and the separately verified physical M4 iPad results are identified
+below; neither is a universal performance guarantee.
 
 ## Interpreter comparison and identified bottleneck
 
@@ -63,6 +64,32 @@ heavy compiler/VM job or memory-pressure event during either run.
 This is one matched host pair, not a universal or statistically established
 speed claim. It is not physical iPad evidence, and does not establish the same
 gain for every task.
+
+## Physical M4 iPad — delivered Build 319
+
+The actual installed TestFlight App was independently read back as 1.7.78
+(319), source `c0aea38a8beda63bb6dcca32f6b4a84fe5dc7663`. The same M4
+iPad Air 13-inch/iPadOS 27.2 ran the unchanged sysbench 1.0.20 CPU fixture
+with four online guest CPUs, 1 GiB RAM, affinity 0–3 and no CPU quota. Each
+trial completed exactly 1,000 total events at max-prime 10,000 without a time
+limit. There were three counterbalanced repetitions at each thread count;
+all nine raw results and unchanged executable/script hashes were checked.
+
+| App build | 1-thread median events/s | 2-thread median events/s | 4-thread median events/s |
+| --- | ---: | ---: | ---: |
+| 315 | 121.69 | 208.01 | 182.80 |
+| 316 | 128.66 | 208.91 | 186.54 |
+| 317 | 128.62 | 215.57 | 188.40 |
+| 319 | 127.49 | 232.76 | 294.24 |
+
+Build 319's four-thread throughput was 2.31× its single-thread throughput,
+and 56.18% above Build 317's four-thread result. The single-thread median was
+0.88% lower than 317, effectively unchanged in these separate device runs.
+This confirms useful concurrent execution, not linear fourfold scaling.
+Temperature and physical-core placement were not controlled. The earlier
+host-only register test and Linux five-process pair remain distinct evidence.
+Build 320 retains exactly the same pinned runtime source; it cannot count
+this improvement as a second performance gain.
 
 ## Further observable interpreter work
 
