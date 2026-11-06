@@ -72,6 +72,7 @@ internal sealed interface AppDownloadState {
 internal enum class DownloadMode { FULL, DELTA }
 
 internal enum class DeltaFallbackReason {
+    INTERRUPTED,
     NOT_OFFERED,
     BASE_MISMATCH,
     PATCH_UNAVAILABLE,
@@ -112,6 +113,12 @@ internal data class DownloadMeta(
     val knownIssues: String = "",
     val intermediate: Boolean = false,
 ) {
+    fun forFullDownload(): DownloadMeta = if (mode == DownloadMode.FULL) this else copy(
+        mode = DownloadMode.FULL, receivedBytes = 0L, etag = null,
+        deltaBaseSha256 = null, deltaPatchName = null, deltaPatchSha256 = null,
+        deltaPatchBytes = 0L,
+    )
+
     fun toJson(): String = buildJsonObject {
         put("tag", tag)
         put("versionName", versionName)
@@ -284,6 +291,11 @@ internal class UpdateDownloader(
 
     /** Process-restart reconciliation of a staged/incomplete download. */
     fun reconcile() {
+        if (!transitions.tryLock()) return
+        try { reconcileLocked() } finally { transitions.unlock() }
+    }
+
+    private fun reconcileLocked() {
         synchronized(writerLock) {
             if (writer != null || mutable.value !is AppDownloadState.Idle) return
         }
@@ -294,12 +306,15 @@ internal class UpdateDownloader(
         }
         // A delta that did not complete is never resumed: its patch and partial
         // target are deleted so a restarted process cannot mistake a truncated
-        // reconstruction for a verified update. The user simply starts again.
+        // reconstruction for a verified update. Retain the full target so the
+        // explicit fallback remains usable without an in-memory release feed.
         if (meta.mode == DownloadMode.DELTA && !meta.completed) {
             deltaPatchFile(meta).delete()
             deltaTargetFile(meta).delete()
-            store.pendingDownloadJson = null
             cleanupDeltaLeftovers()
+            mutable.value = AppDownloadState.DeltaFallback(
+                meta.versionName, DeltaFallbackReason.INTERRUPTED, meta.totalBytes,
+            )
             return
         }
         val apk = apkFile(meta)
@@ -378,7 +393,7 @@ internal class UpdateDownloader(
                         knownIssues = release.knownIssues, intermediate = release.intermediate,
                     )
                 }
-                beginWriter(meta, if (allowDelta) release else null)
+                beginWriter(if (allowDelta) meta else meta.forFullDownload(), if (allowDelta) release else null)
             }
         }
     }
@@ -411,7 +426,7 @@ internal class UpdateDownloader(
                         return@withLock
                     }
                 }
-                beginWriter(meta)
+                beginWriter(meta.forFullDownload())
             }
         }
     }
@@ -729,6 +744,13 @@ internal class UpdateDownloader(
         )
         if (decision !is DeltaDecision.Use) return DeltaOutcome.PROCEED_TO_FULL
         val manifest = decision.manifest
+        // Persist the attempt before downloading or applying the patch, so
+        // process death cannot turn an interrupted delta into a lost button.
+        persist(owner, working.copy(
+            mode = DownloadMode.DELTA, deltaBaseSha256 = manifest.base.sha256,
+            deltaPatchName = manifest.patch.assetName, deltaPatchSha256 = manifest.patch.sha256,
+            deltaPatchBytes = manifest.patch.sizeBytes,
+        ))
 
         // Peak requirement: patch + reconstructed target + install headroom.
         val required = manifest.patch.sizeBytes + manifest.target.sizeBytes +
@@ -1026,6 +1048,12 @@ internal class UpdateDownloader(
         val meta = DownloadMeta.fromJson(store.pendingDownloadJson)
         if (meta == null) {
             publish(owner, AppDownloadState.Idle)
+            return
+        }
+        if (meta.mode == DownloadMode.DELTA && !meta.completed) {
+            publish(owner, AppDownloadState.DeltaFallback(
+                meta.versionName, DeltaFallbackReason.INTERRUPTED, meta.totalBytes,
+            ))
             return
         }
         val part = partFile(meta)

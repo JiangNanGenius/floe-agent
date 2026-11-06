@@ -193,7 +193,17 @@ internal class AppUpdateController private constructor(
         // failed/rechecking feed must not make the visible fallback button inert.
         val release = downloadRelease
             ?: (checkController.state.value as? AppCheckState.UpdateAvailable)?.release
-            ?: return
+        if (release == null) {
+            if (DownloadMeta.fromJson(store.pendingDownloadJson) != null) {
+                downloader.resume()
+                startDownloadService()
+            } else {
+                downloader.discard()
+                checkController.manualCheck()
+            }
+            refresh()
+            return
+        }
         downloadRelease = release
         downloader.startFull(release)
         startDownloadService()

@@ -11,6 +11,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
@@ -33,6 +35,14 @@ class UpdateFallbackTest {
     }
 
     @Test fun failedDeltaCanDownloadAndVerifyFullWithoutRetryingPatch() = runBlocking {
+        exerciseFallback(recreate = false)
+    }
+
+    @Test fun interruptedDeltaRestoresFullChoiceWithoutFeedOrAutomaticNetwork() = runBlocking {
+        exerciseFallback(recreate = true)
+    }
+
+    private suspend fun exerciseFallback(recreate: Boolean) {
         val dir = Files.createTempDirectory("floe-fallback-").toFile()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val base = dir.resolve("installed.apk").apply { writeBytes(ByteArray(900) { 7 }) }
@@ -74,7 +84,9 @@ class UpdateFallbackTest {
             delta = asset("update-delta-v1.json", manifest.size),
             assets = mapOf(patchName to asset(patchName, patch.size)),
         )
-        val subject = UpdateDownloader(scope, transport, Store(), dir.resolve("staging"), { null },
+        val store = Store()
+        val restoredScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val subject = UpdateDownloader(scope, transport, store, dir.resolve("staging"), { null },
             deltaBaseProvider = InstalledBaseProvider {
                 InstalledBaseInfo(base, base.length(), "com.floe.agent.full", "0.1.0-alpha.16", 18,
                     setOf(signer), false, 35)
@@ -84,14 +96,28 @@ class UpdateFallbackTest {
             awaitCondition { subject.state.value is AppDownloadState.DeltaFallback }
             assertEquals(1, patchOpens.get())
             assertEquals(0, fullOpens.get())
-            subject.startFull(release)
-            awaitCondition { subject.state.value is AppDownloadState.Ready }
-            assertEquals(DownloadMode.FULL, (subject.state.value as AppDownloadState.Ready).mode)
+            val downloader = if (recreate) {
+                scope.coroutineContext[Job]!!.cancelAndJoin()
+                val restored = UpdateDownloader(restoredScope, transport, store, dir.resolve("staging"), { null })
+                restored.reconcile()
+                assertEquals(DeltaFallbackReason.INTERRUPTED,
+                    (restored.state.value as AppDownloadState.DeltaFallback).reason)
+                assertEquals(0, fullOpens.get())
+                assertEquals(1, patchOpens.get())
+                // Explicit full-package choice after recreation: no release object or feed.
+                restored.resume()
+                restored
+            } else {
+                subject.startFull(release)
+                subject
+            }
+            awaitCondition { downloader.state.value is AppDownloadState.Ready }
+            assertEquals(DownloadMode.FULL, (downloader.state.value as AppDownloadState.Ready).mode)
             assertEquals(1, patchOpens.get())
             assertEquals(1, fullOpens.get())
-            assertArrayEquals(full, subject.readyFile()!!.readBytes())
+            assertArrayEquals(full, downloader.readyFile()!!.readBytes())
             assertEquals(sha(ByteArray(900) { 7 }), sha(base.readBytes()))
-        } finally { scope.cancel(); dir.deleteRecursively() }
+        } finally { scope.coroutineContext[Job]!!.cancelAndJoin(); restoredScope.coroutineContext[Job]!!.cancelAndJoin(); dir.deleteRecursively() }
     }
 
     @Test fun checksumPreparationIsVisibleAndDoesNotAdmitDuplicateWriter() = runBlocking {

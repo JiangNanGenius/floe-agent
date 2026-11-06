@@ -588,7 +588,8 @@
     <string name="linux_desktop_open_file">Open selected file</string>
     <string name="linux_desktop_stop">Stop session</string>
     <string name="linux_desktop_operation_failed">The operation could not finish. Check the terminal and installed software.</string>
-    <string name="linux_desktop_installing">Installing the graphical environment… Progress is available in its terminal tab.</string>
+    <string name="linux_desktop_installing">Preparing the graphical environment… Progress is available in its terminal tab.</string>
+    <string name="app_update_delta_interrupted">The incremental update was interrupted. Download the full installer to continue.</string>
     <string name="linux_desktop_starting">Starting the graphical session…</string>
     <string name="linux_desktop_failed">The graphical session stopped or could not start. Check the terminal before trying again.</string>
     <string name="linux_desktop_stopped">No active graphical session in this workspace.</string>

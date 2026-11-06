@@ -36,6 +36,8 @@ internal fun AppUpdateSettingsEntry() {
     val controller = AppUpdateFeature.controller() ?: return
     val ui by controller.ui.collectAsState()
     val context = LocalContext.current
+    val primaryLabel = AppUpdateCopy.primaryLabel(ui)
+    val checkLabel = stringResource(R.string.app_update_check_now)
     // The hosting settings page owns horizontal padding; this entry adds only
     // the vertical rhythm of a settings card group.
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
@@ -74,15 +76,15 @@ internal fun AppUpdateSettingsEntry() {
             })
             SectionItem(title = {
                 FloeCapsuleAction(
-                    label = AppUpdateCopy.primaryLabel(ui),
+                    label = primaryLabel,
                     onClick = { primaryAction(controller, ui, context) },
                     enabled = AppUpdateCopy.primaryEnabled(ui),
                     modifier = Modifier.padding(vertical = 2.dp),
                 )
             })
-            SectionItem(title = {
+            if (primaryLabel != checkLabel && ui.check !is AppCheckState.Checking) SectionItem(title = {
                 FloeCapsuleAction(
-                    label = stringResource(R.string.app_update_check_now),
+                    label = checkLabel,
                     onClick = {
                         controller.showDialog()
                         controller.checkNow()
@@ -296,6 +298,7 @@ internal object AppUpdateCopy {
 
     @Composable
     fun deltaFallback(reason: DeltaFallbackReason): String = when (reason) {
+        DeltaFallbackReason.INTERRUPTED -> stringResource(R.string.app_update_delta_interrupted)
         DeltaFallbackReason.BASE_MISMATCH -> stringResource(R.string.app_update_delta_base_changed)
         DeltaFallbackReason.PATCH_UNAVAILABLE -> stringResource(R.string.app_update_delta_patch_unavailable)
         DeltaFallbackReason.PATCH_CORRUPT -> stringResource(R.string.app_update_delta_patch_corrupt)

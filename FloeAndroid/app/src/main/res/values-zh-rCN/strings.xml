@@ -588,7 +588,8 @@
     <string name="linux_desktop_open_file">打开所选文件</string>
     <string name="linux_desktop_stop">停止会话</string>
     <string name="linux_desktop_operation_failed">操作未完成，请查看终端和已安装软件。</string>
-    <string name="linux_desktop_installing">正在安装图形环境… 可在对应终端标签查看进度。</string>
+    <string name="linux_desktop_installing">正在准备图形环境… 可在对应终端标签查看进度。</string>
+    <string name="app_update_delta_interrupted">增量更新已中断，可下载完整安装包继续。</string>
     <string name="linux_desktop_starting">正在启动图形会话…</string>
     <string name="linux_desktop_failed">图形会话已停止或启动失败，请先查看终端。</string>
     <string name="linux_desktop_stopped">当前工作区没有运行中的图形会话。</string>
