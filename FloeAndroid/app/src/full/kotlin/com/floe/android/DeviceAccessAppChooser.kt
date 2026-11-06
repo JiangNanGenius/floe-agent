@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.toggleable
@@ -76,7 +77,8 @@ internal fun DeviceAccessAppChooser(
                     FloeText(stringResource(R.string.device_access_targets_section),
                         style = Floe.typography.section, modifier = Modifier.weight(1f),
                         maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    FloeCapsuleButton(stringResource(R.string.done), onClick = onDismiss)
+                    FloeCapsuleButton(stringResource(R.string.done), onClick = onDismiss,
+                        modifier = Modifier.widthIn(min = 64.dp, max = 96.dp))
                 }
                 FloeDivider()
                 FloeSearchField(query, { query = it },

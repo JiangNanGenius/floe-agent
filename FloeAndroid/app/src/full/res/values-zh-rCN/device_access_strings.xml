@@ -85,7 +85,7 @@
     <string name="device_access_task_not_allowed">此任务尚未开启手机控制。需要你明确允许，Agent 不能自行开启。</string>
     <string name="device_access_task_stopped">你已停止手机控制。再次允许后才会恢复。</string>
     <string name="device_access_allow_task">允许此任务使用手机控制</string>
-    <string name="device_access_select_apps_first">请先在下方选择至少一个目标应用。</string>
+    <string name="device_access_select_apps_first">请先选择至少一个目标应用。</string>
     <string name="device_access_current_task">当前任务</string>
 
     <string name="device_access_targets_section">Agent 可控制的应用</string>

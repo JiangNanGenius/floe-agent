@@ -88,7 +88,7 @@
     <string name="device_access_task_not_allowed">Phone control is off for this task. Allow it explicitly; the Agent cannot arm it.</string>
     <string name="device_access_task_stopped">You stopped phone control. Allow this task again to resume.</string>
     <string name="device_access_allow_task">Allow phone control for this task</string>
-    <string name="device_access_select_apps_first">Select at least one target app below first.</string>
+    <string name="device_access_select_apps_first">Select at least one target app first.</string>
     <string name="device_access_current_task">Current task</string>
 
     <string name="device_access_targets_section">Apps the Agent may control</string>

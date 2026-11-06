@@ -46,7 +46,6 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -56,6 +55,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.floe.android.design.Floe
 import com.floe.android.design.FloeBadgePill
 import com.floe.android.design.FloeBadgeTone
@@ -120,12 +120,13 @@ fun RemoteVncViewerPage(
     val imageBitmap = remember(vnc.revision, vnc.bitmap) { vnc.bitmap?.asImageBitmap() }
     val currentTransform by rememberUpdatedState(transform)
 
-    val lifecycleOwner = LocalContext.current as? androidx.lifecycle.LifecycleOwner
+    val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, vnc.sessionID) {
-        val owner = lifecycleOwner
-        if (owner == null) {
-            onDispose { onReleaseAll(); onVisible(false) }
-        } else {
+        val lifecycle = lifecycleOwner.lifecycle
+        // Dialog contexts need not be LifecycleOwners. Re-entering the viewer
+        // after its software picker must resume frame delivery immediately,
+        // including when the host was already started before composition.
+        onVisible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_START -> onVisible(true)
@@ -136,12 +137,11 @@ fun RemoteVncViewerPage(
                 else -> Unit
             }
         }
-        owner.lifecycle.addObserver(observer)
+        lifecycle.addObserver(observer)
         onDispose {
             onReleaseAll()
             onVisible(false)
-            owner.lifecycle.removeObserver(observer)
-        }
+            lifecycle.removeObserver(observer)
         }
     }
 
