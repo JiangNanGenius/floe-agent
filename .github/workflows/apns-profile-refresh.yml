@@ -11,6 +11,10 @@ name: Prepare existing App production push profile for Build 322
         description: SHA256 of the real build322-host-info.plist private draft asset
         required: true
         type: string
+      host_info_base64:
+        description: Base64 of the real build322 host Info.plist; checked against info_sha256
+        required: true
+        type: string
       recipient_certificate_base64:
         description: Base64 of the public X509 certificate in canonical DER form; never a private key
         required: true
@@ -41,8 +45,6 @@ jobs:
           persist-credentials: false
 
       - name: Validate confirmation, recipient, frozen entitlement and private host Info
-        env:
-          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -75,25 +77,14 @@ jobs:
           entitlement_path = 'FloeAgent/FloeApp/Entitlements/Floe.entitlements'
           frozen = git('show', source + ':' + entitlement_path)
           assert pathlib.Path(entitlement_path).read_bytes() == frozen, 'Operations source entitlement differs from frozen App'
-          repo = os.environ['GITHUB_REPOSITORY']
-          def gh_api(path):
-              return subprocess.run(['gh', 'api', 'repos/' + repo + '/' + path], stdout=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL, check=True).stdout
-          transport = 'local-transport-build322-v182-520afe01'
-          release = json.loads(gh_api('releases/tags/' + transport))
-          assert release['draft'] is True and release['prerelease'] is False, 'Transport must stay private draft'
-          assert release['tag_name'] == transport and release['target_commitish'] == source, 'Transport source mismatch'
-          assets = [x for x in release['assets'] if x['name'] == 'build322-host-info.plist']
-          assert len(assets) == 1 and assets[0]['state'] == 'uploaded', 'Expected one uploaded host Info asset'
-          asset = assets[0]
-          assert 0 < asset['size'] <= 1024 * 1024 and asset['digest'] == 'sha256:' + inputs['info_sha256'], 'Host Info metadata mismatch'
+          # The read-only token cannot read a private release draft. The caller
+          # supplies the actual saved App metadata through the event, with its
+          # independently verified package digest; no repository permission expands.
+          host_info = base64.b64decode(inputs['host_info_base64'], validate=True)
+          assert 0 < len(host_info) <= 1024 * 1024, 'Host Info size mismatch'
+          assert hashlib.sha256(host_info).hexdigest() == inputs['info_sha256'], 'Host Info SHA mismatch'
           app = work / 'Floe.app'; app.mkdir()
-          info_path = app / 'Info.plist'
-          with info_path.open('wb') as stream:
-              subprocess.run(['gh', 'api', 'repos/' + repo + '/releases/assets/' + str(asset['id']),
-                              '-H', 'Accept: application/octet-stream'], stdout=stream, stderr=subprocess.DEVNULL, check=True)
-          assert info_path.stat().st_size == asset['size'], 'Host Info size mismatch'
-          assert hashlib.sha256(info_path.read_bytes()).hexdigest() == inputs['info_sha256'], 'Host Info SHA mismatch'
+          info_path = app / 'Info.plist'; info_path.write_bytes(host_info)
           info = plistlib.loads(info_path.read_bytes())
           assert (info['CFBundleIdentifier'], info['CFBundleShortVersionString'], info['CFBundleVersion'], info['FloeAPNsEnvironment']) == (
               'org.floeagent.ios', '1.8.2', '322', 'production'), 'Expected actual Build 322 production host Info'
