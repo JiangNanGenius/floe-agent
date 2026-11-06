@@ -249,7 +249,7 @@ class ConversationPermissionGestureFenceTest {
     }
 
     @org.junit.Test
-    fun firstTaskChoiceSurvivesDefaultRowRefreshWithoutFabricatingCas() {
+    fun firstTaskChoiceSurvivesDefaultRowRefreshWithoutFabricatingCas() = runBlocking {
         val exchange = HeldExchange()
         val host = host(exchange)
         try {
@@ -268,7 +268,7 @@ class ConversationPermissionGestureFenceTest {
     }
 
     @org.junit.Test
-    fun firstTaskChoiceRejectsRetiredEpochAndUnprovenEmptyRunPages() {
+    fun firstTaskChoiceRejectsRetiredEpochAndUnprovenEmptyRunPages() = runBlocking {
         val exchange = HeldExchange()
         val host = host(exchange)
         try {
