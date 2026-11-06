@@ -82,6 +82,9 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
     private val workingRoot = File(this.context.applicationInfo.dataDir, "files/OfficeInputs/working")
     private val workspace = WorkspaceOfficeSnapshotStager(workspaceRoot)
     private val provider = OfficeProviderSnapshotStager(this.context, providerRoot)
+    private val pendingProviderPreview = OfficePendingPreviewStore(providerRoot,
+        File(this.context.noBackupFilesDir, "office-pending-preview"))
+    private val pendingPreviewRestored = java.util.concurrent.atomic.AtomicBoolean()
     /** D04 owned run-output INPUT transport: streams the native-verified snapshot
      * (exact persisted receipt -> lease -> full streamed verify) into this
      * App-owned immutable snapshot root. Never a model path, never a
@@ -476,45 +479,19 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                         op.snapshotSha256 = snapshot.sha256
                         op.snapshotBytes = snapshot.bytes
                         op.input = snapshot.file
-                        // EDIT route: stage a separately owned
-                        // MUTABLE working copy from the verified immutable snapshot.
-                        // The snapshot and the provider original are never chmod'd,
-                        // truncated or overwritten; the same-original refusal below
-                        // uses the snapshot's existing source URI / document id.
-                        val copy = working.stage(
-                            source = snapshot.file, sourceBytes = snapshot.bytes,
-                            sourceSha256 = snapshot.sha256, extension = snapshot.file.extension,
-                            isCurrent = { current(op) },
-                        )
-                        op.workingCopy = copy.file
-                        op.workingCopySha256 = copy.sha256
-                        op.workingCopyBytes = copy.bytes
-                        op.input = copy.file
-                        op.editable = true
-                        op.saveOriginal = OfficeSaveCopyOriginal(
-                            SafUriRef(snapshot.sourceUri), snapshot.sourceDocumentID,
-                        )
-                        val candidateId = recordRecoveryCandidate(
-                            op = op,
-                            route = OfficeRecoveryRoute.PROVIDER,
-                            displayName = snapshot.displayName,
-                            snapshotSha256 = snapshot.sha256,
-                            snapshotBytes = snapshot.bytes,
-                            copy = copy,
-                            original = op.saveOriginal,
-                        )
-                        if (candidateId == null) {
-                            discardUnjournaledWorkingCopy(copy)
-                            settle(op, "recovery")
-                            return@launch
+                        // Global Open Document is a local preview. Editing is
+                        // an explicit external/workspace action; downloading a
+                        // component must not create an interrupted edit draft.
+                        if (!com.floe.android.host.officecomponent.OfficeComponentController.installed(context)) {
+                            pendingProviderPreview.save(OfficePendingPreviewStore.Snapshot(
+                                snapshot.file.canonicalPath, snapshot.sha256, snapshot.bytes, snapshot.displayName))
                         }
-                        op.recoveryCandidateId = candidateId
                         prepare(op, OfficePreviewRequest.of(
-                            sessionToken = copy.sessionID, stagedFilePath = copy.file.canonicalPath,
-                            sha256 = copy.sha256, lengthBytes = copy.bytes,
+                            sessionToken = snapshot.sessionID, stagedFilePath = snapshot.file.canonicalPath,
+                            sha256 = snapshot.sha256, lengthBytes = snapshot.bytes,
                             displayName = snapshot.displayName,
                             languageTag = languageTag(),
-                            permission = OfficePermission.EDIT,
+                            permission = OfficePermission.READ_ONLY,
                         ))
                     }
                 }
@@ -523,6 +500,50 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
             } catch (error: LinkageError) {
                 recordFailure(op, error); settle(op, stagingError(op, error))
             }
+        }
+    }
+
+    /** Main-shell foreground continuation after split installation killed the
+     * old process. Restores only a re-hashed private READ_ONLY provider copy;
+     * old task/URI/write authority is never inferred from saved metadata. */
+    fun restoreComponentPreview() {
+        if (!pendingPreviewRestored.compareAndSet(false, true) || isBusy) return
+        scope.launch(Dispatchers.IO) {
+            var admitted: Operation? = null
+            try {
+                val saved = pendingProviderPreview.load() ?: return@launch
+                val op = synchronized(lock) {
+                    if (active != null) null else admit(Phase.STAGING, owner = { true })
+                } ?: return@launch
+                admitted = op
+                op.input = File(saved.path)
+                op.snapshot = op.input
+                op.snapshotSha256 = saved.sha256
+                op.snapshotBytes = saved.bytes
+                prepare(op, OfficePreviewRequest.of(
+                    sessionToken = UUID.randomUUID().toString(), stagedFilePath = saved.path,
+                    sha256 = saved.sha256, lengthBytes = saved.bytes, displayName = saved.displayName,
+                    languageTag = languageTag(), permission = OfficePermission.READ_ONLY))
+            } catch (failure: Exception) {
+                diagnosticFailure = failure
+                val op = admitted
+                if (op != null) settle(op, "source", removeInput = false)
+                else synchronized(lock) { if (active == null) mutableState.value = State(error = "source") }
+            }
+        }
+    }
+
+    /** Retire only the exact pending OPEN after Android accepted its launch.
+     * This is navigation bookkeeping, never a rendering or save receipt. */
+    fun viewerLaunchAccepted(incarnation: Long) {
+        val op = synchronized(lock) {
+            active?.takeIf { it.id == incarnation && it.phase == Phase.VIEWING && !it.editable }
+        } ?: return
+        val path = op.input?.canonicalPath ?: return
+        val sha = op.snapshotSha256 ?: return
+        scope.launch(Dispatchers.IO) {
+            runCatching { pendingProviderPreview.clearMatching(path, sha, op.snapshotBytes) }
+                .onFailure { diagnosticFailure = it }
         }
     }
 
@@ -1832,7 +1853,12 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                     }
                 } else if (removeInput) {
                     op.input?.let { file ->
-                        scope.launch(Dispatchers.IO) { removeOwnUnreferencedInput(file) }
+                        scope.launch(Dispatchers.IO) {
+                            runCatching {
+                                op.snapshotSha256?.let { sha -> pendingProviderPreview.clearMatching(file.canonicalPath, sha, op.snapshotBytes) }
+                                removeOwnUnreferencedInput(file)
+                            }.onFailure { diagnosticFailure = it }
+                        }
                     }
                 }
                 releasedReviewToken = op.sessionToken

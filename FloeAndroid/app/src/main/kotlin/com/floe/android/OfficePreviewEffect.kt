@@ -44,6 +44,9 @@ internal fun OfficePreviewEffect(controller: OfficePreviewController, themeMode:
     OfficeComponentSystemConfirmation(module)
     val moduleReady = OfficeComponentController.installed(app) &&
         moduleState.phase !in setOf("removing", "remove_pending", "confirm")
+    LaunchedEffect(controller, moduleReady) {
+        if (moduleReady) controller.restoreComponentPreview()
+    }
     LaunchedEffect(state.viewer?.incarnation) {
         if (state.viewer != null && !moduleReady) module.requestInstall()
     }
@@ -244,7 +247,10 @@ private fun OfficeViewerLaunchSlot(
                 }
                 if (intent != null) {
                     currentOnIssued(slotKey)
-                    runCatching { launcher.launch(intent) }.onFailure {
+                    runCatching {
+                        launcher.launch(intent)
+                        controller.viewerLaunchAccepted(incarnation)
+                    }.onFailure {
                         currentOnRelease(slotKey)
                         controller.launchFailed(incarnation)
                     }
