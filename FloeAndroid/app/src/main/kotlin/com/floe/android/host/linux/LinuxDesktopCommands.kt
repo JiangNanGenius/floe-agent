@@ -56,9 +56,28 @@ internal object LinuxDesktopCommands {
             kill -0 "${'$'}gui_vnc"
             ${if (desktop) "dbus-run-session -- sh -c 'openbox & xfce4-panel & wait'" else "dbus-run-session -- openbox --config-file \"${'$'}gui_dir/rc.xml\""} > "${'$'}gui_dir/desktop.log" 2>&1 &
             gui_wm=${'$'}!
+            launch_app() {
+              gui_ack="${'$'}1"; gui_editor="${'$'}2"; shift 2
+              if ! command -v "${'$'}gui_editor" >/dev/null; then
+                printf '\nFLOE_APP_FAILED:%s:missing\n' "${'$'}gui_ack"; return
+              fi
+              # A child must never consume the control stream (including APT
+              # and GUI applications that read stdin during first-run setup).
+              "${'$'}gui_editor" "${'$'}@" </dev/null >/dev/null 2>&1 &
+              gui_child=${'$'}!
+              sleep 0.2
+              if kill -0 "${'$'}gui_child" 2>/dev/null || wait "${'$'}gui_child"; then
+                printf '\nFLOE_APP_STARTED:%s\n' "${'$'}gui_ack"
+              else printf '\nFLOE_APP_FAILED:%s:exit\n' "${'$'}gui_ack"; fi
+            }
             printf '%s%s\n' 'FLOE_READY:' '$nonce'
             while IFS= read -r gui_action; do
               case "${'$'}gui_action" in
+                ping:*) printf '\nFLOE_PONG:%s\n' "${'$'}{gui_action#ping:}" ;;
+                run:*)
+                  gui_spec="${'$'}{gui_action#run:}"; gui_editor="${'$'}{gui_spec%%:*}"; gui_ack="${'$'}{gui_spec#*:}"
+                  case "${'$'}gui_editor" in mousepad|pcmanfm|xterm|libreoffice|gimp|inkscape|blender) ;; *) continue ;; esac
+                  launch_app "${'$'}gui_ack" "${'$'}gui_editor" ;;
                 edit:*)
                   gui_spec="${'$'}{gui_action#edit:}"
                   gui_editor="${'$'}{gui_spec%%:*}"; gui_spec="${'$'}{gui_spec#*:}"
@@ -77,9 +96,10 @@ internal object LinuxDesktopCommands {
                   gui_spec="${'$'}{gui_action#open:}"
                   gui_editor="${'$'}{gui_spec%%:*}"
                   case "${'$'}gui_editor" in mousepad|pcmanfm|xterm|libreoffice|gimp|inkscape|blender) ;; *) continue ;; esac
-                  gui_file=${'$'}(printf '%s' "${'$'}{gui_spec#*:}" | base64 -d) || continue
-                  if test -f "./${'$'}gui_file"; then "${'$'}gui_editor" "./${'$'}gui_file" > /dev/null 2>&1 &
-                  else printf '%s\n' 'FLOE_FILE_UNAVAILABLE'; fi ;;
+                  gui_spec="${'$'}{gui_spec#*:}"; gui_ack="${'$'}{gui_spec##*:}"; gui_file="${'$'}{gui_spec%:*}"
+                  gui_file=${'$'}(printf '%s' "${'$'}gui_file" | base64 -d) || continue
+                  if test -f "./${'$'}gui_file"; then launch_app "${'$'}gui_ack" "${'$'}gui_editor" "./${'$'}gui_file"
+                  else printf '\nFLOE_APP_FAILED:%s:file\n' "${'$'}gui_ack"; fi ;;
                 inventory:*)
                   gui_query="${'$'}{gui_action#inventory:}"
                   for gui_package in mousepad pcmanfm xterm libreoffice gimp inkscape blender; do
@@ -90,12 +110,12 @@ internal object LinuxDesktopCommands {
                 uninstall:mousepad:*|uninstall:pcmanfm:*|uninstall:xterm:*|uninstall:libreoffice:*|uninstall:gimp:*|uninstall:inkscape:*|uninstall:blender:*)
                   gui_spec="${'$'}{gui_action#uninstall:}"; gui_package="${'$'}{gui_spec%%:*}"; gui_ack="${'$'}{gui_spec#*:}"
                   mapfile -t gui_packages < <(dpkg-query -W -f='${'$'}{db:Status-Abbrev} ${'$'}{binary:Package}\n' "${'$'}gui_package*" 2>/dev/null | awk '${'$'}1 == "ii" {print ${'$'}2}')
-                  if test "${'$'}{#gui_packages[@]}" = 0 || apt-get remove -y -- "${'$'}{gui_packages[@]}"; then
+                  if test "${'$'}{#gui_packages[@]}" = 0 || apt-get remove -y -- "${'$'}{gui_packages[@]}" </dev/null; then
                     printf '%s%s\n' 'FLOE_REMOVED:' "${'$'}gui_ack"
                   else printf '%s%s\n' 'FLOE_REMOVE_FAILED:' "${'$'}gui_ack"; fi ;;
                 clean-cache:*)
                   gui_ack="${'$'}{gui_action#clean-cache:}"
-                  if apt-get clean; then printf '%s%s\n' 'FLOE_CACHE_CLEANED:' "${'$'}gui_ack"; else printf '%s%s\n' 'FLOE_CACHE_FAILED:' "${'$'}gui_ack"; fi ;;
+                  if apt-get clean </dev/null; then printf '%s%s\n' 'FLOE_CACHE_CLEANED:' "${'$'}gui_ack"; else printf '%s%s\n' 'FLOE_CACHE_FAILED:' "${'$'}gui_ack"; fi ;;
                 stop) exit 0 ;;
                 mousepad|pcmanfm|xterm|libreoffice|gimp|inkscape|blender)
                   if command -v "${'$'}gui_action" >/dev/null; then
@@ -103,7 +123,7 @@ internal object LinuxDesktopCommands {
                   else printf '%s%s\n' 'FLOE_MISSING:' "${'$'}gui_action"; fi ;;
                 install:mousepad:*|install:pcmanfm:*|install:xterm:*|install:libreoffice:*|install:gimp:*|install:inkscape:*|install:blender:*)
                   gui_spec="${'$'}{gui_action#install:}"; gui_package="${'$'}{gui_spec%%:*}"; gui_ack="${'$'}{gui_spec#*:}"
-                  if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${'$'}gui_package"; then
+                  if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${'$'}gui_package" </dev/null; then
                     printf '%s%s\n' 'FLOE_INSTALLED:' "${'$'}gui_ack"
                   else printf '%s%s\n' 'FLOE_INSTALL_FAILED:' "${'$'}gui_ack"; fi ;;
               esac
@@ -114,7 +134,7 @@ internal object LinuxDesktopCommands {
 
     fun application(name: String, install: Boolean, nonce: String? = null): ByteArray {
         require(name in applications)
-        if (install) require(nonce?.matches(Regex("[a-f0-9]{32}")) == true)
-        return (if (install) "install:$name:$nonce\n" else "$name\n").toByteArray(Charsets.UTF_8)
+        require(nonce?.matches(Regex("[a-f0-9]{32}")) == true)
+        return (if (install) "install:$name:$nonce\n" else "run:$name:$nonce\n").toByteArray(Charsets.UTF_8)
     }
 }

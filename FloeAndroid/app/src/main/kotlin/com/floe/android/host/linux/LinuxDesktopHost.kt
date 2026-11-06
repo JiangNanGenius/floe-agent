@@ -29,6 +29,7 @@ internal data class LinuxDesktopState(val phase: String = "idle", val taskID: St
 /** A graphical session is an owned native PTY plus a real authenticated loopback VNC client.
  * No host interpreter, guessed temporary environment, or view-owned process is used. */
 internal class LinuxDesktopHost(private val host: RuntimeHost) {
+    private class CommandFailure(val code: String) : Exception(code)
     private val serial = Mutex()
     private val scope = host.scope
     private val mutable = MutableStateFlow(LinuxDesktopState())
@@ -47,6 +48,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
     private var remoteOwner: C05RemoteOwner? = null
     private var outputClose: (() -> Unit)? = null
     private val editAcks = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
+    private val controlAcks = ConcurrentHashMap<String, CompletableDeferred<String>>()
     private val editWatchers = ConcurrentHashMap<String, Job>()
     private val editReaders = ConcurrentHashMap<String, suspend (java.io.File) -> String>()
     private val fileOpens = ConcurrentHashMap<String, Job>()
@@ -116,6 +118,12 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                             editAcks.forEach { (id, ack) ->
                                 if (received.contains("FLOE_EDIT_CREATED:$id")) ack.complete(true)
                                 else if (received.contains("FLOE_EDIT_REUSED:$id")) ack.complete(false)
+                            }
+                            controlAcks.forEach { (id, ack) ->
+                                if (received.contains("FLOE_PONG:$id")) ack.complete("pong")
+                                if (received.contains("FLOE_APP_STARTED:$id")) ack.complete("started")
+                                Regex("FLOE_APP_FAILED:$id:(missing|exit|file)[\\r\\n]")
+                                    .find(received)?.let { ack.complete(it.groupValues[1]) }
                             }
                             inventoryNonce?.let { query ->
                                 val rows = Regex("FLOE_SOFTWARE:$query:([a-z0-9]+):(missing|[0-9]+)")
@@ -191,6 +199,10 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                     }
                     refreshSoftware()
                 } finally { password.fill(0) }
+            } catch (timeout: TimeoutCancellationException) {
+                android.util.Log.w("FloeLinuxDesktop", "start_failed stage=$stage code=timeout")
+                if (!cleanup()) return@withLock
+                mutable.value = state.value.copy(phase = "failed", vnc = null, failure = "desktop_start_failed")
             } catch (cancelled: CancellationException) { if (!stopped) cleanup(); throw cancelled }
             catch (failure: Exception) {
                 // Codes and the fixed stage are safe diagnostics; exception messages,
@@ -243,14 +255,63 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
     fun application(name: String, install: Boolean) {
         if (!live() || state.value.phase != "running" || state.value.softwareOperation != null) return
         val token = terminalID ?: return
-        val nonce = if (install) UUID.randomUUID().toString().replace("-", "") else null
+        val nonce = UUID.randomUUID().toString().replace("-", "")
+        val admittedEpoch = epoch
         mutable.value = state.value.copy(failure = null)
-        if (install) {
-            softwareNonce = nonce
-            mutable.value = state.value.copy(softwareOperation = "install:$name", failure = null)
+        if (install) softwareNonce = nonce
+        mutable.value = state.value.copy(softwareOperation = "${if (install) "install" else "launch"}:$name")
+        val operationID = UUID.randomUUID().toString()
+        val operation = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            try {
+                awaitControl(token)
+                if (install) {
+                    checkNotNull(host.workspaceTerminal).transportForTab(token)
+                        .write(LinuxDesktopCommands.application(name, true, nonce))
+                    refreshSoftware()
+                } else {
+                    val answer = commandReply(token, nonce,
+                        LinuxDesktopCommands.application(name, false, nonce))
+                    requireStarted(answer)
+                    if (live() && epoch == admittedEpoch && terminalID == token)
+                        mutable.value = state.value.copy(softwareOperation = null)
+                }
+            } catch (timeout: TimeoutCancellationException) {
+                if (epoch == admittedEpoch && terminalID == token)
+                    mutable.value = state.value.copy(softwareOperation = null, failure = "software_operation_failed")
+                reportFileFailure("application", timeout)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                if (epoch == admittedEpoch && terminalID == token)
+                    mutable.value = state.value.copy(softwareOperation = null, failure = "software_operation_failed")
+                reportFileFailure("application", failure)
+            } finally { fileOpens.remove(operationID) }
         }
-        host.workspaceTerminal?.transportForTab(token)?.write(LinuxDesktopCommands.application(name, install, nonce))
-        if (install) refreshSoftware()
+        fileOpens[operationID] = operation
+        operation.start()
+    }
+
+    private suspend fun commandReply(token: String, nonce: String, bytes: ByteArray): String {
+        val admittedEpoch = epoch
+        check(live() && terminalID == token)
+        val ack = CompletableDeferred<String>()
+        controlAcks[nonce] = ack
+        try {
+            checkNotNull(host.workspaceTerminal).transportForTab(token).write(bytes)
+            val answer = withTimeout(15_000) { ack.await() }
+            check(live() && epoch == admittedEpoch && terminalID == token)
+            return answer
+        } finally { controlAcks.remove(nonce) }
+    }
+
+    private suspend fun awaitControl(token: String) {
+        val nonce = UUID.randomUUID().toString().replace("-", "")
+        try {
+            check(commandReply(token, nonce, "ping:$nonce\n".toByteArray()) == "pong")
+        } catch (_: TimeoutCancellationException) { throw CommandFailure("control_timeout") }
+    }
+
+    private fun requireStarted(answer: String) {
+        if (answer != "started") throw CommandFailure("application_$answer")
     }
     fun uninstallSoftware(name: String) {
         require(name in LinuxDesktopCommands.applications)
@@ -274,6 +335,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
     fun openFile(application: String, logicalPath: String, taskID: String, workspaceID: String) {
         require(application in LinuxDesktopCommands.applications)
         require(com.floe.android.host.externaledit.ExternalEditPolicy.validPath(logicalPath))
+        if (fileOpens.isNotEmpty() || state.value.softwareOperation != null) return
         check(live() && state.value.phase == "running")
         check(state.value.workspaceID.equals(workspaceID, ignoreCase = true))
         check(state.value.softwareOperation == null)
@@ -285,6 +347,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
         val operationID = UUID.randomUUID().toString()
         val opening = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             try {
+                awaitControl(token)
                 val caller = G04WorkspaceBridgeClient.bindExisting(host, taskID) {
                     live() && epoch == admittedEpoch && terminalID == token
                 }
@@ -317,7 +380,9 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                 }
                 check(live() && epoch == admittedEpoch && terminalID == token)
                 editReaders[row.id] = { destination -> bridge.copy(path, destination) }
-                terminal.transportForTab(token).write("open:$application:${encoded(path)}\n".toByteArray())
+                val launchNonce = UUID.randomUUID().toString().replace("-", "")
+                requireStarted(commandReply(token, launchNonce,
+                    "open:$application:${encoded(path)}:$launchNonce\n".toByteArray()))
                 editWatchers.remove(row.id)?.cancelAndJoin()
                 editWatchers[row.id] = scope.launch(Dispatchers.IO) {
                     while (isActive && live() && epoch == admittedEpoch && terminalID == token) {
@@ -339,6 +404,10 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                         delay(2_000)
                     }
                 }
+            } catch (timeout: TimeoutCancellationException) {
+                reportFileFailure("open", timeout)
+                if (epoch == admittedEpoch && terminalID == token)
+                    mutable.value = state.value.copy(failure = "file_return_failed")
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
                 reportFileFailure("open", failure)
@@ -395,6 +464,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
         softwareNonce = null
         frames?.cancelAndJoin(); frames = null
         editAcks.values.forEach { it.cancel() }; editAcks.clear()
+        controlAcks.values.forEach { it.cancel() }; controlAcks.clear()
         input?.close(); input = null
         inputJob?.cancelAndJoin(); inputJob = null
         outputClose?.invoke(); outputClose = null
@@ -437,6 +507,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
 
     private fun reportFileFailure(stage: String, failure: Exception) {
         val code = when (failure) {
+            is CommandFailure -> failure.code
             is LinuxDesktopFileBridge.Failure -> failure.code
             is G04WorkspaceBridgeClient.Failure -> failure.code
             is C05RemoteFailure -> failure.code
