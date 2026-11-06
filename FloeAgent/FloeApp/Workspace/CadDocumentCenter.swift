@@ -873,7 +873,7 @@ actor CadDocumentCenter: CadDocumentHost, CadBasicMachiningHosting {
         if format == "stp" { format = "step" }
         if format == "igs" { format = "iges" }
         let supported: Set<String> = ["step", "iges", "stl", "obj", "obj_bundle", "3mf",
-                                      "glb", "usdz", "pdf", "svg", "dxf", "csv"]
+                                      "glb", "usdz", "pdf", "svg", "dxf", "dwg", "csv"]
         guard supported.contains(format) else {
             if format == "zip" {
                 throw FloeError.validationFailed(
@@ -882,7 +882,7 @@ actor CadDocumentCenter: CadDocumentHost, CadBasicMachiningHosting {
             }
             throw FloeError.validationFailed(
                 "native export format '\(format)' is not supported "
-                + "(step, iges, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, csv).")
+                + "(step, iges, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, dwg, csv).")
         }
         // An explicitly named format owns its extension. This is what prevents
         // a caller from receiving ZIP bytes under a .obj name (or OBJ bytes

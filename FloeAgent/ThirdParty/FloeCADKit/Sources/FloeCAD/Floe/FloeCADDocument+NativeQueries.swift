@@ -899,7 +899,7 @@ public extension FloeCADDocument {
     func nativeExportDataAsync(format rawFormat: String, pageID: UUID? = nil)
         async -> Result<(data: Data, note: String), CADDocumentError> {
         let format = rawFormat.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard ["pdf", "svg", "dxf", "png", "csv"].contains(format) else {
+        guard ["pdf", "svg", "dxf", "dwg", "png", "csv"].contains(format) else {
             return nativeExportData(format: rawFormat, pageID: pageID)
         }
         do {
@@ -1046,6 +1046,8 @@ public extension FloeCADDocument {
                 return text
             }.joined(separator: "; ")
             return failure(first.code, details)
+        case "dwg":
+            return failure("async_required", "Use asynchronous drawing export for DWG.")
         case "pdf", "svg", "dxf", "csv":
             guard let pageID else {
                 return failure("page_required",

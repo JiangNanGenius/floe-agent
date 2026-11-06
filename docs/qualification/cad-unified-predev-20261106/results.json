@@ -1,0 +1,272 @@
+{
+  "date": "2026-11-06",
+  "scope": "User-approved representative predevelopment checks; component, App-native, UI and Linux-task evidence remain separate.",
+  "toolchain": "Xcode 27.1 (27A9275), SDK 27.1",
+  "appBuild": "arm64 iOS Simulator, minimumOS26; no distribution",
+  "runtime": "Reused existing iPad mini A17 Pro, iOS Simulator27.0; no physical iPhone",
+  "nativeLatest": {
+    "uniqueCases": 34,
+    "counts": {
+      "Passed": 34
+    },
+    "batches": [
+      {
+        "batch": "native-tests-01",
+        "counts": {
+          "Failed": 3,
+          "Passed": 25
+        }
+      },
+      {
+        "batch": "native-tests-02",
+        "counts": {
+          "Passed": 12
+        }
+      },
+      {
+        "batch": "native-tests-03",
+        "counts": {
+          "Passed": 3
+        }
+      }
+    ],
+    "cases": [
+      {
+        "identifier": "CADAnimationExportReadbackTests/testPortraitHevcSelectionSurvivesIntoOutputMetadata()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADAnimationRevealTests/testRevealPreservesFinalCameraAndPersistsThroughUndoAndReopen()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADUnifiedDrawingBridgeTests/nativeEngineeringDWGEditAndNativeSketchColdReopen()",
+        "result": "Passed",
+        "batch": "native-tests-03"
+      },
+      {
+        "identifier": "CADBuildingWorkflowTests/testFailedOpeningAndStaleInspectorCannotCommitPartialBuilding()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADBuildingWorkflowTests/testFutureNestedBuildingAndMissingRegionalRulesFailClosed()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADBuildingWorkflowTests/testNamedVersionRestoresBuildingSemanticsAndExactGeometryTogether()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADBuildingWorkflowTests/testPlanToExactBuildingOpeningSingleUndoReopenAndDrawing()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADDirectModelImportTests/testIGESDirectOpenPreservesClosedExactSolidAndSourceUnits()",
+        "result": "Passed",
+        "batch": "native-tests-02"
+      },
+      {
+        "identifier": "CADDirectModelImportTests/testSTEPDirectOpenPreservesClosedExactSolidAndSourceUnits()",
+        "result": "Passed",
+        "batch": "native-tests-02"
+      },
+      {
+        "identifier": "CADDirectModelImportTests/testSTLDirectOpenUsesExplicitMillimetresAndPersistsMesh()",
+        "result": "Passed",
+        "batch": "native-tests-02"
+      },
+      {
+        "identifier": "CADHybridModelingTests/testFacetedConversionCreatesValidatedSolidAndRetainsScanOnColdReopen()",
+        "result": "Passed",
+        "batch": "native-tests-02"
+      },
+      {
+        "identifier": "CADHybridModelingTests/testManifoldHoleBossCutReplayVolumeAndSourceIntegrity()",
+        "result": "Passed",
+        "batch": "native-tests-02"
+      },
+      {
+        "identifier": "CADHybridModelingTests/testMixedPreciseToolRequiresAcknowledgementAndKeepsItsBRep()",
+        "result": "Passed",
+        "batch": "native-tests-02"
+      },
+      {
+        "identifier": "CADHybridModelingTests/testOpenMeshCancellationAndUnknownNestedDataAreRefused()",
+        "result": "Passed",
+        "batch": "native-tests-02"
+      },
+      {
+        "identifier": "CADHybridModelingTests/testPreviewSingleUndoSaveReopenAndEditOriginalParameters()",
+        "result": "Passed",
+        "batch": "native-tests-02"
+      },
+      {
+        "identifier": "CADNativeStudyReceiptTests/testBuildingOutputSymlinkIsRefusedBeforeArchiving()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADNativeStudyReceiptTests/testBuildingReceiptRejectsWrongActionAndTruncatedIFCEvenWithNewHash()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADNativeStudyReceiptTests/testMatchingDigestDoesNotPromoteFakeOrWrongSizePNG()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADNativeStudyReceiptTests/testRenderReceiptCopiesDecodedPixelsAndRejectsChangedScene()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADOfflineRenderTests/testAlphaCoverageAndPartialMetalHaveVisibleConversionLimit()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADOfflineRenderTests/testIndependentOrthographicWindowAndQualityBounds()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADOfflineRenderTests/testPortraitFramingUsesNarrowAxisAndPreservesImmutableReceipt()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADOfflineRenderTests/testRejectsInvalidGeometryCameraAndUnconfinedAssets()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADOfflineRenderTests/testShadowCoverageFollowsPartAndBuildingScaleWithoutNonfiniteValues()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADSketchTransferTests/testFrontTopSideGroupsAlignWithoutAutomaticReconstruction()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADSketchTransferTests/testSelectedPlaneImportIsOneUndoAndRetainsSourceOnReopen()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADSketchTransferTests/testUnknownNestedFieldsAndCorruptSourceCannotRoundTripAsKnown()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADSketchTransferTests/testUnknownUnitsAndPartialSelectionRequireExplicitChoices()",
+        "result": "Passed",
+        "batch": "native-tests-01"
+      },
+      {
+        "identifier": "CADHybridModelingTests/testSignedZeroSourceAndDefinitionDigestsSurviveFoundationRoundTrip()",
+        "result": "Passed",
+        "batch": "native-tests-02"
+      },
+      {
+        "identifier": "CADHybridModelingTests/testSourceIntegrityStillRejectsNonzeroValueAndTopologyChanges()",
+        "result": "Passed",
+        "batch": "native-tests-02"
+      },
+      {
+        "identifier": "NativeCADCapabilityMatrixTests/rowsAreExplicit()",
+        "result": "Passed",
+        "batch": "native-tests-02"
+      },
+      {
+        "identifier": "NativeCADCapabilityMatrixTests/jsonShape()",
+        "result": "Passed",
+        "batch": "native-tests-02"
+      },
+      {
+        "identifier": "CADUnifiedDrawingBridgeTests/delayedReleaseCannotCloseSamePathReadoption()",
+        "result": "Passed",
+        "batch": "native-tests-03"
+      },
+      {
+        "identifier": "CadDocumentToolTests/formatSchemaIsTheNativeFormatUnion()",
+        "result": "Passed",
+        "batch": "native-tests-03"
+      }
+    ]
+  },
+  "uiLatest": {
+    "uniqueCases": 3,
+    "latestCounts": {
+      "Passed": 3
+    },
+    "cases": [
+      {
+        "identifier": "CADAnimationAuthoringFlowUITests/testCameraKeyCaptureAndStopReturnToPreviewStart()",
+        "result": "Passed",
+        "batch": "ui-tests-01"
+      },
+      {
+        "identifier": "CADBuildingWorkflowUITests/testPlanImportModelSaveReopenDrawingAndProfessionalMenus()",
+        "result": "Passed",
+        "batch": "ui-tests-04"
+      },
+      {
+        "identifier": "CADPresentationFlowUITests/testPresentationEnvironmentAndMaterialReturnToSameWorkbench()",
+        "result": "Passed",
+        "batch": "ui-tests-02"
+      }
+    ]
+  },
+  "buildingSample": {
+    "elements": 7,
+    "views": 4,
+    "projectedVectors": 6084,
+    "DXFBytes": 713894,
+    "DXFSHA256": "c68b30d8bf5a599e1385b933f2f6407b826e69c394bf1507e6a86a1a521d7c32"
+  },
+  "productArtifactSHA256": "1d7e817455bb564574d9725fca9fb471fc2a0864d8ea14ccb254e98b3ce275f4",
+  "testOnlyRebuild": {
+    "unchangedAppFiles": 5508,
+    "allAppFileBytesVerifiedUnchanged": true
+  },
+  "components": {
+    "rust": {
+      "passed": 68,
+      "failed": 0,
+      "existingIgnored": 1
+    },
+    "MeshToFeaturesCore": {
+      "passed": 57
+    },
+    "Manifold": "Actual macOS and canonical Simulator probes passed; iphoneos arm64 archive compiled",
+    "drawings": "Bundled WASM transfer/edit/save and independent LibreDWG readback passed",
+    "professional": "Real IFC geometry readback, one PyNite beam, one MEP intersection and IDS invocation passed on development host",
+    "offlineRender": "Real pinned pbrt CPU PNG, handedness, interruption and stale-output refusal passed on macOS"
+  },
+  "limits": [
+    "Linux guest professional/render job invocation is not runtime-qualified in this round",
+    "Native recognition is bounded to validated axis-aligned boxes; mesh-to-solid is faceted, not general reverse engineering",
+    "No complete professional precision matrix, whole-building structural analysis or global regulatory approval",
+    "Offline pbrt output in this round is a still PNG; existing MP4 uses RealityKit/AVFoundation"
+  ],
+  "originalFailuresRetained": [
+    "Native first run:3 immutable-source signed-zero persistence failures, fixed and rerun",
+    "Building initial UI: generate action below preview, fixed toolbar and rerun",
+    "Building second UI: first checks list empty, fixed result-bound sheet and rerun",
+    "MEP initial BRep tree backend rejected clash; fixed triangle-BVH backend and rerun"
+  ],
+  "screenshots": {
+    "building-reopened.png": "2242cf1bfa437540b241b3150db30e9cb0bd136f89319e45d8930545c3c6d9bc",
+    "building-vectors.png": "f0beb9898ba1200e597357eaaa9927c7023269a8d9f791bd7c9e676938520e56",
+    "building-dxf-ready.png": "b001a0a2b504d0bb1e7308f8d1ad5de686ddc81615cd76ab1e88ff715d7db199"
+  }
+}

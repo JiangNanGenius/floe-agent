@@ -93,7 +93,7 @@ const edit = request => {
 {
   const info = inspect();
   const capabilities = info.capabilities;
-  check('engine advertises capabilities v3', capabilities.version === 3, JSON.stringify(capabilities.version));
+  check('engine advertises capabilities v4', capabilities.version === 4, JSON.stringify(capabilities.version));
   check('engine advertises trim/extend/offset', ['trim', 'extend', 'offset'].every(op => capabilities.operations.includes(op)));
   check('engine advertises dimensions', capabilities.entityCreation.dimensions.length === 5);
   check('engine advertises snap and measure kinds', capabilities.snap.kinds.includes('intersection') && capabilities.measure.kinds.includes('area'));

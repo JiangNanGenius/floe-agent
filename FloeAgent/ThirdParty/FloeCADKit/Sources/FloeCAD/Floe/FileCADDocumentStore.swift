@@ -215,6 +215,8 @@ struct CADDocumentRecord: Codable, Sendable {
     /// M08 associative datum points, one blob record each (mirrors `axes`).
     /// Additive optional key: absent on every document that never made one.
     var datumPoints: [CADBlobRecord]? = nil
+    /// Optional building semantics, protected by the intent-specific writer floor.
+    var building: Data? = nil
 }
 
 /// Everything a commit needs, in a `Sendable` value: cheap to build on the
@@ -610,6 +612,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         project.tolerance = manifest.tolerance
         project.assemblyData = document.assembly
         project.drawingsData = document.drawings
+        project.buildingData = document.building
         project.scriptsData = document.scripts
         project.sceneSettingsData = document.sceneSettings
         project.materialsData = document.materials
@@ -710,7 +713,8 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             datumPoints: project.datumPoints.isEmpty ? nil : project.datumPoints.map {
                 CADBlobRecord(blobID: $0.pointID, data: $0.pointData,
                               sha256: Self.sha256($0.pointData))
-            }
+            },
+            building: project.buildingData
         )
         var blobs: [String: Data] = [:]
 

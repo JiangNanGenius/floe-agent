@@ -129,6 +129,17 @@ public final class CADDrawingService {
     /// B-rep copies off-main; the synchronous facade is compatibility/test-only.
     public func handleAsync(action: String, args: [String: Any]) async -> [String: Any] {
         guard !document.isClosed else { return fail("document_closed", "The document is closed.") }
+        if action == "export", (args["format"] as? String)?.lowercased() == "dwg" {
+            guard let pageID = uuidValue(args["pageID"]) ?? uuidValue(args["id"]) else { return fail("bad_page_id", "pageID must be a drawing page UUID string.") }
+            do {
+                let data = try await exportDataAsync(pageID: pageID, format: "dwg")
+                return ["ok": true, "mutated": false, "pageID": pageID.uuidString, "format": "dwg",
+                        "base64": data.base64EncodedString(), "byteCount": data.count,
+                        "sha256": SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+                        "noRasterization": true]
+            } catch let error as CADDocumentError { return failurePayload(error) }
+            catch { return fail("export_failed", error.localizedDescription) }
+        }
         if let pageID = uuidValue(args["pageID"]) ?? uuidValue(args["id"]),
            !["removePage", "updatePage", "updateView", "addView", "removeView"].contains(action) {
             if let refusal = await prepareProjection(pageID: pageID) { return refusal }
@@ -146,6 +157,22 @@ public final class CADDrawingService {
         if format.lowercased() != "csv", let refusal = await prepareProjection(pageID: pageID) {
             throw CADDocumentError(code: refusal["error"] as? String ?? "drawing_refused",
                                    message: refusal["message"] as? String ?? "Drawing calculation failed.")
+        }
+        if format.lowercased() == "dwg" {
+            guard let encoder = document.drawingDWGEncoder else {
+                throw CADDocumentError(code: "dwg_encoder_unavailable", message: "The DWG exporter is unavailable in this host.")
+            }
+            let changeCount = document.session.changeCount
+            let dxf = try exportData(pageID: pageID, format: "dxf")
+            let result = try await encoder(dxf)
+            try Task.checkCancellation()
+            guard !document.isClosed, document.session.changeCount == changeCount else {
+                throw CADDocumentError(code: "stale_drawing_export", message: "The model changed while exporting. Export the current drawing again.")
+            }
+            guard result.count >= 6, String(data: result.prefix(6), encoding: .ascii)?.hasPrefix("AC10") == true else {
+                throw CADDocumentError(code: "invalid_dwg_output", message: "The exporter returned no verified DWG drawing.")
+            }
+            return result
         }
         return try exportData(pageID: pageID, format: format)
     }

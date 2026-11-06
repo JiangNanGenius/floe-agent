@@ -53,6 +53,13 @@ nonisolated struct CADNamedVersionComparisonBuilder {
         compareMaterials(from, to, into: &collector)
         compareAssembly(from, to, into: &collector)
         compareDrawings(from, to, into: &collector)
+        if from.document.building != to.document.building {
+            let differences=jsonDifferences(from.document.building,to.document.building,prefix:"building",limit:6)
+            if !differences.isEmpty {
+                collector.add(section:"metadata",change:"modified",identifier:"building",
+                    name:FloeCADStrings.text("cad.building.title","Building Design"),detail:differences.joined(separator:"; "))
+            }
+        }
         comparePresentation(from, to, into: &collector)
         compareAnimation(from, to, into: &collector)
         compareScripts(from, to, into: &collector)
@@ -700,6 +707,9 @@ nonisolated struct CADNamedVersionComparisonBuilder {
     -> (value: Any?, name: String?) {
         switch section {
         case "metadata":
+            if identifier == "building" {
+                return (rawJSON(state.document.building),FloeCADStrings.text("cad.building.title","Building Design"))
+            }
             if identifier == "itemFolders" {
                 return (rawJSON(state.document.itemFolders), "Items folders")
             }

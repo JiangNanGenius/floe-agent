@@ -417,11 +417,22 @@ final class CADPresentationFlowUITests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
-                               "-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture"]
+                               "-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture",
+                               "--ui-test-cad-uninstanced"]
         app.launch()
         defer { app.terminate() }
         XCTAssertTrue(app.otherElements["CADFixtureHarness"].waitForExistence(timeout: 30))
         XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 15))
+        // Select the real holed B-rep through the shipped Items panel. An
+        // unselected inspector with a disabled Apply button cannot pass this flow.
+        let items = app.buttons["ItemsButton"]
+        XCTAssertTrue(items.waitForExistence(timeout: 10) && items.isHittable)
+        items.tap()
+        let body = app.descendants(matching: .any)
+            .matching(identifier: "ItemRow-Extrude").firstMatch
+        XCTAssertTrue(body.waitForExistence(timeout: 15) && body.isHittable, app.debugDescription)
+        body.tap()
+        items.tap()
         let mode = app.segmentedControls["CADWorkbenchMode"]
         XCTAssertTrue(mode.waitForExistence(timeout: 10))
         mode.buttons["Present"].tap()
@@ -429,29 +440,88 @@ final class CADPresentationFlowUITests: XCTestCase {
         XCTAssertTrue(app.buttons["CADPresentFit"].isHittable)
         app.buttons["CADPresentFit"].tap()
         let present = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        present.name = "CAD-Present-placed-parts"
+        present.name = "CAD-Present-real-selected-body"
         present.lifetime = .keepAlways
         add(present)
 
-        app.buttons["CADPresentEnvironment"].tap()
+        let openEnvironment = app.buttons["CADPresentEnvironment"]
+        openEnvironment.tap()
         XCTAssertTrue(app.buttons["CADEnvironmentApply"].waitForExistence(timeout: 10))
         let environment = app.segmentedControls["CADEnvironmentKind"]
         XCTAssertTrue(environment.exists)
+        XCTAssertTrue(environment.buttons["Studio"].isSelected)
         environment.buttons["Dark"].tap()
+        CADSheetProbe.expandSheet("Environment", in: app)
+        let shadows = CADSheetProbe.toggle("CADEnvironmentShadows", in: app)
+        CADSheetProbe.reveal(shadows, in: app, sheet: "Environment")
+        XCTAssertTrue(shadows.exists && shadows.isHittable, app.debugDescription)
+        let originalShadows = try XCTUnwrap(shadows.value as? String)
+        XCTAssertTrue(["0", "1"].contains(originalShadows), "Read the actual native switch value")
+        let changedShadows = originalShadows == "1" ? "0" : "1"
+        XCTAssertTrue(CADSheetProbe.setToggle(shadows, changedShadows))
+        XCTAssertTrue(app.buttons["CADEnvironmentApply"].isEnabled)
+        snapshotFaceFlow("CAD-Environment-real-dark-and-shadow-change")
         app.buttons["CADEnvironmentApply"].tap()
-        XCTAssertTrue(app.buttons["CADPresentMaterial"].waitForExistence(timeout: 10))
-        app.buttons["CADPresentMaterial"].tap()
+        XCTAssertTrue(CADSheetProbe.waitForAbsence(app.buttons["CADEnvironmentApply"], timeout: 10))
+        XCTAssertTrue(openEnvironment.waitForExistence(timeout: 10))
+        openEnvironment.tap()
+        XCTAssertTrue(environment.waitForExistence(timeout: 10) && environment.buttons["Dark"].isSelected,
+                      "Reopening must read the applied environment")
+        CADSheetProbe.expandSheet("Environment", in: app)
+        CADSheetProbe.reveal(shadows, in: app, sheet: "Environment")
+        XCTAssertTrue(CADSheetProbe.waitForValue(shadows, changedShadows),
+                      "Reopening must read the applied shadow setting")
+        app.buttons["CADEnvironmentCancel"].tap()
+
+        let openMaterial = app.buttons["CADPresentMaterial"]
+        XCTAssertTrue(openMaterial.waitForExistence(timeout: 10))
+        openMaterial.tap()
         XCTAssertTrue(app.textFields["CADMaterialNameField"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["CADMaterialCancel"].exists)
-        let inspector = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        inspector.name = "CAD-Material-inspector"
-        inspector.lifetime = .keepAlways
-        add(inspector)
+        let materialTarget = app.descendants(matching: .any)
+            .matching(identifier: "CADMaterialSelectedTarget").firstMatch
+        XCTAssertTrue(CADSheetProbe.waitForLabel(materialTarget, contains: "Extrude", timeout: 10),
+                      "Material must own the body selected in Items, not an empty draft")
+        let selectedTarget = materialTarget.label
+        let applyMaterial = app.buttons["CADMaterialApply"]
+        XCTAssertTrue(CADSheetProbe.waitForEnabled(applyMaterial, timeout: 10),
+                      "A real selected body must enable material Apply")
+        CADSheetProbe.expandSheet("Material", in: app)
+        let roughness = app.sliders["CADMaterialRoughnessSlider"]
+        CADSheetProbe.reveal(roughness, in: app, sheet: "Material")
+        XCTAssertTrue(roughness.exists && roughness.isHittable, app.debugDescription)
+        let roughnessValue = app.staticTexts["CADMaterialRoughnessValue"]
+        XCTAssertTrue(roughnessValue.exists)
+        let originalRoughness = roughnessValue.label
+        roughness.adjust(toNormalizedSliderPosition: originalRoughness == "80%" ? 0.25 : 0.8)
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND label != %@", originalRoughness),
+            object: roughnessValue)], timeout: 10), .completed,
+                       "The native roughness control must actually change before Apply")
+        let changedRoughness = roughnessValue.label
+        snapshotFaceFlow("CAD-Material-real-selected-body-roughness-before-apply")
+        XCTAssertTrue(applyMaterial.isEnabled)
+        applyMaterial.tap()
+        XCTAssertTrue(CADSheetProbe.waitForAbsence(applyMaterial, timeout: 10),
+                      "Apply must finish and dismiss the real material inspector")
+        XCTAssertTrue(openMaterial.waitForExistence(timeout: 10))
+        openMaterial.tap()
+        XCTAssertTrue(CADSheetProbe.waitForLabelEquals(materialTarget, selectedTarget, timeout: 10))
+        CADSheetProbe.expandSheet("Material", in: app)
+        CADSheetProbe.reveal(roughness, in: app, sheet: "Material")
+        XCTAssertTrue(CADSheetProbe.waitForLabelEquals(roughnessValue, changedRoughness, timeout: 10),
+                      "Reopening must load the applied roughness on the same body")
+        snapshotFaceFlow("CAD-Material-reopened-applied-roughness-on-same-body")
         app.buttons["CADMaterialCancel"].tap()
         XCTAssertTrue(mode.waitForExistence(timeout: 10))
         mode.buttons["Edit"].tap()
         XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 15))
-        XCTAssertTrue(app.buttons["ItemsButton"].exists)
+        XCTAssertTrue(app.otherElements["CADFixtureHarness"].exists)
+        XCTAssertTrue(items.isHittable)
+        items.tap()
+        XCTAssertTrue(body.waitForExistence(timeout: 10) && body.isHittable,
+                      "Return to the original editor and its existing native body")
+        snapshotFaceFlow("CAD-same-workbench-after-real-environment-and-material-apply")
+        items.tap()
     }
 }
 

@@ -497,6 +497,11 @@ NOTES = (
 # (name, version, license, source, section, noteKey)
 STATIC_COMPONENTS = (
     (
+        "Manifold", "3.5.4", "Apache-2.0",
+        "https://github.com/elalish/manifold/tree/ce50d78021d64507f89e8c9fc2c2e51018117857",
+        "engineering", None,
+    ),
+    (
         "iCTRL (native iOS automation protocol adaptations)",
         "c1e4268859ba858d1579f7b846a56cb40641b7f6 (v1.98.16)",
         "Apache-2.0",
@@ -976,6 +981,11 @@ STATIC_COMPONENTS = (
 
 # (id, repositoryPath, bundlePath, titleKey, title, titleArgument, license, kind, required, section)
 DOCUMENTS = (
+    (
+        "manifold", "FloeApp/Resources/Licenses/Manifold-NOTICES.txt",
+        "Licenses/Manifold-NOTICES.txt", "settings.licenses.document.manifold.title",
+        "Manifold mesh geometry kernel", None, "Apache-2.0", "full_text", True, "engineering",
+    ),
     (
         "ictrl", "FloeApp/Resources/Licenses/iCTRL-Apache-2.0.txt",
         "Licenses/iCTRL-Apache-2.0.txt",
@@ -2161,6 +2171,7 @@ DOCUMENT_NOTES = {
 # evidence is preferred; upstream fetches are named by the pinned tag so a
 # reviewer can repeat the read.
 STATIC_EVIDENCE = {
+    "Manifold": "ThirdParty/FloeCADKit/Vendor/Manifold-SOURCE.json (fixed 3.5.4 source and native slices); full Apache-2.0 and source notices in FloeApp/Resources/Licenses/Manifold-NOTICES.txt",
     "iCTRL (native iOS automation protocol adaptations)": "FloeApp/Resources/Licenses/iCTRL-NOTICE.md (upstream c1e4268859ba858d1579f7b846a56cb40641b7f6); full Apache-2.0 text in iCTRL-Apache-2.0.txt",
     "TinyEMU / FloeTinyEMU engine": "ThirdParty/TinyEMU/LICENSE-INVENTORY.md (per-file inventory of the pinned tarball)",
     "TinyEMU slirp (compiled subset)": "ThirdParty/TinyEMU/LICENSE-INVENTORY.md and the restored slirp COPYRIGHT text",

@@ -4,6 +4,7 @@ import SwiftUI
 import Foundation
 import WebKit
 import FloeWorkspace
+import FloeCAD
 import FloeWorkbench
 import FloeCore
 
@@ -695,6 +696,7 @@ final class CadLiveDraftRegistry {
                 onReview: ((EngineeringReviewCapture) -> Void)?,
                 onSave: ((Data, String) async throws -> String)?,
                 onDirty: ((Bool) -> Void)?,
+                onDrawingTransfer: ((CADSketchTransferEnvelope) -> Void)? = nil,
                 dark: Bool, locale: String) -> WKWebView {
         // Canonical document identity (workspace root + relative path) when
         // the caller supplies one: saving changes bytes but never identity,
@@ -703,7 +705,7 @@ final class CadLiveDraftRegistry {
         let canEdit = onSave != nil
         if let web, coordinator != nil, generation != nil, !pendingRebuild,
            key == loadedDocumentKey {
-            coordinator?.update(callbacks: error, onReview: onReview, onSave: onSave, onDirty: onDirty)
+            coordinator?.update(callbacks: error, onReview: onReview, onSave: onSave, onDirty: onDirty, onDrawingTransfer: onDrawingTransfer)
             coordinator?.onSceneState = { [weak self] state in
                 guard let self else { return }
                 self.sceneState = state
@@ -742,7 +744,7 @@ final class CadLiveDraftRegistry {
         registerLiveDraft(key: key)
         let coordinator = EngineeringWebView.Coordinator(package: package, error: error,
                                                          onReview: onReview, onSave: onSave,
-                                                         onDirty: onDirty)
+                                                         onDirty: onDirty, onDrawingTransfer: onDrawingTransfer)
         coordinator.onSceneState = { [weak self] state in
             guard let self else { return }
             self.sceneState = state
@@ -751,13 +753,15 @@ final class CadLiveDraftRegistry {
         coordinator.onSceneProgress = { [weak self] progress in
             self?.sceneLoadProgress = progress
         }
+        coordinator.drawingSourceIdentity = identity
         self.coordinator = coordinator
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
         config.userContentController.addScriptMessageHandler(coordinator, contentWorld: .page, name: "floeEngineering")
         let options: [String: Any] = ["dark": dark, "language": locale,
-                                      "canReview": onReview != nil, "canEdit": onSave != nil]
+                                      "canReview": onReview != nil, "canEdit": onSave != nil,
+                                      "canTransfer": onDrawingTransfer != nil]
         if let bytes = try? JSONSerialization.data(withJSONObject: options),
            let json = String(data: bytes, encoding: .utf8) {
             config.userContentController.addUserScript(WKUserScript(
@@ -1113,6 +1117,7 @@ struct EngineeringFilePreview: View {
     var onReview: ((EngineeringReviewCapture) -> Void)? = nil
     var onSave: ((Data, String) async throws -> String)? = nil
     var onDirty: ((Bool) -> Void)? = nil
+    var onDrawingTransfer: ((CADSketchTransferEnvelope) -> Void)? = nil
     /// Optional externally owned session (so a fullscreen presentation can
     /// re-parent the SAME web view and preserve the editing session).
     var session: EngineeringWebSession? = nil
@@ -1156,7 +1161,7 @@ struct EngineeringFilePreview: View {
             } else {
                 ZStack(alignment: .bottom) {
                     EngineeringWebView(session: activeSession, package: package, identity: identity,
-                                       error: $error, onReview: onReview, onSave: onSave, onDirty: onDirty)
+                                       error: $error, onReview: onReview, onSave: onSave, onDirty: onDirty, onDrawingTransfer: onDrawingTransfer)
                     if isSceneDocument {
                         EngineeringSceneControlBar(session: activeSession, package: package)
                     }
@@ -1182,19 +1187,20 @@ struct EngineeringWebView: UIViewRepresentable {
     var onReview: ((EngineeringReviewCapture) -> Void)?
     var onSave: ((Data, String) async throws -> String)?
     var onDirty: ((Bool) -> Void)?
+    var onDrawingTransfer: ((CADSketchTransferEnvelope) -> Void)? = nil
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.locale) private var locale
 
     func makeCoordinator() -> Coordinator {
         if let existing = session.coordinator { return existing }
-        return Coordinator(package: package, error: $error, onReview: onReview, onSave: onSave, onDirty: onDirty)
+        return Coordinator(package: package, error: $error, onReview: onReview, onSave: onSave, onDirty: onDirty, onDrawingTransfer: onDrawingTransfer)
     }
 
     func makeUIView(context: Context) -> EngineeringContainerView {
         let container = EngineeringContainerView()
         container.session = session
         _ = session.attach(package: package, identity: identity, error: $error,
-                           onReview: onReview, onSave: onSave, onDirty: onDirty,
+                           onReview: onReview, onSave: onSave, onDirty: onDirty, onDrawingTransfer: onDrawingTransfer,
                            dark: colorScheme == .dark, locale: locale.identifier)
         container.setNeedsLayout()
         return container
@@ -1202,7 +1208,7 @@ struct EngineeringWebView: UIViewRepresentable {
 
     func updateUIView(_ container: EngineeringContainerView, context: Context) {
         container.session = session
-        session.coordinator?.update(callbacks: $error, onReview: onReview, onSave: onSave, onDirty: onDirty)
+        session.coordinator?.update(callbacks: $error, onReview: onReview, onSave: onSave, onDirty: onDirty, onDrawingTransfer: onDrawingTransfer)
         // A theme change must not destroy an unsaved CAD session.
         session.update(dark: colorScheme == .dark)
         container.setNeedsLayout()
@@ -1270,6 +1276,8 @@ struct EngineeringWebView: UIViewRepresentable {
         var onReview: ((EngineeringReviewCapture) -> Void)?
         var onSave: ((Data, String) async throws -> String)?
         var onDirty: ((Bool) -> Void)?
+        var onDrawingTransfer: ((CADSketchTransferEnvelope) -> Void)?
+        var drawingSourceIdentity: String?
         var onSceneState: ((EngineeringSceneState) -> Void)?
         var onSceneProgress: ((Double?) -> Void)?
         var baselineSHA: String
@@ -1362,17 +1370,24 @@ struct EngineeringWebView: UIViewRepresentable {
         init(package: EngineeringPreviewPackage, error: Binding<String?>,
              onReview: ((EngineeringReviewCapture) -> Void)?,
              onSave: ((Data, String) async throws -> String)?,
-             onDirty: ((Bool) -> Void)?) {
+             onDirty: ((Bool) -> Void)?,
+             onDrawingTransfer: ((CADSketchTransferEnvelope) -> Void)? = nil) {
             self.package = package; self.error = error; self.onReview = onReview
-            self.onSave = onSave; self.onDirty = onDirty
+            self.onSave = onSave; self.onDirty = onDirty; self.onDrawingTransfer = onDrawingTransfer
             baselineSHA = package.provenance.sourceSHA256
         }
 
         func update(callbacks error: Binding<String?>,
                     onReview: ((EngineeringReviewCapture) -> Void)?,
                     onSave: ((Data, String) async throws -> String)?,
-                    onDirty: ((Bool) -> Void)?) {
-            self.error = error; self.onReview = onReview; self.onSave = onSave; self.onDirty = onDirty
+                    onDirty: ((Bool) -> Void)?,
+                    onDrawingTransfer: ((CADSketchTransferEnvelope) -> Void)? = nil) {
+            let transferCapabilityChanged = (self.onDrawingTransfer != nil) != (onDrawingTransfer != nil)
+            self.error = error; self.onReview = onReview; self.onSave = onSave; self.onDirty = onDirty; self.onDrawingTransfer = onDrawingTransfer
+            if transferCapabilityChanged, let web {
+                let enabled = onDrawingTransfer != nil ? "true" : "false"
+                web.evaluateJavaScript("window.floeEngineeringConfiguration.canTransfer = \(enabled); window.dispatchEvent(new Event('floe-cad-capabilities'));")
+            }
         }
 
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
@@ -1424,6 +1439,24 @@ struct EngineeringWebView: UIViewRepresentable {
             if operation == "export-cad-recovery", completed, onSave != nil,
                let text = body["text"] as? String {
                 exportRecovery(text, reply: replyHandler)
+                return
+            }
+            if operation == "transfer-drawing", completed, !saving,
+               [.dxf, .dwg].contains(package.kind), let onDrawingTransfer,
+               let purposeValue = body["purpose"] as? String,
+               let purpose = CADSketchTransferEnvelope.Purpose(rawValue: purposeValue),
+               let object = body["snapshot"],
+               let encoded = body["sourceBase64"] as? String, encoded.utf8.count <= 14 * 1024 * 1024,
+               let bytes = Data(base64Encoded: encoded), !bytes.isEmpty, bytes.count <= 10 * 1024 * 1024 {
+                do {
+                    let data = try JSONSerialization.data(withJSONObject: object)
+                    let snapshot = try CADSketchTransferSnapshot.decodeValidated(data)
+                    let envelope = try CADSketchTransferEnvelope(purpose: purpose, sourceName: package.name,
+                        sourceSHA256: CADSketchTransferEnvelope.digest(bytes), sourceIdentity: drawingSourceIdentity,
+                        sourceBytes: bytes, snapshot: snapshot)
+                    onDrawingTransfer(envelope)
+                    replyHandler(["prepared": true], nil)
+                } catch { replyHandler(nil, error.localizedDescription) }
                 return
             }
             if operation == "save", completed, !saving, let onSave,

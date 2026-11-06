@@ -50,6 +50,24 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
  const undo=button(controls,say('撤销','Undo'),()=>{if(externalUndo&&!info.canUndo){void restoreExternalUndo();return;}void mutate('undo');});
  const redo=button(controls,say('重做','Redo'),()=>mutate('redo'));
  const save=button(controls,say('保存','Save'),saveDocument);save.id='cadSave';
+ window.addEventListener('floe-cad-capabilities',update);
+ const transferControls=document.createElement('div');transferControls.className='cadActions';
+ const transferSketch=button(transferControls,say('转三维草图','Create 3D sketch'),()=>transferDrawing('modelSketch'));
+ transferSketch.id='cadTransferSketch';
+ const transferBuilding=button(transferControls,say('由平面图创建建筑','Building from floor plan'),()=>transferDrawing('buildingFloorplan'));
+ transferBuilding.id='cadTransferBuilding';
+ panel.insertBefore(transferControls,properties);
+ async function transferDrawing(purpose){
+  if(busy)return;busy=true;update();
+  try{
+   const result=await engine.call('transfer_sketch',{request:{handles:targets(),expectedRevision:info.draftRevision}});
+   let binary='';const bytes=result.sourceBytes;
+   for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
+   await window.webkit.messageHandlers.floeEngineering.postMessage({operation:'transfer-drawing',purpose,snapshot:result.snapshot,sourceBase64:btoa(binary)});
+   note(say('已准备几何，请选择目标平面或建筑选项。','Geometry is ready. Choose the destination plane or building options.'));
+  }catch(e){note(e.message,true);}finally{busy=false;update();}
+ }
+
  function button(parent,label,action){const b=document.createElement('button');b.textContent=label;b.onclick=action;parent.append(b);return b;}
  function collapsible(section,label,open){
   const header=document.createElement('button');header.type='button';header.className='cadSectionToggle';
@@ -411,6 +429,7 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
   selectionInfo.textContent=selection.size?say(`已选 ${selection.size} 个图元`,`${selection.size} selected`):'';
   scopeInfo.hidden=info.entities.length>=info.entityCount;
   scopeInfo.textContent=scopeInfo.hidden?'':say('显示前 500 个图元，其他内容保留在原图纸中。','Showing the first 500 entities; other content remains in the drawing.');
+  transferSketch.disabled=transferBuilding.disabled=busy||!window.floeEngineeringConfiguration?.canTransfer;
   updateInk();
  }
  function toggleSelection(handle){
@@ -644,6 +663,7 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
  note(say('支持线、圆、圆弧、多段线/矩形、文字、标注、移动/复制/旋转/缩放/镜像、修剪/延伸/偏移、图层与测量。复杂图元保留，暂不编辑。','Lines, circles, arcs, polylines/rectangles, text, dimensions, move/copy/rotate/scale/mirror, trim/extend/offset, layers and measures. Other entities are retained and read only.'));
  update();
  return {showDiff,clearDiff,locate:locateHandle,reload,pushExternalUndo,inspect:()=>({...info,selectedHandle:selected,selection:[...selection],activeLayer:activeLayer(),externalUndo:!!externalUndo,units,ink:{active:inkState.active,ready:inkState.ready,reason:inkState.reason,color:inkState.color,lineWeight:inkState.lineWeight,drawWithFinger:inkState.drawWithFinger,capabilities:inkState.capabilities?{pointCount:inkState.capabilities.pointCount,lineWeights:inkState.capabilities.lineWeights.length}:null}}),destroy(){
+  window.removeEventListener('floe-cad-capabilities',update);
   document.removeEventListener('pointerdown',onPointerDown,captureOptions);
   document.removeEventListener('pointermove',onPointerMove,captureOptions);
   document.removeEventListener('pointerup',onPointerUp,captureOptions);

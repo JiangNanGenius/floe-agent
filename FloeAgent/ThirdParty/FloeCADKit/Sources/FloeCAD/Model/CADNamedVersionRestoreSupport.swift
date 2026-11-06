@@ -40,6 +40,7 @@ nonisolated struct CADProjectSnapshot {
     var tolerance: Double?
     var assemblyData: Data?
     var drawingsData: Data?
+    var buildingData: Data?
     var scriptsData: Data?
     var sceneSettingsData: Data?
     var materialsData: Data?
@@ -70,6 +71,7 @@ nonisolated struct CADProjectSnapshot {
         tolerance = project.tolerance
         assemblyData = project.assemblyData
         drawingsData = project.drawingsData
+        buildingData = project.buildingData
         scriptsData = project.scriptsData
         sceneSettingsData = project.sceneSettingsData
         materialsData = project.materialsData
@@ -101,6 +103,7 @@ nonisolated struct CADProjectSnapshot {
         project.tolerance = tolerance
         project.assemblyData = assemblyData
         project.drawingsData = drawingsData
+        project.buildingData = buildingData
         project.scriptsData = scriptsData
         project.sceneSettingsData = sceneSettingsData
         project.materialsData = materialsData
@@ -150,6 +153,7 @@ extension Project {
         tolerance = other.tolerance
         assemblyData = other.assemblyData
         drawingsData = other.drawingsData
+        buildingData = other.buildingData
         scriptsData = other.scriptsData
         sceneSettingsData = other.sceneSettingsData
         materialsData = other.materialsData

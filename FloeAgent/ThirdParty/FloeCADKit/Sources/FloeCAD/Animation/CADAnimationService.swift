@@ -47,11 +47,13 @@ public nonisolated struct CADAnimationLoadState: Sendable, Equatable {
 public nonisolated enum CADAnimationPresetKind: String, Sendable, CaseIterable {
     case turntable
     case explodeReturn
+    case reveal
 
     public var localizationKey: String {
         switch self {
         case .turntable: return "cad.animation.preset.turntable"
         case .explodeReturn: return "cad.animation.preset.explode"
+        case .reveal: return "cad.animation.preset.reveal"
         }
     }
 }
@@ -794,15 +796,19 @@ public extension FloeCADDocument {
         let context = animationSceneContext()
         let clip: CADAnimationClip
         switch kind {
-        case .turntable:
+        case .turntable, .reveal:
             let base = camera ?? CADAnimationCameraValue.fitted(
                 boundsMinMM: context.boundsMinMM,
                 boundsMaxMM: context.boundsMaxMM,
                 aspect: aspect)
-            clip = CADAnimationPreset.turntable(
-                name: name ?? "Turntable",
-                duration: duration ?? CADAnimationDocument.defaultDurationSeconds,
-                base: base, turns: turns)
+            if kind == .reveal {
+                clip = CADAnimationPreset.reveal(name: name ?? "Reveal", duration: duration ?? 6, base: base)
+            } else {
+                clip = CADAnimationPreset.turntable(
+                    name: name ?? "Turntable",
+                    duration: duration ?? CADAnimationDocument.defaultDurationSeconds,
+                    base: base, turns: turns)
+            }
         case .explodeReturn:
             let seeds = context.instances.values
                 .filter { context.bodyRevisions[$0.sourceBodyID] != nil }
@@ -1115,7 +1121,7 @@ public extension FloeCADDocument {
                 guard let raw = payload.string("kind"),
                       let kind = CADAnimationPresetKind(rawValue: raw) else {
                     throw CADDocumentError(code: "bad_preset",
-                                           message: "preset kind must be turntable or explodeReturn.")
+                                           message: "preset kind must be turntable, explodeReturn or reveal.")
                 }
                 let clip = try applyAnimationPreset(
                     kind,

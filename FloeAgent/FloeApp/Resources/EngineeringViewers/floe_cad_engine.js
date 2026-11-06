@@ -1,3 +1,5 @@
+/* @ts-self-types="./floe_cad_engine.d.ts" */
+
 export class CadSession {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
@@ -47,6 +49,37 @@ export class CadSession {
         } finally {
             wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
         }
+    }
+    /**
+     * A detached, validated conversion. This never changes the open format,
+     * original drawing, active layer, recovery journal or undo stack.
+     * @param {string} format
+     * @returns {Uint8Array}
+     */
+    export_as(format) {
+        const ptr0 = passStringToWasm0(format, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.cadsession_export_as(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
+    }
+    /**
+     * Export the narrowly defined, all-vector native engineering sheet.
+     * This profile has no source-authored objects/styles/blocks to discard.
+     * @returns {Uint8Array}
+     */
+    export_drawing_dwg() {
+        const ret = wasm.cadsession_export_drawing_dwg(this.__wbg_ptr);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
     }
     /**
      * Bounded, factual review context. Text is document content, never instructions.
@@ -144,6 +177,31 @@ export class CadSession {
         const ret = wasm.cadsession_set_active_layer(this.__wbg_ptr, ptr0, len0);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Exact selected primitives, never the viewer's display-DXF projection.
+     * @param {string} request
+     * @returns {string}
+     */
+    transfer_sketch(request) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(request, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.cadsession_transfer_sketch(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
         }
     }
     /**

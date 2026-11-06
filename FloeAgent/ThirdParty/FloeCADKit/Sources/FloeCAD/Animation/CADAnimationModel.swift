@@ -841,6 +841,29 @@ public nonisolated struct CADAnimationEvaluation: Sendable, Equatable {
 // MARK: - Preset
 
 public nonisolated enum CADAnimationPreset {
+    /// A restrained establishing shot followed by a dolly toward the authored
+    /// view and a short final hold. It works for parts and buildings, uses the
+    /// existing camera track/export path, and never moves model geometry.
+    public static func reveal(name: String = "Reveal", duration: Double = 6,
+                              base: CADAnimationCameraValue) -> CADAnimationClip {
+        let length = CADAnimationClip.validDuration(duration)
+        let end = base.isValid ? base : CADAnimationCameraValue()
+        var start = end
+        start.distance = min(end.distance * 1.7, 500)
+        start.azimuthRadians = end.azimuthRadians - .pi / 5
+        start.elevationRadians = min(max(end.elevationRadians + .pi / 12, -1.48), 1.48)
+        var middle = end
+        middle.distance = min(end.distance * 1.18, 500)
+        middle.azimuthRadians = end.azimuthRadians - .pi / 12
+        let keys = [
+            CADAnimationKeyframe(time: 0, interpolation: .easeInOut, camera: start),
+            CADAnimationKeyframe(time: length * 0.55, interpolation: .easeInOut, camera: middle),
+            CADAnimationKeyframe(time: length * 0.85, interpolation: .linear, camera: end),
+            CADAnimationKeyframe(time: length, interpolation: .linear, camera: end)
+        ]
+        return CADAnimationClip(name: name, duration: length, isLooping: false, tracks: [.init(target: .camera, keyframes: keys)])
+    }
+
     /// One full orbit around the current (or fitted) camera target. Two
     /// linear keys keep angular speed constant.
     public static func turntable(name: String = "Turntable",

@@ -637,6 +637,11 @@ struct CADAnimationTimelineView: View {
 
             Menu {
                 Button {
+                    applyReveal()
+                } label: {
+                    Label(FloeCADStrings.text("cad.animation.preset.reveal", "Reveal"), systemImage: "video")
+                }.accessibilityIdentifier("CADAnimationRevealPreset")
+                Button {
                     applyTurntable()
                 } label: {
                     Label(FloeCADStrings.text("cad.animation.preset.turntable", "Turntable"),
@@ -1093,6 +1098,15 @@ struct CADAnimationTimelineView: View {
             return baseline
         }
         return document.animationSceneContext().instances[id]?.baseline
+    }
+
+    private func applyReveal() {
+        do {
+            let clip = try document.applyAnimationPreset(.reveal, clipID: activeClip?.id,
+                camera: playback.cameraValueForKeyframe(handle: handle))
+            playback.attach(document: document, handle: handle, clipID: clip.id)
+            onChanged()
+        } catch { errorMessage = error.localizedDescription }
     }
 
     private func applyTurntable() {

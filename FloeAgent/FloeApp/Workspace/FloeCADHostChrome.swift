@@ -32,20 +32,30 @@ struct FloeCADHostChrome: ViewModifier {
 
     /// Optional observation of the real host save; no replacement save path.
     var onSaveCompleted: (@MainActor (CADSaveOutcome) -> Void)? = nil
+    var workspaceRoot: URL? = nil
+    var workspaceID: UUID? = nil
+    var conversationID: UUID? = nil
+    var externalCoverPresented = false
 
     @State private var saving = false
     @State private var saveOutcome: String?
     @State private var fullScreen = false
+    @State private var building = false
 
     func body(content: Content) -> some View {
         content
+            .task(id:ObjectIdentifier(document)) { CADDrawingModelBridge.configure(document) }
             // While the fullscreen cover is presented, the editor underneath
             // is TRANSIENTLY covered — its disappearance is not a close, so
             // the close-time preview flush is suppressed (T7T). A real close
             // (cover dismissed) leaves this false and flushes normally.
-            .environment(\.cadWorkbenchTransientlyCovered, fullScreen)
+            .environment(\.cadWorkbenchTransientlyCovered, fullScreen || building || externalCoverPresented)
+            .modifier(CADOfflineRenderEntry(document:document,root:workspaceRoot,workspaceID:workspaceID,conversationID:conversationID))
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { building=true } label:{
+                        Label(FloeCADStrings.text("cad.building.title","Building Design"),systemImage:"building.2")
+                    }.accessibilityIdentifier("cad.host.building")
                     Button {
                         Task { await save() }
                     } label: {
@@ -65,6 +75,9 @@ struct FloeCADHostChrome: ViewModifier {
                     .accessibilityIdentifier("cad.host.fullscreen")
                 }
             }
+            .fullScreenCover(isPresented:$building) {
+                CADBuildingWorkspaceView(document:document,root:workspaceRoot,workspaceID:workspaceID,conversationID:conversationID)
+            }
             .fullScreenCover(isPresented: $fullScreen) {
                 NavigationStack {
                     // The cover's editor is a re-presentation of the SAME live
@@ -77,6 +90,7 @@ struct FloeCADHostChrome: ViewModifier {
                         .environment(\.cadWorkbenchTransientlyCovered, true)
                         .navigationTitle(document.name)
                         .navigationBarTitleDisplayMode(.inline)
+                        .modifier(CADOfflineRenderEntry(document:document,root:workspaceRoot,workspaceID:workspaceID,conversationID:conversationID))
                         .toolbar {
                             ToolbarItem(placement: .topBarLeading) {
                                 Button(FloeCADStrings.text("engineering.done", "Done")) {

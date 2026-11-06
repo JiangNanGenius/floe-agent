@@ -679,6 +679,7 @@ enum CADQualificationFixture {
 struct CADWorkbenchFixtureHarness: View {
     @EnvironmentObject private var environment: AppEnvironment
     @State private var document: FloeCADDocument?
+    @State private var buildingPlan: CADSketchTransferEnvelope?
     @State private var m30Fixture: CADM30SelectedTargetUIFixture?
     @State private var error: String?
     /// E26: set when the fixture seeded a workspace-owned .floecad package and
@@ -770,7 +771,9 @@ struct CADWorkbenchFixtureHarness: View {
                 // chrome or CUA accepts a workbench that does not exist in
                 // the product. The editor sets its own inline navigation
                 // title (the document name), exactly as it does in-product.
-                if ProcessInfo.processInfo.arguments.contains(CADTextureImportUIFixture.argument) {
+                if ProcessInfo.processInfo.arguments.contains(CADBuildingUIFixture.argument) {
+                    CADBuildingFixtureSurface(document:document,plan:buildingPlan)
+                } else if ProcessInfo.processInfo.arguments.contains(CADTextureImportUIFixture.argument) {
                     ZStack(alignment: .topTrailing) {
                         workbench(document)
                         CADTextureImportReadbackPanel(document: document)
@@ -844,7 +847,12 @@ struct CADWorkbenchFixtureHarness: View {
             Self.installMeshPanelFlowProbeIfRequested()
             do {
                 let arguments = ProcessInfo.processInfo.arguments
-                if arguments.contains(CADM30SelectedTargetUIFixture.argument) {
+                if arguments.contains(CADBuildingUIFixture.argument) {
+                    let prepared=try await CADBuildingUIFixture.prepare(
+                        reopen:arguments.contains("--ui-test-cad-building-reopen"),
+                        reset:arguments.contains("--ui-test-cad-building-reset"))
+                    buildingPlan=prepared.plan;document=prepared.document
+                } else if arguments.contains(CADM30SelectedTargetUIFixture.argument) {
                     let fixture = try await CADM30SelectedTargetUIFixture.prepare(in: environment)
                     m30Fixture = fixture
                     document = fixture.document

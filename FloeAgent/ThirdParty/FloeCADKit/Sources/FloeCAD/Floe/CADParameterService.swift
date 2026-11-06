@@ -4536,7 +4536,7 @@ public final class CADParameterService {
             return [face.body.bodyID]
         case let .pattern(body, spec): return spec.featureSeed == nil ? [] : [body.bodyID]
         case let .surface(definition): return definition.operation == .loft ? [] : definition.sources.prefix(1).map(\.bodyID)
-        case .primitive, .baseSolid, .polygonCage, .voxelRemesh, .mechanical, .mirror:
+        case .primitive, .baseSolid, .polygonCage, .voxelRemesh, .hybrid, .mechanical, .mirror:
             return []
         }
     }
@@ -4984,6 +4984,11 @@ public final class CADParameterService {
         }
 
         switch node.kind {
+        case let .hybrid(definition, _):
+            kindName = "hybrid"
+            add("definition_digest", "unitless", definition.digest, editable: false)
+            add("operation_count", "unitless", definition.operations.count, editable: false)
+            add("update_action", "unitless", "mesh.hybrid.update", editable: false)
         case let .surface(definition):
             kindName = "surface"
             add("definition", "unitless", (try? JSONSerialization.jsonObject(with:JSONEncoder().encode(definition))) ?? NSNull(),
@@ -5390,7 +5395,7 @@ public final class CADParameterService {
              let .fillet(body, _, _), let .advancedBlend(body, _, _), let .shell(body, _, _), let .regionShell(body, _, _),
              let .deleteFace(body, _):
             return [body]
-        case .primitive, .baseSolid, .polygonCage, .voxelRemesh, .mechanical,
+        case .primitive, .baseSolid, .polygonCage, .voxelRemesh, .hybrid, .mechanical,
              .pushPull, .moveFace, .scaleFace, .rotateFace, .draftFace, .replaceFace:
             return []
         }

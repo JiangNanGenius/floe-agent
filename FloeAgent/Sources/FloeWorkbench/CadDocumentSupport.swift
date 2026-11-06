@@ -582,14 +582,14 @@ public enum NativeCADPolicy: Sendable {
 
     /// Formats the native kernel exports (the host validates against the
     /// output extension). STEP is closed-solid-only; IGES writes exact solid
-    /// AND open-surface B-rep geometry back. PDF, SVG, DXF and the complete
+    /// AND open-surface B-rep geometry back. PDF, SVG, DXF, DWG and the complete
     /// BOM CSV are page-scoped drawing exports and need `page_id`; CSV is a
     /// table, not a body-geometry exchange. `obj_bundle` is the single-file
     /// ZIP container (output extension .zip); plain `obj` remains a real OBJ
     /// with UVs and no materials.
     public static let exportExtensions: Set<String> =
         ["step", "stp", "iges", "igs", "stl", "obj", "obj_bundle", "3mf", "glb",
-         "usdz", "pdf", "svg", "dxf", "csv"]
+         "usdz", "pdf", "svg", "dxf", "dwg", "csv"]
 }
 
 /// Per-format capability matrix advertised by the native `.floecad` surface.
@@ -631,7 +631,7 @@ public enum NativeCADCapabilityMatrix: Sendable {
         FormatRow(format: "floecad", aliases: [], geometryClass: "native",
                   create: true, import: false, view: true, edit: true,
                   export: ["step", "iges", "stl", "obj", "obj_bundle", "3mf", "glb",
-                           "usdz", "pdf", "svg", "dxf", "csv"],
+                           "usdz", "pdf", "svg", "dxf", "dwg", "csv"],
                   note: "Native parametric package created with the create action; "
                     + "never build the package by hand. obj_bundle writes one .zip "
                     + "containing model.obj, model.mtl and relative textures; plain obj "
@@ -651,21 +651,27 @@ public enum NativeCADCapabilityMatrix: Sendable {
                     + "STEP export require closed solids, so surfaces are excluded there with "
                     + "a truthful reason. Imported surfaces are not captured as graph-owned authoring inputs; native authored surfaces use the versioned parameters actions. No IGES assembly metadata."),
         FormatRow(format: "stl", aliases: [], geometryClass: "mesh",
-                  create: false, import: true, view: true, edit: false,
+                  create: false, import: true, view: true, edit: true,
                   export: ["stl", "obj", "obj_bundle", "3mf", "glb", "usdz"],
-                  note: "Triangle mesh imported as a render body; no parametric history "
-                    + "and no boolean/fillet/shell on the imported body."),
+                  note: "Triangle mesh: the original has no recovered CAD history. "
+                    + "Closed inputs support hybrid hole/cut/boss/boolean with a retained "
+                    + "source and new editable parameters; the derived result remains mesh. "
+                    + "Bounded faceted conversion is separate. Exact fillet/shell requires B-rep."),
         FormatRow(format: "obj", aliases: [], geometryClass: "mesh",
-                  create: false, import: true, view: true, edit: false,
+                  create: false, import: true, view: true, edit: true,
                   export: ["stl", "obj", "obj_bundle", "3mf", "glb", "usdz"],
                   note: "Wavefront mesh imported as render body(ies); loose .obj keeps "
-                    + "its .mtl/texture siblings. No parametric history. obj_bundle "
+                    + "its .mtl/texture siblings. The original has no recovered CAD history. "
+                    + "Closed inputs support hybrid modeling with retained source and new "
+                    + "editable parameters; untextured derived cuts need explicit UV-loss acknowledgement. obj_bundle "
                     + "re-exports the applied appearance as a self-contained .zip."),
         FormatRow(format: "glb", aliases: ["gltf"], geometryClass: "mesh",
-                  create: false, import: true, view: true, edit: false,
+                  create: false, import: true, view: true, edit: true,
                   export: ["glb", "stl", "obj", "obj_bundle", "3mf", "usdz"],
                   note: "Binary .glb mesh(es) import as render bodies with materials, "
-                    + "no parametric history. A JSON .gltf imports ONLY when every "
+                    + "and the original has no recovered CAD history. Closed inputs support "
+                    + "hybrid modeling with retained source and new editable parameters; "
+                    + "untextured derived cuts need explicit UV-loss acknowledgement. A JSON .gltf imports ONLY when every "
                     + "buffer/image is an embedded data: URI (self-contained); a .gltf "
                     + "referencing external .bin buffers or textures is reported "
                     + "unsupported by the tool rather than dropping geometry."),
@@ -1188,10 +1194,10 @@ public enum CadServiceOperationCatalog: Sendable {
                   arguments: [arg("pageID", "uuid", required: true, note: "alias id")],
                   examples: [#"{"pageID":"<page uuid>"}"#]),
         Operation(kind: "drawing", action: "export", mutating: false,
-                  summary: "Export one page as pdf/svg/dxf vector, png raster, or the COMPLETE BOM table as UTF-8 RFC 4180 CSV (base64 + sha256 in the reply).",
+                  summary: "Export one page as pdf/svg/dxf/dwg vector, png raster, or the COMPLETE BOM table as UTF-8 RFC 4180 CSV (base64 + sha256 in the reply). DWG uses the document-scoped verified codec.",
                   arguments: [
                       arg("pageID", "uuid", required: true, note: "alias id"),
-                      arg("format", "string", required: true, note: "pdf | svg | dxf | png | csv"),
+                      arg("format", "string", required: true, note: "pdf | svg | dxf | dwg | png | csv"),
                   ],
                   examples: [#"{"pageID":"<page uuid>","format":"pdf"}"#,
                              #"{"pageID":"<page uuid>","format":"dxf"}"#,
@@ -1617,7 +1623,39 @@ public enum CadServiceOperationCatalog: Sendable {
                   arguments: [arg("bodyIDs", "[uuid]", note: "alias bodyID")],
                   examples: [#"{"bodyID":"<body uuid>"}"#]),
 
-    ] + polygonMeshOperations + voxelMeshOperations
+    ] + polygonMeshOperations + voxelMeshOperations + hybridMeshOperations
+
+    private static let hybridMeshOperations:[Operation] = [
+        Operation(kind:"mesh",action:"hybrid.catalog",mutating:false,
+            summary:"Manifold mixed modeling scope, limits, retained-source and mesh-result precision.",arguments:[],examples:[]),
+        Operation(kind:"mesh",action:"hybrid.add",mutating:true,
+            summary:"Hole, cut, boss or boolean on a closed mesh; retains the original body and immutable source plus editable parameters. Exact operands require explicit allowMeshResult. Use preview first and bind its returned hash/revision/change count when applying.",
+            arguments:[arg("bodyID","uuid",required:true),arg("kind","hole | cut | boss | union | subtract | intersect",required:true),
+                arg("radius","mm"),arg("depth","mm"),arg("center","[x,y,z]"),arg("axis","[x,y,z]"),
+                arg("toolBodyID","uuid"),arg("allowMeshResult","boolean"),arg("discardOutputUV","boolean"),arg("preview","boolean")],
+            examples:[#"{"bodyID":"<mesh uuid>","kind":"hole","radius":2,"depth":12,"center":[0,0,0],"axis":[0,0,1],"preview":true}"#]),
+        Operation(kind:"mesh",action:"hybrid.inspect",mutating:false,
+            summary:"Inspect immutable source, editable operation IDs, definitionDigest and actual result representation.",
+            arguments:[arg("bodyID","uuid",required:true)],examples:[]),
+        Operation(kind:"mesh",action:"hybrid.update",mutating:true,
+            summary:"Replay an existing operation with new dimensions. Requires its operationID and current definitionDigest; one undo/save path and stale/cancellation fences.",
+            arguments:[arg("bodyID","uuid",required:true),arg("operationID","uuid",required:true),arg("definitionDigest","sha256",required:true),
+                arg("radius","mm"),arg("depth","mm"),arg("center","[x,y,z]"),arg("preview","boolean")],examples:[]),
+        Operation(kind:"mesh",action:"hybrid.remove",mutating:true,
+            summary:"Remove one authored hybrid operation and replay the retained source; keeps the source body recoverable.",
+            arguments:[arg("bodyID","uuid",required:true),arg("operationID","uuid",required:true),arg("definitionDigest","sha256",required:true)],examples:[]),
+        Operation(kind:"mesh",action:"faceted.catalog",mutating:false,
+            summary:"Bounded OCCT faceted mesh or exact-sheet sewing to a closed solid. This does not recover arbitrary original curves.",arguments:[],examples:[]),
+        Operation(kind:"mesh",action:"faceted.convert",mutating:true,
+            summary:"Convert one closed mesh (up to 8192 triangles), or sew up to 64 exact sheets. Preserves original inputs and tolerance/source provenance. Open invalid results refuse without repairing holes.",
+            arguments:[arg("bodyID","uuid"),arg("bodyIDs","[uuid]"),arg("tolerance","mm"),arg("discardOutputUV","boolean"),arg("preview","boolean")],examples:[]),
+        Operation(kind:"mesh",action:"recognition.inspect",mutating:false,
+            summary:"Inspect a bounded axis-aligned box candidate. More general MeshToFeatures fitting remains a separately qualified research component.",
+            arguments:[arg("bodyID","uuid",required:true),arg("tolerance","mm")],examples:[]),
+        Operation(kind:"mesh",action:"recognition.create",mutating:true,
+            summary:"Create a verified native box from an inspected closed source; keep the original source and measured fit tolerance.",
+            arguments:[arg("bodyID","uuid",required:true),arg("candidate","axis-aligned-box",required:true),arg("sourceSHA256","sha256"),arg("tolerance","mm")],examples:[]),
+    ]
 
     private static let voxelMeshOperations: [Operation] = [
         Operation(kind: "mesh", action: "voxel.catalog", mutating: false,

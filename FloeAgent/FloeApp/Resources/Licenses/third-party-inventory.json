@@ -68,6 +68,19 @@
   ],
   "documents": [
     {
+      "id": "manifold",
+      "repositoryPath": "FloeApp/Resources/Licenses/Manifold-NOTICES.txt",
+      "bundlePath": "Licenses/Manifold-NOTICES.txt",
+      "titleKey": "settings.licenses.document.manifold.title",
+      "titleFallback": "Manifold mesh geometry kernel",
+      "titleArgument": null,
+      "license": "Apache-2.0",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "engineering",
+      "noteKey": null
+    },
+    {
       "id": "ictrl",
       "repositoryPath": "FloeApp/Resources/Licenses/iCTRL-Apache-2.0.txt",
       "bundlePath": "Licenses/iCTRL-Apache-2.0.txt",
@@ -1043,6 +1056,15 @@
       "section": "swift",
       "noteKey": "settings.licenses.note.openshape3d",
       "evidence": "FloeApp/Resources/Licenses/OpenShape3D-LICENSE.txt"
+    },
+    {
+      "name": "Manifold",
+      "version": "3.5.4",
+      "license": "Apache-2.0",
+      "source": "https://github.com/elalish/manifold/tree/ce50d78021d64507f89e8c9fc2c2e51018117857",
+      "section": "engineering",
+      "noteKey": null,
+      "evidence": "ThirdParty/FloeCADKit/Vendor/Manifold-SOURCE.json (fixed 3.5.4 source and native slices); full Apache-2.0 and source notices in FloeApp/Resources/Licenses/Manifold-NOTICES.txt"
     },
     {
       "name": "iCTRL (native iOS automation protocol adaptations)",
@@ -2849,8 +2871,8 @@
     }
   ],
   "counts": {
-    "components": 234,
-    "documents": 48,
+    "components": 235,
+    "documents": 49,
     "pins": 40
   }
 }

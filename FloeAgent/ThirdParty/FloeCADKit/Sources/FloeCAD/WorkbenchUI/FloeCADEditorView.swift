@@ -1483,7 +1483,7 @@ struct FloeCADEditorView: View {
             .accessibilityIdentifier("ImportSTL")
             // DXF import (plan §B14): entities join a ground-plane
             // sketch as one undo step.
-            Button(FloeCADStrings.label("cad.ui.import.dxfFile", "DXF File…")) {
+            Button(FloeCADStrings.label("cad.ui.import.dxfFile", "DWG / DXF Drawing…")) {
                 importRequest = .dxf
                 showImporter = true
             }
@@ -2745,7 +2745,18 @@ struct FloeCADEditorView: View {
                             probe: prepared.probe, operation: prepared.operation)
                     }
                 case .dxf:
-                    viewModel.importDXF(data: source.data, fileName: source.fileName)
+                    guard let decoder = document.drawingSketchDecoder else {
+                        viewModel.errorMessage = FloeCADStrings.text("cad.import.drawingUnavailable", "The drawing importer is unavailable in this host.")
+                        return
+                    }
+                    do {
+                        let prepared = try await decoder(source.data, source.fileName)
+                        guard !Task.isCancelled, viewModel.isCurrentManualImport(operation), !document.isClosed else { return }
+                        try document.queueDrawingTransfer(prepared)
+                    } catch {
+                        guard viewModel.isCurrentManualImport(operation) else { return }
+                        viewModel.errorMessage = error.localizedDescription
+                    }
                 case .step:
                     _ = await viewModel.importExactOffMain(
                         data: source.data, fileName: source.fileName, format: "step")
@@ -2792,6 +2803,18 @@ struct FloeCADEditorView: View {
                 allowsMultipleSelection: importRequest == .mesh
             ) { result in
                 handleImport(result, viewModel: viewModel)
+            }
+            .sheet(isPresented: Binding(
+                get: { viewModel.pendingDrawingTransfer != nil },
+                set: { if !$0 { viewModel.pendingDrawingTransfer = nil } }
+            )) {
+                if let transfer = viewModel.pendingDrawingTransfer {
+                    CADSketchTransferSheet(source: transfer,
+                        hasSelection: viewModel.drawingImportSelectionAvailable) { placement in
+                        try viewModel.importDrawingTransfer(transfer, placement: placement)
+                    }
+                    .id(viewModel.drawingTransferPresentationID)
+                }
             }
             .sheet(item: $pendingMeshImport) { pending in
                 MeshUnitPromptSheet(probe: pending.probe) { unit in

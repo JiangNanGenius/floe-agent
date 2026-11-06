@@ -657,6 +657,7 @@ struct NativeCADCapabilityMatrixTests {
         #expect(floecad.create == true)
         #expect(floecad.import == false)
         #expect(floecad.edit == true)
+        #expect(floecad.export.contains("dwg"), "Engineering drawings can be exported as editable DWG")
 
         let step = try #require(NativeCADCapabilityMatrix.row(forFormat: "stp"))
         #expect(step.format == "step")
@@ -673,7 +674,9 @@ struct NativeCADCapabilityMatrixTests {
         for meshFormat in ["stl", "obj", "glb", "gltf"] {
             let row = try #require(NativeCADCapabilityMatrix.row(forFormat: meshFormat))
             #expect(row.geometryClass == "mesh", "\(meshFormat) imports as render meshes")
-            #expect(row.edit == false, "\(meshFormat) bodies have no parametric history editing")
+            #expect(row.edit == true, "\(meshFormat) supports newly authored hybrid features")
+            #expect(row.note.contains("hybrid") && row.note.contains("original"),
+                    "New hybrid editing must retain the distinction from recovered CAD history")
             #expect(row.import == true)
             #expect(row.view == true)
         }

@@ -41,8 +41,14 @@ nonisolated enum CADDocumentFormat {
     /// shared number and keep each feature's own intent check; never lower a
     /// floor or bump ordinary documents just because this build can write 7.
     static let drawingManufacturingVersion = 7
-    static let supportedVersion = 8
+    static let supportedVersion = 9
     static let advancedMaterialVersion = 8
+    /// Build 320 / v1.7.79 already writes format 8. The new semantic records
+    /// need their own floor so that frozen writer cannot decode them away.
+    static let buildingVersion = 9
+    static let drawingTransferVersion = 9
+    static let hybridMeshVersion = 9
+    static let meshConversionVersion = 9
     static let loftSurfaceVersion = 7
     /// Root-coordinated unreleased floor; only actual normal-offset links raise it.
     static let sketchCurveEditVersion = 7
@@ -154,16 +160,27 @@ nonisolated enum CADDocumentFormat {
         var opaqueBodyAppearance = false
         var opaqueUVAuthoring = false
         var opaqueSceneAppearance = false
+        var opaqueBuilding = false
         var isOpaqueReadOnly: Bool {
             !opaquePlanes.isEmpty || !opaqueSketches.isEmpty
                 || !opaqueAxes.isEmpty || !opaqueDatumPoints.isEmpty
                 || !opaqueFeatures.isEmpty || opaqueDrawings || opaqueAssembly
-                || opaqueAnimation || opaqueBodyAppearance || opaqueUVAuthoring || opaqueSceneAppearance
+                || opaqueAnimation || opaqueBodyAppearance || opaqueUVAuthoring || opaqueSceneAppearance || opaqueBuilding
         }
     }
 
     static func requiredFormat(document: DesignDocument) -> Int {
         var required = legacyVersion
+        if document.buildingData != nil { required = max(required, buildingVersion) }
+        if document.sketches.contains(where: { $0.drawingSource != nil }) { required = max(required, drawingTransferVersion) }
+        for node in document.features.nodes {
+            switch node.kind {
+            case .hybrid: required = max(required, hybridMeshVersion)
+            case let .baseSolid(source) where source.conversionProvenance != nil:
+                required = max(required, meshConversionVersion)
+            default: break
+            }
+        }
         if document.features.nodes.contains(where: {
             if case .regionShell = $0.kind { return true }
             return $0.kind.shellParameters?.openFaces.contains(where: {
@@ -731,6 +748,11 @@ nonisolated enum CADDocumentFormat {
     /// Existing save diffs preserve unreadable legacy rows, but a new
     /// association must never be silently skipped by a try?-encode fallback.
     static func validateLiveAssociations(_ document: DesignDocument) throws {
+        _ = try CADBuildingDocument.decode(document.buildingData)
+        for sketch in document.sketches { try sketch.drawingSource?.validate() }
+        guard document.sketches.reduce(0, { $0 + ($1.drawingSource?.sourceBytes.count ?? 0) }) <= 32*1024*1024 else {
+            throw CADDocumentFormatError.malformedAssociation("drawing-source-budget")
+        }
         if assemblyJointIntent(document.assemblyData).opaque { throw CADDocumentFormatError.opaqueAssociations }
         if faceNames(in: document).contains(where: { !$0.hasSupportedOperationIdentity }) {
             throw CADDocumentFormatError.opaqueAssociations
@@ -742,6 +764,10 @@ nonisolated enum CADDocumentFormat {
         let encoder = JSONEncoder()
         for node in document.features.nodes {
             switch node.kind {
+            case let .hybrid(definition, placement):
+                try definition.validate(); try CADPolygonMeshDefinition.validatePlacement(placement)
+                guard node.outputBodyIDs.count == 1 else { throw CADDocumentFormatError.malformedAssociation("hybrid-output-identities") }
+                _ = try encoder.encode(node.kind)
             case let .mechanical(definition, placement):
                 try definition.validate(); try CADMechanicalDefinition.validatePlacement(placement)
                 guard node.outputBodyIDs.count == definition.outputCount,
@@ -885,8 +911,14 @@ nonisolated enum CADDocumentFormat {
                        assembly: Data? = nil,
                        drawings: Data? = nil,
                        animation: Data? = nil,
-                       sceneSettings: Data? = nil, materials:Data? = nil) throws -> Assessment {
+                       sceneSettings: Data? = nil, materials:Data? = nil,
+                       building: Data? = nil) throws -> Assessment {
         var result = Assessment()
+        if building != nil {
+            result.requiredVersion = max(result.requiredVersion, buildingVersion)
+            do { _ = try CADBuildingDocument.decode(building) }
+            catch { result.opaqueBuilding = true }
+        }
         let appearanceInputs = bodies.flatMap { [CADMaterialAppearanceIntent.inspect($0.material), CADMaterialAppearanceIntent.inspect($0.faceMaterials)] }
             + [CADMaterialAppearanceIntent.inspect(materials)]
         if appearanceInputs.contains(where:{$0.present || $0.opaque}) { result.requiredVersion = max(result.requiredVersion,advancedMaterialVersion) }
@@ -1013,8 +1045,24 @@ nonisolated enum CADDocumentFormat {
             }
         }
         let knownSupportCases: Set<String> = ["sketch", "construction", "ground", "explicit"]
+        var drawingSourceBytes = 0
         for row in sketches {
             guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any] else { continue }
+            if let source = object["drawingSource"], !(source is NSNull) {
+                result.requiredVersion = max(result.requiredVersion, drawingTransferVersion)
+                do {
+                    try CADSketchTransferEnvelope.validateStoredJSONObject(source)
+                    if let bytes = (source as? [String:Any])?["sourceBytes"] as? String {
+                        drawingSourceBytes += Data(base64Encoded:bytes)?.count ?? 0
+                    }
+                }
+                catch {
+                    var cache = object; cache.removeValue(forKey:"drawingSource")
+                    _ = try cachedSketch(from: JSONSerialization.data(withJSONObject:cache))
+                    result.opaqueSketches.insert(row.blobID); continue
+                }
+                guard drawingSourceBytes <= 32*1024*1024 else { throw CADDocumentFormatError.malformedAssociation("drawing-source-budget") }
+            }
             let support = object["support"]
             let hasSupport = support.map { !($0 is NSNull) } ?? false
             // M05: a sketch row carrying linked external projections gets the
@@ -1105,6 +1153,18 @@ nonisolated enum CADDocumentFormat {
             // for the M08 consumer identity BEFORE the hole contract below.
             guard let object = try? JSONSerialization.jsonObject(with: row.kind) as? [String: Any] else {
                 continue
+            }
+            if let hybrid = object["hybrid"] as? [String:Any] {
+                result.requiredVersion = max(result.requiredVersion, hybridMeshVersion)
+                do {
+                    guard object.count == 1, Set(hybrid.keys).isSubset(of:["definition","placement"]),
+                          let definition = hybrid["definition"] else { throw CADDocumentFormatError.opaqueAssociations }
+                    _ = try CADHybridStoredJSON.object(hybrid["placement"] as Any,keys:["translation","rotation","scale"])
+                    try CADHybridFeatureDefinition.validateStoredJSONObject(definition)
+                    let decoded = try JSONDecoder().decode(FeatureKind.self,from:row.kind)
+                    guard case let .hybrid(_,placement) = decoded else { throw CADDocumentFormatError.opaqueAssociations }
+                    try CADPolygonMeshDefinition.validatePlacement(placement)
+                } catch { result.opaqueFeatures.insert(row.featureID) }
             }
             if let shell = object["regionShell"] as? [String: Any] {
                 result.requiredVersion = max(result.requiredVersion, regionalShellVersion)
@@ -1420,6 +1480,15 @@ nonisolated enum CADDocumentFormat {
                       let version = source["version"] as? Int, version > 0 else {
                     throw CADDocumentFormatError.malformedAssociation("exact-body-source")
                 }
+                if let provenance = source["conversionProvenance"], !(provenance is NSNull) {
+                    result.requiredVersion = max(result.requiredVersion, meshConversionVersion)
+                    do { try CADSolidConversionProvenance.validateStoredJSONObject(provenance) }
+                    catch { result.opaqueFeatures.insert(row.featureID); continue }
+                }
+                if !Set(root.keys).isSubset(of:["source"])
+                    || !Set(source.keys).isSubset(of:["version","name","placement","sha256","brepData","faces","conversionProvenance"]) {
+                    result.opaqueFeatures.insert(row.featureID);continue
+                }
                 if version > NativeBodySource.supportedVersion {
                     result.opaqueFeatures.insert(row.featureID)
                 } else {
@@ -1535,7 +1604,8 @@ nonisolated enum CADDocumentFormat {
                    axes: record.axes, datumPoints: record.datumPoints ?? [],
                    features: record.features, bodies: record.bodies, assembly: record.assembly,
                    drawings: record.drawings, animation: record.animation,
-                   sceneSettings: record.sceneSettings, materials:record.materials)
+                   sceneSettings: record.sceneSettings, materials:record.materials,
+                   building: record.building)
     }
 
     /// Older scene-settings writers would silently drop hierarchy references.

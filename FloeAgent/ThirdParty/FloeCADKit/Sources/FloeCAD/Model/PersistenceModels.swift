@@ -76,6 +76,9 @@ final class Project {
     /// independently.
     var assemblyData: Data? = nil
     var drawingsData: Data? = nil
+    /// Building semantics and source-plan evidence. Geometry remains in the
+    /// same body/feature records; this blob shares their undo/save transaction.
+    var buildingData: Data? = nil
 
     /// ShapeScript records (`[CADScriptRecord]`) owned by `CADScriptService`.
     /// Additive optional JSON blob, independent of the body/feature records.

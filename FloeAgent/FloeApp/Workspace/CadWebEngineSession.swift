@@ -18,6 +18,7 @@
 import Foundation
 import WebKit
 import FloeCore
+import FloeCAD
 
 @MainActor
 final class CadWebEngineSession: NSObject, WKNavigationDelegate {
@@ -154,6 +155,24 @@ final class CadWebEngineSession: NSObject, WKNavigationDelegate {
         let base64 = try await hostCall("save", payload: [:])
         guard let data = Data(base64Encoded: base64), !data.isEmpty else {
             throw CadEngineHostError.engine("CAD engine returned no saved bytes")
+        }
+        return data
+    }
+
+    func transferSketch(handles: [String] = [], layers: [String] = [],
+                        expectedRevision: UInt64? = nil) async throws -> CADSketchTransferSnapshot {
+        var request: [String: Any] = ["handles": handles, "layers": layers]
+        if let expectedRevision { request["expectedRevision"] = expectedRevision }
+        let json = try JSONSerialization.data(withJSONObject: request)
+        let result = try await hostCall("transfer_sketch", payload: ["request": String(decoding: json, as: UTF8.self)])
+        return try CADSketchTransferSnapshot.decodeValidated(Data(result.utf8))
+    }
+
+    func exportAs(_ format: String, engineeringDrawing: Bool = false) async throws -> Data {
+        guard ["dwg", "dxf"].contains(format) else { throw CadEngineHostError.engine("Expected DWG or DXF") }
+        let result = try await hostCall(engineeringDrawing ? "export_drawing_dwg" : "export_as", payload: ["format": format])
+        guard let data = Data(base64Encoded: result), !data.isEmpty, data.count <= 10 * 1024 * 1024 else {
+            throw CadEngineHostError.engine("No verified drawing output")
         }
         return data
     }

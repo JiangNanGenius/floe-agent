@@ -276,6 +276,8 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
     /// from its own decoder and is surfaced by the document format as an
     /// opaque read-only document, never a silent drop to plain geometry.
     var externalReferences: [SketchExternalReference]?
+    /// Exact drawing source and explicit transfer placement, committed with this sketch.
+    var drawingSource: CADSketchTransferEnvelope?
 
     init(
         id: SketchID = SketchID(),
@@ -294,7 +296,8 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
         circleRadiusDirections: [UUID: SIMD2<Double>] = [:],
         lineDimensionKinds: [UUID: DimensionKind] = [:],
         support: PlaneRef? = nil,
-        externalReferences: [SketchExternalReference]? = nil
+        externalReferences: [SketchExternalReference]? = nil,
+        drawingSource: CADSketchTransferEnvelope? = nil
     ) {
         self.id = id
         self.name = name
@@ -313,13 +316,14 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
         self.lineDimensionKinds = lineDimensionKinds
         self.support = support
         self.externalReferences = externalReferences
+        self.drawingSource = drawingSource
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, plane, entities, isHidden, constructionEntityIDs
         case constraints, dimensions, patternLinks, curveOffsetLinks, rectangleSizingAnchors
         case disconnectedEndpoints, rotatedRectangleEdges, circleRadiusDirections
-        case lineDimensionKinds, support, externalReferences
+        case lineDimensionKinds, support, externalReferences, drawingSource
     }
 
     /// `name`/`isHidden`/`constructionEntityIDs`/`constraints`/`dimensions`
@@ -353,6 +357,8 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
         support = try container.decodeIfPresent(PlaneRef.self, forKey: .support)
         externalReferences = try container.decodeIfPresent(
             [SketchExternalReference].self, forKey: .externalReferences)
+        drawingSource = try container.decodeIfPresent(CADSketchTransferEnvelope.self, forKey: .drawingSource)
+        try drawingSource?.validate()
         RectangleConstruction.recoverLegacyGroups(in: &self)
     }
 
@@ -380,6 +386,7 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
         try container.encode(lineDimensionKinds, forKey: .lineDimensionKinds)
         try container.encodeIfPresent(support, forKey: .support)
         try container.encodeIfPresent(externalReferences, forKey: .externalReferences)
+        try container.encodeIfPresent(drawingSource, forKey: .drawingSource)
     }
 }
 

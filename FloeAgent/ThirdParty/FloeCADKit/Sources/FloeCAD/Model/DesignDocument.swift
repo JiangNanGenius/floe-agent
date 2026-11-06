@@ -51,6 +51,7 @@ nonisolated struct DesignDocument: Sendable {
     /// the package store slices into `document.json` verbatim.
     var assemblyData: Data? = nil
     var drawingsData: Data? = nil
+    var buildingData: Data? = nil
     var scriptsData: Data? = nil
     /// Legacy-scene presentation imported from a migrated Canvas 3D scene
     /// (camera, lighting, background, grid, provenance). Additive optional

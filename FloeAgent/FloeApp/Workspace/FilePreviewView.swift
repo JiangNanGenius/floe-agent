@@ -66,6 +66,19 @@ struct FilePreviewView: View {
 
     /// Native FloeCAD document (`.floecad` package) opened in the workbench.
     @State private var floecadDocument: FloeCADDocument?
+    @State private var nativeModelImportPath: String?
+    @State private var importedModelPath: String?
+    @State private var isBuildingPresented = false
+    @State private var incomingBuildingPlan: CADSketchTransferEnvelope?
+    @State private var drawingTransferTask: Task<Void,Never>?
+    @State private var drawingTransferGeneration = UUID()
+    /// Bound before the Worker's asynchronous selection extraction starts.
+    /// A late page callback cannot mint a fresh operation after navigation.
+    @State private var drawingTransferSourceEpoch = UUID()
+    @State private var transferringDrawing = false
+    @State private var drawingTransferDestination: CADFromDrawingDestination?
+    @State private var isDrawingTransferPresented = false
+    @State private var waitingForDrawingCoverDismissal = false
     @State private var isEngineeringFullScreen = false
     @State private var engineeringReview: EngineeringReviewCapture?
     @State private var engineeringRoot: URL?
@@ -135,7 +148,11 @@ struct FilePreviewView: View {
                     .modifier(FloeCADHostChrome(document: floecadDocument,
                                                 canvasActions: CADCanvasActionBridge.actions(
                                                     assetStore: environment.creativeAssetStore),
-                                                onSelectionContextChange: {basicMachiningSelection=$0}))
+                                                onSelectionContextChange: {basicMachiningSelection=$0},
+                                                workspaceRoot:center.fileService?.guardResolver.rootURL,
+                                                workspaceID:center.currentWorkspace?.id,
+                                                conversationID:engineeringConversationID,
+                                                externalCoverPresented:isBuildingPresented))
                     .modifier(CADSelectionAssistantEntry(document: floecadDocument, selection: basicMachiningSelection,
                         relativePath: displayedPath, root: center.fileService?.guardResolver.rootURL,
                         workspaceID: center.currentWorkspace?.id, conversationID: conversationID))
@@ -147,6 +164,17 @@ struct FilePreviewView: View {
                             nativeCADProposalBanner
                         }
                     }
+            } else if let nativeModelImportPath, let service = center.fileService {
+                CADUnifiedModelImportEntry(sourcePath:nativeModelImportPath,service:service) { document,path in
+                    guard relativePath == nativeModelImportPath,
+                          center.fileService?.guardResolver.rootURL == service.guardResolver.rootURL else {
+                        Task { await FloeCAD3DBridge.shared.releaseDocument(at:document.url,expected:document) };return
+                    }
+                    importedModelPath=path
+                    self.nativeModelImportPath=nil
+                    floecadDocument=document
+                    Task { await center.recordRecentFile(relativePath:path,displayName:(path as NSString).lastPathComponent) }
+                }.id(nativeModelImportPath)
             } else if let engineeringPackage {
                 if isEngineeringFullScreen {
                     Color.clear
@@ -232,6 +260,10 @@ struct FilePreviewView: View {
         }
         .task(id: "\(relativePath)-\(usesExpandedReadOnly)-\(reloadGeneration)") { await load() }
         .onChange(of: relativePath) { _, _ in
+            invalidateDrawingTransferRoute()
+            isBuildingPresented=false;incomingBuildingPlan=nil
+            nativeModelImportPath = nil
+            importedModelPath = nil
             // The caller retargeted this preview to another file. No result
             // from the old recovery presentation may surface in the new one.
             recoveryFence.invalidate()
@@ -242,6 +274,22 @@ struct FilePreviewView: View {
             recoverySheet = nil
             recoveredCopyNotice = nil
         }
+        .onChange(of: center.currentWorkspace?.id) { _, _ in invalidateDrawingTransferRoute() }
+        .onChange(of: center.fileService?.guardResolver.rootURL) { _, _ in invalidateDrawingTransferRoute() }
+        .onChange(of: engineeringConversationID) { _, _ in invalidateDrawingTransferRoute() }
+        .fullScreenCover(isPresented: $isDrawingTransferPresented, onDismiss: finishDrawingTransferPresentation) {
+            if let destination = drawingTransferDestination {
+                CADFromDrawingWorkspaceView(destination: destination).id(destination.id)
+            }
+        }
+        .fullScreenCover(isPresented:$isBuildingPresented,onDismiss:{ incomingBuildingPlan=nil }) {
+            if let document=floecadDocument {
+                CADBuildingWorkspaceView(document:document,incomingPlan:incomingBuildingPlan,
+                    root:center.fileService?.guardResolver.rootURL,workspaceID:center.currentWorkspace?.id,
+                    conversationID:engineeringConversationID)
+            }
+        }
+        .overlay { if transferringDrawing { ProgressView().padding(20).background(.bar,in:RoundedRectangle(cornerRadius:12)) } }
         .fullScreenCover(isPresented: $isIDEPresented, onDismiss: {
             // The IDE can be swipe-dismissed on a clean session without
             // invoking onSaved. The Office preview session was released
@@ -283,7 +331,7 @@ struct FilePreviewView: View {
                 )
             }
         }
-        .fullScreenCover(isPresented: $isEngineeringFullScreen, onDismiss: { Task { await load() } }) {
+        .fullScreenCover(isPresented: $isEngineeringFullScreen, onDismiss: drawingCoverDidDismiss) {
             if let engineeringPackage {
                 NavigationStack {
                     engineeringView(engineeringPackage, editing: true)
@@ -378,7 +426,16 @@ struct FilePreviewView: View {
                 .ignoresSafeArea()
         }
         .onDisappear {
+            // This also runs for modal transitions. Only the source callback
+            // epoch changes: an already accepted route keeps its operation.
+            drawingTransferSourceEpoch = UUID()
             if !isIDEPresented, !isOfficeEditorPresented { Task { await officeSession.release() } }
+            // A modal cover is a sizing/domain transition. Actual navigation
+            // fences a pending route; workspace/path changes are fenced above.
+            if !isEngineeringFullScreen, !isDrawingTransferPresented,
+               !waitingForDrawingCoverDismissal, !isBuildingPresented {
+                invalidateDrawingTransferRoute()
+            }
         }
         .sheet(item: $recoverySheet) { sheet in
             switch sheet {
@@ -508,7 +565,13 @@ struct FilePreviewView: View {
     }
 
     private func engineeringView(_ package: EngineeringPreviewPackage, editing: Bool = false) -> some View {
-        EngineeringFilePreview(
+        let sourceEpoch = drawingTransferSourceEpoch
+        let sourceRoot = engineeringRoot
+        let sourceWorkspaceID = center.currentWorkspace?.id
+        let sourceConversationID = engineeringConversationID
+        let sourceDocumentKey = EngineeringWebSession.documentKey(
+            rootPath: sourceRoot?.path, relativePath: displayedPath)
+        return EngineeringFilePreview(
             package: package,
             onReview: { capture in
             engineeringReview = EngineeringReviewCapture(
@@ -523,9 +586,121 @@ struct FilePreviewView: View {
                 try service.commitBinaryEdit(path: path, data: data, expectedSHA256: baseline)
             }.value
             return result.write.sha256
-        } : nil, onDirty: { cadDirty = $0 }, session: engineeringSession,
-        identity: EngineeringWebSession.documentKey(
-            rootPath: engineeringRoot?.path, relativePath: displayedPath))
+        } : nil, onDirty: { cadDirty = $0 },
+        onDrawingTransfer: sourceRoot != nil ? { transfer in
+            guard drawingTransferSourceEpoch == sourceEpoch,
+                  center.currentWorkspace?.id == sourceWorkspaceID,
+                  center.fileService?.guardResolver.rootURL == sourceRoot,
+                  engineeringConversationID == sourceConversationID,
+                  transfer.sourceIdentity == sourceDocumentKey,
+                  engineeringSession.loadedDocumentKey == sourceDocumentKey,
+                  engineeringSession.presentationHost?.window != nil else { return }
+            openDrawingTransfer(transfer)
+        } : nil,
+        session: engineeringSession,
+        identity: sourceDocumentKey)
+    }
+
+    private func drawingTransferContextMatches(_ destination: CADFromDrawingDestination) -> Bool {
+        relativePath == destination.sourcePath
+            && center.fileService?.guardResolver.rootURL == destination.sourceRoot
+            && center.currentWorkspace?.id == destination.workspaceID
+            && engineeringConversationID == destination.conversationID
+    }
+
+    private func openDrawingTransfer(_ transfer: CADSketchTransferEnvelope) {
+        guard !transferringDrawing, drawingTransferDestination == nil,
+              let service = center.fileService, service.guardResolver.rootURL == engineeringRoot else { return }
+        let path = displayedPath, root = service.guardResolver.rootURL, origin = relativePath
+        let workspaceID = center.currentWorkspace?.id, conversationID = engineeringConversationID
+        let wasFullScreen = isEngineeringFullScreen, generation = UUID()
+        drawingTransferGeneration = generation; transferringDrawing = true
+        drawingTransferTask = Task { @MainActor in
+            var opened: FloeCADDocument?
+            defer {
+                if drawingTransferGeneration == generation { transferringDrawing = false; drawingTransferTask = nil }
+            }
+            do {
+                let result = try await CADFromDrawingImport.open(transfer, sourcePath: path, service: service)
+                opened = result.document
+                guard !Task.isCancelled, drawingTransferGeneration == generation,
+                      relativePath == origin, center.fileService?.guardResolver.rootURL == root,
+                      center.currentWorkspace?.id == workspaceID, engineeringConversationID == conversationID,
+                      !wasFullScreen || isEngineeringFullScreen else {
+                    await FloeCAD3DBridge.shared.releaseDocument(at: result.document.url, expected: result.document); return
+                }
+                // Keep the original preview/path/session untouched. The entire
+                // 2D draft (including unselected edits) stays in its Worker.
+                drawingTransferDestination = CADFromDrawingDestination(id: generation, document: result.document,
+                    path: result.path, transfer: transfer, sourcePath: origin, sourceRoot: root,
+                    workspaceID: workspaceID, conversationID: conversationID,
+                    returnToDrawingFullScreen: wasFullScreen)
+                if wasFullScreen {
+                    waitingForDrawingCoverDismissal = true
+                    isEngineeringFullScreen = false
+                } else { isDrawingTransferPresented = true }
+                await center.recordRecentFile(relativePath: result.path, displayName: (result.path as NSString).lastPathComponent)
+            } catch {
+                if let opened { await FloeCAD3DBridge.shared.releaseDocument(at: opened.url, expected: opened) }
+                if drawingTransferGeneration == generation, !Task.isCancelled { previewError = error.localizedDescription }
+            }
+        }
+    }
+
+    private func drawingCoverDidDismiss() {
+        if waitingForDrawingCoverDismissal, let destination = drawingTransferDestination {
+            waitingForDrawingCoverDismissal = false
+            guard drawingTransferContextMatches(destination) else { invalidateDrawingTransferRoute(); return }
+            // The previous cover is now gone. No load()/teardown is allowed in
+            // this branch: it would clear cadDirty and release the live draft.
+            isDrawingTransferPresented = true
+        } else if drawingTransferDestination == nil {
+            Task { await load() }
+        }
+    }
+
+    private func finishDrawingTransferPresentation() {
+        guard let destination = drawingTransferDestination else { return }
+        let generation = drawingTransferGeneration
+        Task { @MainActor in
+            if !destination.document.isClosed {
+                let outcome = await FloeCAD3DBridge.shared.releaseDocumentOutcome(
+                    at: destination.document.url, expected: destination.document)
+                if !destination.document.isClosed, drawingTransferContextMatches(destination),
+                   drawingTransferGeneration == generation {
+                    previewError = outcome?.error ?? "The model is still open. Save it before returning."
+                    // The bridge retained the only editable draft. Keep its
+                    // owner visible instead of returning a false save success.
+                    isDrawingTransferPresented = true
+                    return
+                }
+            }
+            guard drawingTransferGeneration == generation else { return }
+            drawingTransferDestination = nil
+            if drawingTransferContextMatches(destination), destination.returnToDrawingFullScreen {
+                isEngineeringFullScreen = true
+            }
+        }
+    }
+
+    private func invalidateDrawingTransferRoute() {
+        drawingTransferSourceEpoch = UUID()
+        drawingTransferTask?.cancel(); drawingTransferTask = nil
+        drawingTransferGeneration = UUID(); transferringDrawing = false
+        waitingForDrawingCoverDismissal = false
+        isDrawingTransferPresented = false
+        if let destination = drawingTransferDestination {
+            drawingTransferDestination = nil
+            Task { @MainActor in
+                if destination.document.isReadOnly {
+                    _ = FloeCAD3DBridge.shared.releaseReadOnlyDocument(destination.document)
+                } else if !destination.document.isClosed {
+                    _ = await FloeCAD3DBridge.shared.releaseDocumentOutcome(
+                        at: destination.document.url, expected: destination.document)
+                }
+                // A failed save remains owned by the existing bridge cache.
+            }
+        }
     }
 
     /// Interactive confirmation for a native CAD proposal drafted by the
@@ -640,7 +815,7 @@ struct FilePreviewView: View {
     /// that is really open.
     private var displayedPath: String {
         guard recoveredCopyOrigin == relativePath, let recoveredCopyPath else {
-            return relativePath
+            return importedModelPath ?? relativePath
         }
         return recoveredCopyPath
     }
@@ -1226,6 +1401,7 @@ struct FilePreviewView: View {
         binaryPreviewURL = nil
         nativeOfficeURL = nil
         engineeringPackage = nil
+        nativeModelImportPath = nil
         mayOpenLargeModel = false
         engineeringRoot = nil
         cadDirty = false
@@ -1351,6 +1527,7 @@ struct FilePreviewView: View {
                 // One live session: the bridge owns it so the workbench and
                 // the assistant route operate on the same in-memory document.
                 let document = try await FloeCAD3DBridge.shared.openDocument(at: resolved)
+                CADDrawingModelBridge.configure(document)
                 guard recoveryFence.accepts(ticket), !Task.isCancelled else {
                     // A canceled load of the recovered copy would otherwise
                     // leave the bridge owning a session no view presents. The
@@ -1371,6 +1548,15 @@ struct FilePreviewView: View {
             } catch {
                 loadError = error.localizedDescription
             }
+            return
+        }
+        if CADUnifiedModelImport.extensions.contains((path as NSString).pathExtension.lowercased()),
+           !center.isCloudWorkspacePath(path), !center.isNetworkWorkspacePath(path), let service = center.fileService {
+            do {
+                _ = try service.guardResolver.resolve(path, for: .read(maxBytes:128*1024*1024))
+                nativeModelImportPath=path
+                engineeringRoot=service.guardResolver.rootURL
+            } catch { loadError=error.localizedDescription }
             return
         }
         if EngineeringPreviewKind.identify(path) != nil, let service = center.fileService {

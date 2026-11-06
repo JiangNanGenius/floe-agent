@@ -37,6 +37,13 @@ let package = Package(
         .target(name: "XAtlasShim", dependencies: ["XAtlasCore"], path: "Sources/XAtlasShim",
                 publicHeadersPath: "include", cxxSettings: [.headerSearchPath("Private")]),
 
+        // Manifold 3.5.4, Apache-2.0. Fixed serial core; provenance and
+        // byte hashes are recorded beside the three native archive slices.
+        .binaryTarget(name: "ManifoldCore", path: "Vendor/ManifoldCore.xcframework"),
+        .target(name: "ManifoldShim", dependencies: ["ManifoldCore"],
+                path: "Sources/ManifoldShim", publicHeadersPath: "include",
+                cxxSettings: [.headerSearchPath("../../Vendor/ManifoldCore.xcframework/ios-arm64/Headers")]),
+
         // ObjC++ façade over OCCT plus the LAPACK shim used by the sketch
         // solver. Swift never sees OCCT C++ headers.
         .target(
@@ -60,6 +67,7 @@ let package = Package(
                 "OCCTShim",
                 "OCCT",
                 "XAtlasShim",
+                "ManifoldShim",
                 .product(name: "Euclid", package: "Euclid"),
                 .product(name: "ShapeScript", package: "ShapeScript")
             ],
@@ -72,7 +80,8 @@ let package = Package(
                 "Model/SampleDesigns.swift"
             ],
             resources: [
-                .copy("Shaders")
+                .copy("Shaders"),
+                .copy("Building/Support")
             ],
             swiftSettings: [
                 .swiftLanguageMode(.v5),

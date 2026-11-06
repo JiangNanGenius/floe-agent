@@ -235,7 +235,7 @@ fn e21_bulge_boundary_trims_a_world_xy_line_without_sampling() {
     let mut polyline = LwPolyline::from_points(vec![Vector2::new(0.0, -5.0), Vector2::new(0.0, 5.0)]);
     polyline.vertices[0].bulge = 1.0; // right semicircle, crosses line at x=5
     let boundary = document.add_entity(EntityType::LwPolyline(polyline)).unwrap();
-    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into() };
+    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into(), revision: 0, engineering_profile: false };
     e21_edit(&mut session, json!({"operation":"trim","handle":format!("{line:X}"),"boundary":format!("{boundary:X}"),"pick":[9.0,0.0,0.0]}));
     match session.document.get_entity(line).unwrap() {
         EntityType::Line(line) => e21_near(line.end.x, 5.0),

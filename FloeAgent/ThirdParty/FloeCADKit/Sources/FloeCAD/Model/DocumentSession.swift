@@ -1315,7 +1315,7 @@ final class DocumentSession {
     /// Domain seam for definition/support edits. Semantic edits and all derived
     /// planes, sketches and solids commit together, or nothing is applied.
     @discardableResult
-    func performAssociativeTransaction(_ commands: [DocumentCommand], title: String) -> Bool {
+    func performAssociativeTransaction(_ commands: [DocumentCommand], title: String, strictValidation: Bool = false) -> Bool {
         guard requireWritable(), !commands.isEmpty, !isRebuilding else { return false }
         var preview = document
         for command in commands { command.apply(to: &preview) }
@@ -1329,7 +1329,7 @@ final class DocumentSession {
         return performRebuild(preview.features, leadingCommands: commands + fanOut.featureCommands
                               + fanOut.sketchCommands + fanOut.planeCommands
                               + fanOut.axisCommands + fanOut.datumPointCommands, title: title,
-                              previewDocument: preview)
+                              previewDocument: preview, strictValidation: strictValidation)
     }
 
     /// The service snapshots resolved value geometry before the async native
@@ -1618,7 +1618,7 @@ final class DocumentSession {
                     storedUnit: "deg", expr: angle))
             }
             return slots
-        case .primitive, .baseSolid, .polygonCage, .voxelRemesh, .sweep, .loft, .surface, .boolean, .split, .transform, .mirror, .pattern,
+        case .primitive, .baseSolid, .polygonCage, .voxelRemesh, .hybrid, .sweep, .loft, .surface, .boolean, .split, .transform, .mirror, .pattern,
              .moveFace, .deleteFace, .replaceFace:
             return []
         }
@@ -1723,7 +1723,7 @@ final class DocumentSession {
                 return nil
             }
             return .hole(target: target, profile: profile, plane: plane, spec: updated)
-        case .primitive, .baseSolid, .polygonCage, .voxelRemesh, .sweep, .loft, .surface, .boolean, .split, .transform, .mirror, .pattern,
+        case .primitive, .baseSolid, .polygonCage, .voxelRemesh, .hybrid, .sweep, .loft, .surface, .boolean, .split, .transform, .mirror, .pattern,
              .moveFace, .deleteFace, .replaceFace:
             return nil
         }
@@ -2223,7 +2223,8 @@ final class DocumentSession {
             },
             drawings: project.drawingsData,
             animation: project.animationData,
-            sceneSettings: project.sceneSettingsData, materials:project.materialsData)
+            sceneSettings: project.sceneSettingsData, materials:project.materialsData,
+            building: project.buildingData)
         project.hasOpaqueAssociations = project.hasOpaqueAssociations || associationAssessment?.isOpaqueReadOnly == true
         storeIsNewerThanApp = project.formatVersion > Project.currentFormatVersion || project.hasOpaqueAssociations
         #if DEBUG
@@ -2428,6 +2429,7 @@ final class DocumentSession {
         // edits are undoable commands; save() writes them back to the project.
         loaded.assemblyData = project.assemblyData
         loaded.drawingsData = project.drawingsData
+        loaded.buildingData = project.buildingData
         loaded.scriptsData = project.scriptsData
         loaded.sceneSettingsData = project.sceneSettingsData
         loaded.materialLibraryData = project.materialsData
@@ -3034,6 +3036,7 @@ final class DocumentSession {
         // verbatim into document.json.
         project.assemblyData = document.assemblyData
         project.drawingsData = document.drawingsData
+        project.buildingData = document.buildingData
         project.scriptsData = document.scriptsData
         project.sceneSettingsData = document.sceneSettingsData
         project.materialsData = document.materialLibraryData

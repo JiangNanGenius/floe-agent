@@ -70,6 +70,9 @@ final class FloeCAD3DBridge {
     private var importSpecs: [UUID: ImportSpec] = [:]
 
     private var documents: [String: FloeCADDocument] = [:]
+    /// Public editor presentations can re-adopt the SAME cached instance.
+    /// Headless queries deliberately do not renew this presentation lease.
+    private var documentAdoptions: [String: UUID] = [:]
     /// In-flight opens keyed by canonical path: concurrent callers share one
     /// open so two FloeCADDocument instances can never own the same file.
     private var opening: [String: Task<FloeCADDocument, Error>] = [:]
@@ -113,6 +116,9 @@ final class FloeCAD3DBridge {
     /// same live session cannot replace its owner. The tool/headless export
     /// path never calls this sink, so it cannot create a duplicate record.
     private func installEditorExportRecovery(_ document: FloeCADDocument) {
+        // Every host/tool open gets the same document-scoped codec adapters,
+        // including exports invoked before a workbench view has appeared.
+        CADDrawingModelBridge.configure(document)
         guard document.animationExportRecoverySink == nil else { return }
         document.installAnimationExportRecoverySink(
             NativeCADEditorAnimationExportRecovery(documentURL: document.url))
@@ -130,6 +136,7 @@ final class FloeCAD3DBridge {
         if documents[key]?.isClosed == true {
             documents[key] = nil
             services[key] = nil
+            documentAdoptions[key] = nil
         }
         // Reentrancy guard: one in-flight open per canonical path, shared by
         // every concurrent caller.
@@ -158,7 +165,12 @@ final class FloeCAD3DBridge {
     /// the SAME FloeCADDocument instance, or an assistant proposal could be
     /// drafted against a different in-memory state than the open editor.
     func openDocument(at url: URL) async throws -> FloeCADDocument {
-        try await document(at: url)
+        let document = try await document(at: url)
+        guard !document.isClosed else {
+            throw CADDocumentError(code: "document_closed", message: "The document closed before the editor could open it.")
+        }
+        documentAdoptions[key(url)] = UUID()
+        return document
     }
 
     /// Registers one in-flight import token under its canonical document.
@@ -216,8 +228,10 @@ final class FloeCAD3DBridge {
             // An already-closed session has no owner and no draft to save.
             documents[key] = nil
             services[key] = nil
+            documentAdoptions[key] = nil
             return nil
         }
+        let adoption = documentAdoptions[key]
         // Explicit save may persist thumbnail/metadata even on a clean model.
         // Releasing a clean owner must not create an unrelated extra revision.
         let outcome: CADSaveOutcome
@@ -234,11 +248,18 @@ final class FloeCAD3DBridge {
             // caller's to save/release.
             return document.isClosed ? outcome : nil
         }
+        guard documentAdoptions[key] == adoption else {
+            // An editor opened this same instance while the save awaited IO.
+            // The saved receipt still belongs to the document, but this old
+            // release no longer owns its presentation or permission to close.
+            return nil
+        }
         guard !document.isClosed else {
             // The owner closed this instance while its commit was in flight.
             // There is no owner left for a draft; drop only the dead entry.
             documents[key] = nil
             services[key] = nil
+            documentAdoptions[key] = nil
             return outcome
         }
         guard outcome.error == nil else {
@@ -257,6 +278,7 @@ final class FloeCAD3DBridge {
         }
         documents[key] = nil
         services[key] = nil
+        documentAdoptions[key] = nil
         document.close()
         return outcome
     }
@@ -275,6 +297,7 @@ final class FloeCAD3DBridge {
         if documents[key] === document {
             documents[key] = nil
             services[key] = nil
+            documentAdoptions[key] = nil
         }
         document.close()
         return true
@@ -821,7 +844,7 @@ final class FloeCAD3DBridge {
                 "coverage": true,
                 "dry_run": true,
                 "part_formats": ["step", "iges", "stl", "obj", "obj_bundle", "3mf",
-                                 "glb", "usdz", "pdf", "svg", "dxf", "csv"],
+                                 "glb", "usdz", "pdf", "svg", "dxf", "dwg", "csv"],
                 "assembly_formats": ["step", "glb", "usdz"],
                 "bundle_formats": ["obj_bundle"],
                 "selection": ["body_ids", "instance_ids"],
@@ -1197,6 +1220,7 @@ final class FloeCAD3DBridge {
                 cached.close()
                 documents[key(url)] = nil
                 services[key(url)] = nil
+                documentAdoptions[key(url)] = nil
             }
             throw CADDocumentError(code: "save_failed",
                                    message: save.error

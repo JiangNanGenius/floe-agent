@@ -27,6 +27,9 @@ async function handle({id,operation,...args}) {
    case 'query': result=JSON.parse(session.query(normalizeEngineRequest(args.request,'query')));break;
    case 'setActiveLayer': session.set_active_layer(args.name);result=state();break;
    case 'save': result=session.save();break;
+   case 'export_as': result=session.export_as(args.format);break;
+   case 'export_drawing_dwg': result=session.export_drawing_dwg();break;
+   case 'transfer_sketch': result={snapshot:JSON.parse(session.transfer_sketch(normalizeEngineRequest(args.request,'sketch transfer'))),sourceBytes:recovery.bytes};break;
    case 'recovery': result=await recovery.serialize();break;
    case 'restoreRecovery': {
     const journal=await readCadRecovery(args.text);

@@ -13,6 +13,7 @@ nonisolated struct NativeBodySource: Codable, Sendable {
     let sha256: String
     private let brepData: Data
     private let faces: [FaceWitness]
+    let conversionProvenance: CADSolidConversionProvenance?
     /// Derived once, not stored in the package. A different witness must not
     /// hit the old memo even when the immutable geometry bytes are identical.
     let faceWitnessSHA256: String
@@ -27,13 +28,14 @@ nonisolated struct NativeBodySource: Codable, Sendable {
         let signature: FaceSignature?
     }
 
-    init(capturing body: Body) throws {
+    init(capturing body: Body, conversionProvenance: CADSolidConversionProvenance? = nil) throws {
         guard let handle = body.brep, handle.containsSolid,
               let independent = OCCTKernel.independentSnapshot(handle),
               let data = OCCTKernel.serialize(independent), !data.isEmpty else {
             throw Failure(message: "The original exact body could not be preserved for replay.")
         }
         version = Self.supportedVersion
+        self.conversionProvenance = conversionProvenance
         name = body.name
         placement = body.transform
         brepData = data
@@ -44,7 +46,7 @@ nonisolated struct NativeBodySource: Codable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, name, placement, sha256, brepData, faces
+        case version, name, placement, sha256, brepData, faces, conversionProvenance
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -57,6 +59,7 @@ nonisolated struct NativeBodySource: Codable, Sendable {
         sha256 = try c.decode(String.self, forKey: .sha256)
         brepData = try c.decode(Data.self, forKey: .brepData)
         faces = try c.decode([FaceWitness].self, forKey: .faces)
+        conversionProvenance = try c.decodeIfPresent(CADSolidConversionProvenance.self, forKey: .conversionProvenance)
         faceWitnessSHA256 = try Self.witnessDigest(faces)
         try validate()
         guard Self.digest(brepData) == sha256 else {
@@ -65,6 +68,7 @@ nonisolated struct NativeBodySource: Codable, Sendable {
     }
 
     private func validate() throws {
+        try conversionProvenance?.validate()
         let frame = placement.rotation.vector
         guard version == Self.supportedVersion, !brepData.isEmpty, sha256.count == 64,
               placement.scale.isFinite, placement.scale > 0,

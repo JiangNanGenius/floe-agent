@@ -83,6 +83,14 @@ window.floeCadHostCall = async (operation, payload) => {
     }
     case 'save':
       return b64encode(await engine.call('save'));
+    case 'export_as':
+      return b64encode(await engine.call('export_as',{format:payload.format}));
+    case 'export_drawing_dwg':
+      return b64encode(await engine.call('export_drawing_dwg'));
+    case 'transfer_sketch': {
+      const result=await engine.call('transfer_sketch',{request:normalizeEngineRequest(payload.request,'sketch transfer')});
+      return JSON.stringify(result.snapshot);
+    }
     case 'dxf':
       return b64encode(await engine.call('display_dxf'));
     case 'shutdown':

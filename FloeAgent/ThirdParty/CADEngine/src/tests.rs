@@ -138,7 +138,7 @@ fn add_stroke_rejects_locked_annotation_layer() {
     let mut document = fixture(DxfVersion::AC1032);
     document.layers.add(Layer::new(ANNOTATION_LAYER)).unwrap();
     document.layers.get_mut(ANNOTATION_LAYER).unwrap().lock();
-    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into() };
+    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into(), revision: 0, engineering_profile: false };
     let before = session.inspect(0, 500).unwrap();
     assert!(session.edit(r#"{"operation":"addStroke","points":[[0,0,0],[5,0,0]]}"#).is_err());
     assert_eq!(before, session.inspect(0, 500).unwrap());
@@ -244,7 +244,7 @@ fn roundtrip_preserves_custom_styles_objects_and_layouts() {
             _ => {}
         }
     }
-    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into() };
+    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into(), revision: 0, engineering_profile: false };
     let output = session.save().unwrap();
     let reopened = read(&output, "dxf").unwrap();
     let dashed = reopened.line_types.get("Dashed").expect("custom linetype preserved");
@@ -307,7 +307,7 @@ fn roundtrip_gate_rejects_unpreserved_font_and_paper_units() {
                 .unwrap();
             layout.plot_paper_units = 1;
         }
-        let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into() };
+        let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into(), revision: 0, engineering_profile: false };
         let before = auxiliary_image(&session.document);
         assert!(session.save().is_err());
         assert_eq!(before, auxiliary_image(&session.document));
@@ -353,10 +353,12 @@ fn inspect_declares_add_stroke_capabilities() {
     let session = session(DxfVersion::AC1032, "dxf");
     let metadata: Value = serde_json::from_str(&session.inspect(0, 1).unwrap()).unwrap();
     let stroke = &metadata["capabilities"]["addStroke"];
-    assert_eq!(metadata["capabilities"]["version"].as_u64(), Some(3));
+    assert_eq!(metadata["capabilities"]["version"].as_u64(), Some(4));
     assert_eq!(stroke["pointCount"]["min"].as_u64(), Some(MIN_STROKE_POINTS as u64));
     assert_eq!(stroke["pointCount"]["max"].as_u64(), Some(MAX_STROKE_POINTS as u64));
     assert_eq!(stroke["layer"], ANNOTATION_LAYER);
+    assert_eq!(metadata["capabilities"]["sketchTransfer"]["exactBulges"], true);
+    assert!(metadata["capabilities"]["exportAs"]["formats"].as_array().unwrap().contains(&json!("dwg")));
     assert_eq!(stroke["color"]["min"].as_u64(), Some(1));
     assert_eq!(stroke["color"]["max"].as_u64(), Some(255));
     assert!(stroke["lineWeight"]["allowed"].as_array().unwrap().contains(&json!(25)));
@@ -368,7 +370,7 @@ fn diagnostics_and_corrupt_files_cannot_be_saved() {
     assert!(CadSession::new(b"not a DWG", "dwg").is_err());
     let mut doc = fixture(DxfVersion::AC1032);
     doc.notifications.notify(acadrust::notification::NotificationType::NotSupported, "unknown entity");
-    let session = CadSession { document: doc, format: "dwg".into(), undo: vec![], redo: vec![], active_layer: "0".into() };
+    let session = CadSession { document: doc, format: "dwg".into(), undo: vec![], redo: vec![], active_layer: "0".into(), revision: 0, engineering_profile: false };
     assert!(session.save().is_err());
     let mut doc = fixture(DxfVersion::AC1032);
     doc.notifications
@@ -875,7 +877,7 @@ fn locate_and_text_query_are_read_only() {
 fn planar_gate_rejects_sloped_lines_and_mixed_elevations() {
     let mut document = fixture(DxfVersion::AC1032);
     let sloped = document.add_entity(EntityType::Line(Line::from_coords(0., 0., 0., 50., 0., 10.))).unwrap();
-    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into() };
+    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into(), revision: 0, engineering_profile: false };
     let before = entity_images(&session);
     let sloped_id = format!("{sloped:X}");
     for request in [
@@ -897,7 +899,7 @@ fn planar_gate_rejects_sloped_lines_and_mixed_elevations() {
     let mut document = fixture(DxfVersion::AC1032);
     let ground = document.add_entity(EntityType::Line(Line::from_coords(-10., 0., 0., 10., 0., 0.))).unwrap();
     let raised = document.add_entity(EntityType::Line(Line::from_coords(0., -10., 5., 0., 10., 5.))).unwrap();
-    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into() };
+    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into(), revision: 0, engineering_profile: false };
     let before = entity_images(&session);
     assert!(session
         .edit(&json!({"operation":"trim","handle":format!("{ground:X}"),"boundary":format!("{raised:X}"),"pick":[5,0,0]}).to_string())
@@ -926,7 +928,7 @@ fn model_space_and_ocs_eligibility_is_enforced() {
     if let Some(entity) = document.get_entity_mut(circle) {
         entity.common_mut().entity_mode = Some(1);
     }
-    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into() };
+    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into(), revision: 0, engineering_profile: false };
     let before = entity_images(&session);
     for request in [
         json!({"operation":"delete","handle":format!("{circle:X}")}),
@@ -951,7 +953,7 @@ fn locked_source_blocks_copy_and_offset() {
         EntityType::Line(l) => Some(l.common.handle),
         _ => None,
     }).unwrap();
-    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into() };
+    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into(), revision: 0, engineering_profile: false };
     let before = entity_images(&session);
     assert!(session.edit(&json!({"operation":"copy","handle":format!("{line:X}"),"delta":[0,5,0]}).to_string()).is_err());
     assert!(session.edit(&json!({"operation":"offset","handle":format!("{line:X}"),"distance":1,"side":[0,5,0]}).to_string()).is_err());
@@ -963,7 +965,7 @@ fn locked_source_blocks_copy_and_offset() {
 fn rejected_batch_leaves_document_and_history_unchanged() {
     let mut document = fixture(DxfVersion::AC1032);
     let sloped = document.add_entity(EntityType::Line(Line::from_coords(0., 0., 0., 10., 0., 5.))).unwrap();
-    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into() };
+    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into(), revision: 0, engineering_profile: false };
     let before = entity_images(&session);
     assert!(session
         .edit(&json!({"operation":"batch","operations":[
@@ -981,7 +983,7 @@ fn non_planar_entities_refuse_planar_edits() {
     let mut circle = Circle::from_coords(0., 0., 0., 5.);
     circle.normal = Vector3::new(1.0, 0.0, 0.0);
     let handle = document.add_entity(EntityType::Circle(circle)).unwrap();
-    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into() };
+    let mut session = CadSession { document, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into(), revision: 0, engineering_profile: false };
     let before = session.inspect(0, 500).unwrap();
     assert!(session
         .edit(&json!({"operation":"rotate","handle":format!("{handle:X}"),"center":[0,0,0],"angle":0.1}).to_string())
@@ -1055,12 +1057,12 @@ fn block_reference_and_unknown_boundary_evidence() {
         doc
     };
 
-    let dxf_session = CadSession { document: block_document(), format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into() };
+    let dxf_session = CadSession { document: block_document(), format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into(), revision: 0, engineering_profile: false };
     let dxf_bytes = dxf_session.save().expect("block reference must save in DXF");
     let path = dir.join("block-reference-AC1032.dxf");
     std::fs::write(&path, &dxf_bytes).unwrap();
     let reopened = read(&dxf_bytes, "dxf").unwrap();
-    let dwg_session = CadSession { document: block_document(), format: "dwg".into(), undo: vec![], redo: vec![], active_layer: "0".into() };
+    let dwg_session = CadSession { document: block_document(), format: "dwg".into(), undo: vec![], redo: vec![], active_layer: "0".into(), revision: 0, engineering_profile: false };
     let dwg_error = dwg_session.save().err();
 
     let mut unknown_entity = acadrust::entities::UnknownEntity::new("FLOE_PROXY_ENTITY");
@@ -1069,7 +1071,7 @@ fn block_reference_and_unknown_boundary_evidence() {
     unknown_entity.common.handle = doc.allocate_handle();
     unknown_entity.raw_dxf_codes = Some(vec![(1, "floe-payload".into()), (70, "7".into())]);
     doc.add_entity(EntityType::Unknown(unknown_entity)).unwrap();
-    let unknown_entity_error = CadSession { document: doc, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into() }.save().err();
+    let unknown_entity_error = CadSession { document: doc, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into(), revision: 0, engineering_profile: false }.save().err();
 
     let mut doc = CadDocument::new();
     doc.version = DxfVersion::AC1032;
@@ -1083,7 +1085,7 @@ fn block_reference_and_unknown_boundary_evidence() {
         raw_dwg_handle_bits: 0,
         raw_dwg_version: None,
     });
-    let unknown_object_error = CadSession { document: doc, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into() }.save().err();
+    let unknown_object_error = CadSession { document: doc, format: "dxf".into(), undo: vec![], redo: vec![], active_layer: "0".into(), revision: 0, engineering_profile: false }.save().err();
 
     std::fs::write(
         dir.join("block-reference-summary.json"),

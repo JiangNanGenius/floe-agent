@@ -121,7 +121,7 @@ final class CADPresentationEntityBuilder {
         try Task.checkCancellation()
         addFloor(to: stage, environment: scene.environment,
                  bounds: scene.bounds)
-        addLights(to: stage, environment: scene.environment)
+        addLights(to: stage, environment: scene.environment, bounds: scene.bounds)
         // X22: saved measurement guides are real stage geometry, so they are
         // in Present pixels and every exported frame — not a SwiftUI-only
         // annotation that disappears from a capture.
@@ -159,7 +159,7 @@ final class CADPresentationEntityBuilder {
             || $0.name.hasPrefix("CADPresentationFloor") }
             .forEach { $0.removeFromParent() }
         addFloor(to: stage, environment: environment, bounds: bounds)
-        addLights(to: stage, environment: environment)
+        addLights(to: stage, environment: environment, bounds: bounds)
         _ = await cache.environment(for: environment)
     }
 
@@ -856,6 +856,14 @@ final class CADPresentationEntityBuilder {
     /// Used by animation frames and by any caller that re-dresses the scene
     /// while a transient pose is applied.
     static func updateFloor(in stage: Entity, bounds: CADPresentationBounds?, physicsFloorYMM: Double? = nil) {
+        // Exploded/animated assemblies can become much larger than their
+        // baseline. Keep the same scene-sized cascades while the pose moves.
+        let shadowDistance = CADPresentationLightingScale.shadowDistance(radiusMetres: bounds?.radius)
+        for child in stage.children {
+            if let light = child as? DirectionalLight, light.shadow != nil {
+                light.shadow = .init(shadowProjection: .automatic(maximumDistance: shadowDistance), depthBias: 1)
+            }
+        }
         guard let floor = stage.children.first(where: {
             $0.name == "CADPresentationFloor"
         }) else { return }
@@ -865,7 +873,9 @@ final class CADPresentationEntityBuilder {
         }
     }
 
-    private func addLights(to stage: Entity, environment: CADPresentationEnvironment) {
+    private func addLights(to stage: Entity, environment: CADPresentationEnvironment,
+                           bounds: CADPresentationBounds?) {
+        let shadowDistance = CADPresentationLightingScale.shadowDistance(radiusMetres: bounds?.radius)
         if let authored = environment.sceneLights {
             guard (try? CADSceneLight.validate(authored)) != nil else { return }
             for value in authored where value.enabled {
@@ -879,7 +889,7 @@ final class CADPresentationEntityBuilder {
                     light.light = .init(color:color,intensity:Float(value.intensity),isRealWorldProxy:false)
                     light.look(at:position+direction,from:position,relativeTo:nil,forward:.negativeZ)
                     if value.castsShadow && environment.shadowsEnabled {
-                        light.shadow = .init(shadowProjection:.automatic(maximumDistance:20),depthBias:1)
+                        light.shadow = .init(shadowProjection:.automatic(maximumDistance:shadowDistance),depthBias:1)
                     }
                     entity = light
                 case .point:
@@ -911,7 +921,7 @@ final class CADPresentationEntityBuilder {
         key.look(at: keyDirection, from: .zero, relativeTo: nil, forward: .negativeZ)
         if environment.shadowsEnabled {
             key.shadow = DirectionalLightComponent.Shadow(
-                shadowProjection: .automatic(maximumDistance: 20),
+                shadowProjection: .automatic(maximumDistance: shadowDistance),
                 depthBias: 1)
         }
         stage.addChild(key)

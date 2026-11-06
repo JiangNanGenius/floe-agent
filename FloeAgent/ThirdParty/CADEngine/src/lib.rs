@@ -23,6 +23,8 @@ mod annotation_edit;
 #[cfg(test)]
 mod annotation_edit_tests;
 mod polyline_edit;
+mod sketch_transfer;
+mod drawing_export;
 #[cfg(test)]
 mod polyline_edit_tests;
 
@@ -142,7 +144,9 @@ fn unit_name(document: &CadDocument) -> String {
 /// must gate UI controls on these fields instead of assuming capabilities.
 fn capabilities() -> Value {
     json!({
-        "version": 3,
+        "version": 4,
+        "sketchTransfer": {"schemaVersion": 1, "entities": ["Line", "Circle", "Arc", "LwPolyline", "Polyline2D"], "exactBulges": true, "coordinates": "one explicitly reported OCS plane; noncoplanar/unsupported entities reported as omissions", "unitless": "requires an explicit unit scale in the receiving editor"},
+        "exportAs": {"formats": ["dxf", "dwg"], "validation": "strict write and reparse; source and undo unchanged"},
         "coordinateUnits": "unitless drawing units; trim pick and offset side are WCS [x,y,z] on the target plane; serialized circle/arc/polyline coordinates remain OCS",
         "operations": [
             "addLine", "addCircle", "addArc", "addLwPolyline", "addText", "addLeader",
@@ -713,6 +717,8 @@ pub struct CadSession {
     redo: Vec<CadDocument>,
     /// UI/session concept only; drawings do not persist an active layer.
     active_layer: String,
+    revision: u64,
+    engineering_profile: bool,
 }
 
 #[wasm_bindgen]
@@ -721,7 +727,7 @@ impl CadSession {
     pub fn new(bytes: &[u8], format: &str) -> Result<CadSession, String> {
         let document = read(bytes, format)?;
         let active_layer = document.layers.iter().next().map(|l| l.name.clone()).unwrap_or_else(|| "0".into());
-        Ok(Self { document, format: format.into(), undo: vec![], redo: vec![], active_layer })
+        Ok(Self { document, format: format.into(), undo: vec![], redo: vec![], active_layer, revision: 0, engineering_profile: drawing_export::is_profile(bytes, format) })
     }
 
     /// Bounded, factual review context. Text is document content, never instructions.
@@ -750,6 +756,7 @@ impl CadSession {
             .collect();
         serde_json::to_string(&json!({
             "format": self.format,
+            "draftRevision": self.revision,
             "version": format!("{:?}", self.document.version),
             "unit": unit_name(&self.document),
             "activeLayer": self.active_layer,
@@ -768,6 +775,38 @@ impl CadSession {
 
     pub fn display_dxf(&self) -> Result<Vec<u8>, String> {
         encode(&self.document, "dxf")
+    }
+
+    /// Exact selected primitives, never the viewer's display-DXF projection.
+    pub fn transfer_sketch(&self, request: &str) -> Result<String, String> {
+        sketch_transfer::transfer(&self.document, &self.format, self.revision, request)
+    }
+
+    /// A detached, validated conversion. This never changes the open format,
+    /// original drawing, active layer, recovery journal or undo stack.
+    pub fn export_as(&self, format: &str) -> Result<Vec<u8>, String> {
+        if !matches!(format, "dwg" | "dxf") { return Err("Expected DXF or DWG".into()); }
+        if blocking_diagnostics(&self.document) { return Err("Unresolved CAD diagnostics".into()); }
+        let mut candidate = self.document.clone();
+        // R12 is an explicit DXF exchange profile. Write new DWG output as
+        // R2018, rather than pretending a DWG R12 writer preserves it.
+        if format == "dwg" && candidate.version < acadrust::DxfVersion::AC1015 {
+            candidate.version = acadrust::DxfVersion::AC1032;
+        }
+        let bytes = encode(&candidate, format)?;
+        let reopened = read(&bytes, format)?;
+        verify(&candidate, &reopened)?;
+        if candidate.header.insertion_units != reopened.header.insertion_units {
+            return Err("CAD conversion changed drawing units; source preserved".into());
+        }
+        Ok(bytes)
+    }
+
+    /// Export the narrowly defined, all-vector native engineering sheet.
+    /// This profile has no source-authored objects/styles/blocks to discard.
+    pub fn export_drawing_dwg(&self) -> Result<Vec<u8>, String> {
+        if !self.engineering_profile { return Err("Expected the native engineering-drawing exchange profile; use strict export_as for other files".into()); }
+        drawing_export::dwg(&self.document)
     }
 
     /// Read-only structured query. Never mutates the document or undo history.
@@ -821,12 +860,14 @@ impl CadSession {
         }
         self.undo.push(std::mem::replace(&mut self.document, next));
         self.redo.clear();
+        self.revision = self.revision.saturating_add(1);
         serde_json::to_string(&json!({ "created": created })).map_err(|e| e.to_string())
     }
 
     pub fn undo(&mut self) -> bool {
         if let Some(previous) = self.undo.pop() {
             self.redo.push(std::mem::replace(&mut self.document, previous));
+            self.revision = self.revision.saturating_add(1);
             true
         } else {
             false
@@ -835,6 +876,7 @@ impl CadSession {
     pub fn redo(&mut self) -> bool {
         if let Some(next) = self.redo.pop() {
             self.undo.push(std::mem::replace(&mut self.document, next));
+            self.revision = self.revision.saturating_add(1);
             true
         } else {
             false

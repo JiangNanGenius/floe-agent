@@ -1331,39 +1331,82 @@ final class EditorViewModel {
         return Data(DXFKit.exportSketch(entities: sketch.entities, plane: sketch.plane).utf8)
     }
 
-    /// DXF import (plan §B14, spec §12.1): parsed entities land in the
-    /// ground-plane sketch — reused when one exists (unhiding it if an
-    /// extrude auto-hid it), created otherwise — as ONE CompositeCommand so
-    /// a single undo removes everything the import added.
+    /// The host decoder prepares exact native drawing geometry off the UI
+    /// thread. The pending snapshot itself is read-only until one import.
+    var pendingDrawingTransfer: CADSketchTransferEnvelope? {
+        didSet { if pendingDrawingTransfer != nil { drawingTransferPresentationID = UUID() } }
+    }
+    var drawingTransferPresentationID = UUID()
+
+    var drawingImportSelectionAvailable: Bool {
+        activeSketch != nil || selectedPlane != nil || {
+            if case .faceSelected = mode { return toolContext?.plane != nil }; return false
+        }()
+    }
+
+    func importDrawingTransfer(_ source: CADSketchTransferEnvelope,
+                               placement: CADSketchTransferPlacement) throws {
+        guard !session.isReadOnly, session.writeBlock == nil, !(documentClosedCheck?() ?? false) else {
+            throw CADSketchTransferError.invalid("The target model is closed or read-only.")
+        }
+        try source.validate()
+        let totalSourceBytes = session.document.sketches.reduce(0) { $0 + ($1.drawingSource?.sourceBytes.count ?? 0) }
+        guard totalSourceBytes <= 32 * 1024 * 1024 - source.sourceBytes.count else {
+            throw CADSketchTransferError.invalid("Retained drawing sources exceed this model's 32 MB budget.")
+        }
+        let entities = try placement.entities(snapshot: source.snapshot)
+        // Capture the actual selected support BEFORE cancelling transient UI.
+        let plane: SketchPlane
+        var support: PlaneRef?
+        switch placement.target {
+        case .selected:
+            if let sketch = activeSketch {
+                guard session.lastReferenceErrors[.sketch(sketch.id)] == nil else { throw CADSketchTransferError.invalid("Repair the selected sketch support before importing.") }
+                plane = sketch.plane; support = sketch.support
+            }
+            else if let selected = selectedPlane {
+                guard session.lastReferenceErrors[.plane(selected.id)] == nil else { throw CADSketchTransferError.invalid("Repair the selected plane before importing.") }
+                plane = selected.plane; support = PlaneRef(source: .construction(selected.id))
+            } else if case .faceSelected = mode, let selected = toolContext?.plane {
+                plane = .readable(origin: selected.origin, normal: selected.normal)
+            } else { throw CADSketchTransferError.invalid("Select a sketch, construction plane or planar face first.") }
+        case .front: plane = .worldXY
+        case .top: plane = .ground
+        case .right: plane = .worldYZ
+        case .source:
+            let original = source.snapshot.sourcePlane.sketchPlane
+            let scale = placement.unitScaleMM ?? source.snapshot.unitScaleMM!
+            plane = SketchPlane(origin: original.origin * scale, xAxis: original.xAxis, yAxis: original.yAxis)
+        }
+        var provenance = source; provenance.placement = placement
+        let sketch = Sketch(name: session.document.uniqueSketchName(), plane: plane,
+                            entities: entities, support: support, drawingSource: provenance)
+        cancelTransientPicks()
+        if case .sketching = mode { finishSketch() }
+        session.perform(AddSketchCommand(sketch: sketch))
+        guard session.document.sketches.contains(where: { $0.id == sketch.id }) else {
+            throw CADSketchTransferError.invalid("The drawing import could not be committed.")
+        }
+        mode = .idle
+        pendingDrawingTransfer = nil
+        cameraControl?.moveCameraHeadOn(to: plane)
+    }
+
+    /// Legacy package-only path. App hosts install the DWG/DXF typed decoder;
+    /// this fallback still respects the current selected support.
     func importDXF(data: Data, fileName: String) {
         let entities = DXFKit.importDXF(data)
         guard !entities.isEmpty else {
             errorMessage = FloeCADStrings.format("cad.error.importDXF", "Couldn't import “%@” — no supported DXF entities found.", fileName)
             return
         }
+        let plane = activeSketch?.plane ?? selectedPlane?.plane ?? toolContext?.plane ?? .worldXY
+        let sketch = Sketch(name: session.document.uniqueSketchName(), plane: plane, entities: entities)
         cancelTransientPicks()
         if case .sketching = mode { finishSketch() }
-        var commands: [DocumentCommand] = []
-        let sketch: Sketch
-        if let existing = session.document.sketches.first(where: {
-            $0.plane.isCoincident(with: .ground)
-        }) {
-            sketch = existing
-            if existing.isHidden {
-                commands.append(SetItemVisibilityCommand(
-                    item: .sketch(existing.id), isHidden: false
-                ))
-            }
-        } else {
-            sketch = Sketch(name: session.document.uniqueSketchName(), plane: .ground)
-            commands.append(AddSketchCommand(sketch: sketch))
-        }
-        commands.append(AddSketchEntitiesCommand(
-            sketchID: sketch.id, entities: entities, title: "Import DXF"
-        ))
-        session.perform(CompositeCommand(title: "Import DXF", commands: commands))
+        session.perform(AddSketchCommand(sketch: sketch))
         mode = .idle
-        cameraControl?.moveCameraHeadOn(to: sketch.plane)
+        cameraControl?.moveCameraHeadOn(to: plane)
     }
 
     /// Screenshot PNG at the requested size, or nil (with a user-facing
@@ -21179,6 +21222,8 @@ final class EditorViewModel {
             return FloeCADStrings.text("cad.mesh.voxel.title", "Voxel reconstruction")
         case .polygonCage:
             return FloeCADStrings.text("cad.mesh.cage", "Polygon cage")
+        case .hybrid:
+            return FloeCADStrings.text("cad.feature.hybrid", "Hybrid result")
         case .baseSolid:
             return FloeCADStrings.text("cad.feature.importedBody", "Imported body")
         case let .extrude(_, _, distance, _, boolean, _, _):

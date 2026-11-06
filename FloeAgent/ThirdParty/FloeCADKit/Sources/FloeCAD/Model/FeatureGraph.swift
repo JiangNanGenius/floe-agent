@@ -390,6 +390,9 @@ nonisolated enum FeatureKind: Codable, Sendable {
     case polygonCage(definition: CADPolygonMeshDefinition, placement: Transform3D)
     /// Immutable scan reconstruction; owns a separate mesh output and consumes no source body.
     case voxelRemesh(definition: CADVoxelRemeshDefinition, placement: Transform3D)
+    /// Immutable source mesh plus editable, versioned Boolean tools. Source
+    /// bodies remain independent; derived output is explicitly mesh grade.
+    case hybrid(definition: CADHybridFeatureDefinition, placement: Transform3D)
     case mechanical(definition: CADMechanicalDefinition, placement: Transform3D)
     case extrude(
         profile: ProfileRef,
@@ -559,7 +562,7 @@ nonisolated extension FeatureNode {
         case let .split(_, cutter):
             addPlane(cutter.plane)
             if let profile = cutter.profile { ids.insert(profile.sketchID) }
-        case .primitive, .baseSolid, .polygonCage, .voxelRemesh, .mechanical, .thread, .boolean, .transform, .pushPull, .moveFace,
+        case .primitive, .baseSolid, .polygonCage, .voxelRemesh, .hybrid, .mechanical, .thread, .boolean, .transform, .pushPull, .moveFace,
              .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .advancedBlend, .shell, .regionShell,
              .deleteFace, .replaceFace:
             break
@@ -581,7 +584,7 @@ nonisolated extension FeatureNode {
              let .hole(_, _, plane, _), let .mirror(_, plane, _):
             add(plane)
         case let .split(_, cutter): add(cutter.plane)
-        case .primitive, .baseSolid, .polygonCage, .voxelRemesh, .mechanical, .thread, .loft, .surface, .boolean, .transform, .pattern, .pushPull, .moveFace,
+        case .primitive, .baseSolid, .polygonCage, .voxelRemesh, .hybrid, .mechanical, .thread, .loft, .surface, .boolean, .transform, .pattern, .pushPull, .moveFace,
              .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .advancedBlend, .shell, .regionShell,
              .deleteFace, .replaceFace:
             break
@@ -618,7 +621,7 @@ nonisolated extension FeatureNode {
     /// the memo is only as correct as this enumeration.
     var consumedBodyIDs: [BodyID] {
         switch kind {
-        case .primitive, .baseSolid, .polygonCage, .voxelRemesh, .mechanical:
+        case .primitive, .baseSolid, .polygonCage, .voxelRemesh, .hybrid, .mechanical:
             return []
         case let .surface(definition):
             return definition.sources.map(\.bodyID)
@@ -1027,6 +1030,17 @@ nonisolated extension FeatureGraph {
                         channel: OCCTKernel.renderMeshFaceChannel(from: output.handle), body: body)
                     state.put(body, table: table); state.kernelNames[id] = names
                 }
+            } catch { state.errors[node.id] = .kernelFailure(error.localizedDescription) }
+        case let .hybrid(definition, placement):
+            guard let id = node.outputBodyIDs.first, node.outputBodyIDs.count == 1 else {
+                state.errors[node.id] = .brokenRef("A hybrid history must own one derived mesh."); return
+            }
+            do {
+                try CADPolygonMeshDefinition.validatePlacement(placement)
+                let evaluated = try CADHybridMeshKernel.evaluate(definition)
+                let body = Body(id:id,name:node.name,transform:placement,primitive:nil,
+                    render:evaluated.render,revision:nextRevision())
+                state.put(body,table:state.naming.faceTable(for:body,createdBy:node.id,scheme:.generic))
             } catch { state.errors[node.id] = .kernelFailure(error.localizedDescription) }
         case let .voxelRemesh(definition, placement):
             guard let id = node.outputBodyIDs.first, node.outputBodyIDs.count == 1 else {

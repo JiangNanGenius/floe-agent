@@ -6083,6 +6083,85 @@ static OCCTShape *OS3DPlanarSupportShell(const TopoDS_Shape &source,
     }
 }
 
+static OCCTShape *OS3DClosedSewnSolid(const std::vector<TopoDS_Shape>& inputs,
+                                    double tolerance,OCCTOpStatus *status) {
+    BRepBuilderAPI_Sewing sewing(tolerance,Standard_True,Standard_True,Standard_True,Standard_False);
+    for(const auto& input:inputs)sewing.Add(input);
+    Handle(OS3DDeadlineProgress) deadline=new OS3DDeadlineProgress(kOS3DOpDeadlineSeconds);
+    OS3D_GUARDED(status,"faceted solid sewing",sewing.Perform(deadline->Start()));
+    if(deadline->Fired() || sewing.NbFreeEdges()!=0 || sewing.NbMultipleEdges()!=0) {
+        OS3DSetStatus(status,OCCTOpCodeInvalidResult,@"The input does not form one closed manifold shell.");return nil;
+    }
+    const TopoDS_Shape sewn=sewing.SewedShape();
+    if(sewn.IsNull())return nil;
+    TopoDS_Shell shell;int shells=0;
+    for(TopExp_Explorer ex(sewn,TopAbs_SHELL);ex.More();ex.Next()){shell=TopoDS::Shell(ex.Current());++shells;}
+    if(shells!=1 || shell.IsNull() || !BRep_Tool::IsClosed(shell)) {
+        OS3DSetStatus(status,OCCTOpCodeInvalidResult,@"Conversion requires one closed shell; disconnected parts and missing faces are kept unchanged.");return nil;
+    }
+    BRepBuilderAPI_MakeSolid maker(shell);if(!maker.IsDone())return nil;
+    TopoDS_Solid solid=maker.Solid();
+    if(!BRepLib::OrientClosedSolid(solid) || !OS3DIsValid(solid))return nil;
+    GProp_GProps original;BRepGProp::VolumeProperties(solid,original);
+    if(!std::isfinite(original.Mass()) || original.Mass()<=1e-12)return nil;
+    // Mature same-support unification removes planar triangle diagonals; it
+    // does not fit cylinders or guess an original design feature.
+    ShapeUpgrade_UnifySameDomain unify(solid,Standard_True,Standard_True,Standard_False);
+    unify.SetLinearTolerance(tolerance);unify.SetAngularTolerance(1e-8);
+    OS3D_GUARDED(status,"faceted same-domain unification",unify.Build());
+    TopoDS_Shape result=unify.Shape();if(result.IsNull() || !OS3DIsValid(result))return nil;
+    GProp_GProps after;BRepGProp::VolumeProperties(result,after);
+    if(!std::isfinite(after.Mass()) || std::abs(after.Mass()-original.Mass())>std::max(1e-8,std::abs(original.Mass())*1e-7))return nil;
+    OCCTShape *output=[OCCTShape new];output->_shape=result;
+    OS3DSetStatus(status,OCCTOpCodeOK,@"Converted the closed boundary to a solid; source surfaces were not inferred.");return output;
+}
+
++ (nullable OCCTShape *)solidFromFacetsXYZ:(NSData *)xyz indices:(NSData *)indices
+                              tolerance:(double)tolerance status:(OCCTOpStatus *)status {
+    OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"The facets could not be converted to a solid.");
+    if(!std::isfinite(tolerance)||tolerance<1e-7||tolerance>1e-3||xyz.length==0||xyz.length%(3*sizeof(float))||
+       indices.length==0||indices.length%(3*sizeof(uint32_t))||indices.length/(3*sizeof(uint32_t))>8192)return nil;
+    OS3DSignalScope signalScope;
+    try {
+        OCC_CATCH_SIGNALS
+        const float *p=(const float *)xyz.bytes;const uint32_t *t=(const uint32_t *)indices.bytes;
+        const size_t vertices=xyz.length/(3*sizeof(float)),count=indices.length/sizeof(uint32_t);
+        if(vertices>24576)return nil;
+        for(size_t i=0;i<3*vertices;++i)if(!std::isfinite(p[i])||std::abs(p[i])>1e6)return nil;
+        std::vector<TopoDS_Shape> faces;faces.reserve(count/3);
+        for(size_t i=0;i<count;i+=3) {
+            if(t[i]>=vertices||t[i+1]>=vertices||t[i+2]>=vertices)return nil;
+            const auto point=[&](uint32_t v){return gp_Pnt(p[3*v],p[3*v+1],p[3*v+2]);};
+            const gp_Pnt a=point(t[i]),b=point(t[i+1]),c=point(t[i+2]);
+            if(gp_Vec(a,b).Crossed(gp_Vec(a,c)).SquareMagnitude()<=1e-24)return nil;
+            BRepBuilderAPI_MakePolygon polygon(a,b,c,Standard_True);
+            if(!polygon.IsDone())return nil;
+            BRepBuilderAPI_MakeFace face(polygon.Wire(),Standard_True);if(!face.IsDone())return nil;
+            faces.push_back(face.Face());
+        }
+        return OS3DClosedSewnSolid(faces,tolerance,status);
+    } catch(Standard_Failure &failure) {OS3DSetStatus(status,OCCTOpCodeKernelRefused,OS3DCrashMessage("faceted conversion",failure.GetMessageString()));return nil;}
+      catch(...) {return nil;}
+}
+
++ (nullable OCCTShape *)solidFromSheets:(NSArray<OCCTShape *> *)sheets tolerance:(double)tolerance status:(OCCTOpStatus *)status {
+    OS3DSetStatus(status,OCCTOpCodeKernelRefused,@"The sheets do not form a closed solid.");
+    if(sheets.count==0||sheets.count>64||!std::isfinite(tolerance)||tolerance<1e-7||tolerance>1e-3)return nil;
+    OS3DSignalScope signalScope;
+    try {
+        OCC_CATCH_SIGNALS
+        std::vector<TopoDS_Shape> inputs;size_t count=0;
+        for(OCCTShape *sheet in sheets) {
+            if(!sheet||sheet->_shape.IsNull()||!OS3DIsValid(sheet->_shape))return nil;
+            for(TopExp_Explorer solid(sheet->_shape,TopAbs_SOLID);solid.More();solid.Next())return nil;
+            for(TopExp_Explorer face(sheet->_shape,TopAbs_FACE);face.More();face.Next())if(++count>8192)return nil;
+            inputs.push_back(sheet->_shape);
+        }
+        return OS3DClosedSewnSolid(inputs,tolerance,status);
+    } catch(Standard_Failure &failure) {OS3DSetStatus(status,OCCTOpCodeKernelRefused,OS3DCrashMessage("sheet conversion",failure.GetMessageString()));return nil;}
+      catch(...) {return nil;}
+}
+
 + (BOOL)shapeContainsSolid:(OCCTShape *)shape {
     if (shape == nil || shape->_shape.IsNull()) return NO;
     // The caller may be classifying a STORED handle (document load). The

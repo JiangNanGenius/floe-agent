@@ -94,6 +94,9 @@ public nonisolated struct CADDocumentError: Error, LocalizedError, Sendable {
 @MainActor
 public final class FloeCADDocument {
     public let url: URL
+    /// Host-owned local codec; no global engine, file access or permission grant.
+    public var drawingDWGEncoder: (@MainActor (Data) async throws -> Data)?
+    public var drawingSketchDecoder: (@MainActor (Data, String) async throws -> CADSketchTransferEnvelope)?
     public private(set) var name: String
     public var revision: Int { session.savedIdentity.revision }
     /// The last verified commit, without creating another package revision.

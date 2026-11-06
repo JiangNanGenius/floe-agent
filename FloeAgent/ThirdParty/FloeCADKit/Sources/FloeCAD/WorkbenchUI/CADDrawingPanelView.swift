@@ -416,6 +416,10 @@ struct CADDrawingPanelView: View {
                                 panelHitTarget(Button("DXF") { export(page, format: "dxf") }
                                     .buttonStyle(.bordered)
                                     .controlSize(.small))
+                                panelHitTarget(Button("DWG") { export(page, format: "dwg") }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .disabled(document.drawingDWGEncoder == nil))
                                 // The complete-table fallback for the vector
                                 // BOM limit; only a page with real rows needs it.
                                 if (page["bomEntryCount"] as? Int ?? 0) > 0 {

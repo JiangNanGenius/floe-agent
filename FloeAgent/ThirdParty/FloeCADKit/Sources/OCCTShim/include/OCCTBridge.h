@@ -797,6 +797,18 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 /// unreadable shape reports NO.
 + (BOOL)shapeContainsSolid:(OCCTShape *)shape;
 
+/// Bounded FreeCAD/OCCT-style faceted conversion. XYZ is tightly packed
+/// float32, indices uint32. Sew existing triangle planes, require one closed
+/// valid shell, make a solid and merge coincident analytic supports. No holes
+/// are filled and no original curved surface is inferred from tessellation.
++ (nullable OCCTShape *)solidFromFacetsXYZ:(NSData *)xyz indices:(NSData *)indices
+                              tolerance:(double)tolerance status:(OCCTOpStatus *)status
+    NS_SWIFT_NAME(solidFromFacets(xyz:indices:tolerance:status:));
+/// Sew exact imported sheets; accept only one genuinely closed shell.
++ (nullable OCCTShape *)solidFromSheets:(NSArray<OCCTShape *> *)sheets
+                            tolerance:(double)tolerance status:(OCCTOpStatus *)status
+    NS_SWIFT_NAME(solidFromSheets(_:tolerance:status:));
+
 // MARK: - STEP interchange (spec §12.1 / §12.2)
 
 /// Write `shapes` to a STEP AP214 file at `path`. Exports EXACT B-rep geometry

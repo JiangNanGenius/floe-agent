@@ -700,6 +700,9 @@ targets:
     sources:
       - path: Tests/FloeAppTests/SkillRuntimeTargetTests.swift
       - path: Tests/FloeAppTests/CADBasicMachiningTests.swift
+      - path: Tests/FloeAppTests/CADNativeStudyReceiptTests.swift
+      - path: Tests/FloeAppTests/CADDirectModelImportTests.swift
+      - path: Tests/FloeAppTests/CADUnifiedDrawingBridgeTests.swift
       - path: Tests/FloeAppTests/CADMultiAxisPreviewTests.swift
       - path: Tests/FloeAppTests/CADMultiAxisPreviewBridgeQualificationTests.swift
       - path: Tests/FloeAppTests/IOSBridgeIntegrationTests.swift
@@ -1305,6 +1308,10 @@ targets:
       # membership (this target lists each file); regenerate the Xcode project
       # after applying the packet.
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADViewportHandoffTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADHybridModelingTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSketchTransferTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADBuildingWorkflowTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADOfflineRenderTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADThumbnailIsolationTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/ViewportRenderTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADViewOverlayTests.swift

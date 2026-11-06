@@ -55,6 +55,12 @@ nonisolated enum ProjectMergeKit {
         _ guest: DesignDocument, into host: DesignDocument,
         translation: SIMD3<Double> = .zero
     ) throws -> Insertion {
+        // Building payloads reference their own level/space/element identities.
+        // Until the building service supplies that remap, preserve both
+        // documents rather than silently dropping the incoming payload.
+        guard guest.buildingData == nil else {
+            throw MergeError.missingAssociativeReferences(["building-element-insertion"])
+        }
         // Insertion re-mints every identity. Until its external-edge remap is
         // supported, refusing is safer than binding a guest link to the host.
         guard !guest.sketches.contains(where: \.hasExternalReferences) else {
@@ -67,13 +73,16 @@ nonisolated enum ProjectMergeKit {
         guard !guest.features.nodes.contains(where: { if case .surface = $0.kind { return true }; return false }) else {
             throw MergeError.missingAssociativeReferences(["surface-feature-insertion"])
         }
+        guard !guest.features.nodes.contains(where: { if case .hybrid = $0.kind { return true }; return false }) else {
+            throw MergeError.missingAssociativeReferences(["hybrid-source-snapshot-insertion"])
+        }
         let associative = guest.planes.contains { $0.definition != nil }
             || guest.sketches.contains { $0.support != nil }
             || guest.axes.contains { $0.definition != nil }
             || guest.datumPoints.contains { $0.definition != nil }
             || guest.features.nodes.contains {
                 if $0.kind.operationPlaneReference != nil { return true }
-                switch $0.kind { case .baseSolid, .polygonCage, .voxelRemesh, .mechanical: return true; default: return false }
+                switch $0.kind { case .baseSolid, .polygonCage, .voxelRemesh, .hybrid, .mechanical: return true; default: return false }
             }
         let hostAssociative = host.planes.contains { $0.definition != nil }
             || host.sketches.contains { $0.support != nil || $0.hasExternalReferences }
@@ -81,7 +90,7 @@ nonisolated enum ProjectMergeKit {
             || host.datumPoints.contains { $0.definition != nil }
             || host.features.nodes.contains {
                 if $0.kind.operationPlaneReference != nil { return true }
-                switch $0.kind { case .baseSolid, .polygonCage, .voxelRemesh, .mechanical: return true; default: return false }
+                switch $0.kind { case .baseSolid, .polygonCage, .voxelRemesh, .hybrid, .mechanical: return true; default: return false }
             }
         // One ordered rollback prefix cannot represent two independently
         // active histories. In particular, adding the guest count to a host
@@ -294,12 +303,12 @@ nonisolated enum ProjectMergeKit {
             // operation vocabulary, including a later boolean that bakes it.
             // This path activates only for the new source kind; old projects
             // retain their existing remapping behavior.
-            if guest.features.nodes.contains(where: { switch $0.kind { case .baseSolid, .polygonCage, .voxelRemesh, .mechanical: return true; default: return false } }) {
+            if guest.features.nodes.contains(where: { switch $0.kind { case .baseSolid, .polygonCage, .voxelRemesh, .hybrid, .mechanical: return true; default: return false } }) {
                 var local: Set<BodyID> = []
                 for node in guest.features.nodes where !node.suppressed {
                     localFramesBefore[node.id] = local
                     switch node.kind {
-                    case .baseSolid, .polygonCage, .voxelRemesh, .mechanical:
+                    case .baseSolid, .polygonCage, .voxelRemesh, .hybrid, .mechanical:
                         local.formUnion(node.outputBodyIDs)
                     case .primitive, .surface, .mirror:
                         local.subtract(node.outputBodyIDs)
@@ -724,7 +733,7 @@ nonisolated enum ProjectMergeKit {
 
         func remap(_ kind: FeatureKind, translation t: SIMD3<Double>) -> FeatureKind {
             switch kind {
-            case .thread, .surface:
+            case .thread, .surface, .hybrid:
                 // Unreachable: insert rejects threaded guests before mapping.
                 return kind
             case let .mechanical(definition, placement):

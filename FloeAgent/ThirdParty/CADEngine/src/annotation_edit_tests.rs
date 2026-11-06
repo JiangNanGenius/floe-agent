@@ -187,7 +187,7 @@ fn annotation_attached_or_nonplanar_leaders_are_readonly() {
     for attached in [true,false] {
         let mut doc=CadDocument::new();let mut v=Leader::new();v.vertices=vec![Vector3::ZERO,Vector3::new(1.,1.,0.)];
         if attached {v.annotation_handle=Handle::new(0xBAD);}else{v.normal=Vector3::UNIT_X;}
-        let id=doc.add_entity(EntityType::Leader(v)).unwrap();let mut s=CadSession{document:doc,format:"dxf".into(),undo:vec![],redo:vec![],active_layer:"0".into()};
+        let id=doc.add_entity(EntityType::Leader(v)).unwrap();let mut s=CadSession{document:doc,format:"dxf".into(),undo:vec![],redo:vec![],active_layer:"0".into(),revision:0,engineering_profile:false};
         assert!(entity_operations(&s.document,s.document.get_entity(id).unwrap()).is_empty());
         assert!(s.edit(&json!({"operation":"updateLeader","handle":format!("{id:X}"),"points":[[1,1,0],[2,2,0]]}).to_string()).is_err());assert!(!s.undo());
     }

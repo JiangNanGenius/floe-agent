@@ -75,6 +75,8 @@ struct CADMeshPanelView: View {
 
             CADSculptPanel(document:document,viewModel:viewModel,selectedBodyIDs:selectedIDs)
 
+            CADHybridModelingPanel(document:document,viewModel:viewModel,selectedBodyIDs:selectedIDs)
+
             CADVoxelRemeshPanel(document: document, viewModel: viewModel, selectedBodyIDs: selectedIDs)
 
             CADPolygonMeshPanel(document: document, viewModel: viewModel,

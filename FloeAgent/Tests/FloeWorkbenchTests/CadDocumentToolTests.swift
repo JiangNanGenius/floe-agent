@@ -375,7 +375,7 @@ struct CadDocumentToolTests {
         let expected = NativeCADPolicy.importExtensions.union(NativeCADPolicy.exportExtensions)
         #expect(enumValues == expected,
                 "schema format enum must equal the native import/export union")
-        for value in ["3mf", "usdz", "pdf", "svg", "dxf", "csv"] {
+        for value in ["3mf", "usdz", "pdf", "svg", "dxf", "dwg", "csv"] {
             #expect(enumValues.contains(value),
                     "supported export format \(value) must not be refused by schema admission")
         }
