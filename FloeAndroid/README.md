@@ -1,12 +1,12 @@
 # Floe for Android
 
-## Current delivery — Android Alpha42 (2026-11-07)
+## Current delivery — Android Alpha43 (2026-11-07)
 
-[Android 0.1.0-alpha.42](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.42), code61, is published from immutable source `4cd977c0ab2de550667d7e13f857ece2e3c7d903`. Actual Full packaging, 17 focused JVM checks, Play Kotlin compilation from identical production inputs, signing/ARM64/16KiB checks, all six anonymous asset downloads and update discovery passed. iOS Latest remains unchanged.
+[Android 0.1.0-alpha.43](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.43), code62, is published from immutable source `c78b3e166c6bd2409115666af3f8d1b642f56436`. Actual Full packaging, Play Kotlin compilation, 2 focused JVM and 11 real-database checks, ARM64 Swift object/link, signing/16KiB checks, six anonymous asset downloads and update discovery passed. iOS Latest remains unchanged.
 
-The physical Samsung now shows five history rows instead of three at default font size, and a fresh conversation accepts an explicit Automatic choice before sending. Dark/enlarged-font settings were inspected; the reused API37 tablet retained split settings and nested provider sheets. A subsequent bounded Ark task discovered ready phone tools, but approved phone.observe remained pending; App Stop checkpointed it without retry. Multi-step phone control, conditional schedules, project isolation, remaining visual polish and new CAD-toolbar actions continue. Alpha41 STL evidence remains separate.
+The physical Samsung now receives the real handover question and launches the selected calculator after confirmation. The single subsequent observation was incorrectly denied by approval, so calculation did not complete; there was no tool retry. The post-run approval UI still displays Ask after an explicit first-send Automatic choice and is not accepted end to end. Dark/font-scale-1.3 long-value layout passed; unchanged tablet UI reuses Alpha42 reference only. Multi-step phone control, conditional schedules, project isolation, global visual polish and new CAD-toolbar actions continue. Alpha41 STL evidence remains separate.
 
-当前已发布Alpha42/code61：侧栏更紧凑，首次权限选择可生效；真实Ark任务仍发现phone.observe等待断点，已停止且未重试。整轮N01–N08继续，不能将本次发布算作全部功能完成。范围与限制见[交付记录](../docs/releases/ANDROID_ALPHA42_DELIVERY.md)和[当前推进计划](../docs/FLOE_ANDROID_NEXT_ITERATION_QA_20261106.zh-CN.md)。
+当前已发布Alpha43/code62：接管弹窗与启动计算器已走通；后续观察被审批误判拦下，首次权限运行后仍显示每次询问，两项继续修复。整轮N01–N08继续，不能将本包算作全部功能完成。范围与限制见[交付记录](../docs/releases/ANDROID_ALPHA43_DELIVERY.md)和[当前推进计划](../docs/FLOE_ANDROID_NEXT_ITERATION_QA_20261106.zh-CN.md)。
 
 ## Historical source checkpoint — G09-R2 (2026-11-01)
 
