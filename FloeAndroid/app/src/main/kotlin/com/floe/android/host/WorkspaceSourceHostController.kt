@@ -1072,6 +1072,12 @@ internal class WorkspaceSourceHostController(
                 }
                 if (freshRefusal != 0) return mapStatus(freshRefusal)
                 if (freshPump is SafOutcome.Failure) return mapFailure(freshPump.failure, freshPump.detail)
+                // Streaming alone has no native-observed digest. Freeze the
+                // observation before asking the journal for its write claim.
+                val freshFinish = SourceHostReply.call { buffer ->
+                    runCatching { channel.stageFinish(freshTicket, buffer) }.getOrDefault(-599)
+                }
+                if (!freshFinish.ok) return mapReply(freshFinish)
                 val claimReply = SourceHostReply.call { buffer ->
                     runCatching { channel.saveClaim(saveTicket, freshTicket, buffer) }.getOrDefault(-599)
                 }
@@ -1148,6 +1154,11 @@ internal class WorkspaceSourceHostController(
                             "(${readbackPump.failure.code}); the journaled row stays pending for reconcile")
                     }
                 }
+                val readbackFinish = SourceHostReply.call { buffer ->
+                    runCatching { channel.stageFinish(readbackTicket, buffer) }.getOrDefault(-599)
+                }
+                if (!readbackFinish.ok) return honestlyPending(recoveryID,
+                    "provider read-back could not be verified; retained for reconcile")
                 val settle = SourceHostReply.call { buffer ->
                     runCatching { channel.saveSettle(saveTicket, readbackTicket, buffer) }.getOrDefault(-599)
                 }

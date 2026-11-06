@@ -221,6 +221,7 @@ class WorkspaceSourceHostControllerTest {
 
         override fun saveClaim(saveTicket: Long, freshTicket: Long, reply: ByteArray): Int {
             calls.add("saveClaim")
+            if (finishedStageBodies[freshTicket]?.first != "fresh-observe") return -504
             return body(reply, """{"ok":1,"state":"writing","recoveryID":"$nextRecoveryId"}""")
         }
 
@@ -233,8 +234,9 @@ class WorkspaceSourceHostControllerTest {
 
         override fun saveSettle(saveTicket: Long, readbackTicket: Long, reply: ByteArray): Int {
             calls.add("saveSettle")
-            val readback = stages[readbackTicket] ?: return -503
-            val observed = digest(readback.second.toByteArray())
+            val readback = finishedStageBodies[readbackTicket] ?: return -504
+            if (readback.first != "readback") return -504
+            val observed = digest(readback.second)
             val replacement = digest(snapshots[saveTicket] ?: return -503)
             return if (settleMatches && observed == replacement) {
                 body(reply, """{"ok":1,"state":"committed","recoveryID":"$nextRecoveryId",""" +
@@ -683,13 +685,14 @@ class WorkspaceSourceHostControllerTest {
         assertEquals(outcome.detail, "ok", outcome.status)
         val order = channel.calls.filter {
             it.startsWith("sourceLookup") || it.startsWith("egressOpen") || it.startsWith("stageOpen") ||
+                it.startsWith("stageFinish") ||
                 it == "savePrepare" || it == "saveClaim" || it == "savePermit" ||
                 it == "saveSettle" || it == "egressClose"
         }
         assertEquals(
-            listOf("sourceLookup", "egressOpen:save", "stageOpen:backup-verify", "savePrepare",
-                   "stageOpen:fresh-observe", "saveClaim", "savePermit", "stageOpen:readback",
-                   "saveSettle", "egressClose"),
+            listOf("sourceLookup", "egressOpen:save", "stageOpen:backup-verify", "stageFinish:backup-verify", "savePrepare",
+                   "stageOpen:fresh-observe", "stageFinish:fresh-observe", "saveClaim", "savePermit", "stageOpen:readback",
+                   "stageFinish:readback", "saveSettle", "egressClose"),
             order,
         )
         // The gateway really wrote the replacement through the "wt" stream.
