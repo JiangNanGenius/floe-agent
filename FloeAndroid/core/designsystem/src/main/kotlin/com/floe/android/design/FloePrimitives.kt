@@ -578,8 +578,8 @@ fun io.github.robinpcrd.cupertino.section.SectionScope.FloeValueRow(title: Strin
                 }
             } else FloeText(title, style = Floe.typography.body)
         },
-        trailingContent = if (compact) null else {
-            {
+        trailingContent = {
+            if (!compact) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     FloeText(value, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
                     if (onClick != null) IconGlyph(FloeIcons.ChevronForward, Floe.colors.tertiaryLabel, 14.dp)
