@@ -397,28 +397,35 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
         input?.close(); input = null
         inputJob?.cancelAndJoin(); inputJob = null
         outputClose?.invoke(); outputClose = null
+        var closeStage = "vnc"
         try {
             val owner = remoteOwner
             if (owner != null) {
                 vncID?.let { id ->
-                    vncClient.releaseAll(id, owner)
+                    // Native close releases held input and is idempotent even
+                    // after the session has already disappeared. A separate
+                    // releaseAll refuses a retired session and blocks cleanup.
                     check(vncClient.close(id, owner).complete)
                     vncID = null
                 }
+                closeStage = "profile"
                 profileID?.let { id ->
                     val deleted = runCatching { profiles.profileDelete(id, owner).deleted }.getOrDefault(false)
                     check(deleted || profiles.profileList(owner).none { it.id == id })
                     profileID = null
                 }
+                closeStage = "credential"
                 credential?.let { vncClient.credentialDelete(it); credential = null }
             }
             remoteOwner = null
+            closeStage = "terminal"
             terminalID?.let { token ->
                 check(host.workspaceTerminal?.closeTab(token) is TerminalActionReply.Success)
                 terminalID = null
             }
             true
-        } catch (_: Exception) {
+        } catch (failure: Exception) {
+            reportFileFailure("close_$closeStage", failure)
             mutable.value = state.value.copy(phase = "close_pending", failure = "desktop_stop_pending")
             false
         }
@@ -428,6 +435,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
         val code = when (failure) {
             is LinuxDesktopFileBridge.Failure -> failure.code
             is G04WorkspaceBridgeClient.Failure -> failure.code
+            is C05RemoteFailure -> failure.code
             else -> failure.javaClass.simpleName
         }.takeIf { it.matches(Regex("[A-Za-z0-9_]{1,80}")) } ?: "unknown"
         android.util.Log.w("FloeLinuxDesktop", "file_return_failed stage=$stage code=$code")
