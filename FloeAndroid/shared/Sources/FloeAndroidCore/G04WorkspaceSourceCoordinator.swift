@@ -628,6 +628,8 @@ public actor G04WorkspaceSourceCoordinator {
     public struct WorkingCopySnapshot: Sendable, Equatable {
         public let sha256: String
         public let bytes: Int
+        public let sourceID: UUID?
+        public let sourceRevision: String?
     }
 
     public func snapshotWorkingCopy(taskID: UUID, workspaceID: UUID, logicalPath: String,
@@ -672,8 +674,14 @@ public actor G04WorkspaceSourceCoordinator {
                 throw G04SourceCoordinatorError.digestMismatch(expected: streamedDigest,
                                                                 actual: snapshotDigest)
             }
+            // Resolve the original from the owned workspace binding, never
+            // from a caller-supplied filename or provider reference. Editors
+            // need this association to return saved bytes to an attached SAF
+            // original after their local workspace CAS completes.
+            let source = try await store.source(workspaceID: workspaceID, logicalPath: logicalPath)
             await endLease(lease)
-            return WorkingCopySnapshot(sha256: snapshotDigest, bytes: size)
+            return WorkingCopySnapshot(sha256: snapshotDigest, bytes: size,
+                                       sourceID: source?.id, sourceRevision: source?.revision)
         } catch {
             await endLease(lease)
             throw Self.remapFileError(error)

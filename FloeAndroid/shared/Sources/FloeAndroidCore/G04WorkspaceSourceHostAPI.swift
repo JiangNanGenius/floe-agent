@@ -727,10 +727,14 @@ public final class G04WorkspaceSourceHost: @unchecked Sendable {
             try? FileManager.default.removeItem(at: snapshotURL)
             return Int64(G04SourceHostStatus.saturated)
         }
+        let associatedSource = sourceID ?? (mode == "export" ? snapshot.sourceID : nil)
         let session = EgressSession(ticket: newTicketLocked(), epoch: epoch, mode: mode,
-                                    taskID: taskID, workspaceID: workspaceID, sourceID: sourceID,
+                                    taskID: taskID, workspaceID: workspaceID, sourceID: associatedSource,
                                     logicalPath: logicalPath, snapshotURL: snapshotURL,
                                     sha256: snapshot.sha256, bytes: snapshot.bytes, recoveryID: UUID())
+        if mode == "export", associatedSource == snapshot.sourceID {
+            session.sourceRevision = snapshot.sourceRevision
+        }
         egresses[session.ticket] = session
         counters.opens += 1
         lock.unlock()

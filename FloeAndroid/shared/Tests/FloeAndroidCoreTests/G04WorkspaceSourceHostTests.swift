@@ -391,6 +391,35 @@ final class G04WorkspaceSourceHostTests: XCTestCase {
 
     // MARK: - 4. The save ladder (journal-admitted, native-observed)
 
+    func testEditorExportRetainsBoundOriginalWithoutCallerSourceID() async throws {
+        let boot = try await bootInstalledGeneration()
+        let host = G04WorkspaceSourceHost.shared
+        let cluster = try installedCluster()
+        let (taskID, workspaceID) = try await makeBoundOrdinaryTask()
+        let sourceID = UUID()
+        let payload = Data("editable original".utf8)
+        let imported = try importBytes(host: host, boot: boot, taskID: taskID, workspaceID: workspaceID,
+                                       sourceID: sourceID, path: "docs/edit.txt",
+                                       reference: "content://com.floe.host/document/editor-fixture",
+                                       documentID: "editor-fixture", bytes: payload)
+        XCTAssertEqual(imported?["ok"] as? Int, 1)
+        let store = AndroidWorkspaceSourceStore(database: cluster.database)
+        let lookup = try await store.source(workspaceID: workspaceID, logicalPath: "docs/edit.txt")
+        let source = try XCTUnwrap(lookup)
+        let ticket = host.egressOpen(epoch: boot.epoch, mode: "export", taskHex: taskID.uuidString,
+                                    workspaceHex: workspaceID.uuidString, logicalPath: "docs/edit.txt",
+                                    sourceHex: nil)
+        XCTAssertGreaterThan(ticket, 0)
+        defer { _ = host.egressClose(ticket: ticket) }
+        var buffer = [CChar](repeating: 0, count: 4096)
+        let count = host.egressInfo(ticket: ticket, buffer: &buffer, capacity: 4096)
+        let info = try XCTUnwrap(reply(count, buffer))
+        XCTAssertEqual(info["sourceID"] as? String, sourceID.uuidString)
+        XCTAssertEqual(info["sourceRevision"] as? String, source.revision)
+        XCTAssertEqual(info["sha256"] as? String, FloeDigest.sha256Hex(payload))
+        XCTAssertEqual(info["mode"] as? String, "export", "association alone grants no provider write")
+    }
+
     func testSaveLadderPermitOnceConflictThenCommittedAndRetain() async throws {
         let boot = try await bootInstalledGeneration()
         let host = G04WorkspaceSourceHost.shared
