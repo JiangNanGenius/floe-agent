@@ -1,0 +1,3 @@
+# Unified-diff context markers and the byte-preserved upstream license are intentional.
+Integration/FloeSSH/*.patch -whitespace
+ThirdParty/LICENSE.usb-serial-for-android.txt -whitespace

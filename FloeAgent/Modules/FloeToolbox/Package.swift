@@ -1,0 +1,38 @@
+// swift-tools-version: 6.2
+import PackageDescription
+
+let package = Package(
+    name: "FloeToolbox",
+    platforms: [.iOS(.v26), .macOS(.v15)],
+    products: [
+        .library(name: "FloeToolboxCore", targets: ["FloeToolboxCore"]),
+        .library(name: "FloeToolboxRemoteFiles", targets: ["FloeToolboxRemoteFiles"]),
+        .library(name: "FloeToolboxUI", targets: ["FloeToolboxUI"]),
+        .library(name: "FloeToolboxClients", targets: ["FloeToolboxClients"]),
+        .library(name: "FloeToolboxDiagnostics", targets: ["FloeToolboxDiagnostics"]),
+        .library(name: "FloeToolboxUSB", targets: ["FloeToolboxUSB"]),
+        .library(name: "FloeToolboxUtilities", targets: ["FloeToolboxUtilities"]),
+        .library(name: "FloeToolboxFileTransports", targets: ["FloeToolboxFileTransports"]),
+        .library(name: "FloeToolboxWorkbenches", targets: ["FloeToolboxWorkbenches"]),
+    ],
+    targets: [
+        .target(name: "FloeToolboxUSBWire", publicHeadersPath: "include"),
+        .target(name: "FloeToolboxCore", dependencies: []),
+        .target(name: "FloeToolboxRemoteFiles", dependencies: ["FloeToolboxCore"]),
+        .target(name: "FloeToolboxUI", dependencies: ["FloeToolboxCore", "FloeToolboxRemoteFiles"]),
+        .target(name: "FloeToolboxClients", dependencies: ["FloeToolboxCore"]),
+        .target(name: "FloeToolboxDiagnostics", dependencies: ["FloeToolboxCore", "FloeToolboxClients"]),
+        .target(name: "FloeToolboxUSB", dependencies: ["FloeToolboxCore", "FloeToolboxUSBWire"]),
+        .target(name: "FloeToolboxUtilities", dependencies: ["FloeToolboxCore"]),
+        .target(name: "FloeToolboxFileTransports", dependencies: ["FloeToolboxCore", "FloeToolboxRemoteFiles", "FloeToolboxClients"]),
+        .target(name: "FloeToolboxWorkbenches", dependencies: ["FloeToolboxCore", "FloeToolboxClients", "FloeToolboxDiagnostics", "FloeToolboxUtilities"]),
+        .testTarget(name: "FloeToolboxCoreTests", dependencies: ["FloeToolboxCore"]),
+        .testTarget(name: "FloeToolboxRemoteFilesTests", dependencies: ["FloeToolboxRemoteFiles", "FloeToolboxCore"]),
+        .testTarget(name: "FloeToolboxClientsTests", dependencies: ["FloeToolboxClients", "FloeToolboxCore"], resources: [.copy("Fixtures")]),
+        .testTarget(name: "FloeToolboxDiagnosticsTests", dependencies: ["FloeToolboxDiagnostics", "FloeToolboxCore"]),
+        .testTarget(name: "FloeToolboxUSBTests", dependencies: ["FloeToolboxUSB", "FloeToolboxCore"]),
+        .testTarget(name: "FloeToolboxUtilitiesTests", dependencies: ["FloeToolboxUtilities"]),
+        .testTarget(name: "FloeToolboxFileTransportsTests", dependencies: ["FloeToolboxFileTransports", "FloeToolboxRemoteFiles", "FloeToolboxClients", "FloeToolboxCore"], resources: [.copy("Fixtures")]),
+    ],
+    swiftLanguageModes: [.v6]
+)
