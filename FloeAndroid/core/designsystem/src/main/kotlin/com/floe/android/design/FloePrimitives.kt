@@ -42,6 +42,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.robinpcrd.cupertino.CupertinoAlertDialog
@@ -325,6 +326,7 @@ fun FloeSidebarRow(
     leadingTintUnselected: Color = Floe.colors.accent,
 ) {
     val style = if (selected) selectionStyle else FloeSelectionStyle.NONE
+    val compact = LocalFloeCompactSettings.current
     val capsule = FloeLayout.SidebarSelectionShape
     val container: Color = when (style) {
         FloeSelectionStyle.BLUE -> Floe.colors.accent
@@ -337,15 +339,15 @@ fun FloeSidebarRow(
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = FloeLayout.SidebarRowHeight)
-            .padding(horizontal = 8.dp, vertical = 3.dp)
+            .padding(horizontal = if (compact) 0.dp else 8.dp, vertical = if (compact) 0.dp else 3.dp)
             .clip(capsule)
             .background(container)
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            .padding(horizontal = 10.dp, vertical = if (compact) 4.dp else 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        IconGlyph(icon, iconTint)
+        IconGlyph(icon, iconTint, if (compact) 20.dp else FloeLayout.SidebarRowIconSize)
         FloeText(
             text = label,
             style = Floe.typography.body,
@@ -477,10 +479,13 @@ fun FloeSettingsSectionCard(
     modifier: Modifier = Modifier,
     content: @Composable io.github.robinpcrd.cupertino.section.SectionScope.() -> Unit,
 ) {
+    val compact = LocalFloeCompactSettings.current
     io.github.robinpcrd.cupertino.section.CupertinoSection(
         modifier = modifier.fillMaxWidth(),
         style = SectionStyle.InsetGrouped,
         state = rememberSectionState(canCollapse = false),
+        contentPadding = if (compact) PaddingValues(vertical = 4.dp)
+            else io.github.robinpcrd.cupertino.section.CupertinoSectionDefaults.paddingValues(SectionStyle.InsetGrouped, true),
         title = title?.let { t -> { FloeText(t, style = Floe.typography.groupHeader, color = Floe.colors.secondaryLabel) } },
         content = content,
     )
@@ -512,12 +517,11 @@ fun io.github.robinpcrd.cupertino.section.SectionScope.FloeSwitchRow(
             }
         },
         trailingContent = {
-            CupertinoSwitch(
+            FloeInlineSwitch(
                 checked = checked,
                 onCheckedChange = onCheckedChange,
-                modifier = Modifier
-                    .heightIn(min = FloeLayout.MinimumTarget)
-                    .widthIn(min = 64.dp),
+                description = title,
+                modifier = Modifier.clearAndSetSemantics { },
             )
         },
     )
@@ -526,6 +530,7 @@ fun io.github.robinpcrd.cupertino.section.SectionScope.FloeSwitchRow(
 @Composable
 fun io.github.robinpcrd.cupertino.section.SectionScope.FloeValueRow(title: String, value: String, onClick: (() -> Unit)? = null) {
     SectionItem(
+        paddingValues = floeSettingsRowPadding(),
         modifier = if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier,
         title = { FloeText(title, style = Floe.typography.body) },
         trailingContent = {

@@ -268,8 +268,9 @@ LIMITATIONS = [
     "GitHub publication, --latest=false enforcement, release readback, "
     "download hash comparison, and coverage upgrade installation are outside "
     "this offline tool.",
-    "No Android update feed or update.json is implemented or emitted; this "
-    "stage asset set supports manual installation only.",
+    "This offline preparer does not emit an update feed or delta. App update "
+    "discovery, separately produced update metadata and device installation "
+    "require their own verification.",
     "The single embedded runtime installer asset is accepted only by deep "
     "child verification: exact asset plus digest sidecar pair, bounded "
     "extraction, real apksigner verification with signer-certificate "
@@ -3468,10 +3469,13 @@ def build_body(policy: ReleasePolicy, report: Dict[str, Any]) -> str:
             "",
             "## Updates",
             "",
-            "This stage supports **manual APK installation only**. No Android "
-            "update feed or in-app automatic update check is included yet, and "
-            "this release does not contain `update.json` or another updater "
-            "metadata file. Install newer stage APKs manually when published.",
+            "GitHub builds with the in-app updater can discover eligible "
+            "releases; Android still requires system confirmation to install. "
+            "The complete APK is also available for manual and cross-version "
+            "updates. Incremental updates, when separately provided, require "
+            "a matching base; use the complete APK if a patch cannot be applied. "
+            "This offline preparation step does not publish an update feed "
+            "or produce incremental metadata.",
             "",
             "## Known limitations",
             "",

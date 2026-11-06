@@ -506,6 +506,7 @@ fun DeviceAccessSettingsPage(
     var confirmForget by remember { mutableStateOf(false) }
     var confirmRootCheck by remember { mutableStateOf(false) }
     var confirmAutomatic by remember { mutableStateOf(false) }
+    var appChooserOpen by remember { mutableStateOf(false) }
     var confirmUnlock by remember { mutableStateOf(false) }
     var unlockDraft by remember { mutableStateOf("") }
     var revealUnlock by remember { mutableStateOf(false) }
@@ -513,6 +514,13 @@ fun DeviceAccessSettingsPage(
     // the user enter the six-digit code while Android's pairing dialog stays
     // in front; when it is unavailable the page says so and keeps the manual
     // (split-screen) path explicit instead of claiming a broken return flow.
+    DeviceAccessAppChooser(
+        visible = appChooserOpen,
+        targets = state.targets,
+        enabled = state.busy == DeviceAccessBusyUi.NONE,
+        onSelectionChange = callbacks.onAllowedPackagesChange,
+        onDismiss = { appChooserOpen = false },
+    )
     val context = LocalContext.current
     var notificationAvailability by remember {
         mutableStateOf(PairingNotificationAccess.availability(context))
@@ -591,6 +599,105 @@ fun DeviceAccessSettingsPage(
             style = Floe.typography.metadata,
             color = colors.secondaryLabel,
         )
+
+        // --------------------------------------------------- active task card
+        FloeSettingsSectionCard(title = stringResource(R.string.device_access_active_section)) {
+            val task = state.activeTask
+            if (task == null) {
+                FloeSectionRow(title = {
+                    FloeText(
+                        stringResource(R.string.device_access_active_none),
+                        style = Floe.typography.body,
+                        color = colors.secondaryLabel,
+                    )
+                })
+            } else {
+                FloeSectionRow(title = {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        FloeText(
+                            task.title,
+                            style = Floe.typography.body,
+                            color = colors.label,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 2,
+                        )
+                        FloeBadgePill(
+                            stringResource(DeviceAccessPresentation.taskPhaseRes(task.phase)),
+                            tone = when (task.phase) {
+                                DeviceAccessTaskPhaseUi.TAKEN_OVER -> FloeBadgeTone.SECONDARY
+                                DeviceAccessTaskPhaseUi.STOPPING -> FloeBadgeTone.PENDING
+                                DeviceAccessTaskPhaseUi.WAITING_FOR_USER -> FloeBadgeTone.PENDING
+                                DeviceAccessTaskPhaseUi.RUNNING -> FloeBadgeTone.ACCENT
+                            },
+                        )
+                    }
+                })
+                if (state.taskControl == DeviceAccessTaskControlUi.ARMED) {
+                    FloeActionRow(
+                        label = stringResource(R.string.device_access_stop_task),
+                        onClick = callbacks.onStopActiveTask,
+                        enabled = DeviceAccessPresentation.canStopTask(state),
+                    )
+                    FloeActionRow(
+                        label = stringResource(R.string.device_access_take_over),
+                        onClick = callbacks.onTakeOverActiveTask,
+                        enabled = DeviceAccessPresentation.canTakeOverTask(state),
+                    )
+                    FloeSectionRow(title = {
+                        FloeText(
+                            stringResource(R.string.device_access_take_over_hint),
+                            style = Floe.typography.metadata,
+                            color = colors.secondaryLabel,
+                        )
+                    })
+                } else {
+                    FloeSectionRow(title = {
+                        FloeText(
+                            stringResource(
+                                if (state.taskControl == DeviceAccessTaskControlUi.STOPPED) {
+                                    R.string.device_access_task_stopped
+                                } else {
+                                    R.string.device_access_task_not_allowed
+                                },
+                            ),
+                            style = Floe.typography.metadata,
+                            color = colors.secondaryLabel,
+                        )
+                    })
+                    FloeSectionRow(title = {
+                        FloeCapsuleButton(
+                            stringResource(R.string.device_access_allow_task),
+                            onClick = callbacks.onArmPhoneControl,
+                            enabled = DeviceAccessPresentation.canArmPhoneControl(state),
+                            prominent = true,
+                        )
+                    })
+                    if (!DeviceAccessPresentation.packageTargetsValid(state)) {
+                        FloeSectionRow(title = {
+                            FloeText(
+                                stringResource(R.string.device_access_select_apps_first),
+                                style = Floe.typography.metadata,
+                                color = colors.secondaryLabel,
+                            )
+                        })
+                    }
+                }
+            }
+        }
+
+        FloeSettingsSectionCard(title = stringResource(R.string.device_access_targets_section)) {
+            FloeValueRow(
+                title = stringResource(R.string.device_access_targets_choose),
+                value = stringResource(R.string.device_access_targets_count, state.targets.selectedPackages.size),
+                onClick = { appChooserOpen = true },
+            )
+            if (state.targets.selectedPackages.isEmpty()) {
+                FloeSectionRow(title = {
+                    FloeText(stringResource(R.string.device_access_select_apps_first),
+                        style = Floe.typography.metadata, color = colors.secondaryLabel)
+                })
+            }
+        }
 
         FloeSettingsSectionCard(title = stringResource(R.string.phone_automation_title)) {
             FloeSectionRow(title = { FloeText(stringResource(R.string.phone_automation_automatic)) }, trailing = {
@@ -672,60 +779,6 @@ fun DeviceAccessSettingsPage(
                 label = stringResource(R.string.device_access_open_settings),
                 onClick = callbacks.onOpenAccessibilitySettings,
             )
-        }
-
-        // ------------------------------------------------- target application scope
-        FloeSettingsSectionCard(title = stringResource(R.string.device_access_targets_section)) {
-            FloeSectionRow(title = {
-                FloeText(
-                    stringResource(R.string.device_access_targets_intro),
-                    style = Floe.typography.metadata,
-                    color = colors.secondaryLabel,
-                )
-            })
-            if (state.targets.packages.isEmpty()) {
-                FloeSectionRow(title = {
-                    FloeText(
-                        stringResource(R.string.device_access_targets_empty),
-                        style = Floe.typography.metadata,
-                        color = colors.secondaryLabel,
-                    )
-                })
-            } else {
-                state.targets.packages.forEach { pkg ->
-                    FloeSectionRow(
-                        title = {
-                            Column(Modifier.fillMaxWidth()) {
-                                FloeText(
-                                    pkg.label,
-                                    style = Floe.typography.body,
-                                    color = colors.label,
-                                    maxLines = 1,
-                                )
-                                FloeText(
-                                    pkg.packageName,
-                                    style = Floe.typography.metadata,
-                                    color = colors.secondaryLabel,
-                                    maxLines = 1,
-                                )
-                            }
-                        },
-                        trailing = {
-                            FloeInlineSwitch(
-                                checked = pkg.selected,
-                                onCheckedChange = { checked ->
-                                    val next = state.targets.selectedPackages.toMutableSet()
-                                    if (checked) next += pkg.packageName
-                                    else next -= pkg.packageName
-                                    callbacks.onAllowedPackagesChange(next)
-                                },
-                                description = pkg.label,
-                                enabled = state.busy == DeviceAccessBusyUi.NONE,
-                            )
-                        },
-                    )
-                }
-            }
         }
 
         // ------------------------------------------------------- file ceilings
@@ -874,91 +927,6 @@ fun DeviceAccessSettingsPage(
                     color = colors.secondaryLabel,
                 )
             })
-        }
-
-        // --------------------------------------------------- active task card
-        FloeSettingsSectionCard(title = stringResource(R.string.device_access_active_section)) {
-            val task = state.activeTask
-            if (task == null) {
-                FloeSectionRow(title = {
-                    FloeText(
-                        stringResource(R.string.device_access_active_none),
-                        style = Floe.typography.body,
-                        color = colors.secondaryLabel,
-                    )
-                })
-            } else {
-                FloeSectionRow(title = {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                        FloeText(
-                            task.title,
-                            style = Floe.typography.body,
-                            color = colors.label,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 2,
-                        )
-                        FloeBadgePill(
-                            stringResource(DeviceAccessPresentation.taskPhaseRes(task.phase)),
-                            tone = when (task.phase) {
-                                DeviceAccessTaskPhaseUi.TAKEN_OVER -> FloeBadgeTone.SECONDARY
-                                DeviceAccessTaskPhaseUi.STOPPING -> FloeBadgeTone.PENDING
-                                DeviceAccessTaskPhaseUi.WAITING_FOR_USER -> FloeBadgeTone.PENDING
-                                DeviceAccessTaskPhaseUi.RUNNING -> FloeBadgeTone.ACCENT
-                            },
-                        )
-                    }
-                })
-                if (state.taskControl == DeviceAccessTaskControlUi.ARMED) {
-                    FloeActionRow(
-                        label = stringResource(R.string.device_access_stop_task),
-                        onClick = callbacks.onStopActiveTask,
-                        enabled = DeviceAccessPresentation.canStopTask(state),
-                    )
-                    FloeActionRow(
-                        label = stringResource(R.string.device_access_take_over),
-                        onClick = callbacks.onTakeOverActiveTask,
-                        enabled = DeviceAccessPresentation.canTakeOverTask(state),
-                    )
-                    FloeSectionRow(title = {
-                        FloeText(
-                            stringResource(R.string.device_access_take_over_hint),
-                            style = Floe.typography.metadata,
-                            color = colors.secondaryLabel,
-                        )
-                    })
-                } else {
-                    FloeSectionRow(title = {
-                        FloeText(
-                            stringResource(
-                                if (state.taskControl == DeviceAccessTaskControlUi.STOPPED) {
-                                    R.string.device_access_task_stopped
-                                } else {
-                                    R.string.device_access_task_not_allowed
-                                },
-                            ),
-                            style = Floe.typography.metadata,
-                            color = colors.secondaryLabel,
-                        )
-                    })
-                    FloeSectionRow(title = {
-                        FloeCapsuleButton(
-                            stringResource(R.string.device_access_allow_task),
-                            onClick = callbacks.onArmPhoneControl,
-                            enabled = DeviceAccessPresentation.canArmPhoneControl(state),
-                            prominent = true,
-                        )
-                    })
-                    if (!DeviceAccessPresentation.packageTargetsValid(state)) {
-                        FloeSectionRow(title = {
-                            FloeText(
-                                stringResource(R.string.device_access_select_apps_first),
-                                style = Floe.typography.metadata,
-                                color = colors.secondaryLabel,
-                            )
-                        })
-                    }
-                }
-            }
         }
 
         // ------------------------------------------------------ screen content

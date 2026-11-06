@@ -16,6 +16,8 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -31,6 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
@@ -38,6 +41,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -57,6 +61,12 @@ import io.github.robinpcrd.cupertino.cancel
 import io.github.robinpcrd.cupertino.destructive
 import io.github.robinpcrd.cupertino.section.SectionItem
 import io.github.robinpcrd.cupertino.section.SectionScope
+import io.github.robinpcrd.cupertino.section.CupertinoSectionDefaults
+
+@Composable
+internal fun floeSettingsRowPadding(): PaddingValues =
+    if (LocalFloeCompactSettings.current) PaddingValues(horizontal = 14.dp)
+    else CupertinoSectionDefaults.PaddingValues
 
 /* ------------------------------ grouped rows ------------------------------ */
 
@@ -79,6 +89,7 @@ fun SectionScope.FloeSectionRow(
     trailing: (@Composable RowScope.() -> Unit)? = null,
 ) {
     SectionItem(
+        paddingValues = floeSettingsRowPadding(),
         modifier = modifier
             .then(
                 when {
@@ -147,6 +158,7 @@ fun SectionScope.FloeFormTextField(
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
 ) {
     SectionItem(
+        paddingValues = floeSettingsRowPadding(),
         modifier = modifier,
         title = {
             Box(
@@ -209,6 +221,7 @@ fun SectionScope.FloeSecureFormField(
 ) {
     val colors = Floe.colors
     SectionItem(
+        paddingValues = floeSettingsRowPadding(),
         modifier = modifier,
         title = {
             Row(
@@ -289,6 +302,7 @@ fun SectionScope.FloeFormChooserRow(
 ) {
     val colors = Floe.colors
     SectionItem(
+        paddingValues = floeSettingsRowPadding(),
         modifier = modifier.clickable(enabled = enabled, role = Role.Button, onClick = onClick),
         title = {
             Row(
@@ -443,6 +457,7 @@ fun SectionScope.FloeActionRow(
 ) {
     val colors = Floe.colors
     SectionItem(
+        paddingValues = floeSettingsRowPadding(),
         modifier = modifier,
         title = {
             Row(
@@ -566,10 +581,13 @@ fun FloeInlineSwitch(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
+    val compact = LocalFloeCompactSettings.current
     Box(
         modifier = modifier
             .heightIn(min = FloeLayout.MinimumTarget)
-            .widthIn(min = FloeLayout.MinimumTarget)
+            .widthIn(min = if (compact) 52.dp else 64.dp)
+            .toggleable(checked, enabled = enabled, role = Role.Switch,
+                onValueChange = onCheckedChange)
             .semantics { contentDescription = description },
         contentAlignment = Alignment.Center,
     ) {
@@ -577,8 +595,11 @@ fun FloeInlineSwitch(
             checked = checked,
             onCheckedChange = onCheckedChange,
             modifier = Modifier
-                .heightIn(min = FloeLayout.MinimumTarget)
-                .widthIn(min = 64.dp),
+                .graphicsLayer {
+                    scaleX = if (compact) 0.9f else 1f
+                    scaleY = if (compact) 0.9f else 1f
+                }
+                .clearAndSetSemantics { },
             enabled = enabled,
         )
     }

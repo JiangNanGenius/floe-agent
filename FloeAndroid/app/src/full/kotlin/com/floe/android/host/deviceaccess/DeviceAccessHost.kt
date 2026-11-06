@@ -3105,8 +3105,26 @@ internal class DeviceAccessHost(
     private fun systemStatus(): PlatformToolOutcome {
         val adb = adbStatus
         val root = rootStatus
+        val phone = phoneStatus
+        val targets = settings.allowedPackages
         val roots = effectiveSelectedRoots()
         val summary = buildString {
+            append("phoneEnabled=").append(phone.enabled)
+            append(" connected=").append(phone.connected)
+            append(" blocker=").append(phone.blocker?.name?.lowercase() ?: "none")
+            append(" selectedApps=").append(targets.size)
+            append(" toolsAvailable=").append(phoneServiceUsable(phone) && targets.isNotEmpty())
+            append(" userStopped=").append(userStopped)
+            append(" automaticControl=").append(settings.automaticPhoneControl)
+            val phoneNext = when {
+                !phone.enabled -> "enable_accessibility"
+                !phone.connected -> "connect_accessibility"
+                targets.isEmpty() -> "select_target_apps"
+                userStopped || !phoneServiceUsable(phone) -> "allow_task_again"
+                else -> "task_authorization_checked_on_call"
+            }
+            append("\nphoneNext=").append(phoneNext)
+            append(" (Settings > Phone; VNC is not phone UI)\n")
             append("adb=").append(
                 when (adb) {
                     is AdbStatus.ServiceAlive -> "alive(uid=${adb.effectiveUid})"

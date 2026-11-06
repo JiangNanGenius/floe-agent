@@ -176,4 +176,8 @@
     <string name="device_access_usb_bootstrap">复制 USB 初始化命令</string>
     <string name="device_access_usb_bootstrap_copied">已复制 USB 初始化命令。请在电脑上用 ADB 执行一次。</string>
     <string name="device_access_accessibility_restricted_hint">如果 Android 限制了此应用，请在应用信息中允许受限设置，然后重新启用服务。</string>
+    <string name="device_access_targets_choose">选择应用</string>
+    <string name="device_access_targets_count">已选：%1$d</string>
+    <string name="device_access_targets_search">搜索名称或包名</string>
+    <string name="device_access_targets_no_matches">没有匹配的应用</string>
 </resources>

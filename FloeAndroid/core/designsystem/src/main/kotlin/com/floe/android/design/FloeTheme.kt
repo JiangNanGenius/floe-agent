@@ -8,7 +8,10 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.ProvidableCompositionLocal
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import io.github.robinpcrd.cupertino.theme.CupertinoTheme
 import io.github.robinpcrd.cupertino.theme.darkColorScheme
 import io.github.robinpcrd.cupertino.theme.lightColorScheme
@@ -35,6 +38,32 @@ fun floeIsDarkAppearance(themeMode: FloeThemeMode): Boolean = when (themeMode) {
 
 internal val LocalFloeColors: ProvidableCompositionLocal<FloeColors> = staticCompositionLocalOf { FloeLightColors }
 internal val LocalFloeType: ProvidableCompositionLocal<FloeTypography> = staticCompositionLocalOf { FloeTypography() }
+internal val LocalFloeCompactSettings = staticCompositionLocalOf { false }
+
+/** Compact form chrome only; document/chat reading and system font scale stay independent. */
+@Composable
+fun FloeSettingsContentDensity(compact: Boolean, content: @Composable () -> Unit) {
+    if (!compact) {
+        content()
+        return
+    }
+    val base = Floe.typography
+    val type = remember(base) {
+        base.copy(
+            title = base.title.copy(fontSize = 20.sp, lineHeight = 25.sp),
+            section = base.section.copy(fontSize = 15.sp, lineHeight = 21.sp),
+            body = base.body.copy(fontSize = 15.sp, lineHeight = 21.sp),
+            bodyEmphasized = base.bodyEmphasized.copy(fontSize = 15.sp, lineHeight = 21.sp),
+            metadata = base.metadata.copy(fontSize = 12.sp, lineHeight = 17.sp),
+            groupHeader = base.groupHeader.copy(fontSize = 12.sp, lineHeight = 16.sp),
+        )
+    }
+    CompositionLocalProvider(
+        LocalFloeType provides type,
+        LocalFloeCompactSettings provides true,
+        content = content,
+    )
+}
 
 /** Semantic accessors — business pages never hard-code colors or text styles. */
 object Floe {

@@ -60,6 +60,7 @@ import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloePageSheet
 import com.floe.android.design.FloeSelectionStyle
 import com.floe.android.design.FloeSegmented
+import com.floe.android.design.FloeSettingsContentDensity
 import com.floe.android.design.FloeSettingsSectionCard
 import com.floe.android.design.FloeSettingsSection
 import com.floe.android.design.FloeSettingsHostGeometry
@@ -164,10 +165,14 @@ fun SettingsSheet(
             }
         }
     }
+    val configuration = LocalConfiguration.current
+    val compactSettings = FloeLayout.usesCompactNavigation(
+        configuration.screenWidthDp.toFloat(), configuration.smallestScreenWidthDp.toFloat())
+    FloeSettingsContentDensity(compactSettings) {
     FloePageSheet(
         visible = visible,
         onDismiss = onDismiss,
-        topInset = FloeLayout.SettingsSheetTopInset,
+        topInset = if (compactSettings) 16.dp else FloeLayout.SettingsSheetTopInset,
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             // Measured inside the actual page-sheet window so boundsInWindow()
@@ -483,6 +488,7 @@ fun SettingsSheet(
             }
         }
     }
+    }
 }
 
 /** Wide sidebar chrome: section-list title, Done and the column toggle. */
@@ -553,8 +559,8 @@ private fun SheetToolbar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(FloeLayout.ToolbarHeight + 6.dp)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .heightIn(min = FloeLayout.ToolbarHeight)
+            .padding(horizontal = 12.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (compactDetail) {

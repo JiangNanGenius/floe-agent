@@ -179,4 +179,8 @@
     <string name="device_access_usb_bootstrap">Copy USB setup command</string>
     <string name="device_access_usb_bootstrap_copied">USB setup command copied. Run it once from a computer with ADB.</string>
     <string name="device_access_accessibility_restricted_hint">If Android blocks this app, open App info and allow restricted settings, then enable the service again.</string>
+    <string name="device_access_targets_choose">Choose apps</string>
+    <string name="device_access_targets_count">Selected: %1$d</string>
+    <string name="device_access_targets_search">Search name or package</string>
+    <string name="device_access_targets_no_matches">No matching apps</string>
 </resources>
