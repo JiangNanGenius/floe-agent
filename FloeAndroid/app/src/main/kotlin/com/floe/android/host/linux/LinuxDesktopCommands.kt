@@ -83,9 +83,12 @@ internal object LinuxDesktopCommands {
               # A child must never consume the control stream (including APT
               # and GUI applications that read stdin during first-run setup).
               # PCManFM may keep a live singleton without a visible window.
-              # The launcher action must open this project's working directory.
+              # Use the resolved shell's absolute project path: a native GUI
+              # child's relative "." can resolve to the guest process root.
               if test "${'$'}gui_editor" = pcmanfm && test "${'$'}#" = 0; then
-                set -- --new-win .
+                case "${'$'}PWD" in /*) ;; *) printf '\nFLOE_APP_FAILED:%s:file\n' "${'$'}gui_ack"; return ;; esac
+                if ! test -d "${'$'}PWD"; then printf '\nFLOE_APP_FAILED:%s:file\n' "${'$'}gui_ack"; return; fi
+                set -- --new-win "${'$'}PWD"
               fi
               "${'$'}gui_editor" "${'$'}@" </dev/null >/dev/null 2>&1 &
               gui_child=${'$'}!

@@ -66,7 +66,7 @@ class LinuxDesktopCommandsTest {
             process.outputStream.write(LinuxDesktopCommands.application("pcmanfm", false, "1".repeat(32)))
             process.outputStream.flush()
             awaitLine("FLOE_APP_STARTED:" + "1".repeat(32))
-            assertEquals(":171|--new-win|.|synthetic-project-bus", awaitTrace(root.resolve("pcmanfm-trace")))
+            assertEquals(":171|--new-win|${root.canonicalPath}|synthetic-project-bus", awaitTrace(root.resolve("pcmanfm-trace")))
             process.outputStream.write(LinuxDesktopCommands.application("gimp", false, "c".repeat(32))
                 .toString(Charsets.UTF_8).replace("\n", "\r\n").toByteArray())
             process.outputStream.flush()
