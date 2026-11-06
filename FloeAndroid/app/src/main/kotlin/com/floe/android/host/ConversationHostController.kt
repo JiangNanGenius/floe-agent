@@ -3206,13 +3206,14 @@ class ConversationHostController internal constructor(
             )) { outcome ->
                 if (host.nativeRootEpoch() != ownerEpoch || outcome !is HostOperationOutcome.Completed) return@trackOperation
                 val page = ConversationWire.decodeSnapshotPage(outcome.value) ?: return@trackOperation
-                if (page.runID != runID) return@trackOperation
+                val durableRunID = com.floe.android.host.notification.NotificationRunIdentity
+                    .resolve(runID, page.runID) ?: return@trackOperation
                 if (page.isTerminal) {
-                    host.runForeground?.agentRunSettled(runID)
+                    host.runForeground?.agentRunSettled(durableRunID)
                     return@trackOperation
                 }
                 host.trackOperation(HostCommandRequest(
-                    command = "run.cancel", scope = HostScope.TaskExecution(conversationID, runID),
+                    command = "run.cancel", scope = HostScope.TaskExecution(conversationID, durableRunID),
                     stateful = true, correlationID = client().correlationID("notify-cancel"),
                     revision = HostRevision(page.revision.resourceID, page.revision.version),
                     payload = JsonObject(mapOf("expectedState" to JsonPrimitive(page.durableState))),

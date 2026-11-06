@@ -91,4 +91,18 @@ class C07EntryRoutePolicyTest {
         assertNull(C07EntryNotification.validQuestionId("bad id"))
         assertNull(C07EntryNotification.validQuestionTextId("q".repeat(161)))
     }
+
+    @Test
+    fun taskReturnUsesStoreIdentityRatherThanLinkSpelling() {
+        val route = C07EntryRouteParser.parse("floe://task/${task.uppercase()}")
+            as C07RouteParse.Parsed
+        val requested = (route.route as C07EntryRoute.Task).conversationID
+        assertEquals(task, requested)
+        assertEquals(task.uppercase(), C07EntryIds.durableTaskId(requested, task.uppercase()))
+        assertEquals(task, C07EntryIds.durableTaskId(requested.uppercase(), task))
+        assertNull(C07EntryIds.durableTaskId(requested, schedule))
+        assertNull(C07EntryIds.durableTaskId(requested, null))
+        assertNull(C07EntryIds.durableTaskId(requested, task + " "))
+        assertNull(C07EntryIds.durableTaskId("not-a-uuid", task))
+    }
 }

@@ -119,6 +119,14 @@ internal object C07EntryRouteParser {
 
 /** Strict canonical UUID identity used by links and notification payloads. */
 internal object C07EntryIds {
+    /** Link spelling is not the key of a live holder. Keep the store's exact
+     * UUID spelling after proving that it identifies the requested task. */
+    fun durableTaskId(requested: String, returned: String?): String? {
+        val target = canonicalUuid(requested) ?: return null
+        val actual = canonicalUuid(returned) ?: return null
+        return returned?.takeIf { actual == target }
+    }
+
     fun canonicalUuid(value: String?): String? {
         if (value == null || value.length != 36) return null
         if (value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-') return null

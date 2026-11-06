@@ -1179,9 +1179,9 @@ internal object C07EntryFlowHost {
             return
         }
         linkJob = scope.launch {
-            val exists = withContext(io) { durableTaskExists(conversationID) }
-            if (exists) {
-                navigationState.value = C07EntryNavigation.OpenTask(conversationID)
+            val durableID = withContext(io) { resolveDurableTaskID(conversationID) }
+            if (durableID != null) {
+                navigationState.value = C07EntryNavigation.OpenTask(durableID)
             } else {
                 showNotice(EntryNoticeKind.TASK_UNAVAILABLE)
             }
@@ -1216,9 +1216,9 @@ internal object C07EntryFlowHost {
         while (pendingRoutes.size > 4) pendingRoutes.removeFirst()
     }
 
-    private suspend fun durableTaskExists(conversationID: String): Boolean {
-        val host = runtimeHost ?: return false
-        val deferred = CompletableDeferred<Boolean>()
+    private suspend fun resolveDurableTaskID(conversationID: String): String? {
+        val host = runtimeHost ?: return null
+        val deferred = CompletableDeferred<String?>()
         host.trackOperation(
             request = HostCommandRequest(
                 command = "conversation.get",
@@ -1232,15 +1232,15 @@ internal object C07EntryFlowHost {
                     val root = outcome.value as? JsonObject
                     val replyID = (root?.get("conversationID") as? JsonPrimitive)
                         ?.contentOrNull
-                    deferred.complete(replyID?.equals(conversationID, ignoreCase = true) == true)
+                    deferred.complete(C07EntryIds.durableTaskId(conversationID, replyID))
                 }
-                is HostOperationOutcome.Rejected -> deferred.complete(false)
-                is HostOperationOutcome.Failed -> deferred.complete(false)
+                is HostOperationOutcome.Rejected -> deferred.complete(null)
+                is HostOperationOutcome.Failed -> deferred.complete(null)
                 HostOperationOutcome.Cancelled,
-                HostOperationOutcome.Superseded -> deferred.complete(false)
+                HostOperationOutcome.Superseded -> deferred.complete(null)
             }
         }
-        return withTimeoutOrNull(12_000L) { deferred.await() } ?: false
+        return withTimeoutOrNull(12_000L) { deferred.await() }
     }
 
     private suspend fun durableScheduleExists(scheduleID: String): Boolean {
