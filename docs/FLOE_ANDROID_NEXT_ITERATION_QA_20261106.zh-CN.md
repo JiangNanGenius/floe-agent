@@ -152,3 +152,15 @@ Android 更接近电脑上的 Agent 工作台：Floe 负责任务、文件、授
 QA01–QA24 以及“任务异常不自动上传”“三星为主、模拟器参考”“仅真实冲突再协调”的后续修正均已入表。规划创建时仅新增计划和链接。随后已推进 N01–N08 代码接线；源码检查点 `c9a5f5fc2664151af8a63f863e72aa171c02dcfc` 已推送并读回。该检查点尚未通过集中编译、三星实测或 APK 发行；这些状态分别记录，不以源码提交代替可用版本。候选采用 Alpha26/code45，App 与 Linux 组件共用递增版本，防止旧运行组件接受新文件修订协议。
 
 English: Android remains a lightweight Agent workspace. Prefer external Android editors, then project-scoped ARM64 Linux graphical applications; retain local preview, Notes, a lightweight IDE and quick edits. Implement the whole agreed code scope before per-feature Samsung testing and repairs. Intermediate GitHub prereleases may expose known limitations. Reporting is consented for App crashes/internal faults, never automatic for ordinary task errors; screenshots are opt-in. Emulator evidence is primarily for layout and remains separate from physical-device acceptance.
+
+## 8. 本轮三星修复进展（2026-11-06）
+
+继续按完整代码接入、集中编译、三星使用后修复的顺序推进；总目标仍包含 N01–N08 的交付。仅因实际故障更新受影响的包，不重跑未改组件或全量矩阵。
+
+- **任务与文件入口：** 修复工作区和执行位置按钮空回调。三星已实际打开任务文件列表、全屏编辑器，并读回已有终端成果。
+- **Linux：** 三星手动终端实际执行命令并返回 `aarch64`。修复图形会话冷启动的工作区误判和 VNC 凭据命名空间错误后，已安装图形依赖、连接本机图形会话并显示 Mousepad。文件编辑回传仍需继续实测；图形窗口可见不代表保存闭环通过。
+- **外部编辑：** 增加恢复记录中的编辑器重选入口；实测发现文件提供器组件身份冲突，已改为独立组件，待新包复测文件读取和保存回传。不扩大第三方编辑器存储权限来掩盖问题。
+- **诊断：** 修复客户端回执解析和服务端重复回执关联。三星一次无附件手动反馈显示真实接收回执，服务端已读回对应持久记录；自动上报同意开关保持关闭。此证据仅覆盖手动反馈链路。
+- **发行：** Alpha26/code45 已构建实用 Full 候选，新增原生改动通过实际 ARM64 对象编译；未改库复用原证据。按需 Office 组件和对应源码正在绑定同一公开来源，尚未发布新版 Release。继续完成编辑保存、组件安装和更新路径；中间版本按已确认规则说明未验证项。
+
+清理已归并三份重复 Office 组件文件，减少 345,022,128 字节；日志服务部署临时文件已清理 82,476,727 字节。保留当前候选、原始故障、精确生产记录和必要恢复材料，编译缓存继续用于紧接的修复批次。
