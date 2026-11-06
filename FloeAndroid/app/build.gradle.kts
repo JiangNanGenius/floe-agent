@@ -627,6 +627,8 @@ dependencies {
     // Explicit pin: the dispatcher relies on CoroutineStart.UNDISPATCHED
     // semantics from the repository-resolved 1.9.0 line.
     implementation(libs.kotlinx.coroutines.core)
+    // Bounded diagnostics uploads need write and whole-call deadlines.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // RB1-R6: structured JSON tree parsing for the bootstrap readback/
     // status/effect channels (no Regex, no handwritten parser). 1.9.0 is
     // already present in gradle/verification-metadata.xml with jar/module

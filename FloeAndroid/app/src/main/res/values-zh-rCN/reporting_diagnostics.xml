@@ -1,4 +1,6 @@
 <resources>
+    <string name="reporting_screenshot_feedback">截图反馈（%1$d 张）</string>
+    <string name="reporting_upload_progress">正在上传：%1$d%%。传输完成后等待服务器接收回执。</string>
     <string name="reporting_image_count">每次最多选择四张截图，本次选择未添加，请重新选择。</string>
     <string name="reporting_saved_for_upload">报告已保存在本机，正在排队上传。除非允许其他网络，截图默认等待 Wi-Fi。服务器确认收到后，此窗口会显示接收回执。</string>
     <string name="reporting_image_memory">处理图片时内存不足，请关闭其他应用或选择较小的截图。</string>

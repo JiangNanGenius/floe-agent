@@ -20,10 +20,9 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.floe.android.BuildConfig
 import com.floe.android.FloeApplication
+import com.floe.android.R
 import com.floe.android.host.entryflow.C07EntryRedactor
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.Locale
@@ -40,7 +39,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 internal data class DiagnosticReportRow(val id: String, val kind: String, val state: String,
-    val reportID: String?, val errorCode: String?, val attachments: Int)
+    val reportID: String?, val errorCode: String?, val attachments: Int,
+    val transferred: Long = 0, val transferTotal: Long = 0, val uploading: Boolean = false)
 internal data class DiagnosticReportingState(val automatic: Boolean = false,
     val reports: List<DiagnosticReportRow> = emptyList())
 
@@ -50,6 +50,8 @@ internal class DiagnosticReportService(private val context: Context) {
     private val root = File(context.noBackupFilesDir, "DiagnosticReports")
     private val gate = Any()
     private val uploadGate = Mutex()
+    private val transfers = HashMap<String, Pair<Long, Long>>()
+    private val transport = ReportUploadTransport()
     private val mutable = MutableStateFlow(DiagnosticReportingState())
     val state = mutable.asStateFlow()
     private var attached = false
@@ -124,7 +126,7 @@ internal class DiagnosticReportService(private val context: Context) {
 
     suspend fun submitManual(problem: String, screenshots: List<Uri>, allowAttachmentsOnAnyNetwork: Boolean): String =
         withContext(Dispatchers.IO) {
-            require(problem.isNotBlank() && screenshots.size <= 4)
+            require((problem.isNotBlank() || screenshots.isNotEmpty()) && screenshots.size <= 4)
             val id = UUID.randomUUID().toString()
             val images = ArrayList<File>()
             try {
@@ -132,7 +134,9 @@ internal class DiagnosticReportService(private val context: Context) {
                 screenshots.forEachIndexed { index, uri ->
                     images += importScreenshot(uri, File(root, "$id-$index.jpg"))
                 }
-                val row = newRecord("manual", C07EntryRedactor.redact(problem.take(8_000)), images,
+                val description = problem.takeIf { it.isNotBlank() }
+                    ?: context.getString(R.string.reporting_screenshot_feedback, images.size)
+                val row = newRecord("manual", C07EntryRedactor.redact(description.take(8_000)), images,
                     allowAttachmentsOnAnyNetwork).put("id", id)
                 synchronized(gate) { save(row) }
                 refresh(); enqueue(); id
@@ -215,7 +219,7 @@ internal class DiagnosticReportService(private val context: Context) {
                             .put("error", when (failure) {
                                 is ReportTransportFailure -> failure.code
                                 is java.net.UnknownHostException -> "network_dns"
-                                is java.net.SocketTimeoutException -> "network_timeout"
+                                is java.io.InterruptedIOException -> "network_timeout"
                                 is javax.net.ssl.SSLException -> "network_tls"
                                 else -> "network_connection"
                             }))
@@ -228,40 +232,30 @@ internal class DiagnosticReportService(private val context: Context) {
     }
 
     private fun upload(row: JSONObject): String {
-        val connection = URL(ENDPOINT).openConnection() as HttpURLConnection
+        val id = row.getString("id")
         try {
-            val boundary = "Floe${UUID.randomUUID()}"
-            connection.requestMethod = "POST"; connection.doOutput = true
-            connection.instanceFollowRedirects = false
-            connection.connectTimeout = 20_000; connection.readTimeout = 20_000
-            connection.setChunkedStreamingMode(32_768)
-            connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-            connection.outputStream.use { output ->
-                fun text(value: String) { output.write(value.toByteArray(Charsets.UTF_8)) }
-                text("--$boundary\r\nContent-Disposition: form-data; name=\"manifest\"\r\nContent-Type: application/json\r\n\r\n")
-                text(row.getJSONObject("manifest").toString()); text("\r\n")
-                val images = row.getJSONArray("images")
-                for (index in 0 until images.length()) {
-                    text("--$boundary\r\nContent-Disposition: form-data; name=\"screenshots\"; filename=\"image-$index.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n")
-                    File(root, images.getString(index)).inputStream().use { it.copyTo(output, 32_768) }
-                    text("\r\n")
-                }
-                text("--$boundary--\r\n")
+            val names = row.getJSONArray("images")
+            val images = (0 until names.length()).map { File(root, names.getString(it)) }
+            // Previously queued reports keep their identity and images across
+            // upgrades. Reduce old oversized attachments before resuming them.
+            for (image in images) if (image.length() > ReportScreenshot.OUTPUT_LIMIT) {
+                val temporary = File(root, "${UUID.randomUUID()}.jpg")
+                try {
+                    ReportScreenshot.prepare(image.inputStream(), File(root, "${UUID.randomUUID()}.import"), temporary)
+                    java.nio.file.Files.move(temporary.toPath(), image.toPath(),
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                } finally { temporary.delete() }
             }
-            val status = connection.responseCode
+            val (status, data) = transport.post(ENDPOINT, row.getJSONObject("manifest").toString(), images) { bytes, total ->
+                synchronized(gate) {
+                    transfers[id] = bytes to total
+                    mutable.value = mutable.value.copy(reports = mutable.value.reports.map {
+                        if (it.id == id) it.copy(transferred = bytes, transferTotal = total, uploading = true) else it
+                    })
+                }
+            }
             if (status == 429 || status >= 500) throw ReportTransportFailure("http_$status")
             if (status !in 200..299) throw ReportRejected(status)
-            val data = connection.inputStream.use { input ->
-                val output = java.io.ByteArrayOutputStream()
-                val buffer = ByteArray(4_096)
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    require(output.size() + count <= 65_536)
-                    output.write(buffer, 0, count)
-                }
-                output.toString("UTF-8")
-            }
             val receipt = try { JSONObject(data) } catch (_: org.json.JSONException) { throw ReportReceiptRejected() }
             val reportID = receipt.optString("report_id")
             val eventID = row.getJSONObject("manifest").getJSONArray("events").getJSONObject(0).getString("client_event_id")
@@ -278,7 +272,7 @@ internal class DiagnosticReportService(private val context: Context) {
             if (!reportID.matches(Regex("[A-Za-z0-9_-]{8,128}")) ||
                 rejected == null || rejected.length() != 0 || !(fresh || duplicate)) throw ReportReceiptRejected()
             return reportID
-        } finally { connection.disconnect() }
+        } finally { synchronized(gate) { transfers.remove(id) }; refresh() }
     }
 
     fun retry(id: String) {
@@ -327,7 +321,8 @@ internal class DiagnosticReportService(private val context: Context) {
         mutable.value = DiagnosticReportingState(preferences.getBoolean("automatic", false), records().map {
             DiagnosticReportRow(it.getString("id"), it.getString("kind"), it.getString("state"),
                 it.optString("report_id").takeIf(String::isNotEmpty), it.optString("error").takeIf(String::isNotEmpty),
-                it.getJSONArray("images").length())
+                it.getJSONArray("images").length(), transfers[it.getString("id")]?.first ?: 0,
+                transfers[it.getString("id")]?.second ?: 0, transfers.containsKey(it.getString("id")))
         })
     } }
     private fun onWifi(): Boolean {

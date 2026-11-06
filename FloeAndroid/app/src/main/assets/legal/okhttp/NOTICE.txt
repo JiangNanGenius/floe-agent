@@ -1,0 +1,4 @@
+OkHttp 4.12.0 and Okio JVM 3.6.0
+Copyright (C) Square, Inc. and contributors.
+Apache License, Version 2.0. See LICENSE.txt and pinned source file notices.
+OkHttp Public Suffix List attribution: okhttp-NOTICE; license: PublicSuffix-MPL-2.0.txt.

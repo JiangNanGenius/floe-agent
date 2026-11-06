@@ -72,7 +72,7 @@ internal fun DiagnosticReportingSettings() {
             })
         }
         FloeActionRow(label = stringResource(if (sending) R.string.reporting_preparing else R.string.reporting_submit),
-            enabled = !sending && problem.isNotBlank(), onClick = {
+            enabled = !sending && (problem.isNotBlank() || images.isNotEmpty()), onClick = {
                 sending = true; failure = null
                 val currentProblem = problem
                 val currentImages = images
@@ -106,9 +106,11 @@ internal fun DiagnosticReportingSettings() {
             FloeSectionRow(title = {
                 Column {
                     FloeText(stringResource(if (row.kind == "manual") R.string.reporting_manual else R.string.reporting_fault))
-                    FloeText(when (row.state) {
-                        "sent" -> stringResource(R.string.reporting_receipt, row.reportID.orEmpty())
-                        "failed" -> stringResource(R.string.reporting_rejected)
+                    FloeText(when {
+                        row.uploading -> stringResource(R.string.reporting_upload_progress,
+                            row.transferred * 100 / row.transferTotal.coerceAtLeast(1))
+                        row.state == "sent" -> stringResource(R.string.reporting_receipt, row.reportID.orEmpty())
+                        row.state == "failed" -> stringResource(R.string.reporting_rejected)
                         else -> stringResource(R.string.reporting_queued)
                     }, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
                     if (row.state != "sent") row.errorCode?.let {
@@ -140,9 +142,11 @@ internal fun DiagnosticReportingSettings() {
     }
     submittedID?.let { id ->
         val row = state.reports.firstOrNull { it.id == id }
-        val message = when (row?.state) {
-            "sent" -> stringResource(R.string.reporting_receipt, row.reportID.orEmpty())
-            "failed" -> reportErrorMessage(row.errorCode.orEmpty())
+        val message = when {
+            row?.uploading == true -> stringResource(R.string.reporting_upload_progress,
+                row.transferred * 100 / row.transferTotal.coerceAtLeast(1))
+            row?.state == "sent" -> stringResource(R.string.reporting_receipt, row.reportID.orEmpty())
+            row?.state == "failed" -> reportErrorMessage(row.errorCode.orEmpty())
             else -> row?.errorCode?.let { reportErrorMessage(it) }
                 ?: stringResource(R.string.reporting_saved_for_upload)
         }

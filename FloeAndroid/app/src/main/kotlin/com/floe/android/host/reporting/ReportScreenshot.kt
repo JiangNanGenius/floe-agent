@@ -12,7 +12,7 @@ import kotlin.math.sqrt
 /** Bound decoding by pixels, not by the compressed size of a tall screenshot. */
 internal object ReportScreenshot {
     const val INPUT_LIMIT = 64L * 1024 * 1024
-    const val OUTPUT_LIMIT = 1024 * 1024
+    const val OUTPUT_LIMIT = 500 * 1024
     private const val PIXELS = 4_000_000L
     private const val EDGE = 4096
 
@@ -49,7 +49,9 @@ internal object ReportScreenshot {
             }
             bitmap = BitmapFactory.decodeFile(source.path, options) ?: throw IOException("image_invalid")
             // Enforce the final contract even if a device decoder rounds its sample dimensions.
-            val scale = minOf(1.0, EDGE.toDouble() / max(bitmap.width, bitmap.height),
+            // Match the receiving service's 1600px / 500KiB normalization,
+            // so mobile uploads do not transfer pixels the server discards.
+            val scale = minOf(1.0, 1600.0 / max(bitmap.width, bitmap.height),
                 sqrt(PIXELS.toDouble() / (bitmap.width.toLong() * bitmap.height)))
             if (scale < 1.0) {
                 val reduced = Bitmap.createScaledBitmap(bitmap, max(1, (bitmap.width * scale).toInt()),

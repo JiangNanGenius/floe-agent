@@ -1,0 +1,19 @@
+{
+  "libraries": [
+    {
+      "name": "okhttp",
+      "version": "4.12.0",
+      "source": "https://repo.maven.apache.org/maven2/com/squareup/okhttp3/okhttp/4.12.0/okhttp-4.12.0-sources.jar",
+      "sourceSha256": "d91a769a4140e542cddbac4e67fcf279299614e8bfd53bd23b85e60c2861341c"
+    },
+    {
+      "name": "okio-jvm",
+      "version": "3.6.0",
+      "source": "https://repo.maven.apache.org/maven2/com/squareup/okio/okio-jvm/3.6.0/okio-jvm-3.6.0-sources.jar",
+      "sourceSha256": "870a42a7b468af8fd24d67b7b62e5861aab398c56f15a80b10642e7001564e2f"
+    }
+  ],
+  "license": "Apache-2.0; OkHttp Public Suffix List retains its bundled NOTICE and MPL-2.0.",
+  "artifactPins": "app and Office Gradle locks plus verification-metadata.xml; previous pins preserved",
+  "apacheLicenseSha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+}
