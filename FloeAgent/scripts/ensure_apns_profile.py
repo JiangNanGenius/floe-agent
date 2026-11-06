@@ -110,7 +110,9 @@ def ensure_profile(api, profile_path, declared, report):
         return
 
     bundle_id = exact_bundle_id(api.rows("/v1/bundleIds?" + urlencode({"filter[identifier]": APP_ID, "limit": 2})))
-    caps_path = "/v1/bundleIds/" + bundle_id + "/bundleIdCapabilities?limit=200"
+    # This relationship currently rejects the optional limit parameter.
+    # rows() still follows every next link returned by Apple.
+    caps_path = "/v1/bundleIds/" + bundle_id + "/bundleIdCapabilities"
     caps = api.rows(caps_path)
     if not any(row["attributes"].get("capabilityType") == "PUSH_NOTIFICATIONS" for row in caps):
         api.call("POST", "/v1/bundleIdCapabilities", {"data": {
@@ -123,7 +125,7 @@ def ensure_profile(api, profile_path, declared, report):
     old_certificates = {digest(bytes(value)) for value in old.get("DeveloperCertificates", [])}
     require(bool(old_certificates), "Existing certificate binding missing")
     matching = []
-    for certificate in api.rows("/v1/certificates?limit=200"):
+    for certificate in api.rows("/v1/certificates"):
         attributes = certificate.get("attributes", {})
         content = attributes.get("certificateContent")
         if not content:

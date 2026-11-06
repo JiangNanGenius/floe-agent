@@ -11,11 +11,48 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sign_app_store_extensions import (APP_ID, EXTENSIONS, TEAM, inventory,
     production_host_entitlements, validated_entitlements)
-from ensure_apns_profile import exact_bundle_id, SigningAPIError
+from ensure_apns_profile import exact_bundle_id, SigningAPIError, ensure_profile
 import ensure_apns_profile
 
 
 class ExtensionSigningTests(unittest.TestCase):
+    def test_profile_preparation_uses_supported_relationship_query_and_same_certificate(self):
+        import base64
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); profile = root / "host.mobileprovision"; profile.write_bytes(b"original-profile")
+            declared = {"com.apple.security.application-groups": ["group." + APP_ID], "aps-environment": "production"}
+            old = {"TeamIdentifier": [TEAM], "ExpirationDate": datetime.now(timezone.utc) + timedelta(days=30),
+                   "DeveloperCertificates": [b"fixture-certificate"], "Entitlements": {
+                       "com.apple.security.application-groups": ["group." + APP_ID],
+                       "application-identifier": TEAM + "." + APP_ID, "get-task-allow": False,
+                       "beta-reports-active": True, "keychain-access-groups": [TEAM + ".*"]}}
+            new = {**old, "Entitlements": {**old["Entitlements"], "aps-environment": "production"}}
+            calls = []
+            class API:
+                def rows(self, path):
+                    calls.append(("GET", path))
+                    if path.startswith("/v1/bundleIds?"):
+                        return [{"id": "app", "attributes": {"identifier": APP_ID}},
+                                {"id": "extension", "attributes": {"identifier": APP_ID + ".share"}}]
+                    if path == "/v1/bundleIds/app/bundleIdCapabilities":
+                        return [{"attributes": {"capabilityType": "PUSH_NOTIFICATIONS"}}]
+                    if path == "/v1/certificates":
+                        return [{"id": "cert", "attributes": {"certificateContent": base64.b64encode(b"fixture-certificate").decode()}}]
+                    raise AssertionError("Unsupported relationship query: " + path)
+                def call(self, method, path, body=None):
+                    calls.append((method, path))
+                    if (method, path) != ("POST", "/v1/profiles"): raise AssertionError((method, path))
+                    self.request = body
+                    return {"data": {"type": "profiles", "id": "new-profile", "attributes": {
+                        "profileContent": base64.b64encode(b"replacement-profile").decode()}}}
+            api = API(); report = {}
+            with mock.patch.object(ensure_apns_profile, "decode_profile", side_effect=lambda p: old if p == profile else new):
+                ensure_profile(api, profile, declared, report)
+            self.assertEqual(profile.read_bytes(), b"replacement-profile")
+            self.assertEqual(report["state"], "production-profile-verified")
+            self.assertEqual(api.request["data"]["relationships"]["certificates"]["data"], [{"type": "certificates", "id": "cert"}])
+            self.assertFalse(any(method == "POST" and path == "/v1/certificates" for method, path in calls))
+
     def test_private_api_failure_is_saved_without_entering_public_report(self):
         import json
         with tempfile.TemporaryDirectory() as temporary:
