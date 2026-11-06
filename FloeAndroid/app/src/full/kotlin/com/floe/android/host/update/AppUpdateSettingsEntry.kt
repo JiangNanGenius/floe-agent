@@ -130,10 +130,10 @@ private fun primaryAction(
                 if (!launchSystemIntent(context, intent)) controller.onConfirmationUnavailable((ui.install as AppInstallState.Confirming).sessionID)
             }
         }
+        ui.install is AppInstallState.Succeeded -> controller.clearInstallSucceeded()
         ui.install is AppInstallState.Preparing ||
             ui.install is AppInstallState.AwaitingSystem ||
             ui.install is AppInstallState.WaitingForJobs ||
-            ui.install is AppInstallState.Succeeded ||
             ui.install is AppInstallState.Failed -> controller.showDialog()
         ui.download is AppDownloadState.Ready -> controller.installNow(force = false)
         ui.download is AppDownloadState.InProgress -> controller.cancelDownload()
@@ -289,7 +289,7 @@ internal object AppUpdateCopy {
     fun manualCheckEnabled(ui: AppUpdateUiState): Boolean =
         ui.check !is AppCheckState.Checking &&
             ui.download is AppDownloadState.Idle &&
-            ui.install is AppInstallState.Idle
+            (ui.install is AppInstallState.Idle || ui.install is AppInstallState.Succeeded)
 
     @Composable
     fun installFailure(kind: InstallFailure): String = when (kind) {

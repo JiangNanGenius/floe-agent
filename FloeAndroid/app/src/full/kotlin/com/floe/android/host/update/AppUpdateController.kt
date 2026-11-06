@@ -171,6 +171,8 @@ internal class AppUpdateController private constructor(
     }
 
     fun checkNow() {
+        // A verified old success must not block discovery of the next release.
+        if (installer.state.value is AppInstallState.Succeeded) installer.clearSucceeded()
         checkController.manualCheck()
         refresh()
     }
@@ -290,6 +292,12 @@ internal class AppUpdateController private constructor(
 
     /** "Later" — persists the dismissed release so it is not re-presented. */
     fun dismissDialog() {
+        if (installer.state.value is AppInstallState.Succeeded) {
+            installer.clearSucceeded()
+            suppressed = true
+            refresh()
+            return // Closing a success receipt is not "Later" for a newer offer.
+        }
         val available = checkController.state.value as? AppCheckState.UpdateAvailable
         // Only dismissing the new-version offer counts as "Later"; hiding a
         // progress/install surface must not mute a still-downloading update.
