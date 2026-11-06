@@ -311,6 +311,7 @@ internal class ExternalEditController(private val context: Context, private val 
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
                 val code = (error as? Failure)?.code ?: (error as? G04WorkspaceBridgeClient.Failure)?.code ?: "operationFailed"
+                logFailure("open", code)
                 lock.withLock {
                     row?.let { records[it.id] }?.let { save(it.copy(errorCode = code, updatedAt = System.currentTimeMillis())) }
                         ?: run { mutableState.value = mutableState.value.copy(failure = code) }
@@ -428,6 +429,7 @@ internal class ExternalEditController(private val context: Context, private val 
         catch (error: Exception) {
             val latest = records[id] ?: row
             val code = (error as? Failure)?.code ?: (error as? G04WorkspaceBridgeClient.Failure)?.code ?: "operationFailed"
+            logFailure("return", code)
             // Retain pending commit identity on unknown outcomes; no success or blind replay.
             save(latest.copy(phase = ExternalEditPhase.PAUSED, errorCode = code, updatedAt = System.currentTimeMillis()))
         } catch (_: LinkageError) {
@@ -435,6 +437,13 @@ internal class ExternalEditController(private val context: Context, private val 
         } finally {
             mutableState.value = mutableState.value.copy(busy = mutableState.value.busy - id)
         }
+    }
+
+    private fun logFailure(operation: String, code: String) {
+        val safe = code.takeIf { it.matches(Regex("[A-Za-z0-9_]{1,80}")) } ?: "unknown"
+        // Local diagnostics only: never include exception text, document bytes,
+        // filenames or paths, and never submit ordinary task errors as reports.
+        android.util.Log.w("FloeExternalEdit", "${operation}_failed code=$safe")
     }
 
     private suspend fun syncProvider(row: ExternalEditRecord, binding: Binding) {
