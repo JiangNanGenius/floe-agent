@@ -655,7 +655,8 @@ extension FacadeRunDomain {
                 // Full's real registered status tool is the platform signal;
                 // Play and Notes receive no phone-control capability hint.
                 // This is discovery guidance only, never an authorization.
-                workspaceNotes: !temporary && !isNotes && ceiling.contains("system.access.status") ? [
+                workspaceNotes: !temporary && !isNotes &&
+                    (ceiling ?? Set(components.registry.allDescriptors.map(\.name))).contains("system.access.status") ? [
                     "Android phone UI uses phone.observe / phone.act / phone.screenshot, not VNC or a Linux desktop. Discover exact phone schemas when offered. If phone tools are absent, read system.access.status and explain the missing Settings > Phone setup (accessibility and selected target apps), then wait for the user. VNC is a distinct remote/Linux desktop; never substitute it for the phone or switch targets to evade a missing grant. Existing task, app, approval and screen-consent checks remain authoritative."
                 ] : []),
             personalizationProvider: personalizationProvider,
