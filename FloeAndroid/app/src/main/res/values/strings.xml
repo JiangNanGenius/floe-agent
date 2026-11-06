@@ -650,4 +650,6 @@
     <string name="linux_desktop_save_pending">File return or session shutdown is incomplete. The session is retained; retry before switching environments.</string>
     <string name="linux_desktop_retry_return">Retry file return and stop</string>
     <string name="external_edit_linux">Use a Linux desktop application</string>
+    <string name="workspace_document_cad_units_unspecified">Not specified</string>
+    <string name="workspace_document_cad_more_actions">More actions</string>
 </resources>

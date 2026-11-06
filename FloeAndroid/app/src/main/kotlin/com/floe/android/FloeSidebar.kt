@@ -22,6 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -33,6 +34,7 @@ import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloeSelectionStyle
 import com.floe.android.design.FloeSectionHeader
+import com.floe.android.design.FloeSettingsContentDensity
 import com.floe.android.design.FloeSidebarRow
 import com.floe.android.design.FloeText
 import com.floe.android.design.FloeCircleButton
@@ -49,6 +51,12 @@ import com.floe.android.design.fixedSidebarRoutes
  * history; with the host it renders the REAL produced history rows (the
  * same `conversation.list` wire the Task Center consumes) under the same
  * serial selection path.
+ *
+ * Compact windows (the phone drawer) opt into the shared compact chrome:
+ * one-step-smaller type roles and glyphs, tighter section-header padding,
+ * single-line ellipsized history titles (full text stays in semantics), and
+ * a larger recent-history window — materially more rows in the first
+ * viewport. The persistent tablet column keeps the roomier iPad metrics.
  */
 @Composable
 fun FloeSidebar(
@@ -62,6 +70,12 @@ fun FloeSidebar(
 ) {
     val newTaskKey = SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK)
     val overviewKey = SidebarSelection.Workbench(WorkbenchSelection.OVERVIEW)
+    val configuration = LocalConfiguration.current
+    val compact = FloeLayout.usesCompactNavigation(
+        configuration.screenWidthDp.toFloat(),
+        configuration.smallestScreenWidthDp.toFloat(),
+    )
+    FloeSettingsContentDensity(compact) {
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -83,8 +97,8 @@ fun FloeSidebar(
                     icon = FloeIcons.Folder,
                     contentDescription = stringResource(R.string.office_open_document),
                     onClick = onOpenDocument,
-                    visualSize = 38.dp,
-                    iconSize = 20.dp,
+                    visualSize = if (compact) 34.dp else 38.dp,
+                    iconSize = if (compact) 18.dp else 20.dp,
                     modifier = Modifier.align(Alignment.CenterStart).padding(start = 10.dp),
                 )
             }
@@ -93,8 +107,8 @@ fun FloeSidebar(
                     icon = FloeIcons.SidebarToggle,
                     contentDescription = stringResource(R.string.collapse_task_list),
                     onClick = onCollapseRequested,
-                    visualSize = 38.dp,
-                    iconSize = 20.dp,
+                    visualSize = if (compact) 34.dp else 38.dp,
+                    iconSize = if (compact) 18.dp else 20.dp,
                     modifier = Modifier.align(Alignment.CenterEnd).padding(end = 10.dp),
                 )
             }
@@ -207,7 +221,11 @@ fun FloeSidebar(
 
             FloeSectionHeader(stringResource(R.string.chat))
             val historyState = runtimeHost?.conversations?.historyHolder?.state?.value
-            val recent = historyState?.items.orEmpty().take(5)
+            // Compact phone chrome shows a deeper recent window: one-line
+            // rows are 48dp instead of ~60dp, so the drawer fits materially
+            // more history up front; the tablet column keeps the short list.
+            val recentLimit = if (compact) 10 else 5
+            val recent = historyState?.items.orEmpty().take(recentLimit)
             if (runtimeHost == null || recent.isEmpty()) {
                 FloeText(
                     stringResource(R.string.no_conversations_yet),
@@ -218,7 +236,9 @@ fun FloeSidebar(
             } else {
                 // REAL rows from the produced history wire (same titles and
                 // running projection the Task Center list shows); a tap
-                // travels the shell's single serial selection reducer.
+                // travels the shell's single serial selection reducer. The
+                // compact drawer pins each title to one ellipsized line (the
+                // full string remains in semantics and in the opened chat).
                 recent.forEach { item ->
                     val key = SidebarSelection.Conversation(item.id)
                     FloeConversationRow(
@@ -228,6 +248,7 @@ fun FloeSidebar(
                         ),
                         selected = selection == key,
                         onClick = { onSelect(key) },
+                        maxLines = if (compact) 1 else 2,
                         modifier = Modifier.padding(horizontal = 12.dp),
                     )
                 }
@@ -254,6 +275,7 @@ fun FloeSidebar(
             )
             Spacer(Modifier.weight(1f))
         }
+    }
     }
 }
 

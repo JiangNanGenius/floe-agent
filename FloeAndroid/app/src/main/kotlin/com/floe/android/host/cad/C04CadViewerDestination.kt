@@ -18,6 +18,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -50,8 +51,10 @@ import androidx.compose.ui.graphics.vector.PathBuilder
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -59,6 +62,8 @@ import com.floe.android.R
 import com.floe.android.WorkspaceDocumentHeader
 import com.floe.android.WorkspaceDocumentRequest
 import com.floe.android.design.Floe
+import com.floe.android.design.FloeActionMenu
+import com.floe.android.design.FloeActionMenuItem
 import com.floe.android.design.FloeActivityIndicator
 import com.floe.android.design.FloeCapsuleAction
 import com.floe.android.design.FloeCircleButton
@@ -69,6 +74,7 @@ import com.floe.android.design.FloeSheetPlacement
 import com.floe.android.design.FloeStatusLine
 import com.floe.android.design.FloeText
 import com.floe.android.design.FloeToolbar
+import com.floe.android.design.FloeToolbarIconButton
 import com.floe.android.design.FloeUnavailableView
 import com.floe.android.host.Owner
 import java.text.NumberFormat
@@ -206,6 +212,10 @@ private fun SceneChip(
     state: C04CadViewerState.Ready,
     modifier: Modifier = Modifier,
 ) {
+    // Compact summary chip: format · element/triangle count · localized
+    // units only. The exact floating-point bounds moved into the existing
+    // details sheet (they never fit this width honestly); numeric values
+    // and units are never rounded or fabricated here.
     Column(
         modifier = modifier
             .widthIn(max = 360.dp)
@@ -218,13 +228,6 @@ private fun SceneChip(
             sceneGeometry(state),
             style = Floe.typography.metadata,
             color = Floe.colors.label,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-        FloeText(
-            boundsText(state.facts.bounds),
-            style = Floe.typography.metadata,
-            color = Floe.colors.secondaryLabel,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
@@ -293,72 +296,182 @@ private fun SceneControls(
                 color = if (exported) Floe.colors.success else Floe.colors.pending,
             )
         }
-        Row(
-            modifier = Modifier
-                .background(Floe.colors.chromeSurface.copy(alpha = 0.94f), RoundedCornerShape(24.dp))
-                .border(0.5.dp, Floe.colors.chromeHairline, RoundedCornerShape(24.dp))
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 6.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            if (state.format.family != C04CadFamily.VECTOR_2D) {
-                FloeCircleButton(
-                    icon = FloeIcons.ChevronBack,
-                    contentDescription = stringResource(R.string.workspace_document_cad_orbit_left),
-                    onClick = { controller.command("orbitLeft") },
-                    visualSize = 34.dp,
-                    iconSize = 15.dp,
-                )
-                FloeCircleButton(
-                    icon = FloeIcons.ChevronForward,
-                    contentDescription = stringResource(R.string.workspace_document_cad_orbit_right),
-                    onClick = { controller.command("orbitRight") },
-                    visualSize = 34.dp,
-                    iconSize = 15.dp,
-                )
+        // Toolbar. At sufficient width every action stays visible as a circle
+        // or capsule (no scrolling strip). On narrower windows the same real
+        // commands collapse to compact glyph buttons plus a "…" overflow, so
+        // Save and every camera action remain reachable without a clipped
+        // strip. The switch is a real measurement of the localized labels at
+        // the current sp scale — never a fixed width guess. Camera gestures
+        // on the surface are untouched.
+        var overflowExpanded by rememberSaveable { mutableStateOf(false) }
+        val is3d = state.format.family != C04CadFamily.VECTOR_2D
+        val saveLabel = when {
+            state.capturing -> stringResource(R.string.workspace_document_cad_capturing)
+            state.exporting -> stringResource(R.string.workspace_document_cad_exporting)
+            else -> stringResource(R.string.workspace_document_cad_save_preview)
+        }
+        val detailsLabel = stringResource(R.string.workspace_document_cad_details)
+        BoxWithConstraints {
+            val density = LocalDensity.current
+            val textMeasurer = rememberTextMeasurer()
+            val circleCount = (if (is3d) 6 else 4)
+            // Exact worst-case width of the full strip: 48dp targets, 2dp
+            // gaps, the two capsules at their measured label width plus the
+            // shared capsule's 18dp side padding, and a 2dp hairline buffer.
+            val fullWidth = with(density) {
+                val gap = 2.dp.roundToPx()
+                val capsuleSidePadding = 36.dp.roundToPx()
+                val saveWidth = textMeasurer.measure(
+                    saveLabel, Floe.typography.bodyEmphasized,
+                ).size.width + capsuleSidePadding
+                val detailsWidth = textMeasurer.measure(
+                    detailsLabel, Floe.typography.bodyEmphasized,
+                ).size.width + capsuleSidePadding
+                (12.dp.roundToPx() +
+                    circleCount * 48.dp.roundToPx() +
+                    (circleCount + 1) * gap +
+                    saveWidth + detailsWidth + 2.dp.roundToPx()).toDp()
             }
-            FloeCircleButton(
-                icon = MinusIcon,
-                contentDescription = stringResource(R.string.workspace_document_cad_zoom_out),
-                onClick = { controller.command("zoomOut") },
-                visualSize = 34.dp,
-                iconSize = 15.dp,
-            )
-            FloeCircleButton(
-                icon = FloeIcons.Plus,
-                contentDescription = stringResource(R.string.workspace_document_cad_zoom_in),
-                onClick = { controller.command("zoomIn") },
-                visualSize = 34.dp,
-                iconSize = 15.dp,
-            )
-            FloeCircleButton(
-                icon = FitIcon,
-                contentDescription = stringResource(R.string.workspace_document_cad_fit),
-                onClick = { controller.command("fit") },
-                visualSize = 34.dp,
-                iconSize = 15.dp,
-            )
-            FloeCircleButton(
-                icon = FloeIcons.Refresh,
-                contentDescription = stringResource(R.string.workspace_document_cad_reset),
-                onClick = { controller.command("reset") },
-                visualSize = 34.dp,
-                iconSize = 15.dp,
-            )
-            FloeCapsuleAction(
-                label = when {
-                    state.capturing -> stringResource(R.string.workspace_document_cad_capturing)
-                    state.exporting -> stringResource(R.string.workspace_document_cad_exporting)
-                    else -> stringResource(R.string.workspace_document_cad_save_preview)
-                },
-                onClick = onSaveToFiles,
-                enabled = !state.capturing && !state.exporting,
-            )
-            FloeCapsuleAction(
-                label = stringResource(R.string.workspace_document_cad_details),
-                onClick = onDetails,
-            )
+            val fullToolbar = fullWidth <= maxWidth
+            val toolbarSurface = Modifier
+                .background(
+                    Floe.colors.chromeSurface.copy(alpha = 0.94f),
+                    RoundedCornerShape(24.dp),
+                )
+                .border(0.5.dp, Floe.colors.chromeHairline, RoundedCornerShape(24.dp))
+                .padding(horizontal = 6.dp, vertical = 4.dp)
+            if (fullToolbar) {
+                Row(
+                    modifier = toolbarSurface,
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    if (is3d) {
+                        FloeCircleButton(
+                            icon = FloeIcons.ChevronBack,
+                            contentDescription = stringResource(R.string.workspace_document_cad_orbit_left),
+                            onClick = { controller.command("orbitLeft") },
+                            visualSize = 34.dp,
+                            iconSize = 15.dp,
+                        )
+                        FloeCircleButton(
+                            icon = FloeIcons.ChevronForward,
+                            contentDescription = stringResource(R.string.workspace_document_cad_orbit_right),
+                            onClick = { controller.command("orbitRight") },
+                            visualSize = 34.dp,
+                            iconSize = 15.dp,
+                        )
+                    }
+                    FloeCircleButton(
+                        icon = MinusIcon,
+                        contentDescription = stringResource(R.string.workspace_document_cad_zoom_out),
+                        onClick = { controller.command("zoomOut") },
+                        visualSize = 34.dp,
+                        iconSize = 15.dp,
+                    )
+                    FloeCircleButton(
+                        icon = FloeIcons.Plus,
+                        contentDescription = stringResource(R.string.workspace_document_cad_zoom_in),
+                        onClick = { controller.command("zoomIn") },
+                        visualSize = 34.dp,
+                        iconSize = 15.dp,
+                    )
+                    FloeCircleButton(
+                        icon = FitIcon,
+                        contentDescription = stringResource(R.string.workspace_document_cad_fit),
+                        onClick = { controller.command("fit") },
+                        visualSize = 34.dp,
+                        iconSize = 15.dp,
+                    )
+                    FloeCircleButton(
+                        icon = FloeIcons.Refresh,
+                        contentDescription = stringResource(R.string.workspace_document_cad_reset),
+                        onClick = { controller.command("reset") },
+                        visualSize = 34.dp,
+                        iconSize = 15.dp,
+                    )
+                    FloeCapsuleAction(
+                        label = saveLabel,
+                        onClick = onSaveToFiles,
+                        enabled = !state.capturing && !state.exporting,
+                    )
+                    FloeCapsuleAction(
+                        label = detailsLabel,
+                        onClick = onDetails,
+                    )
+                }
+            } else {
+                Box {
+                    Row(
+                        modifier = toolbarSurface,
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        FloeToolbarIconButton(
+                            icon = MinusIcon,
+                            contentDescription = stringResource(R.string.workspace_document_cad_zoom_out),
+                            onClick = { controller.command("zoomOut") },
+                        )
+                        FloeToolbarIconButton(
+                            icon = FloeIcons.Plus,
+                            contentDescription = stringResource(R.string.workspace_document_cad_zoom_in),
+                            onClick = { controller.command("zoomIn") },
+                        )
+                        FloeToolbarIconButton(
+                            icon = FitIcon,
+                            contentDescription = stringResource(R.string.workspace_document_cad_fit),
+                            onClick = { controller.command("fit") },
+                        )
+                        FloeToolbarIconButton(
+                            icon = FloeIcons.Refresh,
+                            contentDescription = stringResource(R.string.workspace_document_cad_reset),
+                            onClick = { controller.command("reset") },
+                        )
+                        FloeToolbarIconButton(
+                            icon = SavePreviewIcon,
+                            contentDescription = stringResource(R.string.workspace_document_cad_save_preview),
+                            onClick = onSaveToFiles,
+                            enabled = !state.capturing && !state.exporting,
+                        )
+                        FloeToolbarIconButton(
+                            icon = FloeIcons.Ellipsis,
+                            contentDescription = stringResource(R.string.workspace_document_cad_more_actions),
+                            onClick = { overflowExpanded = true },
+                        )
+                    }
+                    // Same opaque card + hairline chrome as the design-system
+                    // choice menus; orbit/details stay one tap away.
+                    FloeActionMenu(
+                        expanded = overflowExpanded,
+                        onDismissRequest = { overflowExpanded = false },
+                        items = buildList {
+                            if (is3d) {
+                                add(
+                                    FloeActionMenuItem(
+                                        label = stringResource(R.string.workspace_document_cad_orbit_left),
+                                        icon = FloeIcons.ChevronBack,
+                                        onClick = { controller.command("orbitLeft") },
+                                    )
+                                )
+                                add(
+                                    FloeActionMenuItem(
+                                        label = stringResource(R.string.workspace_document_cad_orbit_right),
+                                        icon = FloeIcons.ChevronForward,
+                                        onClick = { controller.command("orbitRight") },
+                                    )
+                                )
+                            }
+                            add(
+                                FloeActionMenuItem(
+                                    label = stringResource(R.string.workspace_document_cad_details),
+                                    icon = FloeIcons.InfoCircle,
+                                    onClick = onDetails,
+                                )
+                            )
+                        },
+                    )
+                }
+            }
         }
     }
 }
@@ -475,8 +588,8 @@ private fun C04CadDetailsSheet(
                             stringResource(R.string.workspace_document_cad_detail_units),
                             stringResource(
                                 R.string.workspace_document_cad_units_detail,
-                                facts.sourceUnits,
-                                facts.displayUnits,
+                                unitsLabel(facts.sourceUnits),
+                                unitsLabel(facts.displayUnits),
                             ),
                         )
                         DetailRow(stringResource(R.string.workspace_document_cad_detail_bounds), boundsText(facts.bounds))
@@ -554,9 +667,9 @@ private fun DetailRow(label: String, value: String) {
 private fun sceneGeometry(state: C04CadViewerState.Ready): String {
     val facts = state.facts
     val units = if (facts.sourceUnits == facts.displayUnits) {
-        facts.sourceUnits
+        unitsLabel(facts.sourceUnits)
     } else {
-        "${facts.sourceUnits} (display ${facts.displayUnits})"
+        "${unitsLabel(facts.sourceUnits)} (display ${unitsLabel(facts.displayUnits)})"
     }
     val count = facts.entityCount
     return if (count != null) {
@@ -574,6 +687,17 @@ private fun sceneGeometry(state: C04CadViewerState.Ready): String {
             units,
         )
     }
+}
+
+/**
+ * Localized unit label. Unitless sources (the controller's "unknown") read
+ * as "Not specified"/未指定 — never a fabricated "mm" — while real units
+ * (mm/cm/m/in/ft/yd) pass through exactly.
+ */
+@Composable
+private fun unitsLabel(units: String): String = when (units) {
+    "unknown", "" -> stringResource(R.string.workspace_document_cad_units_unspecified)
+    else -> units
 }
 
 private fun boundsText(bounds: C04CadBounds): String {
@@ -633,6 +757,25 @@ private val MinusIcon: ImageVector = cadIcon("floe.cad.minus") {
     stroke {
         moveTo(5f, 12f)
         lineTo(19f, 12f)
+    }
+}
+
+/** iOS square.and.arrow.down — compact Save-to-Files toolbar glyph. */
+private val SavePreviewIcon: ImageVector = cadIcon("floe.cad.save_preview") {
+    stroke {
+        moveTo(12f, 3f)
+        lineTo(12f, 13f)
+    }
+    stroke {
+        moveTo(7.5f, 9.5f)
+        lineTo(12f, 14f)
+        lineTo(16.5f, 9.5f)
+    }
+    stroke {
+        moveTo(5f, 16.5f)
+        lineTo(5f, 19f)
+        lineTo(19f, 19f)
+        lineTo(19f, 16.5f)
     }
 }
 

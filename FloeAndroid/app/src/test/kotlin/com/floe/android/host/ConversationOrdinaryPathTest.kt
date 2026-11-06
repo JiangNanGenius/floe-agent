@@ -536,6 +536,25 @@ class ConversationOrdinaryPathTest {
     }
 
     @Test
+    fun firstTaskAutomaticChoiceTravelsThroughTheActualRunStartWire() = runBlocking {
+        val script = LocalScript().apply { freshConversation = true }
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        try {
+            val holder = loadedHolder(host)
+            assertTrue(awaitCondition { holder.snapshot.value?.hasLoaded == true })
+            assertTrue(host.conversations.updateTaskApprovalMode(
+                holder.session, com.floe.android.feature.conversation.ApprovalModeUi.AUTOMATIC))
+            holder.onDraftChange(TextFieldValue("Synthetic first-run permissions"))
+            assertEquals(com.floe.android.feature.conversation.ConversationFlowResult.Accepted, holder.send())
+            assertTrue(awaitCondition { exchange.commandsOf("run.start").isNotEmpty() })
+            val payload = exchange.commandsOf("run.start").single()["payload"]!!.jsonObject
+            assertEquals("automatic", payload["approvalMode"]!!.jsonPrimitive.content)
+            assertTrue(exchange.commandsOf("run.policy.update").isEmpty())
+        } finally { host.stop() }
+    }
+
+    @Test
     fun modelSelectionPersistsTheFullPreferencesDocument() = runBlocking {
         val script = LocalScript().apply { extraModelRows = "," + modelRow(secondModelId, "deepseek-reasoner", "DeepSeek Reasoner") }
         val exchange = buildExchange(script)

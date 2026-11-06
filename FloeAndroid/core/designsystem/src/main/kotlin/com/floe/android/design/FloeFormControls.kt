@@ -438,6 +438,79 @@ fun SectionScope.FloeFormChoiceField(
     }
 }
 
+/** One action of a [FloeActionMenu]. [label] is already localized by the caller. */
+data class FloeActionMenuItem(
+    val label: String,
+    val icon: ImageVector? = null,
+    val enabled: Boolean = true,
+    val onClick: () -> Unit,
+)
+
+/**
+ * Compact overflow action menu (iOS navigation-bar "…" menu): the same
+ * opaque card + hairline chrome as [FloeChoiceMenu], but each entry is a
+ * plain labelled action with an optional leading glyph and no selection
+ * state. Opening the menu performs nothing by itself; every entry owns the
+ * 48dp floor. Anchored TopEnd like the protocol menu so it hangs from the
+ * trailing chrome control that opened it.
+ */
+@Composable
+fun FloeActionMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    items: List<FloeActionMenuItem>,
+    modifier: Modifier = Modifier,
+) {
+    if (!expanded) return
+    val colors = Floe.colors
+    val shape: Shape = RoundedCornerShape(FloeLayout.BubbleCorner)
+    Popup(
+        alignment = Alignment.TopEnd,
+        onDismissRequest = onDismissRequest,
+        properties = PopupProperties(focusable = true),
+    ) {
+        Column(
+            modifier = modifier
+                .widthIn(min = 200.dp, max = 320.dp)
+                .clip(shape)
+                .background(colors.sectionCardSurface)
+                .border(0.5.dp, colors.chromeHairline, shape)
+                .padding(vertical = 4.dp),
+        ) {
+            items.forEach { item ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = FloeLayout.MinimumTarget)
+                        .clickable(enabled = item.enabled, role = Role.Button, onClick = {
+                            onDismissRequest()
+                            item.onClick()
+                        })
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                        .semantics {
+                            contentDescription = item.label
+                            if (!item.enabled) disabled()
+                        },
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    if (item.icon != null) {
+                        IconGlyph(item.icon, colors.label, 18.dp)
+                    }
+                    FloeText(
+                        item.label,
+                        style = Floe.typography.body,
+                        color = if (item.enabled) colors.label else colors.tertiaryLabel,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
 /* --------------------------- action / status rows -------------------------- */
 
 /**

@@ -236,6 +236,57 @@ class ConversationPermissionGestureFenceTest {
 
     // ----------------------------------------------------------------- tests
 
+    private fun seedUnsent(host: RuntimeHost, runsMembers: String = "\"runs\":[]"): ConversationFlowHolderEntry {
+        host.conversations.holderFor(conversationId, isTemporary = false, incarnationId = null)
+        val entry = checkNotNull(host.conversations.entryFor(conversationId))
+        val page = checkNotNull(ConversationWire.decodeSessionReply(Json.parseToJsonElement(
+            """{"conversationID":"$conversationId","title":"Unsent",$runsMembers,
+                "taskPolicy":{"resolvedApprovalMode":"ask","updatedAt":"$stamp"}}""",
+        )))
+        entry.builder.applySession(page)
+        entry.holder.applyHostSnapshot(entry.builder.build())
+        return entry
+    }
+
+    @org.junit.Test
+    fun firstTaskChoiceSurvivesDefaultRowRefreshWithoutFabricatingCas() {
+        val exchange = HeldExchange()
+        val host = host(exchange)
+        try {
+            val entry = seedUnsent(host)
+            val settlements = CopyOnWriteArrayList<Settled>()
+            check(host.conversations.updateTaskApprovalMode(
+                entry.holder.session, ApprovalModeUi.AUTOMATIC, recorder(entry, settlements)))
+            org.junit.Assert.assertEquals(ApprovalModeUi.AUTOMATIC, entry.holder.draftTaskApprovalMode)
+            org.junit.Assert.assertEquals(ApprovalModeUi.AUTOMATIC, entry.holder.snapshot.value!!.approvalMode)
+            org.junit.Assert.assertFalse(settlements.single().appliedToLiveRun)
+            org.junit.Assert.assertEquals(stamp, entry.builder.policyRevision!!.version)
+            seedUnsent(host) // a real default-row refresh before the first launch
+            org.junit.Assert.assertEquals(ApprovalModeUi.AUTOMATIC, entry.holder.snapshot.value!!.approvalMode)
+            org.junit.Assert.assertTrue(exchange.submits("run.policy.update").isEmpty())
+        } finally { host.stop() }
+    }
+
+    @org.junit.Test
+    fun firstTaskChoiceRejectsRetiredEpochAndUnprovenEmptyRunPages() {
+        val exchange = HeldExchange()
+        val host = host(exchange)
+        try {
+            var entry = seedUnsent(host)
+            val old = entry.holder.session
+            host.conversations.releaseHolder(conversationId)
+            entry = seedUnsent(host)
+            org.junit.Assert.assertFalse(host.conversations.updateTaskApprovalMode(old, ApprovalModeUi.FULL_ACCESS))
+            org.junit.Assert.assertNull(entry.holder.draftTaskApprovalMode)
+            for (members in listOf("\"runs\":[],\"runsTruncated\":true,\"runsTotalCount\":4", "\"runs\":null")) {
+                entry = seedUnsent(host, members)
+                org.junit.Assert.assertFalse(host.conversations.updateTaskApprovalMode(entry.holder.session, ApprovalModeUi.AUTOMATIC))
+                org.junit.Assert.assertNull(entry.holder.draftTaskApprovalMode)
+            }
+            org.junit.Assert.assertTrue(exchange.submits("run.policy.update").isEmpty())
+        } finally { host.stop() }
+    }
+
     @org.junit.Test
     fun oneGestureSendsExactlyOneMutationAndAdoptsAckVersion() = runBlocking {
         val exchange = HeldExchange()

@@ -485,6 +485,7 @@ class ThreadProjectionBuilder internal constructor(
 
     internal fun applySession(reply: ConversationWire.SessionReply) {
         hasLoaded = true
+        emptyRunsProven = reply.emptyRunsProven
         taskTitle = reply.title
         conversationRevision = reply.revision
         // The native snapshot orders runs NEWEST-FIRST (`started_at DESC, id`,
@@ -1118,6 +1119,13 @@ class ThreadProjectionBuilder internal constructor(
     /** The proven durable task-policy CAS pair, or null when unread. */
     internal val policyRevision: Revision? get() = policyRevisionValue
 
+    /** True once the first REAL `conversation.get` page applied to this
+     * builder — the honest "thread loaded" signal (never a fabricated
+     * state). */
+    internal val hasLoadedThread: Boolean get() = hasLoaded
+    private var emptyRunsProven = false
+    internal val hasProvenNoRuns: Boolean get() = emptyRunsProven && runRows.isEmpty()
+
     /** Forget an invalidated revision (typed stale refusal): the next
      * policy action must re-read the authoritative page, never replay the
      * rejected version. The mode projection itself stays at the durable
@@ -1143,6 +1151,21 @@ class ThreadProjectionBuilder internal constructor(
             policyRevisionValue = null
         }
     }
+
+    /** Apply ONE explicit pre-first-run draft selection. No durable
+     * task-policy row exists yet (the conversation owns no run), so the
+     * human's own choice travels with the FIRST launch through the existing
+     * run.start `approvalMode` key (persisted atomically by the native C1) —
+     * never through a fabricated `run.policy.update` CAS. The durable lane
+     * owns the truth once a run exists; the next authoritative page
+     * re-reads/corrects this projection. */
+    internal fun applyDraftApprovalMode(mode: ApprovalModeUi) {
+        draftApprovalMode = mode
+    }
+
+    // An unsent draft can have a default task-policy row already. A refresh
+    // of that row must not erase the explicit choice for its first launch.
+    private var draftApprovalMode: ApprovalModeUi? = null
 
     /**
      * A typed pump failure for [runID]: surfaced in the projection so the UI
@@ -1302,7 +1325,7 @@ class ThreadProjectionBuilder internal constructor(
             // hiding a real durable row).
             projects = workspace?.let { listOf(ProjectOptionUi(it.id, it.name)) }.orEmpty(),
             boundWorkspaceId = workspace?.id,
-            approvalMode = policyApprovalMode,
+            approvalMode = if (runRows.isEmpty()) draftApprovalMode ?: policyApprovalMode else policyApprovalMode,
             usage = null,
             contextUsage = null,
             compactionStatus = compactionStatus,
@@ -1408,6 +1431,8 @@ internal object ConversationWire {
         val runs: List<RunSummary>,
         val pendingInputs: List<PendingInputUi>,
         val approvalMode: ApprovalModeUi?,
+        /** An explicit empty wire array, not a missing or malformed page. */
+        val emptyRunsProven: Boolean = false,
         /** `taskPolicy.<uuid>` / the row's `updatedAt` when the reply
          * proves a durable policy row; null = no proven revision. */
         val policyRevision: Revision? = null,
@@ -1605,6 +1630,9 @@ internal object ConversationWire {
             runs = runs,
             pendingInputs = pendingInputs,
             approvalMode = approvalMode,
+            emptyRunsProven = (root["runs"] as? JsonArray)?.isEmpty() == true &&
+                root.bool("runsTruncated") != true &&
+                (root.long("runsTotalCount") ?: 0L) == 0L,
             policyRevision = policyRevision,
             policyRecoveryRaw = policy?.string("recoveryPolicy"),
             policyNotificationRaw = policy?.string("notificationPolicy"),

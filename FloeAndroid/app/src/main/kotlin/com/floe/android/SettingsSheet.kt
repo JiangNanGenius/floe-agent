@@ -54,6 +54,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
+import com.floe.android.design.FloeCapsuleAction
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeLayout
@@ -587,24 +588,18 @@ private fun SheetToolbar(
     FloeDivider()
 }
 
+/**
+ * The sheet Done action: the shared chrome capsule so Settings, CAD details
+ * and document chrome present one consistent button (same capsule, hairline,
+ * 48dp floor and accent label). No local copy of the capsule metrics lives
+ * here anymore.
+ */
 @Composable
 private fun FloeDoneButton(onClick: () -> Unit) {
-    val colors = Floe.colors
-    val shape = RoundedCornerShape(percent = 50)
-    val doneLabel = stringResource(R.string.done)
-    Box(
-        modifier = Modifier
-            .heightIn(min = FloeLayout.MinimumTarget)
-            .clip(shape)
-            .background(colors.chromeSurface)
-            .border(0.5.dp, colors.chromeHairline, shape)
-            .clickable { onClick() }
-            .padding(horizontal = 18.dp, vertical = 8.dp)
-            .semantics { contentDescription = doneLabel },
-        contentAlignment = Alignment.Center,
-    ) {
-        FloeText(doneLabel, style = Floe.typography.bodyEmphasized, color = colors.accent)
-    }
+    FloeCapsuleAction(
+        label = stringResource(R.string.done),
+        onClick = onClick,
+    )
 }
 
 @Composable

@@ -313,6 +313,11 @@ fun FloeToolbar(
 /**
  * Sidebar navigation row with iOS capsule selection:
  * blue capsule (accent) or gray focus capsule, 24dp outline glyph, one-line title.
+ *
+ * [labelMaxLines] lets dense phone surfaces (compact history rows) pin the
+ * label to a single ellipsized line; the full string stays in the text
+ * semantics, so accessibility and open-title recovery are unchanged. The
+ * 48dp target floor and capsule geometry are independent of the line count.
  */
 @Composable
 fun FloeSidebarRow(
@@ -324,6 +329,7 @@ fun FloeSidebarRow(
     selectionStyle: FloeSelectionStyle = FloeSelectionStyle.BLUE,
     trailing: (@Composable RowScope.() -> Unit)? = null,
     leadingTintUnselected: Color = Floe.colors.accent,
+    labelMaxLines: Int = 2,
 ) {
     val style = if (selected) selectionStyle else FloeSelectionStyle.NONE
     val compact = LocalFloeCompactSettings.current
@@ -352,7 +358,7 @@ fun FloeSidebarRow(
             text = label,
             style = Floe.typography.body,
             color = labelColor,
-            maxLines = 2,
+            maxLines = labelMaxLines,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
@@ -363,9 +369,19 @@ fun FloeSidebarRow(
 /** Section header on the sidebar plane (工作区 / 聊天). */
 @Composable
 fun FloeSectionHeader(title: String, modifier: Modifier = Modifier) {
+    val compact = LocalFloeCompactSettings.current
     FloeText(
         text = title,
-        modifier = modifier.padding(start = 20.dp, end = 16.dp, top = 18.dp, bottom = FloeLayout.SectionHeaderVPadding),
+        modifier = modifier.padding(
+            start = 20.dp,
+            end = 16.dp,
+            // Compact chrome (phone sidebar / compact settings) keeps the
+            // 13sp group-header role but halves the iPad's generous 18dp
+            // top gap so more rows reach the first viewport; the 48dp row
+            // floor below is untouched.
+            top = if (compact) 10.dp else 18.dp,
+            bottom = if (compact) 4.dp else FloeLayout.SectionHeaderVPadding,
+        ),
         style = Floe.typography.groupHeader,
         color = Floe.colors.secondaryLabel,
     )
@@ -423,6 +439,7 @@ fun FloeConversationRow(
     selected: Boolean = false,
     activityBadge: (@Composable () -> Unit)? = null,
     selectionStyle: FloeSelectionStyle = FloeSelectionStyle.GRAY,
+    maxLines: Int = 2,
 ) {
     FloeSidebarRow(
         icon = FloeIcons.Bubble,
@@ -431,6 +448,7 @@ fun FloeConversationRow(
         onClick = onClick,
         modifier = modifier,
         selectionStyle = selectionStyle,
+        labelMaxLines = maxLines,
         trailing = activityBadge?.let { badge -> { androidx.compose.foundation.layout.Box(contentAlignment = Alignment.Center) { badge() } } },
     )
 }

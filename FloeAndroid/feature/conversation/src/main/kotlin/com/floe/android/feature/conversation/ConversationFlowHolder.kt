@@ -482,13 +482,19 @@ class ConversationFlowHolder(
      * The Home launchpad's EXPLICIT draft-task approval mode for the FIRST
      * fresh launch of this (brand-new) conversation only (⇄
      * DraftTaskPermissionsSheet persisted atomically with the first launch).
-     * Set ONLY by the Home send path; a thread composer never owns one (the
-     * durable task-policy row + `run.policy.update` lane is the task truth
-     * there). Consumed exactly once at fresh-launch capture and NEVER applied
-     * to a temporary session.
+     * Written by the Home send path AND by ONE explicit human gesture on the
+     * task permissions surface before the first run exists (the
+     * pre-first-run draft lane). Once
+     * durable runs exist, the durable task-policy row + `run.policy.update`
+     * lane is the task truth and this field stays null. Consumed exactly
+     * once at fresh-launch capture and NEVER applied to a temporary
+     * session.
      */
     var draftTaskApprovalMode: ApprovalModeUi? = null
         private set
+
+    /** A queued first launch already captured its choice; wait for its echo. */
+    val hasPendingLaunch: Boolean get() = pendingCommit != null
 
     fun setDraftTaskApprovalMode(mode: ApprovalModeUi?) {
         if (retired) return
@@ -1152,13 +1158,8 @@ class ConversationFlowHolder(
             onLaunchOutcome,
         )
         isConsumingDraft = false
-        if (started) {
-            // The draft choice was captured into THIS launch's request; the
-            // durable policy row (if the launch commits) or the restored
-            // draft (if it fails before admission) owns everything from
-            // here, so the holder never re-sends the same draft key.
-            draftTaskApprovalMode = null
-        }
+        // Admission alone is reversible. Keep the first-run choice until
+        // prepared, so a rejected launch restores the user's choice too.
         if (!started) {
             // Nothing began: put the complete original draft back unless the
             // user already owns a newer field generation.
@@ -1190,6 +1191,7 @@ class ConversationFlowHolder(
         val commit = pendingCommit ?: return
         if (!matchesLaunchCommit(commit, correlation)) return
         commit.clearStoredDraft()
+        draftTaskApprovalMode = null
         pendingCommit = null
     }
 

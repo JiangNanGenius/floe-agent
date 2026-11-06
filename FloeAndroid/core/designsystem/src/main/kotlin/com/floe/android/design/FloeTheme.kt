@@ -40,7 +40,15 @@ internal val LocalFloeColors: ProvidableCompositionLocal<FloeColors> = staticCom
 internal val LocalFloeType: ProvidableCompositionLocal<FloeTypography> = staticCompositionLocalOf { FloeTypography() }
 internal val LocalFloeCompactSettings = staticCompositionLocalOf { false }
 
-/** Compact form chrome only; document/chat reading and system font scale stay independent. */
+/**
+ * Shared compact chrome provider for form/navigation surfaces that opt into
+ * density (Settings on compact windows, the phone sidebar drawer): one step
+ * down on title/section/body/metadata/group-header sizes, plus the
+ * [LocalFloeCompactSettings] flag the row/section/switch wrappers read to
+ * tighten paddings and visible chrome. Sizes stay in sp, so the system
+ * font-scale keeps working; nothing here touches document/chat reading
+ * surfaces and there is no fixed fontScale override.
+ */
 @Composable
 fun FloeSettingsContentDensity(compact: Boolean, content: @Composable () -> Unit) {
     if (!compact) {

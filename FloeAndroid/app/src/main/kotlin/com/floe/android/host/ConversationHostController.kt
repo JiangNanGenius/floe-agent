@@ -4598,6 +4598,14 @@ class ConversationHostController internal constructor(
      * native (launch-time materialization + the v48 convergence
      * migration); this producer only sends revisions the snapshot proved —
      * never fabricated versions.
+     *
+     * Pre-first-run draft lane: an ordinary conversation whose thread has
+     * loaded with NO durable run yet owns no policy row to CAS-update. ONE
+     * explicit human gesture there is adopted by the holder's existing
+     * draft field (⇄ the Home first-send handoff) and travels with the
+     * FIRST launch through the real run.start `approvalMode` key; once a
+     * run exists the durable CAS lane above is the only route. Temporary
+     * sessions never reach the draft lane.
      */
     fun updateTaskApprovalMode(
         session: ConversationSessionToken,
@@ -4616,6 +4624,46 @@ class ConversationHostController internal constructor(
         val runID = entry.builder.selectedRunId
         val revision = entry.builder.policyRevision
         if (revision == null || runID == null) {
+            // PRE-FIRST-RUN DRAFT LANE: an ORDINARY conversation whose thread
+            // loaded with NO durable run yet owns no taskPolicy row — there
+            // is nothing real to CAS-update, and refusing here left the
+            // observed first-turn defect (the sheet reported
+            // host_unavailable and the selection never reached the first
+            // launch). The explicit human gesture is adopted by the
+            // holder's EXISTING draft field (⇄ the Home first-send handoff)
+            // and travels with the FIRST launch through the real run.start
+            // `approvalMode` key, persisted atomically by the native C1.
+            // Temporary sessions, a loaded thread that already owns runs,
+            // and a superseded/stale gesture all keep the honest refusal
+            // below (never a fabricated version, never a UI-only success).
+            if (!entry.builder.isTemporary &&
+                entry.builder.hasLoadedThread &&
+                entry.builder.hasProvenNoRuns &&
+                !entry.holder.hasPendingLaunch
+            ) {
+                val intentSeq = entry.nextPolicyGestureIntent()
+                val adopted = entry.withLatestPolicyGestureIntent(
+                    intentSeq = intentSeq,
+                    check = {
+                        ownCurrentEntry(
+                            entry, session.conversationId, session.sessionEpoch) &&
+                            entry.builder.selectedRunId == null &&
+                            entry.builder.hasProvenNoRuns &&
+                            !entry.holder.hasPendingLaunch
+                    },
+                ) {
+                    entry.holder.setDraftTaskApprovalMode(mode)
+                    entry.builder.applyDraftApprovalMode(mode)
+                    entry.holder.applyHostSnapshot(entry.builder.build())
+                }
+                if (adopted) {
+                    // accepted=true / appliedToLiveRun=false is the honest
+                    // "applies to the next run" echo: no live run exists,
+                    // and the first launch persists the mode durably.
+                    onSettled?.invoke(true, null, false)
+                    return true
+                }
+            }
             // No proven CAS identity: refuse and re-read the authoritative
             // snapshot instead of sending a fabricated version.
             if (runID != null) refreshRunSnapshot(entry, runID)

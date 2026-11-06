@@ -678,7 +678,9 @@ private fun TaskPermissionsPane(conversations: ConversationHostController?, conv
                     .fillMaxWidth()
                     .heightIn(min = FloeLayout.MinimumTarget)
                     .clickable {
+                        var settled = false
                         val started = conversations.updateTaskApprovalMode(holder.session, mode) { accepted, code, appliedToLiveRun ->
+                            settled = true
                             resultLine = if (accepted) {
                                 if (appliedToLiveRun) {
                                     context.getString(R.string.root_perm_update_live)
@@ -689,7 +691,7 @@ private fun TaskPermissionsPane(conversations: ConversationHostController?, conv
                                 context.getString(R.string.root_perm_update_failed, code ?: "unknown")
                             }
                         }
-                        if (!started) {
+                        if (!started && !settled) {
                             resultLine = context.getString(R.string.root_perm_update_failed, "host_unavailable")
                         }
                     }

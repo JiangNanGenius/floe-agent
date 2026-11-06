@@ -28,6 +28,37 @@ import org.junit.Test
 
 class ConversationSendDraftTest {
 
+    @Test
+    fun firstTaskPermissionSurvivesRejectedPreparationAndClearsOnlyOnPrepared() {
+        val host = RecordingHost()
+        val holder = holder(host)
+        holder.applyHostSnapshot(threadState(holder.session).copy(runs = emptyList()))
+        holder.setDraftTaskApprovalMode(ApprovalModeUi.AUTOMATIC)
+        holder.onDraftChange(TextFieldValue("first"))
+        assertEquals(ConversationFlowResult.Accepted, holder.send())
+        assertEquals(ApprovalModeUi.AUTOMATIC, (host.lastArgs("startRun")!![0] as RunLaunchRequest).approvalMode)
+        holder.applyLaunchFailure(recordedCorrelation(host), "synthetic preflight rejection")
+        assertEquals(ApprovalModeUi.AUTOMATIC, holder.draftTaskApprovalMode)
+        assertEquals(ConversationFlowResult.Accepted, holder.send())
+        assertEquals(ApprovalModeUi.AUTOMATIC, (host.lastArgs("startRun")!![0] as RunLaunchRequest).approvalMode)
+        holder.applyLaunchPrepared(recordedCorrelation(host))
+        assertNull(holder.draftTaskApprovalMode)
+    }
+
+    @Test
+    fun firstTaskDraftPermissionCannotRaiseTemporaryOrExistingRunPolicy() {
+        for (temporary in listOf(false, true)) {
+            val host = RecordingHost()
+            val holder = holder(host)
+            val state = threadState(holder.session, isTemporary = temporary)
+            holder.applyHostSnapshot(if (temporary) state.copy(runs = emptyList()) else state)
+            holder.setDraftTaskApprovalMode(ApprovalModeUi.FULL_ACCESS)
+            holder.onDraftChange(TextFieldValue("ordinary or temporary"))
+            assertEquals(ConversationFlowResult.Accepted, holder.send())
+            assertNull((host.lastArgs("startRun")!![0] as RunLaunchRequest).approvalMode)
+        }
+    }
+
     private fun holder(host: RecordingHost): ConversationFlowHolder {
         val holder = ConversationFlowHolder(host, "conv-1")
         holder.applyHostSnapshot(threadState(holder.session))
