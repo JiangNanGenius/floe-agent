@@ -414,7 +414,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                     profileID = null
                 }
                 closeStage = "credential"
-                credential?.let { vncClient.credentialDelete(it); credential = null }
+                credential?.let { vncClient.credentialDelete(it, owner); credential = null }
             }
             remoteOwner = null
             closeStage = "terminal"

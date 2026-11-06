@@ -306,7 +306,7 @@ internal class C05RemoteHostController(
                 withContext(ioDispatcher) { client.profileDelete(id, owner) }
                 if (!gate.isLiveSSH(token)) return@launch
                 vncRefs.forEach { ref ->
-                    runCatching { withContext(ioDispatcher) { vncClient.credentialDelete(ref) } }
+                    runCatching { withContext(ioDispatcher) { vncClient.credentialDelete(ref, owner) } }
                 }
                 if (_state.value.session?.profileID == id) {
                     gate.finishSSHSession(_state.value.session?.id ?: "")
@@ -1176,7 +1176,7 @@ internal class C05RemoteHostController(
                     runCatching {
                         val owner = ownerFor(token)
                         if (owner != null) {
-                            withContext(ioDispatcher) { vncClient.credentialDelete(credential) }
+                            withContext(ioDispatcher) { vncClient.credentialDelete(credential, owner) }
                         }
                     }
                 }
@@ -1222,7 +1222,7 @@ internal class C05RemoteHostController(
                     existing?.passwordRef
                         ?.takeIf { it.keychainAccount.startsWith("floe.vnc.") }
                         ?.let { ref -> runCatching { withContext(ioDispatcher) {
-                            vncClient.credentialDelete(ref)
+                            vncClient.credentialDelete(ref, owner)
                         } } }
                     passwordRef = null
                 }
@@ -1374,7 +1374,7 @@ internal class C05RemoteHostController(
                 endpoint?.passwordRef
                     ?.takeIf { it.keychainAccount.startsWith("floe.vnc.") }
                     ?.let { ref -> runCatching { withContext(ioDispatcher) {
-                        vncClient.credentialDelete(ref)
+                        vncClient.credentialDelete(ref, owner)
                     } } }
                 rawDetails[profileID] = saved
                 _state.update {

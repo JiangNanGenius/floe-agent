@@ -184,8 +184,9 @@ internal class C05VNCClient(
         return response.boolValue("present")
     }
 
-    fun credentialDelete(reference: C05VncPasswordRef) {
+    fun credentialDelete(reference: C05VncPasswordRef, owner: C05RemoteOwner) {
         exchange(request("c05.vnc.credential.delete") {
+            putOwner(owner)
             put("credential", passwordRefJson(reference))
         })
     }

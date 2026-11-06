@@ -15,6 +15,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class C05VNCClientTest {
+    @Test
+    fun credentialDeletionCarriesTheOwnerRequiredByNativeBindings() {
+        val transport = FakeTransport(
+            """{"ok":true,"schema":"floe.vnc/11","operation":"c05.vnc.credential.delete","deleted":true}""",
+        )
+        val activeOwner = owner.copy(taskID = "44444444-4444-4444-4444-444444444444")
+        C05VNCClient(transport).credentialDelete(C05VncPasswordRef("floe.vnc.test.password", false), activeOwner)
+        val request = Json.parseToJsonElement(transport.requests.single()).jsonObject
+        val actual = request["owner"]!!.jsonObject
+        assertEquals(activeOwner.token, actual["token"]!!.jsonPrimitive.content)
+        assertEquals(activeOwner.nativeEpoch.toString(), actual["nativeEpoch"]!!.jsonPrimitive.content)
+        assertEquals(activeOwner.taskID, actual["taskID"]!!.jsonPrimitive.content)
+    }
     private class FakeTransport(var response: String) : C05RemoteTransport {
         val requests = mutableListOf<String>()
         override fun exchange(request: String): String {
