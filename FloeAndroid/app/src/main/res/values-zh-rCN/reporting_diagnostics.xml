@@ -1,4 +1,6 @@
 <resources>
+    <string name="reporting_stop_upload">停止上传</string>
+    <string name="reporting_upload_cancelled">已停止上传和重试。报告保留在本机，可手动重试。</string>
     <string name="reporting_update_required">此报告来自过旧的 Floe 版本。请更新 Floe 后，在新版重新提交反馈。本机报告已保留。</string>
     <string name="reporting_screenshot_feedback">截图反馈（%1$d 张）</string>
     <string name="reporting_upload_progress">正在上传：%1$d%%。传输完成后等待服务器接收回执。</string>

@@ -208,7 +208,7 @@ internal class DiagnosticReportService(private val context: Context) {
             val receipt = withContext(Dispatchers.IO) { upload(row, session) }
             synchronized(gate) {
                 // A concurrent opt-out/removal must not recreate a deleted report.
-                if (file(row.getString("id")).exists()) {
+                if (allowsPublication(id, session)) {
                     row.put("state", "sent").put("report_id", receipt).remove("error")
                     save(row)
                     for (index in 0 until images.length()) File(root, images.getString(index)).delete()
@@ -217,17 +217,17 @@ internal class DiagnosticReportService(private val context: Context) {
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (_: ReportReceiptRejected) {
             synchronized(gate) {
-                if (file(row.getString("id")).exists())
+                if (allowsPublication(id, session))
                     save(row.put("state", "failed").put("error", "invalid_receipt"))
             }
         }
         catch (failure: ReportRejected) {
             synchronized(gate) {
-                if (file(row.getString("id")).exists()) save(row.put("state", "failed").put("error", failure.code))
+                if (allowsPublication(id, session)) save(row.put("state", "failed").put("error", failure.code))
             }
         } catch (failure: Exception) {
             synchronized(gate) {
-                if (file(row.getString("id")).exists())
+                if (allowsPublication(id, session))
                     save(row.put("state", if (attempts + 1 >= 5) "failed" else "queued")
                         .put("error", when (failure) {
                             is ReportTransportFailure -> failure.code
@@ -297,11 +297,36 @@ internal class DiagnosticReportService(private val context: Context) {
     }
 
     fun retry(id: String) {
-        synchronized(gate) { read(id)?.takeIf { it.optString("state") == "failed" }?.let {
+        val reset = synchronized(gate) { read(id)?.takeIf { it.optString("state") == "failed" }?.let {
             save(it.put("state", "queued").put("attempts", 0).apply { remove("error") })
-        } }
-        refresh(); enqueue()
+            true
+        } ?: false }
+        refresh()
+        // An explicit retry must not be lost behind the previous cancelled
+        // attempt's still-settling WorkManager chain.
+        if (reset) enqueue(replaceID = id)
     }
+
+    /** Stop this attempt and its retry work, retaining the original manifest
+     * and attachments for an explicit retry. Never revoke a received report. */
+    fun cancel(id: String) {
+        synchronized(gate) {
+            val row = read(id) ?: return@synchronized
+            if (row.optString("state") != "queued") return@synchronized
+            activeUploads.remove(id)?.cancel()
+            // Enqueue cancellation before publishing the retryable row. A
+            // later explicit retry enqueues its replacement after this work.
+            WorkManager.getInstance(context).cancelUniqueWork("floe.diagnostics.upload.$id")
+            save(row.put("state", "failed").put("error", "upload_cancelled"))
+            transfers.remove(id)
+        }
+        refresh()
+    }
+
+    /** Caller holds gate, so cancellation and terminal publication linearize. */
+    private fun allowsPublication(id: String, session: ReportUploadSession): Boolean =
+        session.allowsPublication(activeUploads[id], read(id)?.optString("state"))
+
     fun remove(id: String) { synchronized(gate) { read(id)?.let(::removeRecord) }; refresh() }
     private fun removeRecord(row: JSONObject) {
         activeUploads.remove(row.getString("id"))?.cancel()
@@ -351,14 +376,15 @@ internal class DiagnosticReportService(private val context: Context) {
         val manager = context.getSystemService(ConnectivityManager::class.java)
         return manager.getNetworkCapabilities(manager.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
     }
-    private fun enqueue() {
+    private fun enqueue(replaceID: String? = null) {
         // Each report owns its retry. A waiting Wi-Fi attachment or an older
         // retry backoff must not delay newly submitted text feedback.
         val rows = synchronized(gate) { records().filter { it.optString("state") == "queued" } }
         val work = WorkManager.getInstance(context)
         for (row in rows) {
             val id = row.getString("id")
-            work.enqueueUniqueWork("floe.diagnostics.upload.$id", ExistingWorkPolicy.KEEP,
+            work.enqueueUniqueWork("floe.diagnostics.upload.$id",
+                if (id == replaceID) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
                 OneTimeWorkRequestBuilder<DiagnosticReportWorker>().setInputData(workDataOf("report_id" to id))
                     .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                     .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS).build())

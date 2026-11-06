@@ -23,6 +23,7 @@ class LinuxDesktopCommandsTest {
         executable("openbox", "printf '%s' \"\$DBUS_SESSION_BUS_ADDRESS\" > \"\$WMTRACE\"; exec sleep 30")
         executable("inkscape", "printf '%s|%s|%s' \"\$DISPLAY\" \"\${1:-}\" \"\$DBUS_SESSION_BUS_ADDRESS\" > \"\$TRACE\"")
         executable("gimp", "exit 7")
+        executable("pcmanfm", "printf '%s|%s|%s|%s' \"\$DISPLAY\" \"\${1:-}\" \"\${2:-}\" \"\$DBUS_SESSION_BUS_ADDRESS\" > \"\$PCMANFMTRACE\"")
         executable("apt-get", "if IFS= read -r leaked; then exit 42; fi; exit 0")
         root.resolve("work file.svg").writeText("<svg/>")
         val executor = Executors.newSingleThreadExecutor()
@@ -33,6 +34,7 @@ class LinuxDesktopCommandsTest {
             environment()["TMPDIR"] = root.absolutePath
             environment()["TRACE"] = root.resolve("trace").absolutePath
             environment()["WMTRACE"] = root.resolve("wm-trace").absolutePath
+            environment()["PCMANFMTRACE"] = root.resolve("pcmanfm-trace").absolutePath
             redirectErrorStream(true)
         }.start()
         try {
@@ -51,12 +53,20 @@ class LinuxDesktopCommandsTest {
             awaitLine("FLOE_READY:" + "a".repeat(32))
             process.outputStream.write(LinuxDesktopCommands.application("inkscape", false, "b".repeat(32))); process.outputStream.flush()
             awaitLine("FLOE_APP_STARTED:" + "b".repeat(32))
-            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
             val trace = root.resolve("trace")
-            while ((!trace.isFile || trace.length() == 0L) && System.nanoTime() < deadline) Thread.sleep(10)
-            assertTrue("App command must reach the still-running launcher", trace.exists())
+            fun awaitTrace(file: java.io.File): String {
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+                while ((!file.isFile || file.length() == 0L) && System.nanoTime() < deadline) Thread.sleep(10)
+                assertTrue("Owned child must publish its trace: ${file.name}", file.isFile && file.length() > 0L)
+                return file.readText()
+            }
+            awaitTrace(trace)
             assertEquals(":171||synthetic-project-bus", trace.readText())
-            assertEquals("synthetic-project-bus", root.resolve("wm-trace").readText())
+            assertEquals("synthetic-project-bus", awaitTrace(root.resolve("wm-trace")))
+            process.outputStream.write(LinuxDesktopCommands.application("pcmanfm", false, "1".repeat(32)))
+            process.outputStream.flush()
+            awaitLine("FLOE_APP_STARTED:" + "1".repeat(32))
+            assertEquals(":171|--new-win|.|synthetic-project-bus", awaitTrace(root.resolve("pcmanfm-trace")))
             process.outputStream.write(LinuxDesktopCommands.application("gimp", false, "c".repeat(32))
                 .toString(Charsets.UTF_8).replace("\n", "\r\n").toByteArray())
             process.outputStream.flush()

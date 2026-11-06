@@ -14,6 +14,11 @@ internal class ReportUploadSession {
         if (synchronized(gate) { cancelled }) throw ReportUploadCancelled()
     }
 
+    /** Checked under the report service's persistence lock. A response can
+     * already be queued after HTTP finishes when the user stops its attempt. */
+    fun allowsPublication(current: ReportUploadSession?, state: String?): Boolean =
+        current === this && state == "queued" && synchronized(gate) { !cancelled }
+
     fun bind(value: Call) {
         val admitted = synchronized(gate) {
             check(call == null)

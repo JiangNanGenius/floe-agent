@@ -1,4 +1,6 @@
 <resources>
+    <string name="reporting_stop_upload">Stop upload</string>
+    <string name="reporting_upload_cancelled">Upload and retries stopped. The report is saved on this device for manual retry.</string>
     <string name="reporting_update_required">This report is from an outdated Floe version. Update Floe and submit feedback again from the newer version. This local report has been kept.</string>
     <string name="reporting_screenshot_feedback">Screenshot feedback (%1$d images)</string>
     <string name="reporting_upload_progress">Uploading: %1$d%%. Waiting for the server receipt when the transfer completes.</string>

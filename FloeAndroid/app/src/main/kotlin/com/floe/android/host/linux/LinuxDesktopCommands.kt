@@ -82,6 +82,11 @@ internal object LinuxDesktopCommands {
               fi
               # A child must never consume the control stream (including APT
               # and GUI applications that read stdin during first-run setup).
+              # PCManFM may keep a live singleton without a visible window.
+              # The launcher action must open this project's working directory.
+              if test "${'$'}gui_editor" = pcmanfm && test "${'$'}#" = 0; then
+                set -- --new-win .
+              fi
               "${'$'}gui_editor" "${'$'}@" </dev/null >/dev/null 2>&1 &
               gui_child=${'$'}!
               sleep 0.2

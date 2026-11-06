@@ -10,6 +10,7 @@ import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.asRequestBody
@@ -100,6 +101,10 @@ internal class ReportUploadTransport(private val client: OkHttpClient = defaultC
 
     companion object {
         private val defaultClient = OkHttpClient.Builder()
+            // Isolate feedback uploads from HTTP/2 stream/proxy interactions.
+            // This is a single-request transport choice, never protocol replay;
+            // TLS verification and queue-owned retries are unchanged.
+            .protocols(listOf(Protocol.HTTP_1_1))
             .connectTimeout(20, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS).callTimeout(90, TimeUnit.SECONDS)
             .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build()

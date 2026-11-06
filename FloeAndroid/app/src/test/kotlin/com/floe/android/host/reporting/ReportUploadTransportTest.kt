@@ -7,19 +7,78 @@ import java.net.ServerSocket
 import java.io.IOException
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 import okhttp3.OkHttpClient
+import okhttp3.Call
+import okhttp3.EventListener
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlin.coroutines.CoroutineContext
+import java.util.concurrent.LinkedBlockingQueue
 import org.junit.Assert.*
 import org.junit.Test
 
 class ReportUploadTransportTest {
+    @Test fun cancelledAttemptCannotPublishAnAlreadyReceivedResponse() = runBlocking {
+        val continuations = LinkedBlockingQueue<Runnable>()
+        val owner = object : CoroutineDispatcher() {
+            override fun dispatch(context: CoroutineContext, block: Runnable) { continuations.add(block) }
+        }
+        ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { server ->
+            val ended = CountDownLatch(1)
+            val listener = thread(isDaemon = true) {
+                server.accept().use { socket ->
+                    val input = socket.getInputStream()
+                    val header = ByteArrayOutputStream()
+                    while (!header.toString("ISO-8859-1").endsWith("\r\n\r\n")) {
+                        val byte = input.read(); check(byte >= 0); header.write(byte)
+                    }
+                    val headers = header.toString("ISO-8859-1")
+                    val length = Regex("(?i)Content-Length: ([0-9]+)").find(headers)!!.groupValues[1].toInt()
+                    var remaining = length
+                    val buffer = ByteArray(4096)
+                    while (remaining > 0) {
+                        val count = input.read(buffer, 0, minOf(buffer.size, remaining))
+                        check(count > 0); remaining -= count
+                    }
+                    socket.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".toByteArray())
+                }
+            }
+            val client = OkHttpClient.Builder().eventListener(object : EventListener() {
+                override fun callEnd(call: Call) { ended.countDown() }
+            }).build()
+            val attempt = ReportUploadSession()
+            val response = async(owner) {
+                ReportUploadTransport(client).post("http://127.0.0.1:${server.localPort}/report", "{}", emptyList(), attempt) { _, _ -> }
+            }
+            try {
+                checkNotNull(continuations.poll(3, TimeUnit.SECONDS)).run()
+                assertTrue("The HTTP response must actually finish before cancellation", ended.await(3, TimeUnit.SECONDS))
+                // HTTP is finished but the owner continuation is still queued.
+                // Call.cancel alone cannot revoke that already-received receipt.
+                attempt.cancel()
+                checkNotNull(continuations.poll(3, TimeUnit.SECONDS)).run()
+                assertEquals(200, response.await().first)
+                assertFalse(attempt.allowsPublication(attempt, "queued"))
+                val replacement = ReportUploadSession()
+                assertTrue(replacement.allowsPublication(replacement, "queued"))
+                assertFalse(attempt.allowsPublication(replacement, "queued"))
+                assertFalse(replacement.allowsPublication(replacement, "failed"))
+                listener.join(1000)
+            } finally {
+                response.cancel()
+                while (true) (continuations.poll() ?: break).run()
+            }
+        }
+    }
+
     @Test fun completeCallDeadlineStopsAStalledServer() = runBlocking {
         ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { server ->
             val listener = thread(isDaemon = true) {

@@ -151,13 +151,18 @@ internal fun DiagnosticReportingSettings() {
                 ?: stringResource(R.string.reporting_saved_for_upload)
         }
         FloeConfirmDialog(title = stringResource(R.string.reporting_title), message = message,
-            confirmLabel = stringResource(R.string.done), dismissLabel = stringResource(R.string.cancel),
-            onConfirm = { submittedID = null }, onDismiss = { submittedID = null })
+            confirmLabel = stringResource(R.string.done),
+            dismissLabel = stringResource(if (row?.state == "queued") R.string.reporting_stop_upload else R.string.cancel),
+            onConfirm = { submittedID = null }, onDismiss = {
+                if (row?.state == "queued") scope.launch(Dispatchers.IO) { reporter.cancel(id) }
+                submittedID = null
+            })
     }
 }
 
 @Composable
 private fun reportErrorMessage(code: String): String = stringResource(when {
+    code == "upload_cancelled" -> R.string.reporting_upload_cancelled
     code == "client_update_required" -> R.string.reporting_update_required
     code == "waiting_wifi" -> R.string.reporting_waiting_wifi
     code == "image_too_large" -> R.string.reporting_image_too_large
