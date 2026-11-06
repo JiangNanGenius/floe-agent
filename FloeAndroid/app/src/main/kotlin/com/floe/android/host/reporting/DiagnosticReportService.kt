@@ -132,7 +132,7 @@ internal class DiagnosticReportService(private val context: Context) {
             try {
                 root.mkdirs()
                 screenshots.forEachIndexed { index, uri ->
-                    images += importScreenshot(uri, File(root, "$id-$index.jpg"))
+                    images += importScreenshot(uri, File(root, "$id-$index.jpg"), ReportScreenshot.attachmentBudget(screenshots.size))
                 }
                 val description = problem.takeIf { it.isNotBlank() }
                     ?: context.getString(R.string.reporting_screenshot_feedback, images.size)
@@ -143,10 +143,10 @@ internal class DiagnosticReportService(private val context: Context) {
             } catch (error: Exception) { images.forEach { it.delete() }; throw error }
         }
 
-    private fun importScreenshot(uri: Uri, destination: File): File {
+    private fun importScreenshot(uri: Uri, destination: File, budget: Int): File {
         val source = File(root, "${UUID.randomUUID()}.import")
         val input = context.contentResolver.openInputStream(uri) ?: throw java.io.IOException("image_unreadable")
-        return ReportScreenshot.prepare(input, source, destination)
+        return ReportScreenshot.prepare(input, source, destination, budget)
     }
 
     private fun newRecord(kind: String, message: String, images: List<File>, anyNetwork: Boolean): JSONObject {
@@ -187,7 +187,7 @@ internal class DiagnosticReportService(private val context: Context) {
                         save(row.put("state", "failed").put("error", "retry_limit"))
                         false
                     }
-                    else -> { save(row.put("attempts", attempts + 1)); true }
+                    else -> { row.remove("error"); save(row.put("attempts", attempts + 1)); true }
                 }
             }
             if (!admitted) continue
@@ -238,10 +238,11 @@ internal class DiagnosticReportService(private val context: Context) {
             val images = (0 until names.length()).map { File(root, names.getString(it)) }
             // Previously queued reports keep their identity and images across
             // upgrades. Reduce old oversized attachments before resuming them.
-            for (image in images) if (image.length() > ReportScreenshot.OUTPUT_LIMIT) {
+            val budget = if (images.isEmpty()) ReportScreenshot.OUTPUT_LIMIT else ReportScreenshot.attachmentBudget(images.size)
+            for (image in images) if (image.length() > budget) {
                 val temporary = File(root, "${UUID.randomUUID()}.jpg")
                 try {
-                    ReportScreenshot.prepare(image.inputStream(), File(root, "${UUID.randomUUID()}.import"), temporary)
+                    ReportScreenshot.prepare(image.inputStream(), File(root, "${UUID.randomUUID()}.import"), temporary, budget)
                     java.nio.file.Files.move(temporary.toPath(), image.toPath(),
                         java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
                 } finally { temporary.delete() }

@@ -16,6 +16,13 @@ internal object ReportScreenshot {
     private const val PIXELS = 4_000_000L
     private const val EDGE = 4096
 
+    fun attachmentBudget(count: Int): Int {
+        require(count in 1..4)
+        // Keep the complete mobile report below 1 MiB, with room for its
+        // manifest and multipart framing. A lone image can retain more detail.
+        return minOf(OUTPUT_LIMIT, (1024 * 1024 - 32768) / count)
+    }
+
     fun sampleSize(width: Int, height: Int): Int {
         require(width > 0 && height > 0) { "image_invalid" }
         var sample = 1
@@ -27,7 +34,8 @@ internal object ReportScreenshot {
         return sample
     }
 
-    fun prepare(input: InputStream, source: File, destination: File): File {
+    fun prepare(input: InputStream, source: File, destination: File, budget: Int = OUTPUT_LIMIT): File {
+        require(budget in 1..OUTPUT_LIMIT)
         var bitmap: Bitmap? = null
         try {
             input.use { stream -> source.outputStream().use { output ->
@@ -65,7 +73,7 @@ internal object ReportScreenshot {
                         if (!bitmap!!.compress(Bitmap.CompressFormat.JPEG, quality, output))
                             throw IOException("image_invalid")
                     }
-                    if (destination.length() in 1..OUTPUT_LIMIT.toLong()) return destination
+                    if (destination.length() in 1..budget.toLong()) return destination
                 }
                 val current = bitmap!!
                 val reduced = Bitmap.createScaledBitmap(current, max(1, current.width * 3 / 4),

@@ -584,7 +584,7 @@
     <string name="reporting_manual">反馈</string>
     <string name="reporting_fault">应用故障</string>
     <string name="reporting_receipt">已接收：%1$s</string>
-    <string name="reporting_rejected">上传被拒绝，可重试或移除。</string>
+    <string name="reporting_rejected">上传未完成，可重试或移除。</string>
     <string name="reporting_queued">等待上传；附件默认等待 Wi-Fi。</string>
     <string name="reporting_remove">移除本机报告</string>
     <string name="reporting_agree">同意</string>

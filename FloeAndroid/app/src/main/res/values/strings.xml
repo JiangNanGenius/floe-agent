@@ -584,7 +584,7 @@
     <string name="reporting_manual">Feedback</string>
     <string name="reporting_fault">App fault</string>
     <string name="reporting_receipt">Received: %1$s</string>
-    <string name="reporting_rejected">Upload was rejected. You can retry or remove it.</string>
+    <string name="reporting_rejected">Upload did not complete. You can retry or remove it.</string>
     <string name="reporting_queued">Queued; attachments wait for Wi-Fi by default.</string>
     <string name="reporting_remove">Remove local report</string>
     <string name="reporting_agree">Agree</string>

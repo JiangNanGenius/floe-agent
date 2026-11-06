@@ -4,6 +4,10 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ReportScreenshotTest {
+    @Test fun fourImagesAndManifestFitTheWholeMobileBudget() {
+        assertEquals(500 * 1024, ReportScreenshot.attachmentBudget(1))
+        for (count in 1..4) assertTrue(ReportScreenshot.attachmentBudget(count) * count + 32768 <= 1024 * 1024)
+    }
     @Test fun typicalScreenshotIsNotUnnecessarilyReduced() {
         assertEquals(1, ReportScreenshot.sampleSize(1080, 2400))
     }
