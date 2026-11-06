@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import subprocess
 import sys
 from urllib.error import HTTPError
@@ -35,6 +36,28 @@ def exact_bundle_id(candidates):
     return bundles[0]["id"]
 
 
+class SigningAPIError(ValueError):
+    def __init__(self, method, path, status, payload):
+        super().__init__("Apple signing API returned HTTP " + str(status))
+        resource = path.split("?", 1)[0]
+        resource = re.sub(r"/(bundleIds|certificates)/[^/]+", r"/\1/{id}", resource)
+        errors = payload.get("errors", []) if isinstance(payload, dict) else []
+        codes, parameters, pointers = [], [], []
+        for item in errors if isinstance(errors, list) else []:
+            if not isinstance(item, dict): continue
+            code = item.get("code", "")
+            if isinstance(code, str) and re.fullmatch(r"[A-Z0-9_.-]{1,128}", code): codes.append(code)
+            source = item.get("source", {})
+            if not isinstance(source, dict): continue
+            for key, target, pattern in (("parameter", parameters, r"[A-Za-z0-9_.\[\]-]{1,128}"),
+                                         ("pointer", pointers, r"/[A-Za-z0-9_./-]{1,128}")):
+                value = source.get(key, "")
+                if isinstance(value, str) and re.fullmatch(pattern, value): target.append(value)
+        self.summary = {"method": method, "resource": resource, "status": status,
+                        "codes": codes, "parameters": parameters, "pointers": pointers}
+        self.private_payload = payload
+
+
 class AppleAPI:
     def __init__(self):
         self.token = subprocess.check_output(
@@ -49,7 +72,12 @@ class AppleAPI:
             with urlopen(request, timeout=45) as response:
                 return json.load(response)
         except HTTPError as error:
-            raise ValueError("Apple signing API returned HTTP " + str(error.code)) from None
+            try:
+                raw = error.read(65537)
+                payload = json.loads(raw) if len(raw) <= 65536 else {}
+            except (ValueError, OSError):
+                payload = {}
+            raise SigningAPIError(method, path, error.code, payload) from None
 
     def rows(self, path):
         rows = []
@@ -156,6 +184,12 @@ def main():
         ensure_profile(api, args.profile, declared, report)
     except Exception as error:
         report.update(state="failed", error=str(error) if isinstance(error, ValueError) else type(error).__name__)
+        if isinstance(error, SigningAPIError):
+            report["apiFailure"] = error.summary
+            private_path = os.environ.get("FLOE_SIGNING_PRIVATE_DIAGNOSTIC_PATH")
+            if private_path:
+                with Path(private_path).open("x", opener=lambda path, flags: os.open(path, flags, 0o600)) as stream:
+                    json.dump(error.private_payload, stream)
         raise SystemExit("Production push profile preparation failed; see the redacted signing report.") from None
     finally:
         args.report.parent.mkdir(parents=True, exist_ok=True)

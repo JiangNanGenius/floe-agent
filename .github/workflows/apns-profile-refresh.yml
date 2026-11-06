@@ -103,6 +103,7 @@ jobs:
           ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           ASC_PRIVATE_KEY_PATH: ${{ runner.temp }}/floe-apns322-work/AuthKey.p8
+          FLOE_SIGNING_PRIVATE_DIAGNOSTIC_PATH: ${{ runner.temp }}/floe-apns322-work/api-failure-private.json
         shell: bash
         run: |
           set -euo pipefail
@@ -158,7 +159,7 @@ jobs:
           for filename, keys in (
               ('preflight.json', ('state', 'infoSHA256', 'recipientSHA256', 'sourceEntitlementsSHA256', 'frozenAppSource', 'frozenAppTag', 'frozenAppTagObject')),
               ('helper-report.json', ('state', 'originalSHA256', 'profileSHA256', 'bundleID', 'created', 'profileReplaced', 'profileCreationAttempted',
-                                      'enabledPushCapability', 'expiration', 'noCertificateCreated', 'noAppStoreSubmissionChanged'))):
+                                      'enabledPushCapability', 'expiration', 'noCertificateCreated', 'noAppStoreSubmissionChanged', 'apiFailure'))):
               path = work / filename
               if path.is_file():
                   try:
@@ -179,6 +180,14 @@ jobs:
                       if raw['error'] in safe_errors: report['helperError'] = raw['error']
                       status = re.search(r'Apple signing API returned HTTP ([0-9]{3})', str(raw['error']))
                       if status: report['appleHTTPStatus'] = status.group(1)
+          diagnostic = work / 'api-failure-private.json'
+          if diagnostic.is_file() and (work / 'recipient.pem').is_file():
+              import subprocess
+              encrypted_diagnostic = export / 'Floe-profile-diagnostic.cms'
+              subprocess.run(['openssl', 'cms', '-encrypt', '-binary', '-aes256', '-outform', 'DER',
+                              '-in', str(diagnostic), '-out', str(encrypted_diagnostic), str(work / 'recipient.pem')],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+              report['encryptedDiagnosticSHA256'] = hashlib.sha256(encrypted_diagnostic.read_bytes()).hexdigest()
           cms = export / 'Floe-production-profile.cms'
           report['encryptedProfilePresent'] = cms.is_file()
           if cms.is_file():
@@ -195,6 +204,7 @@ jobs:
           name: apns-production-profile-322-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/floe-apns322-export/Floe-production-profile.cms
+            ${{ runner.temp }}/floe-apns322-export/Floe-profile-diagnostic.cms
             ${{ runner.temp }}/floe-apns322-export/apns-profile-report.json
           if-no-files-found: error
           retention-days: 1

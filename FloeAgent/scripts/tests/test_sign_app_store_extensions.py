@@ -10,10 +10,21 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sign_app_store_extensions import (APP_ID, EXTENSIONS, TEAM, inventory,
     production_host_entitlements, validated_entitlements)
-from ensure_apns_profile import exact_bundle_id
+from ensure_apns_profile import exact_bundle_id, SigningAPIError
 
 
 class ExtensionSigningTests(unittest.TestCase):
+    def test_signing_api_failure_summary_omits_account_ids_and_raw_details(self):
+        error = SigningAPIError("POST", "/v1/bundleIds/private-resource/bundleIdCapabilities?limit=200", 400,
+            {"errors": [{"code": "PARAMETER_ERROR.INVALID", "detail": "PRIVATE_DETAIL_VALUE",
+                         "source": {"parameter": "limit", "pointer": "/data/attributes/settings"}}]})
+        import json
+        serialized = str(error) + json.dumps(error.summary)
+        self.assertNotIn("private-resource", serialized)
+        self.assertNotIn("PRIVATE_DETAIL_VALUE", serialized)
+        self.assertEqual(error.summary["codes"], ["PARAMETER_ERROR.INVALID"])
+        self.assertEqual(error.summary["parameters"], ["limit"])
+
     def test_profile_lookup_ignores_nonexact_server_candidates(self):
         exact = {"id": "expected-resource", "attributes": {"identifier": APP_ID}}
         extras = [{"id": "extension", "attributes": {"identifier": APP_ID + ".share"}},
