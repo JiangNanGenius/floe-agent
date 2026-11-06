@@ -1,0 +1,21 @@
+--- src/mesh/util.js.upstream
++++ src/mesh/util.js
+@@ -1,7 +1,7 @@
+ /** Copyright Stewart Allen <sa@grid.space> -- All Rights Reserved */
+ 
+ import { THREE } from '../ext/three.js';
+-import { api as meshApi } from './api.js';
++// Floe patch: visualization preferences are supplied explicitly; no mesh app UI import.
+ 
+ const { Matrix3, Vector3, Box3, LineSegments, BufferGeometry, Float32BufferAttribute, LineBasicMaterial } = THREE;
+ const deferFn = [];
+@@ -121,7 +121,8 @@
+         const _v1 = new Vector3();
+         const _v2 = new Vector3();
+         const _normalMatrix = new Matrix3();
+-        const prefs = meshApi.prefs.map;
++        const prefs = opt.preferences;
++        if (!prefs) throw new Error('faceNormals requires explicit visualization preferences');
+         const norms = prefs.normals;
+         const defcolor = prefs.space.dark ? norms.color_dark : norms.color_lite;
+         const normlen = norms.length || 1;

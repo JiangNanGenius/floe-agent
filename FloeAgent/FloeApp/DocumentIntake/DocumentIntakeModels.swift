@@ -382,6 +382,7 @@ struct DocumentIntakePresentation: Equatable, Sendable, Identifiable {
 }
 
 struct DocumentIntakeNoteOpenRequest: Equatable, Sendable, Identifiable {
+    enum Source: Equatable, Sendable { case imported, systemAction }
     /// Unique per request so a view's `.task(id:)` runs again even when the
     /// same imported document is requested twice.
     let id: UUID
@@ -391,6 +392,8 @@ struct DocumentIntakeNoteOpenRequest: Equatable, Sendable, Identifiable {
     /// The originating scene. A Notes view in another window must not adopt
     /// the same import and move that window's selected note.
     let sceneID: String?
+    /// eventID identifies an import receipt only for imported requests.
+    var source: Source = .imported
 }
 
 /// A committed result that was NOT auto-presented. The user keeps a real Open

@@ -1,0 +1,4 @@
+framework module FloeMachiningNative {
+  umbrella header "FloeMachiningNative.h"
+  export *
+}

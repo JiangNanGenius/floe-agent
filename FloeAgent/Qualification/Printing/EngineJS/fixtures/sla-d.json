@@ -1,0 +1,18 @@
+{
+  "new": true,
+  "mode": "",
+  "deviceName": "",
+  "imageURL": "",
+  "noclone": false,
+  "internal": 0,
+  "bedWidth": 150,
+  "bedDepth": 150,
+  "bedHeight": 1.5,
+  "maxHeight": 150,
+  "resolutionX": 1600,
+  "resolutionY": 900,
+  "slaFormat": "",
+  "slaFileExt": "",
+  "slaFormatVersion": 1,
+  "slaMachineEditable": false
+}

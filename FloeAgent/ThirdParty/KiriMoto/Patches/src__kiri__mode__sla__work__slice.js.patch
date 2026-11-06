@@ -1,0 +1,38 @@
+--- src/kiri/mode/sla/work/slice.js.upstream
++++ src/kiri/mode/sla/work/slice.js
+@@ -6,7 +6,6 @@
+ import { polygons as POLY } from '../../../../geo/polygons.js';
+ import { newSlice, newTop } from '../../../core/slice.js';
+ import { layerProcessTops, layerDiff } from '../../fdm/work/slice.js';
+-import { PNG } from '../../../../ext/pngjs.esm.js';
+ import { SLA } from './init-work.js';
+ 
+ let fill_cache;
+@@ -59,15 +58,7 @@
+             break;
+     }
+ 
+-    let sws = self.kiri_worker.current.snap.url;
+-    let b64 = atob(sws.substring(sws.indexOf(',') + 1));
+-    let bin = Uint8Array.from(b64, c => c.charCodeAt(0));
+-    let img = new PNG();
+-    img.parse(bin, (err, data) => {
+-        SLA.preview = img;
+-        SLA.previewSmall = samplePNG(img, smallDims.x, smallDims.y);
+-        SLA.previewLarge = samplePNG(img, largeDims.x, largeDims.y);
+-    });
++    // Floe patch: selected CTB encoder builds thumbnails from actual exposure layers.
+     let height = process.slaSlice || 0.05;
+ 
+     async function onSliceDone(slices) {
+@@ -213,8 +204,8 @@
+             let tops = POLY.nest(groups);
+             return newSlice(z).addTops(tops);
+         });
+-        onSliceDone(slices).then(ondone);
+-    });
++        return onSliceDone(slices);
++    }).then(ondone).catch(ondone);
+ };
+ 
+ const SLA_RENDER_THICK = true;

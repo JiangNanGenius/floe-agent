@@ -1,0 +1,14 @@
+/* 电子琴面板 — 简体中文 */
+"keyboard.tone" = "音色";
+"keyboard.volume" = "音量";
+"keyboard.filter" = "滤波";
+"keyboard.attack" = "起音";
+"keyboard.release" = "释放";
+"keyboard.effect" = "效果";
+"keyboard.sustain" = "延音";
+"keyboard.pitchbend" = "弯音";
+"keyboard.modulation" = "调制";
+"keyboard.expand" = "展开键盘";
+"keyboard.collapse" = "收起键盘";
+"keyboard.octave" = "八度";
+"keyboard.noPresets" = "暂无可用音色";

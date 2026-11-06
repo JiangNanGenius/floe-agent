@@ -1,0 +1,14 @@
+/* Electronic keyboard panel — English */
+"keyboard.tone" = "Tone";
+"keyboard.volume" = "Volume";
+"keyboard.filter" = "Filter";
+"keyboard.attack" = "Attack";
+"keyboard.release" = "Release";
+"keyboard.effect" = "Effect";
+"keyboard.sustain" = "Sustain";
+"keyboard.pitchbend" = "Pitch bend";
+"keyboard.modulation" = "Modulation";
+"keyboard.expand" = "Expand keyboard";
+"keyboard.collapse" = "Collapse keyboard";
+"keyboard.octave" = "Octave";
+"keyboard.noPresets" = "No tones available";

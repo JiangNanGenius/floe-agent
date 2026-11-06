@@ -1,0 +1,39 @@
+{
+  "new": true,
+  "mode": "",
+  "deviceName": "",
+  "imageURL": "",
+  "internal": 0,
+  "bedWidth": 300,
+  "bedDepth": 175,
+  "bedHeight": 2.5,
+  "bedRound": false,
+  "bedBelt": false,
+  "fwRetract": false,
+  "filamentSource": "direct",
+  "originCenter": false,
+  "deviceZMax": 0,
+  "maxHeight": 150,
+  "gcodeTime": 1,
+  "gcodeChange": [
+    "T{tool}"
+  ],
+  "gcodePre": [],
+  "gcodePost": [],
+  "gcodeProc": "",
+  "gcodeFan": [],
+  "gcodeFeature": [],
+  "gcodeTrack": [],
+  "gcodeLayer": [],
+  "gcodeFExt": "",
+  "extruders": [
+    {
+      "extFilament": 1.75,
+      "extNozzle": 0.4,
+      "extOffsetX": 0,
+      "extOffsetY": 0
+    }
+  ],
+  "profiles": [],
+  "extras": {}
+}

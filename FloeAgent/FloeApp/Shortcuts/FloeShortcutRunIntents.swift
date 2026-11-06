@@ -40,14 +40,15 @@ struct GetFloeRunStatusIntent: AppIntent {
     @AppDependency private var environment: AppEnvironment
 
     @MainActor
-    func perform() async throws -> some IntentResult & ReturnsValue<FloeShortcutRunEntity> {
+    func perform() async throws -> some IntentResult & ReturnsValue<FloeShortcutRunEntity> & ProvidesDialog {
         let identity = try FloeShortcutRunIntentBridge.identifier(run)
         let value = try await FloeShortcutRunIntentBridge.snapshot(
             runID: identity.runID,
             expectedConversationID: identity.conversationID,
             environment: { environment }
         )
-        return .result(value: value)
+        let state = FloeL10n.l("shortcuts.run.state." + value.state.rawValue)
+        return .result(value: value, dialog: IntentDialog("\(value.title): \(state)"))
     }
 }
 

@@ -969,6 +969,7 @@ struct RootView: View {
         guard entryNavigationReady, environment.persistenceReady,
               let entry = pendingEntry else { return }
         let selection = router.workbenchSelection
+        let entrySidebarSelection = router.sidebarSelection
         do {
             switch entry.route {
             case .newTask:
@@ -986,6 +987,26 @@ struct RootView: View {
                     break
                 }
                 router.openConversation(id)
+            case .note(let id):
+                guard let store = try await NotesRepository.shared.existingStore() else {
+                    entryNotice = FloeL10n.l("shortcuts.note.unavailable")
+                    break
+                }
+                let note = try await store.document(id)
+                try Task.checkCancellation()
+                guard pendingEntry?.id == entry.id else { return }
+                guard router.workbenchSelection == selection,
+                      router.sidebarSelection == entrySidebarSelection else {
+                    pendingEntry = nil
+                    return
+                }
+                guard note.deletedAt == nil else {
+                    entryNotice = FloeL10n.l("shortcuts.note.unavailable")
+                    break
+                }
+                environment.documentIntakeCenter.presentSystemNote(
+                    documentID: id, title: note.title, sceneID: sceneID)
+                router.openMore(.notes)
             case .shareInbox(let id):
                 await environment.shareIntakeCenter.refresh()
                 try Task.checkCancellation()
@@ -1467,7 +1488,7 @@ struct RootView: View {
                     Label("app.floe_agent_app.task_center", systemImage: "checklist")
                         .tag(SidebarSelection.workbench(.overview))
                         .accessibilityIdentifier("sidebar.task_center")
-                    Label("notes.notes_root_view.notes", systemImage: "book.pages")
+                    Label("space.title", systemImage: "square.stack.3d.up")
                         .tag(SidebarSelection.more(.notes))
                         .accessibilityIdentifier("sidebar.notes")
                     Label("app.floe_agent_app.creative", systemImage: "rectangle.and.pencil.and.ellipsis")
@@ -2243,7 +2264,7 @@ private struct MoreDestinationView: View {
     var body: some View {
         switch sub {
         case .notes:
-            NotesRootView()
+            SpaceRootView()
         case .creative:
             CreativeModeHubView()
         case .runs:

@@ -1,0 +1,78 @@
+--- src/kiri/mode/sla/work/x_ctb.js.upstream
++++ src/kiri/mode/sla/work/x_ctb.js
+@@ -1,7 +1,5 @@
+ /** Copyright Stewart Allen <sa@grid.space> -- All Rights Reserved */
+ 
+-import { JSZip } from '../../../../ext/jszip-esm.js';
+-import { PNG } from '../../../../ext/pngjs.esm.js';
+ import { imageToRowMajor, renderRasterLayers, round } from './raster.js';
+ import { ctbLayerCrypt } from './x_ctb_crypto.js';
+ 
+@@ -71,44 +69,6 @@
+         layers,
+         layout: inferLayout(header, layers)
+     };
+-}
+-
+-function toRSLA(input, progress) {
+-    let view = toDataView(input);
+-    let ctb = read(view);
+-    let { header, layers } = ctb;
+-    let zip = new JSZip();
+-    let rslaLayers = [];
+-
+-    layers.forEach((layer, index) => {
+-        let pixels = decodeLayer(view, header, layer);
+-        let file = `layers/${index.toString().padStart(6, "0")}.png`;
+-        zip.file(file, imageToPNG(pixels, header.resolutionX, header.resolutionY));
+-        rslaLayers.push({
+-            index,
+-            z: round(layer.z),
+-            exposure: round(layer.exposure),
+-            lightOffDelay: round(layer.lightOffDelay),
+-            source: {
+-                offset: layer.imageOffset,
+-                length: layer.imageLength
+-            },
+-            file
+-        });
+-        if (progress) progress((index / layers.length) * 0.85, "ctb_decode");
+-    });
+-
+-    zip.file("manifest.json", JSON.stringify(createRSLAManifest(ctb, rslaLayers), null, 2));
+-
+-    return zip.generateAsync({
+-        type: "arraybuffer",
+-        compression: "DEFLATE",
+-        compressionOptions: { level: 6 },
+-        streamFiles: true,
+-        mimeType: RSLA_MIME
+-    }, meta => {
+-        if (progress) progress(0.85 + (meta.percent / 100) * 0.15, "zip_gen");
+-    });
+ }
+ 
+ function decodeLayer(view, header, layer) {
+@@ -723,14 +683,6 @@
+     return ctbLayerCrypt(seed, layerIndex, input);
+ }
+ 
+-function imageToPNG(image, width, height) {
+-    return PNG.sync.write({ width, height, data: image }, {
+-        colorType: 0,
+-        inputColorType: 0,
+-        inputHasAlpha: false
+-    });
+-}
+-
+ function toDataView(input) {
+     return input instanceof DataView
+         ? input
+@@ -802,7 +754,6 @@
+ export const CTB = {
+     encode,
+     read,
+-    toRSLA,
+     decodeLayer,
+     encodeRLE
+ };

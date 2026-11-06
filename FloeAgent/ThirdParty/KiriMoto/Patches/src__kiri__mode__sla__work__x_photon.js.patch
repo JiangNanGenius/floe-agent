@@ -1,0 +1,38 @@
+--- src/kiri/mode/sla/work/x_photon.js.upstream
++++ src/kiri/mode/sla/work/x_photon.js
+@@ -445,13 +445,15 @@
+         }
+     });
+ 
++    // Floe patch: reserve the low WASM pages for C globals/stack (readoff lives at 1024).
++    const rasterBase = SLA.wasm.rasterBase;
+     let imagelen = width * height;
+     let metadata = 6 + array.reduce((total, poly) => total + polyRecordBytes(poly), 0);
+     let rleSpace = masks.length ? imagelen : 0;
+-    ensureSLAMemory(imagelen + Math.max(metadata, rleSpace) + 1024);
++    ensureSLAMemory(rasterBase + imagelen + Math.max(metadata, rleSpace) + 1024);
+ 
+     let wasm = SLA.wasm;
+-    let writer = new self.DataWriter(new DataView(wasm.memory.buffer), imagelen);
++    let writer = new self.DataWriter(new DataView(wasm.memory.buffer), rasterBase + imagelen);
+     writer.writeU16(width, true);
+     writer.writeU16(height, true);
+     writer.writeU16(array.length, true);
+@@ -463,13 +465,13 @@
+         scaleMovePoly(poly);
+         writePoly(writer, poly);
+     }
+-    wasm.render(0, imagelen, 0);
+-    let image = wasm.heap.slice(0, imagelen), layers = [];
++    wasm.render(rasterBase, imagelen, 0);
++    let image = wasm.heap.slice(rasterBase, rasterBase + imagelen), layers = [];
+     // one rle encoded bitstream for each mash (anti-alias sublayer)
+     for (let l=0; l<masks.length; l++) {
+         // while the image is still in wasm heap memory, rle encode it
+-        let rlelen = wasm.rle_encode(0, 0, imagelen, masks[l], imagelen, 0);
+-        layers.push(wasm.heap.slice(imagelen, imagelen + rlelen));
++        let rlelen = wasm.rle_encode(rasterBase, 0, imagelen, masks[l], imagelen, 0);
++        layers.push(wasm.heap.slice(rasterBase + imagelen, rasterBase + imagelen + rlelen));
+     }
+ 
+     return { image, layers, end: count === 0, area };

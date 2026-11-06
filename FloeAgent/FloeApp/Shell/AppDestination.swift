@@ -54,7 +54,7 @@ enum MoreDestination: String, Hashable, CaseIterable, Identifiable, Sendable {
 
     var title: LocalizedStringKey {
         switch self {
-        case .notes: "notes.notes_root_view.notes"
+        case .notes: "space.title"
         case .creative: "app.floe_agent_app.creative"
         case .runs: "more.runs"
         case .setupGuide: "more.setup_guide"
@@ -69,7 +69,7 @@ enum MoreDestination: String, Hashable, CaseIterable, Identifiable, Sendable {
 
     var systemImage: String {
         switch self {
-        case .notes: "book.pages"
+        case .notes: "square.stack.3d.up"
         case .creative: "rectangle.and.pencil.and.ellipsis"
         case .runs: "play.rectangle"
         case .setupGuide: "wand.and.stars"

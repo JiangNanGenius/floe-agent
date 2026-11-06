@@ -1,0 +1,30 @@
+--- src/kiri/mode/sla/work/init-work.js.upstream
++++ src/kiri/mode/sla/work/init-work.js
+@@ -2,7 +2,17 @@
+ 
+ import { newPrint } from '../../../core/print.js';
+ import { sla_slice } from './slice.js';
+-import { sla_export } from './export.js';
++// Floe patch: this bounded adapter exports CTB v3 only; no implicit format fallback.
++import { CTB } from './x_ctb.js';
++import { photon } from './x_photon.js';
++function sla_export(print, online, ondone) {
++    const d=print.settings.device;
++    if(d.slaFormat !== 'ctb' || d.slaFormatVersion !== 3) throw new Error('Unsupported resin format');
++    return CTB.encode(print,(progress,message)=>online({progress,message}),photon).then(output=>{
++        const done={width:d.resolutionX,height:d.resolutionY,...output};
++        ondone(done,[done.file]);
++    });
++}
+ 
+ export const SLA = {
+     init,
+@@ -61,6 +71,8 @@
+                 SLA.wasm = {
+                     heap,
+                     memory: exports.memory,
++                    // Floe patch: keep image buffers above the C stack and static globals.
++                    rasterBase: Math.ceil(exports.emscripten_stack_get_current() / 65536) * 65536,
+                     render: exports.render,
+                     rle_encode: exports.rle_encode
+                 };

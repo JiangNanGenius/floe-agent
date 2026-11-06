@@ -1,0 +1,87 @@
+{
+  "id": "5F7A1B2C-3D4E-4F50-A1B2-C3D4E5F60718",
+  "schemaVersion": 5,
+  "name": "Research Board",
+  "revision": 12,
+  "selectedDocumentID": "9E8D7C6B-5A49-4837-9F0E-1D2C3B4A5960",
+  "experimentalFeature": { "flag": true, "score": 1.5 },
+  "viewports": {
+    "9E8D7C6B-5A49-4837-9F0E-1D2C3B4A5960": { "center": { "x": 100, "y": -40 }, "scale": 0.8 }
+  },
+  "documents": [
+    {
+      "id": "9E8D7C6B-5A49-4837-9F0E-1D2C3B4A5960",
+      "name": "Main",
+      "backgroundStyle": "dots",
+      "createdAt": "2026-05-01T10:00:00Z",
+      "updatedAt": "2026-05-02T11:00:00Z",
+      "nodes": [
+        {
+          "id": "11111111-2222-3333-4444-555555555501",
+          "kind": "text",
+          "text": "Primary question",
+          "x": 120,
+          "y": 240,
+          "width": 300,
+          "height": 160,
+          "isLocked": false,
+          "metadata": { "licenseStatus": "own" }
+        },
+        {
+          "id": "11111111-2222-3333-4444-555555555502",
+          "kind": "image",
+          "title": "Reference photo",
+          "text": "",
+          "position": { "x": 520, "y": 240 },
+          "size": { "width": 320, "height": 260 },
+          "asset": {
+            "id": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEE01",
+            "contentHash": "sha256:abc123",
+            "localRelativePath": "assets/ref-photo.heic",
+            "mimeType": "image/heic",
+            "byteCount": 204800
+          },
+          "sourceURLs": ["https://example.org/reference-photo"]
+        },
+        {
+          "id": "11111111-2222-3333-4444-555555555503",
+          "kind": "group",
+          "text": "Findings",
+          "position": { "x": 900, "y": 300 },
+          "size": { "width": 420, "height": 280 }
+        },
+        {
+          "id": "11111111-2222-3333-4444-555555555504",
+          "kind": "handwriting",
+          "text": "Pencil notes",
+          "position": { "x": 900, "y": 560 },
+          "size": { "width": 260, "height": 150 },
+          "metadata": { "strokeCount": "7" }
+        }
+      ],
+      "connections": [
+        {
+          "id": "22222222-3333-4444-5555-666666666601",
+          "sourceNodeID": "11111111-2222-3333-4444-555555555501",
+          "destinationNodeID": "11111111-2222-3333-4444-555555555502",
+          "kind": "arrow",
+          "label": "illustrates"
+        }
+      ],
+      "strokes": [
+        {
+          "id": "33333333-4444-5555-6666-777777777701",
+          "points": [ { "x": 0, "y": 0 }, { "x": 40, "y": 12 } ],
+          "width": 3,
+          "color": "primary",
+          "isEraser": false
+        }
+      ]
+    },
+    {
+      "id": "8D7C6B5A-4948-4837-9F0E-1D2C3B4A5961",
+      "name": "Appendix",
+      "nodes": []
+    }
+  ]
+}

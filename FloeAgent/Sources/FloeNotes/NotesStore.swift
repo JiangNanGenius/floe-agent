@@ -635,16 +635,26 @@ public actor NotesStore {
     }
 
     /// Returns source documents, not synthesized answers. Literal substring matching also supports CJK.
-    public func search(_ query: String, limit: Int = 50) throws -> [NoteDocument] {
+    public func search(_ query: String, limit: Int = 50,
+                       modifiedAfter: Date? = nil, modifiedBefore: Date? = nil) throws -> [NoteDocument] {
         let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return [] }
+        guard modifiedAfter?.timeIntervalSince1970.isFinite != false,
+              modifiedBefore?.timeIntervalSince1970.isFinite != false,
+              modifiedAfter == nil || modifiedBefore == nil || modifiedAfter! <= modifiedBefore! else {
+            throw NoteError.invalidOperation(FloeL10n.l("shortcuts.note.invalid_dates"))
+        }
         let escaped = value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_")
         return try database.read { db in
             try Data.fetchAll(db, sql: """
                 SELECT d.body FROM documents d JOIN note_search s ON s.document_id=d.id
                 WHERE d.deleted IS NULL AND (s.title LIKE ? ESCAPE '\\' OR s.body LIKE ? ESCAPE '\\')
-                ORDER BY d.updated DESC LIMIT ?
-                """, arguments: ["%\(escaped)%", "%\(escaped)%", min(200, max(1, limit))])
+                  AND (? IS NULL OR d.updated >= ?) AND (? IS NULL OR d.updated <= ?)
+                ORDER BY d.updated DESC,d.id LIMIT ?
+                """, arguments: ["%\(escaped)%", "%\(escaped)%",
+                    modifiedAfter?.timeIntervalSince1970, modifiedAfter?.timeIntervalSince1970,
+                    modifiedBefore?.timeIntervalSince1970, modifiedBefore?.timeIntervalSince1970,
+                    min(200, max(1, limit))])
                 .map { try decoder.decode(NoteDocument.self, from: $0) }
         }
     }

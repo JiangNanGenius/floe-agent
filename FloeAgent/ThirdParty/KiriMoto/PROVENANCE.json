@@ -1,0 +1,488 @@
+{
+  "upstream": "GridSpace/grid-apps",
+  "tag": "4.7.3",
+  "commit": "ff7692241c48c3495da0bb8eb7455f906f3abb2d",
+  "tree": "7a5f3839227e3fda35dbf7b9142a582419d1cbe5",
+  "originalTarballSHA256": "854b1459692373d74d3c6fb1796afefa973bcf449c58ad193a4892fdcb0f767e",
+  "sourceFiles": [
+    {
+      "path": "src/add/array.js",
+      "bytes": 5992,
+      "sha256": "6eded1436c4495422c888fa6ef5e5d6055832e638cc09e3ef405b23bdd761866",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/add/class.js",
+      "bytes": 3596,
+      "sha256": "8445ccab8ea2cd159879bf06e825a9de7f2f3be95ab53b7d5bf5aaf6b9361a7b",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/add/three.js",
+      "bytes": 3794,
+      "sha256": "a03fa33cccfc31536c11899bc073d21a6c8232b9ac118ae4dd2b0542d6dbf831",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/ext/clip2.esm.js",
+      "bytes": 210,
+      "sha256": "a0110b80cfe5faa6f2e0ff677658f264ed966131770950f6ef7d200cf5045af8",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/ext/clip2.js",
+      "bytes": 203795,
+      "sha256": "0f4afcfbf3ee6b4f47272790f4f1eec91d8efc13bac769cafd13623147e8b893",
+      "classification": "upstream-original",
+      "license": "BSL-1.0 AND LicenseRef-JSBN",
+      "source": "Clipper 6.4.2.2 / JSBN; embedded notices retained"
+    },
+    {
+      "path": "src/ext/earcut.js",
+      "bytes": 21272,
+      "sha256": "d9152e5a32a3b79ba633adaf07ebfe3cd9115455ccfe11bcbf631f76fd8fda93",
+      "classification": "npm-original",
+      "license": "ISC",
+      "source": "earcut@3.0.1/src/earcut.js"
+    },
+    {
+      "path": "src/ext/jspoly.js",
+      "bytes": 240042,
+      "sha256": "d684a771577e0769844ccb2cc732f6fe6ffd346eb5d1a6d031179ad4c48c8f33",
+      "classification": "upstream-original",
+      "license": "BSL-1.0 AND LicenseRef-JSBN",
+      "source": "JSPoly 1.0.1 / Boost.Polygon / JSBN; embedded notices retained"
+    },
+    {
+      "path": "src/ext/quickjs.js",
+      "bytes": 2400802,
+      "sha256": "2d9c79d4aa2db6c86e96fc3783a4f2ecb00156f225888b262a1d4eb7950d8955",
+      "classification": "npm-generated",
+      "license": "MIT",
+      "source": "quickjs-emscripten@0.20.0 + embedded QuickJS MIT; webpack runtime MIT"
+    },
+    {
+      "path": "src/ext/three.js",
+      "bytes": 2399744,
+      "sha256": "99f4b1fd3dd5edfc70acd0a6010951bb2d3588277fbf80ecb8f788eb6ed6229a",
+      "classification": "npm-generated",
+      "license": "MIT",
+      "source": "three@0.182.0 + three-mesh-bvh@0.7.6; webpack runtime MIT"
+    },
+    {
+      "path": "src/geo/base.js",
+      "bytes": 22814,
+      "sha256": "fb3dca811a0765ae61b91733ae0ed6375c3a2a6e7db9a68d1d92a9a0eac18cc0",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/geo/bounds.js",
+      "bytes": 6681,
+      "sha256": "f510e761a7902ef6b83079ad4bdb7240fd09cf7580d9551618990ef734c8d106",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/geo/gyroid.js",
+      "bytes": 5689,
+      "sha256": "2b191929e38685b3adafa6d1e072014b8c2b69b9262d37b27df4bdd04a43d197",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/geo/line.js",
+      "bytes": 3000,
+      "sha256": "4006bb24f81fb49fd6eb8d7427bdfa35423912360949459fc6d8f1dd6e43fe07",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/geo/paths.js",
+      "bytes": 27309,
+      "sha256": "7c1971cd56563ce06e072e8943c8ba099dde5e166744e405fc0a1e7adaeb4127",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/geo/point.js",
+      "bytes": 30378,
+      "sha256": "fd1de97b22e56601b258ad47e2ac0a82acae1159c9849e6c86a185ec1696d827",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/geo/points.js",
+      "bytes": 4118,
+      "sha256": "8c18face298d493008b5536560ace4577135684348f13f2a12979007e71e004d",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/geo/poly/arcs.js",
+      "bytes": 10019,
+      "sha256": "214888cf1befa7469d943c4d83e9ca0441dd6648c4558718c326178361cdea9c",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/geo/poly/geo.js",
+      "bytes": 9032,
+      "sha256": "239974519ade4cbcec72e2abb2777aa477a17865b848f3d35bf11848bf1cba37",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/geo/poly/mesh.js",
+      "bytes": 8608,
+      "sha256": "f56a84faee3a02eeac8999d277c6bb105cc301e35b447f4472fc5a66c8e2e144",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/geo/poly/path.js",
+      "bytes": 12263,
+      "sha256": "9012e913cb3c95def251697a9e060d9d4e762978cd456f6f5ccc2c234d6d9d1d",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/geo/polygon.js",
+      "bytes": 48777,
+      "sha256": "ce49829d3646bd57f5e4eef5c276d61b54b22ec2617ad6711158070035dfe161",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/geo/polygons.js",
+      "bytes": 39242,
+      "sha256": "07242a1fe638d84b91cdfca8c8424afe4737951c5c5261f6781bbce2df5e318b",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/geo/slicer.js",
+      "bytes": 31422,
+      "sha256": "db60ae35bbda7976e7cbdcf0bbdecfe9533d1bd7abef052dd84b6fcb8803c35e",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/geo/slope.js",
+      "bytes": 5478,
+      "sha256": "3f18f11d5a533c77409922da00d27e1e19e978c339b213713098e88cded29584",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/kiri/app/layers.js",
+      "bytes": 13404,
+      "sha256": "64a26dd545acf67419111322aa54827b329fad0ea256a82f5d7d0d3455d0787e",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/kiri/core/codec.js",
+      "bytes": 13077,
+      "sha256": "20894344f514a0602d0b2341989e13b0533f27db5c0bc3ed130f399431a2e089",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/kiri/core/print.js",
+      "bytes": 30346,
+      "sha256": "379191ac4ec7b77cdc47506e0115463bdd25baa65e2325df1d85b6e6620c90fa",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/kiri/core/render.js",
+      "bytes": 15912,
+      "sha256": "6ed53000177918c8b1dfb2db61d471a93dfe1fc8db8d1556ab7f71da6ab05aff",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/kiri/core/slice.js",
+      "bytes": 7492,
+      "sha256": "af459db4e09ed326c2b193f08d1d1516fa4197202a12e2be53905ee97b88b873",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/kiri/core/widget.js",
+      "bytes": 30748,
+      "sha256": "d3dc3390ea9d4927565aad9dfde652d1888ad63eb965e1187b18e5439b6d46cd",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/kiri/mode/fdm/core/params.js",
+      "bytes": 678,
+      "sha256": "8f3703388bc42e0cd63dc0bbf2e1fdff1480c9843b5e1cb74e4c398dc0a8befd",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/kiri/mode/fdm/work/belt.js",
+      "bytes": 11583,
+      "sha256": "38e5a8cf1f8f3cca7c4b4d169066cb365944c4b8805a0481db48b0a3dc807af1",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/kiri/mode/fdm/work/export.js",
+      "bytes": 27850,
+      "sha256": "3d758004785bbd6b15b7dbf5e8c794157bd64df873530c542d794d838aad5798",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/kiri/mode/fdm/work/fill.js",
+      "bytes": 10371,
+      "sha256": "a99d6f8e7213873f11eb012184221f52a89c7e5ebc7efb7e12f21348668c273a",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/kiri/mode/fdm/work/init-work.js",
+      "bytes": 1722,
+      "sha256": "a47daeb8ddfe7c4749e530b0b9851b8f7d985d7c38bc90e18da2184b45357958",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/kiri/mode/fdm/work/post.js",
+      "bytes": 29427,
+      "sha256": "e7c0dd6e0b93a6bc34ae35fef5bc848d4ebb7a20ad0677bc39ac2208e6921d0d",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/kiri/mode/fdm/work/prepare.js",
+      "bytes": 71983,
+      "sha256": "01dce3c6a0f8a6ceb285b141acc61eea09483321777dccd416633208ff33dee7",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/kiri/mode/fdm/work/slice.js",
+      "bytes": 69679,
+      "sha256": "75083fa2e882273b6b81af51908c7b3a2cfa8348b308f7e9c2cb3a1992e0cb50",
+      "classification": "upstream-with-floe-patch",
+      "license": "MIT AND MPL-2.0",
+      "source": "GridSpace/grid-apps at fixed commit; local patch retained in Patches/"
+    },
+    {
+      "path": "src/kiri/mode/sla/core/formats.js",
+      "bytes": 5658,
+      "sha256": "e3ba5f0a068ab257261437d9fa8d7110f216b1b78a150cdd8b70816d3fc562b4",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/kiri/mode/sla/work/init-work.js",
+      "bytes": 2906,
+      "sha256": "db7400ba6466e0e1b308bf213c8c733bbf45aca6039c757c5dac9e744e672a69",
+      "classification": "upstream-with-floe-patch",
+      "license": "MIT AND MPL-2.0",
+      "source": "GridSpace/grid-apps at fixed commit; local patch retained in Patches/"
+    },
+    {
+      "path": "src/kiri/mode/sla/work/raster.js",
+      "bytes": 2567,
+      "sha256": "ef9191841bc72fbca36458eec3d3b80366f0cf237a72bfbe9c104d3585080484",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/kiri/mode/sla/work/slice.js",
+      "bytes": 49131,
+      "sha256": "8f8db448d7ae4052aeadab190b19b6011ea6f8bd168312bf7e3587195b7fae82",
+      "classification": "upstream-with-floe-patch",
+      "license": "MIT AND MPL-2.0",
+      "source": "GridSpace/grid-apps at fixed commit; local patch retained in Patches/"
+    },
+    {
+      "path": "src/kiri/mode/sla/work/x_ctb.js",
+      "bytes": 24038,
+      "sha256": "42cc336e336f54f811f4e1bd9a234eb2131fc68817b51d93b9429b1ff08df5f0",
+      "classification": "upstream-with-floe-patch",
+      "license": "MIT AND MPL-2.0",
+      "source": "GridSpace/grid-apps at fixed commit; local patch retained in Patches/"
+    },
+    {
+      "path": "src/kiri/mode/sla/work/x_ctb_crypto.js",
+      "bytes": 9300,
+      "sha256": "aba71ddb9651634835f84524c8b92ff94cd221ee67ca62074f210b634cc4234d",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/kiri/mode/sla/work/x_photon.js",
+      "bytes": 19689,
+      "sha256": "4d33d8a376b91b5aa5e4561c1a493e4c428a10e9ae1ff04fa3e66f44638b5790",
+      "classification": "upstream-with-floe-patch",
+      "license": "MIT AND MPL-2.0",
+      "source": "GridSpace/grid-apps at fixed commit; local patch retained in Patches/"
+    },
+    {
+      "path": "src/mesh/geom.js",
+      "bytes": 2799,
+      "sha256": "c3c05c70de8f84e1ee756751075420957d50b8c26a1fbd7fc3c07458174f2e32",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/mesh/tool.js",
+      "bytes": 35968,
+      "sha256": "3d8c52f7fba96784bfb6045f1390afe264e18f8dacaa2fe51b6e18d528af69ed",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/mesh/util.js",
+      "bytes": 9564,
+      "sha256": "4ea94c1588fe235aebca82d8434346529430a548feaf5af9cadc1466d131b6dd",
+      "classification": "upstream-with-floe-patch",
+      "license": "MIT AND MPL-2.0",
+      "source": "GridSpace/grid-apps at fixed commit; local patch retained in Patches/"
+    },
+    {
+      "path": "src/moto/license.js",
+      "bytes": 365,
+      "sha256": "daf8f5484ae9d70443f4cc6a903a2e0d3eadf4851084ace99bc474b18d2bdee5",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/moto/quickjs.js",
+      "bytes": 7574,
+      "sha256": "cf081e9731a7fe18cf4d74159a40763de7c12fab94fcf5f7ca59987aafbb597e",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/wasm/kiri-sla.c",
+      "bytes": 5831,
+      "sha256": "44a195ad8f067bc952b9fe03b9d49cca9a18fedc3207ba1f745dbfc68feb3643",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    },
+    {
+      "path": "src/wasm/kiri-sla.wasm",
+      "bytes": 1511,
+      "sha256": "9eaebe18c54f3e9092d233ccda2c196dcd3bae6dfa1d2790e13b075fb6857b3c",
+      "classification": "upstream-original",
+      "license": "MIT",
+      "source": "GridSpace/grid-apps at fixed commit"
+    }
+  ],
+  "localPatches": [
+    {
+      "path": "src/mesh/util.js",
+      "upstreamSHA256": "61675593d6a96da954aa2c98767881ad385214391e9ca9ec443c70af1951f7a4",
+      "localSHA256": "4ea94c1588fe235aebca82d8434346529430a548feaf5af9cadc1466d131b6dd"
+    },
+    {
+      "path": "src/kiri/mode/sla/work/slice.js",
+      "upstreamSHA256": "df62e0c8cfdb68fed4f12b46c101a3267452d748bd48abc2c04a51421771459a",
+      "localSHA256": "8f8db448d7ae4052aeadab190b19b6011ea6f8bd168312bf7e3587195b7fae82"
+    },
+    {
+      "path": "src/kiri/mode/sla/work/init-work.js",
+      "upstreamSHA256": "a239ee95cf256ac017727966a32eaf365659f1593fb8bf7ddad9d5c2e73d7f57",
+      "localSHA256": "db7400ba6466e0e1b308bf213c8c733bbf45aca6039c757c5dac9e744e672a69"
+    },
+    {
+      "path": "src/kiri/mode/sla/work/x_ctb.js",
+      "upstreamSHA256": "9410d3cd0e020b413228f6a4d7abf2c76e1a7b5c8e7397fb0c87e4cffd220129",
+      "localSHA256": "42cc336e336f54f811f4e1bd9a234eb2131fc68817b51d93b9429b1ff08df5f0"
+    },
+    {
+      "path": "src/kiri/mode/sla/work/x_photon.js",
+      "upstreamSHA256": "db80428e5133d8a7f349fe29b95b5ed847bc123782fa4db435564781089c0a2c",
+      "localSHA256": "4d33d8a376b91b5aa5e4561c1a493e4c428a10e9ae1ff04fa3e66f44638b5790"
+    },
+    {
+      "path": "src/kiri/mode/fdm/work/slice.js",
+      "upstreamSHA256": "43a9cc5f32c61758ffd9b131c122d5a54bacbed164e78d52daadda2ba7ae3883",
+      "localSHA256": "75083fa2e882273b6b81af51908c7b3a2cfa8348b308f7e9c2cb3a1992e0cb50"
+    }
+  ],
+  "selectedNpmRuntimePackages": {
+    "three": {
+      "version": "0.182.0",
+      "license": "MIT"
+    },
+    "three-mesh-bvh": {
+      "version": "0.7.6",
+      "license": "MIT"
+    },
+    "quickjs-emscripten": {
+      "version": "0.20.0",
+      "license": "MIT"
+    },
+    "earcut": {
+      "version": "3.0.1",
+      "license": "ISC"
+    }
+  },
+  "buildInputs": "BuildInputs/ pins the npm build environment and original webpack inputs; not every locked build package is shipped.",
+  "excluded": [
+    "planegcs (LGPL) and manifold-3d",
+    "FontAwesome and fonts",
+    "mesh application UI, animation timers, CAM/laser/other device modes",
+    "PNGJS and JSZip opaque prebundles, RSLA/archive converters and unsupported resin encoders"
+  ],
+  "quickJSLicenseSource": {
+    "url": "https://raw.githubusercontent.com/justjake/quickjs-emscripten/v0.20.0/quickjs/LICENSE",
+    "sha256": "f41baf09eef895d468d18c23055d74f711e4b8b2641cef279b5d71285c07bfe8"
+  },
+  "runtimeLicenseRule": "MIT/ISC/Boost/JSBN notices retained; Floe modifications MPL-2.0. No GPL/AGPL/LGPL runtime component in selected source closure.",
+  "qualificationOnly": "MIT uv3dp decoder is a separate qualification Go module, not linked or shipped in FloePrintCore/engine."
+}

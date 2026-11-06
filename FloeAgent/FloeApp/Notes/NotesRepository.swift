@@ -40,6 +40,16 @@ actor NotesRepository {
         }
     }
 
+    /// Read-only callers never create an empty Notes library.
+    func existingStore() throws -> NotesStore? {
+        if let instance { return instance }
+        let file = try FileManager.default.url(for: .applicationSupportDirectory,
+            in: .userDomainMask, appropriateFor: nil, create: false)
+            .appendingPathComponent("FloeAgent/Notes/notes.sqlite")
+        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+        return try store()
+    }
+
     func store() throws -> NotesStore {
         if let instance { return instance }
         let root = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)

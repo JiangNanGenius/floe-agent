@@ -974,6 +974,15 @@ final class DocumentIntakeCenter: ObservableObject {
         )
     }
 
+    /// The system-selected scene opens an existing identity without creating an
+    /// import event, changing ownership or bypassing the Notes save guard.
+    func presentSystemNote(documentID: UUID, title: String, sceneID: String) {
+        let identity = UUID()
+        noteOpenRequest = DocumentIntakeNoteOpenRequest(
+            id: identity, eventID: identity, documentID: documentID,
+            title: title, sceneID: sceneID, source: .systemAction)
+    }
+
     /// Synchronous one-shot claim: only the first Notes view (in the
     /// originating scene) can adopt this request. A second window observes
     /// nil and leaves its own selected note untouched.
@@ -989,7 +998,9 @@ final class DocumentIntakeCenter: ObservableObject {
             showNotice(
                 DocumentIntakeNotice(
                     kind: .success,
-                    message: successMessage(for: .floeNote)
+                    message: request.source == .imported
+                        ? successMessage(for: .floeNote)
+                        : FloeL10n.l("shortcuts.note.opened", request.title)
                 ),
                 autoClear: 4
             )
@@ -997,7 +1008,7 @@ final class DocumentIntakeCenter: ObservableObject {
             showNotice(DocumentIntakeNotice(
                 kind: .info,
                 message: FloeL10n.l("document.intake.busy_switch"),
-                eventID: request.eventID
+                eventID: request.source == .imported ? request.eventID : nil
             ))
         }
     }

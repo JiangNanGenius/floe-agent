@@ -12,6 +12,7 @@ struct FloeAppEntryRouteTests {
         #expect(try FloeAppEntryRoute.parse(URL(string: "floe://share")!) == .shareInbox(nil))
         #expect(try FloeAppEntryRoute.parse(FloeAppEntryRoute.shareInbox(id).url) == .shareInbox(id))
         #expect(FloeAppEntryRoute.task(id).url.absoluteString == "floe://task/\(id.uuidString.lowercased())")
+        #expect(try FloeAppEntryRoute.parse(FloeAppEntryRoute.note(id).url) == .note(id))
     }
 
     @Test(arguments: [
@@ -19,7 +20,8 @@ struct FloeAppEntryRouteTests {
         "floe://task/2a9bb479-f614-473c-b8e4-008e2dfe8222?run=true",
         "floe://share?envelope=2a9bb479-f614-473c-b8e4-008e2dfe8222&envelope=2a9bb479-f614-473c-b8e4-008e2dfe8222",
         "floe://user:password@new", "floe://new:123", "floe://new#run",
-        "https://example.invalid/floe/new", "javascript:runTask()"
+        "https://example.invalid/floe/new", "javascript:runTask()",
+        "floe://note/2a9bb479-f614-473c-b8e4-008e2dfe8222?edit=true"
     ])
     func untrustedLinksCannotBecomeExecutionOrAmbiguousIntake(_ input: String) throws {
         #expect(throws: FloeAppEntryRouteError.self) {
@@ -31,7 +33,8 @@ struct FloeAppEntryRouteTests {
         "floe://task", "floe://task/not-a-uuid", "floe://task/../new",
         "floe://task/%2F2a9bb479-f614-473c-b8e4-008e2dfe8222",
         "floe://task/2a9bb479-f614-473c-b8e4-008e2dfe8222/other",
-        "floe://share?envelope", "floe://share?envelope=", "floe://share?task=all"
+        "floe://share?envelope", "floe://share?envelope=", "floe://share?task=all",
+        "floe://note/not-a-uuid", "floe://note/2a9bb479-f614-473c-b8e4-008e2dfe8222/extra"
     ])
     func malformedOrForeignTargetShapesAreRejected(_ input: String) throws {
         #expect(throws: FloeAppEntryRouteError.self) {

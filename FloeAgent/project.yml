@@ -30,6 +30,26 @@ packages:
     revision: 1e2a163736dfa5a198e637ae44c114e1c6d5cc2d
   FloeAgentPackages:
     path: .  # Local Swift package (root Package.swift)
+  FloeCanvasKit:
+    path: Modules/FloeCanvasKit
+  FloeCanvasTemplates:
+    path: Modules/FloeCanvasTemplates
+  FloeDiagramKit:
+    path: Modules/FloeDiagramKit
+  FloeMusicKit:
+    path: Modules/FloeMusicKit
+  FloeMusicNative:
+    path: Modules/FloeMusicKit/Native
+  FloeMusicKeyboard:
+    path: Modules/FloeMusicKit/KeyboardUI
+  FloeMeetings:
+    path: Modules/FloeMeetings
+  FloeInteractiveContent:
+    path: Modules/FloeInteractiveContent
+  FloeManufacturingKit:
+    path: Modules/FloeManufacturingKit
+  FloePrintKit:
+    path: Modules/FloePrintKit
   ZLImageEditor:
     path: ThirdParty/ZLImageEditor
   VideoEditorKit:
@@ -85,6 +105,7 @@ targets:
           - Resources/Whisper
           - Resources/LocalSpeech
           - Resources/Shortcuts
+          - Resources/Printing
           # Per-extension privacy manifests: each extension copies its own
           # PrivacyInfo.xcprivacy from here; they must never also land in the
           # app bundle (one manifest per bundle root).
@@ -97,6 +118,12 @@ targets:
         type: folder
         buildPhase: resources
       - path: FloeApp/Resources/Capabilities
+        type: folder
+        buildPhase: resources
+      - path: FloeApp/Resources/Printing
+        type: folder
+        buildPhase: resources
+      - path: ThirdParty/KiriMoto
         type: folder
         buildPhase: resources
       - path: FloeApp/Resources/BasicMachining
@@ -270,6 +297,46 @@ targets:
         com.apple.security.application-groups:
           - group.org.floeagent.ios
     dependencies:
+      - package: FloeCanvasKit
+        product: FloeCanvasCore
+      - package: FloeCanvasKit
+        product: FloeCanvasIntegration
+      - package: FloeCanvasKit
+        product: FloeCanvasUI
+      - package: FloeCanvasKit
+        product: FloeCanvasFlow
+      - package: FloeCanvasKit
+        product: FloeCanvasLayout
+      - package: FloeCanvasKit
+        product: FloeCanvasExchange
+      - package: FloeCanvasTemplates
+        product: FloeCanvasTemplates
+      - package: FloeCanvasTemplates
+        product: FloeCanvasTemplatesUI
+      - package: FloeDiagramKit
+        product: FloeDiagramUI
+      - package: FloeDiagramKit
+        product: FloeDiagramExchange
+      - package: FloeMusicKit
+        product: FloeMusicCore
+      - package: FloeMusicNative
+        product: FloeMusicNative
+      - package: FloeMusicKeyboard
+        product: FloeMusicKeyboard
+      - package: FloeMeetings
+        product: FloeMeetings
+      - package: FloeMeetings
+        product: FloeMeetingsAV
+      - package: FloeInteractiveContent
+        product: FloeInteractiveContentCore
+      - package: FloeInteractiveContent
+        product: FloeInteractiveContentWebKit
+      - package: FloeManufacturingKit
+        product: FloeManufacturingUI
+      - package: FloeManufacturingKit
+        product: FloeManufacturingCore
+      - package: FloePrintKit
+        product: FloePrintCore
       - package: FloeMacBridge
         product: FloeMacBridgeProtocol
       - package: SpeechSwiftTTS
@@ -913,6 +980,7 @@ targets:
       - path: Tests/FloeAppTests/ChatAttachmentOpenTests.swift
       - path: Tests/FloeAppTests/AppQualificationEnvironment.swift
       - path: Tests/FloeAppTests/FloeShortcutsInitializationTests.swift
+      - path: Tests/FloeAppTests/FloeNoteIntentsIntegrationTests.swift
       - path: Tests/FloeAppTests/FloeShortcutRunServiceTests.swift
       - path: Tests/FloeAppTests/FloeShortcutRunServicePersistenceTests.swift
       - path: Tests/FloeAppTests/FloeShortcutRunIntentTests.swift

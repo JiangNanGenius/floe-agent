@@ -1,0 +1,4 @@
+module FloeMachiningNative {
+    header "FloeMachiningNative.h"
+    export *
+}

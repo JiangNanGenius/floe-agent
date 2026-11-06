@@ -488,6 +488,24 @@ struct FloeShortcuts: AppShortcutsProvider {
             shortTitle: "shortcuts.app_shortcut.run_scheduled_task",
             systemImageName: "calendar.badge.checkmark"
         )
+        AppShortcut(
+            intent: CreateFloeNoteIntent(),
+            phrases: [
+                "用 \(.applicationName) 记一条手记",
+                "Create a note with \(.applicationName)"
+            ],
+            shortTitle: "shortcuts.note.create",
+            systemImageName: "note.text.badge.plus"
+        )
+        AppShortcut(
+            intent: FindFloeNotesIntent(),
+            phrases: [
+                "用 \(.applicationName) 查找手记",
+                "Find notes in \(.applicationName)"
+            ],
+            shortTitle: "shortcuts.note.find",
+            systemImageName: "doc.text.magnifyingglass"
+        )
     }
 }
 #endif

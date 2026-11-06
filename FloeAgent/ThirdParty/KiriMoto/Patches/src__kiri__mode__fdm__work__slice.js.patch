@@ -1,0 +1,12 @@
+--- src/kiri/mode/fdm/work/slice.js.upstream
++++ src/kiri/mode/fdm/work/slice.js
+@@ -361,7 +361,8 @@
+             minions.setPoints();
+         }
+     })
+-    .then(ondone);
++    .then(ondone)
++    .catch(ondone);
+ 
+     // z index generator (bottom up)
+     function zGen(zopt) {
