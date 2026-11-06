@@ -61,7 +61,9 @@ public final class VNCFloeSession: VNCConnectionDelegate, VNCFloeSessionDriving,
             isShared: true,
             isScalingEnabled: false,
             useDisplayLink: false,
-            inputMode: .none,
+            // Input is forwarded explicitly by the App. RoyalVNCKit's .none
+            // also drops programmatic pointer/key messages before enqueueing.
+            inputMode: .forwardKeyboardShortcutsIfNotInUseLocally,
             isClipboardRedirectionEnabled: false,
             colorDepth: .depth24Bit,
             // No Tight/JPEG advertisement: a non-Apple build has no JPEG
