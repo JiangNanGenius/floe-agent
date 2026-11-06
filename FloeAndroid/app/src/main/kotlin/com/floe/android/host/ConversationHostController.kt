@@ -1303,6 +1303,58 @@ class ConversationHostController internal constructor(
         }
     }
 
+    /**
+     * ONE bounded authoritative `conversation.get` re-read for the exact
+     * committed-launch boundary of a first send that carried the explicit
+     * `approvalMode` key. The launch's C1 transaction persists/adopts the
+     * durable task-policy row atomically with the run, while the App's ONLY
+     * policy-projection source is the session page (`run.snapshot` answers
+     * the policy REVISION only): without this re-read the task truth the
+     * launch just committed never reaches the projection of THIS session.
+     *
+     * Applies ONLY the returned approval mode, under the standard
+     * ownership fences (the exact registry entry, its session epoch and the
+     * run's stream incarnation): a late reply for a retired/replaced entry,
+     * a newer stream generation or a superseded run mutates nothing.
+     * A late full session page must not rewind live run rows, queue entries,
+     * workspace/model choices or CAS truth owned by the snapshot lane.
+     * A newer human policy gesture also supersedes this read atomically.
+     */
+    private fun refreshSessionPolicyTruth(
+        entry: ConversationFlowHolderEntry,
+        runID: String,
+        streamGeneration: Long,
+    ) {
+        if (!conversationAdmitted() || entry.holder.retired) return
+        val conversationId = entry.holder.session.conversationId
+        val sessionEpoch = entry.holder.session.sessionEpoch
+        val policyIntent = entry.currentPolicyGestureIntent()
+        host.trackOperation(
+            HostCommandRequest(
+                command = "conversation.get",
+                scope = HostScope.ConversationLifecycle(conversationId),
+                stateful = false,
+                correlationID = client().correlationID("cget-poltruth"),
+            ),
+        ) { outcome ->
+            if (outcome !is HostOperationOutcome.Completed) return@trackOperation
+            val reply = outcome.value?.let { ConversationWire.decodeSessionReply(it) }
+                ?: return@trackOperation
+            val mode = reply.approvalMode ?: return@trackOperation
+            entry.withLatestPolicyGestureIntent(
+                intentSeq = policyIntent,
+                check = {
+                    ownCurrentEntry(entry, conversationId, sessionEpoch) &&
+                        entry.builder.selectedRunId == runID &&
+                        currentRunStreamGeneration(conversationId, runID) == streamGeneration
+                },
+            ) {
+                entry.builder.applyApprovalModeFromSession(mode)
+                entry.holder.applyHostSnapshot(entry.builder.build())
+            }
+        }
+    }
+
     /** True while [entry] still owns [conversationId] at [sessionEpoch]. */
     private fun ownCurrentEntry(
         entry: ConversationFlowHolderEntry,
@@ -2182,6 +2234,26 @@ class ConversationHostController internal constructor(
             // Launch committed a real run row: refresh its authoritative CAS
             // snapshot so cancel/steer are immediately available.
             refreshRunSnapshot(entry, prepared.runID)
+            // The SAME atomic launch transaction may have just materialized
+            // (or explicitly adopted) the durable task-policy row. For a
+            // brand-new task the pre-launch `conversation.get` page answered
+            // from the SYNTHESIZED default (no row existed yet), and the
+            // `run.snapshot` lane carries only the policy REVISION, never the
+            // mode — so the footer would keep the pre-launch default for the
+            // whole session (the observed Alpha43 Samsung defect: an explicit
+            // first-send automatic choice, footer back on Ask after the run).
+            // ONE bounded authoritative session re-read at this exact
+            // committed boundary projects the task's real approval mode.
+            // Only a launch that CARRIED the explicit first-send
+            // `approvalMode` key can have changed the row; every other launch
+            // leaves the established policy untouched and adds no read.
+            if (request.approvalMode != null) {
+                refreshSessionPolicyTruth(
+                    entry,
+                    prepared.runID,
+                    currentRunStreamGeneration(request.conversationId, prepared.runID),
+                )
+            }
             // The SAME atomic launch transaction committed the real user turn
             // (and, on a fast run, possibly the assistant turn). Reading the
             // committed page here is the original authority — never an
@@ -6808,6 +6880,8 @@ class ConversationFlowHolderEntry internal constructor(
      */
     private val policyGestureLock = Any()
     private var policyGestureSeq = 0L
+
+    fun currentPolicyGestureIntent(): Long = synchronized(policyGestureLock) { policyGestureSeq }
 
     fun nextPolicyGestureIntent(): Long = synchronized(policyGestureLock) {
         policyGestureSeq += 1

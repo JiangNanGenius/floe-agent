@@ -19,6 +19,11 @@ public struct ProposedAction: Sendable, Codable {
     /// Role-checked user messages supplied by the runtime, independent of
     /// tool-output volume. Never reconstruct authority from transcript lines.
     public var userRequests: [String]?
+    /// Harness-authored receipts for settled ok tool calls in this run.
+    /// These distinguish calls already made from calls not yet attempted;
+    /// returned excerpts remain untrusted and do not prove a user's goal or
+    /// external effect completed. They provide ordering context, not authority.
+    public var committedSteps: [CommittedStepReceipt]
     public var hostAndPathScope: ToolScope
     /// Exact source/package fingerprints audited while installed skills were
     /// activated. These values grant no general Python authority.
@@ -37,6 +42,7 @@ public struct ProposedAction: Sendable, Codable {
         userGoal: String,
         recentContext: String = "",
         userRequests: [String]? = nil,
+        committedSteps: [CommittedStepReceipt] = [],
         hostAndPathScope: ToolScope,
         preapprovedPythonScriptSHA256: Set<String> = [],
         preapprovedPythonPackages: Set<String> = [],
@@ -47,10 +53,78 @@ public struct ProposedAction: Sendable, Codable {
         self.userGoal = String(userGoal.prefix(2048))
         self.recentContext = String(recentContext.prefix(8192))
         self.userRequests = userRequests.map { $0.suffix(6).map { String($0.prefix(2048)) } }
+        self.committedSteps = committedSteps.suffix(8).map {
+            CommittedStepReceipt(
+                toolName: $0.toolName,
+                excerpt: $0.excerpt,
+                isSideEffecting: $0.isSideEffecting
+            )
+        }
         self.hostAndPathScope = hostAndPathScope
         self.preapprovedPythonScriptSHA256 = preapprovedPythonScriptSHA256
         self.preapprovedPythonPackages = preapprovedPythonPackages
         self.trustedContext = trustedContext
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case toolCall, riskLabels, userGoal, recentContext, userRequests
+        case committedSteps, hostAndPathScope
+        case preapprovedPythonScriptSHA256, preapprovedPythonPackages
+        case trustedContext
+    }
+
+    /// Older payloads (and the iOS original's encoded actions) predate the
+    /// committed-step channel; a missing key must decode as an empty list,
+    /// not fail. All other fields keep their original required decoding.
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            toolCall: try values.decode(ToolCall.self, forKey: .toolCall),
+            riskLabels: try values.decode(Set<String>.self, forKey: .riskLabels),
+            userGoal: try values.decode(String.self, forKey: .userGoal),
+            recentContext: try values.decode(String.self, forKey: .recentContext),
+            userRequests: try values.decodeIfPresent([String].self, forKey: .userRequests),
+            committedSteps: try values.decodeIfPresent(
+                [CommittedStepReceipt].self, forKey: .committedSteps) ?? [],
+            hostAndPathScope: try values.decode(ToolScope.self, forKey: .hostAndPathScope),
+            preapprovedPythonScriptSHA256: try values.decode(
+                Set<String>.self, forKey: .preapprovedPythonScriptSHA256),
+            preapprovedPythonPackages: try values.decode(
+                Set<String>.self, forKey: .preapprovedPythonPackages),
+            trustedContext: try values.decodeIfPresent(
+                TrustedExecutionContext.self, forKey: .trustedContext)
+        )
+    }
+}
+
+/// One settled ok tool call in the current run's own execution ledger.
+/// A returned result or accepted launch does not prove completion of an
+/// external effect. Its bounded output excerpt remains untrusted context.
+public struct CommittedStepReceipt: Sendable, Codable, Hashable {
+    /// The catalog tool name that completed (e.g. `phone.act`).
+    public var toolName: String
+    /// Bounded excerpt of the settled result. Untrusted data, context only.
+    public var excerpt: String
+    /// Descriptor classification, not a claim that a real-world effect occurred.
+    public var isSideEffecting: Bool
+
+    public init(toolName: String, excerpt: String, isSideEffecting: Bool = false) {
+        self.toolName = String(toolName.prefix(120))
+        self.excerpt = String(excerpt.prefix(240))
+        self.isSideEffecting = isSideEffecting
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case toolName, excerpt, isSideEffecting
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            toolName: try values.decode(String.self, forKey: .toolName),
+            excerpt: try values.decode(String.self, forKey: .excerpt),
+            isSideEffecting: try values.decodeIfPresent(Bool.self, forKey: .isSideEffecting) ?? false
+        )
     }
 }
 

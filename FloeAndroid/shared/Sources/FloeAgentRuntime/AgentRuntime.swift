@@ -1492,6 +1492,10 @@ public actor FloeAgentRuntime {
             userGoal: messages.last(where: { $0.role == "user" })?.content ?? "",
             recentContext: Self.approvalContext(from: messages),
             userRequests: Self.approvalUserRequests(from: messages),
+            committedSteps: Self.approvalCommittedSteps(
+                from: executionLedger.entries,
+                redactingSecret: credentials.apiKey
+            ),
             hostAndPathScope: waiting.toolCall.scope,
             preapprovedPythonScriptSHA256: configuration.preapprovedPythonScriptSHA256,
             preapprovedPythonPackages: configuration.preapprovedPythonPackages,
@@ -3178,6 +3182,10 @@ public actor FloeAgentRuntime {
             userGoal: messages.last(where: { $0.role == "user" })?.content ?? "",
             recentContext: Self.approvalContext(from: messages),
             userRequests: Self.approvalUserRequests(from: messages),
+            committedSteps: Self.approvalCommittedSteps(
+                from: executionLedger.entries,
+                redactingSecret: credentials.apiKey
+            ),
             hostAndPathScope: call.scope,
             preapprovedPythonScriptSHA256: configuration.preapprovedPythonScriptSHA256,
             preapprovedPythonPackages: configuration.preapprovedPythonPackages,
@@ -3370,6 +3378,36 @@ public actor FloeAgentRuntime {
     /// cannot expand the provider request without limit.
     nonisolated static func approvalUserRequests(from messages: [ConversationMessage]) -> [String] {
         messages.filter { $0.role == "user" }.suffix(6).map { String($0.content.prefix(2048)) }
+    }
+
+    /// Tool steps already committed successfully in THIS run, projected from
+    /// the harness execution ledger — never from tool or assistant text.
+    /// Only settled `status == .ok` entries without an unknown outcome or
+    /// overflow sentinel qualify. Read-only calls also matter for ordering
+    /// (for example, an observation before a click), but an ok result means
+    /// the tool returned successfully, not that its user's goal was achieved.
+    /// Keep the descriptor's side-effect classification so discovery results
+    /// are not presented as external mutations. The activation's own ledger,
+    /// including its checkpoint on resume, supplies these contextual receipts.
+    /// Excerpts remain untrusted and are redacted before leaving the runtime.
+    nonisolated static func approvalCommittedSteps(
+        from entries: [HarnessExecutionLedger.Entry],
+        redactingSecret secret: String?
+    ) -> [CommittedStepReceipt] {
+        entries
+            .filter {
+                $0.status == .ok
+                    && !$0.outcomeUnknown
+                    && !$0.isUnknownOutcomeOverflowSentinel
+            }
+            .suffix(8)
+            .map {
+                CommittedStepReceipt(
+                    toolName: $0.toolName,
+                    excerpt: SecretRedactor.redact($0.excerpt, secret: secret),
+                    isSideEffecting: $0.isSideEffecting
+                )
+            }
     }
 
     private static func approvalContext(from messages: [ConversationMessage]) -> String {

@@ -1163,6 +1163,12 @@ class ThreadProjectionBuilder internal constructor(
         draftApprovalMode = mode
     }
 
+    /** A policy-only read never reconciles an older session page's run,
+     * queue, workspace or CAS state over newer live snapshot values. */
+    internal fun applyApprovalModeFromSession(mode: ApprovalModeUi) {
+        policyApprovalMode = mode
+    }
+
     // An unsent draft can have a default task-policy row already. A refresh
     // of that row must not erase the explicit choice for its first launch.
     private var draftApprovalMode: ApprovalModeUi? = null

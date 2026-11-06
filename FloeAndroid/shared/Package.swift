@@ -886,6 +886,10 @@ let package = Package(
             "FloeAndroidDataExchange", "FloeAndroidToolResults",
             .product(name: "Crypto", package: "swift-crypto"),
             "FloeCore", "FloeModels", "FloePersistence", "GRDB",
+            // Approval-context regression suite (n02-approval-context44): pins
+            // the runtime->classifier committed-step receipts; imports the
+            // receipt/contract types directly.
+            "FloeSecurity",
             "FloeAndroidNetwork",
             "FloeWorkspace",
             // G02-P3 transport suites: the REAL incremental seam + provider

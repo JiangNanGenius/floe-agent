@@ -153,12 +153,16 @@ class ConversationOrdinaryPathTest {
             """"isHiddenFromPrimaryPicker":false,""" +
             """"revision":{"resourceID":"model.$id","version":"digest"}}"""
 
-    private fun conversationReply(state: String, runsJson: String? = null): String {
+    private fun conversationReply(
+        state: String,
+        runsJson: String? = null,
+        policyMode: String = "ask",
+    ): String {
         val runs = runsJson ?: """[{"runID":"$runId","state":"$state","modelName":"DeepSeek Cloud QA",""" +
             """"startedAt":"2026-10-20T01:00:00.000Z"}]"""
         return """{"conversationID":"$conversationId","title":"Task",""" +
             """"revision":{"resourceID":"conversation.${conversationId.uppercase()}","version":"digest-1"},""" +
-            """"runs":$runs,"pendingInputs":[],"taskPolicy":{"resolvedApprovalMode":"ask"}}"""
+            """"runs":$runs,"pendingInputs":[],"taskPolicy":{"resolvedApprovalMode":"$policyMode"}}"""
     }
 
     private fun snapshotValue(
@@ -201,6 +205,13 @@ class ConversationOrdinaryPathTest {
         var archiveAccepted = true
         val questionReads = AtomicInteger()
         @Volatile var questionReply: (() -> String)? = null
+        /** Flips when the real `run.start` command is observed: every later
+         * `conversation.get` page answers from the committed launch truth
+         * (the C1 transaction has materialized/adopted the task-policy row),
+         * exactly like the native store after an atomic first launch. */
+        @Volatile var policyCommitted = false
+        /** The durable `resolvedApprovalMode` the committed row owns. */
+        var committedPolicyMode = "ask"
     }
 
     private fun client(exchange: HostBridgeExchange) = RuntimeHostCommandClient(
@@ -267,12 +278,24 @@ class ConversationOrdinaryPathTest {
                     "op:v1:conversationGet" -> effectPage(
                         correlation, "conversationGet",
                         accepted(
-                            if (script.freshConversation) {
+                            if (script.policyCommitted) {
+                                // Post-commit page: the launch's C1 wrote the
+                                // durable task-policy row; the session page is
+                                // the ONLY carrier of the committed mode.
+                                conversationReply(
+                                    script.runState,
+                                    policyMode = script.committedPolicyMode,
+                                )
+                            } else if (script.freshConversation) {
                                 conversationReply(script.runState, runsJson = "[]")
                             } else {
                                 conversationReply(script.runState)
                             },
                         ),
+                    )
+                    "op:v1:conversationCreate" -> effectPage(
+                        correlation, "conversationCreate",
+                        accepted("""{"conversationID":"$conversationId"}"""),
                     )
                     "op:v1:runStart" -> effectPage(
                         correlation, "runStart",
@@ -396,8 +419,12 @@ class ConversationOrdinaryPathTest {
                 receipt(correlation, "conversationGet")
             raw.contains("\"command\":\"question.pending\"") ->
                 receipt(correlation, "questionPending")
-            raw.contains("\"command\":\"run.start\"") ->
+            raw.contains("\"command\":\"conversation.create\"") ->
+                receipt(correlation, "conversationCreate")
+            raw.contains("\"command\":\"run.start\"") -> {
+                script.policyCommitted = true
                 receipt(correlation, "runStart")
+            }
             raw.contains("\"command\":\"run.snapshot\"") ->
                 receipt(correlation, "runSnapshot")
             raw.contains("\"command\":\"run.cancel\"") ->
@@ -562,6 +589,123 @@ class ConversationOrdinaryPathTest {
             val payload = exchange.commandsOf("run.start").single()["payload"]!!.jsonObject
             assertEquals("automatic", payload["approvalMode"]!!.jsonPrimitive.content)
             assertTrue(exchange.commandsOf("run.policy.update").isEmpty())
+        } finally { host.stop() }
+    }
+
+    /**
+     * Alpha43 Samsung regression (n02-first-mode44): an explicit first-send
+     * AUTOMATIC choice reached the run and was persisted by the native C1,
+     * but the footer still showed Ask after the run. The durable
+     * `task-policy` row rides ONLY the `conversation.get` page; the
+     * pre-launch page of a brand-new task answers from the SYNTHESIZED
+     * default (no row yet) and `run.snapshot` carries the policy REVISION
+     * alone — so one bounded authoritative session re-read at the committed
+     * (prepared) boundary is required to project the committed mode.
+     *
+     * AUTHORED, NOT EXECUTED by the worker (user keeps all verification
+     * upstream): before the repair the projection keeps `ASK` here; after
+     * the repair it reads the committed `AUTOMATIC` like the durable row.
+     */
+    @Test
+    fun firstTaskAutomaticChoiceProjectsCommittedPolicyAfterPrepared() = runBlocking {
+        val script = LocalScript().apply {
+            freshConversation = true
+            committedPolicyMode = "automatic"
+        }
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        try {
+            val holder = loadedHolder(host)
+            assertTrue(awaitCondition { holder.snapshot.value?.hasLoaded == true })
+            // Pre-run truth for a brand-new task: no durable policy row yet,
+            // so the page resolves the ORIGINAL default (Ask).
+            assertEquals(
+                com.floe.android.feature.conversation.ApprovalModeUi.ASK,
+                holder.snapshot.value?.approvalMode,
+            )
+            assertTrue(host.conversations.updateTaskApprovalMode(
+                holder.session, com.floe.android.feature.conversation.ApprovalModeUi.AUTOMATIC))
+            holder.onDraftChange(TextFieldValue("Synthetic first-run permissions"))
+            assertEquals(com.floe.android.feature.conversation.ConversationFlowResult.Accepted, holder.send())
+            assertTrue(awaitCondition { exchange.commandsOf("run.start").isNotEmpty() })
+            assertTrue(
+                "the prepared echo must bind the real run",
+                awaitCondition { holder.snapshot.value?.selectedRunId == runId },
+            )
+            // The launch's C1 committed AUTOMATIC; the SAME session must now
+            // project the committed task truth instead of the pre-launch
+            // synthesized default (the observed post-run Ask footer).
+            assertTrue(
+                "post-prepared projection must read the committed task policy " +
+                    "(commands=${commandsSummary(exchange)})",
+                awaitCondition(4_000) {
+                    holder.snapshot.value?.approvalMode ==
+                        com.floe.android.feature.conversation.ApprovalModeUi.AUTOMATIC
+                },
+            )
+        } finally { host.stop() }
+    }
+
+    /**
+     * The REAL homepage producer chain (the exact lane the Alpha43 Samsung
+     * QA exercised): an explicit permissions-chip selection on the Home
+     * launchpad travels through `HomeLaunchpadHost.send` →
+     * `conversation.create` → holder handoff → `run.start` `approvalMode`,
+     * and the committed mode projects after the prepared echo. The existing
+     * `firstTaskAutomaticChoiceTravelsThroughTheActualRunStartWire` proves
+     * only the already-loaded holder lane; this test drives the launchpad
+     * host itself.
+     *
+     * AUTHORED, NOT EXECUTED by the worker (user keeps all verification
+     * upstream).
+     */
+    @Test
+    fun homeFirstSendAutomaticChoiceReachesFirstRunAndProjectsCommittedPolicy() = runBlocking {
+        val script = LocalScript().apply {
+            freshConversation = true
+            committedPolicyMode = "automatic"
+        }
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        try {
+            // The REAL homepage composer boundary: the permissions chip's
+            // explicit human selection writes the shared Home draft policy.
+            host.conversations.rootWorkspace.selectDraftApprovalMode(
+                com.floe.android.feature.conversation.ApprovalModeUi.AUTOMATIC)
+            val failure = java.util.concurrent.atomic.AtomicReference<String?>()
+            host.home.send(
+                text = "Synthetic homepage first task",
+                mode = "agent",
+                temporary = false,
+            ) { reason -> failure.set(reason) }
+            assertTrue(
+                "run.start must be submitted for the homepage first send",
+                awaitCondition(4_000) { exchange.commandsOf("run.start").isNotEmpty() },
+            )
+            assertNull(
+                "homepage first send must not fail: ${failure.get()} " +
+                    "(commands=${commandsSummary(exchange)})",
+                failure.get(),
+            )
+            val payload = exchange.commandsOf("run.start").single()["payload"]!!.jsonObject
+            assertEquals("automatic", payload["approvalMode"]!!.jsonPrimitive.content)
+            assertTrue(exchange.commandsOf("run.policy.update").isEmpty())
+            val holder = host.conversations.holderFor(
+                conversationId, isTemporary = false, incarnationId = null)
+            assertTrue(
+                "the prepared echo must bind the real run to the created holder",
+                awaitCondition(4_000) { holder.snapshot.value?.selectedRunId == runId },
+            )
+            // The committed task policy must project truthfully after the
+            // first run instead of the pre-launch synthesized Ask default.
+            assertTrue(
+                "post-prepared projection must read the committed task policy " +
+                    "(commands=${commandsSummary(exchange)})",
+                awaitCondition(4_000) {
+                    holder.snapshot.value?.approvalMode ==
+                        com.floe.android.feature.conversation.ApprovalModeUi.AUTOMATIC
+                },
+            )
         } finally { host.stop() }
     }
 
