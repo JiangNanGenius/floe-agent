@@ -67,14 +67,23 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
             stopped = false
             epoch = host.nativeRootEpoch() ?: return@withLock
             mutable.value = LinuxDesktopState("starting", taskID, workspaceID, desktop = desktop)
+            var stage = "workspace"
             try {
                 val binding = G04WorkspaceBridgeClient.bindExisting(host, taskID) { live() }
                 check(binding.workspaceID.equals(workspaceID, ignoreCase = true))
                 val terminal = checkNotNull(host.workspaceTerminal)
-                val tab = terminal.openTab(taskID, workspaceID, 120, 36)
+                stage = "terminal"
+                var refusal: TerminalActionReply? = null
+                val tab = terminal.openTab(taskID, workspaceID, 120, 36) { refusal = it }
+                    .also {
+                        (refusal as? TerminalActionReply.Refused)?.let { reply ->
+                            throw G04WorkspaceBridgeClient.Failure(reply.code)
+                        }
+                    }
                     ?: error("terminal_unavailable")
                 val token = checkNotNull(tab.sessionID)
                 terminalID = token
+                stage = "terminal_metadata"
                 val metadata = withTimeout(15_000) {
                     while (true) {
                         checkLive()
@@ -93,6 +102,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                 val random = SecureRandom()
                 val password = ByteArray(8) { "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[random.nextInt(32)].code.toByte() }
                 try {
+                    stage = "vnc_credential"
                     credential = vncClient.credentialSave("floe.local-desktop.$nonce", false, password, owner)
                     val read = CompletableDeferred<Unit>()
                     val ready = CompletableDeferred<Unit>()
@@ -138,13 +148,16 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                     val port = 5900 + display
                     terminal.transportForTab(token).write(LinuxDesktopCommands.launch(nonce, display,
                         if (desktop) 1600 else 960, if (desktop) 1000 else 1280, install, desktop).toByteArray())
+                    stage = "guest_components"
                     withTimeout(if (install) 20 * 60_000L else 30_000L) { read.await() }
                     checkLive()
                     terminal.transportForTab(token).write(password + byteArrayOf(10))
+                    stage = "guest_display"
                     withTimeout(30_000) { ready.await() }
                     checkLive()
                     // Reuse the existing Android local-network permission broker.
                     val network = CompletableDeferred<Unit>()
+                    stage = "local_network"
                     withContext(Dispatchers.Main) {
                         host.integrations.localNetwork.runExplicitAction(
                             ownerID = "linux-desktop-$nonce", endpoint = "vnc://127.0.0.1:$port",
@@ -153,9 +166,11 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                     }
                     withTimeout(120_000) { network.await() }
                     checkLive()
+                    stage = "vnc_profile"
                     val detail = vncClient.profileSaveVNCOnly(C05VncProfileDraft(null, "Linux", "linux",
                         listOf(C05VncEndpointDraft(null, "Linux", "direct", "127.0.0.1", port, credential))), owner)
                     profileID = detail.summary.id
+                    stage = "vnc_connect"
                     val session = vncClient.connect(detail.summary.id, detail.vncEndpoints.firstOrNull()?.id, null, owner)
                     vncID = session.id
                     visible = true
@@ -178,7 +193,15 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                     if (!desktop) application("mousepad", false)
                 } finally { password.fill(0) }
             } catch (cancelled: CancellationException) { if (!stopped) cleanup(); throw cancelled }
-            catch (_: Exception) {
+            catch (failure: Exception) {
+                // Codes and the fixed stage are safe diagnostics; exception messages,
+                // guest output, paths and credentials must never enter Android logs.
+                val code = when (failure) {
+                    is G04WorkspaceBridgeClient.Failure -> failure.code
+                    is C05RemoteFailure -> failure.code
+                    else -> failure.javaClass.simpleName
+                }.takeIf { it.matches(Regex("[A-Za-z0-9_]{1,80}")) } ?: "unknown"
+                android.util.Log.w("FloeLinuxDesktop", "start_failed stage=$stage code=$code")
                 if (!cleanup()) return@withLock
                 mutable.value = state.value.copy(phase = "failed", vnc = null, failure = "desktop_start_failed")
             }
