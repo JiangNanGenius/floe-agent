@@ -1088,8 +1088,31 @@ internal class C04CadViewerController(
         val diagnostic = if (code == "emptyViewport" || detail == "emptyViewport") {
             withContext(Dispatchers.Main.immediate) {
                 val view = session.boundSurface
-                safeDetail("$detail; native=${view?.width ?: 0}x${view?.height ?: 0}; " +
-                    "attached=${view?.isAttachedToWindow == true}")
+                val nativeBounds = "${view?.width ?: 0}x${view?.height ?: 0}"
+                val attached = view?.isAttachedToWindow == true
+                val result = CompletableDeferred<String>()
+                // Only numeric geometry from our fixed local document. No
+                // file contents, DOM text, resource URLs or user identifiers.
+                if (view != null) runCatching {
+                    view.evaluateJavascript("""(() => {
+                        const e = document.getElementById('view');
+                        const r = e?.getBoundingClientRect();
+                        const s = e ? getComputedStyle(e) : null;
+                        const number = v => Number.isFinite(Number.parseFloat(v))
+                            ? Math.round(Number.parseFloat(v)) : -1;
+                        return [innerWidth, innerHeight,
+                            document.documentElement.clientWidth, document.documentElement.clientHeight,
+                            document.body.clientWidth, document.body.clientHeight,
+                            number(r?.width), number(r?.height), document.styleSheets.length,
+                            s?.position === 'absolute' ? 1 : s?.position === 'fixed' ? 2 : 0,
+                            number(s?.top), number(s?.bottom), number(s?.height), e?.children.length ?? -1
+                        ].join(',');
+                    })()""") { raw -> result.complete(raw?.removeSurrounding("\"") ?: "unavailable") }
+                }.onFailure { result.complete("unavailable") }
+                else result.complete("unavailable")
+                val geometry = withTimeoutOrNull(750L) { result.await() }
+                    ?.takeIf { it.matches(Regex("[-0-9,]{1,90}")) } ?: "unavailable"
+                safeDetail("$detail;n=$nativeBounds;a=$attached;w=$geometry")
             }
         } else detail
         if (!isCurrent(session)) return

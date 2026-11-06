@@ -4,10 +4,10 @@ CAD 查看器等待原生视图挂载并获得实际尺寸后再打开本地网�
 
 ## Known issues / 已知问题
 
-这是 N01–N08 中间候选。Alpha40 三星合成 STL 首次预览返回 emptyViewport；本候选的原生尺寸等待尚待编译与三星实测，不能据此宣布 CAD 或离线预览修复。手机多步、条件触发、跨项目隔离及其他既定场景继续推进。不重放付费图片／视频生成。
+这是 N01–N08 中间候选。Alpha40 三星合成 STL 首次预览返回 emptyViewport；首份候选的 Full／Play 编译通过，但三星原生尺寸1080×2107且已挂载时仍失败；后续候选补有限网页尺寸诊断，不能宣布 CAD 或离线预览修复。手机多步、条件触发、跨项目隔离及其他既定场景继续推进。不重放付费图片／视频生成。
 
 ## English
 
 The CAD viewer waits for the native view to attach and acquire real bounds before opening its local page. Closing or changing tasks cancels pending layout admission. Existing real-frame, geometry, ownership and file checks remain authoritative. Viewport failure details include bounded native dimensions for diagnosis.
 
-This is an intermediate N01–N08 candidate. Alpha40 failed its first Samsung synthetic STL preview with emptyViewport. This candidate still needs compilation and Samsung acceptance; CAD and offline preview are not claimed fixed. Phone multi-step automation, system conditions, project isolation and other agreed scenarios continue. No paid media generation is replayed.
+This is an intermediate N01–N08 candidate. Alpha40 failed its first Samsung synthetic STL preview with emptyViewport. The first candidate compiled for Full and Play but still failed on Samsung with attached native bounds of1080×2107. The follow-up adds bounded numeric page geometry; CAD and offline preview are not claimed fixed. Phone multi-step automation, system conditions, project isolation and other agreed scenarios continue. No paid media generation is replayed.
