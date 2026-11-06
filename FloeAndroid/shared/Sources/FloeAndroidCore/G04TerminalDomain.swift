@@ -467,9 +467,11 @@ public actor G04TerminalStore {
             .conversation(id: conversationID)
         var bindingKnown = false
         var alreadyBound = false
+        var boundWorkspaceID: UUID?
         do {
-            alreadyBound = try await installed.cluster.workspaceStore
-                .workspaceID(conversationID: conversationID) != nil
+            boundWorkspaceID = try await installed.cluster.workspaceStore
+                .workspaceID(conversationID: conversationID)
+            alreadyBound = boundWorkspaceID != nil
             bindingKnown = true
         } catch {
             bindingKnown = false
@@ -481,7 +483,11 @@ public actor G04TerminalStore {
             generationLive: !retired && G02NativeRootEpoch.readback() == epoch && installed.epoch == epoch,
             bindingKnown: bindingKnown,
             alreadyBound: alreadyBound,
-            foreignWorkspaceExpectation: expectedWorkspaceID != nil) {
+            // A graphical/multi-tab caller pins the task's existing workspace.
+            // That matching expectation must still run cold-start preparation;
+            // only an absent/different ownership row is foreign. Admission below
+            // rechecks the exact expectation after the awaited preparation.
+            foreignWorkspaceExpectation: expectedWorkspaceID != nil && expectedWorkspaceID != boundWorkspaceID) {
         case .notEligible:
             return .proceed
         case .alreadyBound:
