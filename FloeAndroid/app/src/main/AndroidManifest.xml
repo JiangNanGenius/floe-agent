@@ -102,7 +102,7 @@
             android:exported="false" android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/task_export_paths" />
         </provider>
-        <provider android:name="androidx.core.content.FileProvider"
+        <provider android:name="com.floe.android.host.externaledit.ExternalEditFileProvider"
             android:authorities="${applicationId}.externaledits"
             android:exported="false" android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/external_edit_paths" />

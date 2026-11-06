@@ -195,6 +195,7 @@ LIBCXX_NAME = "libc++_shared.so"
 ROOT_DOCS = sorted(["PROVENANCE.md", "asset-overlays.json", "build.gradle.kts",
                     "consumer-rules.pro", "payload-pins.json",
                     "producer-manifest.json"])
+OPTIONAL_ROOT_DOCS = {"gradle.lockfile"}
 TOOLS_FILES = sorted(["tools/README.md", "tools/prepare_payload.py",
                       "tools/test_presentation_controls.js",
                       "tools/test_writer_viewport_sync.js"])
@@ -497,12 +498,12 @@ def collect_office_tree(base: Path, checks: List[Dict[str, object]]
                 raise OfficeSourceError(f"office source file {rel} is a symlink")
             safe_rel(rel, "office source file")
             suffix = Path(rel).suffix.lower()
-            if suffix not in TEXT_EXT:
+            if suffix not in TEXT_EXT and rel not in OPTIONAL_ROOT_DOCS:
                 raise OfficeSourceError(
                     f"office source file {rel} has unexpected type {suffix!r}; "
                     "the public Office group carries source/manifest/notices only")
             found[rel] = read_raw(p, MAX_TEXT_BYTES, f"office source file {rel}")
-    unexpected = sorted(set(found) - set(ROOT_DOCS) - set(TOOLS_FILES)
+    unexpected = sorted(set(found) - set(ROOT_DOCS) - OPTIONAL_ROOT_DOCS - set(TOOLS_FILES)
                         - {r for r in found if r.startswith("overlays/")}
                         - {r for r in found if r.startswith("src/")}
                         - set(LOCAL_ONLY_FILES))
@@ -917,7 +918,7 @@ def collect_office_group(args: argparse.Namespace, version: str, repository: str
     # references in the authoritative module tree; they travel only as the
     # sanitized renderings below (re-scanned), never as raw bytes.
     SANITIZED = {"payload-pins.json", "tools/README.md"}
-    for rel in ROOT_DOCS + TOOLS_FILES + \
+    for rel in ROOT_DOCS + sorted(OPTIONAL_ROOT_DOCS & tree.keys()) + TOOLS_FILES + \
             [r for r in tree if r.startswith("src/")]:
         if rel in SANITIZED:
             continue
