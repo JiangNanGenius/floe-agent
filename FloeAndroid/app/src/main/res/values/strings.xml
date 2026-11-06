@@ -575,7 +575,7 @@
     <string name="reporting_privacy">After you agree, App crashes and internal faults can be reported automatically. Task failures, model errors and cancellations are excluded. No automatic screenshots, documents, chat content or credentials. Manual attachments use Wi-Fi unless you choose otherwise.</string>
     <string name="reporting_problem">Describe the problem</string>
     <string name="reporting_include_diagnostics">Include basic diagnostics</string>
-    <string name="reporting_select_images">Choose screenshots (%1$d/3)</string>
+    <string name="reporting_select_images">Choose screenshots (%1$d/4)</string>
     <string name="reporting_clear_images">Remove screenshots</string>
     <string name="reporting_any_network">Allow attachments on any network</string>
     <string name="reporting_preparing">Preparing report…</string>

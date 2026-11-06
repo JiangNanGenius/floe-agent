@@ -1,4 +1,5 @@
 <resources>
+    <string name="linux_failure_runtime">Cannot connect to the Linux component. Check that it is installed, enabled and matches this Floe version. Reopen Floe and retry; if it repeats, send the diagnostic details.</string>
     <string name="linux_failure_server">The download server rejected the request or is unavailable. Check the HTTP code in diagnostics. Try later or another network; if it repeats, send those details.</string>
     <string name="linux_failure_storage">Not enough storage to prepare Linux. Free some internal storage, then try again. Existing files are preserved.</string>
     <string name="linux_failure_dns">The download address could not be resolved. Check DNS, Wi-Fi or your VPN, then try again.</string>

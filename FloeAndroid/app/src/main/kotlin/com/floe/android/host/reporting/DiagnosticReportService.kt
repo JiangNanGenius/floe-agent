@@ -124,7 +124,7 @@ internal class DiagnosticReportService(private val context: Context) {
 
     suspend fun submitManual(problem: String, screenshots: List<Uri>, allowAttachmentsOnAnyNetwork: Boolean): String =
         withContext(Dispatchers.IO) {
-            require(problem.isNotBlank() && screenshots.size <= 3)
+            require(problem.isNotBlank() && screenshots.size <= 4)
             val id = UUID.randomUUID().toString()
             val images = ArrayList<File>()
             try {
@@ -303,9 +303,9 @@ internal class DiagnosticReportService(private val context: Context) {
             require(row.getString("state") in setOf("queued", "sent", "failed"))
             row.getJSONObject("manifest").getJSONArray("events")
             val images = row.getJSONArray("images")
-            require(images.length() <= 3)
+            require(images.length() <= 4)
             for (index in 0 until images.length()) require(
-                images.getString(index).matches(Regex("[a-f0-9-]{36}-[0-2]\\.jpg")))
+                images.getString(index).matches(Regex("[a-f0-9-]{36}-[0-3]\\.jpg")))
         }
     }.getOrNull()
     private fun records(): List<JSONObject> = root.listFiles().orEmpty()

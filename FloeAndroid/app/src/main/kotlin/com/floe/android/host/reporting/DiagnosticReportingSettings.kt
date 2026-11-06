@@ -40,8 +40,10 @@ internal fun DiagnosticReportingSettings() {
     var diagnostics by remember { mutableStateOf(false) }
     var sending by remember { mutableStateOf(false) }
     var failure by remember { mutableStateOf<String?>(null) }
+    var submittedID by remember { mutableStateOf<String?>(null) }
+    var tooManyImages by remember { mutableStateOf(false) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
-        images = it.take(3)
+        if (it.size > 4) tooManyImages = true else images = it
     }
     FloeSettingsSectionCard(title = stringResource(R.string.reporting_title)) {
         FloeSectionRow(title = { FloeText(stringResource(R.string.reporting_automatic)) }, trailing = {
@@ -82,7 +84,7 @@ internal fun DiagnosticReportingSettings() {
                             if (includeDiagnostics) C07DiagnosticsExport.build(context, app.runtimeHost,
                                 currentProblem, includeDiagnostics = true) else currentProblem
                         }
-                        reporter.submitManual(text, currentImages, network)
+                        submittedID = reporter.submitManual(text, currentImages, network)
                         problem = ""; images = emptyList()
                     } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                     catch (error: Exception) {
@@ -100,7 +102,6 @@ internal fun DiagnosticReportingSettings() {
             FloeText(stringResource(R.string.reporting_compression), style = Floe.typography.metadata,
                 color = Floe.colors.secondaryLabel)
         })
-        failure?.let { FloeSectionRow(title = { FloeText(reportErrorMessage(it)) }) }
         for (row in state.reports.asReversed().take(20)) {
             FloeSectionRow(title = {
                 Column {
@@ -128,6 +129,27 @@ internal fun DiagnosticReportingSettings() {
         confirmLabel = stringResource(R.string.reporting_agree), dismissLabel = stringResource(R.string.cancel),
         onConfirm = { consent = false; scope.launch(Dispatchers.IO) { reporter.setAutomatic(true) } },
         onDismiss = { consent = false })
+    if (tooManyImages) FloeConfirmDialog(title = stringResource(R.string.reporting_title),
+        message = stringResource(R.string.reporting_image_count), confirmLabel = stringResource(R.string.done),
+        dismissLabel = stringResource(R.string.cancel), onConfirm = { tooManyImages = false },
+        onDismiss = { tooManyImages = false })
+    failure?.let { code ->
+        FloeConfirmDialog(title = stringResource(R.string.reporting_title), message = reportErrorMessage(code),
+            confirmLabel = stringResource(R.string.done), dismissLabel = stringResource(R.string.cancel),
+            onConfirm = { failure = null }, onDismiss = { failure = null })
+    }
+    submittedID?.let { id ->
+        val row = state.reports.firstOrNull { it.id == id }
+        val message = when (row?.state) {
+            "sent" -> stringResource(R.string.reporting_receipt, row.reportID.orEmpty())
+            "failed" -> reportErrorMessage(row.errorCode.orEmpty())
+            else -> row?.errorCode?.let { reportErrorMessage(it) }
+                ?: stringResource(R.string.reporting_saved_for_upload)
+        }
+        FloeConfirmDialog(title = stringResource(R.string.reporting_title), message = message,
+            confirmLabel = stringResource(R.string.done), dismissLabel = stringResource(R.string.cancel),
+            onConfirm = { submittedID = null }, onDismiss = { submittedID = null })
+    }
 }
 
 @Composable

@@ -575,7 +575,7 @@
     <string name="reporting_privacy">同意后自动上报应用崩溃和内部故障。任务异常、模型错误和取消不会自动上报。不自动附带截图、文档、聊天内容或凭据。手动附件默认仅通过 Wi-Fi 上传，可单独更改。</string>
     <string name="reporting_problem">描述问题</string>
     <string name="reporting_include_diagnostics">附带基础诊断</string>
-    <string name="reporting_select_images">选择截图（%1$d/3）</string>
+    <string name="reporting_select_images">选择截图（%1$d/4）</string>
     <string name="reporting_clear_images">移除截图</string>
     <string name="reporting_any_network">允许附件使用任意网络</string>
     <string name="reporting_preparing">正在准备报告…</string>

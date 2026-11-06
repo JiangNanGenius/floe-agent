@@ -88,6 +88,7 @@ fun LocalRuntimeSettingsCard() {
                         "cancelled" -> R.string.linux_failure_cancelled
                         "compatibility" -> R.string.linux_failure_compatibility
                         "busy" -> R.string.linux_failure_busy
+                        "runtime" -> R.string.linux_failure_runtime
                         else -> R.string.linux_failure_unknown
                     }), style = Floe.typography.body, color = Floe.colors.label)
                     var details by remember(failure) { mutableStateOf(false) }

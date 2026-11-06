@@ -1,4 +1,6 @@
 <resources>
+    <string name="reporting_image_count">Choose up to four screenshots. No images from this selection were added.</string>
+    <string name="reporting_saved_for_upload">Saved on this device and queued for upload. Screenshots wait for Wi-Fi unless you allowed other networks. This window will show the receipt when the server confirms delivery.</string>
     <string name="reporting_image_memory">Not enough memory to process this image. Close other apps or choose a smaller screenshot.</string>
     <string name="reporting_compression">Selected screenshots are resized and compressed before upload. Originals stay unchanged.</string>
     <string name="reporting_waiting_wifi">Waiting for Wi-Fi. To use mobile data, remove this local report and submit again with “Allow attachments on any network”.</string>

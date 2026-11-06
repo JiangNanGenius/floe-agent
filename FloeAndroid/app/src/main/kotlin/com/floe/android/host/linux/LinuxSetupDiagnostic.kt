@@ -15,6 +15,7 @@ data class LinuxSetupDiagnostic(val code: String, val stage: String, val excepti
         "COMPONENT_CANCELLED" -> "cancelled"
         "COMPONENT_BLOCKED", "SecurityException" -> "permission"
         "RUNTIME_BUSY" -> "busy"
+        "RUNTIME_CONNECTION_FAILED" -> "runtime"
         "COMPONENT_INCOMPATIBLE" -> "compatibility"
         else -> "unknown"
     }
@@ -31,7 +32,7 @@ data class LinuxSetupDiagnostic(val code: String, val stage: String, val excepti
             val known = causes.firstOrNull { it is java.net.UnknownHostException ||
                 it is java.net.SocketTimeoutException || it is java.util.concurrent.TimeoutException ||
                 it is javax.net.ssl.SSLException || it is java.net.ConnectException || it is SecurityException }
-            val type = (known ?: error).javaClass.simpleName
+            val type = (known ?: causes.last()).javaClass.simpleName
             return fromFields(type, stage, type)
         }
     }

@@ -251,7 +251,14 @@ class LocalRuntimeSetupHost(context: Context, private val scope: CoroutineScope)
 
     private suspend fun <T> connection(permit: android.os.IBinder? = null, body: suspend (RuntimeConnection) -> T): T {
         val client = RuntimeConnection(context, permit)
-        try { client.connect().get(15, TimeUnit.SECONDS); return body(client) }
+        try {
+            try { client.connect().get(15, TimeUnit.SECONDS) }
+            catch (error: Exception) {
+                val root = LinuxSetupDiagnostic.fromThrowable(error, "connect")
+                throw LinuxSetupException(LinuxSetupDiagnostic.fromFields("RUNTIME_CONNECTION_FAILED", "connect", root.exceptionType))
+            }
+            return body(client)
+        }
         finally { client.close() }
     }
 

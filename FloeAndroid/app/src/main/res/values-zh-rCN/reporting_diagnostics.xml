@@ -1,4 +1,6 @@
 <resources>
+    <string name="reporting_image_count">每次最多选择四张截图，本次选择未添加，请重新选择。</string>
+    <string name="reporting_saved_for_upload">报告已保存在本机，正在排队上传。除非允许其他网络，截图默认等待 Wi-Fi。服务器确认收到后，此窗口会显示接收回执。</string>
     <string name="reporting_image_memory">处理图片时内存不足，请关闭其他应用或选择较小的截图。</string>
     <string name="reporting_compression">所选截图会在上传前缩放压缩，原图保持不变。</string>
     <string name="reporting_waiting_wifi">正在等待 Wi-Fi。如需使用移动网络，请移除此本机报告，重新提交时开启“允许附件使用任意网络”。</string>
