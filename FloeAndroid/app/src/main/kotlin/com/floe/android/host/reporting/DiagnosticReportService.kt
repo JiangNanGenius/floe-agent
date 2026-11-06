@@ -32,8 +32,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -49,7 +47,7 @@ internal class DiagnosticReportService(private val context: Context) {
     private val preferences = context.getSharedPreferences("diagnostic_reporting", Context.MODE_PRIVATE)
     private val root = File(context.noBackupFilesDir, "DiagnosticReports")
     private val gate = Any()
-    private val uploadGate = Mutex()
+    private val uploadLanes = ReportUploadLanes()
     private val transfers = HashMap<String, Pair<Long, Long>>()
     private val transport = ReportUploadTransport()
     private val mutable = MutableStateFlow(DiagnosticReportingState())
@@ -165,71 +163,75 @@ internal class DiagnosticReportService(private val context: Context) {
                 .put("locale", Locale.getDefault().toLanguageTag()).put("events", JSONArray().put(event)))
     }
 
-    suspend fun flush(reportID: String? = null): Boolean = uploadGate.withLock {
+    suspend fun flush(reportID: String? = null): Boolean {
         val rows = synchronized(gate) { records().filter {
             it.optString("state") == "queued" && (reportID == null || it.optString("id") == reportID)
-        } }
-        for (row in rows) {
-            if (row.getString("kind") != "manual" && !preferences.getBoolean("automatic", false)) continue
-            val images = row.getJSONArray("images")
-            if (images.length() > 0 && !row.optBoolean("any_network") && !onWifi()) {
-                synchronized(gate) { read(row.getString("id"))?.takeIf { it.optString("state") == "queued" }
-                    ?.let { save(it.put("error", "waiting_wifi")) } }
-                continue // A screenshot must not block later text-only reports.
-            }
-            val attempts = row.optInt("attempts", 0)
-            val admitted = synchronized(gate) {
-                val current = read(row.getString("id"))
-                when {
-                    current == null || current.optString("state") != "queued" -> false
-                    row.getString("kind") != "manual" && !preferences.getBoolean("automatic", false) -> false
-                    attempts >= 5 -> {
-                        save(row.put("state", "failed").put("error", "retry_limit"))
-                        false
-                    }
-                    else -> { row.remove("error"); save(row.put("attempts", attempts + 1)); true }
+        }.sortedBy { it.getJSONArray("images").length() > 0 } }
+        for (row in rows) flushOne(row.getString("id"), row.getJSONArray("images").length() > 0)
+        refresh()
+        return synchronized(gate) { records().none { it.optString("state") == "queued" &&
+            (reportID == null || it.optString("id") == reportID) } }
+    }
+
+    private suspend fun flushOne(id: String, hasAttachments: Boolean): Unit = uploadLanes.withPermit(hasAttachments) {
+        val row = synchronized(gate) { read(id)?.takeIf { it.optString("state") == "queued" } }
+            ?: return@withPermit
+        if (row.getString("kind") != "manual" && !preferences.getBoolean("automatic", false)) return@withPermit
+        val images = row.getJSONArray("images")
+        if (images.length() > 0 && !row.optBoolean("any_network") && !onWifi()) {
+            synchronized(gate) { read(row.getString("id"))?.takeIf { it.optString("state") == "queued" }
+                ?.let { save(it.put("error", "waiting_wifi")) } }
+            return@withPermit // A screenshot must not block later text-only reports.
+        }
+        val attempts = row.optInt("attempts", 0)
+        val admitted = synchronized(gate) {
+            val current = read(row.getString("id"))
+            when {
+                current == null || current.optString("state") != "queued" -> false
+                row.getString("kind") != "manual" && !preferences.getBoolean("automatic", false) -> false
+                attempts >= 5 -> {
+                    save(row.put("state", "failed").put("error", "retry_limit"))
+                    false
                 }
-            }
-            if (!admitted) continue
-            refresh() // Clear the previous attempt's error before showing new progress.
-            try {
-                val receipt = withContext(Dispatchers.IO) { upload(row) }
-                synchronized(gate) {
-                    // A concurrent opt-out/removal must not recreate a deleted report.
-                    if (file(row.getString("id")).exists()) {
-                        row.put("state", "sent").put("report_id", receipt).remove("error")
-                        save(row)
-                        for (index in 0 until images.length()) File(root, images.getString(index)).delete()
-                    }
-                }
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: ReportReceiptRejected) {
-                synchronized(gate) {
-                    if (file(row.getString("id")).exists())
-                        save(row.put("state", "failed").put("error", "invalid_receipt"))
-                }
-            }
-            catch (failure: ReportRejected) {
-                synchronized(gate) {
-                    if (file(row.getString("id")).exists()) save(row.put("state", "failed").put("error", failure.code))
-                }
-            } catch (failure: Exception) {
-                synchronized(gate) {
-                    if (file(row.getString("id")).exists())
-                        save(row.put("state", if (attempts + 1 >= 5) "failed" else "queued")
-                            .put("error", when (failure) {
-                                is ReportTransportFailure -> failure.code
-                                is java.net.UnknownHostException -> "network_dns"
-                                is java.io.InterruptedIOException -> "network_timeout"
-                                is javax.net.ssl.SSLException -> "network_tls"
-                                else -> "network_connection"
-                            }))
-                }
+                else -> { row.remove("error"); save(row.put("attempts", attempts + 1)); true }
             }
         }
-        refresh()
-        synchronized(gate) { records().none { it.optString("state") == "queued" &&
-            (reportID == null || it.optString("id") == reportID) } }
+        if (!admitted) return@withPermit
+        refresh() // Clear the previous attempt's error before showing new progress.
+        try {
+            val receipt = withContext(Dispatchers.IO) { upload(row) }
+            synchronized(gate) {
+                // A concurrent opt-out/removal must not recreate a deleted report.
+                if (file(row.getString("id")).exists()) {
+                    row.put("state", "sent").put("report_id", receipt).remove("error")
+                    save(row)
+                    for (index in 0 until images.length()) File(root, images.getString(index)).delete()
+                }
+            }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: ReportReceiptRejected) {
+            synchronized(gate) {
+                if (file(row.getString("id")).exists())
+                    save(row.put("state", "failed").put("error", "invalid_receipt"))
+            }
+        }
+        catch (failure: ReportRejected) {
+            synchronized(gate) {
+                if (file(row.getString("id")).exists()) save(row.put("state", "failed").put("error", failure.code))
+            }
+        } catch (failure: Exception) {
+            synchronized(gate) {
+                if (file(row.getString("id")).exists())
+                    save(row.put("state", if (attempts + 1 >= 5) "failed" else "queued")
+                        .put("error", when (failure) {
+                            is ReportTransportFailure -> failure.code
+                            is java.net.UnknownHostException -> "network_dns"
+                            is java.io.InterruptedIOException -> "network_timeout"
+                            is javax.net.ssl.SSLException -> "network_tls"
+                            else -> "network_connection"
+                        }))
+            }
+        }
     }
 
     private fun upload(row: JSONObject): String {
