@@ -1,12 +1,12 @@
 # Floe for Android
 
-## Current delivery — Android Alpha41 (2026-11-07)
+## Current delivery — Android Alpha42 (2026-11-07)
 
-[Android 0.1.0-alpha.41](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.41), code60, is published from immutable source `aadcd9fd1af935ffe126e82d7e746b4ed874ec6b`. Full packaging, Play Kotlin compilation, signing/ARM64/16KiB checks, and all six public asset bytes passed. iOS Latest remains unchanged.
+[Android 0.1.0-alpha.42](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.42), code61, is published from immutable source `4cd977c0ab2de550667d7e13f857ece2e3c7d903`. Actual Full packaging, 17 focused JVM checks, Play Kotlin compilation from identical production inputs, signing/ARM64/16KiB checks, all six anonymous asset downloads and update discovery passed. iOS Latest remains unchanged.
 
-On the physical Samsung Android13 phone, one four-triangle STL passed first display, fresh reopening with no active network, orbit input and real1080×2106 PNG export/readback. This does not cover every CAD format or the whole Android iteration. Phone multi-step automation, conditions, project isolation, retry component-lease hardening and compact UI work continue. The later lease-generation source correction is not in this frozen APK.
+The physical Samsung now shows five history rows instead of three at default font size, and a fresh conversation accepts an explicit Automatic choice before sending. Dark/enlarged-font settings were inspected; the reused API37 tablet retained split settings and nested provider sheets. A subsequent bounded Ark task discovered ready phone tools, but approved phone.observe remained pending; App Stop checkpointed it without retry. Multi-step phone control, conditional schedules, project isolation, remaining visual polish and new CAD-toolbar actions continue. Alpha41 STL evidence remains separate.
 
-当前已发布Alpha41/code60；三星实测覆盖一个STL的首帧、断网新预览和真实视口导出。整轮N01–N08继续推进，不把单一样例或公开发布当作全部功能完成。原失败、精确来源及未完成项见[交付记录](../docs/releases/ANDROID_ALPHA41_DELIVERY.md)与[当前推进计划](../docs/FLOE_ANDROID_NEXT_ITERATION_QA_20261106.zh-CN.md)。
+当前已发布Alpha42/code61：侧栏更紧凑，首次权限选择可生效；真实Ark任务仍发现phone.observe等待断点，已停止且未重试。整轮N01–N08继续，不能将本次发布算作全部功能完成。范围与限制见[交付记录](../docs/releases/ANDROID_ALPHA42_DELIVERY.md)和[当前推进计划](../docs/FLOE_ANDROID_NEXT_ITERATION_QA_20261106.zh-CN.md)。
 
 ## Historical source checkpoint — G09-R2 (2026-11-01)
 
