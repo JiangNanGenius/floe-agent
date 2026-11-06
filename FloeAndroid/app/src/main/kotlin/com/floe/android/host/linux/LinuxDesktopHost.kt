@@ -24,7 +24,8 @@ internal data class LinuxSoftwarePackage(val application: String, val installed:
 internal data class LinuxDesktopState(val phase: String = "idle", val taskID: String? = null,
     val workspaceID: String? = null, val environmentID: String? = null,
     val desktop: Boolean = false, val vnc: RemoteVncUi? = null, val failure: String? = null,
-    val software: List<LinuxSoftwarePackage> = emptyList(), val softwareOperation: String? = null)
+    val software: List<LinuxSoftwarePackage> = emptyList(), val softwareOperation: String? = null,
+    val runtimeGeneration: String? = null, val failureStage: String? = null, val failureCode: String? = null)
 
 /** A graphical session is an owned native PTY plus a real authenticated loopback VNC client.
  * No host interpreter, guessed temporary environment, or view-owned process is used. */
@@ -60,7 +61,8 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
 
     fun start(taskID: String, workspaceID: String, desktop: Boolean, install: Boolean) {
         if (task?.isActive == true) return
-        if (state.value.workspaceID == workspaceID && state.value.phase == "running" && state.value.desktop == desktop) {
+        if (live() && terminalID != null && state.value.workspaceID == workspaceID &&
+            state.value.phase == "running" && state.value.desktop == desktop) {
             visible = true; return
         }
         task = scope.launch(Dispatchers.IO) { serial.withLock {
@@ -97,6 +99,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                 }
                 check(metadata.workspaceID.equals(workspaceID, ignoreCase = true))
                 mutable.value = state.value.copy(environmentID = metadata.environmentID,
+                    runtimeGeneration = metadata.runtimeGeneration,
                     phase = if (install) "installing" else "starting")
                 val owner = C05RemoteOwner(UUID.randomUUID().toString(), epoch, taskID)
                 remoteOwner = owner
@@ -113,6 +116,10 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                         synchronized(received) {
                             received.append(String(bytes, Charsets.UTF_8))
                             if (received.length > 65_536) received.delete(0, received.length - 32_768)
+                            if (!ready.isCompleted) LinuxDesktopStartupProtocol.failure(received, nonce)?.let { failure ->
+                                read.completeExceptionally(failure)
+                                ready.completeExceptionally(failure)
+                            }
                             if (received.contains("FLOE_READ:$nonce")) read.complete(Unit)
                             if (received.contains("FLOE_READY:$nonce")) ready.complete(Unit)
                             editAcks.forEach { (id, ack) ->
@@ -202,19 +209,23 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
             } catch (timeout: TimeoutCancellationException) {
                 android.util.Log.w("FloeLinuxDesktop", "start_failed stage=$stage code=timeout")
                 if (!cleanup()) return@withLock
-                mutable.value = state.value.copy(phase = "failed", vnc = null, failure = "desktop_start_failed")
+                mutable.value = state.value.copy(phase = "failed", vnc = null, failure = "desktop_start_failed",
+                    failureStage = stage, failureCode = "timeout")
             } catch (cancelled: CancellationException) { if (!stopped) cleanup(); throw cancelled }
             catch (failure: Exception) {
                 // Codes and the fixed stage are safe diagnostics; exception messages,
                 // guest output, paths and credentials must never enter Android logs.
                 val code = when (failure) {
+                    is LinuxDesktopStartupProtocol.Failure -> "guest_exit_${failure.exitCode}"
                     is G04WorkspaceBridgeClient.Failure -> failure.code
                     is C05RemoteFailure -> failure.code
                     else -> failure.javaClass.simpleName
                 }.takeIf { it.matches(Regex("[A-Za-z0-9_]{1,80}")) } ?: "unknown"
-                android.util.Log.w("FloeLinuxDesktop", "start_failed stage=$stage code=$code")
+                val failedStage = (failure as? LinuxDesktopStartupProtocol.Failure)?.stage ?: stage
+                android.util.Log.w("FloeLinuxDesktop", "start_failed stage=$failedStage code=$code")
                 if (!cleanup()) return@withLock
-                mutable.value = state.value.copy(phase = "failed", vnc = null, failure = "desktop_start_failed")
+                mutable.value = state.value.copy(phase = "failed", vnc = null, failure = "desktop_start_failed",
+                    failureStage = failedStage, failureCode = code)
             }
         } }
     }
@@ -419,9 +430,13 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
         opening.start()
     }
     fun stop() {
+        val stoppingTask = task
         stopped = true
-        task?.cancel()
+        stoppingTask?.cancel()
         scope.launch(Dispatchers.IO) { serial.withLock {
+            // A later start performs its own old-session drain. A queued stop
+            // from the previous request must not close that new session.
+            if (task !== stoppingTask) return@withLock
             if (cleanup()) mutable.value = LinuxDesktopState()
         } }
     }
@@ -513,6 +528,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
             is C05RemoteFailure -> failure.code
             else -> failure.javaClass.simpleName
         }.takeIf { it.matches(Regex("[A-Za-z0-9_]{1,80}")) } ?: "unknown"
+        mutable.value = state.value.copy(failureStage = stage, failureCode = code)
         android.util.Log.w("FloeLinuxDesktop", "file_return_failed stage=$stage code=$code")
     }
 

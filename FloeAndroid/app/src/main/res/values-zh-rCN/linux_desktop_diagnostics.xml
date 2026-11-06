@@ -1,0 +1,7 @@
+<resources>
+    <string name="linux_desktop_diagnostics">会话详情</string>
+    <string name="linux_desktop_copy_details">复制详情</string>
+    <string name="linux_desktop_copy_failed">暂时无法复制，请在此查看详情。</string>
+    <string name="linux_desktop_components_hint">图形组件未能启动。请检查网络或开启基础组件安装后重试。</string>
+    <string name="linux_desktop_diagnostic_content">Android：%1$s\n应用：%2$s\n状态：%3$s\n失败阶段：%4$s\n原因：%5$s\n任务：%6$s\n工作区：%7$s\n环境：%8$s\n运行会话：%9$s</string>
+</resources>

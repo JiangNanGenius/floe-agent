@@ -26,24 +26,41 @@ internal object LinuxDesktopCommands {
         val script = """
             set -eu
             umask 077
-            command -v Xtigervnc >/dev/null || exit 73
-            command -v vncpasswd >/dev/null || exit 74
-            gui_dir="${'$'}{TMPDIR:-/tmp}/floe-gui-$nonce"
-            mkdir -p "${'$'}gui_dir"
+            gui_start_complete=0
+            gui_start_stage=vnc_tools
             cleanup() {
+              gui_status=${'$'}?
+              unset gui_secret
+              if test "${'$'}gui_start_complete" = 0; then
+                printf '\nFLOE_START_FAILED:$nonce:%s:%s\n' "${'$'}gui_start_stage" "${'$'}gui_status"
+              fi
               stty echo 2>/dev/null || true
               test -z "${'$'}{gui_wm:-}" || kill "${'$'}gui_wm" 2>/dev/null || true
               test -z "${'$'}{gui_vnc:-}" || kill "${'$'}gui_vnc" 2>/dev/null || true
-              rm -f -- "${'$'}gui_dir/passwd"
-              rmdir -- "${'$'}gui_dir" 2>/dev/null || true
+              if test -n "${'$'}{gui_dir:-}"; then
+                rm -f -- "${'$'}gui_dir/passwd"
+                rmdir -- "${'$'}gui_dir" 2>/dev/null || true
+              fi
             }
-            trap cleanup EXIT HUP INT TERM
+            trap cleanup EXIT
+            trap 'exit 129' HUP
+            trap 'exit 130' INT
+            trap 'exit 143' TERM
+            command -v Xtigervnc >/dev/null || exit 73
+            command -v vncpasswd >/dev/null || exit 74
+            gui_start_stage=desktop
+            command -v openbox >/dev/null || exit 75
+            ${if (desktop) "command -v xfce4-panel >/dev/null || exit 76" else ""}
+            gui_dir="${'$'}{TMPDIR:-/tmp}/floe-gui-$nonce"
+            mkdir -p "${'$'}gui_dir"
+            gui_start_stage=credential
             stty -echo
             printf '%s%s\n' 'FLOE_READ:' '$nonce'
             IFS= read -r gui_secret
             printf '%s' "${'$'}gui_secret" | vncpasswd -f > "${'$'}gui_dir/passwd"
             unset gui_secret
             stty echo
+            gui_start_stage=display
             export DISPLAY=:$display
             export XDG_RUNTIME_DIR="${'$'}gui_dir"
             ${if (!desktop) """
@@ -53,8 +70,11 @@ internal object LinuxDesktopCommands {
             gui_vnc=${'$'}!
             sleep 1
             kill -0 "${'$'}gui_vnc"
+            gui_start_stage=desktop
             ${if (desktop) "sh -c 'openbox & xfce4-panel & wait'" else "openbox --config-file \"${'$'}gui_dir/rc.xml\""} > "${'$'}gui_dir/desktop.log" 2>&1 &
             gui_wm=${'$'}!
+            sleep 0.2
+            kill -0 "${'$'}gui_wm"
             launch_app() {
               gui_ack="${'$'}1"; gui_editor="${'$'}2"; shift 2
               if ! command -v "${'$'}gui_editor" >/dev/null; then
@@ -69,6 +89,7 @@ internal object LinuxDesktopCommands {
                 printf '\nFLOE_APP_STARTED:%s\n' "${'$'}gui_ack"
               else printf '\nFLOE_APP_FAILED:%s:exit\n' "${'$'}gui_ack"; fi
             }
+            gui_start_complete=1
             printf '%s%s\n' 'FLOE_READY:' '$nonce'
             while IFS= read -r gui_action; do
               gui_action="${'$'}{gui_action%${'$'}'\r'}"
@@ -131,7 +152,18 @@ internal object LinuxDesktopCommands {
         """.trimIndent()
         // One bus per owned desktop: applications must inherit the same
         // session as its window manager, rather than autolaunching another bus.
-        val bootstrap = "set -eu\n$installCommand\nexec dbus-run-session -- bash -c ${quote(script)}"
+        val bootstrap = """
+            set -eu
+            trap 'gui_status=${'$'}?; if test "${'$'}gui_status" != 0; then printf "\nFLOE_START_FAILED:$nonce:packages:%s\n" "${'$'}gui_status"; fi' EXIT
+            $installCommand
+            trap - EXIT
+            if dbus-run-session -- bash -c ${quote(script)}; then :
+            else
+              gui_status=${'$'}?
+              printf '\nFLOE_START_FAILED:$nonce:session_bus:%s\n' "${'$'}gui_status"
+              exit "${'$'}gui_status"
+            fi
+        """.trimIndent()
         return "bash -c ${quote(bootstrap)}\n"
     }
 

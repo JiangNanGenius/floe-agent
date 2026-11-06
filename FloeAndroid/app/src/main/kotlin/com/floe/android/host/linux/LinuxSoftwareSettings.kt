@@ -18,6 +18,7 @@ internal fun LinuxSoftwareSettings() {
     var stop by remember { mutableStateOf(false) }
     var remove by remember { mutableStateOf<String?>(null) }
     FloeSettingsSectionCard(title = stringResource(R.string.linux_software_title)) {
+        LinuxDesktopDiagnosticsAction(state)
         if (state.phase == "running") {
             FloeSectionRow(title = { FloeText(stringResource(R.string.linux_software_size_hint),
                 style = Floe.typography.metadata, color = Floe.colors.secondaryLabel) })

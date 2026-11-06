@@ -17,6 +17,7 @@ import com.floe.android.design.*
 import com.floe.android.feature.remote.RemoteVncViewerPage
 import com.floe.android.host.RuntimeHost
 import com.floe.android.host.linux.LinuxDesktopCommands
+import com.floe.android.host.linux.LinuxDesktopDiagnosticsAction
 import com.floe.android.host.linux.LocalRuntimeSettingsCard
 import com.floe.android.host.linux.LocalRuntimeSetupHost
 import com.floe.android.host.remote.C05VncInput
@@ -86,6 +87,7 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
                 Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     FloeText(stringResource(R.string.linux_desktop_description), color = Floe.colors.secondaryLabel)
+                    LinuxDesktopDiagnosticsAction(state)
                     FloeText(stringResource(when (state.phase.takeIf { owned } ?: "idle") {
                         "running" -> R.string.linux_desktop_running
                         "installing" -> R.string.linux_desktop_installing

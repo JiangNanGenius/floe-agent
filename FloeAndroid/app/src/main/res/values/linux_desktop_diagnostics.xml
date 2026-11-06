@@ -1,0 +1,7 @@
+<resources>
+    <string name="linux_desktop_diagnostics">Session details</string>
+    <string name="linux_desktop_copy_details">Copy details</string>
+    <string name="linux_desktop_copy_failed">Could not copy. You can read the details in this window.</string>
+    <string name="linux_desktop_components_hint">The graphical components could not start. Check the connection or enable basic component installation, then try again.</string>
+    <string name="linux_desktop_diagnostic_content">Android: %1$s\nApp: %2$s\nState: %3$s\nFailed stage: %4$s\nReason: %5$s\nTask: %6$s\nWorkspace: %7$s\nEnvironment: %8$s\nRuntime session: %9$s</string>
+</resources>

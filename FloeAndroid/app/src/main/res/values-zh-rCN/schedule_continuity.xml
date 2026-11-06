@@ -1,3 +1,5 @@
 <resources>
     <string name="schedule_condition_clock_changed">系统时间已改变，此前的一次条件触发未执行。请检查计划，或手动运行。后续触发仍然启用。</string>
+    <string name="schedule_status_condition">条件触发</string>
+    <string name="schedule_workspace_reused_caption">每次运行都使用此项目工作区及其中已有的文件。</string>
 </resources>

@@ -1,3 +1,5 @@
 <resources>
     <string name="schedule_condition_clock_changed">The system clock changed, so an earlier condition event was not run. Check this schedule or run it manually. Future triggers remain enabled.</string>
+    <string name="schedule_status_condition">On condition</string>
+    <string name="schedule_workspace_reused_caption">Each run uses this project workspace and its existing files.</string>
 </resources>

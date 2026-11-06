@@ -459,7 +459,7 @@ private fun ScheduledTaskRow(
             Spacer(Modifier.width(8.dp))
             FloeStatusLine(
                 icon = statusIcon(status),
-                text = stringResource(statusLabel(status)),
+                text = stringResource(statusLabel(status, summary.cadence)),
                 color = statusColor(status),
             )
             Box {
@@ -830,7 +830,8 @@ private fun TaskScheduleEditorSheet(
                     },
                 )
                 FloeText(
-                    stringResource(R.string.schedule_workspace_caption),
+                    stringResource(if (workspaceID == null) R.string.schedule_workspace_caption
+                        else R.string.schedule_workspace_reused_caption),
                     style = Floe.typography.metadata,
                     color = Floe.colors.tertiaryLabel,
                 )
@@ -1189,12 +1190,13 @@ private fun cadenceLabel(summary: TaskScheduleSummary): Int = when (summary.cade
     TaskScheduleCadence.NETWORK_CONNECTED -> R.string.schedule_cadence_network
 }
 
-private fun statusLabel(status: TaskSchedulePresentationStatus): Int = when (status) {
+private fun statusLabel(status: TaskSchedulePresentationStatus, cadence: TaskScheduleCadence): Int = when (status) {
     TaskSchedulePresentationStatus.ACTIVE -> R.string.schedule_status_active
     TaskSchedulePresentationStatus.FLEXIBLE -> R.string.schedule_status_flexible
     TaskSchedulePresentationStatus.WAITING_PERMISSION -> R.string.schedule_status_waiting
     TaskSchedulePresentationStatus.PAUSED -> R.string.schedule_status_paused
-    TaskSchedulePresentationStatus.EVENT_DRIVEN -> R.string.schedule_status_event
+    TaskSchedulePresentationStatus.EVENT_DRIVEN -> if (cadence == TaskScheduleCadence.AFTER_SUCCESS)
+        R.string.schedule_status_event else R.string.schedule_status_condition
     TaskSchedulePresentationStatus.NEEDS_ATTENTION -> R.string.schedule_status_attention
 }
 

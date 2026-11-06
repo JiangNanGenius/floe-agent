@@ -48,7 +48,7 @@ https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json
 | iOS / iPadOS · TestFlight | [前往官网申请内测](https://www.floe-agent.com/?utm_source=github&utm_medium=referral&utm_campaign=beta_readme_zh#beta)，可用构建与测试资格以 TestFlight 为准。 |
 | iOS / iPadOS · Feather / AltStore | 先安装对应 App，点击上方按钮添加源，再按自己的签名方式安装。 |
 | iOS / iPadOS · GitHub IPA | 从发布页下载 IPA 和校验文件；IPA 未签名，需要自行签名。 |
-| Android 测试版 | Android 9+（ARM64）。从 [Android 发布页](https://www.floe-agent.com/releases?platform=android&utm_source=github&utm_medium=referral&utm_campaign=readme_zh) 安装签名 APK；GitHub 版会检查更新，引导下载、校验和系统安装，有补丁时可减少下载量。当前支持自备云端 Key 的 AI 任务、历史与附件、服务商与凭据设置、MCP、设备端 Linux 终端与作业、文件、代码 IDE、Git、浏览器、内置 Office 查看与基础编辑，以及手记基础工作区。网络工作台包含 Wi-Fi、局域网发现、DNS、Ping、TCP、HTTPS、测速、监测与脱敏报告。Alpha21 加入离线 PCAP／PCAPNG 分析、可选平面图的 Wi-Fi 覆盖点记录，以及在独立对话中执行的定时 Agent 任务；精确时间需要系统授权，弹性时间需主动选择。安卓不提供本地模型推理，语音、只读 CAD／3D 与完整 Skill Hub 客户端仍在计划中。实际测试设备与限制见发布说明。 |
+| Android 测试版 | Android 9+（ARM64）。从 [Android 发布页](https://www.floe-agent.com/releases?platform=android&utm_source=github&utm_medium=referral&utm_campaign=readme_zh) 安装签名 APK；GitHub 版会检查更新，引导下载、校验和系统安装，有补丁时可减少下载量。当前支持自备云端 Key 的 AI 任务、历史与附件、服务商与凭据设置、MCP、设备端 Linux 终端与作业、文件、代码 IDE、Git、浏览器、内置 Office 查看与基础编辑，以及手记基础工作区。网络工作台包含 Wi-Fi、局域网发现、DNS、Ping、TCP、HTTPS、测速、监测与脱敏报告。Alpha21 加入离线 PCAP／PCAPNG 分析、可选平面图的 Wi-Fi 覆盖点记录，以及在独立对话中执行的定时 Agent 任务；精确时间需要系统授权，弹性时间需主动选择。安卓不提供本地模型推理；系统／配置的云端语音、只读 CAD／3D 预览及签名 Skill Hub 客户端已接入并继续实机验证，可用性取决于按需组件、兼容包和配置。专业编辑可交给 Android 应用或项目 Linux 图形会话，轻量编辑保留在 Floe。实际测试设备与限制见发布说明。 |
 
 iOS / iPadOS 首次使用：**安装 → 配置模型 → 新建任务 → 打开成果**。核心手记、文件整理和画布无需 AI 服务商；AI 功能使用你配置的服务商或设备支持的本地模型。Android 首次使用：**安装 → 添加云端模型 Key → 开始对话**；手记基础编辑无需配置模型；AI功能使用自备云端服务。Office 文档、文件工作区、Linux 终端、代码 IDE 和网络工作台已在当前测试版中可用。
 
@@ -70,8 +70,8 @@ iOS 设置向导提供四种推荐配置，帮助预填模型、搜索、语音�
 | 画布与媒体 | 在画布组织素材，进入图像、视频和音频工作台处理细节。 | [画布与媒体](docs/USER_GUIDE.zh-CN.md#15-画布图像音视频) |
 | 图纸与 3D | 在 iOS/iPadOS 上编辑二维图纸，在同一工作台创建并持续完善原生 3D 模型——AI 连续修改、材质与展示导出。能力随格式而异。 | [原生 3D 编辑器](docs/USER_GUIDE.zh-CN.md#3d-模型统一工作台) · [二维图纸](docs/USER_GUIDE.zh-CN.md#14-工程图纸与图纸助手) |
 | 开发与远程 | 编辑代码、跟踪 Git 变更，并使用授权的远程主机。 | [终端与端口](docs/USER_GUIDE.zh-CN.md#9-本地终端与-linux-性能配置) · [远程连接](docs/USER_GUIDE.zh-CN.md#12-远程设备桌面与网络诊断) |
-| 语音 | 语音输入生成可编辑草稿、进行语音对话，并让最终回答使用系统、设备端增强或已配置在线语音朗读。语音已在 iOS 提供，Android 尚未包含。 | [语音输入与朗读](docs/USER_GUIDE.zh-CN.md#16-语音输入与转录) |
-| Skills 与 Skill Hub | 安装带精确依赖声明和版本管理的受审技能、统一更新，并使用 MCP 服务与邮件操作自动化。Skill Hub 商店已在 iOS 提供，Android 支持在路线图中。 | [Skills、MCP 与自动任务](docs/USER_GUIDE.zh-CN.md#17-skillsmcp邮件与自动任务) |
+| 语音 | 语音输入生成可编辑草稿、进行语音对话，并让最终回答使用系统、设备端增强或已配置在线语音朗读。Android 已接入系统／配置的云端语音通路，供应商和设备行为继续验证，不提供 App 管理的本地语音模型。 | [语音输入与朗读](docs/USER_GUIDE.zh-CN.md#16-语音输入与转录) |
+| Skills 与 Skill Hub | 安装带精确依赖声明和版本管理的受审技能、统一更新，并使用 MCP 服务与邮件操作自动化。Android 已接入签名 Hub 客户端，兼容包供给和任务 Linux 依赖分别校验。 | [Skills、MCP 与自动任务](docs/USER_GUIDE.zh-CN.md#17-skillsmcp邮件与自动任务) |
 
 云端模型请求直接发送至你选择的服务商；支持的本地模型在设备端完成推理。密钥保存在设备的受保护存储中。文件、上传与远程操作遵循任务权限，重要操作按当前策略确认。详见[安全说明](SECURITY.zh-CN.md)。
 
