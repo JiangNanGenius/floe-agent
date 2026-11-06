@@ -599,6 +599,8 @@
     <string name="linux_desktop_windows">桌面</string>
     <string name="linux_desktop_install_base">安装缺少的图形组件</string>
     <string name="linux_desktop_setup_required">本地环境需要设置或更新，完成后即可启动会话。</string>
+    <string name="app_update_runtime_required">App 已更新。请继续更新本地环境，以使用终端和 Linux 应用。</string>
+    <string name="external_edit_choose_app">选择其他应用</string>
     <string name="linux_desktop_start">启动会话</string>
     <string name="linux_desktop_switch_notice">在此启动将停止当前图形会话，请先保存修改。</string>
     <string name="linux_desktop_software">选择应用</string>

@@ -57,10 +57,10 @@ internal object ApkValidationPolicy {
 /** Reads [ApkIdentity] from a staged APK file and from the installed app. */
 internal class ApkIdentityReader(private val context: Context) {
 
-    fun installed(): ApkIdentity? = runCatching {
+    fun installed(packageName: String = context.packageName): ApkIdentity? = runCatching {
         @Suppress("DEPRECATION")
         val info = context.packageManager.getPackageInfo(
-            context.packageName,
+            packageName,
             PackageManager.GET_SIGNING_CERTIFICATES,
         )
         ApkIdentity(

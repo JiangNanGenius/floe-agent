@@ -312,7 +312,7 @@ internal class ExternalEditController(private val context: Context, private val 
 
     /** Android first. No external handler is an actionable result, not a fake Linux launch. */
     fun openAndroid(activity: Activity, owner: ExternalEditOwner, path: String, existingID: String? = null,
-        forceChooser: Boolean = true) {
+        forceChooser: Boolean = false) {
         if (!launchClaim.compareAndSet(false, true)) return
         mutableState.value = mutableState.value.copy(preparing = true,
             failure = if (journal == null) mutableState.value.failure else null)
@@ -356,7 +356,7 @@ internal class ExternalEditController(private val context: Context, private val 
 
     fun viewCopy(activity: Activity, id: String) {
         state.value.records.firstOrNull { it.id == id }?.let { row ->
-            runCatching { activity.startActivity(Intent.createChooser(intent(row, false), null)) }
+            runCatching { activity.startActivity(intent(row, false)) }
                 .onFailure { mutableState.value = mutableState.value.copy(failure = "noViewer") }
         }
     }
@@ -366,7 +366,7 @@ internal class ExternalEditController(private val context: Context, private val 
             runCatching {
                 val file = File(directory("versions", row.id), "${row.initialSHA256}.bin")
                 if (measured(file).first != row.initialSHA256) throw Failure("copyChanged")
-                activity.startActivity(Intent.createChooser(intent(row, false, file), null))
+                activity.startActivity(intent(row, false, file))
             }.onFailure { mutableState.value = mutableState.value.copy(failure = "noViewer") }
         }
     }

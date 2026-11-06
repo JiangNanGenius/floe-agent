@@ -74,7 +74,7 @@ internal sealed interface AppInstallState {
 
     data class AwaitingSystem(val sessionID: Int) : AppInstallState
     data class Confirming(val sessionID: Int, val intent: Intent) : AppInstallState
-    data class Succeeded(val versionName: String) : AppInstallState
+    data class Succeeded(val versionName: String, val runtimeUpdateRequired: Boolean = false) : AppInstallState
     data class Failed(
         val kind: InstallFailure,
         val detail: String? = null,
@@ -173,6 +173,9 @@ internal data class PendingInstall(
     val sessionID: Int,
     val packageName: String = "",
     val signerSha256: Set<String> = emptySet(),
+    val runtime: RuntimeInstallProof? = null,
+    val childSessionIDs: List<Int> = emptyList(),
+    val runtimeUpdateRequired: Boolean = false,
 ) {
     fun toJson(): String = buildJsonObject {
         put("versionName", versionName)
@@ -182,6 +185,14 @@ internal data class PendingInstall(
         put("sessionID", sessionID)
         put("packageName", packageName)
         put("signerSha256", signerSha256.sorted().joinToString(","))
+        put("childSessionIDs", childSessionIDs.joinToString(","))
+        put("runtimeUpdateRequired", runtimeUpdateRequired)
+        runtime?.let {
+            put("runtimePackage", it.packageName)
+            put("runtimeVersion", it.versionCode)
+            put("runtimeSigners", it.signerSha256.sorted().joinToString(","))
+            put("runtimeSha256", it.sha256)
+        }
     }.toString()
 
     companion object {
@@ -206,6 +217,25 @@ internal data class PendingInstall(
                 .filter { it.isNotEmpty() }
                 .toSet()
             if (signers.any { !it.matches(Regex("[0-9a-f]{64}")) }) return null
+            val childText = string("childSessionIDs").orEmpty()
+            val children = if (childText.isEmpty()) emptyList() else childText.split(',').map {
+                it.toIntOrNull()?.takeIf { id -> id > 0 && id != sessionID } ?: return null
+            }
+            if (children.size > 2 || children.distinct().size != children.size) return null
+            val runtime = if ("runtimePackage" in obj) {
+                val name = string("runtimePackage") ?: return null
+                val code = (obj["runtimeVersion"] as? JsonPrimitive)?.longOrNull ?: return null
+                val hashes = string("runtimeSigners")?.split(',')?.toSet() ?: return null
+                val digest = string("runtimeSha256") ?: return null
+                // The exact channel mapping is checked again at settlement.
+                if (name.length !in 1..200 || !name.matches(Regex("[a-zA-Z0-9_.]+")) || code != versionCode ||
+                    hashes.isEmpty() || hashes != signers || hashes.any { !it.matches(Regex("[0-9a-f]{64}")) } ||
+                    !digest.matches(Regex("[0-9a-f]{64}")) || children.size != 2) return null
+                RuntimeInstallProof(name, code, hashes, digest)
+            } else null
+            if (runtime == null && children.isNotEmpty()) return null
+            val runtimeUpdateRequired = (obj["runtimeUpdateRequired"] as? JsonPrimitive)?.content == "true"
+            if (runtime != null && runtimeUpdateRequired) return null
             return PendingInstall(
                 versionName = versionName,
                 versionCode = versionCode,
@@ -214,6 +244,9 @@ internal data class PendingInstall(
                 sessionID = sessionID,
                 packageName = packageName,
                 signerSha256 = signers,
+                runtime = runtime,
+                childSessionIDs = children,
+                runtimeUpdateRequired = runtimeUpdateRequired,
             )
         }
     }
@@ -284,6 +317,7 @@ internal class AppUpdateInstaller(
 
     /** One admission at a time; the UI never owns the blocking work. */
     private val admissionHeld = AtomicBoolean(false)
+    private val runtimeUpdates = UpdateRuntimeCandidate(context, reader)
 
     @Volatile
     private var permissionPending: PendingInstallRequest? = null
@@ -595,14 +629,14 @@ internal class AppUpdateInstaller(
      */
     private fun startWaiting(request: PendingInstallRequest) {
         if (waitingJob.get() != null) return
-        val job = scope.launch(Dispatchers.Default) {
+        val job = scope.launch(Dispatchers.IO) {
             try {
                 val deadline = System.currentTimeMillis() + UpdateConfig.QUIESCENCE_WAIT_MS
                 while (isActive && System.currentTimeMillis() < deadline) {
                     delay(2_000L)
                     if (mutable.value !is AppInstallState.WaitingForJobs) return@launch
                     val kinds = heldOperationKinds()
-                    if (kinds.isEmpty()) {
+                    if (kinds.isEmpty() && runtimeUpdates.isIdle()) {
                         waitingJob.set(null)
                         requestInstall(request.versionName, request.apk, request.sha256, force = false)
                         return@launch
@@ -616,6 +650,8 @@ internal class AppUpdateInstaller(
                 }
             } catch (cancellation: CancellationException) {
                 throw cancellation
+            } catch (_: Exception) {
+                mutable.value = AppInstallState.Failed(InstallFailure.SYSTEM, "runtime-idle-unconfirmed")
             } finally {
                 val self = kotlinx.coroutines.currentCoroutineContext()[Job]
                 if (waitingJob.get() === self) waitingJob.set(null)
@@ -633,140 +669,120 @@ internal class AppUpdateInstaller(
      */
     private fun commit(request: PendingInstallRequest) {
         val apk = request.apk
-        // Re-read identity at the commit boundary: a proof that was true when
-        // the download completed (or before the permission round trip) must
-        // not be assumed to still hold.
         val candidate = reader.read(apk)
-        if (candidate == null) {
-            mutable.value = AppInstallState.Failed(InstallFailure.IDENTITY, "not-an-apk")
+        if (candidate == null || reader.rejectionFor(apk) != null) {
+            mutable.value = AppInstallState.Failed(InstallFailure.IDENTITY, "artifact-changed")
             return
         }
-        val rejection = reader.rejectionFor(apk)
-        if (rejection != null) {
-            mutable.value = AppInstallState.Failed(InstallFailure.IDENTITY, rejection.name.lowercase())
-            return
-        }
-        val packageInstaller = context.packageManager.packageInstaller
-        mutable.value = AppInstallState.Committing
-        // Explicit retry may replace only this app's own unfinished session;
-        // installed data is never touched by an app-side update.
-        runCatching {
-            packageInstaller.mySessions
-                .filter { it.appPackageName == context.packageName }
-                .forEach { packageInstaller.abandonSession(it.sessionId) }
-        }
-        val params = PackageInstaller.SessionParams(
-            PackageInstaller.SessionParams.MODE_FULL_INSTALL,
-        ).apply {
-            setAppPackageName(context.packageName)
-            setSize(apk.length())
-            if (Build.VERSION.SDK_INT >= 31) {
-                setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED)
-            }
-        }
-        val sessionID = try {
-            packageInstaller.createSession(params)
-        } catch (failure: Exception) {
-            mutable.value = AppInstallState.Failed(InstallFailure.SYSTEM, "session-create")
-            return
-        }
-        val digest = MessageDigest.getInstance("SHA-256")
-        val session = try {
-            packageInstaller.openSession(sessionID)
-        } catch (failure: Exception) {
-            runCatching { packageInstaller.abandonSession(sessionID) }
-            mutable.value = AppInstallState.Failed(InstallFailure.SYSTEM, "session-open")
-            return
-        }
-        var committed = false
+        val installer = context.packageManager.packageInstaller
+        val created = mutableListOf<Int>()
+        var handedToSystem = false
+        var runtime: UpdateRuntimeCandidate.Prepared? = null
         try {
-            session.openWrite("app-update.apk", 0L, apk.length()).use { output ->
-                apk.inputStream().use { input ->
-                    val buffer = ByteArray(256 * 1024)
-                    while (true) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        digest.update(buffer, 0, count)
-                        output.write(buffer, 0, count)
+            val runtimeInstalled = runtimeUpdates.isInstalled()
+            // Replacing the companion terminates its process. A visible force
+            // choice cannot turn unknown/busy runtime work into idle work.
+            if (runtimeInstalled && !runtimeUpdates.isIdle()) {
+                mutable.value = AppInstallState.WaitingForJobs(heldOperationKinds() + OperationKind.LOCAL_EXECUTION)
+                startWaiting(request)
+                return
+            }
+            runtime = runtimeUpdates.prepare(apk, candidate)
+            val installBytes = Math.addExact(apk.length(), runtime?.file?.length() ?: 0L)
+            if (!InstallStoragePolicy.hasRoom(stagingDir.usableSpace, installBytes)) {
+                mutable.value = AppInstallState.Failed(InstallFailure.STORAGE, "install-space")
+                return
+            }
+            mutable.value = AppInstallState.Committing
+            abandonOrphanSessions()
+            fun create(packageName: String?, bytes: Long, multi: Boolean = false): Int {
+                val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
+                    setAppLabel(INSTALL_LABEL)
+                    if (multi) {
+                        check(Build.VERSION.SDK_INT >= 29)
+                        setMultiPackage() // parent contains session IDs, never APK bytes
+                    } else {
+                        setAppPackageName(packageName)
+                        setSize(bytes)
                     }
+                    if (Build.VERSION.SDK_INT >= 31) setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED)
                 }
-                session.fsync(output)
+                return installer.createSession(params).also { created += it }
             }
-            val streamedSha = digest.digest().joinToString("") { "%02x".format(it) }
-            if (!streamedSha.equals(request.sha256, ignoreCase = true)) {
-                // The staged bytes are not the release artifact the feed
-                // proved. Abandon before commit; nothing was installed.
-                store.pendingInstallJson = null
-                runCatching { session.abandon() }
-                runCatching { session.close() }
-                mutable.value = AppInstallState.Failed(InstallFailure.IDENTITY, "release-checksum")
-                return
+            val parentID = if (runtime != null) create(null, 0, multi = true) else null
+            val mainID = create(candidate.packageName, apk.length())
+            // Attach each child as soon as it exists. Abandoning the parent
+            // then reliably destroys both children's staged data.
+            if (parentID != null) installer.openSession(parentID).use { it.addChildSessionId(mainID) }
+            val mainSha = installer.openSession(mainID).use { stream(it, apk, "app-update.apk") }
+            check(mainSha == request.sha256) { "release-checksum" }
+            val children = mutableListOf<Int>()
+            if (runtime != null && parentID != null) {
+                children += mainID
+                val companionID = create(runtime.proof.packageName, runtime.file.length())
+                installer.openSession(parentID).use { it.addChildSessionId(companionID) }
+                val sha = installer.openSession(companionID).use { stream(it, runtime.file, "runtime.apk") }
+                check(sha == runtime.proof.sha256) { "runtime-checksum" }
+                children += companionID
             }
-            // Identity is re-read at the last moment before commit; the
-            // system installer independently enforces package/version/
-            // signature, but the UI never adopts an install whose local
-            // admission proof went stale.
-            val post = reader.read(apk)
-            if (post == null || post.packageName != candidate.packageName ||
-                post.longVersionCode != candidate.longVersionCode ||
-                post.signerSha256 != candidate.signerSha256
-            ) {
-                store.pendingInstallJson = null
-                runCatching { session.abandon() }
-                runCatching { session.close() }
-                mutable.value = AppInstallState.Failed(InstallFailure.IDENTITY, "artifact-changed")
-                return
-            }
-            val callback = PendingIntent.getBroadcast(
-                context,
-                sessionID,
-                Intent(context, AppUpdateInstallReceiver::class.java)
-                    .putExtra(EXTRA_SESSION_ID, sessionID),
-                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-            )
-            // Persist BEFORE the commit callback can be delivered so no
-            // system confirmation is ever dropped as an unknown session.
+            val post = checkNotNull(reader.read(apk))
+            check(post == candidate && reader.rejectionFor(apk) == null) { "artifact-changed" }
+            // Streaming may have taken seconds. Re-prove actual companion
+            // quiescence immediately before handing either package to the OS.
+            check(!runtimeInstalled || runtimeUpdates.isIdle()) { "runtime-not-idle" }
+            val sessionID = parentID ?: mainID
+            val callback = PendingIntent.getBroadcast(context, sessionID,
+                Intent(context, AppUpdateInstallReceiver::class.java).putExtra(EXTRA_SESSION_ID, sessionID),
+                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
             store.pendingInstallJson = PendingInstall(
-                versionName = request.versionName,
-                versionCode = post.longVersionCode,
-                sha256 = streamedSha,
-                fileName = apk.name,
-                sessionID = sessionID,
-                packageName = post.packageName,
-                signerSha256 = post.signerSha256,
+                versionName = request.versionName, versionCode = post.longVersionCode,
+                sha256 = mainSha, fileName = apk.name, sessionID = sessionID,
+                packageName = post.packageName, signerSha256 = post.signerSha256,
+                runtime = runtime?.proof, childSessionIDs = children,
+                // API28 has no atomic multi-package API: keep an explicit
+                // setup handoff after main installation, never claim both done.
+                runtimeUpdateRequired = runtimeInstalled && Build.VERSION.SDK_INT < 29,
             ).toJson()
-            // Hand ownership to the system exactly once. An exception here is
-            // an AMBIGUOUS commit: keep the persisted session record and the
-            // open session (never abandon, never resubmit), so a later
-            // confirmation or process reconcile can adopt the real outcome.
+            // An exception from commit is ambiguous. Persisted ownership and
+            // system sessions survive, preventing a duplicate install/retry.
+            handedToSystem = true
             try {
-                session.commit(callback.intentSender)
-                committed = true
-            } catch (failure: Exception) {
-                mutable.compareAndSet(
-                    AppInstallState.Committing,
-                    AppInstallState.Failed(InstallFailure.SYSTEM, "commit-unknown"),
-                )
+                installer.openSession(sessionID).use { it.commit(callback.intentSender) }
+            } catch (_: Exception) {
+                mutable.compareAndSet(AppInstallState.Committing,
+                    AppInstallState.Failed(InstallFailure.SYSTEM, "commit-unknown"))
                 return
-            } finally {
-                // Closing the handle does not abandon a committed/ambiguous
-                // system session; retain its durable ownership record.
-                runCatching { session.close() }
             }
+            permissionPending = null
+            mutable.compareAndSet(AppInstallState.Committing, AppInstallState.AwaitingSystem(sessionID))
         } catch (failure: Exception) {
-            // Only pre-commit work reaches here (commit has its own handling).
-            if (!committed) {
+            if (!handedToSystem) {
                 store.pendingInstallJson = null
-                runCatching { session.abandon() }
-                runCatching { session.close() }
+                created.asReversed().forEach { runCatching { installer.abandonSession(it) } }
             }
-            mutable.value = AppInstallState.Failed(InstallFailure.SYSTEM, "session-commit")
-            return
+            val identity = failure is IllegalStateException || failure is SecurityException
+            mutable.value = AppInstallState.Failed(if (identity) InstallFailure.IDENTITY else InstallFailure.SYSTEM,
+                "coordinated-install-preparation")
+        } finally {
+            runtime?.close() // installer owns its fsynced copies after commit
         }
-        permissionPending = null
-        // A fast receiver may have delivered confirmation or completion while
-        // commit was returning. Never overwrite that authoritative callback.
-        mutable.compareAndSet(AppInstallState.Committing, AppInstallState.AwaitingSystem(sessionID))
+    }
+
+    private fun stream(session: PackageInstaller.Session, file: File, name: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        session.openWrite(name, 0L, file.length()).use { output ->
+            file.inputStream().use { input ->
+                val buffer = ByteArray(256 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                    output.write(buffer, 0, count)
+                }
+            }
+            session.fsync(output)
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun handleEvent(event: InstallEvent) {
@@ -788,14 +804,9 @@ internal class AppUpdateInstaller(
                         // re-adopts and finishes the cleanup.
                         adoptInstalled(record, installed)
                     } else {
-                        // The system reported success for our own verified
-                        // session; keep the honest success result and retire
-                        // only the exact consumed target. Installed identity
-                        // was not readable, so no identity claim is made.
-                        retireConsumedDownload(record)
-                        store.pendingInstallJson = null
-                        mutable.value = AppInstallState.Succeeded(record.versionName)
-                        cleanupStaged(record)
+                        // Keep the durable record and exact download until
+                        // installed identities can actually be read back.
+                        mutable.value = AppInstallState.Failed(InstallFailure.SYSTEM, "installed-unreadable")
                     }
                 } else {
                     store.pendingInstallJson = null
@@ -819,6 +830,20 @@ internal class AppUpdateInstaller(
             mutable.value = AppInstallState.Failed(InstallFailure.IDENTITY, detail)
             return
         }
+        val pair = com.floe.android.runtimeipc.RuntimePackages.forCore(context.packageName)
+        val companion = reader.installed(pair.runtime)
+        val proof = record.runtime
+        if (proof != null && (proof.packageName != pair.runtime ||
+                !RuntimeUpdatePolicy.installedMatches(companion, proof.copy(versionCode = installed.longVersionCode)))) {
+            // A main-only readback cannot settle an atomic install. Preserve
+            // its ownership record and expose the existing setup recovery.
+            mutable.value = AppInstallState.Failed(InstallFailure.IDENTITY, "runtime-installed-mismatch")
+            return
+        }
+        // Also covers records written by the previous main-only updater: the
+        // first new launch offers runtime setup instead of a false all-done.
+        val runtimeRequired = companion != null &&
+            (companion.longVersionCode != installed.longVersionCode || companion.signerSha256 != installed.signerSha256)
         // Retire the completed download that this install consumed BEFORE the
         // install record: the process is killed by the system right after a
         // self-update, and a leftover completed download record would be
@@ -834,6 +859,7 @@ internal class AppUpdateInstaller(
             } else {
                 installed.versionName.ifEmpty { record.versionName }
             },
+            runtimeUpdateRequired = runtimeRequired,
         )
         cleanupStaged(record)
     }
@@ -870,7 +896,7 @@ internal class AppUpdateInstaller(
         runCatching {
             val packageInstaller = context.packageManager.packageInstaller
             packageInstaller.mySessions
-                .filter { it.appPackageName == context.packageName }
+                .filter { it.appPackageName == context.packageName || it.appLabel?.toString() == INSTALL_LABEL }
                 .forEach { packageInstaller.abandonSession(it.sessionId) }
         }
     }
@@ -887,6 +913,7 @@ internal class AppUpdateInstaller(
     companion object {
         /** Distinct from the bundled-runtime installer's private extra. */
         const val EXTRA_SESSION_ID = "floeAppUpdateSessionID"
+        private const val INSTALL_LABEL = "Floe update"
     }
 }
 

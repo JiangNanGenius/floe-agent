@@ -32,6 +32,7 @@ import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloePageSheet
 import com.floe.android.design.FloeSheetPlacement
 import com.floe.android.design.FloeText
+import com.floe.android.host.linux.LocalRuntimeSettingsCard
 
 /**
  * The single window for every self-update state: new version, download
@@ -441,12 +442,20 @@ private fun InstallContent(controller: AppUpdateController, ui: AppUpdateUiState
                 style = Floe.typography.bodyEmphasized,
                 color = Floe.colors.label,
             )
+            if (install.runtimeUpdateRequired) {
+                FloeText(stringResource(R.string.app_update_runtime_required), color = Floe.colors.secondaryLabel)
+                LocalRuntimeSettingsCard()
+            }
             FloeCapsuleAction(
                 label = stringResource(R.string.done),
                 onClick = { controller.clearInstallSucceeded() },
             )
         }
         is AppInstallState.Failed -> {
+            if (install.detail == "runtime-installed-mismatch") {
+                FloeText(stringResource(R.string.app_update_runtime_required), color = Floe.colors.secondaryLabel)
+                LocalRuntimeSettingsCard()
+            }
             FloeText(
                 AppUpdateCopy.installFailure(install.kind),
                 style = Floe.typography.body,

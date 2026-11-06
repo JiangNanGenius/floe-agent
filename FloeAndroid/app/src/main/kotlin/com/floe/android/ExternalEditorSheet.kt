@@ -51,6 +51,13 @@ internal fun ExternalEditorSheet(host: RuntimeHost, taskID: String, workspaceID:
             FloeCapsuleButton(stringResource(if (state.preparing) R.string.external_edit_preparing else R.string.external_edit_open),
                 enabled = activity != null && path.isNotBlank() && !state.preparing,
                 onClick = { activity?.let { service.openAndroid(it, owner, path.trim()) } })
+            FloeCapsuleButton(stringResource(R.string.external_edit_choose_app),
+                enabled = activity != null && path.isNotBlank() && !state.preparing,
+                onClick = { activity?.let {
+                    val existing = rows.firstOrNull { row -> row.logicalPath == path.trim() && row.linuxWorkingPath == null &&
+                        row.phase in setOf(ExternalEditPhase.EDITING, ExternalEditPhase.SAVED, ExternalEditPhase.PAUSED) }
+                    service.openAndroid(it, owner, path.trim(), existing?.id, forceChooser = true)
+                } })
             FloeCapsuleButton(stringResource(R.string.external_edit_linux),
                 enabled = path.isNotBlank() && !state.preparing,
                 onClick = { onOpenLinux(path.trim()) })

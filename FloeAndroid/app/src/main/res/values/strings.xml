@@ -599,6 +599,8 @@
     <string name="linux_desktop_windows">Desktop</string>
     <string name="linux_desktop_install_base">Install missing graphical components</string>
     <string name="linux_desktop_setup_required">Set up or update the local environment before starting this session.</string>
+    <string name="app_update_runtime_required">The app is updated. Update the local environment to use the terminal and Linux apps.</string>
+    <string name="external_edit_choose_app">Choose another app</string>
     <string name="linux_desktop_start">Start session</string>
     <string name="linux_desktop_switch_notice">Starting here stops the current graphical session. Save your work first.</string>
     <string name="linux_desktop_software">Choose an application</string>
