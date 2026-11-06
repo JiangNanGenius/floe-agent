@@ -188,7 +188,7 @@ def main():
             report["apiFailure"] = error.summary
             private_path = os.environ.get("FLOE_SIGNING_PRIVATE_DIAGNOSTIC_PATH")
             if private_path:
-                with Path(private_path).open("x", opener=lambda path, flags: os.open(path, flags, 0o600)) as stream:
+                with open(private_path, "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as stream:
                     json.dump(error.private_payload, stream)
         raise SystemExit("Production push profile preparation failed; see the redacted signing report.") from None
     finally:

@@ -6,14 +6,39 @@ import plistlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sign_app_store_extensions import (APP_ID, EXTENSIONS, TEAM, inventory,
     production_host_entitlements, validated_entitlements)
 from ensure_apns_profile import exact_bundle_id, SigningAPIError
+import ensure_apns_profile
 
 
 class ExtensionSigningTests(unittest.TestCase):
+    def test_private_api_failure_is_saved_without_entering_public_report(self):
+        import json
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "FloeApp/Entitlements").mkdir(parents=True)
+            (root / "FloeApp/Entitlements/Floe.entitlements").write_bytes(
+                plistlib.dumps({"aps-environment": "production"}))
+            app = root / "Floe.app"; app.mkdir()
+            (app / "Info.plist").write_bytes(plistlib.dumps({"FloeAPNsEnvironment": "production"}))
+            report, private = root / "report.json", root / "private.json"
+            payload = {"errors": [{"code": "ENTITY_ERROR", "detail": "PRIVATE_ONLY"}]}
+            error = SigningAPIError("POST", "/v1/bundleIdCapabilities", 400, payload)
+            args = ["ensure_apns_profile.py", "--profile", str(root / "host.mobileprovision"),
+                    "--app", str(app), "--source-root", str(root), "--report", str(report)]
+            with mock.patch.object(sys, "argv", args), mock.patch.object(ensure_apns_profile, "decode_profile", return_value={"Entitlements": {}}), \
+                 mock.patch.object(ensure_apns_profile, "AppleAPI"), mock.patch.object(ensure_apns_profile, "ensure_profile", side_effect=error), \
+                 mock.patch.dict("os.environ", {"FLOE_SIGNING_PRIVATE_DIAGNOSTIC_PATH": str(private)}):
+                with self.assertRaises(SystemExit): ensure_apns_profile.main()
+            self.assertEqual(json.loads(private.read_text()), payload)
+            self.assertEqual(private.stat().st_mode & 0o777, 0o600)
+            self.assertNotIn("PRIVATE_ONLY", report.read_text())
+            self.assertEqual(json.loads(report.read_text())["apiFailure"]["status"], 400)
+
     def test_signing_api_failure_summary_omits_account_ids_and_raw_details(self):
         error = SigningAPIError("POST", "/v1/bundleIds/private-resource/bundleIdCapabilities?limit=200", 400,
             {"errors": [{"code": "PARAMETER_ERROR.INVALID", "detail": "PRIVATE_DETAIL_VALUE",
