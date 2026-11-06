@@ -103,7 +103,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                 val password = ByteArray(8) { "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[random.nextInt(32)].code.toByte() }
                 try {
                     stage = "vnc_credential"
-                    credential = vncClient.credentialSave("floe.local-desktop.$nonce", false, password, owner)
+                    credential = vncClient.credentialSave("floe.vnc.local-desktop.$nonce", false, password, owner)
                     val read = CompletableDeferred<Unit>()
                     val ready = CompletableDeferred<Unit>()
                     val received = StringBuilder()
