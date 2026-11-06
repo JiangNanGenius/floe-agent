@@ -22,7 +22,7 @@ struct CADOfflineRenderEntry: ViewModifier {
     }
 }
 
-enum CADOfflineRenderText {
+nonisolated enum CADOfflineRenderText {
     static func t(_ zh: String, _ en: String) -> String { FloeL10n.isChinese ? zh : en }
 }
 
@@ -33,7 +33,7 @@ struct CADOfflineRenderView: View {
     let root: URL?
     let workspaceID: UUID?
     let conversationID: UUID?
-    @EnvironmentObject private var environment: AppEnvironment
+    private var center: CADOfflineRenderCenter { .shared }
     @Environment(\.dismiss) private var dismiss
     @State private var settings = CADOfflineRenderSettings()
     @State private var operation: CADOfflineRenderOperation?
@@ -43,17 +43,14 @@ struct CADOfflineRenderView: View {
     @State private var image: UIImage?
     @State private var imageURL: URL?
     private func t(_ zh: String, _ en: String) -> String { CADOfflineRenderText.t(zh, en) }
-    private var canStart: Bool { root != nil && workspaceID != nil && conversationID != nil && !starting && operation?.isRunning != true }
+    private var canStart: Bool { !starting && operation?.isRunning != true }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    Text(t("使用路径追踪计算反射、间接光与阴影。首次使用会在当前任务的执行环境中下载并编译渲染器。", "Path tracing computes reflections, indirect light and shadows. The first run downloads and builds the renderer in this task’s execution environment."))
+                    Text(t("在本机计算反射、间接光与阴影。请保持 Floe 在前台；关闭此窗口后渲染会继续。", "Compute reflections, indirect light and shadows on this device. Keep Floe in the foreground; rendering continues when you close this window."))
                         .font(.callout).foregroundStyle(.secondary)
-                    if root == nil || workspaceID == nil || conversationID == nil {
-                        Text(t("请从任务工作区打开此模型，并为任务选择可用的执行环境。", "Open this model from a task workspace and select an available execution environment."))
-                    }
                 }
                 Section(t("图像", "Image")) {
                     Picker(t("质量", "Quality"), selection: $settings.quality) {
@@ -81,11 +78,14 @@ struct CADOfflineRenderView: View {
                             }
                         }.accessibilityIdentifier("cad.offlineRender.progress")
                     } else {
-                        Button(t("准备并渲染", "Prepare and render"), systemImage: "sparkles") { start() }
+                        Button(t("本机渲染", "Render on device"), systemImage: "sparkles") { start() }
                             .disabled(!canStart).accessibilityIdentifier("cad.offlineRender.start")
                     }
                     if let operation {
                         LabeledContent(t("状态", "Status"), value: stateTitle(operation.state))
+                        if operation.isRunning, let samples = operation.completedSamples {
+                            LabeledContent(t("采样", "Samples"), value: "\(samples) / \(operation.settings.quality.samples)")
+                        }
                         if operation.state == .ready {
                             LabeledContent(t("图像尺寸", "Image size"), value: "\(operation.settings.width) × \(operation.settings.height)")
                             Text(t("图像来自启动渲染时的模型快照。", "The image uses the model snapshot taken when this render started."))
@@ -113,8 +113,9 @@ struct CADOfflineRenderView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button(t("完成", "Done")) { dismiss() } } }
             .task(id: operation?.id) {
-                if operation == nil, let root, let conversationID {
-                    operation = environment.offlineRenderCenter.latest(documentURL: document.url, conversationID: conversationID, workspaceRoot: root)
+                if operation == nil {
+                    operation = center.latest(documentURL: document.url, conversationID: conversationID, workspaceRoot: root)
+                    if let operation { settings = operation.settings }
                 }
                 while !Task.isCancelled, let current = operation {
                     await refresh()
@@ -136,12 +137,12 @@ struct CADOfflineRenderView: View {
         }
     }
     private func start() {
-        guard let root, let workspaceID, let conversationID, canStart else { return }
+        guard canStart else { return }
         starting = true; message = nil; image = nil; imageURL = nil
         Task {
             defer { starting = false }
             do {
-                operation = try await environment.offlineRenderCenter.startFromUI(document: document, settings: settings,
+                operation = try await center.startFromUI(document: document, settings: settings,
                     workspaceRoot: root, workspaceID: workspaceID, conversationID: conversationID)
             } catch { message = error.localizedDescription }
         }
@@ -150,17 +151,17 @@ struct CADOfflineRenderView: View {
         cancelling = true
         Task {
             defer { cancelling = false }
-            do { operation = try await environment.offlineRenderCenter.cancel(id) }
+            do { operation = try await center.cancel(id) }
             catch { message = error.localizedDescription }
         }
     }
     private func refresh() async {
         guard let current = operation else { return }
         do {
-            let updated = try await environment.offlineRenderCenter.refresh(current.id)
+            let updated = try await center.refresh(current.id)
             guard operation?.id == current.id else { return }
             operation = updated; message = updated.error
-            if updated.state == .ready, imageURL == nil, let url = try environment.offlineRenderCenter.imageURL(updated) {
+            if updated.state == .ready, imageURL == nil, let url = try center.imageURL(updated) {
                 imageURL = url; image = UIImage(contentsOfFile: url.path)
             }
         } catch is CancellationError { }

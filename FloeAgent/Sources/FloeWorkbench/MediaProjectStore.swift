@@ -169,6 +169,19 @@ public actor MediaProjectStore {
         fork.parentProjectID = parent.id
         fork.undoHistory = []
         fork.redoHistory = []
+        if var prepared = fork.prepared {
+            // A fork is a new document identity. Reuse the immutable asset
+            // references and typed content, but bind the prepared document to
+            // the fork identity/revision and start with an empty journal; the
+            // parent's edit groups must not be undoable against the child.
+            prepared.id = fork.id
+            prepared.name = fork.name
+            prepared.kind = fork.kind
+            prepared.revision = fork.revision
+            prepared.updatedAt = fork.updatedAt
+            fork.prepared = prepared
+            fork.preparedJournal = MediaPreparedJournal()
+        }
         try await save(fork, expectedRevision: nil)
         return fork
     }
@@ -179,7 +192,31 @@ public actor MediaProjectStore {
         let onDisk = FileManager.default.fileExists(atPath: url.path)
             ? try readProject(from: url)
             : nil
+        if project.prepared != nil {
+            // A prepared write must remain coherent with the v1 envelope and
+            // carry a valid journal. Fail closed before touching the file.
+            try MediaPreparedIntegrity.validateEnvelope(project)
+        }
         if let onDisk {
+            if onDisk.prepared != nil {
+                try MediaPreparedIntegrity.validateEnvelope(onDisk)
+            }
+            // Never let an older build/schema replace a newer document.
+            guard project.schemaVersion >= onDisk.schemaVersion else {
+                throw FloeError.validationFailed(
+                    "Project schema conflict: refusing to replace schema v\(onDisk.schemaVersion) with v\(project.schemaVersion)")
+            }
+            // A v2 document can never be silently dropped or replaced by a
+            // v1-only projection (old autosave, copied snapshot, downgrade).
+            if onDisk.prepared != nil && project.prepared == nil {
+                throw FloeError.validationFailed(
+                    "Prepared project conflict: refusing to drop prepared v2 content")
+            }
+            if project.prepared != nil
+                && !MediaPreparedIntegrity.v1ProjectionEqual(project, onDisk) {
+                throw FloeError.validationFailed(
+                    "Prepared project conflict: v1 content changed without a prepared-document transaction")
+            }
             // No-regression defense shared by every write path, including a
             // UI autosave that carries no transaction base of its own: an
             // older snapshot must never overwrite a newer document, and an

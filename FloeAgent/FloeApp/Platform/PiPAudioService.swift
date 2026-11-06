@@ -801,6 +801,10 @@ final class PiPAudioService: ObservableObject {
         session.canReleaseSession = check
     }
 
+    /// A native editor released its shared audio claim. Retry the existing
+    /// idle-only teardown instead of retaining a deferred session forever.
+    func otherAudioOwnerDidRelease() { releaseSessionIfIdle() }
+
     /// Stop everything this service produced (used by teardown wiring).
     /// Does not fight other owners: the session controller still refuses to
     /// deactivate a session another feature has retaken.

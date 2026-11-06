@@ -1,5 +1,7 @@
 # CAD 离线渲染与动画预研发 · 2026-11-06
 
+本页保留移植前 pbrt／Linux 适配的历史组件证据。用户随后要求专业计算与离线渲染迁到设备本地；当前主路径已换为随 App 打包的 WebGL2 路径追踪器，见[本机移植记录](../cad-ondevice-professional-20261106/README.md)。本页图像与测试不构成新后端的运行验收。
+
 本记录保留开发工作区的组件证据；后续 App 编译、定向测试与 Simulator 页面结果汇总在[本轮集成记录](../../CAD_MESH_BUILDING_PREDEVELOPMENT_20261106.zh-CN.md)。两者均不替代 Linux guest 实际任务或物理设备验收。
 
 ## 实现

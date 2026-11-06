@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Protocol/storage boundary tests only. Synthetic IFC headers do not stand in
-// for IfcOpenShell geometry, actual Linux jobs, or full-App UI acceptance.
+// for IFC geometry, on-device WebKit execution, or full-App UI acceptance.
 #if canImport(UIKit) && DEBUG
 import Foundation
 import UIKit
@@ -96,6 +96,22 @@ final class CADNativeStudyReceiptTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: source, withDestinationURL: outside)
         XCTAssertThrowsError(try CADBuildingProfessionalCenter.verifyAndArchive(operation, archive: archive))
         XCTAssertFalse(FileManager.default.fileExists(atPath: archive.appendingPathComponent("model.ifc").path))
+    }
+    func testDeviceBuildingReceiptRequiresFrozenInputWithoutTaskBinding() throws {
+        let (historical, archive, oldResult) = try buildingFixture()
+        let source = root.appendingPathComponent("BuildingStudies/source")
+        var operation = historical
+        operation.workspaceRoot = nil; operation.conversationID = nil; operation.environmentID = nil; operation.runID = nil
+        operation.executionBackend = "device"
+        operation.inputHashes = ["input.json": operation.sourceSHA256]
+        var result = oldResult; result["schemaVersion"] = 2; result["backendVersions"] = ["web-ifc":"0.0.75"]
+        for name in ["input.json", "model.ifc"] {
+            try FileManager.default.copyItem(at: source.appendingPathComponent(name), to: archive.appendingPathComponent(name))
+        }
+        try writeJSON(result, to: archive.appendingPathComponent("result.json"))
+        XCTAssertEqual(try CADBuildingProfessionalCenter.verifyAndArchive(operation, archive: archive).schemaVersion, 2)
+        try Data("changed local input".utf8).write(to: archive.appendingPathComponent("input.json"))
+        XCTAssertThrowsError(try CADBuildingProfessionalCenter.verifyAndArchive(operation, archive: archive))
     }
 }
 #endif

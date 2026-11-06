@@ -120,8 +120,8 @@
     },
     "NSMicrophoneUsageDescription" : {
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Floe uses the microphone only while you dictate a message." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Floe 仅在你进行语音输入时使用麦克风。" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Floe uses the microphone when you dictate, record music, or record a meeting." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Floe 在你进行语音输入、音乐录音或会议录音时使用麦克风。" } }
       }
     },
     "NSSpeechRecognitionUsageDescription" : {

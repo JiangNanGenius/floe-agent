@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "web-ifc": {
+    "version": "0.0.75",
+    "license": "MPL-2.0",
+    "source": "https://github.com/ThatOpen/engine_web-ifc",
+    "revision": "ac5de14d320dde70515ce1619e48cfb6a5eaf51b",
+    "npm": "https://registry.npmjs.org/web-ifc/-/web-ifc-0.0.75.tgz",
+    "integrity": "sha512-d+xKbBkNgySlbZJF0zLG1zW6KOqT76/Ser7G2FrbO5w+y00WJy3yEPPoHbINF2WqMrhoGxSxw5d64jt4Om9WrQ==",
+    "sourceArchive": "https://github.com/ThatOpen/engine_web-ifc/archive/ac5de14d320dde70515ce1619e48cfb6a5eaf51b.tar.gz",
+    "modifications": "Unmodified npm browser IIFE and single-thread WebAssembly. The fixed Floe adapter is separate MPL-2.0 source in building.js."
+  },
+  "PyNiteFEA": {
+    "version": "3.2.1",
+    "license": "MIT",
+    "source": "https://github.com/JWock82/Pynite",
+    "usage": "The constant-UDL single-beam deflection polynomial is ported to CADBuildingLocalAnalysis.swift; no Python runtime is bundled.",
+    "sourceFile": "Pynite/BeamSegZ.py",
+    "sourceSHA256": "2fe3bcada99f520dd4c2a88a4b83b5feb49fadd1f798d170eb4897206860a90d",
+    "licenseSHA256": "6be544baf65f5ad39fda556ebae05331bfcf7ba2996cf228bdae5a1ecb9576e7"
+  }
+}

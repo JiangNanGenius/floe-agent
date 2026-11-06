@@ -120,11 +120,7 @@ public extension FloeCADDocument {
             "revision":revision,"changeCount":change,"modelSHA256":modelSHA256,
             "model":modelJSON,"geometry":geometry,"structural":settingsJSON],options:.sortedKeys)
         guard input.count <= 64 * 1024 * 1024 else { throw CADBuildingError.invalid(FloeCADStrings.text("cad.building.error.theBuildingStudyIsTooLarge","The building study is too large.")) }
-        guard let runnerURL=Bundle.module.url(forResource:"runner",withExtension:"py",subdirectory:"Support") else {
-            throw CADBuildingError.invalid(FloeCADStrings.text("cad.building.error.buildingStudyResourcesAreUnavailable","Building study resources are unavailable."))
-        }
-        let runner=try Data(contentsOf:runnerURL)
         return CADBuildingProfessionalPackage(action:action,revision:revision,changeCount:change,
-            sourceSHA256:CADSketchTransferEnvelope.digest(input),files:["input.json":input,"runner.py":runner])
+            sourceSHA256:CADSketchTransferEnvelope.digest(input),files:["input.json":input])
     }
 }

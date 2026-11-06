@@ -29,6 +29,58 @@ func L(_ zh: String, _ en: String) -> String { Locale.preferredLanguages.first?.
     public init(directory: URL, service: ManufacturingService = .init()) {
         self.directory = directory; self.service = service
         study = .shaft(); study.name = L("阶梯轴","Stepped shaft")
+        do {
+            let draft = directory.appendingPathComponent("draft.json")
+            let hasDraft = FileManager.default.fileExists(atPath: draft.path)
+            if hasDraft {
+                let data = try Data(contentsOf: draft)
+                guard data.count <= 32_000_000 else { throw ManufacturingError.invalid("draft file budget") }
+                let restored = try JSONDecoder().decode(ManufacturingStudy.self, from: data)
+                try restored.validate(requireOperations: false)
+                study = restored
+            }
+            let archive = directory.appendingPathComponent("latest.floemanufacturing")
+            if FileManager.default.fileExists(atPath: archive.path) {
+                let (saved, result) = try ManufacturingArchive.open(archive)
+                if !hasDraft { study = saved }
+                if try study.fingerprint() == saved.fingerprint() {
+                    artifact = result; state = .completed; progress = 1
+                }
+            }
+        } catch {
+            diagnostic = error.localizedDescription
+            notice = L("部分保存资料未能载入，请查看详情","Some saved data could not be loaded; see details")
+        }
+    }
+    public func saveDraft() throws {
+        try study.validate(requireOperations: false)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try study.encoded().write(to: directory.appendingPathComponent("draft.json"), options: .atomic)
+    }
+    public func replaceStudy(_ proposed: ManufacturingStudy, expectedFingerprint: String) throws {
+        guard !isBusy else { throw ManufacturingError.invalid("calculation is running") }
+        guard try study.fingerprint() == expectedFingerprint else { throw ManufacturingError.stale }
+        try proposed.validate(requireOperations: false)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try proposed.encoded().write(to: directory.appendingPathComponent("draft.json"), options: .atomic)
+        invalidate(); study = proposed
+    }
+    public func calculateAndWait() async throws -> ManufacturingArtifact {
+        guard !isBusy else { throw ManufacturingError.invalid("calculation is running") }
+        try saveDraft()
+        calculate()
+        await withTaskCancellationHandler { await calculation?.value } onCancel: {
+            Task { @MainActor in self.cancel() }
+        }
+        try Task.checkCancellation()
+        guard state == .completed, let artifact else {
+            throw ManufacturingError.invalid(diagnostic.isEmpty ? status : diagnostic)
+        }
+        // A completed calculation is delivered only after its native archive
+        // has been committed and read back, rather than a success string.
+        try ManufacturingArchive.save(study: study, artifact: artifact, to: archiveURL)
+        _ = try ManufacturingArchive.open(archiveURL)
+        return artifact
     }
     public var isBusy: Bool { state == .running || state == .cancelling }
     public var archiveURL: URL { directory.appendingPathComponent("latest.floemanufacturing") }
@@ -75,6 +127,7 @@ func L(_ zh: String, _ en: String) -> String { Locale.preferredLanguages.first?.
                 guard let self, self.generation == token, !Task.isCancelled,
                       result.inputSHA256 == (try self.study.fingerprint()) else { return }
                 self.artifact = result; self.progress = 1; self.state = .completed; self.calculation = nil
+                self.save()
             } catch {
                 guard let self, self.generation == token else { return }
                 if Task.isCancelled || (error as? ManufacturingError).map({ if case .cancelled = $0 { true } else { false } }) == true {

@@ -909,6 +909,12 @@ STATIC_COMPONENTS = (
         None,
     ),
     # Engineering viewers explicitly listed in the bundled notices.
+    ("web-ifc (on-device IFC)", "0.0.75", "MPL-2.0", "https://github.com/ThatOpen/engine_web-ifc/tree/ac5de14d320dde70515ce1619e48cfb6a5eaf51b", "engineering", None),
+    ("PyNiteFEA (single-beam source port)", "3.2.1", "MIT", "https://github.com/JWock82/Pynite", "engineering", None),
+    ("three-gpu-pathtracer (on-device)", "0.0.24", "MIT", "https://github.com/gkjohnson/three-gpu-pathtracer/tree/3c6cda19d1788d7d93705eee704328e66823c845", "engineering", None),
+    ("three (on-device path tracer)", "0.181.1", "MIT", "https://github.com/mrdoob/three.js/tree/a95185f43d42fab9678585725d99a08de4937c6f", "engineering", None),
+    ("three-mesh-bvh (on-device path tracer)", "0.9.5", "MIT", "https://github.com/gkjohnson/three-mesh-bvh/tree/2c9a9216ba92293ca2fd4bf83443c9a0cbce1331", "engineering", None),
+    ("fflate (on-device EXR decoder)", "0.8.2", "MIT", "https://github.com/101arrowz/fflate", "engineering", None),
     (
         "@simonwep/pickr",
         "1.9.0",
@@ -981,6 +987,10 @@ STATIC_COMPONENTS = (
 
 # (id, repositoryPath, bundlePath, titleKey, title, titleArgument, license, kind, required, section)
 DOCUMENTS = (
+    ("building-web-ifc", "FloeApp/Resources/BuildingNative/LICENSE.md", "BuildingNative/LICENSE.md", "settings.licenses.document.building_ifc.title", "On-device IFC — Mozilla Public License 2.0", None, "MPL-2.0", "full_text", True, "engineering"),
+    ("building-web-ifc-source", "FloeApp/Resources/BuildingNative/SOURCE-OFFER.txt", "BuildingNative/SOURCE-OFFER.txt", "settings.licenses.document.building_ifc_source.title", "On-device IFC source", None, "MPL-2.0", "notices", True, "engineering"),
+    ("building-pynite", "FloeApp/Resources/BuildingNative/Pynite-LICENSE.txt", "BuildingNative/Pynite-LICENSE.txt", "settings.licenses.document.building_pynite.title", "Single-beam calculation — PyNite", None, "MIT", "full_text", True, "engineering"),
+    ("cad-native-render", "FloeApp/Resources/CADNativeRender/LICENSES.txt", "CADNativeRender/LICENSES.txt", "settings.licenses.document.cad_native_render.title", "On-device path tracer notices", None, "MIT", "notices", True, "engineering"),
     (
         "manifold", "FloeApp/Resources/Licenses/Manifold-NOTICES.txt",
         "Licenses/Manifold-NOTICES.txt", "settings.licenses.document.manifold.title",
@@ -2203,6 +2213,12 @@ STATIC_EVIDENCE = {
     "zod (JavaScriptCore package)": "upstream repository LICENSE (MIT); bundled build carries no banner",
     "pdf-lib (JavaScriptCore package)": "bundled UMD banner (MIT; TypeScript helper notices Apache-2.0)",
     "@simonwep/pickr": "FloeApp/Resources/EngineeringViewers/THIRD_PARTY_NOTICES.txt",
+    "web-ifc (on-device IFC)": "FloeApp/Resources/BuildingNative/DEPENDENCIES.json; unmodified browser IIFE/WASM manifest; LICENSE.md and SOURCE-OFFER.txt",
+    "PyNiteFEA (single-beam source port)": "FloeApp/Resources/BuildingNative/Pynite-LICENSE.txt; ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalAnalysis.swift",
+    "three-gpu-pathtracer (on-device)": "FloeApp/Resources/CADNativeRender/DEPENDENCIES.json and LICENSES.txt",
+    "three (on-device path tracer)": "FloeApp/Resources/CADNativeRender/DEPENDENCIES.json and LICENSES.txt",
+    "three-mesh-bvh (on-device path tracer)": "FloeApp/Resources/CADNativeRender/DEPENDENCIES.json and LICENSES.txt",
+    "fflate (on-device EXR decoder)": "FloeApp/Resources/CADNativeRender/DEPENDENCIES.json and LICENSES.txt",
     "dxf-viewer": "FloeApp/Resources/EngineeringViewers/THIRD_PARTY_NOTICES.txt",
     "gerber-to-svg": "FloeApp/Resources/EngineeringViewers/gerber-to-svg.min.js.LICENSE.txt",
     OCCT_NATIVE_NAME: (

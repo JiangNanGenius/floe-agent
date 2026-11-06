@@ -70,6 +70,8 @@ final class DurationAdvisoryRelay: @unchecked Sendable {
 /// tests and previews can substitute in-memory doubles.
 @MainActor
 final class AppEnvironment: ObservableObject {
+    lazy var studioCoordinator = StudioCoordinator(environment: self)
+    @Published var studioOpenRequest: StudioOpenRequest?
 
     #if DEBUG
     // Hosted qualification joins the actual launch instance instead of
@@ -716,9 +718,10 @@ final class AppEnvironment: ObservableObject {
                 service?.handlePiPWindowDismissed()
             }
             video.externalAudioSessionOwner = { [weak service] in
-                service?.holdsSharedAudioSession ?? false
+                (service?.holdsSharedAudioSession ?? false) || NativeCreativeAudioSession.isActive
             }
             video.onAudioSessionReleaseDeferred = { [weak service] in
+                if NativeCreativeAudioSession.isActive, service?.holdsSharedAudioSession != true { return }
                 service?.adoptDeferredSessionLease()
             }
             // Synchronous dictation gates for BOTH session owners: the real
@@ -727,14 +730,14 @@ final class AppEnvironment: ObservableObject {
             // recording must not block playback forever).
             video.externalRecordingActive = { [weak self] in
                 guard let self else { return false }
-                return self.voiceInput.state.hasSession || self.voiceInput.state == .requestingPermission || self.continuousVoicePresentation.isPresented
+                return self.voiceInput.state.hasSession || self.voiceInput.state == .requestingPermission || self.continuousVoicePresentation.isPresented || NativeCreativeAudioSession.isRecording
             }
             service.isRecordingActiveNow = { [weak self] in
                 guard let self else { return false }
-                return self.voiceInput.state.hasSession || self.voiceInput.state == .requestingPermission || self.continuousVoicePresentation.isPresented
+                return self.voiceInput.state.hasSession || self.voiceInput.state == .requestingPermission || self.continuousVoicePresentation.isPresented || NativeCreativeAudioSession.isRecording
             }
             service.setSessionReleaseCheck { [weak video] in
-                video?.audioSessionMayBeReleased ?? true
+                (video?.audioSessionMayBeReleased ?? true) && !NativeCreativeAudioSession.isActive && FloeAudioSessionOwnership.holderCount == 0
             }
             let answerSpeech = speechService
             if answerSpeech.onSpeakingChanged == nil {
@@ -1669,6 +1672,7 @@ final class AppEnvironment: ObservableObject {
         // Native canvas inspection and mutation tools. Canvas runs are scoped
         // back to their durable hidden assistant conversation at execution.
         registerCanvasAgentTools(environment: self)
+        registerStudioAgentTools(environment: self)
         // Design workflow tools (brief/spec/revisions/anchored feedback/
         // candidate/adopt/reject/restore) on the shared design project model.
         // Capability flags reflect this build's actually connected operations.

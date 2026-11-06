@@ -22,6 +22,26 @@ fn incidence(faces: &[[u32;3]]) -> HashMap<Edge, (u32, i32)> {
     counts
 }
 
+/// Intersect the nodal occupancy field with the original cylinder BEFORE
+/// extraction. Radial projection of cap triangles can fold their interiors
+/// into the cylinder and turn a closed two-face edge into a four-face edge.
+/// The norm is convex: interpolated nodal distance bounds the true distance
+/// from above, so a zero crossing of max(occupancy, distance) stays in-domain.
+/// Near-zero domain nodes are biased to air to preserve the pinned extractor's
+/// strict nonzero contract without ever expanding the physical envelope.
+pub fn intersect_cylinder_domain(stock: &Stock, dims: [usize;3], low: [f64;3], values: &mut [f64]) {
+    let radius=match stock.shape { StockShape::Cylinder { radius } => radius, StockShape::Box => return };
+    for y in 0..dims[1] { for x in 0..dims[0] {
+        let px=low[0]+x as f64*stock.h;let py=low[1]+y as f64*stock.h;
+        let mut distance=(px.hypot(py)-radius)/stock.h;
+        if distance.abs()<=1e-6 { distance=1e-4; }
+        for z in 0..dims[2] {
+            let value=&mut values[(z*dims[1]+y)*dims[0]+x];
+            *value=value.max(distance);
+        }
+    } }
+}
+
 /// A pristine rectangular blank is known geometry, not an isosurface estimate.
 pub fn blank_box(stock: &Stock, max_triangles: u64) -> Result<Option<Mesh>, String> {
     if stock.shape != StockShape::Box || stock.occupied_count() != stock.cell_count() { return Ok(None); }
@@ -146,4 +166,26 @@ pub fn constrain(stock: &Stock, input: Mesh, max_triangles: u64) -> Result<Mesh,
     for (i,p) in points.into_iter().enumerate() { if used[i] { mapping[i]=compact.len() as u32;compact.push(p); } }
     for t in &mut faces { for id in t { *id=mapping[*id as usize]; } }
     Ok((compact,faces))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cylindrical_nodal_intersection_is_conservative_and_keeps_strict_domain() {
+        let stock=Stock::cylinder(2.0,0.0,2.0,1.0,1<<20).unwrap();
+        let dims=[7,7,5];let low=[-3.0,-3.0,-1.0];
+        let mut values=vec![-1.0;dims[0]*dims[1]*dims[2]];
+        intersect_cylinder_domain(&stock,dims,low,&mut values);
+        for z in 0..dims[2] { for y in 0..dims[1] { for x in 0..dims[0] {
+            let p=[low[0]+x as f64,low[1]+y as f64];
+            let distance=p[0].hypot(p[1])-2.0;
+            let value=values[(z*dims[1]+y)*dims[0]+x];
+            assert!(value.is_finite() && value.abs()>1e-6);
+            assert!(value>=distance,"interpolation cannot expand the physical cylinder");
+        } } }
+        assert_eq!(values[(dims[1]+3)*dims[0]+3],-1.0,"interior occupancy field is retained");
+        assert!(values[(dims[1]+3)*dims[0]+5]>0.0,"exact domain ties are biased to air");
+    }
 }

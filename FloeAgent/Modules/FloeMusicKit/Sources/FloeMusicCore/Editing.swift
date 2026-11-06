@@ -3,7 +3,7 @@ import Foundation
 /// One atomic document mutation. Every case carries fully formed, validated
 /// values; `MusicProjectStore` re-validates the whole resulting document, so
 /// an invalid op anywhere in a batch leaves the store untouched.
-public enum MusicEditOp: Sendable, Hashable {
+public enum MusicEditOp: Sendable, Hashable, Codable {
     case insertAsset(MusicAsset)
     case insertTrack(MusicTrack)
     case removeTrack(MusicTrackID)

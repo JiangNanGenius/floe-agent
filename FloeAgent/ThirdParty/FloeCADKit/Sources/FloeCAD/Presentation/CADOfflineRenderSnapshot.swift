@@ -28,7 +28,7 @@ public extension FloeCADDocument {
         }
         let exchange = try CADOfflineRenderSnapshot.make(scene: scene, camera: camera)
         let worker = Task.detached(priority: .userInitiated) {
-            try CADPBRTSceneExporter.export(exchange, settings: settings, revision: revision,
+            try CADNativeSceneExporter.export(exchange, settings: settings, revision: revision,
                 changeCount: count, sourceSHA256: sha)
         }
         let result = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
@@ -108,9 +108,10 @@ enum CADOfflineRenderSnapshot {
             }
         }
         let environment = scene.environment
+        exchange.backgroundColor = xyz(environment.backgroundColor)
         if let map = environment.environmentMap {
             let bytes = try map.checkedBytes()
-            // pbrt's image loader accepts Radiance HDR, PNG and JPEG. Original
+            // The bundled image loaders accept Radiance HDR, EXR, PNG and JPEG. Original
             // bytes stay intact and are identified by digest, never a path from a document.
             let isHDR = bytes.starts(with: Data("#?".utf8))
             let isPNG = bytes.starts(with: [137, 80, 78, 71])
@@ -120,7 +121,7 @@ enum CADOfflineRenderSnapshot {
             let name = "assets/environment.\(isHDR ? "hdr" : (isEXR ? "exr" : (isPNG ? "png" : "jpg")))"
             exchange.assets[name] = bytes; exchange.environmentImage = name
             exchange.environmentRotation = map.rotationDegrees; exchange.environmentIntensity = map.intensity
-            if !map.showsBackground { exchange.warnings.append("The environment image remains visible in the offline background.") }
+            exchange.environmentShowsBackground = map.showsBackground
         }
         if let authored = environment.sceneLights {
             for light in authored where light.enabled {

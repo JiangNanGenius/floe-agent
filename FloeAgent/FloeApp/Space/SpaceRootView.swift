@@ -62,6 +62,14 @@ struct SpaceRootView: View {
         .onReceive(environment.documentIntakeCenter.$noteOpenRequest) { request in
             if request?.sceneID == sceneID { section = .notes }
         }
+        .onReceive(environment.$studioOpenRequest) { request in
+            guard let request, request.sceneID == sceneID else { return }
+            environment.studioOpenRequest = nil
+            opening = request.record
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .floeStudioDocumentDidChange)) { _ in
+            Task { await refresh() }
+        }
         .fullScreenCover(item: $opening, onDismiss: { Task { await refresh() } }) { record in
             PersonalContentEditor(record: record)
         }
@@ -105,6 +113,23 @@ struct SpaceRootView: View {
         }
     }
 
+    private enum RecentEntry: Identifiable {
+        case work(PersonalContentRecord), note(NoteDocument)
+        var id: String {
+            switch self { case .work(let record): "work/\(record.id)"; case .note(let note): "note/\(note.id)" }
+        }
+        var date: Date {
+            switch self { case .work(let record): max(record.lastOpenedAt ?? record.createdAt, record.modifiedAt); case .note(let note): note.updatedAt }
+        }
+    }
+    private var recentEntries: [RecentEntry] {
+        let works = matchingRecords.map(RecentEntry.work)
+        let noteEntries = notes.filter { query.isEmpty || $0.title.localizedStandardContains(query) }.map(RecentEntry.note)
+        return Array((works + noteEntries).sorted {
+            $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date
+        }.prefix(28))
+    }
+
     private var libraryList: some View {
         List {
             if busy { ProgressView(IDELanguageRunText.t("正在保存", "Saving")) }
@@ -130,8 +155,9 @@ struct SpaceRootView: View {
                     }
                 }
                 Section(IDELanguageRunText.t("最近使用", "Recent")) {
-                    ForEach(Array(matchingRecords.prefix(20))) { workRow($0) }
-                    ForEach(Array(notes.filter { query.isEmpty || $0.title.localizedStandardContains(query) }.prefix(8))) { noteRow($0) }
+                    ForEach(recentEntries) { entry in
+                        switch entry { case .work(let work): workRow(work); case .note(let note): noteRow(note) }
+                    }
                     if matchingRecords.isEmpty && notes.isEmpty {
                         ContentUnavailableView(IDELanguageRunText.t("从一份作品开始", "Start with a work"),
                             systemImage: "square.and.pencil",

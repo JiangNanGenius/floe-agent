@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "backend": "web-ifc",
+  "version": "0.0.75",
+  "files": {
+    "index.html": "96e8eb4ac16f49c4718e0057bc10abd462e7c9554d4fee762c5f295a8e0ba729",
+    "building.js": "a171d2ca79e528f65d3fd950741e94a56cba8fb6168fbd8511546cdab6a85156",
+    "web-ifc-api-iife.js": "092d040a15b927f6ad086d0eb314f2722da319d7fbd30d2bd6af373fda4cbe8a",
+    "web-ifc.wasm": "e648082850c8dcfdf1a00502946567e48bbcf9bdd5f63b1c0191577cea526bdb"
+  }
+}

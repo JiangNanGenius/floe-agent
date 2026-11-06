@@ -85103,6 +85103,74 @@
         }
       }
     },
+    "settings.licenses.document.building_ifc.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On-device IFC — Mozilla Public License 2.0"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机 IFC — Mozilla 公共许可证 2.0"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.building_ifc_source.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On-device IFC source"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机 IFC 源码"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.building_pynite.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Single-beam calculation — PyNite"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "单梁计算 — PyNite"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.cad_native_render.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On-device path tracer notices"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机光线追踪器声明"
+          }
+        }
+      }
+    },
     "settings.licenses.document.cad.title": {
       "extractionState": "manual",
       "localizations": {

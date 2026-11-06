@@ -13,6 +13,7 @@ struct FloeAppEntryRouteTests {
         #expect(try FloeAppEntryRoute.parse(FloeAppEntryRoute.shareInbox(id).url) == .shareInbox(id))
         #expect(FloeAppEntryRoute.task(id).url.absoluteString == "floe://task/\(id.uuidString.lowercased())")
         #expect(try FloeAppEntryRoute.parse(FloeAppEntryRoute.note(id).url) == .note(id))
+        #expect(try FloeAppEntryRoute.parse(FloeAppEntryRoute.work(id).url) == .work(id))
     }
 
     @Test(arguments: [
@@ -21,7 +22,8 @@ struct FloeAppEntryRouteTests {
         "floe://share?envelope=2a9bb479-f614-473c-b8e4-008e2dfe8222&envelope=2a9bb479-f614-473c-b8e4-008e2dfe8222",
         "floe://user:password@new", "floe://new:123", "floe://new#run",
         "https://example.invalid/floe/new", "javascript:runTask()",
-        "floe://note/2a9bb479-f614-473c-b8e4-008e2dfe8222?edit=true"
+        "floe://note/2a9bb479-f614-473c-b8e4-008e2dfe8222?edit=true",
+        "floe://work/2a9bb479-f614-473c-b8e4-008e2dfe8222?run=true"
     ])
     func untrustedLinksCannotBecomeExecutionOrAmbiguousIntake(_ input: String) throws {
         #expect(throws: FloeAppEntryRouteError.self) {

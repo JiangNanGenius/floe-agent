@@ -19,8 +19,16 @@ public enum MediaTransactions {
 
     /// Applies a command sequence as ONE undoable transaction. On failure
     /// nothing is committed (no partial edits, no revision advance).
+    ///
+    /// A project that owns a prepared v2 document refuses v1 commands: those
+    /// commands only know the v1 projection, so accepting them would silently
+    /// diverge from (and eventually lose) prepared content. The prepared
+    /// engine is the only v2 writer.
     public static func apply(_ commands: [MediaEditCommand], to project: inout MediaProject,
                              undoDepth: Int = defaultUndoDepth) throws {
+        guard project.prepared == nil || commands.isEmpty else {
+            throw MediaPreparedCoreError.v1MutationRequiresPreparedEngine
+        }
         var draft = project
         for command in commands {
             try MediaEditCommandApplier.apply(command, to: &draft)
@@ -38,16 +46,23 @@ public enum MediaTransactions {
 
     @discardableResult
     public static func undo(_ project: inout MediaProject, undoDepth: Int = defaultUndoDepth) -> Bool {
-        navigate(&project, stack: \.undoHistory, push: \.redoHistory, undoDepth: undoDepth)
+        guard project.prepared == nil else { return false }
+        return navigate(&project, stack: \.undoHistory, push: \.redoHistory, undoDepth: undoDepth)
     }
 
     @discardableResult
     public static func redo(_ project: inout MediaProject, undoDepth: Int = defaultUndoDepth) -> Bool {
-        navigate(&project, stack: \.redoHistory, push: \.undoHistory, undoDepth: undoDepth)
+        guard project.prepared == nil else { return false }
+        return navigate(&project, stack: \.redoHistory, push: \.undoHistory, undoDepth: undoDepth)
     }
 
-    public static func canUndo(_ project: MediaProject) -> Bool { !project.undoHistory.isEmpty }
-    public static func canRedo(_ project: MediaProject) -> Bool { !project.redoHistory.isEmpty }
+    public static func canUndo(_ project: MediaProject) -> Bool {
+        project.prepared == nil && !project.undoHistory.isEmpty
+    }
+
+    public static func canRedo(_ project: MediaProject) -> Bool {
+        project.prepared == nil && !project.redoHistory.isEmpty
+    }
 
     private static func navigate(
         _ project: inout MediaProject,

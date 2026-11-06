@@ -243,6 +243,13 @@ public final class CanvasEditorStore: ObservableObject {
         }
     }
 
+    /// Host-side commits refresh the visible original without replacing the
+    /// editor, its selection, viewport or recoverable local drafts.
+    public func refreshFromHost() async {
+        guard activeMutationCount == 0 else { return }
+        await reloadAfterMutation()
+    }
+
     private func applySnapshot(_ next: CanvasSnapshot) {
         snapshot = next
         revision = next.revision

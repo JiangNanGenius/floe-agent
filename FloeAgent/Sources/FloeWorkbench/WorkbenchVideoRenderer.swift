@@ -162,6 +162,9 @@ public actor WorkbenchVideoRenderer {
                        to relativeOutput: String, cancellation: CancellationToken? = nil,
                        mediaRoot: URL? = nil,
                        progress: @Sendable @escaping (Double) -> Void = { _ in }) async throws -> WorkbenchVideoExportReceipt {
+        guard project.prepared == nil else {
+            throw MediaPreparedCoreError.v1MutationRequiresPreparedEngine
+        }
         // Freeze the media root BEFORE the first await: the shared renderer's
         // rootProvider is dynamic and a project switch during export must not
         // resolve later clips or music against a different project's root.
@@ -556,6 +559,9 @@ public actor WorkbenchVideoRenderer {
 
     public func thumbnails(project: MediaProject, perClip: Int = 2,
                            maximumDimension: Int = 240) async throws -> [WorkbenchThumbnail] {
+        guard project.prepared == nil else {
+            throw MediaPreparedCoreError.v1MutationRequiresPreparedEngine
+        }
         guard project.kind == .video, let timeline = project.videoTimeline else {
             throw FloeError.validationFailed("project has no video timeline")
         }
@@ -609,6 +615,9 @@ public actor WorkbenchVideoRenderer {
     /// playback renderer to drift out of sync.
     public func renderPreview(project: MediaProject,
                               cancellation: CancellationToken? = nil) async throws -> WorkbenchPreviewReceipt {
+        guard project.prepared == nil else {
+            throw MediaPreparedCoreError.v1MutationRequiresPreparedEngine
+        }
         guard project.kind == .video, let timeline = project.videoTimeline else {
             throw FloeError.validationFailed("project has no video timeline")
         }

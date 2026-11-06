@@ -85,7 +85,11 @@ actor PersonalContentLibrary {
     func folderURL(_ components: [String]) throws -> URL {
         try ensureRoot()
         var url = root
-        for component in components { url.appendPathComponent(try validComponent(component), isDirectory: true) }
+        for component in components {
+            let name = try validComponent(component)
+            guard !(name as NSString).pathExtension.lowercased().elementsEqual("floeproject") else { throw PersonalContentError.invalidName }
+            url.appendPathComponent(name, isDirectory: true)
+        }
         return try confined(url)
     }
 
@@ -108,13 +112,18 @@ actor PersonalContentLibrary {
 
     /// New editor state is committed before its library record is published.
     /// Incomplete generated state stays in Recovery instead of being discarded.
-    func create(kind: PersonalContentKind, title: String, in folders: [String] = [],
+    func create(kind: PersonalContentKind, title: String, in folders: [String] = [], id: UUID = UUID(),
                 prepare: @Sendable (URL, UUID) async throws -> Void) async throws -> PersonalContentRecord {
         try ensureRoot()
         let title = try validComponent(title)
         let directory = try folderURL(folders)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let id = UUID()
+        if let existing = try records().first(where: { $0.id == id }) {
+            guard existing.kind == kind, !existing.needsRecovery else {
+                throw PersonalContentError.changedDocument
+            }
+            return existing
+        }
         var target = directory.appendingPathComponent(title + ".floeproject", isDirectory: true)
         if fileManager.fileExists(atPath: target.path) {
             target = directory.appendingPathComponent(title + " " + id.uuidString.prefix(8) + ".floeproject", isDirectory: true)
@@ -187,6 +196,13 @@ actor PersonalContentLibrary {
         let value = try resolve(id)
         var record = value.record
         record.lastOpenedAt = Date()
+        try encoder.encode(record).write(to: value.url.appendingPathComponent(manifestName), options: .atomic)
+    }
+    func markChanged(_ id: UUID, title: String? = nil) throws {
+        let value = try resolve(id)
+        var record = value.record
+        if let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { record.title = title }
+        record.modifiedAt = Date()
         try encoder.encode(record).write(to: value.url.appendingPathComponent(manifestName), options: .atomic)
     }
 

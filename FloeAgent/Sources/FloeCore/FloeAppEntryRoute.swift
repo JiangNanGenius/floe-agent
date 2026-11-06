@@ -6,6 +6,7 @@ public enum FloeAppEntryRoute: Equatable, Sendable {
     case newTask
     case task(UUID)
     case note(UUID)
+    case work(UUID)
     case shareInbox(UUID?)
     case externalFile(URL)
 
@@ -42,14 +43,18 @@ public enum FloeAppEntryRoute: Equatable, Sendable {
             }
             guard query.isEmpty else { throw FloeAppEntryRouteError.unexpectedParameters }
             return .newTask
-        case "task", "note":
+        case "task", "note", "work":
             guard query.isEmpty else { throw FloeAppEntryRouteError.unexpectedParameters }
             let segments = parts.path.split(separator: "/", omittingEmptySubsequences: false)
             guard segments.count == 2, segments[0].isEmpty else {
                 throw FloeAppEntryRouteError.invalidTarget
             }
             let id = try parseID(String(segments[1]))
-            return parts.host?.lowercased() == "note" ? .note(id) : .task(id)
+            switch parts.host?.lowercased() {
+            case "note": return .note(id)
+            case "work": return .work(id)
+            default: return .task(id)
+            }
         case "share":
             guard parts.path.isEmpty || parts.path == "/" else {
                 throw FloeAppEntryRouteError.malformedURL
@@ -75,6 +80,8 @@ public enum FloeAppEntryRoute: Equatable, Sendable {
             URL(string: "floe://task/" + id.uuidString.lowercased())!
         case .note(let id):
             URL(string: "floe://note/" + id.uuidString.lowercased())!
+        case .work(let id):
+            URL(string: "floe://work/" + id.uuidString.lowercased())!
         case .shareInbox(let id):
             URL(string: "floe://share" + (id.map { "?envelope=" + $0.uuidString.lowercased() } ?? ""))!
         case .externalFile(let url):

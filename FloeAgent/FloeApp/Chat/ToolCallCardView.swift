@@ -51,6 +51,9 @@ struct ToolCallCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
+            if name.hasPrefix("studio."), ["ok", "success", "succeeded"].contains(status), let resultSummary {
+                StudioToolResultView(toolName: name, summary: resultSummary)
+            }
             if !imageArtifacts.isEmpty {
                 ArtifactImageGallery(artifacts: imageArtifacts)
             }
@@ -89,7 +92,7 @@ struct ToolCallCardView: View {
                     .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                    Text(StudioToolResultView.title(for: name)).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
                         .lineLimit(2).multilineTextAlignment(.leading)
                     HStack(spacing: 8) {
                         Text(statusTitle).foregroundStyle(statusColor)

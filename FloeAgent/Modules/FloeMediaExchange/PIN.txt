@@ -1,0 +1,33 @@
+MediaExchange qualification pins (2026-11-02)
+
+ag-psd
+  npm package: ag-psd@34.1.0
+  git commit: a74425db6584cc07b1cc135e370916cb4eccfb32
+  npm integrity: sha512-OamTuun+q681j5NvK8LxMX8oRHS//Ah9+3Xmt0uGXVMdzMz2JpLqBvtXXQdGpucdLE3fs8EzwsPyB/vc1aVSvw==
+  tarball SHA-256: 33d08299ff2ca3a8eb294feae6b7847e4dc4b1733122b01aca6947d73a2cc3b9
+  license: MIT
+  runtime resources:
+    075122c0bec86bb5d059b763f41008ed3202237b4f08dd83d04e1089c4fcefa6  Sources/MediaExchangeCore/Resources/ag-psd-bundle.js
+    1565ed897b40a05eed431c801c47184f173d9a2a60eb486dc2da0e610bafcc78  Sources/MediaExchangeCore/Resources/adapter.js
+
+ZIPFoundation
+  version: 0.9.20
+  revision: 22787ffb59de99e5dc1fbfe80b19c97a904ad48d
+  license: MIT
+  reuse: exact pin already present in FloeAgent/Package.resolved; root manifest untouched
+
+OpenFCPXMLKit
+  commit: 7f55583a3a5b4fecf336ca2ae4b77fb11f8db46d (3.3.15)
+  license: MIT
+  use: independent macOS qualification test target only; full transitive graph in Package.resolved
+  native proof: generic arm64-apple-ios26.0 probe importing FinalCutPro.FCPXML built successfully with Xcode 27.1 (compile only; no device/simulator run)
+
+Clipper2
+  commit: b496b454df168a2280354857c1cd90bd6fa7b4dd
+  version: 2.0.1 (upstream clipper.version.h)
+  license: BSL-1.0
+  exact vendored file hashes and copy list: FloeAgent/ThirdParty/Clipper2/PIN.txt
+  not linked into the App or FloeAgent/Package.swift
+
+Copied qualification source hashes are recorded in the private handoff evidence and
+preserved as MPL-2.0 files with their SPDX headers.

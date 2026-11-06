@@ -20,10 +20,12 @@ public struct DiagramEditorView: View {
     @State private var presentedSheetID: String?
     @State private var showOverview = false
     private let onClose: (() -> Void)?
+    private let onAssistant: (() -> Void)?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    public init(model: DiagramEditorModel, onClose: (() -> Void)? = nil) {
+    public init(model: DiagramEditorModel, onClose: (() -> Void)? = nil, onAssistant: (() -> Void)? = nil) {
         self.model = model
         self.onClose = onClose
+        self.onAssistant = onAssistant
     }
     public var body: some View {
         GeometryReader { geometry in
@@ -98,6 +100,12 @@ public struct DiagramEditorView: View {
         })
     }
     @ToolbarContentBuilder private func editorToolbar(narrow: Bool) -> some ToolbarContent {
+        if let onAssistant {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(DL("作品助手", "Work assistant"), systemImage: "sparkles", action: onAssistant)
+                    .accessibilityIdentifier("space.editor.assistant")
+            }
+        }
         if let onClose {
             ToolbarItem(placement: .cancellationAction) {
                 Button(DL("完成", "Done"), action: onClose)

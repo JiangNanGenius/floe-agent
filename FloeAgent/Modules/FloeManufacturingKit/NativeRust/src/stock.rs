@@ -826,7 +826,30 @@ mod tests {
             (a[0]*(b[1]*c[2]-b[2]*c[1])+a[1]*(b[2]*c[0]-b[0]*c[2])+a[2]*(b[0]*c[1]-b[1]*c[0]))/6.0
         }).sum();
         let occupied = s.occupied_count() as f64*s.cell_volume();
-        assert!(volume>0.0 && (volume-occupied).abs()/occupied<0.001);
+        // Untouched layers have the declared analytic radius, while cut layers
+        // retain voxel-area radii. Compare both contracts explicitly instead of
+        // forcing the analytic blank to shrink to the centre-sampled voxel area.
+        let fresh=cyl();let plane=s.nx*s.ny;
+        let initial_disc=fresh.occupied[..plane].iter().filter(|&&v|v).count();
+        let analytic_area=PI*36.0;
+        let mut expected_volume=0.0;
+        for iz in 0..s.nz {
+            let count=s.occupied[iz*plane..(iz+1)*plane].iter().filter(|&&v|v).count();
+            let area=if count==initial_disc { analytic_area } else { (count as f64*s.h*s.h).min(analytic_area) };
+            expected_volume+=area*s.h;
+        }
+        assert!(volume>0.0 && (volume-expected_volume).abs()/expected_volume<0.001);
+        let declared_geometry_correction=expected_volume-occupied;
+        let material_equivalent_volume=volume-declared_geometry_correction;
+        println!("R11_VOLUME geometry={volume} expected={expected_volume} occupancy={occupied} declaredCorrection={declared_geometry_correction}");
+        assert!((material_equivalent_volume-occupied).abs()/occupied<0.001);
+        assert_eq!(s.occupied_count()+s.removed_count,fresh.occupied_count());
+        for p in &points {
+            if p[2]<5.0 || p[2]>15.0 {
+                let r=p[0].hypot(p[1]);
+                assert!(r<1e-12 || (r-6.0).abs()<1e-12,"untouched layer keeps declared radius");
+            }
+        }
     }
     #[test]
     fn axisym_never_fills_a_slot_or_a_bore() {

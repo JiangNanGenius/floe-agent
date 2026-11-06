@@ -669,7 +669,13 @@ public struct VideoExportOptions: Sendable, Codable, Hashable {
 // MARK: - Project document
 
 public struct MediaProject: Sendable, Codable {
-    public static let currentSchemaVersion = 1
+    /// Highest document schema version this build understands. New projects
+    /// still default to `defaultSchemaVersion` (v1) so current UI behavior is
+    /// stable; v2 content is written only by an explicit
+    /// `MediaPreparedUpgrade.upgrade` call.
+    public static let currentSchemaVersion = 2
+    /// Schema written by `MediaProject.init` unless the caller opts in.
+    public static let defaultSchemaVersion = 1
 
     public var schemaVersion: Int
     public var id: UUID
@@ -711,8 +717,14 @@ public struct MediaProject: Sendable, Codable {
     /// copied bound node). Asset bytes are reused by reference; only editable
     /// state is independent.
     public var parentProjectID: UUID?
+    /// Opt-in prepared v2 document. nil for every ordinary v1 project and for
+    /// every project created by the current UI until an explicit upgrade.
+    public var prepared: MediaPreparedDocument?
+    /// Durable edit-group journal persisted atomically in the same document
+    /// as `prepared`; absent for v1 projects.
+    public var preparedJournal: MediaPreparedJournal?
 
-    public init(schemaVersion: Int = MediaProject.currentSchemaVersion, id: UUID = UUID(),
+    public init(schemaVersion: Int = MediaProject.defaultSchemaVersion, id: UUID = UUID(),
                 kind: MediaProjectKind, name: String, createdAt: Date = Date(),
                 updatedAt: Date = Date(), revision: Int64 = 0, canvas: MediaCanvas? = nil,
                 assets: [MediaAssetReference] = [], sourceAssetID: UUID? = nil,
@@ -724,7 +736,9 @@ public struct MediaProject: Sendable, Codable {
                 unknownOperations: [UnknownOperation] = [],
                 recoveryWarnings: [String] = [],
                 undoHistory: [MediaProjectMemento] = [], redoHistory: [MediaProjectMemento] = [],
-                parentProjectID: UUID? = nil, imageSelection: ImageSelection? = nil) {
+                parentProjectID: UUID? = nil, imageSelection: ImageSelection? = nil,
+                prepared: MediaPreparedDocument? = nil,
+                preparedJournal: MediaPreparedJournal? = nil) {
         self.schemaVersion = schemaVersion
         self.id = id
         self.kind = kind
@@ -750,6 +764,8 @@ public struct MediaProject: Sendable, Codable {
         self.redoHistory = redoHistory
         self.parentProjectID = parentProjectID
         self.imageSelection = imageSelection
+        self.prepared = prepared
+        self.preparedJournal = preparedJournal
     }
 
     public func asset(_ id: UUID) -> MediaAssetReference? {
@@ -780,6 +796,7 @@ extension MediaProject {
         case lastImageExport, lastVideoExport, unknownOperations, recoveryWarnings
         case ownerKind, ownerID, environmentID, taskWorkspacePath
         case undoHistory, redoHistory, parentProjectID, imageSelection
+        case prepared, preparedJournal
     }
 
     public init(from decoder: Decoder) throws {
@@ -809,6 +826,8 @@ extension MediaProject {
         redoHistory = try container.decodeIfPresent([MediaProjectMemento].self, forKey: .redoHistory) ?? []
         parentProjectID = try container.decodeIfPresent(UUID.self, forKey: .parentProjectID)
         imageSelection = try container.decodeIfPresent(ImageSelection.self, forKey: .imageSelection)
+        prepared = try container.decodeIfPresent(MediaPreparedDocument.self, forKey: .prepared)
+        preparedJournal = try container.decodeIfPresent(MediaPreparedJournal.self, forKey: .preparedJournal)
     }
 }
 

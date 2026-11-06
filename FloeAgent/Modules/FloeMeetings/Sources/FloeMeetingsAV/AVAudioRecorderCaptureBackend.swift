@@ -75,6 +75,9 @@ public actor AVAudioRecorderCaptureBackend: MeetingCaptureBackend {
         sink = nil
     }
 
+    /// The recorder's media clock, used for explicit user bookmarks.
+    public func currentTime() -> Double? { recorder?.currentTime }
+
     /// Deterministic per-session file layout, verified without hardware.
     public static func makeFileURL(configuration: CaptureConfiguration, session: CaptureSessionID) throws -> URL {
         let prefix = configuration.filePrefix

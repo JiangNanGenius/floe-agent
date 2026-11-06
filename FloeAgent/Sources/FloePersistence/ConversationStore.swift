@@ -66,6 +66,9 @@ public struct ConversationRecord: Sendable, Hashable, Identifiable {
 
 public extension ConversationRecord {
     var isPinned: Bool { pinnedAt != nil }
+    var isVisibleInOrdinaryList: Bool {
+        purpose == .ordinary && visibility == .normal && archivedAt == nil
+    }
 }
 
 /// Canonical conversation-list ordering for every surface that projects the

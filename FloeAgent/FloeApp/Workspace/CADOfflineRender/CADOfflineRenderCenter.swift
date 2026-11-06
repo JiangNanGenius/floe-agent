@@ -3,21 +3,17 @@ import Foundation
 import ImageIO
 import FloeCAD
 import FloeCore
-import FloeEnvironments
-import FloeExecution
-import FloeModels
-import FloePersistence
 import FloeTools
 import FloeWorkbench
 
-struct CADOfflineRenderOperation: Codable, Identifiable, Sendable {
-    enum State: String, Codable, Sendable { case preparing, rendering, ready, cancelling, cancelled, failed, interrupted }
+nonisolated struct CADOfflineRenderOperation: Codable, Identifiable, Sendable {
+    nonisolated enum State: String, Codable, Sendable { case preparing, rendering, ready, cancelling, cancelled, failed, interrupted }
     var id: UUID
     var documentURL: URL
-    var workspaceRoot: URL
-    var conversationID: UUID
-    var environmentID: String
-    var runID: UUID
+    var workspaceRoot: URL?
+    var conversationID: UUID?
+    var environmentID: String?
+    var runID: UUID?
     var jobID: UUID?
     var relativeDirectory: String
     var payload: Data
@@ -31,13 +27,18 @@ struct CADOfflineRenderOperation: Codable, Identifiable, Sendable {
     var error: String?
     var imageSHA256: String?
     var createdAt: Date
+    var backendID: String?
+    var completedSamples: Int?
     var isRunning: Bool { [.preparing, .rendering, .cancelling].contains(state) }
 }
 
 @MainActor
 final class CADOfflineRenderCenter {
     weak var environment: AppEnvironment?
-    init(environment: AppEnvironment) { self.environment = environment }
+    static let shared = CADOfflineRenderCenter()
+    private var workers: [UUID: Task<Void, Never>] = [:]
+    private var hosts: [UUID: CADNativeRenderHost] = [:]
+    init(environment: AppEnvironment? = nil) { self.environment = environment }
     private func storeRoot() throws -> URL {
         let root = try FloeArtifactStore.root().appendingPathComponent("JobDownloads/CADOfflineRender", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -55,13 +56,14 @@ final class CADOfflineRenderCenter {
         try JSONDecoder().decode(CADOfflineRenderOperation.self,
             from: Data(contentsOf: operationDirectory(id).appendingPathComponent("operation.json")))
     }
-    func latest(documentURL: URL, conversationID: UUID, workspaceRoot: URL) -> CADOfflineRenderOperation? {
+    func latest(documentURL: URL, conversationID: UUID? = nil, workspaceRoot: URL? = nil) -> CADOfflineRenderOperation? {
         guard let root = try? storeRoot(), let urls = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return nil }
         return urls.compactMap { url -> CADOfflineRenderOperation? in
             guard let id = UUID(uuidString: url.lastPathComponent) else { return nil }
             return try? operation(id)
         }.filter { $0.documentURL == documentURL.standardizedFileURL.resolvingSymlinksInPath()
-            && $0.conversationID == conversationID && $0.workspaceRoot == workspaceRoot.standardizedFileURL.resolvingSymlinksInPath() }
+            && (conversationID == nil || $0.conversationID == conversationID)
+            && (workspaceRoot == nil || $0.workspaceRoot == workspaceRoot?.standardizedFileURL.resolvingSymlinksInPath()) }
             .max { $0.createdAt < $1.createdAt }
     }
     func imageURL(_ operation: CADOfflineRenderOperation) throws -> URL? {
@@ -73,115 +75,113 @@ final class CADOfflineRenderCenter {
         return url
     }
 
-    /// Explicit native UI action. Source snapshot and result receipt are
-    /// immutable; the existing jobs service owns execution after this returns.
+    /// App-owned on-device render. Workspace/task arguments remain optional
+    /// context for existing callers; they never select an execution machine.
     func startFromUI(document: FloeCADDocument, settings: CADOfflineRenderSettings,
-                     workspaceRoot: URL, workspaceID: UUID, conversationID: UUID) async throws -> CADOfflineRenderOperation {
-        guard let environment, let jobs = environment.backgroundJobService else { throw FloeError.validationFailed("Background jobs are unavailable.") }
-        let owners = try await SQLiteWorkspaceStore(database: environment.database).conversations(workspaceID: workspaceID)
-        guard owners.contains(conversationID),
-              let binding = try await TaskExecutionBindingStore(database: environment.database).binding(conversationID: conversationID),
-              let record = await environment.environmentRegistry.record(id: binding.target.environmentID), record.state == .active,
-              record.effectiveExecutionBackend != .native else {
-            throw FloeError.validationFailed("Select an available execution environment for this task before rendering.")
+                     workspaceRoot: URL? = nil, workspaceID: UUID? = nil,
+                     conversationID: UUID? = nil) async throws -> CADOfflineRenderOperation {
+        if let prior = latest(documentURL: document.url), prior.isRunning {
+            let current = try await refresh(prior.id); if current.isRunning { return current }
         }
-        let root = workspaceRoot.standardizedFileURL.resolvingSymlinksInPath()
-        if let existing = latest(documentURL: document.url, conversationID: conversationID, workspaceRoot: root), existing.isRunning {
-            let current = try await refresh(existing.id)
-            guard !current.isRunning else { return current }
-        }
+        guard workers.isEmpty else { throw CADNativeRenderError.busy }
         let package = try await document.prepareOfflineRender(settings: settings)
         try Task.checkCancellation()
-        let id = UUID(), runID = UUID(), relative = "Renders/\(id.uuidString)"
-        let directory = root.appendingPathComponent(relative, isDirectory: true)
-        guard !FileManager.default.fileExists(atPath: directory.path), directory.standardizedFileURL == directory.resolvingSymlinksInPath().standardizedFileURL else { throw FloeError.unauthorized }
+        guard workers.isEmpty else { throw CADNativeRenderError.busy }
+        guard Set(package.files.keys) == ["scene.json"], let input = package.files["scene.json"] else { throw CADNativeRenderError.invalidResult }
+        let id = UUID(), archive = try operationDirectory(id), directory = archive.appendingPathComponent("input", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var files = package.files
-        files["install.sh"] = Data(CADOfflineRenderCommands.install.utf8)
-        files["render.sh"] = Data(CADOfflineRenderCommands.render.utf8)
-        for (name, bytes) in files {
-            let target = directory.appendingPathComponent(name)
-            guard target.standardizedFileURL.path.hasPrefix(directory.path + "/"),
-                  target.standardizedFileURL == target.resolvingSymlinksInPath().standardizedFileURL else { throw FloeError.unauthorized }
-            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try bytes.write(to: target, options: .atomic)
-        }
-        let payload = try CADOfflineRenderCommands.payload(script: "set -eu\nsh install.sh\nsh render.sh\n", directory: relative)
-        var operation = CADOfflineRenderOperation(id: id, documentURL: document.url.standardizedFileURL.resolvingSymlinksInPath(),
-            workspaceRoot: root, conversationID: conversationID, environmentID: binding.target.environmentID,
-            runID: runID, relativeDirectory: relative, payload: payload, settings: settings,
+        try input.write(to: directory.appendingPathComponent("scene.json"), options: .atomic)
+        let operation = CADOfflineRenderOperation(id: id,
+            documentURL: document.url.standardizedFileURL.resolvingSymlinksInPath(), workspaceRoot: workspaceRoot?.standardizedFileURL.resolvingSymlinksInPath(),
+            conversationID: conversationID, relativeDirectory: "input", payload: Data(), settings: settings,
             revision: package.revision, changeCount: package.changeCount, sourceSHA256: package.sourceSHA256,
-            inputHashes: files.mapValues(FloeDigest.sha256Hex), warnings: package.warnings, state: .preparing, createdAt: Date())
+            inputHashes: ["scene.json": FloeDigest.sha256Hex(input)], warnings: package.warnings,
+            state: .rendering, createdAt: Date(), backendID: CADNativeSceneExporter.backendID)
         try save(operation)
-        try await environment.runStore.saveRun(RunRecord(id: runID, conversationID: conversationID,
-            state: "completed", goal: "Offline CAD render", startedAt: Date(), endedAt: Date(), executionBinding: binding))
-        do {
-            let job = try await jobs.submit(runID: runID, toolCallID: nil, targetTool: "exec.shell", payloadJSON: payload,
-                scope: .local, workspaceRootURL: root, allowedWorkspacePaths: [], environmentID: binding.target.environmentID,
-                allowedToolNames: ["exec.shell"], submissionSource: .nativeService)
-            operation.jobID = job.id; operation.state = .rendering; try save(operation)
-        } catch {
-            operation.state = .failed; operation.error = error.localizedDescription; try save(operation); throw error
+        workers[id] = Task { [self] in
+            let host = CADNativeRenderHost(input: input, settings: settings) { [weak self] samples in
+                guard let self, var current = try? self.operation(id), current.state == .rendering else { return }
+                current.completedSamples = samples; try? self.save(current)
+            }
+            hosts[id] = host
+            defer { host.release(); hosts[id] = nil; workers[id] = nil }
+            do {
+                let output = try await host.render()
+                try Task.checkCancellation()
+                guard var current = try? self.operation(id), current.state == .rendering else { return }
+                try output.png.write(to: directory.appendingPathComponent("render.png"), options: .atomic)
+                let receipt = try CADOfflineRenderCommands.receipt(sceneSHA256: FloeDigest.sha256Hex(input),
+                    imageSHA256: FloeDigest.sha256Hex(output.png), samples: output.samples)
+                try receipt.write(to: directory.appendingPathComponent("result.json"), options: .atomic)
+                let frozen = current
+                let verifier = Task.detached(priority: .userInitiated) { try Self.verifyAndArchive(frozen, archive: archive) }
+                let hash = try await withTaskCancellationHandler { try await verifier.value } onCancel: { verifier.cancel() }
+                try Task.checkCancellation()
+                current = try self.operation(id)
+                guard current.state == .rendering else { return }
+                current.imageSHA256 = hash; current.completedSamples = output.samples; current.state = .ready
+                try self.save(current)
+            } catch {
+                guard var current = try? self.operation(id) else { return }
+                if current.state == .cancelled || current.state == .cancelling || error is CancellationError {
+                    current.state = .cancelled
+                } else {
+                    if let local = error as? CADNativeRenderError, case .interrupted = local { current.state = .interrupted }
+                    else { current.state = .failed }
+                    current.error = error.localizedDescription
+                }
+                try? self.save(current)
+            }
         }
         return operation
     }
 
-    /// Cold reopen observes the original durable job. It never replays it.
+    /// Reopening never restarts a renderer or resumes an old external job.
     func refresh(_ id: UUID) async throws -> CADOfflineRenderOperation {
-        var operation = try operation(id)
-        guard operation.isRunning else { return operation }
-        guard let jobs = environment?.backgroundJobService, let jobID = operation.jobID else {
-            operation.state = .interrupted; operation.error = "Preparation was interrupted. Start a new render."; try save(operation); return operation
+        var current = try operation(id)
+        if current.isRunning && workers[id] == nil {
+            current.state = .interrupted
+            current.error = CADNativeRenderError.interrupted.localizedDescription
+            try save(current)
         }
-        let job = try await jobs.ownedJob(id: jobID, runID: operation.runID)
-        operation = try self.operation(id)
-        guard job.conversationID == operation.conversationID, job.environmentID == operation.environmentID,
-              job.targetTool == "exec.shell", job.payloadJSON == operation.payload,
-              job.workspaceRootPath.map({ URL(fileURLWithPath: $0).standardizedFileURL.resolvingSymlinksInPath() }) == operation.workspaceRoot else { throw FloeError.unauthorized }
-        guard job.state.isTerminal else { return operation }
-        if operation.state == .cancelling || job.state == .cancelled {
-            operation.state = .cancelled
-        } else if job.state == .interrupted {
-            operation.state = .interrupted; operation.error = job.lastError
-        } else if job.state == .failed {
-            operation.state = .failed; operation.error = job.lastError ?? "Rendering failed. Inspect the task's saved job output."
-        } else if job.state == .completed {
-            do {
-                let frozen = operation, archive = try operationDirectory(id)
-                let worker = Task.detached(priority: .userInitiated) { try Self.verifyAndArchive(frozen, archive: archive) }
-                let hash = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
-                operation = try self.operation(id)
-                guard operation.state != .cancelling, operation.state != .cancelled else { return operation }
-                operation.imageSHA256 = hash; operation.state = .ready
-            } catch is CancellationError { throw CancellationError() }
-            catch { operation.state = .failed; operation.error = error.localizedDescription }
-        }
-        try save(operation); return operation
+        return current
     }
     func cancel(_ id: UUID) async throws -> CADOfflineRenderOperation {
-        var operation = try operation(id)
-        guard operation.isRunning else { return operation }
-        operation.state = .cancelling; try save(operation)
-        if let jobs = environment?.backgroundJobService, let jobID = operation.jobID {
-            _ = try await jobs.cancel(id: jobID)
-            return try await refresh(id)
-        }
-        operation.state = .cancelled; try save(operation); return operation
+        var current = try operation(id); guard current.isRunning else { return current }
+        current.state = .cancelling; try save(current)
+        workers[id]?.cancel(); hosts[id]?.cancel()
+        current = try operation(id); current.state = .cancelled; try save(current)
+        return current
     }
     nonisolated static func verifyAndArchive(_ operation: CADOfflineRenderOperation, archive: URL) throws -> String {
-        let directory = operation.workspaceRoot.appendingPathComponent(operation.relativeDirectory, isDirectory: true)
+        let isNative = operation.backendID == CADNativeSceneExporter.backendID
+        let directory: URL
+        if isNative { directory = archive.appendingPathComponent("input", isDirectory: true) }
+        else if let root = operation.workspaceRoot { directory = root.appendingPathComponent(operation.relativeDirectory, isDirectory: true) }
+        else { throw CADNativeRenderError.invalidResult }
         for (name, hash) in operation.inputHashes {
             try Task.checkCancellation()
             guard FloeDigest.sha256Hex(try checkedFile(directory.appendingPathComponent(name), root: directory,
-                limit: CADPBRTSceneExporter.maximumPackageBytes)) == hash else { throw FloeError.validationFailed("The prepared render inputs have changed.") }
+                limit: isNative ? CADNativeSceneExporter.maximumPackageBytes : CADPBRTSceneExporter.maximumPackageBytes)) == hash else { throw FloeError.validationFailed("The prepared render inputs have changed.") }
         }
         let manifestBytes = try checkedFile(directory.appendingPathComponent("result.json"), root: directory, limit: 4096)
-        guard let manifest = try JSONSerialization.jsonObject(with: manifestBytes) as? [String: String],
-              manifest["backend"] == "pbrt-v4", manifest["revision"] == CADOfflineRenderCommands.revision,
-              manifest["sceneSHA256"] == operation.inputHashes["scene.pbrt"] else { throw FloeError.validationFailed("The renderer returned an invalid scene receipt.") }
+        guard let object = try JSONSerialization.jsonObject(with: manifestBytes) as? [String: Any],
+              let manifestImageSHA = object["imageSHA256"] as? String else { throw CADNativeRenderError.invalidResult }
+        if isNative {
+            guard object["backend"] as? String == CADNativeSceneExporter.backendID,
+                  object["revision"] as? String == CADNativeSceneExporter.backendRevision,
+                  object["sceneSHA256"] as? String == operation.inputHashes["scene.json"],
+                  let count = object["samples"] as? Int, count >= operation.settings.quality.samples else { throw CADNativeRenderError.invalidResult }
+        } else {
+            // Read-only compatibility for already saved PBRT receipts. This
+            // never launches, installs, polls or cancels an external process.
+            guard object["backend"] as? String == "pbrt-v4",
+                  object["revision"] as? String == CADOfflineRenderCommands.revision,
+                  object["sceneSHA256"] as? String == operation.inputHashes["scene.pbrt"] else { throw CADNativeRenderError.invalidResult }
+        }
         let png = try checkedFile(directory.appendingPathComponent("render.png"), root: directory, limit: 64 * 1024 * 1024)
         let hash = FloeDigest.sha256Hex(png)
-        guard manifest["imageSHA256"] == hash, png.starts(with: [137, 80, 78, 71, 13, 10, 26, 10]),
+        guard manifestImageSHA == hash, png.starts(with: [137, 80, 78, 71, 13, 10, 26, 10]),
               let source = CGImageSourceCreateWithData(png as CFData, nil), CGImageSourceGetCount(source) == 1,
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary) as? [CFString: Any],
               (properties[kCGImagePropertyPixelWidth] as? Int) == operation.settings.width,
@@ -209,16 +209,6 @@ final class CADOfflineRenderCenter {
     }
 }
 
-@MainActor
-private enum CADOfflineRenderCenters {
-    static var values: [ObjectIdentifier: CADOfflineRenderCenter] = [:]
-    static func get(_ environment: AppEnvironment) -> CADOfflineRenderCenter {
-        values = values.filter { $0.value.environment != nil }
-        let id = ObjectIdentifier(environment)
-        if let value = values[id] { return value }
-        let value = CADOfflineRenderCenter(environment: environment); values[id] = value; return value
-    }
-}
 extension AppEnvironment {
-    var offlineRenderCenter: CADOfflineRenderCenter { CADOfflineRenderCenters.get(self) }
+    var offlineRenderCenter: CADOfflineRenderCenter { .shared }
 }

@@ -16,7 +16,14 @@ public struct ManufacturingWorkbenchView: View {
     @State private var camPreview:CAMPreviewRequest?
     @State private var ncRequest:NCWorkbenchRequest?
     @State private var pendingNC:URL?
+    private var onClose: (() -> Void)?
+    private var onAssistant: (() -> Void)?
     public init(directory: URL) { _model = State(initialValue:ManufacturingModel(directory:directory)) }
+    public init(model: ManufacturingModel, onClose: (() -> Void)? = nil, onAssistant: (() -> Void)? = nil) {
+        _model = State(initialValue: model)
+        self.onClose = onClose
+        self.onAssistant = onAssistant
+    }
     public var body: some View {
         @Bindable var model = model
         NavigationSplitView {
@@ -89,6 +96,17 @@ public struct ManufacturingWorkbenchView: View {
             .navigationTitle(L("加工预览","Machining preview"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if let onAssistant {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(L("作品助手", "Work assistant"), systemImage: "sparkles", action: onAssistant)
+                            .accessibilityIdentifier("space.editor.assistant")
+                    }
+                }
+                if let onClose {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button(L("完成", "Done"), action: onClose).accessibilityIdentifier("space.editor.done")
+                    }
+                }
                 ToolbarItem(placement:.topBarLeading) {
                     Menu {
                         Button(L("阶梯轴","Stepped shaft")) { model.select(0) }.accessibilityIdentifier("sample.shaft.menu")
@@ -129,6 +147,7 @@ public struct ManufacturingWorkbenchView: View {
         .onChange(of:model.study) { _,_ in
             viewportRevision = UUID(); playing = false
             if model.isBusy || (model.artifact != nil && model.artifact?.inputSHA256 != (try? model.study.fingerprint())) { model.invalidate() }
+            do { try model.saveDraft() } catch { model.report(error) }
         }
         .onOpenURL { loadDocument($0) }
         .fileImporter(isPresented:$importFile,allowedContentTypes:[.json,.data]) { outcome in

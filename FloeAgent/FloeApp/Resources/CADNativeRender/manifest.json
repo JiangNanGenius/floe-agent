@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "backend": "three-gpu-pathtracer-webgl2",
+  "revision": "0.0.24-three0.181.1-bvh0.9.5",
+  "files": {
+    "index.html": "9407978b85face105e8c261f265951bf526b1aeb6aba40dc629c285349600f00",
+    "engine.js": "b7f80175498e0abad6d9e80fb9e8595730f937c3acc472e5061489e08b481c10"
+  }
+}

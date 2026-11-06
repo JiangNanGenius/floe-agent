@@ -70,7 +70,7 @@ final class FloeApplicationDelegate: NSObject, UIApplicationDelegate {
 struct FloeAgentApp: App {
     // App reconstruction must not open another database/service graph while
     // SwiftUI retains the original StateObject and system action dependency.
-    @MainActor fileprivate static let liveEnvironment = AppEnvironment.live()
+    @MainActor static let liveEnvironment = AppEnvironment.live()
     @UIApplicationDelegateAdaptor(FloeApplicationDelegate.self) private var applicationDelegate
     @StateObject private var environment: AppEnvironment
     @StateObject private var router: AppRouter
@@ -1006,6 +1006,17 @@ struct RootView: View {
                 }
                 environment.documentIntakeCenter.presentSystemNote(
                     documentID: id, title: note.title, sceneID: sceneID)
+                router.openMore(.notes)
+            case .work(let id):
+                let value = try await PersonalContentService.shared.library().resolve(id)
+                try Task.checkCancellation()
+                guard pendingEntry?.id == entry.id else { return }
+                guard router.workbenchSelection == selection,
+                      router.sidebarSelection == entrySidebarSelection else {
+                    pendingEntry = nil
+                    return
+                }
+                environment.studioOpenRequest = StudioOpenRequest(record: value.record, sceneID: sceneID)
                 router.openMore(.notes)
             case .shareInbox(let id):
                 await environment.shareIntakeCenter.refresh()

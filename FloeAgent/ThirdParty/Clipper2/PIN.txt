@@ -1,0 +1,48 @@
+# Clipper2 provenance pin
+
+- Upstream: https://github.com/PolyClipping/Clipper2
+- Commit: `b496b454df168a2280354857c1cd90bd6fa7b4dd`
+- Commit date: 2026-10-30
+- Declared library version in `clipper.version.h`: `2.0.1`
+- License: Boost Software License 1.0 (see `LICENSE`; upstream
+  `CPP/Clipper2Lib` headers and sources carry the BSL notice)
+- Import method: `git clone --filter=blob:none` then `git checkout` of the exact
+  commit, followed by copying only the files listed below. No binary, package
+  manager, CMake, Xcode framework or prebuilt library was downloaded or used.
+- Local changes to upstream files: **none**. The C ABI files under
+  `Sources/Clipper2C` are project-authored adapters and are not upstream
+  Clipper2 sources.
+
+## Vendored upstream files (SHA-256)
+
+```text
+b667c2fe968344252e2c32c0cffc09cf6520164e272fcf63bf46eccc707b138f  Sources/Clipper2Cpp/include/clipper2/clipper.core.h
+79bb599897b0eead7946305cb47b8160919b2e5c8c3d41ce93e4ff0e08deb70c  Sources/Clipper2Cpp/include/clipper2/clipper.engine.h
+035e4257f1f127d6a17833331922f2b1b615371b64bb4cd625842102517793b0  Sources/Clipper2Cpp/include/clipper2/clipper.export.h
+145efd001ef2f45ac5655a18e19d8a122efdf665c38d306a1fe91ce9e0d18450  Sources/Clipper2Cpp/include/clipper2/clipper.h
+6ea4f08d3e2561bdd4d95a548e1b5d7983100e317ed805616b8d602f03d3dbe3  Sources/Clipper2Cpp/include/clipper2/clipper.minkowski.h
+147e5f4694327d62cec31fec55b69537f178e808a715a533bb42c01a85cc435a  Sources/Clipper2Cpp/include/clipper2/clipper.offset.h
+2970dbe3f91d32e96abc3117240694fc09f354060ff84e4a95014ec510f4d8dd  Sources/Clipper2Cpp/include/clipper2/clipper.rectclip.h
+a82d32e65583cce5a6d704796c54de3ddd2963d219057263a0f87f8d14a07d6c  Sources/Clipper2Cpp/include/clipper2/clipper.triangulation.h
+0d636f1599b09743496d5c15c7dcb5bc3101bd423d6745bf17e480edbffccdac  Sources/Clipper2Cpp/include/clipper2/clipper.version.h
+9c9886bfcd85cc4faa5b53239cfbd39412b0f9b431758e232df07595350b518b  Sources/Clipper2Cpp/src/clipper.engine.cpp
+131dc83f8ac035e44eb577fea10a145e8bd2bc2780bcdca8a22f5593797817b9  Sources/Clipper2Cpp/src/clipper.offset.cpp
+c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566  LICENSE
+```
+
+## Project-authored C ABI files (SHA-256)
+
+```text
+2f453725f90c24d4c96f6f6040bd3b2e4a3a8cd4ea2c5631ae1255027eb2640e  Sources/Clipper2C/include/clipper2_c.h
+77d8379879ca92c8aca0e635feb2d4e7c2bb3aff3e8e39e13bedb80ba2b6957e  Sources/Clipper2C/clipper2_c.cpp
+```
+
+## Why these files only
+
+`clipper.engine.cpp` and `clipper.offset.cpp` implement the boolean clipping
+and offset operations used by the qualification adapter. `clipper.engine.cpp`
+includes `clipper2/clipper.h`, so the public headers it references are retained
+to keep the upstream translation units byte-identical. No example SVG, sample,
+CMake project, test, triangulation implementation, rect-clip implementation,
+C# binding or prebuilt binary is vendored. Unused declarations in the retained
+headers do not link into the product unless called.

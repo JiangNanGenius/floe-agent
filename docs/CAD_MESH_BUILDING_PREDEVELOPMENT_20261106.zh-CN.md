@@ -2,6 +2,8 @@
 
 本轮把精确实体／曲面和网格放入同一个原生 CAD 文档与工作台；建筑设计使用独立工作区，复用三维核心。实现与验证按用户确认的代表流程收口，不把全部专业精度或所有格式组合列为首轮门槛。没有修改版本号或发布设置。
 
+后续按用户“不在 Linux 进行专业计算”和“不用做重验证”的要求，专业计算与离线渲染已改为设备端代码路径。当前接入与最小检查见[本机移植记录](qualification/cad-ondevice-professional-20261106/README.md)。下方 34 项原生测试、3 条界面流程及旧 pbrt 结果属于前一阶段的冻结证据，不能代表移植后的设备运行结果。
+
 ## 编辑器与入口
 
 - 文件工作区直接打开 STL、OBJ、IGS／IGES、STEP／STP，建立独立的 `.floecad` 工作副本。原交换文件保留；无单位网格需要明确选择单位。IGES 中的精确开放曲面保留曲面身份。
@@ -23,10 +25,11 @@ SolidWorks 在同一零件中区分标准 BRep、Mesh BRep 和图形网格；混
 | 网格布尔 | [Manifold 3.5.4](https://github.com/elalish/manifold/tree/ce50d78021d64507f89e8c9fc2c2e51018117857) | Apache-2.0，已接原生 C++ 桥；闭合网格结果，不冒充精确 BRep |
 | 识别研究 | [MeshToFeatures](https://github.com/MasoudMiM/MeshToFeatures/tree/9d964cfa1e2600a5c30411112cf54933856eb4dc)、[Detessellate](https://github.com/DesignWeaver3D/Detessellate/tree/b55794a2012a7a5e079e0ca6f1d76048e5ecf788) | 参考分割、拟合和转换流程；MeshToFeatures 57 项核心测试通过。原生识别首轮限经核对的轴对齐长方体；没有嵌入 FreeCAD GUI |
 | DWG／DXF | 现有 acadrust／CADEngine | 复用实际 DWG 读写；增加精确曲线移交和有界工程图导出。普通保存仍保留严格写后重读门槛 |
-| 建筑交换／协调 | [IfcOpenShell](https://github.com/IfcOpenShell/IfcOpenShell) | IFC 层级、语义与实际 CAD 网格交换；几何碰撞使用 triangle-BVH 后端 |
-| 信息要求 | [IfcTester](https://docs.ifcopenshell.org/ifctester.html) | 实际 IDS 调用及可查看结果；不等同于建筑法规校核 |
-| 结构 | [PyNite](https://github.com/JWock82/Pynite) | 显式材料、支撑和均布荷载下的单梁分析；不推断整栋建筑的结构条件 |
-| 离线渲染 | [pbrt-v4](https://github.com/mmp/pbrt-v4/tree/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f) | 固定源的 CPU 路径追踪；复用任务执行环境和后台任务生命周期 |
+| 建筑交换 | [web-ifc 0.0.75](https://github.com/ThatOpen/engine_web-ifc/tree/ac5de14d320dde70515ce1619e48cfb6a5eaf51b) | 随 App 打包 WASM，在设备内生成、保存及重读 IFC4；层级、构件身份与实际三角面保持对应 |
+| 信息要求 | web-ifc 与本机固定 IDS 子集 | 从重读 IFC 检查 Name 存在并导出 IDS；不宣称完整 IfcTester 或建筑法规校核 |
+| 结构 | [PyNite](https://github.com/JWock82/Pynite) 单梁多项式的 Swift 移植 | 明确矩形等截面、简支／悬臂、材料与均布荷载；不嵌入 Python 或推断整栋结构 |
+| 机电协调 | 既有原生 Manifold 3.5.4 | AABB 仅筛候选，实际实体交集报告体积；开放或失败网格明确未计算 |
+| 离线渲染 | [three-gpu-pathtracer 0.0.24](https://github.com/gkjohnson/three-gpu-pathtracer/tree/3c6cda19d1788d7d93705eee704328e66823c845) | 固定依赖随 App 打包，在设备 WebGL2 上渐进路径追踪并导出 PNG |
 
 原生 Manifold 切片、源码标识、许可证和逐文件摘要在 `FloeAgent/ThirdParty/FloeCADKit/Vendor/Manifold-SOURCE.json`。许可清单由现有生成器生成，读校验保持只读。非商用项目、AGPL 编辑器与未验证的源码入口没有作为本轮产品依赖。
 
@@ -42,11 +45,11 @@ IFC 交换使用保存时的实际 CAD 三角面，建立建筑／楼层／构�
 
 ## 光影、动画与离线渲染
 
-继续使用现有灯光、环境、PBR 材质、镜头／构件动画与 MP4 导出；新增随场景尺度变化的实时阴影范围和 Reveal 镜头预设。离线入口冻结当前几何、相机、实例和支持的材质，交给原有任务服务运行，支持取消、冷重开观察和固定文件结果验真。
+继续使用现有灯光、环境、PBR 材质、镜头／构件动画与 MP4 导出；新增随场景尺度变化的实时阴影范围和 Reveal 镜头预设。离线入口冻结当前几何、相机、实例和支持的材质，由本机服务拥有 WK 渲染任务，支持进度、取消、结果保存和冷重开验真。
 
-离线首轮是高质量静帧 PNG。高级材质层、部分纹理及透明材质的转换差异显示在详情；缺体、场景预算截断和无效变换拒绝导出。首次安装需要下载构建依赖，后续可复用环境中已验证的渲染器。没有将离线路径追踪动画、降噪或全材质等价列为已完成能力。
+离线首轮是高质量静帧 PNG。高级材质层、部分纹理及透明材质的转换差异显示在详情；缺体、场景预算截断和无效变换拒绝导出。无需下载计算环境；能力不足或任务中断会明确失败，不回退到 Linux。没有将离线路径追踪动画、降噪或全材质等价列为已完成能力。
 
-真实 pbrt 静帧、左右方向、取消和旧输出拒绝的组件证据见[离线渲染资格记录](qualification/cad-offline-render-predev-20261106/README.md)。它与 App／Linux 环境的实际调用验证分别记录。
+前期真实 pbrt 静帧、左右方向、取消和旧输出拒绝的历史组件证据见[离线渲染资格记录](qualification/cad-offline-render-predev-20261106/README.md)。本机路径追踪器另行记录，不沿用 pbrt 的画质或执行证据。
 
 ## 文档与事务
 
@@ -54,7 +57,7 @@ IFC 交换使用保存时的实际 CAD 三角面，建立建筑／楼层／构�
 
 已冻结的 `v1.7.79` 支持格式 8。本轮建筑、二维来源、混合建模及转换来源首次出现时才要求格式 9；普通文档保持原最低格式。未知嵌套数据保留为只读，防止旧写入器丢记录。建筑数据也进入命名版本恢复快照和差异查询。
 
-## 验证边界
+## 移植前的验证边界
 
 用户确认的 CAD／Mesh 六类代表流程、建筑单条贯穿流程、专业菜单简单调用、渲染／动画代表流程是本轮验收范围。未运行完整专业精度矩阵，也未使用用户的物理 iPhone。
 

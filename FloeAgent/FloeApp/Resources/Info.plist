@@ -86,10 +86,10 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>FloeIOSBridgeDownloadURL</key>
-	<string>https://www.floe-agent.com/ios-bridge</string>
 	<key>FLOEGitHubOAuthClientID</key>
 	<string>$(FLOE_GITHUB_OAUTH_CLIENT_ID)</string>
+	<key>FloeIOSBridgeDownloadURL</key>
+	<string>https://www.floe-agent.com/ios-bridge</string>
 	<key>FloeMacBridgeDownloadURL</key>
 	<string>https://www.floe-agent.com/bridge</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
@@ -137,7 +137,7 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Floe uses your location for weather and nearby places you request, including while those tasks continue in the background. Background assistance uses approximate location while tasks are running.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Floe uses the microphone only while you dictate a message.</string>
+	<string>Floe uses the microphone when you dictate, record music, or record a meeting.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Floe saves generated or edited images only when you ask it to save them to Photos.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

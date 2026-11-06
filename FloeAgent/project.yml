@@ -50,6 +50,8 @@ packages:
     path: Modules/FloeManufacturingKit
   FloePrintKit:
     path: Modules/FloePrintKit
+  FloeMediaExchange:
+    path: Modules/FloeMediaExchange
   ZLImageEditor:
     path: ThirdParty/ZLImageEditor
   VideoEditorKit:
@@ -106,6 +108,8 @@ targets:
           - Resources/LocalSpeech
           - Resources/Shortcuts
           - Resources/Printing
+          - Resources/BuildingNative
+          - Resources/CADNativeRender
           # Per-extension privacy manifests: each extension copies its own
           # PrivacyInfo.xcprivacy from here; they must never also land in the
           # app bundle (one manifest per bundle root).
@@ -121,6 +125,12 @@ targets:
         type: folder
         buildPhase: resources
       - path: FloeApp/Resources/Printing
+        type: folder
+        buildPhase: resources
+      - path: FloeApp/Resources/BuildingNative
+        type: folder
+        buildPhase: resources
+      - path: FloeApp/Resources/CADNativeRender
         type: folder
         buildPhase: resources
       - path: ThirdParty/KiriMoto
@@ -233,7 +243,7 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-        NSMicrophoneUsageDescription: Floe uses the microphone only while you dictate a message.
+        NSMicrophoneUsageDescription: Floe uses the microphone when you dictate, record music, or record a meeting.
         NSSpeechRecognitionUsageDescription: Floe converts your speech into text for the message composer.
         NSCalendarsFullAccessUsageDescription: Floe accesses calendars only when you ask the agent to read or edit events.
         NSRemindersFullAccessUsageDescription: Floe accesses reminders only when you ask the agent to read or edit them.
@@ -337,6 +347,12 @@ targets:
         product: FloeManufacturingCore
       - package: FloePrintKit
         product: FloePrintCore
+      - package: FloeMediaExchange
+        product: MediaExchangeBridge
+      - package: FloeMediaExchange
+        product: MediaExchangeClipper
+      - package: FloeMediaExchange
+        product: MediaExchangeFCPXML
       - package: FloeMacBridge
         product: FloeMacBridgeProtocol
       - package: SpeechSwiftTTS
@@ -1576,7 +1592,89 @@ targets:
           - $(inherited)
           - $(FLOE_OFFICE_SIM_HOST_DIR)
 
+  FloePredevelopmentTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "26.0"
+    configFiles:
+      Debug: Vendor/Office/native-host.xcconfig
+      Release: Vendor/Office/native-host.xcconfig
+    sources:
+      - path: Tests/FloeAppTests/FloeNoteIntentsIntegrationTests.swift
+      - path: Tests/FloeAppTests/NativePrintingIntegrationTests.swift
+      - path: Tests/FloeAppTests/NativeStudioRuntimeTests.swift
+      - path: Tests/FloeAppTests/NativeMeetingIntegrationTests.swift
+      - path: Tests/FloeAppTests/StudioDocumentAccessTests.swift
+      - path: Tests/FloeAppTests/StudioRegisteredWorkflowTests.swift
+      - path: Tests/FloeAppTests/CADLocalRenderContractTests.swift
+      - path: Tests/FloeAppTests/NativeCADHostRuntimeTests.swift
+      - path: Tests/FloeAppTests/CADNativeStudyReceiptTests.swift
+      - path: Tests/FloeCoreTests/FloeAppEntryRouteTests.swift
+    dependencies:
+      - target: FloeAgent
+      - package: FloePrintKit
+        product: FloePrintCore
+      - package: FloeManufacturingKit
+        product: FloeManufacturingCore
+      - package: FloeMusicKit
+        product: FloeMusicCore
+      - package: FloeMusicNative
+        product: FloeMusicNative
+      - package: FloeMeetings
+        product: FloeMeetings
+      - package: FloeAgentPackages
+        product: FloeCore
+      - package: FloeAgentPackages
+        product: FloeNotes
+    settings:
+      base:
+        DEVELOPMENT_TEAM: QYL72C43K6
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.ios.predevelopment-tests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "6.0"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Floe Agent.app/Floe Agent"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        "FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]":
+          - $(inherited)
+          - $(FLOE_OFFICE_HOST_DIR)
+        "FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]":
+          - $(inherited)
+          - $(FLOE_OFFICE_SIM_HOST_DIR)
+
+  FloePredevelopmentUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Tests/FloePredevelopmentUITests
+    dependencies:
+      - target: FloeAgent
+    settings:
+      base:
+        DEVELOPMENT_TEAM: QYL72C43K6
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.ios.predevelopment-uitests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "6.0"
+        TEST_TARGET_NAME: FloeAgent
+        TARGETED_DEVICE_FAMILY: "1,2"
+
 schemes:
+  FloePredevelopmentUITests:
+    build:
+      targets:
+        FloeAgent: all
+        FloePredevelopmentUITests: [test]
+    test:
+      targets:
+        - FloePredevelopmentUITests
+  FloePredevelopmentTests:
+    build:
+      targets:
+        FloeAgent: all
+        FloePredevelopmentTests: [test]
+    test:
+      targets:
+        - FloePredevelopmentTests
   FloeAgent:
     build:
       targets:

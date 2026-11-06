@@ -1,17 +1,18 @@
 #!/bin/zsh
 # Build the FloeMachiningNative Rust staticlib for the three Apple arm64
 # slices and package Vendor/FloeMachiningNative.xcframework under one C module
-# name. Produces no debug-symbol bulk and uses the shared internal build cache.
+# name. Preserve the Rust archive symbol identities; use the shared internal cache.
 #
 #   Scripts/build_native.sh            # build all slices + xcframework
 #   Scripts/build_native.sh <target>   # one rust target only
 #
-# Env: DEVELOPER_DIR, CARGO_HOME, CARGO_BUILD_JOBS (default 6), CARGO_TARGET_DIR.
+# Env: DEVELOPER_DIR, CARGO_HOME, CARGO_BUILD_JOBS (default 6), CARGO_TARGET_DIR,
+# FLOE_NATIVE_XCF_OUTPUT (optional private candidate path, defaults to Vendor).
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUST="$ROOT/NativeRust"
 VENDOR="$ROOT/Vendor"
-XCF="$VENDOR/FloeMachiningNative.xcframework"
+XCF="${FLOE_NATIVE_XCF_OUTPUT:-$VENDOR/FloeMachiningNative.xcframework}"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}"
@@ -36,9 +37,10 @@ build_slice() { # <rust-target>
   (cd "$RUST" && cargo build --release --locked --target "$target")
   local lib="$CARGO_TARGET_DIR/$target/release/libFloeMachiningNative.a"
   [ -f "$lib" ] || { echo "[build] missing $lib" >&2; exit 1; }
-  # Strip local symbols to keep the research static lib small.
-  cp "$lib" "$CARGO_TARGET_DIR/$target/release/libFloeMachiningNative.stripped.a"
-  strip -x "$CARGO_TARGET_DIR/$target/release/libFloeMachiningNative.stripped.a" 2>/dev/null || true
+  # Apple strip -x removes Rust's private .llvm symbol disambiguators on this
+  # toolchain, creating duplicate symbols in otherwise valid static archives.
+  # Preserve cargo's archive unchanged. The final executable's normal linker
+  # policy can discard unused code without rewriting this reusable library.
 }
 
 case "${1:-all}" in
@@ -60,7 +62,8 @@ fi
 # ---- package XCFramework ----------------------------------------------------
 TMP="$CARGO_TARGET_DIR/xcframework-staging"
 task_new_xcf="$CARGO_TARGET_DIR/FloeMachiningNative.new.xcframework"
-task_old_xcf="$VENDOR/.FloeMachiningNative.previous.xcframework"
+task_old_xcf="${XCF}.previous"
+mkdir -p "$(dirname "$XCF")"
 rm -rf "$TMP" "$task_new_xcf"
 mkdir -p "$TMP"
 declare -a SLICES=()
@@ -74,7 +77,7 @@ for spec in \
   mkdir -p "$dir/Headers" "$dir/Modules"
   cp "$RUST/include/FloeMachiningNative.h" "$dir/Headers/"
   printf 'framework module FloeMachiningNative {\n  umbrella header "FloeMachiningNative.h"\n  export *\n}\n' > "$dir/Modules/module.modulemap"
-  cp "$CARGO_TARGET_DIR/$target/release/libFloeMachiningNative.stripped.a" \
+  cp "$CARGO_TARGET_DIR/$target/release/libFloeMachiningNative.a" \
      "$dir/FloeMachiningNative"
   python3 - "$dir/Info.plist" <<'PY'
 import plistlib, sys

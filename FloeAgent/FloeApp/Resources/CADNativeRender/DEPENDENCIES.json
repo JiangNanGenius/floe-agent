@@ -1,0 +1,50 @@
+{
+  "backend": "three-gpu-pathtracer-webgl2",
+  "revision": "0.0.24-three0.181.1-bvh0.9.5",
+  "dependencies": [
+    {
+      "name": "three-gpu-pathtracer",
+      "version": "0.0.24",
+      "commit": "3c6cda19d1788d7d93705eee704328e66823c845",
+      "license": "MIT",
+      "repository": "https://github.com/gkjohnson/three-gpu-pathtracer",
+      "source": "https://github.com/gkjohnson/three-gpu-pathtracer/tree/3c6cda19d1788d7d93705eee704328e66823c845",
+      "tarball": "https://registry.npmjs.org/three-gpu-pathtracer/-/three-gpu-pathtracer-0.0.24.tgz",
+      "integrity": "sha512-fHQ7g7ywvSwRAQywhsfech2/kspQKinfFNOcNDTJS2Q34CzcF1kpESlOVvJH8kX/bGlCnxMI+Qo16kWGAy7zCA=="
+    },
+    {
+      "name": "three",
+      "version": "0.181.1",
+      "commit": "a95185f43d42fab9678585725d99a08de4937c6f",
+      "license": "MIT",
+      "repository": "https://github.com/mrdoob/three.js",
+      "source": "https://github.com/mrdoob/three.js/tree/a95185f43d42fab9678585725d99a08de4937c6f",
+      "tarball": "https://registry.npmjs.org/three/-/three-0.181.1.tgz",
+      "integrity": "sha512-bz9xZUQMw3pJbjKy7roiwXWgAp+oVUa+4k5o0oBAQ+IFJuru1xzvtk63h6k72XZanXS/SgoEhV6927Vgazyq2w=="
+    },
+    {
+      "name": "three-mesh-bvh",
+      "version": "0.9.5",
+      "commit": "2c9a9216ba92293ca2fd4bf83443c9a0cbce1331",
+      "license": "MIT",
+      "repository": "https://github.com/gkjohnson/three-mesh-bvh",
+      "source": "https://github.com/gkjohnson/three-mesh-bvh/tree/2c9a9216ba92293ca2fd4bf83443c9a0cbce1331",
+      "tarball": "https://registry.npmjs.org/three-mesh-bvh/-/three-mesh-bvh-0.9.5.tgz",
+      "integrity": "sha512-MYpwzUWDxPAKGhSBFin9E/7K4AAHyIm4IfMZQ/3+Z/jq/swa2dAhXx0yUNDd9mjlhLuzXkMBTGDZioL2GSlIfQ=="
+    }
+  ],
+  "bundler": {
+    "name": "esbuild",
+    "version": "0.25.11",
+    "developmentOnly": true
+  },
+  "transitive": [
+    {
+      "name": "fflate",
+      "version": "0.8.2",
+      "license": "MIT",
+      "source": "three/examples/jsm/libs/fflate.module.js",
+      "repository": "https://github.com/101arrowz/fflate"
+    }
+  ]
+}

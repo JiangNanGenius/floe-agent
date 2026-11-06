@@ -117,6 +117,9 @@ public actor WorkbenchImageRenderer {
         resolveAsset: @Sendable (UUID) -> URL?,
         previewMaxEdge: Int? = nil
     ) throws -> CGImage {
+        guard project.prepared == nil else {
+            throw MediaPreparedCoreError.v1MutationRequiresPreparedEngine
+        }
         guard project.kind == .image else {
             throw WorkbenchImageError.unsupportedSource("not an image project")
         }
@@ -227,6 +230,9 @@ public actor WorkbenchImageRenderer {
         resolveAsset: @Sendable (UUID) -> URL?,
         previewMaxEdge: Int? = nil
     ) throws -> CGImage {
+        guard project.prepared == nil else {
+            throw MediaPreparedCoreError.v1MutationRequiresPreparedEngine
+        }
         guard project.kind == .image else {
             throw WorkbenchImageError.unsupportedSource("not an image project")
         }

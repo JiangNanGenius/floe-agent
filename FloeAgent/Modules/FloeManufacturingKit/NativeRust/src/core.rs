@@ -184,6 +184,7 @@ fn mesh_stock(
         stock.origin[1] - stock.h,
         stock.origin[2] - stock.h,
     ];
+    crate::bounded_mesh::intersect_cylinder_domain(stock,dims,low,&mut values);
     let mesh = tetra::generate(
         dims,
         low,
@@ -833,6 +834,7 @@ pub fn run_core(request_json: &str, progress: &Progress) -> Result<CoreResult, F
     progress.report(0.93, "mesh")?;
     let final_mesh = mesh_stock(&stock, budget.max_triangles, &mut frame_sink.triangle_budget)?;
     capabilities.push("declared-stock-boundary-v1".into());
+    capabilities.push("cylinder-domain-field-v1".into());
     let remaining = stock.occupied_count() as f64 * stock.cell_volume();
     if assembly.is_some()
         && !req.milling.as_ref().map(|m| m.enabled).unwrap_or(false)
@@ -966,6 +968,8 @@ mod tests {
         assert!(s.axisymmetric_mesh(80_000).is_none());
         let before = s.export_state();let mut budget = 80_000;
         let (points,faces) = mesh_stock(&s,80_000,&mut budget).unwrap();
+        require_closed_oriented(&points,&faces);
+        assert!(points.iter().all(|p| p[0].hypot(p[1])<=12.0+1e-12 && p[2]>=0.0 && p[2]<=40.0));
         assert_eq!(s.export_state().occupied_indices,before.occupied_indices);
         let outer:Vec<f64> = points.iter().filter(|p| p[2]>8.0 && p[2]<32.0 && p[0]< -6.0)
             .map(|p| p[0].hypot(p[1])).collect();
@@ -979,6 +983,22 @@ mod tests {
         let mut edges = std::collections::HashMap::<(u32,u32),usize>::new();
         for t in &faces { for i in 0..3 { let a=t[i];let b=t[(i+1)%3];*edges.entry((a.min(b),a.max(b))).or_default()+=1; } }
         assert!(edges.values().all(|&n| n==2),"mixed stock mesh must be closed");
+    }
+
+    #[test]
+    fn mixed_cylinder_with_nonintegral_end_planes_keeps_a_closed_bore() {
+        let mut stock=Stock::cylinder(6.0,-0.25,7.13,0.7,1<<20).unwrap();
+        stock.remove_oriented_cutter(&nalgebra::Point3::new(0.0,0.0,-1.0),&nalgebra::Vector3::z(),2.0,10.0);
+        stock.remove_oriented_cutter(&nalgebra::Point3::new(4.0,0.0,3.0),&nalgebra::Vector3::x(),1.0,5.0);
+        let state=stock.export_state();let mut budget=80_000;
+        let (points,faces)=mesh_stock(&stock,80_000,&mut budget).unwrap();
+        require_closed_oriented(&points,&faces);
+        assert!(points.iter().all(|p| p[0].hypot(p[1])<=6.0+1e-12 && p[2]>= -0.25 && p[2]<=7.13));
+        let middle:Vec<_>=points.iter().filter(|p| p[2]>1.0 && p[2]<6.0).collect();
+        assert!(middle.iter().any(|p| p[0].hypot(p[1])<3.0));
+        assert!(middle.iter().all(|p| p[0].hypot(p[1])>1.0),"do not cap or fill the real bore");
+        assert_eq!(stock.export_state().occupied_indices,state.occupied_indices);
+        assert_eq!(stock.export_state().removed_count,state.removed_count);
     }
 
     const STOCK_JSON: &str = r#""stock": {"shape": "cylinder", "radiusMM": 6, "zMinMM": 0, "zMaxMM": 20, "resolutionMM": 1}"#;

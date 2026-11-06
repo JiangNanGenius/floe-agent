@@ -1,0 +1,6 @@
+web-ifc 0.0.75 is distributed under the Mozilla Public License 2.0.
+The complete license is LICENSE.md. The unmodified corresponding source is available from:
+https://github.com/ThatOpen/engine_web-ifc/archive/ac5de14d320dde70515ce1619e48cfb6a5eaf51b.tar.gz
+Upstream build instructions: https://github.com/ThatOpen/engine_web-ifc/tree/ac5de14d320dde70515ce1619e48cfb6a5eaf51b
+The separately maintained Floe adapter source ships in this folder as building.js.
+This on-device adapter supports IFC4 triangulation and the fixed Name-presence IDS subset only.

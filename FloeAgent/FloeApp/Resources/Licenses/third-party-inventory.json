@@ -68,6 +68,58 @@
   ],
   "documents": [
     {
+      "id": "building-web-ifc",
+      "repositoryPath": "FloeApp/Resources/BuildingNative/LICENSE.md",
+      "bundlePath": "BuildingNative/LICENSE.md",
+      "titleKey": "settings.licenses.document.building_ifc.title",
+      "titleFallback": "On-device IFC — Mozilla Public License 2.0",
+      "titleArgument": null,
+      "license": "MPL-2.0",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "engineering",
+      "noteKey": null
+    },
+    {
+      "id": "building-web-ifc-source",
+      "repositoryPath": "FloeApp/Resources/BuildingNative/SOURCE-OFFER.txt",
+      "bundlePath": "BuildingNative/SOURCE-OFFER.txt",
+      "titleKey": "settings.licenses.document.building_ifc_source.title",
+      "titleFallback": "On-device IFC source",
+      "titleArgument": null,
+      "license": "MPL-2.0",
+      "kindKey": "settings.licenses.kind.notices",
+      "required": true,
+      "section": "engineering",
+      "noteKey": null
+    },
+    {
+      "id": "building-pynite",
+      "repositoryPath": "FloeApp/Resources/BuildingNative/Pynite-LICENSE.txt",
+      "bundlePath": "BuildingNative/Pynite-LICENSE.txt",
+      "titleKey": "settings.licenses.document.building_pynite.title",
+      "titleFallback": "Single-beam calculation — PyNite",
+      "titleArgument": null,
+      "license": "MIT",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "engineering",
+      "noteKey": null
+    },
+    {
+      "id": "cad-native-render",
+      "repositoryPath": "FloeApp/Resources/CADNativeRender/LICENSES.txt",
+      "bundlePath": "CADNativeRender/LICENSES.txt",
+      "titleKey": "settings.licenses.document.cad_native_render.title",
+      "titleFallback": "On-device path tracer notices",
+      "titleArgument": null,
+      "license": "MIT",
+      "kindKey": "settings.licenses.kind.notices",
+      "required": true,
+      "section": "engineering",
+      "noteKey": null
+    },
+    {
       "id": "manifold",
       "repositoryPath": "FloeApp/Resources/Licenses/Manifold-NOTICES.txt",
       "bundlePath": "Licenses/Manifold-NOTICES.txt",
@@ -1526,6 +1578,60 @@
       "evidence": "bundled UMD banner (MIT; TypeScript helper notices Apache-2.0)"
     },
     {
+      "name": "web-ifc (on-device IFC)",
+      "version": "0.0.75",
+      "license": "MPL-2.0",
+      "source": "https://github.com/ThatOpen/engine_web-ifc/tree/ac5de14d320dde70515ce1619e48cfb6a5eaf51b",
+      "section": "engineering",
+      "noteKey": null,
+      "evidence": "FloeApp/Resources/BuildingNative/DEPENDENCIES.json; unmodified browser IIFE/WASM manifest; LICENSE.md and SOURCE-OFFER.txt"
+    },
+    {
+      "name": "PyNiteFEA (single-beam source port)",
+      "version": "3.2.1",
+      "license": "MIT",
+      "source": "https://github.com/JWock82/Pynite",
+      "section": "engineering",
+      "noteKey": null,
+      "evidence": "FloeApp/Resources/BuildingNative/Pynite-LICENSE.txt; ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalAnalysis.swift"
+    },
+    {
+      "name": "three-gpu-pathtracer (on-device)",
+      "version": "0.0.24",
+      "license": "MIT",
+      "source": "https://github.com/gkjohnson/three-gpu-pathtracer/tree/3c6cda19d1788d7d93705eee704328e66823c845",
+      "section": "engineering",
+      "noteKey": null,
+      "evidence": "FloeApp/Resources/CADNativeRender/DEPENDENCIES.json and LICENSES.txt"
+    },
+    {
+      "name": "three (on-device path tracer)",
+      "version": "0.181.1",
+      "license": "MIT",
+      "source": "https://github.com/mrdoob/three.js/tree/a95185f43d42fab9678585725d99a08de4937c6f",
+      "section": "engineering",
+      "noteKey": null,
+      "evidence": "FloeApp/Resources/CADNativeRender/DEPENDENCIES.json and LICENSES.txt"
+    },
+    {
+      "name": "three-mesh-bvh (on-device path tracer)",
+      "version": "0.9.5",
+      "license": "MIT",
+      "source": "https://github.com/gkjohnson/three-mesh-bvh/tree/2c9a9216ba92293ca2fd4bf83443c9a0cbce1331",
+      "section": "engineering",
+      "noteKey": null,
+      "evidence": "FloeApp/Resources/CADNativeRender/DEPENDENCIES.json and LICENSES.txt"
+    },
+    {
+      "name": "fflate (on-device EXR decoder)",
+      "version": "0.8.2",
+      "license": "MIT",
+      "source": "https://github.com/101arrowz/fflate",
+      "section": "engineering",
+      "noteKey": null,
+      "evidence": "FloeApp/Resources/CADNativeRender/DEPENDENCIES.json and LICENSES.txt"
+    },
+    {
       "name": "@simonwep/pickr",
       "version": "1.9.0",
       "license": "MIT",
@@ -2871,8 +2977,8 @@
     }
   ],
   "counts": {
-    "components": 235,
-    "documents": 49,
+    "components": 241,
+    "documents": 53,
     "pins": 40
   }
 }

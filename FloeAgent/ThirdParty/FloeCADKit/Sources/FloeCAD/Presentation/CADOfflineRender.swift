@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
-// Immutable exchange values for a real CPU path tracer. No process, document,
+// Immutable exchange values for offline path tracers. No process, document,
 // renderer or execution-environment ownership lives in this file.
 import Foundation
 
 public nonisolated struct CADOfflineRenderSettings: Codable, Equatable, Sendable {
-    public enum Quality: String, Codable, CaseIterable, Sendable {
+    public nonisolated enum Quality: String, Codable, CaseIterable, Sendable {
         case preview, studio, final
         public var samples: Int { switch self { case .preview: 16; case .studio: 64; case .final: 256 } }
     }
@@ -43,8 +43,8 @@ public nonisolated enum CADOfflineRenderError: Error, LocalizedError, Sendable {
 
 /// One frozen render input. Millimetres have already been converted to metres
 /// by the presentation adapter. This is an exchange snapshot, never an editor.
-public nonisolated struct CADOfflineRenderScene: Sendable {
-    public struct Camera: Sendable {
+public nonisolated struct CADOfflineRenderScene: Codable, Sendable {
+    public nonisolated struct Camera: Codable, Sendable {
         public var eye, target, up: [Double]
         public var verticalFOV: Double
         public var orthographicHalfHeight: Double?
@@ -54,7 +54,7 @@ public nonisolated struct CADOfflineRenderScene: Sendable {
             self.verticalFOV = verticalFOV; self.orthographicHalfHeight = orthographicHalfHeight
         }
     }
-    public struct Material: Sendable {
+    public nonisolated struct Material: Codable, Sendable {
         public var color: [Double], metallic: Double, roughness: Double, opacity: Double
         public var emissive: [Double]
         public var baseColorImage: String?
@@ -69,7 +69,7 @@ public nonisolated struct CADOfflineRenderScene: Sendable {
             self.imageIsLinear = imageIsLinear; self.flipImageV = flipImageV
         }
     }
-    public struct Mesh: Sendable {
+    public nonisolated struct Mesh: Codable, Sendable {
         /// Flat xyz, normal xyz and uv arrays in world metres.
         public var positions: [Double], normals: [Double], uvs: [Double]
         public var indices: [UInt32]
@@ -80,8 +80,8 @@ public nonisolated struct CADOfflineRenderScene: Sendable {
             self.indices = indices; self.material = material
         }
     }
-    public struct Light: Sendable {
-        public enum Kind: String, Sendable { case directional, point, spot }
+    public nonisolated struct Light: Codable, Sendable {
+        public nonisolated enum Kind: String, Codable, Sendable { case directional, point, spot }
         public var kind: Kind
         public var position, direction, color: [Double]
         /// Same authored lux/lumens value as the realtime scene.
@@ -102,9 +102,81 @@ public nonisolated struct CADOfflineRenderScene: Sendable {
     public var environmentImage: String?
     public var environmentRotation: Double = 0
     public var environmentIntensity: Double = 1
+    public var environmentShowsBackground: Bool = true
+    public var backgroundColor: [Double] = [0.025, 0.03, 0.04]
     public var warnings: [String] = []
     public init(camera: Camera, meshes: [Mesh], lights: [Light] = [], assets: [String: Data] = [:]) {
         self.camera = camera; self.meshes = meshes; self.lights = lights; self.assets = assets
+    }
+}
+
+/// Local WebGL2 path-tracing exchange. PBRT remains a historical export type;
+/// no process or package installer is needed for this on-device input.
+public nonisolated enum CADNativeSceneExporter {
+    public static let backendID = "three-gpu-pathtracer-webgl2"
+    public static let backendRevision = "0.0.24-three0.181.1-bvh0.9.5"
+    public static let maximumTriangles = 250_000
+    public static let maximumPackageBytes = 64 * 1024 * 1024
+    private nonisolated struct Envelope: Codable, Sendable {
+        var schemaVersion = 1
+        var backend = CADNativeSceneExporter.backendID
+        var scene: CADOfflineRenderScene
+        var settings: CADOfflineRenderSettings
+    }
+    public static func export(_ scene: CADOfflineRenderScene, settings: CADOfflineRenderSettings,
+                              revision: Int = 0, changeCount: Int = 0,
+                              sourceSHA256: String = "") throws -> CADOfflineRenderPackage {
+        try settings.validate(); try Task.checkCancellation()
+        func vector(_ values: [Double], count: Int = 3) -> Bool {
+            values.count == count && values.allSatisfy { $0.isFinite && abs($0) <= 1e12 }
+        }
+        let camera = scene.camera
+        guard !scene.meshes.isEmpty, vector(camera.eye), vector(camera.target), vector(camera.up),
+              camera.verticalFOV.isFinite, (10...150).contains(camera.verticalFOV) else { throw CADOfflineRenderError.invalidScene }
+        let direction = zip(camera.target, camera.eye).map(-)
+        let cross = [direction[1] * camera.up[2] - direction[2] * camera.up[1],
+                     direction[2] * camera.up[0] - direction[0] * camera.up[2],
+                     direction[0] * camera.up[1] - direction[1] * camera.up[0]]
+        guard cross.reduce(0, { $0 + $1 * $1 }) > 1e-18,
+              camera.orthographicHalfHeight.map({ $0.isFinite && $0 > 0 }) ?? true,
+              vector(scene.backgroundColor), scene.environmentIntensity.isFinite,
+              (0...16).contains(scene.environmentIntensity), scene.environmentRotation.isFinite else { throw CADOfflineRenderError.invalidScene }
+        var triangles = 0
+        for mesh in scene.meshes {
+            try Task.checkCancellation(); triangles += mesh.indices.count / 3
+            guard triangles <= maximumTriangles, mesh.positions.count <= maximumTriangles * 9 else { throw CADOfflineRenderError.tooLarge }
+            guard !mesh.positions.isEmpty, mesh.positions.count % 3 == 0,
+                  !mesh.indices.isEmpty, mesh.indices.count % 3 == 0,
+                  mesh.indices.allSatisfy({ Int($0) < mesh.positions.count / 3 }),
+                  mesh.positions.allSatisfy({ $0.isFinite && abs($0) <= 1e12 }),
+                  mesh.normals.isEmpty || (mesh.normals.count == mesh.positions.count && mesh.normals.allSatisfy(\.isFinite)),
+                  mesh.uvs.isEmpty || (mesh.uvs.count * 3 == mesh.positions.count * 2 && mesh.uvs.allSatisfy(\.isFinite)),
+                  vector(mesh.material.color), mesh.material.color.allSatisfy({ (0...1).contains($0) }),
+                  vector(mesh.material.emissive), mesh.material.emissive.allSatisfy({ $0 >= 0 }),
+                  [mesh.material.metallic, mesh.material.roughness, mesh.material.opacity].allSatisfy({ $0.isFinite && (0...1).contains($0) }) else { throw CADOfflineRenderError.invalidScene }
+            if let name = mesh.material.baseColorImage, scene.assets[name] == nil { throw CADOfflineRenderError.invalidScene }
+        }
+        for light in scene.lights {
+            guard vector(light.position), vector(light.direction), vector(light.color),
+                  light.direction.contains(where: { abs($0) > 1e-8 }), light.color.allSatisfy({ (0...1).contains($0) }),
+                  light.intensity.isFinite, (0...1e6).contains(light.intensity),
+                  light.innerAngle.isFinite, light.outerAngle.isFinite,
+                  light.innerAngle >= 0, light.outerAngle >= light.innerAngle, light.outerAngle < 180 else { throw CADOfflineRenderError.invalidScene }
+        }
+        guard scene.assets.allSatisfy({ name, bytes in
+            name.hasPrefix("assets/") && !name.contains("..") && !name.contains("\\") && !bytes.isEmpty
+                && name.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45,46,47,95].contains($0) }
+        }), scene.assets.values.reduce(0, { $0 + $1.count }) <= maximumPackageBytes,
+              scene.environmentImage.map({ scene.assets[$0] != nil }) ?? true else { throw CADOfflineRenderError.invalidScene }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(Envelope(scene: scene, settings: settings))
+        guard data.count <= maximumPackageBytes else { throw CADOfflineRenderError.tooLarge }
+        var warnings = scene.warnings
+        if scene.meshes.contains(where: { $0.material.opacity < 0.999 }) {
+            warnings.append("Opacity uses surface coverage; glass refraction is not transferred.")
+        }
+        return CADOfflineRenderPackage(files: ["scene.json": data], warnings: Array(Set(warnings)).sorted(),
+            settings: settings, revision: revision, changeCount: changeCount, sourceSHA256: sourceSHA256)
     }
 }
 

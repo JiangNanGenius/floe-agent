@@ -2,15 +2,10 @@
 import Foundation
 import FloeCAD
 import FloeCore
-import FloeEnvironments
-import FloeExecution
-import FloeModels
-import FloePersistence
 import FloeTools
-import FloeWorkbench
 
-struct CADBuildingProfessionalResult: Codable, Sendable {
-    struct Analysis: Codable, Sendable {
+nonisolated struct CADBuildingProfessionalResult: Codable, Sendable {
+    nonisolated struct Analysis: Codable, Sendable {
         var memberID: String
         var support: String
         var spanMM: Double
@@ -20,15 +15,25 @@ struct CADBuildingProfessionalResult: Codable, Sendable {
         var wholeBuildingAnalysis: Bool
         var designCodeApproval: Bool
     }
-    struct Coordination: Codable, Sendable {
-        struct Clash: Codable, Sendable { var a: String; var b: String; var distanceM: Double }
+    nonisolated struct Coordination: Codable, Sendable {
+        nonisolated struct Clash: Codable, Sendable {
+            var a: String; var b: String
+            var distanceM: Double? // Read-only compatibility with historical receipts.
+            var bodyA: String?
+            var bodyB: String?
+            var overlapVolumeM3: Double?
+            var intersectionBoundsM: [[Double]]?
+            var intersectionTriangleCount: Int?
+        }
         var status: String
         var reason: String?
         var toleranceM: Double?
         var clashes: [Clash]
+        var evaluatedMeshPairs: Int?
+        var unevaluatedMeshPairs: Int?
     }
-    struct Information: Codable, Sendable {
-        struct Check: Codable, Sendable { var name: String; var passed: Bool; var applicable: Int; var failed: Int }
+    nonisolated struct Information: Codable, Sendable {
+        nonisolated struct Check: Codable, Sendable { var name: String; var passed: Bool; var applicable: Int; var failed: Int }
         var buildingRegulations: Bool
         var checks: [Check]
     }
@@ -44,15 +49,15 @@ struct CADBuildingProfessionalResult: Codable, Sendable {
     var information: Information?
 }
 
-struct CADBuildingProfessionalOperation: Codable, Identifiable, Sendable {
-    enum State: String, Codable, Sendable { case preparing, running, ready, cancelling, cancelled, failed, interrupted }
+nonisolated struct CADBuildingProfessionalOperation: Codable, Identifiable, Sendable {
+    nonisolated enum State: String, Codable, Sendable { case preparing, running, ready, cancelling, cancelled, failed, interrupted }
     var id: UUID
     var action: CADBuildingProfessionalAction
     var documentURL: URL
-    var workspaceRoot: URL
-    var conversationID: UUID
-    var environmentID: String
-    var runID: UUID
+    var workspaceRoot: URL?
+    var conversationID: UUID?
+    var environmentID: String?
+    var runID: UUID?
     var jobID: UUID?
     var relativeDirectory: String
     var payload: Data
@@ -65,13 +70,25 @@ struct CADBuildingProfessionalOperation: Codable, Identifiable, Sendable {
     var error: String?
     var result: CADBuildingProfessionalResult?
     var createdAt: Date
+    var executionBackend: String? = nil
     var isRunning: Bool { [.preparing, .running, .cancelling].contains(state) }
+}
+
+private nonisolated final class CADBuildingStudyCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func cancel() { lock.withLock { value = true } }
+    var isCancelled: Bool { lock.withLock { value } }
 }
 
 @MainActor
 final class CADBuildingProfessionalCenter {
     weak var environment: AppEnvironment?
     init(environment: AppEnvironment) { self.environment = environment }
+    private var workers: [UUID: Task<Void, Never>] = [:]
+    private var cancellations: [UUID: CADBuildingStudyCancellation] = [:]
+    private var hosts: [UUID: CADBuildingLocalIFCHost] = [:]
+    private var preparing = false
     private func root() throws -> URL {
         let root = try FloeArtifactStore.root().appendingPathComponent("JobDownloads/BuildingStudies", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -88,12 +105,12 @@ final class CADBuildingProfessionalCenter {
     private func load(_ id: UUID) throws -> CADBuildingProfessionalOperation {
         try JSONDecoder().decode(CADBuildingProfessionalOperation.self, from: Data(contentsOf: directory(id).appendingPathComponent("operation.json")))
     }
-    func latest(documentURL: URL, action: CADBuildingProfessionalAction, root: URL, conversationID: UUID) -> CADBuildingProfessionalOperation? {
+    func latest(documentURL: URL, action: CADBuildingProfessionalAction, root: URL? = nil, conversationID: UUID? = nil) -> CADBuildingProfessionalOperation? {
         guard let base = try? self.root(), let urls = try? FileManager.default.contentsOfDirectory(at: base, includingPropertiesForKeys: nil) else { return nil }
         return urls.compactMap { url -> CADBuildingProfessionalOperation? in
             guard let id = UUID(uuidString: url.lastPathComponent) else { return nil }; return try? load(id)
         }.filter { $0.documentURL == documentURL.standardizedFileURL.resolvingSymlinksInPath() && $0.action == action
-            && $0.workspaceRoot == root.standardizedFileURL.resolvingSymlinksInPath() && $0.conversationID == conversationID }
+            && $0.workspaceRoot == root?.standardizedFileURL.resolvingSymlinksInPath() && $0.conversationID == conversationID }
             .max { $0.createdAt < $1.createdAt }
     }
     func artifactURLs(_ operation: CADBuildingProfessionalOperation) throws -> [URL] {
@@ -106,98 +123,126 @@ final class CADBuildingProfessionalCenter {
         return result.artifacts.keys.sorted().map { base.appendingPathComponent($0) } + [base.appendingPathComponent("result.json")]
     }
     func startFromUI(document: FloeCADDocument, action: CADBuildingProfessionalAction,
-                     structural: CADBuildingStructuralSettings, root: URL, workspaceID: UUID,
-                     conversationID: UUID) async throws -> CADBuildingProfessionalOperation {
-        guard let environment, let jobs = environment.backgroundJobService else { throw FloeError.validationFailed("Background jobs are unavailable.") }
-        let owners = try await SQLiteWorkspaceStore(database: environment.database).conversations(workspaceID: workspaceID)
-        guard owners.contains(conversationID),
-              let binding = try await TaskExecutionBindingStore(database: environment.database).binding(conversationID: conversationID),
-              let record = await environment.environmentRegistry.record(id: binding.target.environmentID), record.state == .active,
-              [.linuxVM, .remoteSSH].contains(record.effectiveExecutionBackend) else {
-            throw FloeError.validationFailed("Select a Linux execution environment for this task before running a building study.")
-        }
-        let canonicalRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+                     structural: CADBuildingStructuralSettings, root: URL? = nil, workspaceID: UUID? = nil,
+                     conversationID: UUID? = nil) async throws -> CADBuildingProfessionalOperation {
+        let canonicalRoot = root?.standardizedFileURL.resolvingSymlinksInPath()
         if let prior = latest(documentURL: document.url, action: action, root: canonicalRoot, conversationID: conversationID), prior.isRunning {
             let current = try await refresh(prior.id); if current.isRunning { return current }
         }
+        // Bound device memory, and fence reentrant starts while saving a snapshot.
+        guard !preparing, workers.isEmpty else { throw FloeError.validationFailed("Another building study is running. Wait for it or cancel it first.") }
+        preparing = true
+        defer { preparing = false }
         let package = try await document.prepareBuildingProfessional(action: action, structural: structural)
         try Task.checkCancellation()
-        let id = UUID(), runID = UUID(), relative = "BuildingStudies/\(id.uuidString)"
-        let workspaceDirectory = canonicalRoot.appendingPathComponent(relative, isDirectory: true)
-        guard !FileManager.default.fileExists(atPath: workspaceDirectory.path),
-              workspaceDirectory.standardizedFileURL == workspaceDirectory.resolvingSymlinksInPath().standardizedFileURL else { throw FloeError.unauthorized }
-        try FileManager.default.createDirectory(at: workspaceDirectory, withIntermediateDirectories: true)
-        guard Set(package.files.keys) == ["input.json", "runner.py"] else { throw FloeError.validationFailed("The building input package is incomplete.") }
-        for (name, bytes) in package.files { try bytes.write(to: workspaceDirectory.appendingPathComponent(name), options: .atomic) }
-        let script = #"""
-        set -eu
-        umask 077
-        test "$(uname -s)" = Linux || { echo 'This study requires the selected Linux environment.' >&2; exit 69; }
-        command -v python3 >/dev/null
-        test ! -e result.json
-        python3 -m venv .venv
-        .venv/bin/python -m pip install --disable-pip-version-check 'ifcopenshell==0.9.0.post1' 'ifctester==0.9.0' 'PyniteFEA==3.2.1'
-        .venv/bin/python runner.py
-        test -s result.json
-        test -s model.ifc
-        """#
-        let payload = try JSONSerialization.data(withJSONObject: ["script": script, "cwd": relative, "maxOutputBytes": 65536], options: .sortedKeys)
-        var operation = CADBuildingProfessionalOperation(id: id, action: action,
+        guard Set(package.files.keys) == ["input.json"], let input = package.files["input.json"],
+              FloeDigest.sha256Hex(input) == package.sourceSHA256 else { throw FloeError.validationFailed("The building input package is incomplete.") }
+        let id = UUID(), archive = try directory(id)
+        try input.write(to: archive.appendingPathComponent("input.json"), options: .atomic)
+        let operation = CADBuildingProfessionalOperation(id: id, action: action,
             documentURL: document.url.standardizedFileURL.resolvingSymlinksInPath(), workspaceRoot: canonicalRoot,
-            conversationID: conversationID, environmentID: binding.target.environmentID, runID: runID,
-            relativeDirectory: relative, payload: payload, sourceSHA256: package.sourceSHA256,
+            conversationID: conversationID, environmentID: nil, runID: nil,
+            relativeDirectory: "", payload: Data(), sourceSHA256: package.sourceSHA256,
             structural: action == .structure ? structural : nil,
             inputHashes: package.files.mapValues(FloeDigest.sha256Hex), revision: package.revision,
-            changeCount: package.changeCount, state: .preparing, createdAt: Date())
+            changeCount: package.changeCount, state: .running, createdAt: Date(), executionBackend: "device")
         try save(operation)
-        try await environment.runStore.saveRun(RunRecord(id: runID, conversationID: conversationID, state: "completed",
-            goal: "Building study", startedAt: Date(), endedAt: Date(), executionBinding: binding))
-        do {
-            let job = try await jobs.submit(runID: runID, toolCallID: nil, targetTool: "exec.shell", payloadJSON: payload,
-                scope: .local, workspaceRootURL: canonicalRoot, allowedWorkspacePaths: [], environmentID: binding.target.environmentID,
-                allowedToolNames: ["exec.shell"], submissionSource: .nativeService)
-            operation.jobID = job.id; operation.state = .running; try save(operation)
-        } catch { operation.state = .failed; operation.error = error.localizedDescription; try save(operation); throw error }
+        let cancellation = CADBuildingStudyCancellation()
+        cancellations[id] = cancellation
+        // The centre owns execution; dismissing the sheet does not cancel it.
+        workers[id] = Task { [weak self] in
+            guard let self else { return }
+            await execute(id, input: input, cancellation: cancellation)
+        }
         return operation
     }
     func refresh(_ id: UUID) async throws -> CADBuildingProfessionalOperation {
         var operation = try load(id)
         guard operation.isRunning else { return operation }
-        guard let jobs = environment?.backgroundJobService, let jobID = operation.jobID else {
-            operation.state = .interrupted; operation.error = "Preparation was interrupted. Start a new study."; try save(operation); return operation
-        }
-        let job = try await jobs.ownedJob(id: jobID, runID: operation.runID)
-        operation = try load(id)
-        guard job.conversationID == operation.conversationID, job.environmentID == operation.environmentID,
-              job.targetTool == "exec.shell", job.payloadJSON == operation.payload,
-              job.workspaceRootPath.map({ URL(fileURLWithPath: $0).standardizedFileURL.resolvingSymlinksInPath() }) == operation.workspaceRoot else { throw FloeError.unauthorized }
-        guard job.state.isTerminal else { return operation }
-        if operation.state == .cancelling || job.state == .cancelled { operation.state = .cancelled }
-        else if job.state == .interrupted { operation.state = .interrupted; operation.error = job.lastError }
-        else if job.state == .failed { operation.state = .failed; operation.error = job.lastError ?? "The study failed. Inspect its saved job output." }
-        else if job.state == .completed {
+        if workers[id] == nil {
+            // Recover only a complete hash-checked receipt after process death.
             do {
-                let frozen = operation, archive = try directory(id)
-                let worker = Task.detached(priority: .userInitiated) { try Self.verifyAndArchive(frozen, archive: archive) }
-                let result = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
-                operation = try load(id)
-                guard operation.state != .cancelling, operation.state != .cancelled else { return operation }
-                operation.result = result; operation.state = .ready
-            } catch is CancellationError { throw CancellationError() }
-            catch { operation.state = .failed; operation.error = error.localizedDescription }
+                guard operation.executionBackend == "device", operation.state != .cancelling else { throw CancellationError() }
+                operation.result = try Self.verifyAndArchive(operation, archive: directory(id)); operation.state = .ready
+            } catch { operation.state = .interrupted; operation.error = "The calculation was interrupted. Start a new study." }
+            try save(operation)
         }
-        try save(operation); return operation
+        return operation
     }
     func cancel(_ id: UUID) async throws -> CADBuildingProfessionalOperation {
         var operation = try load(id); guard operation.isRunning else { return operation }
-        operation.state = .cancelling; try save(operation)
-        if let jobs = environment?.backgroundJobService, let job = operation.jobID {
-            _ = try await jobs.cancel(id: job); return try await refresh(id)
-        }
-        operation.state = .cancelled; try save(operation); return operation
+        // Persist the fence BEFORE stopping a worker or a WebKit process.
+        operation.state = .cancelled; try save(operation)
+        cancellations[id]?.cancel(); workers[id]?.cancel(); hosts[id]?.close()
+        return operation
     }
+    private func execute(_ id: UUID, input: Data, cancellation: CADBuildingStudyCancellation) async {
+        defer { hosts[id]?.close(); hosts[id] = nil; cancellations[id] = nil; workers[id] = nil }
+        do {
+            let operation = try load(id), archive = try directory(id)
+            guard operation.state == .running else { return }
+            let worker = Task.detached(priority: .userInitiated) { () throws -> Data in
+                switch operation.action {
+                case .structure: return try CADBuildingLocalAnalysis.evaluate(input: input, cancelled: { cancellation.isCancelled })
+                case .mep: return try CADBuildingLocalCoordination.evaluate(input: input, cancelled: { cancellation.isCancelled })
+                case .ifc, .information: return Data("{}".utf8)
+                }
+            }
+            let fragment = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel(); cancellation.cancel() }
+            try Task.checkCancellation()
+            guard !cancellation.isCancelled, try load(id).state == .running else { throw CancellationError() }
+            let host = CADBuildingLocalIFCHost(); hosts[id] = host
+            let output = try await host.run(input: input)
+            try Task.checkCancellation()
+            guard !cancellation.isCancelled, try load(id).state == .running else { throw CancellationError() }
+            // Hash/serialize on a worker. Only a valid final receipt promotes
+            // the operation; partially written artifacts remain recoverable.
+            let receiptWorker = Task.detached(priority: .userInitiated) {
+                guard var metadata = try JSONSerialization.jsonObject(with: output.metadata) as? [String: Any],
+                      let computed = try JSONSerialization.jsonObject(with: fragment) as? [String: Any] else {
+                    throw FloeError.validationFailed("The local building result is incomplete.")
+                }
+                var versions = metadata["backendVersions"] as? [String: String] ?? [:]
+                versions.merge(computed["backendVersions"] as? [String: String] ?? [:]) { _, new in new }
+                metadata["backendVersions"] = versions
+                metadata.removeValue(forKey: "ifcBytes"); metadata.removeValue(forKey: "idsBytes")
+                for key in ["analysis", "coordination"] { if let value = computed[key] { metadata[key] = value } }
+                metadata["schemaVersion"] = 2; metadata["action"] = operation.action.rawValue
+                metadata["sourceSHA256"] = operation.sourceSHA256; metadata["sourceRevision"] = operation.revision
+                var files = ["model.ifc": output.ifc]
+                if let ids = output.ids { files["requirements.ids"] = ids }
+                metadata["artifacts"] = files.mapValues(FloeDigest.sha256Hex)
+                for (name, bytes) in files {
+                    try Task.checkCancellation()
+                    guard !cancellation.isCancelled else { throw CancellationError() }
+                    try bytes.write(to: archive.appendingPathComponent(name), options: .atomic)
+                }
+                let data = try JSONSerialization.data(withJSONObject: metadata, options: .sortedKeys)
+                try Task.checkCancellation()
+                guard !cancellation.isCancelled else { throw CancellationError() }
+                try data.write(to: archive.appendingPathComponent("result.json"), options: .atomic)
+                return try Self.verifyAndArchive(operation, archive: archive)
+            }
+            let result = try await withTaskCancellationHandler { try await receiptWorker.value } onCancel: { receiptWorker.cancel(); cancellation.cancel() }
+            var current = try load(id)
+            guard current.state == .running, !cancellation.isCancelled else { return }
+            current.result = result; current.state = .ready; current.error = nil; try save(current)
+        } catch {
+            guard var current = try? load(id), current.state == .running else { return }
+            current.state = cancellation.isCancelled || error is CancellationError ? .cancelled : .failed
+            current.error = current.state == .failed ? error.localizedDescription : nil
+            try? save(current)
+        }
+    }
+    /// Historical receipts remain readable, but no new operation executes a
+    /// shell/Python job. Device receipts use the service-owned archive only.
     nonisolated static func verifyAndArchive(_ operation: CADBuildingProfessionalOperation, archive: URL) throws -> CADBuildingProfessionalResult {
-        let directory = operation.workspaceRoot.appendingPathComponent(operation.relativeDirectory, isDirectory: true)
+        let device = operation.executionBackend == "device"
+        guard device || operation.workspaceRoot != nil else { throw FloeError.validationFailed("The saved building study has no source directory.") }
+        let directory = device ? archive : operation.workspaceRoot!.appendingPathComponent(operation.relativeDirectory, isDirectory: true)
+        guard !device || (Set(operation.inputHashes.keys) == ["input.json"] && operation.inputHashes["input.json"] == operation.sourceSHA256) else {
+            throw FloeError.validationFailed("The saved building input is incomplete.")
+        }
         for (name, digest) in operation.inputHashes {
             try Task.checkCancellation()
             guard ["input.json", "runner.py"].contains(name),
@@ -205,10 +250,11 @@ final class CADBuildingProfessionalCenter {
         }
         let bytes = try checkedFile(directory.appendingPathComponent("result.json"), root: directory, limit: 2 * 1024 * 1024)
         let result = try JSONDecoder().decode(CADBuildingProfessionalResult.self, from: bytes)
-        guard result.schemaVersion == 1, result.action == operation.action, result.sourceSHA256 == operation.sourceSHA256,
+        let versionsMatch = device ? result.backendVersions["web-ifc"] == "0.0.75" :
+            result.backendVersions["ifcopenshell"] == "0.9.0.post1" && result.backendVersions["ifctester"] == "0.9.0" && result.backendVersions["PyniteFEA"] == "3.2.1"
+        guard result.schemaVersion == (device ? 2 : 1), result.action == operation.action, result.sourceSHA256 == operation.sourceSHA256,
               result.sourceRevision == operation.revision, (0...500_000).contains(result.triangles),
-              result.backendVersions["ifcopenshell"] == "0.9.0.post1", result.backendVersions["ifctester"] == "0.9.0",
-              result.backendVersions["PyniteFEA"] == "3.2.1", result.artifacts["model.ifc"] != nil,
+              versionsMatch, result.artifacts["model.ifc"] != nil,
               result.artifacts.keys.allSatisfy({ ["model.ifc", "requirements.ids"].contains($0) }),
               operation.action != .information || result.artifacts["requirements.ids"] != nil else { throw FloeError.validationFailed("The building engine returned an invalid result receipt.") }
         guard (operation.action != .structure || result.analysis != nil),
@@ -222,7 +268,10 @@ final class CADBuildingProfessionalCenter {
                   analysis.lineLoadNPerMM == operation.structural?.lineLoadNPerMM else { throw FloeError.validationFailed("The structural result is invalid.") }
         }
         if let coordination = result.coordination {
-            guard coordination.clashes.count <= 10_000, coordination.clashes.allSatisfy({ $0.distanceM.isFinite && $0.a.count <= 80 && $0.b.count <= 80 }) else { throw FloeError.validationFailed("The coordination result is invalid.") }
+            guard coordination.clashes.count <= 10_000, coordination.clashes.allSatisfy({ clash in
+                let metric = device ? clash.overlapVolumeM3 : clash.distanceM
+                return metric?.isFinite == true && (!device || metric! > 0) && clash.a.count <= 80 && clash.b.count <= 80
+            }) else { throw FloeError.validationFailed("The coordination result is invalid.") }
         }
         if let information = result.information {
             guard !information.buildingRegulations, information.checks.count <= 1000,

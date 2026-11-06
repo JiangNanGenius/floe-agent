@@ -1,0 +1,192 @@
+{
+  "schemaVersion": 1,
+  "headBeforeIntegration": "ce06df098558199cd6a210a9a5305b3007d18519",
+  "sourceStatus": "Uncommitted shared-main source; per-file hashes bind this component checkpoint. Primary integration owns project generation and commit.",
+  "toolchain": "Xcode 27.2 (27B52), /Applications/Xcode.app",
+  "sourceSHA256": {
+    "FloeAgent/FloeApp/Workspace/CADBuildingProfessional/CADBuildingProfessionalCenter.swift": "e72752af1108991dd84f6f925ba16d75b39a6e4f6c68e1b1df70b0c30cd56d56",
+    "FloeAgent/FloeApp/Workspace/CADBuildingProfessional/CADBuildingProfessionalView.swift": "688da5e4cbb77f3f70f4ff39f7e5edbc518ecdcd890daa56dc8bd6e00194c7bd",
+    "FloeAgent/FloeApp/Workspace/CADBuildingProfessional/CADBuildingLocalIFCHost.swift": "45ebce608ea5bc31f01b40c940398d6c25e51dc1c806c53da8852ea6bda835f3",
+    "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingInspection.swift": "644d53a7cd051ad3532d8261e3065d45dab4ddef42b68a68011fc64ce71dcde1",
+    "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalAnalysis.swift": "a5c56f014723bb8e1cd58f744fad11259b885ec64a1843257214db6dd6091e0c",
+    "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalCoordination.swift": "77617b5d064c82874c00557a1ad3c1b8b1f9468ee0500c36d0401de6139b3da2",
+    "FloeAgent/FloeApp/Workspace/CADOfflineRender/CADOfflineRenderCenter.swift": "92c453daf33c89e625029f3a43e148f10d134232381fb2cf58477faec5d68284",
+    "FloeAgent/FloeApp/Workspace/CADOfflineRender/CADOfflineRenderCommands.swift": "9db876c34d81a53563781465fe188f89f9db8bec9dc12cc140197c2343359cf4",
+    "FloeAgent/FloeApp/Workspace/CADOfflineRender/CADOfflineRenderView.swift": "90de52e066bd315e792922c3112766bf00b2529a34c3b52cee3bdd08ca3d90fe",
+    "FloeAgent/FloeApp/Workspace/CADOfflineRender/CADNativeRenderHost.swift": "7957dd11fcdd0c5c612c129c5bc252e0d7267530dbd2d24ab27680bdb9439896",
+    "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Presentation/CADOfflineRender.swift": "9f616d52a2600a78b48628ce4f9c32d01c47d6d5676ac56104363693266d6a3e",
+    "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Presentation/CADOfflineRenderSnapshot.swift": "e37a782608ec04a12dd4a4d6f940b99bfd9d211d29bb457f93cd3b65ce11723d"
+  },
+  "componentArtifacts": {
+    "Local/Artifacts/cad-ondevice-professional-20261106/components/LocalBuildingProbe": "8ccc2c0f5b749bd76e7bedd3457c9f456ca8fd48899ac024da019c501379726a",
+    "Local/Artifacts/cad-ondevice-professional-20261106/components/libFloeCADLocalBuildingQualification.dylib": "55428dc8fb152d5e5cc24a4e9d773f8c0d6eee651e2bd411ee5d4337ab3da034",
+    "Local/Artifacts/cad-ondevice-professional-20261106/components/FloeCAD.swiftmodule": "6fc8eaadf4079e1e4aff3359119285206735b5650d52bf0322a17486680bc25e",
+    "Local/Artifacts/cad-ondevice-professional-20261106/components/IFCAppHost.o": "0a814bad642c19921b7aee34a2013df59d05a85ef7aac72666d633961c94d46f",
+    "Local/Artifacts/cad-ondevice-professional-20261106/components/IFCAppServices.o": "6916d11590a0d2c7b01aed4b4fcdeeee656a794b542e984168c6bcacf21b44ef"
+  },
+  "appObjectCompile": {
+    "exitCode": 0,
+    "swiftVersion": 6,
+    "defaultIsolation": "MainActor",
+    "target": "arm64-apple-ios26.0-simulator",
+    "sources": "Actual new Center/View/IFCHost; AppEnvironment, LocalPreviewServer and fresh solver signatures have qualification-only bindings; real prebuilt App dependency modules reused read-only.",
+    "fullAppRuntime": false
+  },
+  "nativeAnalysis": {
+    "exitCode": 0,
+    "elapsedSeconds": 0.285978,
+    "layer": "macOS native component with real new APIs, real BuildingModel, real product Manifold; qualification-only display/persistence bindings; not App or iPad/iPhone runtime",
+    "toolchain": "Xcode 27.2 (27B52)",
+    "swiftMode": "Swift 6, default isolation MainActor, real SIL/object/link, optimization -O",
+    "simpleMinimumMM": -0.03125,
+    "cantileverMinimumMM": -0.30000000000000004,
+    "reactionSumN": 8000,
+    "clashVolumeM3": 0.0015663143362233843,
+    "candidatePairsForDisjoint": 1,
+    "disjointClashes": 0,
+    "cancellationRefused": true
+  },
+  "ifcSmallFixture": {
+    "backend": "web-ifc 0.0.75 Node/WASM on macOS",
+    "products": 2,
+    "storeys": 1,
+    "triangles": 4,
+    "geometryBodies": 1,
+    "ifcBytes": 1903,
+    "unicodeRoundtrip": true,
+    "checks": [
+      {
+        "name": "IFCWALL Name",
+        "passed": true,
+        "applicable": 1,
+        "failed": 0
+      },
+      {
+        "name": "IFCSPACE Name",
+        "passed": true,
+        "applicable": 1,
+        "failed": 0
+      }
+    ],
+    "idsBytes": 1135,
+    "timing": "Original macOS Node/WASM fixture preceded the header timestamp addition; its success is not relabeled as a final-device runtime result."
+  },
+  "heavyRevalidation": false,
+  "physicalDeviceAcceptance": false,
+  "gpuRuntimeAcceptance": false,
+  "release": false,
+  "renderExchange": {
+    "checks": "Swift 6/default MainActor object + JSON/invalid-index; bundle JS syntax and SHA256",
+    "gpuRuntime": false,
+    "backend": "three-gpu-pathtracer-webgl2",
+    "version": "0.0.24-three0.181.1-bvh0.9.5",
+    "manifest": {
+      "schemaVersion": 1,
+      "backend": "three-gpu-pathtracer-webgl2",
+      "revision": "0.0.24-three0.181.1-bvh0.9.5",
+      "files": {
+        "index.html": "9407978b85face105e8c261f265951bf526b1aeb6aba40dc629c285349600f00",
+        "engine.js": "b7f80175498e0abad6d9e80fb9e8595730f937c3acc472e5061489e08b481c10"
+      }
+    }
+  },
+  "buildingResources": {
+    "schemaVersion": 1,
+    "backend": "web-ifc",
+    "version": "0.0.75",
+    "files": {
+      "index.html": "96e8eb4ac16f49c4718e0057bc10abd462e7c9554d4fee762c5f295a8e0ba729",
+      "building.js": "a171d2ca79e528f65d3fd950741e94a56cba8fb6168fbd8511546cdab6a85156",
+      "web-ifc-api-iife.js": "092d040a15b927f6ad086d0eb314f2722da319d7fbd30d2bd6af373fda4cbe8a",
+      "web-ifc.wasm": "e648082850c8dcfdf1a00502946567e48bbcf9bdd5f63b1c0191577cea526bdb"
+    }
+  },
+  "cleanup": {
+    "reclaimedMiB": 211.73,
+    "retained": "Immutable component objects, fixtures, pins, and success/failure logs; other task caches and Simulator preserved.",
+    "renderAdditionalMiB": 74.05
+  },
+  "appIntegration": {
+    "stage": "stage11b",
+    "buildForTesting": "passed, reported by the primary integration owner",
+    "firstFailure": "stage11: missing import FloeTools in CADOfflineRenderCenter; the existing public artifact store is owned by that module",
+    "revalidatedProfessionalMatrix": false,
+    "runtimeAcceptance": false
+  },
+  "integrationSourceSHA256": {
+    "FloeAgent/FloeApp/Workspace/CADOfflineRender/CADOfflineRenderCenter.swift": "781241b36ee494fabe70087db86df5b3788ed52653d289e7d9a45f7af95af4b2"
+  },
+  "licenseInventory": {
+    "generated": true,
+    "readOnlyCheck": "passed",
+    "components": 241,
+    "bundledNotices": 53,
+    "swiftPackageRows": 40,
+    "newComponents": 6,
+    "newNotices": 4,
+    "preservedInitialFailures": [
+      "consumer/host swift-log conflict",
+      "consumer/host eventsource and other pin conflicts"
+    ],
+    "resolution": "Owner regenerated the independent consumer with the actual App host constraints; no lock copy/checker bypass."
+  },
+  "buildingResourcesBeforeHeaderTimestampFix": {
+    "schemaVersion": 1,
+    "backend": "web-ifc",
+    "version": "0.0.75",
+    "files": {
+      "index.html": "96e8eb4ac16f49c4718e0057bc10abd462e7c9554d4fee762c5f295a8e0ba729",
+      "building.js": "c06c96a45b221511e2452cc92dfdda99d23710e34038e5bc9e7a439da1fee553",
+      "web-ifc-api-iife.js": "092d040a15b927f6ad086d0eb314f2722da319d7fbd30d2bd6af373fda4cbe8a",
+      "web-ifc.wasm": "e648082850c8dcfdf1a00502946567e48bbcf9bdd5f63b1c0191577cea526bdb"
+    }
+  },
+  "ifcHeaderIntegration": {
+    "timestamp": "ISO 8601 device UTC; original ReferenceView header fields preserved",
+    "javascriptSyntax": "node --check passed, reported by primary owner",
+    "runtimeAssertion": "Passed in actual stage13 App WebKit test on the reused iPad Simulator",
+    "thirdPartyEngineChanged": false
+  },
+  "appRuntime": {
+    "stage": "stage13",
+    "platform": "Canonical reused iPad Simulator, not a physical device",
+    "buildForTesting": "passed",
+    "relatedXCTests": 6,
+    "failures": 0,
+    "actualPaths": [
+      "Bundled WebKit/WASM IFC generation, geometry reopen and ISO header timestamp",
+      "Bundled WebGL2 path tracing at 64x64, 16 accumulated samples, decoded PNG"
+    ],
+    "contractChecks": "3 CADLocalRenderContract + 1 new device receipt; prior 34 native/3 UI matrix not rerun",
+    "otherModulesSwiftTesting": 8,
+    "evidence": "Local/Private/predev-app-integration-20261106/native-work-stage12-tests.{json,log,xcresult}, historical script name; actual stage13 App",
+    "buildEvidence": "Local/Private/predev-app-integration-20261106/app-tests-stage13-native-hosts.json",
+    "baseCommitAtRun": "573550897a930761c47a49160daf5890b62be8f1",
+    "sourceOverlay": "Shared-main CAD working tree; this base commit alone is not an immutable source tag for all lane changes.",
+    "bootedAfter": []
+  },
+  "simulatorGPURuntimeAcceptance": true,
+  "finalProjectIdentityCheck": {
+    "check": "Bounded pure STEP-adapter cross-project identity/header check after namespace patch",
+    "sourceSHA256": "a171d2ca79e528f65d3fd950741e94a56cba8fb6168fbd8511546cdab6a85156",
+    "rootsPerProject": 5,
+    "sharedGlobalIDs": 0,
+    "isoTimestamp": true,
+    "ifcGeometryParserRun": false,
+    "passed": true
+  },
+  "finalSourceSHA256": {
+    "FloeAgent/FloeApp/Workspace/CADBuildingProfessional/CADBuildingProfessionalCenter.swift": "e72752af1108991dd84f6f925ba16d75b39a6e4f6c68e1b1df70b0c30cd56d56",
+    "FloeAgent/FloeApp/Workspace/CADBuildingProfessional/CADBuildingProfessionalView.swift": "688da5e4cbb77f3f70f4ff39f7e5edbc518ecdcd890daa56dc8bd6e00194c7bd",
+    "FloeAgent/FloeApp/Workspace/CADBuildingProfessional/CADBuildingLocalIFCHost.swift": "45ebce608ea5bc31f01b40c940398d6c25e51dc1c806c53da8852ea6bda835f3",
+    "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingInspection.swift": "644d53a7cd051ad3532d8261e3065d45dab4ddef42b68a68011fc64ce71dcde1",
+    "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalAnalysis.swift": "a5c56f014723bb8e1cd58f744fad11259b885ec64a1843257214db6dd6091e0c",
+    "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalCoordination.swift": "77617b5d064c82874c00557a1ad3c1b8b1f9468ee0500c36d0401de6139b3da2",
+    "FloeAgent/FloeApp/Workspace/CADOfflineRender/CADOfflineRenderCenter.swift": "781241b36ee494fabe70087db86df5b3788ed52653d289e7d9a45f7af95af4b2",
+    "FloeAgent/FloeApp/Workspace/CADOfflineRender/CADOfflineRenderCommands.swift": "9db876c34d81a53563781465fe188f89f9db8bec9dc12cc140197c2343359cf4",
+    "FloeAgent/FloeApp/Workspace/CADOfflineRender/CADOfflineRenderView.swift": "90de52e066bd315e792922c3112766bf00b2529a34c3b52cee3bdd08ca3d90fe",
+    "FloeAgent/FloeApp/Workspace/CADOfflineRender/CADNativeRenderHost.swift": "7957dd11fcdd0c5c612c129c5bc252e0d7267530dbd2d24ab27680bdb9439896",
+    "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Presentation/CADOfflineRender.swift": "9f616d52a2600a78b48628ce4f9c32d01c47d6d5676ac56104363693266d6a3e",
+    "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Presentation/CADOfflineRenderSnapshot.swift": "e37a782608ec04a12dd4a4d6f940b99bfd9d211d29bb457f93cd3b65ce11723d"
+  }
+}

@@ -48,8 +48,8 @@ public actor MeetingService {
     // MARK: - Meetings
 
     @discardableResult
-    public func createMeeting(title: String, capabilities: MeetingProcessingCapabilities = .unavailable) async throws -> MeetingID {
-        let meeting = MeetingSnapshot(title: title, capabilities: capabilities)
+    public func createMeeting(id: MeetingID = MeetingID(), title: String, capabilities: MeetingProcessingCapabilities = .unavailable) async throws -> MeetingID {
+        let meeting = MeetingSnapshot(id: id, title: title, capabilities: capabilities)
         try await database.insertMeeting(meeting)
         return meeting.id
     }

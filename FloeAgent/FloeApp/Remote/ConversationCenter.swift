@@ -1660,7 +1660,7 @@ final class ConversationCenter: ObservableObject {
         // Temporary conversations never enter the saved list projection.
         guard !isTemporaryConversation(conversationID) else { return }
         guard let fresh = try? await environment.conversationStore.conversation(id: conversationID) else { return }
-        guard fresh.purpose == .ordinary, fresh.visibility == .normal else {
+        guard fresh.isVisibleInOrdinaryList else {
             conversations.removeAll { $0.id == conversationID }
             return
         }

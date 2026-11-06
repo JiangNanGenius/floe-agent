@@ -17,6 +17,7 @@ struct CADBuildingProfessionalView: View {
     @State private var inputsConfirmed = false
     @State private var operation: CADBuildingProfessionalOperation?
     @State private var starting = false
+    @State private var startTask: Task<Void, Never>?
     @State private var cancelling = false
     @State private var message: String?
     @State private var artifacts: [URL] = []
@@ -36,28 +37,26 @@ struct CADBuildingProfessionalView: View {
             && structural.lineLoadNPerMM.isFinite && (0.000001...1e6).contains(structural.lineLoadNPerMM)
     }
     private var canStart: Bool {
-        root != nil && workspaceID != nil && conversationID != nil && !starting
-            && operation?.isRunning != true && (action != .structure || structuralValid)
+        !starting && operation?.isRunning != true && (action != .structure || structuralValid)
     }
     var body: some View {
         NavigationStack {
             Form {
                 Section {
                     Text(introduction).font(.callout).foregroundStyle(.secondary)
-                    Text(t("在当前任务选择的 Linux 环境中运行，首次使用会安装计算组件。", "Runs in this task’s selected Linux environment. The first run installs its calculation components."))
+                    Text(t("在此设备上计算，无需安装额外组件。", "Calculates on this device with no additional setup."))
                         .font(.caption).foregroundStyle(.secondary)
-                    if root == nil || workspaceID == nil || conversationID == nil {
-                        Text(t("请从任务工作区打开建筑模型，并选择 Linux 执行环境。", "Open the building from a task workspace and select a Linux execution environment."))
-                    }
                 }
                 if action == .structure { structuralInputs.disabled(starting || operation?.isRunning == true) }
                 Section {
                     if starting || operation?.isRunning == true {
                         HStack {
                             ProgressView()
-                            Text(operation?.state == .cancelling ? t("正在取消…", "Cancelling…") : t("正在准备并计算…", "Preparing and calculating…"))
+                            Text(cancelling || operation?.state == .cancelling ? t("正在取消…", "Cancelling…") : t("正在准备并计算…", "Preparing and calculating…"))
                             Spacer()
-                            if let operation {
+                            if starting {
+                                Button(t("取消", "Cancel"), role: .destructive) { cancelling = true; startTask?.cancel() }.disabled(cancelling)
+                            } else if let operation {
                                 Button(t("取消", "Cancel"), role: .destructive) { cancel(operation.id) }.disabled(cancelling)
                             }
                         }.accessibilityIdentifier("cad.building.professional.progress")
@@ -73,7 +72,7 @@ struct CADBuildingProfessionalView: View {
                         }
                     }
                     if let message {
-                        Text(t("未能完成本次计算，请检查执行环境与输入。", "The study could not complete. Check its execution environment and inputs.")).foregroundStyle(.red)
+                        Text(t("未能完成本次计算，请检查模型与输入。", "The study could not complete. Check its model and inputs.")).foregroundStyle(.red)
                         DisclosureGroup(t("错误详情", "Error details")) { Text(message).font(.caption).textSelection(.enabled) }
                     }
                 }
@@ -102,7 +101,7 @@ struct CADBuildingProfessionalView: View {
                 catch { message = error.localizedDescription }
             }
             .task(id: operation?.id) {
-                if operation == nil, let root, let conversationID {
+                if operation == nil, !starting {
                     operation = environment.buildingProfessionalCenter.latest(documentURL: document.url, action: action, root: root, conversationID: conversationID)
                 }
                 while !Task.isCancelled, let current = operation {
@@ -159,14 +158,23 @@ struct CADBuildingProfessionalView: View {
         if let coordination = result.coordination {
             Section(t("几何协调结果", "Geometric coordination")) {
                 if coordination.status == "notEvaluated" {
-                    Text(t("添加管道或风管及建筑构件后再运行检查。", "Add a pipe or duct and building geometry, then run this check again."))
+                    Text(t("未能完成几何检查。请检查管道、风管与建筑构件是否具有封闭几何。", "Geometry could not be evaluated. Check that pipes, ducts and building elements have closed geometry."))
                 } else {
+                    if coordination.status == "partiallyEvaluated" {
+                        Text(t("部分构件未能计算，请查看保存的详细结果。", "Some geometry could not be evaluated. See the saved detailed result."))
+                            .foregroundStyle(.secondary)
+                    }
                     LabeledContent(t("相交数量", "Intersections"), value: "\(coordination.clashes.count)")
+                    if let count = coordination.unevaluatedMeshPairs, count > 0 { LabeledContent(t("未完成的构件对", "Unevaluated pairs"), value: "\(count)") }
                     if let tolerance = coordination.toleranceM { LabeledContent(t("容差", "Tolerance"), value: number(tolerance * 1000, unit: "mm")) }
                     ForEach(Array(coordination.clashes.prefix(50).enumerated()), id: \.offset) { _, clash in
                         VStack(alignment: .leading) {
                             Text("\(clash.a) ↔ \(clash.b)").font(.caption.monospaced())
-                            Text(number(clash.distanceM * 1000, unit: "mm")).font(.caption)
+                            if let volume = clash.overlapVolumeM3 {
+                                Text(t("相交体积 ", "Overlap volume ") + number(volume, unit: "m³")).font(.caption)
+                            } else if let distance = clash.distanceM {
+                                Text(number(distance * 1000, unit: "mm")).font(.caption)
+                            }
                         }
                     }
                 }
@@ -196,12 +204,16 @@ struct CADBuildingProfessionalView: View {
         }
     }
     private func start() {
-        guard let root, let workspaceID, let conversationID, canStart else { return }
-        starting = true; message = nil; artifacts = []
-        Task {
-            defer { starting = false }
-            do { operation = try await environment.buildingProfessionalCenter.startFromUI(document: document, action: action,
-                structural: structural, root: root, workspaceID: workspaceID, conversationID: conversationID) }
+        guard canStart else { return }
+        starting = true; message = nil; artifacts = []; operation = nil
+        startTask = Task {
+            defer { starting = false; cancelling = false; startTask = nil }
+            do {
+                let created = try await environment.buildingProfessionalCenter.startFromUI(document: document, action: action,
+                    structural: structural, root: root, workspaceID: workspaceID, conversationID: conversationID)
+                operation = Task.isCancelled ? try await environment.buildingProfessionalCenter.cancel(created.id) : created
+            }
+            catch is CancellationError { }
             catch { message = error.localizedDescription }
         }
     }
