@@ -93,6 +93,15 @@ internal fun AppUpdateSettingsEntry() {
                     modifier = Modifier.padding(vertical = 2.dp),
                 )
             })
+            if (ui.check is AppCheckState.UpdateAvailable && ui.download is AppDownloadState.Idle) {
+                SectionItem(title = {
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.app_update_download_full),
+                        onClick = { controller.startFullDownload() },
+                        modifier = Modifier.padding(vertical = 2.dp),
+                    )
+                })
+            }
         }
     }
 }

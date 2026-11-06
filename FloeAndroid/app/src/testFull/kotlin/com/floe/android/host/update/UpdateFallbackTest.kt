@@ -42,7 +42,11 @@ class UpdateFallbackTest {
         exerciseFallback(recreate = true)
     }
 
-    private suspend fun exerciseFallback(recreate: Boolean) {
+    @Test fun explicitFullChoiceSkipsDeltaAndInstalledBaseAcrossVersions() = runBlocking {
+        exerciseFallback(recreate = false, directFull = true)
+    }
+
+    private suspend fun exerciseFallback(recreate: Boolean, directFull: Boolean = false) {
         val dir = Files.createTempDirectory("floe-fallback-").toFile()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val base = dir.resolve("installed.apk").apply { writeBytes(ByteArray(900) { 7 }) }
@@ -88,15 +92,20 @@ class UpdateFallbackTest {
         val restoredScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val subject = UpdateDownloader(scope, transport, store, dir.resolve("staging"), { null },
             deltaBaseProvider = InstalledBaseProvider {
+                check(!directFull) { "Full download must not require an installed delta base" }
                 InstalledBaseInfo(base, base.length(), "com.floe.agent.full", "0.1.0-alpha.16", 18,
                     setOf(signer), false, 35)
             })
         try {
-            subject.start(release)
-            awaitCondition { subject.state.value is AppDownloadState.DeltaFallback }
-            assertEquals(1, patchOpens.get())
-            assertEquals(0, fullOpens.get())
-            val downloader = if (recreate) {
+            if (directFull) {
+                subject.startFull(release)
+            } else {
+                subject.start(release)
+                awaitCondition { subject.state.value is AppDownloadState.DeltaFallback }
+                assertEquals(1, patchOpens.get())
+                assertEquals(0, fullOpens.get())
+            }
+            val downloader = if (directFull) subject else if (recreate) {
                 scope.coroutineContext[Job]!!.cancelAndJoin()
                 val restored = UpdateDownloader(restoredScope, transport, store, dir.resolve("staging"), { null })
                 restored.reconcile()
@@ -113,7 +122,7 @@ class UpdateFallbackTest {
             }
             awaitCondition { downloader.state.value is AppDownloadState.Ready }
             assertEquals(DownloadMode.FULL, (downloader.state.value as AppDownloadState.Ready).mode)
-            assertEquals(1, patchOpens.get())
+            assertEquals(if (directFull) 0 else 1, patchOpens.get())
             assertEquals(1, fullOpens.get())
             assertArrayEquals(full, downloader.readyFile()!!.readBytes())
             assertEquals(sha(ByteArray(900) { 7 }), sha(base.readBytes()))

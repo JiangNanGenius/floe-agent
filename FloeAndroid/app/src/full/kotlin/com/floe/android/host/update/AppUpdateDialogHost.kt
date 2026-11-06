@@ -145,12 +145,10 @@ private fun NewVersionContent(controller: AppUpdateController, ui: AppUpdateUiSt
             onClick = { controller.dismissDialog() },
         )
     }
-    if (release.delta != null) {
-        FloeCapsuleAction(
-            label = stringResource(R.string.app_update_download_full),
-            onClick = { controller.startFullDownload() },
-        )
-    }
+    FloeCapsuleAction(
+        label = stringResource(R.string.app_update_download_full),
+        onClick = { controller.startFullDownload() },
+    )
 }
 
 @Composable

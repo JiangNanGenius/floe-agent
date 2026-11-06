@@ -78,6 +78,16 @@ class UpdateCheckControllerTest {
     }
 
     @Test
+    fun oldVersionDiscoversNewestWithoutIntermediateInstalls() {
+        val subject = controller(FakeFeed(listOf(page(
+            release("0.1.0-alpha.14"), release("0.1.0-alpha.28"),
+        ))), FakeStore(), current = "0.1.0-alpha.3")
+        subject.manualCheck()
+        assertEquals("0.1.0-alpha.28",
+            (subject.state.value as AppCheckState.UpdateAvailable).release.version.toString())
+    }
+
+    @Test
     fun cooldownSuppressesAutomaticCheck() {
         val store = FakeStore().apply { lastCheckAtMillis = now - 60_000L }
         val feed = FakeFeed(listOf(page(release("0.1.0-alpha.14"))))
