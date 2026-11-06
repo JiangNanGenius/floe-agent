@@ -9,6 +9,8 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
+import android.os.SystemClock
+import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.work.Constraints
 import androidx.work.NetworkType
@@ -32,6 +34,8 @@ internal object TaskScheduleConditions {
     private val observations = Any()
     private var powerReceiver: BroadcastReceiver? = null
     private var callback: ConnectivityManager.NetworkCallback? = null
+    private var bootIdentity: String? = null // Accessed only under observations.
+    private val processIdentity = UUID.randomUUID().toString()
     data class Event(val id: String, val condition: String, val at: Long)
 
     @Synchronized
@@ -100,39 +104,51 @@ internal object TaskScheduleConditions {
         enqueue(context)
     }
 
-    private fun observe(context: Context, states: List<Pair<String, Boolean>>): Boolean = synchronized(observations) {
+    private fun observe(context: Context, states: List<Pair<String, Boolean>>): ConditionObservation = synchronized(observations) {
         val prefs = context.getSharedPreferences("floe.schedule.conditions", Context.MODE_PRIVATE)
         val queue = JSONArray(prefs.getString("pending", "[]"))
         val now = System.currentTimeMillis()
+        val elapsed = SystemClock.elapsedRealtime()
+        val boot = bootIdentity ?: runCatching {
+            "boot:${Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT)}"
+        }.getOrElse { "process:$processIdentity" }.also { bootIdentity = it }
         val editor = prefs.edit()
         for ((condition, active) in states) {
-            if (active && !prefs.getBoolean("active.$condition", false) &&
-                now - prefs.getLong("last.$condition", 0) >= 30_000) {
-                if (queue.length() >= 32) return@synchronized false
+            if (TaskScheduleConditionPolicy.risingEdge(
+                    prefs.getBoolean("active.$condition", false), active, elapsed,
+                    if (prefs.contains("last_elapsed.$condition")) prefs.getLong("last_elapsed.$condition", -1) else null,
+                    prefs.getString("last_boot.$condition", null) == boot)) {
+                if (queue.length() >= 32) return@synchronized ConditionObservation.QUEUE_FULL
                 queue.put(JSONObject().put("id", UUID.randomUUID().toString()).put("condition", condition).put("at", now))
-                editor.putLong("last.$condition", now)
+                editor.putLong("last_elapsed.$condition", elapsed).putString("last_boot.$condition", boot)
             }
-            editor.putBoolean("active.$condition", active)
+            // Migrate the old wall-clock debounce in the same preference write;
+            // pending event IDs and observation timestamps stay unchanged.
+            editor.remove("last.$condition").putBoolean("active.$condition", active)
         }
         // Commit the observed edge and stable event ID before starting native work.
-        editor.putString("pending", queue.toString()).commit()
+        if (editor.putString("pending", queue.toString()).commit()) ConditionObservation.DURABLE
+        else ConditionObservation.STORAGE_UNAVAILABLE
     }
 
     suspend fun drain(context: Context, submit: suspend (Event) -> Boolean): Boolean = gate.withLock {
-        val battery = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        val status = battery?.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
-        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
-        if (!observe(context, listOf("charging" to charging, "networkConnected" to connected(context)))) return@withLock false
         val prefs = context.getSharedPreferences("floe.schedule.conditions", Context.MODE_PRIVATE)
-        while (true) {
-            val event = synchronized(observations) {
+        TaskScheduleConditionPolicy.drain(
+            observe = {
+                // Re-read actual state after making space, rather than replaying
+                // the snapshot taken before a slow native submission.
+                val battery = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                val status = battery?.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+                val charging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
+                observe(context, listOf("charging" to charging, "networkConnected" to connected(context)))
+            },
+            peek = { synchronized(observations) {
                 val queue = JSONArray(prefs.getString("pending", "[]"))
                 if (queue.length() == 0) null else queue.getJSONObject(0).let {
                     Event(it.getString("id"), it.getString("condition"), it.getLong("at"))
                 }
-            } ?: return@withLock true
-            if (!submit(event)) return@withLock false
-            val saved = synchronized(observations) {
+            } },
+            acknowledge = { event -> synchronized(observations) {
                 // A live receiver may append during native submission. Re-read so
                 // acknowledging one event cannot discard those later observations.
                 val queue = JSONArray(prefs.getString("pending", "[]"))
@@ -141,10 +157,9 @@ internal object TaskScheduleConditions {
                     queue.remove(0)
                     prefs.edit().putString("pending", queue.toString()).commit()
                 }
-            }
-            if (!saved) return@withLock false
-        }
-        @Suppress("UNREACHABLE_CODE") false
+            } },
+            submit = submit,
+        )
     }
 
 }

@@ -1167,6 +1167,7 @@ private fun scheduleErrorMessage(code: String?): String = when (code) {
     "payloadTooLarge" -> stringResource(R.string.schedule_error_payload_too_large)
     "exactAlarmPermission" -> stringResource(R.string.schedule_error_exact)
     "notifications_blocked" -> stringResource(R.string.schedule_error_notifications)
+    "condition_clock_changed" -> stringResource(R.string.schedule_condition_clock_changed)
     "timeout", "runtime_unavailable", "runtimeUnavailable", "superseded" ->
         stringResource(R.string.schedule_error_runtime)
     "storeUnavailable", "rearm_failed" -> stringResource(R.string.schedule_error_store)

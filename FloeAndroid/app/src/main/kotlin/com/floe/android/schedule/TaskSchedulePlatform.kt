@@ -632,11 +632,22 @@ internal class TaskScheduleCoordinator(
             for (summary in page.schedules) {
                 if (!summary.enabled || summary.cadence.wire != event.condition) continue
                 val detail = (commands.detail(summary.id) as? TaskScheduleResult.Ok)?.value ?: return false
+                val currentSummary = detail.summary
+                if (!currentSummary.enabled || currentSummary.cadence.wire != event.condition) continue
                 // A new schedule must not consume an event which predates it.
                 if ((detail.createdAtMillis ?: Long.MAX_VALUE) > event.at) continue
-                when (val accepted = commands.systemEvent(summary, event.id, event.at)) {
-                    is TaskScheduleResult.Ok -> if (accepted.value.accepted) enqueuePendingDispatch(summary.id) else return false
-                    is TaskScheduleResult.Failure -> return false
+                when (val accepted = commands.systemEvent(currentSummary, event.id, event.at)) {
+                    is TaskScheduleResult.Ok -> if (accepted.value.accepted && accepted.value.scheduleID == currentSummary.id)
+                        enqueuePendingDispatch(currentSummary.id) else return false
+                    is TaskScheduleResult.Failure -> {
+                        // A timestamp invalidated by moving the clock backwards
+                        // is a definite native refusal, not an uncertain launch.
+                        // Retire this transport event only after its failure is
+                        // durably visible; never fabricate an occurrence/run.
+                        if (!TaskScheduleConditionPolicy.clockRejected(accepted.code, event.at, System.currentTimeMillis()))
+                            return false
+                        if (!choices.setNoticeDurably(currentSummary.id, "condition_clock_changed")) return false
+                    }
                 }
             }
             if (!page.hasMore) return true
@@ -647,8 +658,8 @@ internal class TaskScheduleCoordinator(
     }
 
     private suspend fun waitForHost(timeoutMillis: Long): RuntimeHost? {
-        val deadline = System.currentTimeMillis() + timeoutMillis
-        while (System.currentTimeMillis() < deadline) {
+        val deadline = android.os.SystemClock.elapsedRealtime() + timeoutMillis
+        while (android.os.SystemClock.elapsedRealtime() < deadline) {
             val current = host
             if (current != null && current.nativeRootEpoch() != null) return current
             delay(250)

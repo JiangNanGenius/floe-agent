@@ -1,0 +1,3 @@
+<resources>
+    <string name="schedule_condition_clock_changed">系统时间已改变，此前的一次条件触发未执行。请检查计划，或手动运行。后续触发仍然启用。</string>
+</resources>

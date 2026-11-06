@@ -41,6 +41,10 @@ internal class TaskScheduleChoiceStore(context: Context) {
         editor.apply()
     }
 
+    /** A terminal OS-event refusal must survive before its queue entry is removed. */
+    fun setNoticeDurably(scheduleID: String, notice: String): Boolean =
+        preferences.edit().putString("$KEY_NOTICE$scheduleID", notice.take(64)).commit()
+
     /** All ids that currently carry a transport/waiting notice. */
     fun noticeIDs(): Set<String> =
         preferences.all.keys

@@ -1,0 +1,3 @@
+<resources>
+    <string name="schedule_condition_clock_changed">The system clock changed, so an earlier condition event was not run. Check this schedule or run it manually. Future triggers remain enabled.</string>
+</resources>
