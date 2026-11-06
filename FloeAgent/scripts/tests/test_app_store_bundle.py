@@ -180,6 +180,19 @@ class PrivacyManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reviewed as clean but now uses"):
             self.run_policy()
 
+    def test_static_framework_stubs_still_reject_required_reason_apis(self):
+        for name in ("FloeChemistryBridge", "FloeMachiningNative"):
+            with self.subTest(framework=name):
+                root = self.add_framework(name, thin())
+                binary = root / name
+                before = binary.read_bytes()
+                self.run_policy()
+                self.assertEqual(binary.read_bytes(), before)
+                binary.write_bytes(thin_with_symbols(undefined=["_fstat"]))
+                with self.assertRaisesRegex(ValueError, "reviewed as clean but now uses"):
+                    self.run_policy()
+                binary.write_bytes(before)
+
     def test_controlled_manifest_is_injected_without_touching_binary(self):
         root = self.add_framework("CPDFium", thin())
         binary_before = (root / "CPDFium").read_bytes()

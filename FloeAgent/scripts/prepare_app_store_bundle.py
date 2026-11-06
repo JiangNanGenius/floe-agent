@@ -106,9 +106,10 @@ REBUILT_TARGETS = {"shell": "shell.framework", "text": "text.framework"}
 REVIEWED_EMBEDDED_FRAMEWORKS = {
     "CPDFium.framework": "CPDFium",
     "FloeOfficeNative.framework": "FloeOfficeNative",
-    # Chemistry is statically linked into the app; Xcode embeds a codeless stub.
+    # These engines link statically into the app; Xcode embeds codeless stubs.
     # The normal required-reason scan still rejects any later API use here.
     "FloeChemistryBridge.framework": None,
+    "FloeMachiningNative.framework": None,
     "RoyalVNCKit.framework": "RoyalVNCKit",
     "awk.framework": None,
     "curl_ios.framework": "curl_ios",

@@ -79,8 +79,16 @@ for spec in \
   printf 'framework module FloeMachiningNative {\n  umbrella header "FloeMachiningNative.h"\n  export *\n}\n' > "$dir/Modules/module.modulemap"
   cp "$CARGO_TARGET_DIR/$target/release/libFloeMachiningNative.a" \
      "$dir/FloeMachiningNative"
-  python3 - "$dir/Info.plist" <<'PY'
+  python3 - "$dir/Info.plist" "$name" <<'PY'
 import plistlib, sys
+# Xcode retains this metadata when it embeds a static framework with a stub
+# executable. Match the package's supported deployment versions so that the
+# resulting App bundle is valid for distribution as well as local linking.
+if sys.argv[2] == "macos-arm64":
+    deployment = {"LSMinimumSystemVersion": "15.0", "CFBundleSupportedPlatforms": ["MacOSX"]}
+else:
+    platform = "iPhoneSimulator" if sys.argv[2].endswith("-simulator") else "iPhoneOS"
+    deployment = {"MinimumOSVersion": "26.0", "CFBundleSupportedPlatforms": [platform]}
 with open(sys.argv[1], "wb") as stream:
     plistlib.dump({
         "CFBundleExecutable": "FloeMachiningNative",
@@ -88,7 +96,8 @@ with open(sys.argv[1], "wb") as stream:
         "CFBundleName": "FloeMachiningNative",
         "CFBundlePackageType": "FMWK",
         "CFBundleShortVersionString": "0.1.0",
-        "CFBundleVersion": "10"
+        "CFBundleVersion": "10",
+        **deployment
     }, stream)
 PY
   SLICES+=(-framework "$dir")
