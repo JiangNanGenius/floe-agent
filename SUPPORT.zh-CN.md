@@ -6,6 +6,8 @@ Floe Agent 目前由社区尽力提供支持。预发布、开发和未签名版
 
 ## 1.7 问题报告 / Upgrade reports
 
+功能建议和常规故障反馈以 GitHub Issues 为主要入口。App 内上传通道仅收集用户主动提交的故障诊断资料，不承诺逐条查看、回复或处理时效。上传前请先更新软件：落后最新公开版本达到两个版本的报告不再接收；旧客户端可能仅显示 HTTP 错误码，请更新后重试。不要把含有隐私的诊断内容直接贴到公开 Issue。
+
 1.7 仍在开发，先核对[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)与[兼容性说明](docs/FLOE_1_7_COMPATIBILITY.md)。报告环境/包问题时附环境层、包版本、失败阶段及脱敏错误；媒体问题附输入编码、尺寸、帧率、声道、操作参数和是否能重新播放输出。模型问题区分目录可见、安装成功、加载成功与推理成功。
 
 Include the exact commit/build and device/SDK. Preserve recoverable copies and failed transaction evidence; follow [recovery guidance](docs/FLOE_1_7_MIGRATION.md) before manually deleting state. Never attach credentials or private media without reviewing the export.

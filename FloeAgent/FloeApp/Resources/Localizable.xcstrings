@@ -47093,6 +47093,23 @@
         }
       }
     },
+    "feedback.error.update_required": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This app version is outdated. Update Floe Agent, then try uploading diagnostics again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前软件版本过旧，请更新 Floe Agent 后再上传诊断报告。"
+          }
+        }
+      }
+    },
     "feedback.error.too_many_images": {
       "extractionState": "manual",
       "localizations": {

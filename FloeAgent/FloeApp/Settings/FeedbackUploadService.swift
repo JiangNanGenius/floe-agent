@@ -56,6 +56,7 @@ enum FeedbackUploadError: LocalizedError, Equatable {
     case imageTooLarge
     case tooManyImages
     case invalidResponse
+    case updateRequired
     case rateLimited(retryAfterSeconds: Int?)
     case rejected(statusCode: Int)
 
@@ -75,6 +76,8 @@ enum FeedbackUploadError: LocalizedError, Equatable {
             if let seconds {FloeL10n.l("settings.feedback_upload_service.feedback_requests_are_too_frequent_try", seconds)
             } else {FloeL10n.l("settings.feedback_upload_service.feedback_requests_are_too_frequent_try_2")
             }
+        case .updateRequired:
+            String(localized: "feedback.error.update_required")
         case .rejected(let statusCode):
             String(format: String(localized: "feedback.error.rejected"), statusCode)
         }
@@ -127,7 +130,7 @@ enum FeedbackUploadService {
                 continue
             }
             guard (200...299).contains(http.statusCode) else {
-                throw FeedbackUploadError.rejected(statusCode: http.statusCode)
+                throw rejectionError(statusCode: http.statusCode, data: data)
             }
             guard let reportID = reportID(from: data), !reportID.isEmpty else {
                 throw FeedbackUploadError.invalidResponse
@@ -135,6 +138,16 @@ enum FeedbackUploadService {
             return FeedbackUploadReceipt(reportID: reportID)
         }
         throw FeedbackUploadError.invalidResponse
+    }
+
+    /// Display our localized update instruction, never arbitrary server text.
+    static func rejectionError(statusCode: Int, data: Data) -> FeedbackUploadError {
+        if statusCode == 409, data.count <= 8_192,
+           let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           payload["code"] as? String == "client_update_required" {
+            return .updateRequired
+        }
+        return .rejected(statusCode: statusCode)
     }
 
     static func retryAfterSeconds(from response: HTTPURLResponse) -> Int? {
@@ -192,6 +205,7 @@ enum FeedbackUploadService {
             deviceModel: deviceModel,
             sessionID: submission.id.uuidString,
             metadata: [
+                "platform": "ios",
                 "diagnostics_included": diagnostics == nil ? "false" : "true",
                 "image_attachment_count": String(submission.imageAttachments.count)
             ]

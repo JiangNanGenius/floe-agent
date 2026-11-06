@@ -641,6 +641,8 @@ Temporary content — including any fetched public web content — lives only in
 <!-- doc-anchor: section-24 -->
 ## 21. Useful feedback
 
+Use [GitHub Issues](https://github.com/JiangNanGenius/floe-agent/issues) for feature requests and regular bug reports. The in-app channel only accepts voluntarily uploaded diagnostic material; individual review, replies and response times are not guaranteed. Update the app before uploading: diagnostic reports at least two public client versions behind are rejected. Older clients may show only an HTTP error code; update and try again.
+
 Include device, OS, App version/build, entry point, minimal steps, expected/actual behavior and redacted screenshots or a synthetic sample. For crashes, include diagnostics from the matching time. For save issues, state whether save completed, whether the file was reopened and whether the original changed.
 
 [Support](../SUPPORT.md) · [Security](../SECURITY.md)

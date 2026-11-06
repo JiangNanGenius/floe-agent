@@ -781,6 +781,15 @@ struct CrashAndFeedbackRegressionTests {
         ) == nil)
     }
 
+    @Test("Feedback distinguishes the server's update-required code from other errors")
+    func feedbackUpdateRequiredContract() {
+        let body = Data(#"{"code":"client_update_required","error":"untrusted server text"}"#.utf8)
+        #expect(FeedbackUploadService.rejectionError(statusCode: 409, data: body) == .updateRequired)
+        #expect(FeedbackUploadService.rejectionError(statusCode: 503, data: body) == .rejected(statusCode: 503))
+        #expect(FeedbackUploadService.rejectionError(statusCode: 409, data: Data("invalid".utf8)) == .rejected(statusCode: 409))
+        #expect(FeedbackUploadService.rejectionError(statusCode: 409, data: Data(repeating: 32, count: 8_193)) == .rejected(statusCode: 409))
+    }
+
     @Test("Feedback honors the server retry window after HTTP 429")
     func feedbackRetryAfterContract() throws {
         let response = try #require(HTTPURLResponse(

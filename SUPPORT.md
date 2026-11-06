@@ -4,6 +4,8 @@ Floe Agent support is community and best-effort. Prerelease, development, and un
 
 ## 1.7 问题报告 / Upgrade reports
 
+Feature requests and regular bug reports belong in GitHub Issues. The in-app upload channel only collects voluntary diagnostic material; individual review, replies and response times are not guaranteed. Update the app before sending diagnostics: uploads at least two public client versions behind are rejected. Older clients may show only an HTTP error code; update and retry. Do not post private diagnostic contents in public Issues.
+
 Installation channels and acceptance differ; check [current delivery](docs/CURRENT_STATUS.md). Check [status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) and [compatibility](docs/FLOE_1_7_COMPATIBILITY.md) first. For environment/package failures, include the layer, package version, failed stage and sanitized error. For media failures, include input codec, dimensions, frame rate, channels, requested operations and whether the output reopens. Distinguish model catalog visibility, installation, loading and successful inference.
 
 Include the exact commit/build and device/SDK. Preserve recoverable copies and failed transaction evidence; follow [recovery guidance](docs/FLOE_1_7_MIGRATION.md) before deleting state. Never attach credentials or private media without reviewing the export.
