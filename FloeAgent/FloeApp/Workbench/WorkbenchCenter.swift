@@ -110,6 +110,19 @@ final class WorkbenchCenter: ObservableObject {
         var message: String
     }
 
+    /// A music original lives in the personal library independently of the
+    /// media entrance or a chat. No second MediaProject document mirrors it.
+    struct MusicContext {
+        let record: PersonalContentRecord
+        let session: MusicProjectSession
+        let owner: Owner
+    }
+    @Published private(set) var musicContext: MusicContext?
+    struct PreparedContext {
+        let session: MediaV2Session
+    }
+    @Published private(set) var mediaV2Context: PreparedContext?
+
     /// A verified, user-deliverable export. Only the center's own export
     /// paths construct one, after the renderer re-read/verified the file and
     /// committed it atomically. `attemptID` invalidates results superseded by
@@ -383,6 +396,71 @@ final class WorkbenchCenter: ObservableObject {
 
     // MARK: - Project lifecycle
 
+    /// Existing originals upgrade only by this explicit user action. The
+    /// existing store, owner root and tool target identity are retained.
+    @discardableResult
+    func usePreparedWorkspace() async -> Bool {
+        guard let opening = project, await saveNow() else { return false }
+        let token = sessionToken
+        do {
+            let session = try await MediaV2Session.open(projectID: opening.id, root: mediaRoot(), store: store, upgrade: true)
+            guard project?.id == opening.id, sessionToken == token else { return false }
+            cancelOwnedWork()
+            project = session.project
+            savedRevision = session.project.revision; unsavedChanges = false; saveError = nil
+            session.onCommit = { [weak self] latest in
+                guard let self, self.project?.id == opening.id, self.sessionToken == token else { return }
+                self.project = latest; self.savedRevision = latest.revision; self.unsavedChanges = false; self.saveError = nil
+            }
+            mediaV2Context = PreparedContext(session: session)
+            return true
+        } catch { present(error); return false }
+    }
+
+    /// Called only from the already authorized media tool host.
+    func applyPreparedOperations(_ operations: [MediaPreparedOperation], expectedRevision: Int64) async throws -> MediaPreparedCommit {
+        guard let session = mediaV2Context?.session else { throw FloeError.validationFailed("Open the integrated media workspace first") }
+        return try await session.apply(operations, expectedRevision: expectedRevision, actor: .model)
+    }
+
+    @discardableResult
+    func startMusicProject(sourceURL: URL? = nil, owner: Owner, environment: AppEnvironment) async -> Bool {
+        guard await closeProject() else { return false }
+        let token = UUID(); sessionToken = token
+        busy = true
+        defer { busy = false }
+        do {
+            let title = sourceURL?.deletingPathExtension().lastPathComponent ?? WorkbenchText.t("未命名音乐", "Untitled music")
+            let record = try await PersonalContentService.shared.create(kind: .music, title: title)
+            let location = try await PersonalContentService.shared.library().resolve(record.id)
+            let session = try await MusicProjectSession.open(id: record.id, directory: location.url.appendingPathComponent("Music"), environment: environment)
+            if let sourceURL {
+                await session.importFile(sourceURL)
+                if let message = session.diagnostic { throw FloeError.validationFailed(message) }
+            } else {
+                await session.addTrack(); await session.addAudioTrack()
+                if let first = session.document.tracks.first { session.selectTrack(first.id) }
+            }
+            guard sessionToken == token else { return false }
+            musicContext = MusicContext(record: record, session: session, owner: owner)
+            return true
+        } catch { if sessionToken == token { present(error) }; return false }
+    }
+
+    @discardableResult
+    func openMusicProject(record: PersonalContentRecord, environment: AppEnvironment, owner: Owner = .standalone) async -> Bool {
+        guard record.kind == .music, await closeProject() else { return false }
+        let token = UUID(); sessionToken = token
+        do {
+            let location = try await PersonalContentService.shared.library().resolve(record.id)
+            let session = try await MusicProjectSession.open(id: record.id, directory: location.url.appendingPathComponent("Music"), environment: environment)
+            try await session.reload()
+            guard sessionToken == token else { return false }
+            musicContext = MusicContext(record: record, session: session, owner: owner)
+            return true
+        } catch { if sessionToken == token { present(error) }; return false }
+    }
+
     /// Creates and opens a fresh image project. Returns `false` when the
     /// current project could not be flushed/closed or the initial document
     /// could not be written; in both cases the open session is preserved and
@@ -589,6 +667,22 @@ final class WorkbenchCenter: ObservableObject {
     /// traps a clean session.
     @discardableResult
     func closeProject() async -> Bool {
+        if let context = mediaV2Context {
+            guard !context.session.saving else { return false }
+            context.session.stopPlayback()
+            context.session.onCommit = nil
+            mediaV2Context = nil
+        }
+        if let context = musicContext {
+            guard !context.session.saving else { return false }
+            context.session.stopLive(); context.session.stopPlayback()
+            if context.session.isMIDIRecording { await context.session.stopMIDIRecording() }
+            if context.session.isRecording { await context.session.stopMicrophone() }
+            guard musicContext?.record.id == context.record.id, !context.session.saving else { return false }
+            musicContext = nil
+            sessionToken = nil
+            return true
+        }
         // Capture the identity of the session this call is closing BEFORE any
         // await. A replacement session opened meanwhile owns its own state and
         // a stale close must never tear it down.
@@ -648,6 +742,9 @@ final class WorkbenchCenter: ObservableObject {
     }
 
     private func resetSessionState() {
+        mediaV2Context?.session.onCommit = nil
+        mediaV2Context = nil
+        musicContext = nil
         project = nil
         previewImage = nil
         playerItem = nil
@@ -1026,7 +1123,7 @@ final class WorkbenchCenter: ObservableObject {
     }
 
     func resolvedURL(for assetID: UUID) -> URL? {
-        guard let project, let asset = project.asset(assetID) else { return nil }
+        guard let project, let asset = project.prepared?.asset(assetID) ?? project.asset(assetID) else { return nil }
         let canonicalRoot = mediaRoot().resolvingSymlinksInPath().standardizedFileURL
         let url = asset.relativePath.hasPrefix("/")
             ? URL(fileURLWithPath: asset.relativePath)
@@ -1057,7 +1154,7 @@ final class WorkbenchCenter: ObservableObject {
             .mediaRoot(for: project, current: rootProvider())
             .resolvingSymlinksInPath().standardizedFileURL
         var map: [UUID: URL] = [:]
-        for asset in project.assets {
+        for asset in project.prepared?.assets ?? project.assets {
             let url = asset.relativePath.hasPrefix("/")
                 ? URL(fileURLWithPath: asset.relativePath)
                 : canonicalRoot.appendingPathComponent(asset.relativePath)

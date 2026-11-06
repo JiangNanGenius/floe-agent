@@ -35,6 +35,9 @@ public struct CanvasEditorServices: Sendable {
     public var assistantGateway: (any CanvasAssistantGateway)?
     /// Proposal gateway returning validated canvas/document batches.
     public var proposalGateway: (any CanvasAssistantProposalGateway)?
+    /// Opens the host's existing persisted assistant for this actual
+    /// selection. The callback carries context, never tool authority.
+    public var openAssistant: (@Sendable (CanvasAssistantRequest?) async throws -> Void)?
     /// Bounded preview bytes for media/PDF thumbnails (never whole-file Data).
     public var previewProvider: (any CanvasPreviewProviding)?
     /// File leases handed to external editors.
@@ -73,6 +76,7 @@ public struct CanvasEditorServices: Sendable {
         editorForkGateway: (any CanvasEditorForkGateway)? = nil,
         assistantGateway: (any CanvasAssistantGateway)? = nil,
         proposalGateway: (any CanvasAssistantProposalGateway)? = nil,
+        openAssistant: (@Sendable (CanvasAssistantRequest?) async throws -> Void)? = nil,
         previewProvider: (any CanvasPreviewProviding)? = nil,
         resourceLeasing: (any CanvasResourceLeasing)? = nil,
         stepExecutor: (any CanvasStepExecutor)? = nil,
@@ -91,6 +95,7 @@ public struct CanvasEditorServices: Sendable {
         self.editorForkGateway = editorForkGateway
         self.assistantGateway = assistantGateway
         self.proposalGateway = proposalGateway
+        self.openAssistant = openAssistant
         self.previewProvider = previewProvider
         self.resourceLeasing = resourceLeasing
         self.stepExecutor = stepExecutor

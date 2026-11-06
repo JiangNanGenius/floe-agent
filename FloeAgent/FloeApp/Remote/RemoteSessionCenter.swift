@@ -304,6 +304,21 @@ final class RemoteSessionCenter: ObservableObject {
         pendingTrust = nil
     }
 
+    /// Reuses the same visible host-key decision surface for a native
+    /// Toolbox connection. Cancellation affects only this exact challenge.
+    func decideToolboxHostKey(_ challenge: HostKeyChallenge) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        return await withTaskCancellationHandler {
+            let trusted = await hostKeyDecision(challenge)
+            return trusted && !Task.isCancelled
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                guard let self, self.pendingTrust?.challenge.id == challenge.id else { return }
+                self.resolveTrust(false)
+            }
+        }
+    }
+
     // MARK: - SSH terminal
 
     /// Connects an SSH terminal to a host, returns the session ID.
@@ -369,6 +384,8 @@ final class RemoteSessionCenter: ObservableObject {
 
     /// The terminal output buffer for a session (for the view).
     func terminalPresentation(for sessionID: UUID) -> TerminalPresentation? { sshOwners[sessionID]?.presentation }
+    /// Opens an additional channel on this already verified native connection.
+    func toolboxSSHHandle(for sessionID: UUID) -> SSHSessionHandle? { sshOwners[sessionID]?.handle }
 
     func terminalOutputEnd(for sessionID: UUID) -> Int { sshOwners[sessionID]?.outputEnd ?? 0 }
 

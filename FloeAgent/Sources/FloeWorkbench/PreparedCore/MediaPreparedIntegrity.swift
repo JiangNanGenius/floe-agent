@@ -373,6 +373,7 @@ public enum MediaPreparedIntegrity {
                 throw MediaPreparedCoreError.invalidDocument("clip crop must fit the unit square")
             }
         }
+        if let selection = clip.videoMask { try validate(selection: selection) }
         for fade in [clip.fadeIn, clip.fadeOut].compactMap({ $0 }) {
             guard fade.timescale > 0, fade.value >= 0 else {
                 throw MediaPreparedCoreError.invalidDocument("clip fade must be non-negative")

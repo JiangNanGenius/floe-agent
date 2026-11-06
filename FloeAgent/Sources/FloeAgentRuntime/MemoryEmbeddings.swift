@@ -230,3 +230,79 @@ public enum MemoryReciprocalRankFusion {
         }
     }
 }
+
+/// Source evidence retains the owning service identity; it is never a tool grant.
+public struct MemorySourceEvidence: Codable, Sendable, Hashable {
+    public var sourceID: String
+    public var revision: String
+    public var ownerID: String
+    public var locator: String
+    public init(sourceID: String, revision: String, ownerID: String, locator: String) {
+        self.sourceID = String(sourceID.prefix(512)); self.revision = String(revision.prefix(160))
+        self.ownerID = String(ownerID.prefix(160)); self.locator = String(locator.prefix(2_048))
+    }
+    public var isValid: Bool { !sourceID.isEmpty && !revision.isEmpty && !ownerID.isEmpty }
+}
+
+#if canImport(NaturalLanguage)
+/// Real Apple sentence/word vectors, with independent Chinese and English channels.
+/// A word channel averages learned word vectors after native tokenization; it is
+/// semantic pooling, not hashing. Channels are never treated as aligned languages.
+/// One actor serializes NLEmbedding access, as required by NaturalLanguage.
+public actor AppleLocalSemanticEmbeddingProvider: MemoryEmbeddingProvider {
+    private struct Channel {
+        let language: NLLanguage
+        let embedding: NLEmbedding
+        let sentence: Bool
+        let dimensions: Int
+    }
+    public nonisolated let modelIdentifier = "apple.nl.zh-en.channels-v1"
+    public nonisolated let modelRevision: String
+    public nonisolated let modality = MemoryEmbeddingModality.text
+    public nonisolated let supportsChinese: Bool
+    private let channels: [Channel]
+    public init() throws {
+        var available = [Channel]()
+        for language in [NLLanguage.simplifiedChinese, .english] {
+            if let model = NLEmbedding.sentenceEmbedding(for: language) {
+                available.append(.init(language: language, embedding: model, sentence: true, dimensions: model.dimension))
+            } else if let model = NLEmbedding.wordEmbedding(for: language) {
+                available.append(.init(language: language, embedding: model, sentence: false, dimensions: model.dimension))
+            }
+        }
+        guard !available.isEmpty, available.reduce(0, { $0 + $1.dimensions }) <= 4_096 else {
+            throw FloeError.notFound("On-device semantic embedding assets")
+        }
+        channels = available
+        supportsChinese = available.contains { $0.language == .simplifiedChinese }
+        modelRevision = available.map { "\($0.language.rawValue):\($0.sentence ? "sentence" : "word-pool"):\($0.embedding.revision):\($0.dimensions)" }.joined(separator: "+")
+    }
+    public func embedding(for content: String) async throws -> [Float] {
+        let text = String(content.prefix(12_000))
+        var output = [Float]()
+        for channel in channels {
+            var vector = [Double](repeating: 0, count: channel.dimensions)
+            if channel.sentence, let generated = channel.embedding.vector(for: text), generated.count == channel.dimensions {
+                vector = generated
+            } else {
+                let tokenizer = NLTokenizer(unit: .word); tokenizer.setLanguage(channel.language); tokenizer.string = text
+                var count = 0
+                tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+                    guard count < 384 else { return false }
+                    let token = String(text[range]).lowercased()
+                    let hasHan = token.unicodeScalars.contains { (0x3400...0x9fff).contains($0.value) }
+                    guard channel.language == .simplifiedChinese ? hasHan : !hasHan else { return true }
+                    guard let value = channel.embedding.vector(for: token), value.count == vector.count else { return true }
+                    for i in vector.indices { vector[i] += value[i] }; count += 1
+                    return true
+                }
+            }
+            let norm = sqrt(vector.reduce(0) { $0 + $1 * $1 })
+            output += vector.map { Float(norm > 0 ? $0 / norm : 0) }
+        }
+        let norm = sqrt(output.reduce(0.0) { $0 + Double($1) * Double($1) })
+        guard norm > 0, output.allSatisfy(\.isFinite) else { throw FloeError.notFound("No semantic vectors for the supplied text") }
+        return output.map { Float(Double($0) / norm) }
+    }
+}
+#endif

@@ -508,6 +508,19 @@ NOTES = (
 # (name, version, license, source, section, noteKey)
 STATIC_COMPONENTS = (
     (
+        "Floe chemistry native libraries (Avogadro / Eigen)",
+        "Avogadro a5947518efb84132a44110dbdecab94fc87ce3b8; Eigen 5.0.1 build input",
+        "BSD-3-Clause; MPL-2.0; MIT; retained dependency notices",
+        "https://github.com/OpenChemistry/avogadrolibs/tree/a5947518efb84132a44110dbdecab94fc87ce3b8",
+        "engineering", None,
+    ),
+    (
+        "Ketcher / Indigo offline chemistry assets", "Ketcher 3.18.0 pinned standalone assets",
+        "Apache-2.0 and bundled dependency notices",
+        "https://github.com/epam/ketcher/releases/tag/v3.18.0",
+        "engineering", None,
+    ),
+    (
         "Manifold", "3.5.4", "Apache-2.0",
         "https://github.com/elalish/manifold/tree/ce50d78021d64507f89e8c9fc2c2e51018117857",
         "engineering", None,
@@ -998,6 +1011,12 @@ STATIC_COMPONENTS = (
 
 # (id, repositoryPath, bundlePath, titleKey, title, titleArgument, license, kind, required, section)
 DOCUMENTS = (
+    (
+        "chemistry", "FloeApp/Resources/Licenses/Chemistry-NOTICES.txt",
+        "Licenses/Chemistry-NOTICES.txt", "settings.licenses.document.chemistry.title",
+        "Chemistry engines and offline assets", None,
+        "BSD-3-Clause; MPL-2.0; MIT; Apache-2.0; retained notices", "notices", True, "engineering",
+    ),
     ("building-web-ifc", "FloeApp/Resources/BuildingNative/LICENSE.md", "BuildingNative/LICENSE.md", "settings.licenses.document.building_ifc.title", "On-device IFC — Mozilla Public License 2.0", None, "MPL-2.0", "full_text", True, "engineering"),
     ("building-web-ifc-source", "FloeApp/Resources/BuildingNative/SOURCE-OFFER.txt", "BuildingNative/SOURCE-OFFER.txt", "settings.licenses.document.building_ifc_source.title", "On-device IFC source", None, "MPL-2.0", "notices", True, "engineering"),
     ("building-pynite", "FloeApp/Resources/BuildingNative/Pynite-LICENSE.txt", "BuildingNative/Pynite-LICENSE.txt", "settings.licenses.document.building_pynite.title", "Single-beam calculation — PyNite", None, "MIT", "full_text", True, "engineering"),
@@ -2192,6 +2211,8 @@ DOCUMENT_NOTES = {
 # evidence is preferred; upstream fetches are named by the pinned tag so a
 # reviewer can repeat the read.
 STATIC_EVIDENCE = {
+    "Floe chemistry native libraries (Avogadro / Eigen)": "Modules/FloeChemistryNative/UPSTREAM.json and BUILD_SAVED.json bind the Avogadro source/bridge and all three static slices; retained notices in FloeApp/Resources/Licenses/Chemistry-NOTICES.txt. Eigen 5.0.1 is recorded as the producer's header-only build input, not a new remote SwiftPM pin.",
+    "Ketcher / Indigo offline chemistry assets": "Modules/FloeChemistrySketch/UPSTREAM.json binds Ketcher standalone 3.18.0 archive and every bundled asset; LICENSE.Ketcher and retained bundled JavaScript notices are reproduced in FloeApp/Resources/Licenses/Chemistry-NOTICES.txt.",
     "Manifold": "ThirdParty/FloeCADKit/Vendor/Manifold-SOURCE.json (fixed 3.5.4 source and native slices); full Apache-2.0 and source notices in FloeApp/Resources/Licenses/Manifold-NOTICES.txt",
     "iCTRL (native iOS automation protocol adaptations)": "FloeApp/Resources/Licenses/iCTRL-NOTICE.md (upstream c1e4268859ba858d1579f7b846a56cb40641b7f6); full Apache-2.0 text in iCTRL-Apache-2.0.txt",
     "TinyEMU / FloeTinyEMU engine": "ThirdParty/TinyEMU/LICENSE-INVENTORY.md (per-file inventory of the pinned tarball)",

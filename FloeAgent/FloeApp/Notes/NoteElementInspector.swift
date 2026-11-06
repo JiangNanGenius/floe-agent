@@ -12,18 +12,28 @@ struct NoteElementInspector: View {
     let save: (NoteElement) async throws -> Void
     let delete: () async throws -> Void
     let openSource: ((NoteSourceReference) -> Void)?
+    let openWork: ((NoteWorkReference) -> Void)?
+    private let originalElement: NoteElement
     @Environment(\.dismiss) private var dismiss
 
-    init(element: NoteElement, page: NotePage, sourceText: String? = nil, save: @escaping (NoteElement) async throws -> Void, delete: @escaping () async throws -> Void, openSource: ((NoteSourceReference) -> Void)? = nil) {
+    init(element: NoteElement, page: NotePage, sourceText: String? = nil, save: @escaping (NoteElement) async throws -> Void, delete: @escaping () async throws -> Void, openSource: ((NoteSourceReference) -> Void)? = nil, openWork: ((NoteWorkReference) -> Void)? = nil) {
         var initial = element
         if let sourceText { initial.text = sourceText }
         _draft = State(initialValue: initial); self.page = page; self.save = save; self.delete = delete
-        self.openSource = openSource
+        self.openSource = openSource; self.openWork = openWork; self.originalElement = initial
     }
 
     var body: some View {
         NavigationStack {
             Form {
+                if let reference = draft.workReference, let openWork {
+                    Section(IDELanguageRunText.t("关联工程", "Linked project")) {
+                        LabeledContent(IDELanguageRunText.t("插入时修订", "Inserted revision"), value: reference.revision.formatted())
+                        Button(IDELanguageRunText.t("打开工程", "Open project"), systemImage: "arrow.up.forward.app") { openWork(reference) }
+                            .disabled(saving || draft != originalElement)
+                        if draft != originalElement { Text(IDELanguageRunText.t("请先保存当前更改。", "Save the current changes first.")).font(.caption).foregroundStyle(.secondary) }
+                    }
+                }
                 if let source = draft.source {
                     Section("skills.review.source") {
                         Label(draft.isAIGenerated ? "notes.note_element_inspector.ai_generated_summary" : "notes.note_element_inspector.cited_content", systemImage: "quote.opening")

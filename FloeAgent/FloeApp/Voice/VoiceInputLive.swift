@@ -447,6 +447,7 @@ final class AudioEngineCapturer: VoiceAudioCapturing, @unchecked Sendable {
     private var tapInstalled = false
     private var sessionActivated = false
     private let sessionOwnerID = UUID()
+    private let managesAudioSession: Bool
     private let lock = NSLock()
     private let meterLock = NSLock()
     private var activityMeter = VoiceActivityMeter()
@@ -456,7 +457,8 @@ final class AudioEngineCapturer: VoiceAudioCapturing, @unchecked Sendable {
     let levels: AsyncStream<VoiceAudioLevel>
     private let levelContinuation: AsyncStream<VoiceAudioLevel>.Continuation
 
-    init() {
+    init(managesAudioSession: Bool = true) {
+        self.managesAudioSession = managesAudioSession
         var continuation: AsyncStream<VoiceAudioLevel>.Continuation!
         levels = AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation = $0 }
         levelContinuation = continuation
@@ -475,14 +477,16 @@ final class AudioEngineCapturer: VoiceAudioCapturing, @unchecked Sendable {
         // activated — and vice versa. Activate freely; deactivate only as
         // the LAST holder. (Category adoption/stealing across TTS playback
         // remains the SpeechService owner's contract — see the lane handoff.)
-        FloeAudioSessionOwnership.claim(sessionOwnerID)
-        do {
-            try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
-            lock.withLock { sessionActivated = true }
-        } catch {
-            _ = FloeAudioSessionOwnership.release(sessionOwnerID)
-            throw VoiceSessionError.failure(.noAudioInput)
+        if managesAudioSession {
+            FloeAudioSessionOwnership.claim(sessionOwnerID)
+            do {
+                try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
+                try session.setActive(true, options: .notifyOthersOnDeactivation)
+                lock.withLock { sessionActivated = true }
+            } catch {
+                _ = FloeAudioSessionOwnership.release(sessionOwnerID)
+                throw VoiceSessionError.failure(.noAudioInput)
+            }
         }
 
         // CoreAudio's simulator RemoteIO service can abort the entire

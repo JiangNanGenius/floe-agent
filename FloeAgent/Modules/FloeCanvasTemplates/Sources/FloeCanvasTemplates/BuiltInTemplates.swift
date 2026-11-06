@@ -5,6 +5,12 @@ import FloeCanvasCore
 public enum BuiltInCanvasTemplates {
     public static var all: [CanvasTemplate] {
         [
+            make("research", .research, .init("Research board", "资料研究"),
+                 .init("Connect sources, questions and evidence on one board.", "在一张画布中整理来源、问题与证据。"),
+                 [.analyzeReference, .organize]),
+            make("compare", .research, .init("Compare and decide", "方案比较"),
+                 .init("Keep alternatives and their evidence side by side.", "并排保留方案、依据和待确认事项。"),
+                 [.analyzeReference, .ideate, .organize]),
             make("ideas", .ideas, .init("Ideas and references", "脑暴与参考"),
                  .init("Collect references and develop a direction.", "收集参考，逐步形成创作方向。"),
                  [.ideate, .organize]),

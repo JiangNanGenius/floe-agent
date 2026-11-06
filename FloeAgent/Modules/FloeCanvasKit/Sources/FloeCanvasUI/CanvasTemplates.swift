@@ -258,6 +258,7 @@ public enum CanvasSceneGoalComposer {
                     fallback: fallback,
                     template: template)
             } catch {
+                store.presentAlertFromError(error)
                 return fallback
             }
         }
@@ -266,6 +267,7 @@ public enum CanvasSceneGoalComposer {
                 let batch = try await assistantGateway.perform(request: request)
                 return translate(batch: batch, fallback: fallback)
             } catch {
+                store.presentAlertFromError(error)
                 return fallback
             }
         }

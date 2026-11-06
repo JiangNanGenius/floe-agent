@@ -71,6 +71,19 @@ final class DurationAdvisoryRelay: @unchecked Sendable {
 @MainActor
 final class AppEnvironment: ObservableObject {
     lazy var studioCoordinator = StudioCoordinator(environment: self)
+    lazy var chemistryEnvironmentJobs = ChemistryEnvironmentJobAdapter(environment: self)
+    lazy var interactiveHostCenter = InteractiveHostCenter(environment: self)
+    private lazy var _globalSourceMemory: GlobalSourceMemoryService = makeGlobalSourceMemory()
+    private func makeGlobalSourceMemory() -> GlobalSourceMemoryService {
+        let limits = GlobalFileTextLimits()
+        let extractor = ProtectedGlobalFileTextExtractor(limits: limits)
+        return AppGlobalMemoryFactory.make(environment: self, extractFile: { url in try await extractor.text(from: url) })
+    }
+    var globalSourceMemory: GlobalSourceMemoryService { _globalSourceMemory }
+    lazy var toolboxCenter = ToolboxCenter(environment: self)
+    lazy var toolboxDiagnostics = ToolboxDiagnosticsCenter(database: database)
+    lazy var toolboxRemote = ToolboxRemoteCenter(environment: self)
+    lazy var toolboxBrowser = ToolboxBrowserOwner(environment: self)
     @Published var studioOpenRequest: StudioOpenRequest?
 
     #if DEBUG
@@ -197,6 +210,18 @@ final class AppEnvironment: ObservableObject {
     private let environmentExecutions: EnvironmentExecutionCoordinator
     private let skillDependencyPrepareLinux: LinuxPreparationHandler
     lazy var localTerminals = LocalTerminalStore(sessions: shellSessionCenter)
+    /// A payload only requests the existing reconciled finite background pass.
+    lazy var apnsCenter = APNsCenter(
+        signingEnvironment: APNsSigningEnvironment(rawValue:
+            Bundle.main.object(forInfoDictionaryKey: "FloeAPNsEnvironment") as? String ?? "") ?? .unknown,
+        transport: nil, releaseLookup: nil,
+        eligibility: { [weak self] in
+            guard let self else { throw APNsServiceError.unavailable }
+            return try await self.backgroundRunCoordinator.pushEligibilitySnapshot()
+        }, performWake: { [weak self] request in
+            guard let self else { return .deferred }
+            return await self.backgroundRunCoordinator.performPushRefresh(request)
+        })
     /// Managed Linux Python installer shared by internal services and exec.shell.
     let managedPythonInstaller: ManagedPythonInstallService?
     /// Reviewed capability catalog and install routing for internal provisioning.
@@ -1520,6 +1545,10 @@ final class AppEnvironment: ObservableObject {
                 conversationID: job.conversationID, targetTool: job.targetTool)
                 || CADBasicMachiningNativeRunMetadata.matches($0,runID:job.runID,
                     conversationID:job.conversationID,targetTool:job.targetTool)
+                || CanvasFlowNativeRunMetadata.matches($0, runID: job.runID,
+                    conversationID: job.conversationID, targetTool: job.targetTool)
+                || ChemistryNativeRunMetadata.matches($0, runID: job.runID,
+                    conversationID: job.conversationID, targetTool: job.targetTool)
         }
         let content = "[Floe background job \(job.id.uuidString)] \(job.targetTool) finished with state=\(job.state.rawValue). "
             + "Evidence excerpt: \(String(evidence.prefix(1_000))). "
@@ -1673,6 +1702,12 @@ final class AppEnvironment: ObservableObject {
         // back to their durable hidden assistant conversation at execution.
         registerCanvasAgentTools(environment: self)
         registerStudioAgentTools(environment: self)
+        registerChemistryAgentTools(environment: self)
+        registerChemistryEnvironmentTool(environment: self)
+        registerCreativeCanvasAgentTools(environment: self)
+        registerAPNsAgentTools(center: apnsCenter)
+        registerInteractiveHostTools(environment: self)
+        toolboxCenter.register()
         // Design workflow tools (brief/spec/revisions/anchored feedback/
         // candidate/adopt/reject/restore) on the shared design project model.
         // Capability flags reflect this build's actually connected operations.
@@ -2158,6 +2193,24 @@ final class AppEnvironment: ObservableObject {
         registerMemoryTools(store: intelligenceStore) { [runStore] runID in
             try await runStore.run(id: runID)?.conversationID
         }
+        let sourceAuthority: @Sendable (ToolContext) async throws -> Bool = { [weak self] context in
+            guard let self, !context.temporaryReadOnly, !context.publicWebOnly,
+                  let name = context.executionToolName,
+                  ["memory.search", "memory.forget", "memory.sources.read"].contains(name),
+                  context.allowedToolNames?.contains(name) != false,
+                  context.frozenEffectiveCatalogNames?.contains(name) != false,
+                  let id = context.conversationID,
+                  let run = try await self.runStore.run(id: context.runID), run.conversationID == id, run.endedAt == nil,
+                  let record = try await self.conversationStore.conversation(id: id), record.purpose == .ordinary else { return false }
+            return true
+        }
+        ToolCatalog.register(GlobalMemorySearchTool.self)
+        ToolCatalog.register(GlobalMemoryForgetTool.self)
+        ToolRunnerRegistry.shared.register(GlobalMemorySearchTool(service: globalSourceMemory, authorize: sourceAuthority,
+            resolveWorkspace: { [database] id in try await SQLiteWorkspaceStore(database: database).workspaceID(conversationID: id) }))
+        ToolRunnerRegistry.shared.register(GlobalMemoryForgetTool(service: globalSourceMemory, store: intelligenceStore, authorize: sourceAuthority))
+        ToolCatalog.register(GlobalSourceReadTool.self)
+        ToolRunnerRegistry.shared.register(GlobalSourceReadTool(service: globalSourceMemory, authorize: sourceAuthority))
         // Cross-task history is quoted as untrusted data. Spawning is a
         // separate visible task, never an internal subagent, and is gated by
         // an explicit request in the latest user message.
@@ -2997,6 +3050,7 @@ final class AppEnvironment: ObservableObject {
         // transient database failure is not remembered as permanent.
         bootstrapDidCompleteSuccessfully = !isEphemeral && persistenceReady
         if bootstrapDidCompleteSuccessfully {
+            Task { [weak self] in try? await self?.globalSourceMemory.start() }
             bootstrapError = nil
         }
     }

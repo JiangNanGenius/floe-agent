@@ -52,6 +52,10 @@ packages:
     path: Modules/FloePrintKit
   FloeMediaExchange:
     path: Modules/FloeMediaExchange
+  FloeChemistryKit:
+    path: Modules/FloeChemistryKit
+  FloeToolbox:
+    path: Modules/FloeToolbox
   ZLImageEditor:
     path: ThirdParty/ZLImageEditor
   VideoEditorKit:
@@ -79,6 +83,11 @@ packages:
     # authority.
     url: https://github.com/weichsel/ZIPFoundation.git
     revision: 22787ffb59de99e5dc1fbfe80b19c97a904ad48d
+  GRDB:
+    # The App transaction tests call GRDB directly; link its existing pinned
+    # product instead of relying on symbols exported by the application.
+    url: https://github.com/groue/GRDB.swift.git
+    revision: 18497b68fdbb3a09528d260a0a0e1e7e61c8c53d
 
 targets:
   FloeAgent:
@@ -275,7 +284,9 @@ targets:
           - org.floeagent.ios.media-refresh
           - org.floeagent.ios.media-processing
           - org.floeagent.ios.continued.*
+        FloeAPNsEnvironment: $(FLOE_APNS_ENVIRONMENT)
         UIBackgroundModes:
+          - remote-notification
           - fetch
           - processing
           - audio
@@ -296,6 +307,7 @@ targets:
     entitlements:
       path: FloeApp/Entitlements/Floe.entitlements
       properties:
+        aps-environment: $(FLOE_APNS_ENVIRONMENT)
         com.apple.developer.icloud-container-identifiers:
           - iCloud.org.floeagent.ios
         com.apple.developer.icloud-services:
@@ -353,6 +365,32 @@ targets:
         product: MediaExchangeClipper
       - package: FloeMediaExchange
         product: MediaExchangeFCPXML
+      - package: FloeChemistryKit
+        product: FloeChemistryCore
+      - package: FloeChemistryKit
+        product: FloeChemistryEngine
+      - package: FloeChemistryKit
+        product: FloeChemistryUI
+      - package: FloeToolbox
+        product: FloeToolboxCore
+      - package: FloeToolbox
+        product: FloeToolboxUI
+      - package: FloeToolbox
+        product: FloeToolboxClients
+      - package: FloeToolbox
+        product: FloeToolboxDiagnostics
+      - package: FloeToolbox
+        product: FloeToolboxUtilities
+      - package: FloeToolbox
+        product: FloeToolboxRemoteFiles
+      - package: FloeToolbox
+        product: FloeToolboxFileTransports
+      - package: FloeToolbox
+        product: FloeToolboxWorkbenches
+      - package: FloeAgentPackages
+        product: FloeToolboxSSH
+      - package: FloeAgentPackages
+        product: FloeToolboxHost
       - package: FloeMacBridge
         product: FloeMacBridgeProtocol
       - package: SpeechSwiftTTS
@@ -482,8 +520,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.7.79"
-        CURRENT_PROJECT_VERSION: "320"
+        MARKETING_VERSION: "1.8.0"
+        CURRENT_PROJECT_VERSION: "321"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -519,8 +557,10 @@ targets:
           - $(inherited)
       configs:
         Debug:
+          FLOE_APNS_ENVIRONMENT: development
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
         Release:
+          FLOE_APNS_ENVIRONMENT: production
           SWIFT_COMPILATION_MODE: wholemodule
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: Apple Distribution
@@ -564,8 +604,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.79"
-        CURRENT_PROJECT_VERSION: "320"
+        MARKETING_VERSION: "1.8.0"
+        CURRENT_PROJECT_VERSION: "321"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -615,8 +655,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.79"
-        CURRENT_PROJECT_VERSION: "320"
+        MARKETING_VERSION: "1.8.0"
+        CURRENT_PROJECT_VERSION: "321"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -659,8 +699,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.79"
-        CURRENT_PROJECT_VERSION: "320"
+        MARKETING_VERSION: "1.8.0"
+        CURRENT_PROJECT_VERSION: "321"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -712,8 +752,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.79"
-        CURRENT_PROJECT_VERSION: "320"
+        MARKETING_VERSION: "1.8.0"
+        CURRENT_PROJECT_VERSION: "321"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -1606,6 +1646,8 @@ targets:
       - path: Tests/FloeAppTests/NativeMeetingIntegrationTests.swift
       - path: Tests/FloeAppTests/StudioDocumentAccessTests.swift
       - path: Tests/FloeAppTests/StudioRegisteredWorkflowTests.swift
+      - path: Tests/FloeAppTests/NativeToolboxIntegrationTests.swift
+      - path: Tests/FloeAppTests/InteractiveStateIntegrationTests.swift
       - path: Tests/FloeAppTests/CADLocalRenderContractTests.swift
       - path: Tests/FloeAppTests/NativeCADHostRuntimeTests.swift
       - path: Tests/FloeAppTests/CADNativeStudyReceiptTests.swift
@@ -1626,6 +1668,10 @@ targets:
         product: FloeCore
       - package: FloeAgentPackages
         product: FloeNotes
+      - package: FloeInteractiveContent
+        product: FloeInteractiveContentCore
+      - package: GRDB
+        product: GRDB
     settings:
       base:
         DEVELOPMENT_TEAM: QYL72C43K6

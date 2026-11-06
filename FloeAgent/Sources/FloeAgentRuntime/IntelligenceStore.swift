@@ -461,7 +461,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                         id, memory_id, conversation_id, message_id, excerpt_digest, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?)
                     """, arguments: [reference.id.uuidString, entry.id.uuidString,
-                        entry.originConversationID?.uuidString, reference.messageID.uuidString,
+                        entry.originConversationID?.uuidString, reference.messageID?.uuidString,
                         Self.stableDigest(reference.excerpt), Self.date(entry.updatedAt)])
             }
         }
@@ -750,7 +750,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                 FROM memory_fts JOIN memory_entries m ON m.rowid = memory_fts.rowid
                 WHERE memory_fts MATCH ? AND m.status = 'active'
                   AND (
-                    m.scope IN ('user', 'agent', 'task')
+                    m.scope IN ('user', 'agent', 'task', 'workspace')
                     OR m.workspace_id = ?
                     OR m.origin_workspace_id = ?
                   )
@@ -841,7 +841,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                     SELECT m.id, m.content, m.importance, m.is_pinned, m.updated_at
                     FROM memory_fts JOIN memory_entries m ON m.rowid = memory_fts.rowid
                     WHERE memory_fts MATCH ? AND m.status = 'active'
-                      AND (m.scope IN ('user', 'agent', 'task')
+                      AND (m.scope IN ('user', 'agent', 'task', 'workspace')
                            OR m.workspace_id = ? OR m.origin_workspace_id = ?)
                       AND (m.expires_at IS NULL OR m.expires_at > ?)
                       AND (m.owner_deleted_at IS NULL OR m.is_pinned = 1
@@ -873,7 +873,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                     WHERE e.modality = ? AND e.model_identifier = ?
                       AND e.model_revision = ? AND e.dimensions = ?
                       AND m.status = 'active'
-                      AND (m.scope IN ('user', 'agent', 'task')
+                      AND (m.scope IN ('user', 'agent', 'task', 'workspace')
                            OR m.workspace_id = ? OR m.origin_workspace_id = ?)
                       AND (m.expires_at IS NULL OR m.expires_at > ?)
                       AND (m.owner_deleted_at IS NULL OR m.is_pinned = 1

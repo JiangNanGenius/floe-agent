@@ -29,7 +29,19 @@ Configured backends accept a host-owned closure. `ConfiguredChemistryBackend.wor
 
 `quantum_worker.py` executes an explicitly configured xTB CLI for GFN0/1/2 single-point calculations and geometry optimization. The trusted environment provides `CHEMISTRY_XTB_EXECUTABLE` and an existing owned `CHEMISTRY_JOB_DIRECTORY`; request data cannot select commands or executable paths. Failed/cancelled jobs retain their artifacts. Energies are in hartree; native UFF and OpenMM energies are in kJ/mol. The xTB runtime is not bundled into the iOS App.
 
-Install the pinned requirements in the user's resolved execution environment, then probe `{"operation":"capabilities"}`. Only advertise optional methods actually present. A development Mac's successful worker tests do not establish App remote-job integration, cloud availability or a real model call.
+Install the pinned requirements in the user's resolved execution environment, then probe `{"operation":"capabilities","format":"","data":"","options":{}}`. The response includes protocol version, actual engine versions, usable methods and retryable diagnostics. OpenMM creates a tiny real CPU/Reference context; xTB runs a bounded version probe and requires an explicit owned job directory. A development Mac's successful worker tests do not establish App remote-job integration, cloud availability or a real model call.
+
+## External calculation lifecycle
+
+`ChemistryWorkerDeployment.files()` provides the three trusted scripts, pinned requirements and a SHA-256 manifest from the module resource bundle. It verifies the bytes before handing them to the host. Deploy these through Floe's existing environment/jobs lifecycle; no developer interpreter path or package installation runs on the iPad host. `python3 Backends/verify_resources.py --check` is read-only; update the manifest explicitly with `--refresh` after changing worker sources.
+
+After an actual capability probe, the host calls `registerExternalWorker`. `prepareExternal` persists the immutable input and a `ChemistryExecutionOwner` from the genuine task/run. It returns exact worker stdin without dispatching a job. The host submits or hands off the ordinary authorized job, verifies its genuine owner/environment/target/exact payload, then calls `adoptExternal`. `finishExternal` accepts only complete bounded protocol-v1 output matching project, run, attempt, input revision/digest and request checksum. `terminateExternal` records verified failure/cancellation; the host must stop the actual job before recording cancellation. Late results cannot replace terminal state. Reopening reads the saved request and reconciles the same job; it never resubmits it. Restoring history atomically marks historical active calculations interrupted. Applying a result checks its originating completed run in the same commit as the object update.
+
+Protocol v1 hashes the exact UTF-8 `requestJSON` string. The response echoes `identity` and `requestDigest`, along with `protocol: "floe.chemistry.worker"`, `version: 1`, and the actual success/result or failure/error. This avoids cross-language JSON normalization ambiguity. Unbound requests remain supported for capability probes and independent worker qualification, but cannot complete a prepared external run.
+
+Use `importObject(... deferPreparation: true)` for CIF/mmCIF, stereo SMILES or reaction sources awaiting an appropriate worker. The importer exposes “Keep original, process later”; the workbench marks the original as awaiting processing and does not claim calculated properties or preview geometry. Applying a completed structure prefers full MOL data when available and retains the original source. An input snapshot change is rejected even if a revision number is reused.
+
+The App can inject `ChemistryEditorState.calculationHandler` and `cancellationHandler` to use its real jobs adapter; the standalone default remains native execution. Refresh capabilities after probing so the shared inspector sees newly available methods. These callbacks and lifecycle APIs are host seams and do not grant permissions.
 
 ## Qualification
 

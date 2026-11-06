@@ -825,6 +825,17 @@ struct AppleReminderUpdateTool: AgentTool {
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        if args.action == "create" {
+            let due = try AppleToolOutput.date(args.due)
+            let cancellation = context.cancellation
+            do {
+                let receipt = try await AppleReminderCreationService.create(.init(title: args.title ?? "", notes: args.notes,
+                    due: due, completed: args.completed ?? false), beforeCommit: { try cancellation.throwIfCancelled() })
+                return AppleToolOutput.make("status=ok action=create id=\(receipt.identifier)")
+            } catch AppleReminderCreationError.permissionDenied {
+                return AppleToolOutput.make("status=permissionDenied capability=reminders", exitStatus: 77)
+            }
+        }
         let store = EKEventStore()
         guard try await store.requestFullAccessToReminders() else { return AppleToolOutput.make("status=permissionDenied capability=reminders", exitStatus: 77) }
         if args.action == "delete" {

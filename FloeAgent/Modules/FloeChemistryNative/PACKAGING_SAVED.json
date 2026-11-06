@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "format": "static-framework-xcframework",
+  "operation": "repackage-existing",
+  "sourceBuildReceipt": "BUILD_SAVED.json",
+  "sourceBuildReceiptSHA256": "c77799f7c112684f936a2584be2dfb1f6a203a1fbd275d1963e84f80e33289fa",
+  "packagingSourceFiles": [
+    {
+      "path": "Scripts/build_native.py",
+      "sha256": "84ba35d4f6b88faf5f184e946d78003e6c70dbc1182a37d3f0b443ae9ed2ce4c"
+    },
+    {
+      "path": "Native/framework.modulemap",
+      "sha256": "93343c8c8a5e8dd1d9db146232c9a5cc78bb2f7c1b1935235714ec43d22ee29e"
+    }
+  ],
+  "archives": {
+    "macos": {
+      "path": "macos-arm64/FloeChemistryBridge.framework/FloeChemistryBridge",
+      "sourceBuildPath": "macos-arm64/libFloeChemistryBridge.a",
+      "bytes": 6555952,
+      "sha256": "6007711381d30ff301fe5d5f53976461deb0ce9643b22f2fc1d8c846216e6aad"
+    },
+    "ios": {
+      "path": "ios-arm64/FloeChemistryBridge.framework/FloeChemistryBridge",
+      "sourceBuildPath": "ios-arm64/libFloeChemistryBridge.a",
+      "bytes": 6522096,
+      "sha256": "e52f1b612f2218c5053ea2b3639909873f09a76d2111364fb7d3f098618f1582"
+    },
+    "simulator": {
+      "path": "ios-arm64-simulator/FloeChemistryBridge.framework/FloeChemistryBridge",
+      "sourceBuildPath": "ios-arm64-simulator/libFloeChemistryBridge.a",
+      "bytes": 6548408,
+      "sha256": "a3faa2353a620969b09d98936167b55c5435f95cf99d2c67d6585c463ca6863f"
+    }
+  },
+  "files": [
+    {
+      "path": "Info.plist",
+      "sha256": "943cc0822520ee5d0a35a32038ae9800ec5451f346c790a098361967d1e0e601"
+    },
+    {
+      "path": "ios-arm64/FloeChemistryBridge.framework/FloeChemistryBridge",
+      "sha256": "e52f1b612f2218c5053ea2b3639909873f09a76d2111364fb7d3f098618f1582"
+    },
+    {
+      "path": "ios-arm64/FloeChemistryBridge.framework/Headers/FloeChemistryBridge.h",
+      "sha256": "7801d6a53cccc4dcffc2bc284dcd7d3c134264bdb723aab6d0b8e4efb012c82b"
+    },
+    {
+      "path": "ios-arm64/FloeChemistryBridge.framework/Info.plist",
+      "sha256": "6dc98d85601541749ab5a27f23afb551c2747e0a3f3d735242f3062d760b9ef1"
+    },
+    {
+      "path": "ios-arm64/FloeChemistryBridge.framework/Modules/module.modulemap",
+      "sha256": "93343c8c8a5e8dd1d9db146232c9a5cc78bb2f7c1b1935235714ec43d22ee29e"
+    },
+    {
+      "path": "ios-arm64-simulator/FloeChemistryBridge.framework/FloeChemistryBridge",
+      "sha256": "a3faa2353a620969b09d98936167b55c5435f95cf99d2c67d6585c463ca6863f"
+    },
+    {
+      "path": "ios-arm64-simulator/FloeChemistryBridge.framework/Headers/FloeChemistryBridge.h",
+      "sha256": "7801d6a53cccc4dcffc2bc284dcd7d3c134264bdb723aab6d0b8e4efb012c82b"
+    },
+    {
+      "path": "ios-arm64-simulator/FloeChemistryBridge.framework/Info.plist",
+      "sha256": "5ec15aa83b4e35c68c36387de0d91b803087223b531b79c88fac0c23a4c91379"
+    },
+    {
+      "path": "ios-arm64-simulator/FloeChemistryBridge.framework/Modules/module.modulemap",
+      "sha256": "93343c8c8a5e8dd1d9db146232c9a5cc78bb2f7c1b1935235714ec43d22ee29e"
+    },
+    {
+      "path": "macos-arm64/FloeChemistryBridge.framework/FloeChemistryBridge",
+      "sha256": "6007711381d30ff301fe5d5f53976461deb0ce9643b22f2fc1d8c846216e6aad"
+    },
+    {
+      "path": "macos-arm64/FloeChemistryBridge.framework/Headers/FloeChemistryBridge.h",
+      "sha256": "7801d6a53cccc4dcffc2bc284dcd7d3c134264bdb723aab6d0b8e4efb012c82b"
+    },
+    {
+      "path": "macos-arm64/FloeChemistryBridge.framework/Info.plist",
+      "sha256": "54eb4c9613a633652f58efea7e0617fc0b962764a2001c33443ccbeb5eb07238"
+    },
+    {
+      "path": "macos-arm64/FloeChemistryBridge.framework/Modules/module.modulemap",
+      "sha256": "93343c8c8a5e8dd1d9db146232c9a5cc78bb2f7c1b1935235714ec43d22ee29e"
+    }
+  ]
+}

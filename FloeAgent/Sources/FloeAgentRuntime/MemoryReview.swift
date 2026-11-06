@@ -22,12 +22,14 @@ public enum MemoryCandidateOrigin: String, Sendable, Codable, Hashable {
 
 public struct MemoryEvidenceReference: Sendable, Codable, Hashable, Identifiable {
     public var id: UUID
-    public var messageID: UUID
+    public var messageID: UUID?
+    public var source: MemorySourceEvidence?
     public var excerpt: String
 
-    public init(id: UUID = UUID(), messageID: UUID, excerpt: String) {
+    public init(id: UUID = UUID(), messageID: UUID?, excerpt: String, source: MemorySourceEvidence? = nil) {
         self.id = id
         self.messageID = messageID
+        self.source = source
         self.excerpt = String(excerpt.prefix(512))
     }
 }
@@ -144,7 +146,7 @@ public struct BoundedMemoryReviewPolicy: Sendable {
         if candidate.sensitivity == .authenticationSecret || Self.looksLikeSecret(normalized) {
             return .reject(reason: "authentication material is never stored in memory")
         }
-        guard !candidate.evidence.isEmpty else {
+        guard candidate.evidence.contains(where: { $0.messageID != nil || $0.source?.isValid == true }) else {
             return .pending(reason: "direct evidence required")
         }
         guard candidate.conflictsWithEntryIDs.isEmpty else {

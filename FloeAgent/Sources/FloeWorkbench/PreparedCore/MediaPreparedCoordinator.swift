@@ -402,11 +402,12 @@ public actor MediaPreparedCoordinator {
     @discardableResult
     public func applyUserOperations(_ operations: [MediaPreparedOperation],
                                     to documentID: UUID,
-                                    groupID: UUID = UUID()) async throws -> MediaPreparedCommit {
+                                    groupID: UUID = UUID(),
+                                    actor: MediaPreparedActorKind = .user) async throws -> MediaPreparedCommit {
         let targets = try await targets(of: operations, in: documentID)
         let instruction = try await beginInstruction(documentID: documentID,
                                                      targets: targets,
-                                                     actor: .user,
+                                                     actor: actor,
                                                      groupID: groupID)
         do {
             let commit = try await apply(operations, instruction: instruction)
@@ -502,12 +503,25 @@ public actor MediaPreparedCoordinator {
             throw MediaPreparedCoreError.notPrepared(documentID)
         }
         var refs = Set<MediaPreparedObjectRef>()
+        // A parent/track created earlier in this atomic batch has no stored
+        // object to lease yet. The engine still validates creation order,
+        // duplicates, locks and revisions before any store mutation.
+        var created = Set<MediaPreparedObjectRef>()
+        func target(_ kind: MediaPreparedObjectKind, _ id: UUID) {
+            let ref = MediaPreparedObjectRef(kind: kind, id: id)
+            if !created.contains(ref) { refs.insert(ref) }
+        }
+        func introduced(_ kind: MediaPreparedObjectKind, _ id: UUID) {
+            let ref = MediaPreparedObjectRef(kind: kind, id: id)
+            if state(of: ref, in: document) == nil { created.insert(ref) }
+        }
         for operation in operations {
             switch operation.action {
-            case .insertAsset: break
-            case .replaceAsset(let expected, _, _): refs.insert(.init(kind: .asset, id: expected.id))
-            case .insertLayer(_, let parentID, _):
-                if let parentID { refs.insert(.init(kind: .layer, id: parentID)) }
+            case .insertAsset(let asset): introduced(.asset, asset.id)
+            case .replaceAsset(let expected, _, _): target(.asset, expected.id)
+            case .insertLayer(let layer, let parentID, _):
+                if let parentID { target(.layer, parentID) }
+                introduced(.layer, layer.id)
             case .removeLayer(let id, _),
                  .replaceLayerContent(let id, _, _),
                  .updateLayerTransform(let id, _, _),
@@ -515,21 +529,22 @@ public actor MediaPreparedCoordinator {
                  .updateLayerFlags(let id, _, _, _, _, _),
                  .setLayerMask(let id, _, _),
                  .setLayerClip(let id, _, _):
-                refs.insert(.init(kind: .layer, id: id))
+                target(.layer, id)
             case .moveLayer(let id, _, let parentID, _):
-                refs.insert(.init(kind: .layer, id: id))
-                if let parentID { refs.insert(.init(kind: .layer, id: parentID)) }
-            case .insertTrack:
-                break
+                target(.layer, id)
+                if let parentID { target(.layer, parentID) }
+            case .insertTrack(let track, _):
+                introduced(.track, track.id)
+                for clip in track.clips { introduced(.clip, clip.id) }
             case .removeTrack(let id, _), .updateTrackFlags(let id, _, _, _, _, _):
-                refs.insert(.init(kind: .track, id: id))
-            case .insertClip(let trackID, _, _):
-                refs.insert(.init(kind: .track, id: trackID))
+                target(.track, id)
+            case .insertClip(let trackID, let clip, _):
+                target(.track, trackID); introduced(.clip, clip.id)
             case .removeClip(let trackID, let clipID, _),
+                 .replaceClip(let trackID, let clipID, _, _),
                  .replaceClipKeyframes(let trackID, let clipID, _, _),
                  .updateClipRange(let trackID, let clipID, _, _, _):
-                refs.insert(.init(kind: .track, id: trackID))
-                refs.insert(.init(kind: .clip, id: clipID))
+                target(.track, trackID); target(.clip, clipID)
             }
         }
         // Do not silently drop an unknown target from a direct user commit.

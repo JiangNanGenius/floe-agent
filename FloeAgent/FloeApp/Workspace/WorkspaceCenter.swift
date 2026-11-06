@@ -543,6 +543,30 @@ final class WorkspaceCenter: ObservableObject {
         return url
     }
 
+    /// Read-only background source lease. Does not rebind a conversation, register
+    /// mounts, create a missing directory or change the visible workspace.
+    func acquireMemorySourceRoot(_ record: WorkspaceRecord) async throws -> GlobalWorkspaceReadLease {
+        let root: URL
+        let scoped: Bool
+        if record.kind == .privateTask {
+            guard let relative = record.internalRelativePath else { throw FloeError.notFound("Workspace root") }
+            root = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: false).appendingPathComponent("FloeAgent", isDirectory: true).appendingPathComponent(relative, isDirectory: true)
+            scoped = false
+        } else {
+            root = try await resolveRoot(record)
+            scoped = root.startAccessingSecurityScopedResource()
+            guard scoped else { throw FloeError.unauthorized }
+        }
+        var directory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &directory), directory.boolValue else {
+            if scoped { root.stopAccessingSecurityScopedResource() }
+            throw FloeError.notFound("Workspace root")
+        }
+        return GlobalWorkspaceReadLease(workspaceID: record.id, ownerID: record.id.uuidString, root: root,
+            release: { if scoped { root.stopAccessingSecurityScopedResource() } })
+    }
+
     /// Acquires the root belonging to a specific task. Private chats receive
     /// an app-owned directory; projects receive their security-scoped root.
     /// The caller must release the lease when the run becomes terminal.

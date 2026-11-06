@@ -86,20 +86,30 @@ public struct PrintMesh: Sendable, Equatable {
 
 public struct PrintInput: Sendable {
     public static let enginePin = "ff7692241c48c3495da0bb8eb7455f906f3abb2d"
-    public static let adapterVersion = "floe-print-p0-2"
+    public static let adapterVersion = "floe-print-app-4"
     public let mesh: PrintMesh
     public let preset: PrintPreset
     public let overrides: [String: Double]
+    public let machine: PrintMachineConfiguration
     public let fingerprint: String
 
-    public init(mesh: PrintMesh, preset: PrintPreset, overrides: [String: Double] = [:]) throws {
+    public init(mesh: PrintMesh, preset: PrintPreset, overrides: [String: Double] = [:], machine: PrintMachineConfiguration? = nil) throws {
+        let machine = machine ?? .generic(for: preset)
+        try machine.validate()
         let limits: [String: ClosedRange<Double>] = preset == .genericMarlinPLA
-            ? ["sliceHeight": 0.02...1, "outputTemp": 100...450, "outputBedTemp": 0...150, "outputFeedrate": 1...500]
-            : ["slaSlice": 0.005...0.5, "slaLayerOn": 0.1...120, "slaBaseOn": 0.1...600]
+            ? ["sliceHeight": 0.02...1, "outputTemp": 100...450, "outputBedTemp": 0...150, "outputFeedrate": 1...500,
+               "sliceFillSparse": 0...1, "sliceShells": 0...20, "sliceTopLayers": 0...30, "sliceBottomLayers": 0...30,
+               "sliceSupportEnable": 0...1, "sliceSupportDensity": 0.01...1, "sliceSupportAngle": 0...90]
+            : ["slaSlice": 0.005...0.5, "slaLayerOn": 0.1...120, "slaBaseOn": 0.1...600,
+               "slaShell": 0...20, "slaSupportEnable": 0...1, "slaSupportDensity": 0.01...1,
+               "slaSupportSize": 0.1...5, "slaSupportLayers": 0...100]
         for (key, value) in overrides {
             guard let limit = limits[key], value.isFinite, limit.contains(value) else { throw PrintError.invalidSetting(key) }
+            if ["sliceShells", "sliceTopLayers", "sliceBottomLayers", "slaSupportLayers", "sliceSupportEnable", "slaSupportEnable"].contains(key), value.rounded() != value {
+                throw PrintError.invalidSetting(key)
+            }
         }
-        let bed = preset.bed
+        let bed = (width: machine.bedWidth, depth: machine.bedDepth, height: machine.buildHeight)
         for i in stride(from: 0, to: mesh.positions.count, by: 3) {
             guard abs(Double(mesh.positions[i])) <= bed.width/2,
                   abs(Double(mesh.positions[i+1])) <= bed.depth/2,
@@ -109,6 +119,7 @@ public struct PrintInput: Sendable {
             let geometry: String, preset: PrintPreset, format: PrintFormat, engine: String, adapter: String
             let profileRevision: Int
             let overrides: [String: Double]
+            let machine: PrintMachineConfiguration
         }
         var effective: [String:Double] = preset == .genericMarlinPLA
             ? ["sliceHeight":0.2,"outputTemp":200,"outputBedTemp":60,"outputFeedrate":45]
@@ -116,10 +127,10 @@ public struct PrintInput: Sendable {
         effective.merge(overrides) { _, new in new }
         let key = Key(geometry: mesh.sha256, preset: preset, format: preset.format,
                       engine: Self.enginePin, adapter: Self.adapterVersion,
-                      profileRevision: preset.profileRevision, overrides: effective)
+                      profileRevision: preset.profileRevision, overrides: effective, machine: machine)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(key)
-        self.mesh = mesh; self.preset = preset; self.overrides = overrides
+        self.mesh = mesh; self.preset = preset; self.overrides = overrides; self.machine = machine
         self.fingerprint = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }

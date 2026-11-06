@@ -1,0 +1,10 @@
+{
+  "files": {
+    "chemistry_worker.py": "e897fe67fd92d755ded179867f3af74f9e4f59ca993b09cef3f5b02037590cd0",
+    "quantum_worker.py": "d842245ed00f92b16196d4fac86c1f369d3fb811403a4e6b1d5a679db45e930f",
+    "requirements-rdkit.txt": "8773169c269689cfd64ce3c7c540b65d05d189c8c657953d84b357ffe35ed9fd",
+    "requirements-science.txt": "452cf68bb565c2d5870f6a13860726dcba22eb940ddcfa53c1ffec0b1e5904fe",
+    "science_worker.py": "ded2adaebb7f8e4631959f1ff7f62ce890ca713f63fa3f93922b0dfcc8875150"
+  },
+  "protocolVersion": 1
+}

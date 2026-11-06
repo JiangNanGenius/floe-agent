@@ -95,6 +95,7 @@ public struct ChemistryRun: Codable, Identifiable, Sendable, Equatable {
     public var finishedAt: Date?
     public var result: JSONValue?
     public var error: String?
+    public var externalExecution: ChemistryExternalExecution?
     public init(input: ChemicalObject, inputDigest: String, method: String, options: JSONValue,
                 environmentID: String, engineVersion: String) {
         self.input = input; self.inputDigest = inputDigest; self.method = method; self.options = options
@@ -130,6 +131,19 @@ public struct ChemistryProject: Codable, Identifiable, Sendable, Equatable {
         for block in blocks {
             guard block.objectID.map(ids.contains) ?? true, block.runID.map(runIDs.contains) ?? true,
                   block.text.utf8.count <= 1024 * 1024 else { throw ChemistryError.invalid("Invalid document reference.") }
+        }
+        for run in runs {
+            if let execution = run.externalExecution {
+                let identity = execution.identity
+                guard identity.projectID == id, identity.runID == run.id,
+                      identity.objectID == run.input.id, identity.objectRevision == run.input.revision,
+                      identity.inputDigest == run.inputDigest, identity.environmentID == run.environmentID,
+                      !identity.environmentID.isEmpty, identity.environmentID.utf8.count <= 4096,
+                      execution.requestJSON.utf8.count <= 16 * 1024 * 1024,
+                      execution.requestDigest == ChemistryProjectStore.digest(Data(execution.requestJSON.utf8)) else {
+                    throw ChemistryError.corrupt("External calculation identity does not match its saved input.")
+                }
+            }
         }
     }
 }

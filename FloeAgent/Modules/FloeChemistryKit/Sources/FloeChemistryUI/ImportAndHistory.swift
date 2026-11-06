@@ -17,6 +17,11 @@ public enum ChemistryExamples {
     @State private var format = "xyz"
     @State private var source = ChemistryExamples.water
     @State private var importing = false
+    @State private var deferPreparation = false
+    private var supportsDeferredPreparation: Bool {
+        [.molecule, .crystal, .biomolecule, .reaction].contains(kind) &&
+        ["smi", "smiles", "mol", "sdf", "pdb", "xyz", "cjson", "cif", "mmcif", "reaction.json"].contains(format)
+    }
     var body: some View {
         NavigationStack {
             Form {
@@ -26,9 +31,17 @@ public enum ChemistryExamples {
                         ForEach(ChemicalKind.allCases, id: \.self) { Text($0.displayTitle).tag($0) }
                     }
                     Picker(chemistryText("Input format", "输入格式"), selection: $format) {
-                        ForEach(["smi","xyz","sdf","mol","pdb","cjson","vasp","qcschema","molden","cube","orca","csv","reaction.json","text"], id: \.self) { Text($0.uppercased()).tag($0) }
+                        ForEach(["smi","xyz","sdf","mol","pdb","cif","mmcif","cjson","vasp","qcschema","molden","cube","orca","csv","reaction.json","text"], id: \.self) { Text($0.uppercased()).tag($0) }
                     }
                     Button(chemistryText("Choose file", "选择文件"), systemImage: "doc") { importing = true }
+                    if supportsDeferredPreparation {
+                        Toggle(chemistryText("Keep original, process later", "保留原始结构，稍后处理"), isOn: $deferPreparation)
+                            .accessibilityIdentifier("chemistry.import.deferPreparation")
+                        if deferPreparation {
+                            Text(chemistryText("The original is saved. Properties and a structure preview appear after processing.", "原始内容会保存，处理完成后再显示属性和结构预览。"))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 Section(chemistryText("Examples", "示例")) {
                     Button(chemistryText("Water · XYZ", "水 · XYZ")) { title = chemistryText("Water", "水"); kind = .molecule; format = "xyz"; source = ChemistryExamples.water }
@@ -44,7 +57,11 @@ public enum ChemistryExamples {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button(chemistryText("Cancel", "取消")) { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button(chemistryText("Add", "添加")) {
-                    Task { await state.importSource(title: title, kind: kind, format: format, source: source); if state.error == nil { dismiss() } }
+                    Task {
+                        await state.importSource(title: title, kind: kind, format: format, source: source,
+                            deferPreparation: supportsDeferredPreparation && deferPreparation)
+                        if state.error == nil { dismiss() }
+                    }
                 }.disabled(state.busy || title.isEmpty) }
             }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.data, .text]) { result in
@@ -63,11 +80,16 @@ public enum ChemistryExamples {
                             }.value
                             source = bytes; title = url.deletingPathExtension().lastPathComponent
                             format = url.pathExtension.lowercased()
-                            if format == "pdb" { kind = .biomolecule }
+                            if format == "pdb" || format == "mmcif" { kind = .biomolecule }
+                            if format == "cif" { kind = .crystal }
                             if format == "csv" { kind = .spectrum }
                         } catch { state.error = error.localizedDescription }
                     }
                 }
+            }
+            .onChange(of: format) { _, value in
+                if ["cif", "mmcif"].contains(value) { deferPreparation = true }
+                else if !supportsDeferredPreparation { deferPreparation = false }
             }
         }.frame(minWidth: 320, minHeight: 500)
     }

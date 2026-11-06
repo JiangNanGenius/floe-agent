@@ -501,6 +501,8 @@ struct FloeCADEditorView: View {
     let document: FloeCADDocument
     /// Host-injected Canvas actions; nil in standalone/qualification hosts.
     var canvasActions: CADCanvasActions? = nil
+    /// Default preserves the complete 3D workbench; the 2D entrance limits chrome.
+    var draftingOnly = false
 
     /// E31-R3: one units prompt instance. It carries the manual import
     /// operation that produced the probe so the apply cannot land over a
@@ -808,7 +810,9 @@ struct FloeCADEditorView: View {
         ViewThatFits(in: .horizontal) {
             statusPill(icon: "pencil.and.outline", text: sketchStatusText(viewModel)) {
                 sketchDetailActions(viewModel)
-                Button("Exit Sketching") { viewModel.finishSketch() }
+                Button(draftingOnly ? FloeCADStrings.text("cad.ui.common.done", "Done") : "Exit Sketching") {
+                    if draftingOnly { viewModel.deselectSketchTool() } else { viewModel.finishSketch() }
+                }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .accessibilityIdentifier("ExitSketchingButton")
@@ -824,8 +828,8 @@ struct FloeCADEditorView: View {
                         .font(.caption)
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Button { viewModel.finishSketch() } label: {
-                        Label("Exit Sketching", systemImage: "checkmark")
+                    Button { if draftingOnly { viewModel.deselectSketchTool() } else { viewModel.finishSketch() } } label: {
+                        Label(draftingOnly ? FloeCADStrings.text("cad.ui.common.done", "Done") : "Exit Sketching", systemImage: "checkmark")
                             .labelStyle(.iconOnly)
                     }
                     .buttonStyle(.borderedProminent)
@@ -1703,7 +1707,7 @@ struct FloeCADEditorView: View {
                 // the Metal mesh; drags stay 3D-hit-tested), and the named-snap
                 // chip while drawing.
                 ZStack {
-                    OrientationCubeLabels(viewModel: viewModel)
+                    if !draftingOnly { OrientationCubeLabels(viewModel: viewModel) }
                     MoveGizmoOverlay(viewModel: viewModel)
                     SnapChipOverlay(viewModel: viewModel)
                 }
@@ -2275,7 +2279,7 @@ struct FloeCADEditorView: View {
                     // Views popover (spec §7.3): standard views + projection,
                     // plus Display modes / Isolate / Section (spec §16).
                     Menu {
-                        ForEach(StandardView.allCases) { standard in
+                        ForEach(StandardView.allCases.filter { !draftingOnly || $0 == .top || $0 == .bottom }) { standard in
                             Button(standard.rawValue) {
                                 viewModel.applyStandardView(standard)
                             }
@@ -2285,6 +2289,7 @@ struct FloeCADEditorView: View {
                             get: { viewModel.orthographicEnabled },
                             set: { viewModel.setOrthographic($0) }
                         ))
+                        .disabled(draftingOnly)
                         Divider()
                         // Display modes (spec §16.4); the submenu label names
                         // the active shader.
@@ -2395,6 +2400,7 @@ struct FloeCADEditorView: View {
 
                     exportMenu(viewModel)
 
+                    if !draftingOnly {
                     Button {
                         showWorkbenchTools = true
                     } label: {
@@ -2402,6 +2408,7 @@ struct FloeCADEditorView: View {
                               systemImage: "square.grid.2x2")
                     }
                     .accessibilityIdentifier("CADWorkbenchToolsButton")
+                    }
 
                     // Canvas integration (host-injected). "Apply to canvas"
                     // replaces the ORIGINAL bound node's asset; "Make variant"
@@ -2472,6 +2479,7 @@ struct FloeCADEditorView: View {
     /// explicit overflow menu — no action is silently dropped by bar overflow.
     @ViewBuilder
     private func compactToolbarItems(_ viewModel: EditorViewModel) -> some View {
+        if !draftingOnly {
         Button {
             showWorkbenchTools = true
         } label: {
@@ -2484,6 +2492,7 @@ struct FloeCADEditorView: View {
             .accessibilityLabel("CAD Tools")
         }
         .accessibilityIdentifier("CADWorkbenchToolsButton")
+        }
 
         Menu {
             Button {
@@ -2498,7 +2507,7 @@ struct FloeCADEditorView: View {
             }
             .accessibilityIdentifier("CADCompactSettingsButton")
             Menu {
-                ForEach(StandardView.allCases) { standard in
+                ForEach(StandardView.allCases.filter { !draftingOnly || $0 == .top || $0 == .bottom }) { standard in
                     Button(standard.rawValue) {
                         viewModel.applyStandardView(standard)
                     }
@@ -2508,6 +2517,7 @@ struct FloeCADEditorView: View {
                     get: { viewModel.orthographicEnabled },
                     set: { viewModel.setOrthographic($0) }
                 ))
+                .disabled(draftingOnly)
                 Divider()
                 Menu {
                     Picker("Display", selection: Binding(

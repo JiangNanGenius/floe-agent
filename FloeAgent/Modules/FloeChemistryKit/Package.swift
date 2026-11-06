@@ -12,7 +12,12 @@ let package = Package(
     dependencies: [.package(path: "../FloeChemistryNative"), .package(path: "../FloeChemistrySketch")],
     targets: [
         .target(name: "FloeChemistryCore"),
-        .target(name: "FloeChemistryEngine", dependencies: ["FloeChemistryCore", .product(name: "FloeChemistryNative", package: "FloeChemistryNative")]),
+        .target(name: "FloeChemistryWorkerResources", path: "Backends",
+            exclude: ["test_worker.py", "test_science_worker.py", "test_quantum_worker.py", "test_protocol.py", "verify_resources.py"],
+            sources: ["WorkerResources.swift"],
+            resources: [.copy("chemistry_worker.py"), .copy("science_worker.py"), .copy("quantum_worker.py"),
+                        .copy("requirements-rdkit.txt"), .copy("requirements-science.txt"), .copy("WorkerManifest.json")]),
+        .target(name: "FloeChemistryEngine", dependencies: ["FloeChemistryCore", "FloeChemistryWorkerResources", .product(name: "FloeChemistryNative", package: "FloeChemistryNative")]),
         .target(name: "FloeChemistryUI", dependencies: ["FloeChemistryCore", "FloeChemistryEngine", .product(name: "FloeChemistrySketch", package: "FloeChemistrySketch")]),
         .testTarget(name: "FloeChemistryCoreTests", dependencies: ["FloeChemistryCore"]),
         .testTarget(name: "FloeChemistryEngineTests", dependencies: ["FloeChemistryEngine"])

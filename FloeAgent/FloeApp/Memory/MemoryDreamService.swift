@@ -76,6 +76,7 @@ final class MemoryDreamService {
     /// cadence is due, then distill memory from the most recently active
     /// conversation (gated by the dream cadence).
     func deepDream() async {
+        await environment.globalSourceMemory.runBackgroundPass()
         if let generator = environment.conversationCenter.generalAuxiliaryPersonalizationGenerator() {
             for kind in PersonalizationDocumentKind.allCases {
                 _ = try? await environment.personalizationService.generateIfDue(

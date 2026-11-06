@@ -1,10 +1,137 @@
 #!/usr/bin/env python3
 """Trusted JSON worker for an explicitly resolved Mac/Linux environment. No network or shell execution."""
-import json, math, signal, sys
+import hashlib, importlib, json, math, os, pathlib, re, shutil, signal, subprocess, sys, tempfile, time, uuid
 
 MAX_INPUT = 16 * 1024 * 1024
 MAX_ATOMS = 10000
 METHODS = ['rdkit.describe', 'rdkit.embed', 'rdkit.conformers', 'rdkit.similarity', 'rdkit.substructure', 'rdkit.reaction']
+SCIENCE_METHODS = ['gemmi.crystal', 'gemmi.diffraction', 'gemmi.structure', 'openmm.lennardJones', 'openmm.system']
+QUANTUM_METHODS = ['xtb.singlepoint', 'xtb.optimize']
+PROTOCOL = 'floe.chemistry.worker'
+
+def strict_json(source):
+    def reject(value):
+        raise ValueError('Non-finite JSON number')
+    value = json.loads(source, parse_constant=reject)
+    def check(node, depth=0):
+        if depth > 64: raise ValueError('JSON nesting limit exceeded')
+        if isinstance(node, float) and not math.isfinite(node): raise ValueError('Non-finite JSON number')
+        if isinstance(node, dict):
+            for item in node.values(): check(item, depth+1)
+        elif isinstance(node, list):
+            for item in node: check(item, depth+1)
+    check(value)
+    return value
+
+def validate_request(request):
+    if not isinstance(request, dict) or not set(request) <= {'operation','format','data','options'}:
+        raise ValueError('Expected a chemistry request')
+    if request.get('operation') not in METHODS+SCIENCE_METHODS+QUANTUM_METHODS+['capabilities']:
+        raise ValueError('Unknown worker method')
+    if not isinstance(request.get('format'), str) or len(request['format'].encode()) > 64:
+        raise ValueError('Invalid source format')
+    if not isinstance(request.get('data'), str) or len(request['data'].encode()) > MAX_INPUT:
+        raise ValueError('Invalid or oversized chemistry source')
+    if not isinstance(request.get('options', {}), dict): raise ValueError('Options must be an object')
+    return request
+
+def decode_request(raw):
+    value = strict_json(raw)
+    if not isinstance(value, dict): raise ValueError('Expected a JSON object')
+    if 'protocol' not in value:
+        return value, None
+    if set(value) != {'protocol','version','identity','requestJSON','requestDigest'} or value['protocol'] != PROTOCOL or type(value['version']) is not int or value['version'] != 1:
+        raise ValueError('Unsupported worker protocol')
+    identity = value['identity']
+    uuid_fields = ['projectID','runID','objectID','taskID','hostRunID','attemptID']
+    if not isinstance(identity, dict) or set(identity) != set(uuid_fields+['objectRevision','inputDigest','environmentID']):
+        raise ValueError('Invalid execution identity')
+    for field in uuid_fields:
+        text = identity[field]
+        if not isinstance(text, str) or str(uuid.UUID(text)).lower() != text.lower():
+            raise ValueError('Invalid execution '+field)
+    bounded_integer(identity['objectRevision'], 0, 2**64-1, 'object revision')
+    if not isinstance(identity['environmentID'], str) or not 0 < len(identity['environmentID'].encode()) <= 4096:
+        raise ValueError('Invalid execution environment')
+    for digest in (identity['inputDigest'], value['requestDigest']):
+        if not isinstance(digest, str) or re.fullmatch('[0-9a-f]{64}', digest) is None:
+            raise ValueError('Invalid execution checksum')
+    source = value['requestJSON']
+    if not isinstance(source, str) or len(source.encode()) > MAX_INPUT or hashlib.sha256(source.encode()).hexdigest() != value['requestDigest']:
+        raise ValueError('Worker request checksum does not match')
+    binding = dict(protocol=PROTOCOL, version=1, identity=identity, requestDigest=value['requestDigest'])
+    # Decode the inner request later so a valid envelope's engine/input failure remains bound.
+    return source, binding
+
+def xtb_version(executable):
+    path = pathlib.Path(executable)
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise ValueError('Configure a runnable xTB executable')
+    with tempfile.TemporaryFile() as output:
+        process = subprocess.Popen([str(path.resolve()), '--version'], stdout=output, stderr=subprocess.STDOUT)
+        started = time.monotonic()
+        try:
+            while process.poll() is None:
+                if time.monotonic()-started > 5 or os.fstat(output.fileno()).st_size > 65536:
+                    raise ValueError('xTB version probe exceeded its output or time limit')
+                time.sleep(0.02)
+            if os.fstat(output.fileno()).st_size > 65536: raise ValueError('xTB version response is oversized')
+            output.seek(0); text = output.read(65536).decode(errors='replace')
+            version = re.search(r'xtb version\s+([^\n]+)', text, re.IGNORECASE)
+            if process.returncode != 0 or version is None: raise ValueError('xTB did not return a valid version')
+            return version.group(1).strip()
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try: process.wait(timeout=1)
+                except subprocess.TimeoutExpired: process.kill(); process.wait()
+
+def capabilities():
+    methods = []; engines = {}; unavailable = {}; platforms = []
+    try:
+        from rdkit import Chem, rdBase
+        from rdkit.Chem import AllChem, Descriptors, Lipinski, rdMolDescriptors, rdFingerprintGenerator
+        if Chem.MolFromSmiles('O') is None: raise ValueError('RDKit molecule initialization failed')
+        engines['rdkit'] = rdBase.rdkitVersion; methods += METHODS
+    except Exception as error: unavailable['rdkit'] = str(error)[:4096]
+    try:
+        import gemmi
+        if abs(gemmi.UnitCell(1,1,1,90,90,90).calculate_d([1,0,0])-1) > 1e-9:
+            raise ValueError('Gemmi cell initialization failed')
+        engines['gemmi'] = gemmi.__version__; methods += SCIENCE_METHODS[:3]
+    except Exception as error: unavailable['gemmi'] = str(error)[:4096]
+    try:
+        import openmm as mm
+        from openmm import unit
+        failures = []
+        for name in ['CPU','Reference']:
+            context = None; integrator = None
+            try:
+                platform = mm.Platform.getPlatformByName(name)
+                system = mm.System(); system.addParticle(39.948)
+                integrator = mm.VerletIntegrator(0.001)
+                context = mm.Context(system, integrator, platform, {'Threads':'1'} if name == 'CPU' else {})
+                context.setPositions([mm.Vec3(0,0,0)])
+                energy = context.getState(getEnergy=True).getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
+                if not math.isfinite(energy): raise ValueError('Non-finite probe energy')
+                platforms.append(name)
+            except Exception as error: failures.append(name+': '+str(error))
+            finally:
+                del context; del integrator
+        if not platforms: raise ValueError('No usable OpenMM CPU/Reference platform: '+'; '.join(failures))
+        engines['openmm'] = mm.__version__; methods += SCIENCE_METHODS[3:]
+    except Exception as error: unavailable['openmm'] = str(error)[:4096]
+    try:
+        executable = os.environ.get('CHEMISTRY_XTB_EXECUTABLE') or shutil.which('xtb')
+        if not executable: raise ValueError('Configure xTB in this environment')
+        engines['xtb'] = xtb_version(executable)
+        if 'rdkit' not in engines: raise ValueError('xTB requires RDKit geometry interchange')
+        root = os.environ.get('CHEMISTRY_JOB_DIRECTORY')
+        if not root or not pathlib.Path(root).is_dir() or not os.access(root, os.W_OK | os.X_OK):
+            raise ValueError('Configure an explicit writable owned chemistry job directory')
+        methods += QUANTUM_METHODS
+    except Exception as error: unavailable['xtb'] = str(error)[:4096]
+    return dict(protocolVersion=1, methods=methods, engines=engines, unavailable=unavailable, openmmPlatforms=platforms)
 
 def bounded_integer(value, low, high, name):
     if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
@@ -87,15 +214,7 @@ def evaluate(request):
         from science_worker import openmm_execute
         return openmm_execute(request)
     if operation == 'capabilities':
-        import importlib
-        methods=[]; engines={}
-        for name,names in [('rdkit',METHODS),('gemmi',['gemmi.crystal','gemmi.diffraction','gemmi.structure']),('openmm',['openmm.lennardJones','openmm.system'])]:
-            try:
-                module=importlib.import_module(name);engines[name]=getattr(module,'__version__','installed');methods+=names
-            except ImportError: pass
-        import os,shutil
-        if 'rdkit' in engines and (os.environ.get('CHEMISTRY_XTB_EXECUTABLE') or shutil.which('xtb')):methods+=['xtb.singlepoint','xtb.optimize']
-        return {'methods':methods,'engines':engines}
+        return capabilities()
     from rdkit import Chem, DataStructs, rdBase
     from rdkit.Chem import AllChem, Descriptors, Lipinski, rdMolDescriptors, rdFingerprintGenerator
     operation = request['operation']; options = request.get('options', {})
@@ -159,15 +278,18 @@ def evaluate(request):
     return result
 
 def main():
+    binding = None
     try:
         raw = sys.stdin.buffer.read(MAX_INPUT+1)
         if len(raw) > MAX_INPUT: raise ValueError('Input exceeds worker limit')
-        request = json.loads(raw)
+        request, binding = decode_request(raw)
+        request = validate_request(strict_json(request) if isinstance(request, str) else request)
         result = evaluate(request)
-        output = json.dumps({'ok':True,'result':result},allow_nan=False,separators=(',',':'))
+        output = json.dumps(dict(binding or {},ok=True,result=result),allow_nan=False,separators=(',',':'))
         if len(output.encode()) > 64*1024*1024: raise ValueError('Output exceeds worker limit')
     except Exception as error:
-        output = json.dumps({'ok':False,'error':str(error),'errorType':type(error).__name__})
+        message = str(error).encode()[:16000].decode(errors='ignore') or 'Chemistry worker failed'
+        output = json.dumps(dict(binding or {},ok=False,error=message,errorType=type(error).__name__),allow_nan=False)
     sys.stdout.write(output+'\n')
 
 if __name__ == '__main__': main()

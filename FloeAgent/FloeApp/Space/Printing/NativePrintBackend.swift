@@ -80,7 +80,6 @@ enum NativePrintError: Error, LocalizedError {
     func run() async throws -> Data {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
-        config.processPool = WKProcessPool()
         config.setURLSchemeHandler(self, forURLScheme: "floe-print")
         config.userContentController.add(self, name: "floePrint")
         let view = WKWebView(frame: .zero, configuration: config)
@@ -89,7 +88,8 @@ enum NativePrintError: Error, LocalizedError {
         let settings: [String: Any] = [
             "token": token, "requestID": request.identity.jobID.uuidString,
             "kind": request.input.preset == .genericMarlinPLA ? "fdm" : "sla",
-            "overrides": request.input.overrides, "limit": Self.byteLimit
+            "overrides": request.input.overrides, "limit": Self.byteLimit,
+            "machine": try JSONSerialization.jsonObject(with: JSONEncoder().encode(request.input.machine))
         ]
         let json = String(decoding: try JSONSerialization.data(withJSONObject: settings, options: [.sortedKeys]), as: UTF8.self)
         let html = """
@@ -106,7 +106,7 @@ enum NativePrintError: Error, LocalizedError {
             wasmResolver:async name=>await (await read('floe-print://engine/src/wasm/'+name)).arrayBuffer()});
           const slice=config.kind==='fdm'?sliceFDM:sliceSLA;
           const result=await slice(host,{requestId:config.requestID,mesh:{positions:mesh},
-            settings:createSettings(config.kind,config.overrides),
+            settings:createSettings(config.kind,config.overrides,config.machine),
             onProgress:p=>post('progress',{stage:String(p.stage||''),fraction:Number(p.value)||0})});
           const output=config.kind==='fdm'?new TextEncoder().encode(result.text):new Uint8Array(result.file);
           if(!output.length||output.length>config.limit)throw new Error('Slicing output exceeds the supported size.');
@@ -182,7 +182,7 @@ enum NativePrintError: Error, LocalizedError {
         finish(.failure(error))
     }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
-                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                 decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
         let scheme = navigationAction.request.url?.scheme
         decisionHandler(scheme == "floe-print" || scheme == "about" ? .allow : .cancel)
     }

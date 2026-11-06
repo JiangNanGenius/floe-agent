@@ -38,7 +38,7 @@ public enum MediaPreparedExchangeBridge {
             guard track.kind == .visual || track.kind == .audio,
                   !track.isMuted, track.volume == 1 else { try reject("track effects or captions") }
             let items = try track.clips.sorted { $0.timelineRange.start < $1.timelineRange.start }.map { c -> ExchangeTimelineItem in
-                guard let id = c.assetID, c.keyframeTracks.isEmpty, c.crop == nil,
+                guard let id = c.assetID, c.keyframeTracks.isEmpty, c.crop == nil, c.videoMask == nil,
                       c.rotationDegrees == 0, c.volume == 1, !c.isMuted,
                       c.fadeIn == nil || c.fadeIn?.value == 0,
                       c.fadeOut == nil || c.fadeOut?.value == 0,

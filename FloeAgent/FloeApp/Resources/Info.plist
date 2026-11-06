@@ -88,6 +88,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>FLOEGitHubOAuthClientID</key>
 	<string>$(FLOE_GITHUB_OAUTH_CLIENT_ID)</string>
+	<key>FloeAPNsEnvironment</key>
+	<string>$(FLOE_APNS_ENVIRONMENT)</string>
 	<key>FloeIOSBridgeDownloadURL</key>
 	<string>https://www.floe-agent.com/ios-bridge</string>
 	<key>FloeMacBridgeDownloadURL</key>
@@ -150,6 +152,7 @@
 	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
+		<string>remote-notification</string>
 		<string>fetch</string>
 		<string>processing</string>
 		<string>audio</string>

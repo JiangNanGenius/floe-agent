@@ -52,6 +52,7 @@ public actor ConversationPromoter {
         /// saved chat" can never report success while the user's pending
         /// messages exist only in RAM.
         public var inputs: [PendingUserInput]
+        public var presentations: [ConversationPresentationState]
 
         public init(
             conversation: ConversationRecord,
@@ -61,7 +62,8 @@ public actor ConversationPromoter {
             events: [RunEventRecord],
             usage: [RunUsageRecord],
             errors: [RunErrorRecord],
-            inputs: [PendingUserInput] = []
+            inputs: [PendingUserInput] = [],
+            presentations: [ConversationPresentationState] = []
         ) {
             self.conversation = conversation
             self.messages = messages
@@ -71,6 +73,7 @@ public actor ConversationPromoter {
             self.usage = usage
             self.errors = errors
             self.inputs = inputs
+            self.presentations = presentations
         }
     }
 
@@ -140,6 +143,13 @@ public actor ConversationPromoter {
             }
         }
         let runIDs = Set(snapshot.runs.map(\.id))
+        guard snapshot.presentations.count <= 64 else { throw FloeError.validationFailed("Too many interactive surfaces") }
+        for value in snapshot.presentations {
+            try value.validate()
+            guard value.conversationID == target, runIDs.contains(value.runID),
+                  snapshot.messages.contains(where: { $0.id == value.sourceID && $0.runID == value.runID })
+                    || snapshot.events.contains(where: { $0.id == value.sourceID && $0.runID == value.runID }) else { throw FloeError.unauthorized }
+        }
         for message in snapshot.messages {
             for part in message.parts where part.messageID != message.id {
                 throw ValidationError.partNotOwnedByMessage(part.id)
@@ -522,6 +532,9 @@ public actor ConversationPromoter {
                 )
             }
 
+            for presentation in snapshot.presentations {
+                try ConversationPresentationSQL.write(presentation, expectedRevision: nil, db: db)
+            }
             // Activity touch, once.
             try db.execute(
                 sql: "UPDATE conversations SET updated_at = ? WHERE id = ?",

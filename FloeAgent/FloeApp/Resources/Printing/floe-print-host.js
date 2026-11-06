@@ -11,8 +11,8 @@
  * This host intentionally bypasses the upstream app/worker protocol and calls
  * the FDM/SLA driver stages (slice -> prepare -> export) directly with Floe
  * typed settings. Only Floe-owned, typed settings and Floe-owned G-code
- * templates are accepted; arbitrary imported template/script evaluation is not
- * part of this boundary.
+ * scripts are plain text with fixed literal substitutions; no user text reaches
+ * the upstream expression evaluator or general JavaScript runtime.
  */
 'use strict';
 import {ownedProfiles} from './profiles.js';
@@ -21,10 +21,10 @@ const freezeTree=o=>{if(o && typeof o==='object'){Object.values(o).forEach(freez
 freezeTree(ownedProfiles);
 let realmBusy=false;
 const hostDetails=new WeakMap();
-export const ADAPTER_VERSION='floe-print-p0-2';
-export function createSettings(kind, overrides = {}) {
+export const ADAPTER_VERSION='floe-print-app-4';
+export function createSettings(kind, overrides = {}, machine = null) {
     if (!Object.hasOwn(ownedProfiles, kind)) throw new PrintHostError('E_KIND','unsupported kind');
-    const limits = kind === 'fdm' ? {sliceHeight:[0.02,1],outputTemp:[100,450],outputBedTemp:[0,150],outputFeedrate:[1,500]} : {slaSlice:[0.005,0.5],slaLayerOn:[0.1,120],slaBaseOn:[0.1,600]};
+    const limits = kind === 'fdm' ? {sliceHeight:[0.02,1],outputTemp:[100,450],outputBedTemp:[0,150],outputFeedrate:[1,500],sliceFillSparse:[0,1],sliceShells:[0,20],sliceTopLayers:[0,30],sliceBottomLayers:[0,30],sliceSupportEnable:[0,1],sliceSupportDensity:[0.01,1],sliceSupportAngle:[0,90]} : {slaSlice:[0.005,0.5],slaLayerOn:[0.1,120],slaBaseOn:[0.1,600],slaShell:[0,20],slaSupportEnable:[0,1],slaSupportDensity:[0.01,1],slaSupportSize:[0.1,5],slaSupportLayers:[0,100]};
     if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) throw new PrintHostError('E_SETTINGS','overrides object required');
     const s=structuredClone(ownedProfiles[kind]);
     // Geometry fidelity is owned by this adapter, not an inherited profile default.
@@ -37,9 +37,13 @@ export function createSettings(kind, overrides = {}) {
     for(const [key,value] of Object.entries(overrides)) {
         const range=limits[key];
         if(!Object.hasOwn(limits,key) || !range || typeof value !== 'number' || !Number.isFinite(value) || value < range[0] || value > range[1]) throw new PrintHostError('E_SETTING_RANGE','unsupported or invalid override: '+key);
+        if(['sliceShells','sliceTopLayers','sliceBottomLayers','slaSupportLayers','sliceSupportEnable','slaSupportEnable'].includes(key) && !Number.isInteger(value)) throw new PrintHostError('E_SETTING_RANGE','integer override required: '+key);
         s.process[key]=value;
+        if(key==='sliceSupportEnable') { s.process.sliceSupportEnable=!!value;s.process.sliceSupportType=value?'auto':'disabled'; }
+        if(key==='slaSupportEnable') s.process.slaSupportEnable=!!value;
         if(key==='sliceHeight') s.process.firstSliceHeight=value;
     }
+    if (machine) configureMachine(s, kind, machine);
     const freeze=o=>{if(o && typeof o === 'object'){Object.values(o).forEach(freeze);Object.freeze(o);}};freeze(s);trustedSettings.add(s);return s;
 }
 
@@ -54,7 +58,7 @@ export const SUPPORTED_CAPABILITIES = Object.freeze({
     unsupported: Object.freeze([
         '3MF project roundtrip (geometry-only 3MF exists elsewhere)',
         'multicolor / multi-material / multi-toolhead output',
-        'editable supports, hollowing, drainage, multi-plate',
+        'painted supports / drainage (automatic supports and per-plate slicing are available)',
         'sla formats other than CTB v3 (GOO/Photon/PW/encrypted CTB not enabled here)',
         'unknown devices / unknown format versions are rejected, never silently remapped',
     ]),
@@ -260,7 +264,8 @@ async function sliceFDMInternal(host, job) {
         if (typeof segment === 'string') { outputBytes+=new TextEncoder().encode(segment).length; if(outputBytes>64*1024*1024) throw new PrintHostError('E_SIZE','G-code output exceeds limit');chunks.push(segment); lines += segment.split('\n').length; }
     });
     checkSignal(signal);
-    const text = chunks.join('\r\n');
+    const rawText = chunks.join('\r\n');
+    const text = settings.floe ? machineGCode(rawText, settings) : rawText;
     if (!text || text.length < 100) throw new PrintHostError('E_OUTPUT', 'empty g-code output');
     return { requestId, kind: 'fdm', text, info: { triangles: tris, lines, bytes: text.length, widgetStats: widget.stats } };
 }
@@ -334,7 +339,20 @@ async function sliceOwned(host, job, kind, run) {
     const internal=hostDetails.get(host);
     if(!internal) throw new PrintHostError('E_HOST','unknown host');
     realmBusy=true;
-    const ownedJob={...job,mesh};
+    let outputMesh=mesh;
+    if(kind==='sla' && job.settings.floe) {
+        const r=job.settings.floe.resin, a=r.rotationDegrees*Math.PI/180, positions=new Float32Array(mesh.positions);
+        let top=0;for(let i=2;i<positions.length;i+=3)top=Math.max(top,positions[i]);
+        for(let i=0;i<positions.length;i+=3){
+            let x=positions[i]*(r.mirrorX?-1:1),y=positions[i+1]*(r.mirrorY?-1:1);
+            positions[i]=Math.round((x*Math.cos(a)-y*Math.sin(a))*1e6)/1e6;
+            positions[i+1]=Math.round((x*Math.sin(a)+y*Math.cos(a))*1e6)/1e6;
+            if(r.buildDirection==='towardPlatform')positions[i+2]=top-positions[i+2];
+            if(Math.abs(positions[i])>bedWidth/2 || Math.abs(positions[i+1])>bedDepth/2)throw new PrintHostError('E_BOUNDS','oriented resin layout lies outside the bed');
+        }
+        outputMesh=Object.freeze({positions});
+    }
+    const ownedJob={...job,mesh:outputMesh};
     try {const result=await run(internal,ownedJob);checkSignal(ownedJob.signal);return result;}
     finally {try{internal.cleanup();}finally{realmBusy=false;}}
 }
@@ -342,3 +360,60 @@ export const sliceFDM=(host,job)=>sliceOwned(host,job,'fdm',sliceFDMInternal);
 export const sliceSLA=(host,job)=>sliceOwned(host,job,'sla',sliceSLAInternal);
 
 export function hostDiagnostics(host) {const h=hostDetails.get(host);if(!h)throw new PrintHostError("E_HOST","unknown host");return {busy:realmBusy,ownedWidgets:h.ownedCount()};}
+
+
+function configureMachine(settings, kind, supplied) {
+    const m=structuredClone(supplied),d=settings.device,p=settings.process;
+    const number=(v,min,max)=>typeof v==='number'&&Number.isFinite(v)&&v>=min&&v<=max;
+    if(!m || !number(m.bedWidth,1,2000)||!number(m.bedDepth,1,2000)||!number(m.buildHeight,1,2000)||!['cartesian','i3','coreXY','delta','scara'].includes(m.kinematics)||!['frontLeft','center','rearLeft','custom'].includes(m.origin))throw new PrintHostError('E_MACHINE','invalid machine configuration');
+    for(const key of ['originX','originY','originZ','headOffsetX','headOffsetY','headOffsetZ'])if(!number(m[key],-10000,10000))throw new PrintHostError('E_MACHINE','invalid machine offset');
+    if(!Array.isArray(m.tools)||m.tools.length<1||m.tools.length>16)throw new PrintHostError('E_MACHINE','tool configuration required');
+    const ids=new Set();
+    for(const t of m.tools){
+        if(!Number.isInteger(t.id)||t.id<0||t.id>15||ids.has(t.id)||!number(t.nozzleDiameter,.05,5)||!number(t.filamentDiameter,.5,10)||!['offsetX','offsetY','offsetZ'].every(k=>number(t[k],-1000,1000)))throw new PrintHostError('E_MACHINE','invalid tool configuration');ids.add(t.id);
+    }
+    const tool=m.tools.find(t=>t.id===m.selectedTool);if(!tool)throw new PrintHostError('E_MACHINE','selected tool unavailable');
+    Object.assign(d,{bedWidth:m.bedWidth,bedDepth:m.bedDepth,maxHeight:m.buildHeight});
+    if(kind==='fdm'){
+        const vocabulary=new Set(['nozzle_temperature','bed_temperature','tool','layer','layer_z','bed_width','bed_depth']);
+        if(!m.scripts||!['start','end','toolChange','beforeLayer','afterLayer','pause'].every(k=>{
+            const b=m.scripts[k];return typeof b==='string'&&b.length<=32768&&!/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(b)&&Array.from(b.matchAll(/\{([^}]*)\}/g)).every(x=>vocabulary.has(x[1]))&&!b.replace(/\{[^}]*\}/g,'').includes('{');
+        }))throw new PrintHostError('E_SCRIPT','invalid plain G-code block');
+        // Upstream sees owned markers and fixed machine modes only, never custom expressions.
+        d.gcodePre=[';FLOE_START','G21','G90','M82','G92 E0'];d.gcodePost=[';FLOE_END'];
+        d.gcodeLayer=[';FLOE_LAYER {layer} {z}'];d.gcodeChange=[];
+        Object.assign(d.extruders[0],{extNozzle:tool.nozzleDiameter,extFilament:tool.filamentDiameter,extOffsetX:0,extOffsetY:0,extSelect:[],extDeselect:[]});
+    }else{
+        const r=m.resin;
+        if(!r||!Number.isInteger(r.resolutionX)||!Number.isInteger(r.resolutionY)||!number(r.resolutionX,100,8192)||!number(r.resolutionY,100,8192)||r.resolutionX*r.resolutionY>16777216||![0,90,180,270].includes(r.rotationDegrees)||!['awayFromPlatform','towardPlatform'].includes(r.buildDirection))throw new PrintHostError('E_MACHINE','invalid resin configuration');
+        for(const k of ['liftDistance','bottomLiftDistance'])if(!number(r[k],0,100))throw new PrintHostError('E_MACHINE','invalid lift distance');
+        for(const k of ['liftSpeed','retractSpeed'])if(!number(r[k],.01,100))throw new PrintHostError('E_MACHINE','invalid lift speed');
+        if(!Number.isInteger(r.bottomLayers)||!number(r.bottomLayers,0,1000)||!number(r.lightOffSeconds,0,120))throw new PrintHostError('E_MACHINE','invalid resin exposure');
+        Object.assign(d,{resolutionX:r.resolutionX,resolutionY:r.resolutionY});
+        Object.assign(p,{slaPeelDist:r.liftDistance,slaBasePeelDist:r.bottomLiftDistance,slaPeelLiftRate:r.liftSpeed,slaBasePeelLiftRate:r.liftSpeed,slaPeelDropRate:r.retractSpeed,slaBaseLayers:r.bottomLayers,slaLayerOff:r.lightOffSeconds,slaBaseOff:r.lightOffSeconds});
+    }
+    settings.floe=m;
+}
+
+/** Apply origin/carriage/tool translation once. Firmware owns CoreXY/i3 motor mixing. */
+export function machineGCode(text, settings) {
+    const m=settings.floe,t=m.tools.find(t=>t.id===m.selectedTool),p=settings.process;
+    const offset=[(m.origin==='frontLeft'||m.origin==='rearLeft'?m.bedWidth/2:0)+m.originX+m.headOffsetX-t.offsetX,
+        (m.origin==='frontLeft'?m.bedDepth/2:m.origin==='rearLeft'?-m.bedDepth/2:0)+m.originY+m.headOffsetY-t.offsetY,m.originZ+m.headOffsetZ-t.offsetZ];
+    const shift=[offset[0]-m.bedWidth/2,offset[1]-m.bedDepth/2,offset[2]];
+    let layer=0,z=0,seenLayer=false;
+    const render=block=>block.replace(/\{([^}]*)\}/g,(_,key)=>String({nozzle_temperature:p.outputTemp,bed_temperature:p.outputBedTemp,tool:m.selectedTool,layer,layer_z:z,bed_width:m.bedWidth,bed_depth:m.bedDepth}[key]));
+    const lines=[`; Floe Cartesian coordinates; kinematics=${m.kinematics}; tool=${m.selectedTool}`];
+    for(const raw of text.split(/\r?\n/)){
+        if(raw.trim()===';FLOE_START'){lines.push(render(m.scripts.start),render(m.scripts.toolChange));continue;}
+        if(raw.trim()===';FLOE_END'){if(seenLayer)lines.push(render(m.scripts.afterLayer));lines.push(render(m.scripts.end));continue;}
+        const marker=raw.match(/^;FLOE_LAYER\s+(\d+)\s+([-\d.]+)/);
+        if(marker){if(seenLayer)lines.push(render(m.scripts.afterLayer));layer=Number(marker[1]);z=Number(marker[2]);seenLayer=true;lines.push(`;; --- layer ${layer} ---`,render(m.scripts.beforeLayer));if(m.pauseLayers?.includes(layer))lines.push(render(m.scripts.pause));continue;}
+        let line=raw;
+        if(/^G(?:0?0|0?1|92)\s/.test(line)){
+            const parts=line.split(';');parts[0]=parts[0].replace(/\b([XYZ])(-?(?:\d+\.?\d*|\.\d+))/g,(_,axis,value)=>axis+Number((Number(value)+shift['XYZ'.indexOf(axis)]).toFixed(5)));line=parts.join(';');
+        }
+        lines.push(line);
+    }
+    return lines.join('\n');
+}

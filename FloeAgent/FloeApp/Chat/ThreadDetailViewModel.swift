@@ -588,6 +588,14 @@ final class ThreadDetailViewModel: ObservableObject {
 
     /// Loads persisted state, then subscribes to the selected run's bounded
     /// push stream while it is non-terminal.
+    func refreshPresentedMessages() async {
+        do {
+            let values = try await center.conversationStore(for: conversationID).recentMessages(conversationID: conversationID, limit: 64)
+            var byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
+            for value in values { byID[value.id] = value }
+            messages = byID.values.sorted { $0.createdAt == $1.createdAt ? $0.id.uuidString < $1.id.uuidString : $0.createdAt < $1.createdAt }
+        } catch { actionError = error.localizedDescription }
+    }
     func load() async {
         loadGeneration &+= 1
         let generation = loadGeneration

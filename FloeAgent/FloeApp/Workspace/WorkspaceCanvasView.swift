@@ -16,6 +16,8 @@ import CryptoKit
 import ImageIO
 import FloeCAD
 import FloeCore
+import FloeCanvasTemplates
+import FloeCanvasTemplatesUI
 import FloeImages
 import FloeLocalModels
 import FloeModels
@@ -67,6 +69,13 @@ private struct CanvasBinaryDocument: FileDocument {
 struct CreativeModeHubView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @State private var presentation: CanvasPresentation?
+    @State private var mixedCanvasPresentation: PersonalContentRecord?
+    @State private var mixedCanvases: [PersonalContentRecord] = []
+    @State private var showsCanvasStart = false
+    @State private var selectedCanvasTemplate: CanvasTemplate?
+    @State private var selectedCanvasGoal: String?
+    @State private var personalCanvasTemplates: [CanvasTemplate] = []
+    @State private var createsMixedCanvas = false
     @State private var showsWorkspacePicker = false
     @State private var showsMaterialLibrary = false
     @State private var imageGenerationReady = false
@@ -126,6 +135,10 @@ struct CreativeModeHubView: View {
             let values = await Task.detached(priority: .utility) { WorkspaceCanvasRegistry.summaries() }.value
             guard !Task.isCancelled else { return }
             savedCanvases = values
+            do {
+                let library = try await PersonalContentService.shared.library()
+                mixedCanvases = try await library.records().filter { $0.kind == .canvas }
+            } catch { environment.workspaceCenter.actionError = error.localizedDescription }
         }
         .onAppear { Task { await refreshPrerequisites() } }
         .sheet(isPresented: $showsWorkspacePicker) {
@@ -142,6 +155,41 @@ struct CreativeModeHubView: View {
         }
         .sheet(isPresented: $showsMaterialLibrary) {
             NavigationStack { CanvasMaterialLibraryView() }
+        }
+        .sheet(isPresented: $showsCanvasStart, onDismiss: {
+            guard createsMixedCanvas else { return }
+            createsMixedCanvas = false
+            let template = selectedCanvasTemplate
+            Task {
+                do {
+                    mixedCanvasPresentation = try await PersonalContentService.shared.createCanvas(template: template,
+                        chinese: FloeL10n.currentLanguageCode.hasPrefix("zh"), goal: selectedCanvasGoal)
+                    selectedCanvasGoal = nil
+                    listRevision += 1
+                } catch { environment.workspaceCenter.actionError = error.localizedDescription }
+            }
+        }) {
+            NavigationStack {
+                CanvasTemplatePicker(personal: personalCanvasTemplates,
+                    chinese: FloeL10n.currentLanguageCode.hasPrefix("zh"), onGoal: { goal, template in
+                        selectedCanvasGoal = goal; selectedCanvasTemplate = template
+                        createsMixedCanvas = true; showsCanvasStart = false
+                    }) { template in
+                    selectedCanvasGoal = nil; selectedCanvasTemplate = template
+                    createsMixedCanvas = true; showsCanvasStart = false
+                }
+                .navigationTitle(IDELanguageRunText.t("新建画布", "New canvas"))
+                .toolbar { ToolbarItem(placement: .cancellationAction) {
+                    Button(IDELanguageRunText.t("取消", "Cancel")) { showsCanvasStart = false }
+                } }
+                .task {
+                    do { personalCanvasTemplates = try await CanvasHostServices.templateLibrary().list().map(\.latest) }
+                    catch { environment.workspaceCenter.actionError = error.localizedDescription }
+                }
+            }
+        }
+        .fullScreenCover(item: $mixedCanvasPresentation, onDismiss: { listRevision += 1 }) {
+            PersonalContentEditor(record: $0)
         }
         .sheet(item: $creativeDesignTarget) { target in
             CreativeDesignStartView(previousTarget: target)
@@ -239,7 +287,7 @@ struct CreativeModeHubView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("workspace.workspace_canvas_view.new_canvas")
                                 .foregroundStyle(.primary)
-                            Text("workspace.workspace_canvas_view.create_a_private_canvas_outside_a")
+                            Text(IDELanguageRunText.t("从目标、场景或空白开始", "Start with a goal, scenario, or blank canvas"))
                                 .font(FloeTheme.Typography.metadata)
                                 .foregroundStyle(.secondary)
                         }
@@ -334,6 +382,38 @@ struct CreativeModeHubView: View {
                                     value.assignments = value.assignments.filter { $0.value != folder.id }
                                 }
                                 if selectedFolder == folder.id { selectedFolder = nil }
+                            }
+                        }
+                    }
+                }
+            }
+            if !mixedCanvases.isEmpty {
+                Section(IDELanguageRunText.t("混合画布", "Mixed canvases")) {
+                    ForEach(mixedCanvases.filter {
+                        (searchText.isEmpty || $0.title.localizedStandardContains(searchText))
+                            && (selectedFolder == nil || organization.assignments[$0.id] == selectedFolder)
+                    }) { record in
+                        Button { mixedCanvasPresentation = record } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "rectangle.and.pencil.and.ellipsis").foregroundStyle(FloeTheme.primary)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(record.title).foregroundStyle(.primary)
+                                    Text(record.modifiedAt, format: .dateTime.month().day()).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                            }.frame(minHeight: FloeTheme.minimumTarget)
+                        }
+                        .contextMenu {
+                            if !organization.folders.isEmpty {
+                                Menu(IDELanguageRunText.t("移入文件夹", "Move to folder")) {
+                                    Button(IDELanguageRunText.t("所有画布", "All canvases")) {
+                                        updateOrganization { $0.assignments[record.id] = nil }
+                                    }
+                                    ForEach(organization.folders) { folder in
+                                        Button(folder.name) { updateOrganization { $0.assignments[record.id] = folder.id } }
+                                    }
+                                }
                             }
                         }
                     }
@@ -537,21 +617,7 @@ struct CreativeModeHubView: View {
     }
 
     private func createPrivateCanvas() {
-        do {
-            let id = UUID()
-            try WorkspaceCanvasRegistry.createIfNeeded(
-                canvasID: id,
-                name: FloeL10n.l("workspace.workspace_canvas_view.untitled_canvas"),
-                workspaceID: nil
-            )
-            presentation = CanvasPresentation(
-                id: id,
-                name: FloeL10n.l("workspace.workspace_canvas_view.untitled_canvas"),
-                workspace: nil
-            )
-        } catch {
-            environment.workspaceCenter.actionError = error.localizedDescription
-        }
+        selectedCanvasTemplate = nil; createsMixedCanvas = false; showsCanvasStart = true
     }
 
     private func openCanvas(for workspace: WorkspaceRecord) {

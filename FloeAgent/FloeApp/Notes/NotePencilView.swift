@@ -40,6 +40,9 @@ struct NotePencilView: UIViewRepresentable {
     var captureSelectionRequest: UUID? = nil
     var regionSelection = false
     var onSelectionCapture: (CGRect, Data) -> Void = { _, _ in }
+    /// Read-only, explicit ink capture for the Notes-owned shape preview.
+    var inkShapeRequest: NoteInkShapeRequest? = nil
+    var onInkShapeCapture: (NoteInkShapeRequest, Result<NoteInkShapeCapture, NoteInkShapeError>) -> Void = { _, _ in }
     var elementImages: [UUID: Data] = [:]
     // The anchor is normalized to the visible viewport, independent of paper zoom.
     var onPencilAction: (UIPencilPreferredAction, CGPoint) -> Void = { _, _ in }
@@ -149,6 +152,40 @@ struct NotePencilView: UIViewRepresentable {
         #endif
         coordinator.applyDrawingSnapshot(drawing, generation: drawingGeneration,
             baseline: drawingBaseline, mutation: canvasMutation, to: canvas)
+        if let request = inkShapeRequest, request.id != coordinator.handledInkShapeRequest {
+            coordinator.handledInkShapeRequest = request.id
+            let reporter = self
+            DispatchQueue.main.async { [weak canvas, weak coordinator] in
+                guard let canvas, let coordinator,
+                      reporter.page.id == request.pageID, coordinator.parent.page.id == request.pageID else {
+                    reporter.onInkShapeCapture(request, .failure(.sourceChanged)); return
+                }
+                guard !coordinator.isUsingTool, coordinator.pendingDrawing == nil else {
+                    reporter.onInkShapeCapture(request, .failure(.drawingInUse)); return
+                }
+                let indices: [Int]
+                switch request.scope {
+                case .page: indices = Array(canvas.drawing.strokes.indices)
+                case .selection:
+                    #if compiler(>=6.4)
+                    if #available(iOS 27.0, *) {
+                        indices = canvas.drawing.strokes.enumerated().compactMap { index, stroke in
+                            canvas.selection.contains(stroke.id) ? index : nil
+                        }
+                    } else { reporter.onInkShapeCapture(request, .failure(.selectionUnavailable)); return }
+                    #else
+                    reporter.onInkShapeCapture(request, .failure(.selectionUnavailable)); return
+                    #endif
+                }
+                guard !indices.isEmpty else { reporter.onInkShapeCapture(request, .failure(.emptySource)); return }
+                guard indices.count <= NotesInkShapeRecognizer.maximumStrokes else {
+                    reporter.onInkShapeCapture(request, .failure(.tooLarge)); return
+                }
+                reporter.onInkShapeCapture(request, .success(.init(request: request,
+                    drawing: canvas.drawing.dataRepresentation(), sourceIndices: indices,
+                    generation: coordinator.adoptedGeneration, mutation: coordinator.mutationCounter)))
+            }
+        }
         if coordinator.loadedBackground != background || coordinator.elements != page.elements || coordinator.paper != page.paper || coordinator.loadedImages != elementImages || coordinator.loadedTextSources != textSources {
             coordinator.loadedTextSources = textSources
             coordinator.loadedImages = elementImages
@@ -225,6 +262,7 @@ struct NotePencilView: UIViewRepresentable {
         var isApplying = false
         var handledDeleteRequest: UUID?
         var handledCaptureRequest: UUID?
+        var handledInkShapeRequest: UUID?
         var handledFocusRequest: UUID?
         var focusHighlightRect: CGRect?
         let focusHighlightLayer = CAShapeLayer()

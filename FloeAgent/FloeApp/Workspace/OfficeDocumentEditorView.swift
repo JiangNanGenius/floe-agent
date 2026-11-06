@@ -4597,6 +4597,8 @@ private struct OfficePendingProposalReview: View {
 struct OfficeDocumentEditorView: View {
     let relativePath: String
     @ObservedObject var session: OfficeFileSession
+    /// Explicit personal-original root; nil preserves existing workspace hosts.
+    var documentRoot: URL? = nil
     /// Set by `FilePreviewView` for a cloud/network document and by Notes for
     /// its generated Office documents, whose staged copies get fresh paths on
     /// every open; nil for local Office documents, which keep their
@@ -4723,7 +4725,7 @@ struct OfficeDocumentEditorView: View {
                 // exact workspace file and owner.
                 session.registerLiveDocument(
                     relativePath: relativePath,
-                    root: environment.workspaceCenter.fileService?.guardResolver.rootURL,
+                    root: documentRoot ?? environment.workspaceCenter.fileService?.guardResolver.rootURL,
                     conversationID: nil)
                 // Queued intent: a tap that lands while the document is still
                 // opening is replayed instead of being dropped by `operating`.

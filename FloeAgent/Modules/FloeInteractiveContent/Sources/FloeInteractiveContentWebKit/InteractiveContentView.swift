@@ -28,14 +28,17 @@ public struct InteractiveContentView: View {
     private let strings: InteractiveViewStrings
     private let onContinue: ((InteractiveState) -> Void)?
     private let onSave: ((Data) -> Void)?
+    private let managesLifecycle: Bool
     @State private var actionFailed = false
 
     public init(controller: InteractiveWebController, strings: InteractiveViewStrings = .localized(),
-                onContinue: ((InteractiveState) -> Void)? = nil, onSave: ((Data) -> Void)? = nil) {
+                onContinue: ((InteractiveState) -> Void)? = nil, onSave: ((Data) -> Void)? = nil,
+                managesLifecycle: Bool = true) {
         self.controller = controller
         self.strings = strings
         self.onContinue = onContinue
         self.onSave = onSave
+        self.managesLifecycle = managesLifecycle
     }
 
     public var body: some View {
@@ -69,8 +72,8 @@ public struct InteractiveContentView: View {
             if actionFailed { Text(controller.document.fallbackText).font(.footnote) }
             if controller.hasUnsavedChanges { Text(strings.unsavedChanges).font(.footnote) }
         }
-        .task { await controller.resume() }
-        .onDisappear { Task { await controller.suspend() } }
+        .task { if managesLifecycle { await controller.resume() } }
+        .onDisappear { if managesLifecycle { Task { await controller.suspend() } } }
     }
 }
 

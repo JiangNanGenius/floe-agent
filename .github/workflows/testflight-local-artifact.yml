@@ -165,6 +165,9 @@ jobs:
         DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         HOST_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
         SCREENSHARE_PROVISIONING_PROFILE: ${{ secrets.APPLE_SCREENSHARE_PROVISIONING_PROFILE_BASE64 }}
+        ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+        ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        ASC_PRIVATE_KEY_PATH: ${{ runner.temp }}/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
       run: |
         set -euo pipefail
         test -n "$DISTRIBUTION_CERTIFICATE"
@@ -175,6 +178,11 @@ jobs:
         echo "$DISTRIBUTION_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/distribution.p12"
         echo "$HOST_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/Floe.mobileprovision"
         echo "$SCREENSHARE_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/FloeScreenShare.mobileprovision"
+        APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+        test -n "$APP_PATH"
+        python3 scripts/ensure_apns_profile.py \
+          --profile "$RUNNER_TEMP/Floe.mobileprovision" --app "$APP_PATH" \
+          --source-root . --report "$RUNNER_TEMP/apns-signing-profile.json"
         security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
         security set-keychain-settings -lut 21600 "$KEYCHAIN"
         security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
@@ -203,6 +211,10 @@ jobs:
           # wildcard/development values. Xcode normally performs these exact
           # App Store substitutions while exporting an archive.
           cp "$SOURCE_ENTITLEMENTS_PATH" "$ENTITLEMENTS_PATH"
+          if test "$EXPECTED_APP_ID" = QYL72C43K6.org.floeagent.ios && \
+             /usr/libexec/PlistBuddy -c 'Print :aps-environment' "$ENTITLEMENTS_PATH" >/dev/null 2>&1; then
+            /usr/libexec/PlistBuddy -c 'Set :aps-environment production' "$ENTITLEMENTS_PATH"
+          fi
           /usr/libexec/PlistBuddy \
             -c "Add :application-identifier string $EXPECTED_APP_ID" \
             -c 'Add :com.apple.developer.team-identifier string QYL72C43K6' \
@@ -241,6 +253,7 @@ jobs:
         set -euo pipefail
         mkdir -p "$RUNNER_TEMP/TestFlightExport"
         cp "$RUNNER_TEMP/bundle-normalization.json" "$RUNNER_TEMP/TestFlightExport/"
+        cp "$RUNNER_TEMP/apns-signing-profile.json" "$RUNNER_TEMP/TestFlightExport/"
         APP_PATH="$(find "$RUNNER_TEMP/FloeSignedPayload/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
         test -n "$APP_PATH"
         APPEX_PATH="$APP_PATH/PlugIns/Floe Screen Share.appex"
@@ -317,6 +330,7 @@ jobs:
         path: |-
           ${{ runner.temp }}/FloeSignedPayload/provenance.json
           ${{ runner.temp }}/FloeSignedPayload/symbols/
+          ${{ runner.temp }}/apns-signing-profile.json
         if-no-files-found: warn
     - name: Confirm Apple processing and existing internal Floe QA availability
       env:
@@ -330,7 +344,8 @@ jobs:
         sys.path.insert(0,'scripts')
         from prepare_testflight import api, rows, prepare
         version=os.environ['APP_VERSION']; number=os.environ['APP_BUILD']
-        notes=json.loads(pathlib.Path('../docs/releases/testflight/TESTFLIGHT_1.7_WHATS_NEW_BUILD_'+number+'.json').read_text())
+        series='.'.join(version.split('.')[:2])
+        notes=json.loads(pathlib.Path('../docs/releases/testflight/TESTFLIGHT_'+series+'_WHATS_NEW_BUILD_'+number+'.json').read_text())
         for attempt in range(60):
             os.environ['ASC_TOKEN']=subprocess.check_output([sys.executable,'scripts/generate_asc_jwt.py'],text=True).strip()
             apps=rows('/v1/apps?'+urllib.parse.urlencode({'filter[bundleId]':'org.floeagent.ios'}))

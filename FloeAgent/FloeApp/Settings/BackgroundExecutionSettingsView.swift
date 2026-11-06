@@ -86,6 +86,7 @@ struct BackgroundExecutionSettingsView: View {
 
     var body: some View {
         Form {
+            APNsSettingsSection(center: center.environment.apnsCenter)
             Section {
                 Toggle("background.features.enhanced", isOn: Binding(
                     get: { center.backgroundExecutionOptions.enhancedBackgroundEnabled },

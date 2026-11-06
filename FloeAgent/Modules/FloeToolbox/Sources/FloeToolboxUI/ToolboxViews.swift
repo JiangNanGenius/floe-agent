@@ -13,7 +13,7 @@ extension ToolboxGroup {
         return switch self { case .connections: text("终端与远程","Terminal and remote"); case .diagnostics: text("网络诊断","Network diagnostics"); case .communication: text("通信工具","Communication tools"); case .utilities: text("实用工具","Utilities") } }
 }
 extension ToolboxTool {
-    func title(in locale: Locale) -> String {
+    public func title(in locale: Locale) -> String {
         func text(_ zh: String,_ en: String) -> String { locale.language.languageCode?.identifier == "zh" ? zh : en }
         return switch self {
         case .terminal: text("终端","Terminal"); case .vnc: text("VNC 远程桌面","VNC desktop"); case .browser: text("浏览器","Browser")
@@ -26,7 +26,7 @@ extension ToolboxTool {
         case .qr: text("二维码","QR code")
         }
     }
-    var symbol: String {
+    public var symbol: String {
         switch self {
         case .terminal: "terminal"; case .vnc: "desktopcomputer"; case .browser: "globe"; case .ping: "waveform.path.ecg"
         case .traceroute: "point.3.connected.trianglepath.dotted"; case .dns: "list.bullet.rectangle"; case .port: "network"

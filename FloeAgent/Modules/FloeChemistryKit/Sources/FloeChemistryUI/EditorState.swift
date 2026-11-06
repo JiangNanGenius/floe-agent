@@ -20,6 +20,12 @@ extension ChemicalKind {
         }
     }
 }
+extension ChemicalObject {
+    var requiresPreparation: Bool { facts?["preparationRequired"] == .bool(true) }
+    var displaySummary: String {
+        requiresPreparation ? chemistryText("Awaiting processing", "待处理") : (facts?["formula"]?.string ?? kind.displayTitle)
+    }
+}
 extension ChemistryRunStatus {
     var displayTitle: String {
         switch self {
@@ -32,7 +38,7 @@ extension ChemistryRunStatus {
         }
     }
 }
-func chemistryEnvironmentTitle(_ id: String) -> String { id == "native.local" ? chemistryText("On this device", "本机") : id }
+func chemistryEnvironmentTitle(_ id: String) -> String { id == "native.local" ? chemistryText("On this device", "本机") : chemistryText("Configured environment", "已配置环境") }
 func chemistryMethodTitle(_ id: String) -> String {
     switch id {
     case "uff.optimize": chemistryText("UFF · optimize geometry", "UFF · 几何优化")
@@ -47,6 +53,13 @@ func chemistryMethodTitle(_ id: String) -> String {
     case "rdkit.similarity": chemistryText("Molecular similarity", "分子相似性")
     case "rdkit.substructure": chemistryText("Substructure search", "子结构检索")
     case "rdkit.reaction": chemistryText("Reaction rules", "反应规则")
+    case "gemmi.crystal": chemistryText("Crystal structure", "晶体结构")
+    case "gemmi.diffraction": chemistryText("X-ray diffraction", "X 射线衍射")
+    case "gemmi.structure": chemistryText("Biomolecular structure analysis", "生物结构分析")
+    case "openmm.lennardJones": chemistryText("Lennard-Jones particle dynamics", "Lennard-Jones 粒子动力学")
+    case "openmm.system": chemistryText("OpenMM dynamics · supplied system", "OpenMM 动力学 · 指定体系")
+    case "xtb.singlepoint": chemistryText("xTB single-point energy", "xTB 单点能")
+    case "xtb.optimize": chemistryText("xTB geometry optimization", "xTB 几何优化")
     default: id
     }
 }
@@ -56,6 +69,15 @@ public final class ChemistryEditorState {
     public let service: ChemistryService
     public let projectID: UUID
     public var project: ChemistryProject?
+    public var availableEnvironments: [String: [String]] = [:]
+    /// Native host labels for presentation only; execution still uses IDs.
+    public var environmentDisplayNames: [String: String] = [:]
+    public func environmentTitle(_ id: String) -> String {
+        if id == "native.local" { return chemistryText("On this device", "本机") }
+        if let name = environmentDisplayNames[id]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !name.isEmpty, name != id, UUID(uuidString: name) == nil { return name }
+        return chemistryText("Configured environment", "已配置环境")
+    }
     public var selectedID: UUID?
     public var error: String?
     public var busy = false
@@ -66,6 +88,10 @@ public final class ChemistryEditorState {
     private var savingBlocks: Set<UUID> = []
     @ObservationIgnored private lazy var structureProcessor = ChemistryStructureProcessor()
     @ObservationIgnored private var drawingSessions: [UUID:NativeDrawingSession] = [:]
+    /// Trusted host callbacks retain Floe's resolved environment/jobs authorization and ownership.
+    /// Omitting them keeps the standalone native calculation path.
+    @ObservationIgnored public var calculationHandler: (@MainActor @Sendable (UUID, String, JSONValue) async throws -> UUID)?
+    @ObservationIgnored public var cancellationHandler: (@MainActor @Sendable (UUID) async throws -> Void)?
     public init(service: ChemistryService, projectID: UUID) { self.service = service; self.projectID = projectID }
     public var selected: ChemicalObject? { project?.objects.first(where: { $0.id == selectedID }) }
     func drawingSession(for object:ChemicalObject) -> NativeDrawingSession {
@@ -85,11 +111,13 @@ public final class ChemistryEditorState {
     }
     public func refresh() async {
         do {
+            await refreshCapabilities()
             project = try await service.project(projectID)
             if selectedID == nil { selectedID = project?.objects.first?.id }
             for block in project?.blocks ?? [] where drafts[block.id] == nil { baselines[block.id] = block.text }
         } catch { self.error = error.localizedDescription }
     }
+    public func refreshCapabilities() async { availableEnvironments = await service.capabilities() }
     public func perform(_ operation: @MainActor () async throws -> Void) async {
         busy = true; error = nil
         defer { busy = false }
@@ -97,8 +125,11 @@ public final class ChemistryEditorState {
         catch is CancellationError { }
         catch { self.error = error.localizedDescription }
     }
-    public func importSource(title: String, kind: ChemicalKind, format: String, source: String) async {
-        await perform { selectedID = try await service.importObject(projectID, title: title, kind: kind, format: format, source: source).id }
+    public func importSource(title: String, kind: ChemicalKind, format: String, source: String, deferPreparation: Bool = false) async {
+        await perform {
+            selectedID = try await service.importObject(projectID, title: title, kind: kind, format: format,
+                source: source, deferPreparation: deferPreparation).id
+        }
     }
     public func createDrawing() async {
         await perform { selectedID = try await service.createDrawing(projectID, title: chemistryText("Untitled molecule", "未命名分子")).id }
@@ -112,7 +143,16 @@ public final class ChemistryEditorState {
     }
     public func run(method: String, options: JSONValue = .object([:])) async {
         guard let selectedID else { return }
-        await perform { _ = try await service.start(projectID, objectID: selectedID, method: method, options: options) }
+        await perform {
+            if let calculationHandler { _ = try await calculationHandler(selectedID, method, options) }
+            else { _ = try await service.start(projectID, objectID: selectedID, method: method, options: options) }
+        }
+    }
+    public func cancel(runID: UUID) async {
+        await perform {
+            if let cancellationHandler { try await cancellationHandler(runID) }
+            else { try await service.cancel(projectID, runID: runID) }
+        }
     }
     public func setText(_ id: UUID, text: String) {
         if baselines[id] == nil { baselines[id] = project?.blocks.first(where: { $0.id == id })?.text ?? "" }

@@ -267,7 +267,27 @@ final class EditorViewModel {
         return parts.joined(separator: "#")
     }
 
-    weak var cameraControl: (any ViewportCameraControl)?
+    /// An explicitly opened drafting entrance can precede the Metal viewport
+    /// binding. Consume its requested plane when the real camera attaches.
+    var draftingPlaneOnViewportBind: SketchPlane?
+    weak var cameraControl: (any ViewportCameraControl)? {
+        didSet {
+            guard let plane = draftingPlaneOnViewportBind, let cameraControl else { return }
+            draftingPlaneOnViewportBind = nil
+            orthographicEnabled = true
+            cameraControl.setProjection(orthographic: true)
+            cameraControl.moveCameraHeadOn(to: plane)
+        }
+    }
+
+    func requestDraftingCamera(for plane: SketchPlane) {
+        draftingPlaneOnViewportBind = plane
+        guard let cameraControl else { return }
+        draftingPlaneOnViewportBind = nil
+        orthographicEnabled = true
+        cameraControl.setProjection(orthographic: true)
+        cameraControl.moveCameraHeadOn(to: plane)
+    }
 
     /// Bumped by the viewport coordinator whenever the camera moves; SwiftUI
     /// overlays that reproject world points (dimension labels, plan §C2) read

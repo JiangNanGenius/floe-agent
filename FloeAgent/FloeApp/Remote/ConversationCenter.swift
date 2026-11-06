@@ -2211,6 +2211,7 @@ final class ConversationCenter: ObservableObject {
         keepOperation = nil
         keepOperationID = nil
         await environment.userQuestions.discardTemporary(conversationID: id, runIDs: questionRunIDs)
+        environment.interactiveHostCenter.discard(conversationID: id)
         await session.conversationStore.close()
         await session.runStore.close()
         await session.runningInputStore.close()
@@ -2341,6 +2342,7 @@ final class ConversationCenter: ObservableObject {
         await session.runStore.close()
         await session.runningInputStore.close()
         await environment.userQuestions.discardTemporary(conversationID: id, runIDs: questionRunIDs)
+        environment.interactiveHostCenter.discard(conversationID: id)
         // Personal-data pagination snapshots are RAM-only and owned per
         // temporary run (see `PersonalToolOwnerID.init(context:)`). Destroy
         // them with the session instead of leaving the rows to expire on the
@@ -2435,12 +2437,15 @@ final class ConversationCenter: ObservableObject {
         // One real GRDB transaction commits the whole frozen snapshot; any
         // failure rolls back to zero durable rows (no compensating delete).
         let promoter = ConversationPromoter(database: environment.database)
+        let presentations = environment.interactiveHostCenter
         return { saved, conversationSnapshot, runSnapshot, inputSnapshot in
             var events: [RunEventRecord] = []
             for run in runSnapshot.runs {
                 events.append(contentsOf: runSnapshot.events[run.id, default: []])
             }
-            try await promoter.promote(ConversationPromoter.Snapshot(
+            do {
+                let presentationSnapshot = try await presentations.freezeForKeep(conversationID: saved.id)
+                try await promoter.promote(ConversationPromoter.Snapshot(
                 conversation: saved,
                 messages: conversationSnapshot.messages,
                 attachments: conversationSnapshot.attachments,
@@ -2448,8 +2453,13 @@ final class ConversationCenter: ObservableObject {
                 events: events,
                 usage: runSnapshot.runs.flatMap { runSnapshot.usage[$0.id, default: []] },
                 errors: runSnapshot.runs.flatMap { runSnapshot.errors[$0.id, default: []] },
-                inputs: inputSnapshot
+                inputs: inputSnapshot,
+                presentations: presentationSnapshot
             ))
+            } catch {
+                await presentations.keepFailed(conversationID: saved.id)
+                throw error
+            }
         }
     }
 
@@ -2633,6 +2643,7 @@ final class ConversationCenter: ObservableObject {
             promotionContext = nil
             temporarySession = nil
             lastPromotedConversationID = conversationID
+            environment.interactiveHostCenter.didKeep(conversationID: conversationID)
             // ORDINARY auto-title EXACTLY ONCE after a durable Keep: the
             // promotion already committed the instant first-message fallback
             // (never an empty title), and this one ordinary generation
@@ -3949,6 +3960,13 @@ final class ConversationCenter: ObservableObject {
         }
         let credentials = resolveCredentials(for: provider)
         let forceInitialCompaction = consumeManualCompaction(conversationID: conversationID)
+        // Native Toolbox authority is frozen from this conversation's exact
+        // selected connection. All prior task/skill/provider ceilings remain
+        // authoritative, and unrelated tasks discover no Toolbox sessions.
+        let nativeToolboxNames = try await environment.toolboxCenter.freeze(runID: runID, conversationID: conversationID)
+        let toolboxCeiling = allowedToolNames ?? Set(availableDescriptors.map(\.name))
+        allowedToolNames = toolboxCeiling.subtracting(ToolboxCenter.toolNames)
+            .union(toolboxCeiling.intersection(nativeToolboxNames))
         // Canvas Drawing Assistant binding: when this conversation is the
         // bound assistant for a staged canvas draft, the run receives the
         // exact authorized staged identity so cad.document resolves the SAME
@@ -5252,60 +5270,12 @@ final class ConversationCenter: ObservableObject {
         entries = entries.filter { $0.expiresAt.map { $0 > now } ?? true }
         entries = Array(Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) }).values)
 
-        var recalled: [HybridMemoryRecallItem] = []
-        #if canImport(NaturalLanguage)
-        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !normalizedQuery.isEmpty {
-            let recognizer = NLLanguageRecognizer()
-            recognizer.processString(normalizedQuery)
-            let language = recognizer.dominantLanguage ?? .english
-            let embeddingProvider = AppleNaturalLanguageEmbeddingProvider(language: language)
-            let queryVector = try? await embeddingProvider.embedding(for: normalizedQuery)
-            if let queryVector {
-                for entry in entries.prefix(200) {
-                    let digest = MemoryContentDigest.make(entry.content)
-                    let needsRefresh = (try? await environment.intelligenceStore.embeddingNeedsRefresh(
-                        memoryID: entry.id,
-                        modality: .text,
-                        modelIdentifier: embeddingProvider.modelIdentifier,
-                        modelRevision: embeddingProvider.modelRevision,
-                        contentDigest: digest
-                    )) ?? true
-                    if needsRefresh,
-                       let vector = try? await embeddingProvider.embedding(for: entry.content) {
-                        try? await environment.intelligenceStore.saveEmbedding(MemoryEmbedding(
-                            memoryID: entry.id,
-                            modality: .text,
-                            modelIdentifier: embeddingProvider.modelIdentifier,
-                            modelRevision: embeddingProvider.modelRevision,
-                            values: vector,
-                            contentDigest: digest
-                        ))
-                    }
-                }
-                recalled = (try? await environment.intelligenceStore.hybridRecall(
-                    HybridMemoryRecallRequest(
-                        query: normalizedQuery,
-                        workspaceID: workspaceID,
-                        conversationID: conversationID,
-                        queryEmbedding: queryVector,
-                        modelIdentifier: embeddingProvider.modelIdentifier,
-                        modelRevision: embeddingProvider.modelRevision,
-                        limit: 8
-                    )
-                )) ?? []
-            }
-        }
-        #endif
-        if recalled.isEmpty, !query.isEmpty {
-            recalled = (try? await environment.intelligenceStore.hybridRecall(
-                HybridMemoryRecallRequest(
-                    query: query,
-                    workspaceID: workspaceID,
-                    conversationID: conversationID,
-                    limit: 8
-                )
-            )) ?? []
+        let recalled = (try? await environment.globalSourceMemory.recallMemories(query,
+            context: .init(workspaceID: workspaceID, conversationID: conversationID, limit: 8))) ?? []
+        let sourceHits = (try? await environment.globalSourceMemory.search(query,
+            context: .init(workspaceID: workspaceID, conversationID: conversationID, limit: 3))) ?? []
+        let sourceLines = sourceHits.filter(\.sourceAvailable).map {
+            "- Untrusted source excerpt [\($0.source.id), revision \($0.source.revision), offset \($0.offset)]: \(String($0.excerpt.prefix(1600)))"
         }
         let selected = entries
             .filter { $0.expiresAt.map { $0 > now } ?? true }
@@ -5352,9 +5322,9 @@ final class ConversationCenter: ObservableObject {
             }
         let documents = try? await activeDocuments
         return RuntimePersonalizationContext(
-            memory: (Array(memoryLines.prefix(8)) + credentialLines).isEmpty
+            memory: (Array(memoryLines.prefix(8)) + sourceLines + credentialLines).isEmpty
                 ? nil
-                : (Array(memoryLines.prefix(8)) + credentialLines).joined(separator: "\n"),
+                : (Array(memoryLines.prefix(8)) + sourceLines + credentialLines).joined(separator: "\n"),
             soul: documents?.soul,
             profile: documents?.profile
         )
@@ -6722,6 +6692,7 @@ final class ConversationCenter: ObservableObject {
         // best-effort only — never breaks the run's completion path).
         if completedRuns > 0 {
             environment.memoryDreamService.noteRunCompleted()
+            await environment.globalSourceMemory.changed()
         }
         if let conversationID, completedRuns > 0 {
             await environment.memoryDreamService.dream(
@@ -7321,6 +7292,8 @@ final class ConversationCenter: ObservableObject {
     }
 
     private func stopRunsAndDelete(conversationIDs: Set<UUID>) async throws {
+        for id in conversationIDs { environment.interactiveHostCenter.discard(conversationID: id) }
+        defer { for id in conversationIDs { environment.interactiveHostCenter.allowAfterDeletion(conversationID: id) } }
         for id in conversationIDs {
             try await environment.skillAuthoring.prepareForOwnerDeletion(ownerID: id)
         }

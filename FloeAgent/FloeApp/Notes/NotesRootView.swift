@@ -23,6 +23,8 @@ struct NotesRootView: View {
     @State private var deleting: NoteDocument?
     @State private var renaming: RenameTarget?
     @State private var selectedBook: UUID?
+    @State private var meetings: [PersonalContentRecord] = []
+    @State private var openingMeeting: PersonalContentRecord?
     /// Settled cover source and revision per document, reported by each
     /// thumbnail card so accessibility (and the UI acceptance tests) can
     /// distinguish real content covers from the explicit unsupported/placeholder
@@ -55,7 +57,7 @@ struct NotesRootView: View {
         var document: NoteDocument? = nil
     }
     private enum Creation: String, Identifiable {
-        case note, map, notebook, word, sheet, slides
+        case note, map, notebook, word, sheet, slides, meeting
         var id: String { rawValue }
         var titleKey: LocalizedStringKey {
             switch self {
@@ -65,6 +67,7 @@ struct NotesRootView: View {
             case .word: "notes.notes_root_view.word_document"
             case .sheet: "notes.notes_root_view.excel_spreadsheet"
             case .slides: "notes.notes_root_view.powerpoint_presentation"
+            case .meeting: LocalizedStringKey(IDELanguageRunText.t("会议笔记", "Meeting notes"))
             }
         }
     }
@@ -94,6 +97,8 @@ struct NotesRootView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("notes.notes_root_view.blank_note", systemImage: "doc.badge.plus") { creation = .note }
+                        Button(IDELanguageRunText.t("会议笔记", "Meeting notes"), systemImage: "waveform.and.mic") { creation = .meeting }
+                            .accessibilityIdentifier("notes.create.meeting")
                         Button("notes.notes_office_view.mind_map", systemImage: "point.3.connected.trianglepath.dotted") { creation = .map }
                         Button("notes.notes_root_view.notebook", systemImage: "folder.badge.plus") { creation = .notebook }
                         Menu("Office", systemImage: "doc.richtext") {
@@ -125,7 +130,14 @@ struct NotesRootView: View {
             .sheet(item: $creation, onDismiss: {
                 guard let pending = pendingCreation else { return }
                 pendingCreation = nil
-                if pending.kind == .notebook { session.createNotebook(pending.title) }
+                if pending.kind == .meeting {
+                    Task {
+                        do {
+                            openingMeeting = try await PersonalContentService.shared.create(kind: .meeting, title: pending.title)
+                            await refreshMeetings()
+                        } catch { session.errorMessage = error.localizedDescription }
+                    }
+                } else if pending.kind == .notebook { session.createNotebook(pending.title) }
                 else if pending.kind == .word || pending.kind == .sheet || pending.kind == .slides {
                     session.createOffice(extension: pending.kind == .word ? "docx" : pending.kind == .sheet ? "xlsx" : "pptx", title: pending.title, notebookID: selectedBook)
                 } else {
@@ -194,9 +206,16 @@ struct NotesRootView: View {
             .onReceive(environment.documentIntakeCenter.$noteOpenRequest) { _ in
                 adoptPendingDocument()
             }
+            .onReceive(environment.$studioOpenRequest) { _ in adoptMeeting() }
+            .onReceive(NotificationCenter.default.publisher(for: .floeStudioDocumentDidChange)) { _ in Task { await refreshMeetings() } }
+            .fullScreenCover(item: $openingMeeting, onDismiss: { Task { await refreshMeetings(); try? await session.reload() } }) { value in
+                PersonalContentEditor(record: value)
+            }
             .task {
                 await session.open()
                 adoptPendingDocument()
+                await refreshMeetings()
+                adoptMeeting()
                 #if DEBUG
                 await NotesOfficeThumbnailFixture.seedIfRequested(session: session)
                 await NotesAIActualOutputFixture.seedIfRequested(session: session)
@@ -218,6 +237,22 @@ struct NotesRootView: View {
             let opened = await session.adoptImportedDocument(request.documentID)
             environment.documentIntakeCenter.completeNoteOpen(request, opened: opened)
         }
+    }
+
+    private func adoptMeeting() {
+        guard let request = environment.studioOpenRequest, request.record.kind == .meeting,
+              request.sceneID == sceneID else { return }
+        environment.studioOpenRequest = nil
+        openingMeeting = request.record
+    }
+    @MainActor private func refreshMeetings() async {
+        do { meetings = try await PersonalContentService.shared.library().records().filter { $0.kind == .meeting } }
+        catch { session.errorMessage = error.localizedDescription }
+    }
+    private var matchingMeetings: [PersonalContentRecord] {
+        guard selectedBook == nil, section != .maps, section != .trash else { return [] }
+        return meetings.filter { (section != .favorites || $0.isPinned) && (query.isEmpty || $0.title.localizedStandardContains(query)) }
+            .sorted { $0.modifiedAt > $1.modifiedAt }
     }
 
     private var library: some View {
@@ -268,6 +303,16 @@ struct NotesRootView: View {
             }
             ScrollView {
               LazyVGrid(columns: showsCovers ? [GridItem(.adaptive(minimum: 160, maximum: 240), spacing: 20)] : [GridItem(.flexible())], spacing: 24) {
+                ForEach(matchingMeetings) { meeting in
+                    Button { openingMeeting = meeting } label: {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Image(systemName: "waveform.and.mic").font(.system(size: 36)).foregroundStyle(.tint)
+                                .frame(maxWidth: .infinity, minHeight: showsCovers ? 130 : 44, alignment: .leading)
+                            Text(meeting.title).font(.headline).foregroundStyle(.primary)
+                            Text(IDELanguageRunText.t("会议笔记", "Meeting notes")).font(.caption).foregroundStyle(.secondary)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }.buttonStyle(.plain).accessibilityIdentifier("notes.meeting.\(meeting.id)")
+                }
                 if selectedBook == nil && section != .trash && query.isEmpty {
                     ForEach(session.notebooks) { book in
                         Button { selectedBook = book.id } label: {
@@ -365,7 +410,7 @@ struct NotesRootView: View {
                 .scrollDismissesKeyboard(.interactively)
                 .overlay {
                     if session.store == nil { ProgressView("notes.notes_root_view.opening_note") }
-                    else if filtered.isEmpty {
+                    else if filtered.isEmpty && matchingMeetings.isEmpty {
                         ContentUnavailableView(query.isEmpty ? "notes.notes_root_view.nothing_here_yet" : "notes.notes_root_view.no_matching_content_found",
                             systemImage: query.isEmpty ? "book.closed" : "magnifyingglass",
                             description: Text(query.isEmpty ? "notes.notes_root_view.create_a_note_import_slides_or" : "notes.notes_root_view.try_other_keywords_scans_and_handwriting"))

@@ -50,13 +50,18 @@ struct ChemicalCanvasPreview {
         context.scaleBy(x:1,y:-1); context.textMatrix = .identity; context.textPosition = .zero; CTLineDraw(line,context); context.restoreGState()
     }
     static func draw(_ session:NativeDrawingSession,viewport:ChemicalViewport,preview:ChemicalCanvasPreview,size:CGSize,dark:Bool,highContrast:Bool = false,in context:CGContext) {
+        draw(session.document,selection:session.selection,tool:session.tool,rectangleSelection:session.rectangleSelection,
+             ringSize:session.ringSize,element:session.element,viewport:viewport,preview:preview,size:size,dark:dark,
+             highContrast:highContrast,in:context)
+    }
+    static func draw(_ document:ChemicalDrawing2D,selection:Set<ChemicalAtomID> = [],tool:ChemicalDrawTool = .select,rectangleSelection:Bool = false,ringSize:Int = 6,element:String = "C",viewport:ChemicalViewport,preview:ChemicalCanvasPreview,size:CGSize,dark:Bool,highContrast:Bool = false,in context:CGContext) {
         let background = CGColor(gray:dark ? 0.07 : 1,alpha:1), ink = CGColor(gray:dark ? 0.94 : 0.08,alpha:1)
         let accent = CGColor(srgbRed:0,green:0.46,blue:0.94,alpha:1)
         context.setFillColor(background); context.fill(CGRect(origin:.zero,size:size))
-        let atoms = session.document.atoms, bonds = session.document.bonds
+        let atoms = document.atoms, bonds = document.bonds
         let byID = Dictionary(uniqueKeysWithValues:atoms.map { ($0.id,$0) })
         let offset = preview.moving ? CGPoint(x:(preview.end?.x ?? 0)-(preview.start?.x ?? 0),y:(preview.end?.y ?? 0)-(preview.start?.y ?? 0)) : .zero
-        func screen(_ atom:ChemicalDrawAtom) -> CGPoint { let p = viewport.screen(atom.point); return session.selection.contains(atom.id) ? CGPoint(x:p.x+offset.x,y:p.y+offset.y) : p }
+        func screen(_ atom:ChemicalDrawAtom) -> CGPoint { let p = viewport.screen(atom.point); return selection.contains(atom.id) ? CGPoint(x:p.x+offset.x,y:p.y+offset.y) : p }
         let degrees = Dictionary(grouping:bonds.flatMap { [$0.a,$0.b] },by:{$0}).mapValues(\.count)
         var neighbors:[ChemicalAtomID:[ChemicalAtomID]] = [:]
         for bond in bonds {neighbors[bond.a,default:[]].append(bond.b);neighbors[bond.b,default:[]].append(bond.a)}
@@ -125,12 +130,12 @@ struct ChemicalCanvasPreview {
         context.setLineDash(phase:0,lengths:[])
         for atom in atoms.prefix(10000) {
             let p = screen(atom)
-            if session.selection.contains(atom.id) { context.setFillColor(CGColor(srgbRed:0,green:0.46,blue:0.94,alpha:0.15));context.fillEllipse(in:CGRect(x:p.x-14,y:p.y-14,width:28,height:28));context.setStrokeColor(accent);context.setLineWidth(1.5);context.strokeEllipse(in:CGRect(x:p.x-14,y:p.y-14,width:28,height:28)) }
+            if selection.contains(atom.id) { context.setFillColor(CGColor(srgbRed:0,green:0.46,blue:0.94,alpha:0.15));context.fillEllipse(in:CGRect(x:p.x-14,y:p.y-14,width:28,height:28));context.setStrokeColor(accent);context.setLineWidth(1.5);context.strokeEllipse(in:CGRect(x:p.x-14,y:p.y-14,width:28,height:28)) }
             if labeled(atom) { text(atom.label,at:p,size:fontSize,color:atomColor(atom.label,dark:dark,highContrast:highContrast),in:context) }
             if atom.charge != 0 { let q = abs(atom.charge) == 1 ? "" : String(abs(atom.charge));text(q+(atom.charge > 0 ? "+" : "−"),at:CGPoint(x:p.x+fontSize*0.7,y:p.y-fontSize*0.55),size:fontSize*0.65,color:ink,in:context) }
             if atom.isotope > 0 { text(String(atom.isotope),at:CGPoint(x:p.x-fontSize*0.65,y:p.y-fontSize*0.55),size:fontSize*0.65,color:ink,in:context) }
         }
-        for annotation in session.document.annotations {
+        for annotation in document.annotations {
             let p = viewport.screen(annotation.point)
             switch annotation.kind {
             case .arrow:
@@ -144,19 +149,19 @@ struct ChemicalCanvasPreview {
         }
         context.setStrokeColor(accent);context.setLineWidth(2);context.setLineDash(phase:0,lengths:[5,4])
         if let start = preview.start,let end = preview.end,!preview.moving {
-            if session.tool == .select {
-                if session.rectangleSelection {context.stroke(CGRect(x:min(start.x,end.x),y:min(start.y,end.y),width:abs(end.x-start.x),height:abs(end.y-start.y)))}
+            if tool == .select {
+                if rectangleSelection {context.stroke(CGRect(x:min(start.x,end.x),y:min(start.y,end.y),width:abs(end.x-start.x),height:abs(end.y-start.y)))}
                 else if let first = preview.path.first {context.beginPath();context.move(to:first);context.addLines(between:preview.path);context.addLine(to:end);context.strokePath()}
-            } else if [.bond,.arrow].contains(session.tool) {context.move(to:start);context.addLine(to:end);context.strokePath()}
+            } else if [.bond,.arrow].contains(tool) {context.move(to:start);context.addLine(to:end);context.strokePath()}
         }
         if let hover = preview.hover {
             context.setLineDash(phase:0,lengths:[])
-            if session.tool == .ring {
-                let n = session.ringSize,radius = viewport.scale*CGFloat(1.5/(2*sin(.pi/Double(n))))
+            if tool == .ring {
+                let n = ringSize,radius = viewport.scale*CGFloat(1.5/(2*sin(.pi/Double(n))))
                 context.beginPath()
                 for i in 0..<n {let angle = Double(i)*2 * .pi/Double(n) + .pi/6;let p = CGPoint(x:hover.x+cos(angle)*radius,y:hover.y-sin(angle)*radius);if i == 0 {context.move(to:p)}else{context.addLine(to:p)}}
                 context.closePath();context.strokePath()
-            } else if session.tool == .atom {text(session.element,at:hover,size:fontSize,color:accent,in:context)}
+            } else if tool == .atom {text(element,at:hover,size:fontSize,color:accent,in:context)}
             else {context.strokeEllipse(in:CGRect(x:hover.x-12,y:hover.y-12,width:24,height:24))}
         }
     }

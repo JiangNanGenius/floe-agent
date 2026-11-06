@@ -30,6 +30,27 @@ struct MediaWorkbenchView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
+        Group {
+            if let context = center.mediaV2Context {
+                MediaV2Workspace(session: context.session, onAssistant: { center.drawer = .ai }, onExported: onExported,
+                    onSaveToSource: onSaveToSource, onMakeVariant: onMakeVariant)
+                    .navigationTitle(title)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .sheet(item: $center.drawer) { drawer in drawerContent(drawer) }
+            } else if let context = center.musicContext {
+                MusicWorkbenchContextView(context: context, onExported: onExported)
+                    .navigationTitle(context.record.title)
+                    .navigationBarTitleDisplayMode(.inline)
+            } else if center.project?.prepared != nil {
+                ProgressView(WorkbenchText.t("正在打开工作区…", "Opening workspace…"))
+                    .task(id: center.project?.id) { _ = await center.usePreparedWorkspace() }
+            } else {
+                imageVideoBody
+            }
+        }
+    }
+
+    private var imageVideoBody: some View {
         GeometryReader { geometry in
             // Desktop three-column layout requires genuinely wide, landscape
             // usable bounds: portrait iPad and narrow split widths use the
@@ -136,6 +157,9 @@ struct MediaWorkbenchView: View {
                     .accessibilityIdentifier("workbench.save.status")
             }
             Spacer(minLength: 0)
+            toolbarButton("paintpalette", WorkbenchText.t("专业工作区", "Integrated workspace"), identifier: "workbench.prepared.open") {
+                Task { _ = await center.usePreparedWorkspace() }
+            }
             toolbarButton("arrow.uturn.backward", WorkbenchText.t("撤销", "Undo"),
                           identifier: "workbench.undo", disabled: !center.canUndo()) { center.undo() }
             toolbarButton("arrow.uturn.forward", WorkbenchText.t("重做", "Redo"),

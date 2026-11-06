@@ -93,7 +93,7 @@ final class MemoryCenter: ObservableObject {
         self.candidatePipeline = environment.memoryCandidatePipeline
         self.organizationMode = MemoryOrganizationMode(
             rawValue: UserDefaults.standard.string(forKey: Self.organizationModeKey) ?? ""
-        ) ?? .reviewFirst
+        ) ?? .modelManaged
     }
 
     /// Maps machine-readable lifecycle failures to product copy; everything
@@ -216,7 +216,7 @@ final class MemoryCenter: ObservableObject {
 
     func delete(_ entry: MemoryEntry) async {
         do {
-            try await environment.intelligenceStore.deleteMemory(id: entry.id, syncRevision: 1)
+            try await environment.globalSourceMemory.forget(memoryID: entry.id)
             await load()
             if publication.clearError(onSuccessFor: .memoryMutation) { errorMessage = nil }
         }
@@ -234,7 +234,7 @@ final class MemoryCenter: ObservableObject {
         operationNotice = nil
         defer { isWorking = false }
         do {
-            try await environment.intelligenceStore.deleteMemories(ids: ids, syncRevision: 1)
+            for id in ids { try await environment.globalSourceMemory.forget(memoryID: id) }
             await load()
             operationNotice = FloeL10n.plural("memory.memory_view.memories_deleted", count: ids.count)
             if publication.clearError(onSuccessFor: .memoryMutation) { errorMessage = nil }
@@ -257,11 +257,9 @@ final class MemoryCenter: ObservableObject {
             return
         }
         do {
-            let results = try await environment.intelligenceStore.hybridRecall(
-                HybridMemoryRecallRequest(query: query,
-                    workspaceID: environment.workspaceCenter.currentWorkspace?.id,
-                    conversationID: environment.browserCenter.conversationID, limit: 20)
-            )
+            let results = try await environment.globalSourceMemory.recallMemories(query,
+                context: .init(workspaceID: environment.workspaceCenter.currentWorkspace?.id,
+                    conversationID: environment.browserCenter.conversationID, limit: 20))
             guard canPublish(token, in: .search) else { return }
             searchResults = results
             if publication.clearError(onSuccessFor: .search) { errorMessage = nil }
@@ -524,7 +522,7 @@ struct MemoryView: View {
                         Spacer()
                         if center.isWorking {
                             ProgressView()
-                            Text(center.organizationPhase ?? "memory.memory_view.processing")
+                            Text(center.organizationPhase ?? FloeL10n.l("memory.memory_view.processing"))
                                 .font(FloeTheme.Typography.metadata)
                                 .foregroundStyle(.secondary)
                         }
@@ -539,6 +537,7 @@ struct MemoryView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            globalSourcesSection
             Section("memory.memory_view.personalization") {
                 Button { presentedSheet = .userProfile } label: {
                     personalizationRow(FloeL10n.l("memory.memory_view.user_profile"), icon: "person.text.rectangle", available: center.profile != nil)
@@ -758,6 +757,9 @@ struct MemoryView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private var globalSourcesSection: some View {
+        GlobalSourceMemorySettings(service: center.environment.globalSourceMemory)
+    }
     private func personalizationRow(_ title: String, icon: String, available: Bool) -> some View {
         HStack {
             Label(title, systemImage: icon)

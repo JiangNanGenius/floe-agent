@@ -68,6 +68,19 @@
   ],
   "documents": [
     {
+      "id": "chemistry",
+      "repositoryPath": "FloeApp/Resources/Licenses/Chemistry-NOTICES.txt",
+      "bundlePath": "Licenses/Chemistry-NOTICES.txt",
+      "titleKey": "settings.licenses.document.chemistry.title",
+      "titleFallback": "Chemistry engines and offline assets",
+      "titleArgument": null,
+      "license": "BSD-3-Clause; MPL-2.0; MIT; Apache-2.0; retained notices",
+      "kindKey": "settings.licenses.kind.notices",
+      "required": true,
+      "section": "engineering",
+      "noteKey": null
+    },
+    {
       "id": "building-web-ifc",
       "repositoryPath": "FloeApp/Resources/BuildingNative/LICENSE.md",
       "bundlePath": "BuildingNative/LICENSE.md",
@@ -657,6 +670,19 @@
       "section": "fonts"
     },
     {
+      "id": "citadel",
+      "repositoryPath": "FloeApp/Resources/Licenses/Citadel-LICENSE.txt",
+      "bundlePath": "Licenses/Citadel-LICENSE.txt",
+      "titleKey": "settings.licenses.document.citadel.title",
+      "titleFallback": "Citadel",
+      "titleArgument": null,
+      "license": "MIT",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "swift",
+      "noteKey": "settings.licenses.note.citadel_vendor"
+    },
+    {
       "id": "mlx-swift-lm",
       "repositoryPath": "FloeApp/Resources/Licenses/MLXSwiftLM-LICENSE.txt",
       "bundlePath": "Licenses/MLXSwiftLM-LICENSE.txt",
@@ -766,15 +792,6 @@
       "section": "swift",
       "noteKey": null,
       "evidence": ".build/checkouts/bitbytedata/LICENSE"
-    },
-    {
-      "name": "citadel",
-      "version": "ae8562f895de06ccb86fdb1cbb65fd99c8976e12",
-      "license": "MIT",
-      "source": "https://github.com/orlandos-nl/Citadel.git",
-      "section": "swift",
-      "noteKey": null,
-      "evidence": ".build/checkouts/citadel/LICENSE"
     },
     {
       "name": "cryptoswift",
@@ -1047,6 +1064,15 @@
       "evidence": ".build/checkouts/zipfoundation/LICENSE"
     },
     {
+      "name": "citadel",
+      "version": "ae8562f895de06ccb86fdb1cbb65fd99c8976e12",
+      "license": "MIT",
+      "source": "https://github.com/orlandos-nl/Citadel/tree/ae8562f895de06ccb86fdb1cbb65fd99c8976e12",
+      "section": "swift",
+      "noteKey": "settings.licenses.note.citadel_vendor",
+      "evidence": "ThirdParty/Citadel/LICENSE"
+    },
+    {
       "name": "mlx-swift-lm",
       "version": "d5d8b290e601ac1bf11f24635f8f811a83b98bf8",
       "license": "MIT",
@@ -1108,6 +1134,24 @@
       "section": "swift",
       "noteKey": "settings.licenses.note.openshape3d",
       "evidence": "FloeApp/Resources/Licenses/OpenShape3D-LICENSE.txt"
+    },
+    {
+      "name": "Floe chemistry native libraries (Avogadro / Eigen)",
+      "version": "Avogadro a5947518efb84132a44110dbdecab94fc87ce3b8; Eigen 5.0.1 build input",
+      "license": "BSD-3-Clause; MPL-2.0; MIT; retained dependency notices",
+      "source": "https://github.com/OpenChemistry/avogadrolibs/tree/a5947518efb84132a44110dbdecab94fc87ce3b8",
+      "section": "engineering",
+      "noteKey": null,
+      "evidence": "Modules/FloeChemistryNative/UPSTREAM.json and BUILD_SAVED.json bind the Avogadro source/bridge and all three static slices; retained notices in FloeApp/Resources/Licenses/Chemistry-NOTICES.txt. Eigen 5.0.1 is recorded as the producer's header-only build input, not a new remote SwiftPM pin."
+    },
+    {
+      "name": "Ketcher / Indigo offline chemistry assets",
+      "version": "Ketcher 3.18.0 pinned standalone assets",
+      "license": "Apache-2.0 and bundled dependency notices",
+      "source": "https://github.com/epam/ketcher/releases/tag/v3.18.0",
+      "section": "engineering",
+      "noteKey": null,
+      "evidence": "Modules/FloeChemistrySketch/UPSTREAM.json binds Ketcher standalone 3.18.0 archive and every bundled asset; LICENSE.Ketcher and retained bundled JavaScript notices are reproduced in FloeApp/Resources/Licenses/Chemistry-NOTICES.txt."
     },
     {
       "name": "Manifold",
@@ -2966,6 +3010,11 @@
       "fallback": "Every Swift package license was read from the resolved checkout at the exact revision declared in the lock; scripts/license-evidence.json records the file, its sha256 and the pin revision+source, and this generator re-verifies them whenever a checkout is present."
     },
     {
+      "id": "citadel_vendor",
+      "textKey": "settings.licenses.note.citadel_vendor",
+      "fallback": "Citadel retains its exact upstream source and full MIT license, with Floe's bounded authenticated file-channel API."
+    },
+    {
       "id": "mlx_vendor",
       "textKey": "settings.licenses.note.mlx_vendor",
       "fallback": "mlx-swift-lm is vendored at ThirdParty/MLXSwiftLM from upstream commit d5d8b290e601ac1bf11f24635f8f811a83b98bf8 with a minimal Floe prefill-stability patch; the complete MIT text ships in the app as Licenses/MLXSwiftLM-LICENSE.txt."
@@ -2977,8 +3026,8 @@
     }
   ],
   "counts": {
-    "components": 241,
-    "documents": 53,
+    "components": 243,
+    "documents": 55,
     "pins": 40
   }
 }

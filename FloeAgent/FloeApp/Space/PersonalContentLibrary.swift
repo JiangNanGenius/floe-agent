@@ -5,7 +5,7 @@ import CryptoKit
 /// The personal library organizes durable originals. It never changes a task's
 /// workspace, execution environment, or the native editor's commit authority.
 enum PersonalContentKind: String, Codable, CaseIterable, Hashable, Sendable {
-    case canvas, diagram, image, drawing, video, music, meeting
+    case canvas, diagram, image, drawing, video, music, meeting, chemistry
     case cad2D, cad3D, printing, manufacturing, document
 }
 
@@ -228,7 +228,19 @@ actor PersonalContentLibrary {
         record.folders = folders
         record.relativePath = String(target.path.dropFirst(root.path.count + 1))
         record.modifiedAt = Date()
-        try encoder.encode(record).write(to: target.appendingPathComponent(manifestName), options: .atomic)
+        do {
+            try encoder.encode(record).write(to: target.appendingPathComponent(manifestName), options: .atomic)
+        } catch {
+            let writeError = error
+            do {
+                guard !fileManager.fileExists(atPath: value.url.path) else { throw PersonalContentError.changedDocument }
+                try fileManager.moveItem(at: target, to: value.url)
+            } catch {
+                // Never remove either location to make rollback succeed.
+                throw PersonalFileActionError.moveRecovery((folders + [target.lastPathComponent]).joined(separator: "/"))
+            }
+            throw writeError
+        }
         return record
     }
 }

@@ -88,21 +88,23 @@ public struct PrintArtifact: Sendable {
         switch request.input.preset.format {
         case .gcode:
             let summary = try GCodeInspector.inspect(data)
-            let bed = request.input.preset.bed
-            guard summary.minimum.allSatisfy({ $0 >= -0.01 }), summary.maximum[0] <= bed.width+0.01,
-                  summary.maximum[1] <= bed.depth+0.01, summary.maximum[2] <= bed.height+0.01 else { throw PrintError.invalidArtifact }
+            let machine = request.input.machine, offset = machine.coordinateOffset
+            let low = [-machine.bedWidth / 2, -machine.bedDepth / 2, 0.0]
+            let high = [machine.bedWidth / 2, machine.bedDepth / 2, machine.buildHeight]
+            guard (0..<3).allSatisfy({ summary.minimum[$0] >= low[$0] + offset[$0] - 0.01 && summary.maximum[$0] <= high[$0] + offset[$0] + 0.01 }) else { throw PrintError.invalidArtifact }
             layers = summary.layerCount
         case .ctbV3:
             let header = try CTBHeader.inspect(data)
             let layerHeight = request.input.overrides["slaSlice"] ?? 0.1
             let exposure = request.input.overrides["slaLayerOn"] ?? 2.5
             let bottom = request.input.overrides["slaBaseOn"] ?? 25
-            guard header.widthPixels == 960, header.heightPixels == 544,
-                  abs(header.bedWidthMM-120) < 0.001, abs(header.bedDepthMM-68) < 0.001,
+            let machine = request.input.machine
+            guard header.widthPixels == machine.resin.resolutionX, header.heightPixels == machine.resin.resolutionY,
+                  abs(Double(header.bedWidthMM)-machine.bedWidth) < 0.001, abs(Double(header.bedDepthMM)-machine.bedDepth) < 0.001,
                   abs(Double(header.layerHeightMM)-layerHeight) < 0.00001,
                   abs(Double(header.exposureSeconds)-exposure) < 0.00001,
                   abs(Double(header.bottomExposureSeconds)-bottom) < 0.00001,
-                  header.bottomLayers == 5 else { throw PrintError.invalidArtifact }
+                  header.bottomLayers == machine.resin.bottomLayers else { throw PrintError.invalidArtifact }
             layers = header.layerCount
         }
         self.identity = request.identity; self.inputFingerprint = request.input.fingerprint

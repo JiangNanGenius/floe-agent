@@ -116,7 +116,14 @@ public actor ChemistryProjectStore {
     }
     public func restore(_ revision: ChemistryRevision, expectedRevision: UInt64) throws -> ChemistryProject {
         try validate(revision, id: revision.projectID)
-        let old = try snapshot(revision)
+        var old = try snapshot(revision)
+        // Restoring document history never resumes a past execution attempt.
+        // Fence it in the same saved snapshot, before any late callback can observe HEAD.
+        for i in old.runs.indices where [.queued, .running].contains(old.runs[i].status) {
+            old.runs[i].status = .interrupted; old.runs[i].finishedAt = Date()
+            old.runs[i].result = nil
+            old.runs[i].error = "This historical calculation was interrupted by revision restoration. Start a new calculation to run it again."
+        }
         return try save(old, expectedRevision: expectedRevision)
     }
     private func recoveryFolder(_ id: UUID) throws -> URL {

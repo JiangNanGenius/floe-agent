@@ -23,6 +23,7 @@ let package = Package(
         .library(name: "FloeImages", targets: ["FloeImages"]),
         .library(name: "FloeSSH", targets: ["FloeSSH"]),
         .library(name: "FloeToolboxSSH", targets: ["FloeToolboxSSH"]),
+        .library(name: "FloeToolboxHost", targets: ["FloeToolboxHost"]),
         .library(name: "FloeVNC", targets: ["FloeVNC"]),
         .library(name: "FloeMarkdown", targets: ["FloeMarkdown"]),
         .library(name: "FloeWorkspace", targets: ["FloeWorkspace"]),
@@ -460,6 +461,21 @@ let package = Package(
                 .enableUpcomingFeature("InferSendableFromCaptures"),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault")
             ]
+        ),
+
+        .target(
+            name: "FloeToolboxHost",
+            dependencies: [
+                "FloeCore", "FloeTools", "FloeExecution", "FloeWorkspace",
+                .product(name: "FloeToolboxCore", package: "FloeToolbox"),
+                .product(name: "FloeToolboxClients", package: "FloeToolbox"),
+                .product(name: "FloeToolboxRemoteFiles", package: "FloeToolbox"),
+                .product(name: "FloeToolboxFileTransports", package: "FloeToolbox")
+            ],
+            path: "Modules/FloeToolbox/Integration/FloeToolboxHost",
+            exclude: ["SSHFileBridge.swift"],
+            sources: ["NativeToolboxTools.swift", "BluetoothBridge.swift", "WorkspaceMountBridge.swift"],
+            swiftSettings: [.swiftLanguageMode(.v6), .enableUpcomingFeature("NonisolatedNonsendingByDefault")]
         ),
 
         .target(

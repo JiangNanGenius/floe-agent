@@ -9,6 +9,7 @@ import FloeCore
 struct NotesDocumentEditor: View {
     let session: NotesSession
     let document: NoteDocument
+    let embedded: Bool
     @AppStorage("notes.editor.headerCollapsed") private var headerCollapsed = false
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -23,6 +24,9 @@ struct NotesDocumentEditor: View {
     @State private var mapTopicActions: MindMapTopicActions?
     @State private var mapImageTargetID: UUID?
     @State private var importingImage = false
+    @State private var showingChemistry = false
+    @State private var pendingChemistryWork: NoteWorkReference?
+    @State private var chemistryWork: PersonalContentRecord?
     @State private var inspectingElement: NoteElement?
     @State private var inspectionBase: NoteDocument?
     @State private var textBase: NoteDocument?
@@ -48,6 +52,10 @@ struct NotesDocumentEditor: View {
     @State private var selectedStrokeCount = 0
     @State private var deleteSelectionRequest: UUID?
     @State private var captureSelectionRequest: UUID?
+    @State private var inkShapeRequest: NoteInkShapeRequest?
+    @State private var inkShapePreparationID: UUID?
+    @State private var inkShapeTask: Task<Void, Never>?
+    @State private var inkShapeDraft: NotesInkShapeDraft?
     @State private var answerToSave: String?
     @State private var answerSource: NoteSourceReference?
     @State private var assistantInput: ThreadComposerInput?
@@ -95,9 +103,10 @@ struct NotesDocumentEditor: View {
     /// animation crossing the width threshold cannot churn column<->sheet.
     @State private var assistantInlineActive = false
     private typealias InkTool = NotesInkTool
-    init(session: NotesSession, document: NoteDocument) {
+    init(session: NotesSession, document: NoteDocument, embedded: Bool = false) {
         self.session = session
         self.document = document
+        self.embedded = embedded
         let restored = session.editorState(for: document.id)
         _pageID = State(initialValue: restored.pageID)
         _tool = State(initialValue: restored.tool.flatMap(InkTool.init(rawValue:)) ?? .pen)
@@ -236,7 +245,7 @@ struct NotesDocumentEditor: View {
                 proposalBanner
                 Divider()
             }
-            if !headerCollapsed, document.kind != .office {
+            if (embedded || !headerCollapsed), document.kind != .office {
                 header
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
                 Divider()
@@ -318,7 +327,9 @@ struct NotesDocumentEditor: View {
                     }, deleteSelectionRequest: deleteSelectionRequest,
                                    onSelectionCount: { selectedStrokeCount = $0 },
                                    captureSelectionRequest: captureSelectionRequest, regionSelection: tool == .region,
-                                   onSelectionCapture: { bounds, image in stageSelection(page: page, bounds: bounds, image: image) }, elementImages: elementImages,
+                                   onSelectionCapture: { bounds, image in stageSelection(page: page, bounds: bounds, image: image) },
+                                   inkShapeRequest: inkShapeRequest, onInkShapeCapture: receiveInkShapeCapture,
+                                   elementImages: elementImages,
                                    onPencilAction: handlePencilAction,
                                    initialViewport: session.editorState(for: document.id).viewports[page.id],
                                    onViewportChanged: { viewport in
@@ -349,12 +360,16 @@ struct NotesDocumentEditor: View {
         .background(Color(uiColor: .secondarySystemBackground))
         .allowsHitTesting(!session.isSwitchingDocument)
         .onChange(of: pageID) { _, _ in showingPencilMenu = false; rememberEditor() }
-        .onChange(of: document.id) { _, _ in mapTopicActions = nil }
+        .onChange(of: page?.id) { _, _ in cancelInkShapePreview() }
+        .sheet(item: $inkShapeDraft) { draft in
+            NotesInkShapePreview(draft: draft, session: session) { _ in selectedStrokeCount = 0 }
+        }
+        .onChange(of: document.id) { _, _ in mapTopicActions = nil; cancelInkShapePreview() }
         .onChange(of: tool) { _, _ in showingPencilMenu = false; rememberEditor() }
         .onChange(of: scenePhase) { _, value in
             if value != .active { rememberEditor(); session.persistTabs() }
         }
-        .onDisappear { rememberEditor(); session.persistTabs() }
+        .onDisappear { cancelInkShapePreview(); rememberEditor(); session.persistTabs() }
         .alert("notes.notes_root_view.notes", isPresented: Binding(get: { session.errorMessage != nil }, set: { if !$0 { session.errorMessage = nil } })) {
             Button("workspace.office_document_editor_view.ok") { session.errorMessage = nil }
         } message: { Text(session.errorMessage ?? "") }
@@ -466,10 +481,19 @@ struct NotesDocumentEditor: View {
                 } catch { session.errorMessage = error.localizedDescription }
             }
         }
-        .sheet(item: $topicToInspect) { node in
-            MindMapTopicInspector(session: session, document: document, node: node)
+        .sheet(isPresented: $showingChemistry) {
+            NotesChemistryPicker(session: session,
+                target: .init(documentID: document.id, pageID: page?.id, parentNodeID: selectedMapNodeID),
+                onInserted: { _ in showingChemistry = false })
         }
-        .sheet(item: $inspectingElement) { element in
+        .sheet(item: $chemistryWork) { work in PersonalContentEditor(record: work) }
+        .onChange(of: document.id) { _, _ in showingChemistry = false; pendingChemistryWork = nil }
+        .sheet(item: $topicToInspect, onDismiss: openPendingChemistryWork) { node in
+            MindMapTopicInspector(session: session, document: document, node: node, onOpenWork: { reference in
+                pendingChemistryWork = reference; topicToInspect = nil
+            })
+        }
+        .sheet(item: $inspectingElement, onDismiss: openPendingChemistryWork) { element in
             if let base = inspectionBase, let page = base.pages.first(where: { $0.elements.contains(where: { $0.id == element.id }) }) {
                 NoteElementInspector(element: element, page: page, sourceText: element.textSourceID.flatMap { base.textSources?[$0.uuidString] }, save: { updated in
                     let edits = NotesTextLayout.replacementEdits(element: updated, text: updated.text,
@@ -482,6 +506,8 @@ struct NotesDocumentEditor: View {
                 }, openSource: { source in
                     inspectingElement = nil
                     Task { await session.openSource(source) }
+                }, openWork: { reference in
+                    pendingChemistryWork = reference; inspectingElement = nil
                 })
             }
         }
@@ -726,6 +752,15 @@ struct NotesDocumentEditor: View {
         }
     }
 
+    @MainActor private func openPendingChemistryWork() {
+        guard let reference = pendingChemistryWork else { return }
+        pendingChemistryWork = nil
+        Task {
+            do { chemistryWork = try await NotesChemistryBridge.openWork(reference) }
+            catch { session.errorMessage = error.localizedDescription }
+        }
+    }
+
     private func saveAnswer(_ text: String, insert: Bool) {
         let source = answerSource ?? NoteSourceReference(documentID: document.id, revision: document.revision, pageID: page?.id)
         if insert, document.kind == .notebook, let page {
@@ -772,12 +807,17 @@ struct NotesDocumentEditor: View {
 
     private var header: some View {
         HStack(spacing: 4) {
-            Button("notes.navigation.backToNotes", systemImage: "chevron.left") {
-                Task { await session.select(nil) }
-            }.labelStyle(.iconOnly).frame(width: 44, height: 44)
-                .accessibilityIdentifier("notes.back")
-            NotesDocumentTabs(session: session)
-            if sizeClass == .compact {
+            if !embedded {
+                Button("notes.navigation.backToNotes", systemImage: "chevron.left") {
+                    Task { await session.select(nil) }
+                }.labelStyle(.iconOnly).frame(width: 44, height: 44)
+                    .accessibilityIdentifier("notes.back")
+                NotesDocumentTabs(session: session)
+            } else {
+                Text(IDELanguageRunText.t("我的笔记", "My notes")).font(.headline).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            if sizeClass == .compact || embedded {
                 Button("notes.notes_linked_mind_maps.undo", systemImage: "arrow.uturn.backward") { session.undo() }
                     .labelStyle(.iconOnly).frame(width: 44, height: 44)
                     .disabled(!session.canUndo || session.pendingWrites > 0)
@@ -879,6 +919,8 @@ struct NotesDocumentEditor: View {
                     .frame(minWidth: 44, minHeight: 44)
                     .disabled(selectedMapNode == nil || session.pendingWrites > 0)
                 Menu {
+                    Button(IDELanguageRunText.t("化学工程", "Chemistry project"), systemImage: "atom") { showingChemistry = true }
+                        .accessibilityIdentifier("notes.mindmap.insertChemistry")
                     if let node = selectedMapNode {
                         Button(FloeL10n.l("notes.notes_document_editor.insert_or_replace_image", node.title)) {
                             mapImageTargetID = node.id; importingImage = true
@@ -904,7 +946,7 @@ struct NotesDocumentEditor: View {
 
     private var writingTools: some View {
         HStack(spacing: 0) {
-            headerVisibilityButton
+            if !embedded { headerVisibilityButton }
             ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 Button {
@@ -948,9 +990,25 @@ struct NotesDocumentEditor: View {
                     }.frame(minHeight: 44)
                         .accessibilityIdentifier("notes.selection.delete")
                 }
+                Menu {
+                    if #available(iOS 27.0, *), selectedStrokeCount > 0 {
+                        Button(NotesInkShapeText.text("修形所选笔迹…", "Convert selected ink…"), systemImage: "pencil.and.outline") {
+                            requestInkShapePreview(.selection)
+                        }.accessibilityIdentifier("notes.selection.convertShape")
+                    }
+                    Button(NotesInkShapeText.text("修形本页笔迹…", "Convert ink on this page…"), systemImage: "doc") {
+                        requestInkShapePreview(.page)
+                    }.accessibilityIdentifier("notes.page.convertShape")
+                } label: {
+                    if inkShapePreparationID != nil { ProgressView().frame(width: 44, height: 44) }
+                    else { Label(NotesInkShapeText.text("修形", "Convert ink to shapes"), systemImage: "wand.and.rays").labelStyle(.iconOnly).frame(width: 44, height: 44) }
+                }.disabled(session.pendingWrites > 0 || loadedPageID != page?.id || inkShapePreparationID != nil)
+                    .accessibilityIdentifier("notes.inkShape.menu")
                 Button("notes.notes_document_editor.text", systemImage: "textformat") { editedElement = nil; textDraft = ""; textBase = document; textPageID = page?.id; showText = true }.labelStyle(.iconOnly).frame(width: 44, height: 44)
                 Menu {
                     Button("workspace.workspace_canvas_view.image", systemImage: "photo") { importingImage = true }
+                    Button(IDELanguageRunText.t("化学工程", "Chemistry project"), systemImage: "atom") { showingChemistry = true }
+                        .disabled(session.pendingWrites > 0).accessibilityIdentifier("notes.insert.chemistry")
                     ForEach([NoteElement.Kind.rectangle, .ellipse, .line, .arrow], id: \.self) { kind in
                         Button(kind == .rectangle ? "notes.notes_document_editor.rectangle" : kind == .ellipse ? "notes.notes_document_editor.ellipse" : kind == .line ? "notes.notes_document_editor.straight_line" : "notes.notes_document_editor.arrow") {
                             guard let page else { return }
@@ -991,6 +1049,47 @@ struct NotesDocumentEditor: View {
         }.background(.bar)
             .accessibilityIdentifier("notes.writing.tools")
         }
+    }
+
+    private func requestInkShapePreview(_ scope: NoteInkShapeRequest.Scope) {
+        guard let page, loadedPageID == page.id, session.pendingWrites == 0,
+              !session.hasPendingInk(documentID: document.id, pageID: page.id) else { return }
+        showingPencilMenu = false
+        let request = NoteInkShapeRequest(documentID: document.id, pageID: page.id, scope: scope)
+        inkShapePreparationID = request.id
+        inkShapeRequest = request
+    }
+    private func receiveInkShapeCapture(_ request: NoteInkShapeRequest, _ result: Result<NoteInkShapeCapture, NoteInkShapeError>) {
+        guard inkShapeRequest?.id == request.id else { return }
+        switch result {
+        case .failure(let error):
+            inkShapePreparationID = nil; inkShapeRequest = nil
+            session.errorMessage = error.localizedDescription
+        case .success(let capture):
+            guard inkShapeRequest?.id == capture.request.id,
+                  document.id == capture.request.documentID, page?.id == capture.request.pageID,
+                  canvasGeneration == capture.generation, canvasMutation == capture.mutation else {
+                cancelInkShapePreview(); session.errorMessage = NoteInkShapeError.sourceChanged.localizedDescription; return
+            }
+            inkShapeRequest = nil
+            inkShapeTask?.cancel()
+            inkShapeTask = Task { @MainActor in
+                defer { if inkShapePreparationID == capture.request.id { inkShapePreparationID = nil } }
+                do {
+                    let draft = try await NotesInkShapeDraft.prepare(capture, session: session)
+                    try Task.checkCancellation()
+                    guard inkShapePreparationID == capture.request.id,
+                          document.id == capture.request.documentID, page?.id == capture.request.pageID,
+                          canvasGeneration == capture.generation, canvasMutation == capture.mutation else { return }
+                    inkShapeDraft = draft
+                } catch is CancellationError { }
+                catch { if inkShapePreparationID == capture.request.id { session.errorMessage = error.localizedDescription } }
+            }
+        }
+    }
+    private func cancelInkShapePreview() {
+        inkShapeTask?.cancel(); inkShapeTask = nil
+        inkShapeRequest = nil; inkShapePreparationID = nil; inkShapeDraft = nil
     }
 
     private func selectTool(_ value: InkTool) {

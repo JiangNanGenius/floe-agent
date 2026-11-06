@@ -1,0 +1,295 @@
+// SPDX-License-Identifier: MPL-2.0
+#if canImport(UIKit)
+import Foundation
+import CoreGraphics
+import FloeWorkbench
+
+struct MediaV2ToolInput: Codable {
+    var objectID: UUID?
+    var objectIDs: [UUID]?
+    var expectedRevision: Int64?
+    var number: Double?
+    var secondary: Double?
+    var start: Double?
+    var duration: Double?
+    var text: String?
+    var color: String?
+    var property: String?
+    var flag: Bool?
+    var points: [ImageFreehandStroke.Point]?
+    init() {}
+}
+struct MediaV2ToolReceipt: Codable {
+    let documentID: UUID
+    let revision: Int64
+    let toolID: String
+    let groupID: UUID?
+    let selectionOnly: Bool
+}
+enum MediaV2CommandError: Error, LocalizedError {
+    case unavailable, missingSelection, invalidInput
+    var errorDescription: String? {
+        switch self {
+        case .unavailable: return WorkbenchText.t("此工具的执行服务尚未接入。", "This tool's execution service is not connected yet.")
+        case .missingSelection: return WorkbenchText.t("请先选择要编辑的对象。", "Select an object to edit first.")
+        case .invalidInput: return WorkbenchText.t("参数无效，请检查后重试。", "Check the parameters and retry.")
+        }
+    }
+}
+
+extension MediaV2Session {
+    static let localToolIDs: Set<String> = [
+        "image.rectangle", "image.ellipse", "image.lasso", "image.polygon", "image.feather", "image.inverse", "image.deselect",
+        "image.brush", "image.eraser", "image.fill", "image.eyedropper", "image.layer-mask", "image.vector-mask", "image.clip-mask",
+        "image.adjustment-layer", "image.group-layer", "image.duplicate-layer", "image.merge-layer", "image.crop", "image.rotate", "image.flip",
+        "image.text", "image.shape", "image.pen", "image.anchor", "image.stroke-fill", "image.exposure", "image.levels", "image.hsl", "image.white-balance", "image.bw",
+        "video.trim", "video.split", "video.slip", "video.speed", "video.transition", "video.pip",
+        "video.video-mask", "video.video-feather", "video.video-transform", "video.keyframes", "video.easing", "video.caption", "video.caption-time", "video.mix", "video.fades", "video.audio-sync", "video.ripple", "video.roll", "video.srt", "image.align", "image.blend-mode"
+    ]
+    var catalog: [MediaPreparedToolDescriptor] { (try? MediaPreparedBundledCatalog.load().entries) ?? [] }
+    var applicableTools: [MediaPreparedToolDescriptor] { catalog.filter { $0.kind.rawValue == project.kind.rawValue } }
+
+    /// Called only after the existing task authority has admitted the edit.
+    /// Every advertised local route below either edits the canonical document
+    /// or explicitly reports a selection-only editor operation.
+    func performTool(_ id: String, input: MediaV2ToolInput, actor: MediaPreparedActorKind = .user) async throws -> MediaV2ToolReceipt {
+        guard Self.localToolIDs.contains(id) else { throw MediaV2CommandError.unavailable }
+        _ = try MediaPreparedBundledCatalog.load().descriptor(id: id)
+        if let expected = input.expectedRevision, expected != document.revision { throw MediaPreparedCoreError.documentChanged }
+        if let object = input.objectID {
+            if document.layer(object) != nil { selectedLayerID = object }
+            if let clip = document.trackGraph.clip(id: object) { select(clip.track, clip: clip.clip) }
+            else if let track = document.trackGraph.track(object) { select(track) }
+        }
+        var actions: [MediaPreparedAction] = []
+        let layer = selectedLayer
+        let selected = selectedClip
+        func layerContent(_ content: MediaPreparedLayerContent) throws {
+            guard let layer else { throw MediaV2CommandError.missingSelection }
+            actions.append(.replaceLayerContent(id: layer.id, expectedRevision: layer.revision, content: content))
+        }
+        func replace(_ clip: MediaPreparedClip) throws {
+            guard let selected else { throw MediaV2CommandError.missingSelection }
+            actions.append(.replaceClip(trackID: selected.track.id, clipID: clip.id, expectedRevision: selected.clip.revision, clip: clip))
+        }
+        func insertLayer(_ content: MediaPreparedLayerContent, name: String, mask: MediaPreparedLayerMask? = nil) {
+            let layer = MediaPreparedLayer(name: name, content: content, mask: mask)
+            selectedLayerID = layer.id; actions.append(.insertLayer(layer: layer, parentID: nil, index: nil))
+        }
+        var selectionOnly = false
+        if id == "image.merge-layer" {
+            let ids = Set(input.objectIDs ?? Array(document.layers.suffix(2)).map(\.id))
+            let commit = try await mergeLayers(ids, actor: actor)
+            return .init(documentID: document.id, revision: document.revision, toolID: id, groupID: commit.groupID, selectionOnly: false)
+        }
+        switch id {
+        case "image.rectangle", "image.ellipse", "image.lasso", "image.polygon":
+            guard let points = input.points, points.count >= 2 else { throw MediaV2CommandError.invalidInput }
+            let kind: ImageSelectionKind = id == "image.ellipse" ? .ellipse : id == "image.rectangle" ? .rectangle : .lasso
+            guard points.allSatisfy({ $0.x.isFinite && $0.y.isFinite && (0...1).contains($0.x) && (0...1).contains($0.y) }),
+                  points.count <= 10_000, kind != .lasso || points.count >= 3 else { throw MediaV2CommandError.invalidInput }
+            let operation = ImageSelectionOperation(rawValue: input.property ?? "replace") ?? .replace
+            let shape = ImageSelectionShape(kind: kind, operation: operation, points: points)
+            if operation == .replace { selection = .init(shapes: [shape]) }
+            else { var next = selection ?? .init(); next.shapes.append(shape); selection = next }
+            polygonPoints = []; selectionOnly = true
+        case "image.feather":
+            guard var next = selection, let canvas = document.canvas else { throw MediaV2CommandError.missingSelection }
+            next.feather = min(0.5, max(0, (input.number ?? 12) / Double(min(canvas.width, canvas.height)))); selection = next; selectionOnly = true
+        case "image.inverse":
+            var next = selection ?? .init(); next.inverted.toggle(); selection = next; selectionOnly = true
+        case "image.deselect": selection = nil; selectionOnly = true
+        case "image.eyedropper":
+            guard let image = preview, let p = input.points?.first else { throw MediaV2CommandError.invalidInput }
+            let x = min(image.width - 1, max(0, Int(p.x * Double(image.width))))
+            let y = min(image.height - 1, max(0, Int(p.y * Double(image.height))))
+            guard let pixel = image.cropping(to: CGRect(x: x, y: y, width: 1, height: 1)) else { throw MediaV2CommandError.invalidInput }
+            var bytes = [UInt8](repeating: 0, count: 4)
+            guard let ctx = CGContext(data: &bytes, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw MediaV2CommandError.invalidInput }
+            ctx.draw(pixel, in: CGRect(x: 0, y: 0, width: 1, height: 1)); colorHex = String(format: "#%02X%02X%02X", bytes[0], bytes[1], bytes[2]); selectionOnly = true
+        case "image.brush":
+            guard let points = input.points, !points.isEmpty else { throw MediaV2CommandError.invalidInput }
+            let stroke = ImageFreehandStroke(points: points, width: input.number ?? brushWidth, colorHex: input.color ?? colorHex, hardness: 1 - brushHardness, opacity: brushOpacity)
+            if let layer, case .strokes(var strokes) = layer.content { strokes.strokes.append(stroke); try layerContent(.strokes(strokes)) }
+            else { insertLayer(.strokes(.init(strokes: [stroke])), name: WorkbenchText.t("笔迹", "Brush stroke")) }
+        case "image.eraser":
+            guard let layer, let points = input.points else { throw MediaV2CommandError.missingSelection }
+            var mask = layer.mask ?? .init(); mask.strokes.append(.init(points: points, width: input.number ?? brushWidth, hardness: 1 - brushHardness, restore: input.flag ?? eraserRestores, region: selection))
+            actions.append(.setLayerMask(id: layer.id, expectedRevision: layer.revision, mask: mask))
+        case "image.fill": insertLayer(.raster(.init(source: .solidColor(input.color ?? colorHex))), name: WorkbenchText.t("填色", "Fill"), mask: selection.map { .init(vector: $0) })
+        case "image.layer-mask", "image.vector-mask":
+            guard let layer else { throw MediaV2CommandError.missingSelection }
+            if input.flag == false { actions.append(.setLayerMask(id: layer.id, expectedRevision: layer.revision, mask: nil)) }
+            else { guard let selection else { throw MediaV2CommandError.missingSelection }; actions.append(.setLayerMask(id: layer.id, expectedRevision: layer.revision, mask: .init(vector: selection))) }
+        case "image.clip-mask":
+            guard let layer else { throw MediaV2CommandError.missingSelection }
+            if input.flag == false { actions.append(.setLayerClip(id: layer.id, expectedRevision: layer.revision, clip: nil)) }
+            else {
+                let siblings = document.layers.filter { $0.parentID == layer.parentID }
+                guard let index = siblings.firstIndex(where: { $0.id == layer.id }), index > 0 else { throw MediaV2CommandError.missingSelection }
+                actions.append(.setLayerClip(id: layer.id, expectedRevision: layer.revision, clip: .init(baseLayerID: siblings[index - 1].id)))
+            }
+        case "image.blend-mode":
+            guard let layer, case .group(var group) = layer.content else { throw MediaV2CommandError.unavailable }
+            let mode = input.text ?? input.property ?? "normal"
+            guard ["normal", "multiply", "screen", "overlay", "darken", "lighten"].contains(mode) else { throw MediaV2CommandError.invalidInput }
+            group.blendMode = mode; try layerContent(.group(group))
+        case "image.align":
+            let ids = Set(input.objectIDs ?? selectedLayerID.map { [$0] } ?? [])
+            guard !ids.isEmpty, ids.isSubset(of: Set(document.layers.map(\.id))), ["centerX", "centerY", "center"].contains(input.property ?? "center") else { throw MediaV2CommandError.invalidInput }
+            for target in document.layers where ids.contains(target.id) {
+                var transform = target.transform
+                if input.property != "centerY" { transform.centerX = 0.5 }
+                if input.property != "centerX" { transform.centerY = 0.5 }
+                actions.append(.updateLayerTransform(id: target.id, expectedRevision: target.revision, transform: transform))
+            }
+        case "image.adjustment-layer": insertLayer(.adjustment(.init(exposureEV: input.number ?? 0)), name: WorkbenchText.t("调整图层", "Adjustment"))
+        case "image.group-layer":
+            if input.flag == false {
+                guard let layer, layer.contentKind == .group,
+                      let index = document.layers.firstIndex(where: { $0.id == layer.id }) else { throw MediaV2CommandError.missingSelection }
+                for (offset, child) in document.layers.filter({ $0.parentID == layer.id }).enumerated() {
+                    actions.append(.moveLayer(id: child.id, expectedRevision: child.revision, parentID: layer.parentID, index: index + offset))
+                }
+                actions.append(.removeLayer(id: layer.id, expectedRevision: layer.revision))
+                break
+            }
+            let group = MediaPreparedLayer(name: input.text ?? WorkbenchText.t("编组", "Group"), content: .group(.init(isIsolated: true)))
+            actions.append(.insertLayer(layer: group, parentID: nil, index: nil))
+            for layer in document.layers where (input.objectIDs ?? selectedLayerID.map { [$0] } ?? []).contains(layer.id) {
+                actions.append(.moveLayer(id: layer.id, expectedRevision: layer.revision, parentID: group.id, index: document.layers.count))
+            }
+            selectedLayerID = group.id
+        case "image.duplicate-layer":
+            guard let layer else { throw MediaV2CommandError.missingSelection }
+            let duplicate = duplicateLayerActions(layer)
+            actions.append(contentsOf: duplicate.actions); selectedLayerID = duplicate.id
+        case "image.crop":
+            guard let layer, case .raster(var raster) = layer.content else { throw MediaV2CommandError.missingSelection }
+            guard case .asset = raster.source else { throw MediaV2CommandError.unavailable }
+            if input.flag == false { raster.crop = nil }
+            else {
+                guard let points = input.points, points.count == 2 else { throw MediaV2CommandError.invalidInput }
+                if input.property == "canvas" { raster.crop = try sourceCrop(for: layer, canvasPoints: points) }
+                else { raster.crop = .init(x: min(points[0].x, points[1].x), y: min(points[0].y, points[1].y), width: abs(points[0].x - points[1].x), height: abs(points[0].y - points[1].y)) }
+            }
+            try layerContent(.raster(raster))
+        case "image.rotate", "image.flip":
+            guard let layer else { throw MediaV2CommandError.missingSelection }
+            var transform = layer.transform
+            if id == "image.flip" { if input.property == "vertical" { transform.flipY = !(transform.flipY ?? false) } else { transform.flipX = !(transform.flipX ?? false) } } else { transform.rotationDegrees += input.number ?? 90 }
+            actions.append(.updateLayerTransform(id: layer.id, expectedRevision: layer.revision, transform: transform))
+        case "image.text":
+            let content = ImageTextContent(text: input.text ?? WorkbenchText.t("文字", "Text"), fontSize: input.number ?? 72, colorHex: input.color ?? colorHex)
+            if let layer, layer.contentKind == .text { try layerContent(.text(content)) } else { insertLayer(.text(content), name: content.text) }
+        case "image.shape", "image.pen", "image.anchor":
+            let points = input.points ?? [.init(x: 0.2, y: 0.2), .init(x: 0.8, y: 0.2), .init(x: 0.8, y: 0.8), .init(x: 0.2, y: 0.8)]
+            guard points.count >= 2 else { throw MediaV2CommandError.invalidInput }
+            let vector = MediaVectorPath(subpaths: [.init(points: points.map { .init(point: $0) }, isClosed: id == "image.shape")], fillColorHex: id == "image.shape" ? input.color ?? colorHex : nil, strokeColorHex: input.color ?? colorHex, strokeWidth: input.number ?? 3)
+            if id == "image.anchor" { try layerContent(.vectorPaths(vector)) } else { insertLayer(.vectorPaths(vector), name: WorkbenchText.t("矢量路径", "Vector path")) }
+        case "image.stroke-fill":
+            guard let layer, case .vectorPaths(var path) = layer.content else { throw MediaV2CommandError.missingSelection }
+            path.fillColorHex = input.color ?? colorHex; path.strokeWidth = input.number ?? path.strokeWidth; try layerContent(.vectorPaths(path))
+        case "image.exposure", "image.levels", "image.hsl", "image.white-balance", "image.bw":
+            guard let layer else { throw MediaV2CommandError.missingSelection }
+            var adjustment = layer.adjustment
+            switch id {
+            case "image.exposure": adjustment.exposureEV = input.number ?? 0
+            case "image.levels": adjustment.levels = .init(black: input.number ?? 0, white: input.secondary ?? 1, gamma: 1)
+            case "image.hsl": adjustment.saturation = input.number ?? 1; adjustment.hueDegrees = input.secondary
+            case "image.white-balance": adjustment.temperature = input.number ?? 6500
+            default: adjustment.saturation = 0
+            }
+            actions.append(.updateLayerAdjustment(id: layer.id, expectedRevision: layer.revision, adjustment: adjustment))
+        case "video.srt":
+            guard let text = input.text else { throw MediaV2CommandError.invalidInput }
+            actions.append(contentsOf: try captionImportActions(text, offset: input.start ?? 0))
+        case "video.caption":
+            if let text = input.text, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw MediaV2CommandError.invalidInput }
+            if var clip = selected?.clip, selected?.track.kind == .caption {
+                clip.captionText = input.text ?? ""
+                if input.start != nil || input.duration != nil {
+                    let duration = input.duration ?? clip.timelineRange.durationSeconds
+                    clip.timelineRange = try Self.range(start: input.start ?? clip.timelineRange.startSeconds, duration: duration)
+                    clip.sourceRange = try Self.range(start: 0, duration: duration)
+                }
+                try replace(clip)
+            }
+            else {
+                let track = document.trackGraph.tracks.first { $0.kind == .caption } ?? .init(kind: .caption, name: WorkbenchText.t("字幕", "Captions"))
+                if !document.trackGraph.tracks.contains(where: { $0.id == track.id }) { actions.append(.insertTrack(track: track, index: nil)) }
+                let clip = MediaPreparedClip(timelineRange: try Self.range(start: input.start ?? playhead, duration: input.duration ?? 3), sourceRange: try Self.range(start: 0, duration: input.duration ?? 3), captionText: input.text ?? WorkbenchText.t("字幕", "Caption"))
+                actions.append(.insertClip(trackID: track.id, clip: clip, index: nil)); selectedTrackID = track.id; selectedClipID = clip.id
+            }
+        case "video.mix":
+            guard let track = selectedTrack else { throw MediaV2CommandError.missingSelection }
+            actions.append(.updateTrackFlags(id: track.id, expectedRevision: track.revision, name: nil, isMuted: input.flag, isLocked: nil, volume: input.number))
+        default:
+            guard let selected else { throw MediaV2CommandError.missingSelection }
+            var clip = selected.clip
+            switch id {
+            case "video.trim", "video.ripple":
+                let start = input.start ?? clip.sourceRange.startSeconds, length = input.duration ?? clip.sourceRange.durationSeconds
+                actions.append(contentsOf: try trimActions(track: selected.track, clip: clip, sourceStart: start, sourceDuration: length, ripple: id == "video.ripple"))
+                let commit = try await apply(actions.map { .init(action: $0) }, expectedRevision: input.expectedRevision, actor: actor)
+                return .init(documentID: document.id, revision: document.revision, toolID: id, groupID: commit.groupID, selectionOnly: false)
+            case "video.roll":
+                actions.append(contentsOf: try rollActions(track: selected.track, right: clip, boundary: input.start ?? clip.timelineRange.startSeconds + (input.number ?? 0)))
+                let commit = try await apply(actions.map { .init(action: $0) }, expectedRevision: input.expectedRevision, actor: actor)
+                return .init(documentID: document.id, revision: document.revision, toolID: id, groupID: commit.groupID, selectionOnly: false)
+            case "video.slip": clip.sourceRange = try Self.range(start: max(0, clip.sourceRange.startSeconds + (input.number ?? 0)), duration: clip.sourceRange.durationSeconds)
+            case "video.caption-time", "video.audio-sync": clip.timelineRange = try Self.range(start: max(0, input.start ?? clip.timelineRange.startSeconds + (input.number ?? 0)), duration: clip.timelineRange.durationSeconds)
+            case "video.speed":
+                guard selected.track.kind == .visual else { throw MediaV2CommandError.unavailable }
+                let previousSpeed = clip.speed
+                clip.speed = input.number ?? 1; guard clip.speed.isFinite, clip.speed > 0 else { throw MediaV2CommandError.invalidInput }
+                let factor = previousSpeed / clip.speed
+                clip.timelineRange = try Self.range(start: clip.timelineRange.startSeconds, duration: clip.sourceRange.durationSeconds / clip.speed)
+                for index in clip.keyframeTracks.indices { for key in clip.keyframeTracks[index].keyframes.indices { clip.keyframeTracks[index].keyframes[key].time = try Self.time(clip.keyframeTracks[index].keyframes[key].time.seconds * factor) } }
+            case "video.fades": guard selected.track.kind == .audio else { throw MediaV2CommandError.unavailable }
+                clip.fadeIn = try Self.time(min(clip.timelineRange.durationSeconds, max(0, input.number ?? 0))); clip.fadeOut = try Self.time(min(clip.timelineRange.durationSeconds, max(0, input.secondary ?? 0)))
+            case "video.pip", "video.video-transform", "video.keyframes", "video.easing":
+                guard selected.track.kind == .visual else { throw MediaV2CommandError.unavailable }
+                let property = input.property ?? "scale", local = max(0, min(clip.timelineRange.durationSeconds, input.start ?? playhead - clip.timelineRange.startSeconds))
+                guard ["scale", "centerX", "centerY", "rotationDegrees", "opacity"].contains(property) else { throw MediaV2CommandError.invalidInput }
+                let value = input.number ?? (id == "video.pip" ? 0.4 : 1)
+                let interpolation = MediaKeyframeInterpolation(rawValue: input.text ?? "") ?? (id == "video.easing" ? .easeIn : .linear)
+                let key = MediaKeyframe(time: try Self.time(local), value: .number(value), interpolation: interpolation)
+                let propertyName = clip.keyframeTracks.first { $0.property == property || $0.property == "transform." + property }?.property ?? property
+                var keys = clip.keyframeTracks.first { $0.property == propertyName }?.keyframes ?? []
+                keys.removeAll { abs($0.time.seconds - local) < 0.00001 }; if input.flag != false { keys.append(key) }; keys.sort { $0.time < $1.time }
+                clip.keyframeTracks.removeAll { $0.property == propertyName }
+                if !keys.isEmpty { clip.keyframeTracks.append(.init(property: propertyName, keyframes: keys)) }
+            case "video.video-mask", "video.video-feather":
+                guard selected.track.kind == .visual else { throw MediaV2CommandError.unavailable }
+                if input.flag == false { clip.videoMask = nil }
+                else if id == "video.video-mask" { clip.videoMask = .init(shapes: [.init(kind: input.property == "rectangle" ? .rectangle : .ellipse, points: input.points ?? [.init(x: 0.1, y: 0.1), .init(x: 0.9, y: 0.9)])]) }
+                else { guard var mask = clip.videoMask else { throw MediaV2CommandError.missingSelection }; mask.feather = min(0.5, max(0, (input.number ?? 12) / Double(min(document.canvas!.width, document.canvas!.height)))); clip.videoMask = mask }
+            case "video.transition":
+                guard let previous = selected.track.clips.filter({ $0.id != clip.id && $0.timelineRange.startSeconds < clip.timelineRange.startSeconds }).max(by: { $0.timelineRange.startSeconds < $1.timelineRange.startSeconds }) else { throw MediaV2CommandError.invalidInput }
+                let duration = min(input.number ?? 0.5, min(previous.timelineRange.durationSeconds, clip.timelineRange.durationSeconds) / 2)
+                clip.leadingTransition = .crossDissolve; clip.transitionDuration = try Self.time(duration)
+                clip.timelineRange = try Self.range(start: max(0, previous.timelineRange.endSeconds - duration), duration: clip.timelineRange.durationSeconds)
+            case "video.split":
+                let at = input.start ?? playhead, offset = at - clip.timelineRange.startSeconds
+                guard offset > 0, offset < clip.timelineRange.durationSeconds else { throw MediaV2CommandError.invalidInput }
+                var right = clip; right.id = UUID(); right.revision = 0
+                right.timelineRange = try Self.range(start: at, duration: clip.timelineRange.durationSeconds - offset)
+                right.sourceRange = try Self.range(start: clip.sourceRange.startSeconds + offset * clip.speed, duration: clip.sourceRange.durationSeconds - offset * clip.speed)
+                clip.timelineRange = try Self.range(start: clip.timelineRange.startSeconds, duration: offset)
+                clip.sourceRange = try Self.range(start: clip.sourceRange.startSeconds, duration: offset * clip.speed)
+                right.keyframeTracks = try slicedKeyframes(selected.clip.keyframeTracks, from: offset, duration: right.timelineRange.durationSeconds)
+                clip.keyframeTracks = try slicedKeyframes(selected.clip.keyframeTracks, from: 0, duration: offset)
+                if let fade = clip.fadeOut { clip.fadeOut = try Self.time(min(offset, fade.seconds)) }
+                if let fade = right.fadeIn { right.fadeIn = try Self.time(min(right.timelineRange.durationSeconds, fade.seconds)) }
+                right.leadingTransition = .none; right.transitionDuration = nil
+                actions.append(.insertClip(trackID: selected.track.id, clip: right, index: nil))
+            default: throw MediaV2CommandError.unavailable
+            }
+            try replace(clip)
+        }
+        let commit = actions.isEmpty ? nil : try await apply(actions.map { .init(action: $0) }, expectedRevision: input.expectedRevision, actor: actor)
+        return .init(documentID: document.id, revision: document.revision, toolID: id, groupID: commit?.groupID, selectionOnly: selectionOnly)
+    }
+}
+#endif

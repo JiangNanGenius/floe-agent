@@ -603,7 +603,8 @@ enum ThreadTimelineBuilder {
         var currentStepGroup: [RunEventRecord] = []
         var guidedMessages = run.map { _ in
             messagesForRun
-                .filter { $0.role == "user" && $0.id != startingGoalMessageID }
+                .filter { ($0.role == "user" && $0.id != startingGoalMessageID)
+                    || ($0.role == "assistant" && $0.parts.contains { $0.kind == .interactive }) }
                 .sorted { lhs, rhs in
                     if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
                     return lhs.id.uuidString < rhs.id.uuidString
@@ -618,7 +619,8 @@ enum ThreadTimelineBuilder {
             while let next = guidedMessages.first,
                   date.map({ next.createdAt <= $0 }) ?? true {
                 flushStepGroup()
-                items.append(.userMessage(next))
+                items.append(next.role == "assistant"
+                    ? .assistantMessage(text: next.content, idSuffix: next.id.uuidString) : .userMessage(next))
                 guidedMessages.removeFirst()
             }
         }
@@ -684,7 +686,7 @@ enum ThreadTimelineBuilder {
             // older selected run can accidentally display the newest
             // assistant message from another run in the conversation.
             let upperBound = run.endedAt ?? .distantFuture
-            let directlyBound = messagesForRun.filter { $0.role == "assistant" }
+            let directlyBound = messagesForRun.filter { $0.role == "assistant" && !$0.parts.contains { $0.kind == .interactive } }
             let assistantMessages = directlyBound.isEmpty ? unboundAssistantMessages.filter {
                 $0.createdAt >= run.startedAt
                     && $0.createdAt <= upperBound.addingTimeInterval(2)

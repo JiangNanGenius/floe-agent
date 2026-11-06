@@ -297,6 +297,47 @@ struct CADExchangePlan {
 
 @MainActor
 public extension FloeCADDocument {
+    /// Print-only geometry snapshot. Assembly instances use the existing world
+    /// placement plan; no public exchange format support is changed. Bytes and
+    /// the truthful receipt share the same revision/change-count fence.
+    func nativePrintGeometrySnapshot(expectedRevision: Int,
+                                     expectedChangeCount: Int,
+                                     expectedContentSHA256: String,
+                                     acceptPartial: Bool = false) -> CADExchangeOutcome {
+        guard !isClosed else {
+            return .failure(CADDocumentError(code: "document_closed", message: "Reopen the document before preparing a print."))
+        }
+        let scope: CADExchangeScope = hasDrawableAssemblyInstances ? .assembly : .part
+        let selection = CADExchangeSelection(scope: scope, acceptPartial: acceptPartial,
+            expectedRevision: expectedRevision, expectedChangeCount: expectedChangeCount,
+            expectedContentSHA256: expectedContentSHA256.isEmpty ? nil : expectedContentSHA256)
+        do {
+            try validateExchangeSelection(selection)
+            try checkExchangeFence(selection)
+            let plan: CADExchangePlan
+            if scope == .assembly { plan = try makeAssemblyExchangePlan(format: "stl", selection: selection) }
+            else { plan = try makePartExchangePlan(format: "stl", selection: selection) }
+            guard plan.coverage.includedCount > 0 else {
+                return .failure(CADDocumentError(code: "nothing_printable", message: "No printable geometry is available."))
+            }
+            let triangles = plan.coverage.items.filter(\.included).reduce(0) { $0 + $1.meshTriangleCount }
+            guard plan.coverage.items.count <= 512, triangles > 0, triangles <= 1_000_000 else {
+                return .failure(CADDocumentError(code: "print_geometry_limit", message: "Print snapshots are limited to 512 objects and one million triangles."))
+            }
+            guard !plan.coverage.requiresConfirmation else { return .coverageRequired(plan.coverage) }
+            switch nativeExportData(format: "stl", pageID: nil, bodies: plan.placedBodies) {
+            case .success(let value):
+                try checkExchangeFence(selection)
+                guard value.data.count <= 50_000_084 else {
+                    return .failure(CADDocumentError(code: "print_geometry_limit", message: "The print geometry exceeds the snapshot limit."))
+                }
+                return .success(data: value.data, note: value.note, coverage: plan.coverage)
+            case .failure(let error): return .failure(error)
+            }
+        } catch let error as CADDocumentError { return .failure(error) }
+        catch { return .failure(CADDocumentError(code: "print_snapshot_failed", message: error.localizedDescription)) }
+    }
+
     /// Live change count used by the export fence. `revision` is the committed
     /// identity; `changeCount` also moves for unsaved edits.
     var exchangeChangeCount: Int { session.changeCount }

@@ -1,8 +1,16 @@
 import Foundation
 import Darwin
 
+/// Production hosts supply their existing transactional store. The file
+/// implementation remains available for component hosts and local snapshots.
+public protocol CaptureRepository: Sendable {
+    func load(captureID: UUID, ownerID: UUID) async throws -> CaptureState?
+    func commit(_ next: CaptureState, expectedRevision: UInt64) async throws
+    func saveSnapshot(_ state: CaptureState) async throws -> URL
+}
+
 /// A local qualification repository. Production may adapt this boundary to existing SQLite/CAS services.
-public final class FileCaptureRepository: Sendable {
+public final class FileCaptureRepository: CaptureRepository, Sendable {
     public let root: URL
     private let maximumFileBytes = 128 * 1024 * 1024
     public init(root: URL) throws {
@@ -91,19 +99,41 @@ public struct CaptureEvent: Sendable {
 public actor CaptureJournal {
     public nonisolated let ownerID: UUID
     public nonisolated let captureID: UUID
-    private let repository: FileCaptureRepository
+    private let repository: any CaptureRepository
     private let limits: CaptureLimits
     private let redactor: CaptureRedactor
     private var state: CaptureState
+    private var writing = false
+    private var writers: [CheckedContinuation<Void, Never>] = []
+
+    private func beginWrite() async throws {
+        guard writing else { writing = true; return }
+        guard writers.count < 8 else { throw ToolboxError.limit("pending capture commits") }
+        await withCheckedContinuation { writers.append($0) }
+    }
+    private func endWrite() {
+        if writers.isEmpty { writing = false }
+        else { writers.removeFirst().resume() }
+    }
     public init(ownerID: UUID, captureID: UUID = UUID(), repository: FileCaptureRepository, limits: CaptureLimits,
                 redactor: CaptureRedactor = CaptureRedactor()) throws {
         self.ownerID = ownerID; self.captureID = captureID; self.repository = repository; self.limits = limits
         self.state = try repository.load(captureID: captureID, ownerID: ownerID) ?? CaptureState(captureID: captureID, ownerID: ownerID)
         self.redactor = redactor
     }
+    public init(ownerID: UUID, captureID: UUID = UUID(), repository: any CaptureRepository, limits: CaptureLimits,
+                redactor: CaptureRedactor = CaptureRedactor()) async throws {
+        self.ownerID = ownerID; self.captureID = captureID; self.repository = repository; self.limits = limits
+        self.state = try await repository.load(captureID: captureID, ownerID: ownerID) ?? CaptureState(captureID: captureID, ownerID: ownerID)
+        self.redactor = redactor
+    }
     public func snapshot() -> CaptureState { state }
-    public func reload() throws { state = try repository.load(captureID: captureID, ownerID: ownerID) ?? CaptureState(captureID: captureID, ownerID: ownerID) }
-    public func append(_ events: [CaptureEvent]) throws {
+    public func reload() async throws {
+        try await beginWrite(); defer { endWrite() }
+        state = try await repository.load(captureID: captureID, ownerID: ownerID) ?? CaptureState(captureID: captureID, ownerID: ownerID)
+    }
+    public func append(_ events: [CaptureEvent]) async throws {
+        try await beginWrite(); defer { endWrite() }
         guard events.count <= limits.maximumRecords, state.revision < UInt64.max,
               UInt64(events.count) < UInt64.max - state.nextSequence else { throw ToolboxError.limit("capture batch or sequence") }
         var next = state
@@ -128,10 +158,10 @@ public actor CaptureJournal {
             next.records = Array(next.records.dropFirst(drop)); next.droppedRecords += UInt64(drop)
         }
         next.revision += 1
-        try repository.commit(next, expectedRevision: state.revision)
+        try await repository.commit(next, expectedRevision: state.revision)
         state = next
     }
-    public func saveSnapshot() throws -> URL { try repository.saveSnapshot(state) }
+    public func saveSnapshot() async throws -> URL { try await repository.saveSnapshot(state) }
     /// Application events are exported as events, never fabricated IP packets or PCAP files.
     public func exportJSONLines() throws -> Data {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]

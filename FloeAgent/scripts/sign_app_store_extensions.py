@@ -80,6 +80,18 @@ def profile_allows(granted, requested, key):
     return allows(granted, requested)
 
 
+def production_host_entitlements(declared, bundle_info):
+    """Resolve the one source build variable against the actual upload bundle."""
+    declared = dict(declared)
+    if "aps-environment" in declared:
+        require(bundle_info.get("FloeAPNsEnvironment") == "production",
+                "Upload bundle must select production push")
+        require(declared["aps-environment"] in ("production", "$(FLOE_APNS_ENVIRONMENT)"),
+                "Unexpected source push environment")
+        declared["aps-environment"] = "production"
+    return declared
+
+
 def validated_entitlements(profile, declared, bundle_id, now=None):
     now = now or datetime.now(timezone.utc)
     expiration = profile.get("ExpirationDate")
@@ -171,7 +183,9 @@ def main():
     # as well as extensions, before changing any bundle or signature.
     validated_entitlements(
         decode_profile(args.profiles_dir / "Floe.mobileprovision"),
-        read_plist(args.source_root / "FloeApp/Entitlements/Floe.entitlements"), APP_ID
+        production_host_entitlements(
+            read_plist(args.source_root / "FloeApp/Entitlements/Floe.entitlements"),
+            read_plist(args.app / "Info.plist")), APP_ID
     )
     prepared = []
     for identifier, (stem, folder, _) in EXTENSIONS.items():

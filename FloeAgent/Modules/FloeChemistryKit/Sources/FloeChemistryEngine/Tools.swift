@@ -27,6 +27,8 @@ public actor ChemistryToolSession {
                 "title": .object(["type": .string("string")]),
                 "kind": .object(["type": .string("string"), "enum": .array(ChemicalKind.allCases.map { .string($0.rawValue) })]),
                 "format": .object(["type": .string("string")]), "source": .object(["type": .string("string")]),
+                "deferPreparation": .object(["type": .string("boolean"),
+                    "description": .string("Preserve CIF/mmCIF, stereo SMILES or reaction inputs for explicit preparation by a configured worker. No calculated facts are claimed until the worker succeeds.")]),
                 "method": .object(["type": .string("string"), "enum": .array(Set(methods.values.flatMap { $0 }).sorted().map(JSONValue.string))]),
                 "environmentID": .object(["type": .string("string"), "enum": .array(methods.keys.sorted().map(JSONValue.string))]),
                 "options": .object(["type": .string("object")]), "edits": .object(["type": .string("array")]),
@@ -66,7 +68,8 @@ public actor ChemistryToolSession {
         case "chemistry.object.import":
             let kind = ChemicalKind(rawValue: arguments["kind"]?.string ?? "molecule")
             guard let kind else { throw ChemistryError.invalid("Unknown chemistry object kind.") }
-            return try encoded(await service.importObject(id, title: string(arguments,"title"), kind: kind, format: string(arguments,"format"), source: string(arguments,"source")))
+            return try encoded(await service.importObject(id, title: string(arguments,"title"), kind: kind,
+                format: string(arguments,"format"), source: string(arguments,"source"), deferPreparation: arguments["deferPreparation"] == .bool(true)))
         case "chemistry.object.replace":
             return try encoded(await service.replaceObject(id, objectID: uuid(arguments,"objectID"), expectedObjectRevision: revision(arguments), format: string(arguments,"format"), source: string(arguments,"source")))
         case "chemistry.object.edit":

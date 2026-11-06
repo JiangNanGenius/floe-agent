@@ -4,7 +4,7 @@ import FloeChemistryCore
 public actor ChemistryService {
     public let store: ChemistryProjectStore
     private let authorize: ChemistryAuthorizer
-    private var backends: [String: any ChemistryBackend]
+    var backends: [String: any ChemistryBackend]
     private var tasks: [UUID: Task<Void, Never>] = [:]
     private var ownedRuns: Set<UUID> = []
 
@@ -13,7 +13,7 @@ public actor ChemistryService {
         guard Set(backends.map(\.environmentID)).count == backends.count else { throw ChemistryError.invalid("Duplicate execution environment.") }
         self.store = store; self.backends = Dictionary(uniqueKeysWithValues: backends.map { ($0.environmentID, $0) }); self.authorize = authorize
     }
-    private func access(_ id: UUID?, _ action: ChemistryAccessAction, _ environment: String? = nil) async throws {
+    func access(_ id: UUID?, _ action: ChemistryAccessAction, _ environment: String? = nil) async throws {
         try await authorize(ChemistryAccess(projectID: id, action: action, environmentID: environment))
     }
     public func capabilities() -> [String: [String]] { backends.mapValues { $0.methods.sorted() } }
@@ -29,7 +29,7 @@ public actor ChemistryService {
     public func project(_ id: UUID) async throws -> ChemistryProject {
         try await access(id, .read)
         var p = try await store.load(id)
-        for i in p.runs.indices where [.queued, .running].contains(p.runs[i].status) && !ownedRuns.contains(p.runs[i].id) {
+        for i in p.runs.indices where [.queued, .running].contains(p.runs[i].status) && !ownedRuns.contains(p.runs[i].id) && p.runs[i].externalExecution == nil {
             p.runs[i].status = .interrupted; p.runs[i].error = "Execution was interrupted; the saved input can be run again."
             p.runs[i].finishedAt = Date()
         }
@@ -37,15 +37,16 @@ public actor ChemistryService {
         // reflected now and persisted with the next authorized mutation.
         return p
     }
-    private func mutate(_ id: UUID, _ change: (inout ChemistryProject) throws -> Void) async throws -> ChemistryProject {
+    func mutate(_ id: UUID, _ change: (inout ChemistryProject) throws -> Void) async throws -> ChemistryProject {
         var lastConflict: ChemistryError?
         for _ in 0..<4 {
-            var p = try await store.load(id); let revision = p.revision
-            for i in p.runs.indices where [.queued, .running].contains(p.runs[i].status) && !ownedRuns.contains(p.runs[i].id) {
+            var p = try await store.load(id); let revision = p.revision; let original = p
+            for i in p.runs.indices where [.queued, .running].contains(p.runs[i].status) && !ownedRuns.contains(p.runs[i].id) && p.runs[i].externalExecution == nil {
                 p.runs[i].status = .interrupted; p.runs[i].finishedAt = Date()
                 p.runs[i].error = "Execution was interrupted; the saved input can be run again."
             }
             try change(&p)
+            if p == original { return p }
             do { return try await store.save(p, expectedRevision: revision) }
             catch let e as ChemistryError {
                 guard case .conflict = e else { throw e }; lastConflict = e
@@ -77,7 +78,9 @@ public actor ChemistryService {
     public func restore(_ revision: ChemistryRevision, expectedRevision: UInt64) async throws -> ChemistryProject {
         try await access(revision.projectID, .restore)
         let p = try await store.load(revision.projectID)
-        guard !p.runs.contains(where: { ownedRuns.contains($0.id) }) else { throw ChemistryError.unavailable("Stop active calculations before restoring a revision.") }
+        guard !p.runs.contains(where: {
+            ownedRuns.contains($0.id) || ($0.externalExecution != nil && [.queued, .running].contains($0.status))
+        }) else { throw ChemistryError.unavailable("Stop active calculations before restoring a revision.") }
         return try await store.restore(revision, expectedRevision: expectedRevision)
     }
     public func setEnvironment(_ id: UUID, environmentID: String) async throws -> ChemistryProject {
@@ -180,9 +183,23 @@ public actor ChemistryService {
         return object
     }
     @discardableResult
-    public func importObject(_ id: UUID, title: String, kind: ChemicalKind = .molecule, format: String, source: String) async throws -> ChemicalObject {
+    public func importObject(_ id: UUID, title: String, kind: ChemicalKind = .molecule, format: String,
+                             source: String, deferPreparation: Bool = false) async throws -> ChemicalObject {
         try await access(id, .edit)
-        let object = try await prepare(title: title, kind: kind, format: format, source: source)
+        let object: ChemicalObject
+        if deferPreparation {
+            guard source.utf8.count <= 16 * 1024 * 1024, !source.isEmpty,
+                  [.molecule, .crystal, .biomolecule, .reaction].contains(kind),
+                  ["smi", "smiles", "mol", "sdf", "pdb", "xyz", "cjson", "cif", "mmcif", "reaction.json"].contains(format) else {
+                throw ChemistryError.invalid("Unsupported or oversized source for worker preparation.")
+            }
+            var preserved = ChemicalObject(title: title, kind: kind, format: format, source: source,
+                facts: .object(["preparationRequired": .bool(true)]))
+            preserved.originalFormat = format; preserved.originalSource = source
+            object = preserved
+        } else {
+            object = try await prepare(title: title, kind: kind, format: format, source: source)
+        }
         try await access(id, .edit)
         _ = try await mutate(id) { p in
             p.objects.append(object); p.blocks.append(ChemistryBlock(objectID: object.id))
@@ -191,9 +208,17 @@ public actor ChemistryService {
     }
     public func replaceObject(_ id: UUID, objectID: UUID, expectedObjectRevision: UInt64,
                               format: String, source: String) async throws -> ChemicalObject {
+        try await replace(id, objectID: objectID, expectedObjectRevision: expectedObjectRevision,
+                          format: format, source: source, matchingInput: nil)
+    }
+    private func replace(_ id: UUID, objectID: UUID, expectedObjectRevision: UInt64,
+                         format: String, source: String, matchingInput: ChemicalObject?,
+                         matchingRun: ChemistryRun? = nil) async throws -> ChemicalObject {
         try await access(id, .edit)
         let p = try await store.load(id)
         guard let previous = p.objects.first(where: { $0.id == objectID }) else { throw ChemistryError.invalid("Object not found.") }
+        guard previous.revision == expectedObjectRevision else { throw ChemistryError.conflict(expected: expectedObjectRevision, actual: previous.revision) }
+        guard matchingInput == nil || matchingInput == previous else { throw ChemistryError.invalid("This result belongs to a different input snapshot.") }
         var updated = try await prepare(title: previous.title, kind: previous.kind, format: format, source: source)
         guard expectedObjectRevision < UInt64.max else { throw ChemistryError.invalid("Object revision overflow.") }
         updated.id = objectID; updated.revision = expectedObjectRevision + 1
@@ -203,6 +228,12 @@ public actor ChemistryService {
         _ = try await mutate(id) { p in
             guard let i = p.objects.firstIndex(where: { $0.id == objectID }) else { throw ChemistryError.invalid("Object not found.") }
             guard p.objects[i].revision == expectedObjectRevision else { throw ChemistryError.conflict(expected: expectedObjectRevision, actual: p.objects[i].revision) }
+            guard p.objects[i] == previous else { throw ChemistryError.invalid("The input changed while the replacement was being prepared.") }
+            if let matchingRun {
+                guard p.runs.first(where: { $0.id == matchingRun.id }) == matchingRun, matchingRun.status == .succeeded else {
+                    throw ChemistryError.invalid("The calculation changed while its result was being applied.")
+                }
+            }
             p.objects[i] = replacement
         }
         return replacement
@@ -213,13 +244,15 @@ public actor ChemistryService {
         guard let object = p.objects.first(where: { $0.id == objectID }), object.revision == expectedObjectRevision else { throw ChemistryError.invalid("Object changed or is missing.") }
         let output = try await NativeChemistryBackend().evaluate(ChemistryRequest(operation: "edit", format: object.format, data: object.source, options: .object(["edits": edits])))
         guard let source = output["cjson"]?.string else { throw ChemistryError.invalid("No edited structure returned.") }
-        return try await replaceObject(id, objectID: objectID, expectedObjectRevision: expectedObjectRevision, format: "cjson", source: source)
+        return try await replace(id, objectID: objectID, expectedObjectRevision: expectedObjectRevision,
+                                 format: "cjson", source: source, matchingInput: object)
     }
     public func start(_ id: UUID, objectID: UUID, method: String, options: JSONValue = .object([:]), environmentID: String? = nil) async throws -> UUID {
         try await access(id, .read)
         let p = try await store.load(id)
         let env = environmentID ?? p.defaultEnvironmentID
         guard let backend = backends[env], backend.methods.contains(method) else { throw ChemistryError.unavailable("Configure an execution environment that supports this method.") }
+        guard backend.executionMode == .immediate else { throw ChemistryError.unavailable("Prepare this calculation through its task's configured background jobs.") }
         try await access(id, .compute, env)
         guard let input = p.objects.first(where: { $0.id == objectID }) else { throw ChemistryError.invalid("Object not found.") }
         if ["uff.energy", "uff.optimize"].contains(method), input.sketchDocument != nil {
@@ -266,6 +299,9 @@ public actor ChemistryService {
         let p = try await store.load(id)
         guard let run = p.runs.first(where: { $0.id == runID }) else { throw ChemistryError.invalid("Run not found in this project.") }
         try await access(id, .compute, run.environmentID)
+        guard run.externalExecution == nil else {
+            throw ChemistryError.unavailable("Cancel this calculation through its execution task so the background job also stops.")
+        }
         tasks[runID]?.cancel()
         try await complete(id, runID: runID, status: .cancelled, result: nil, error: "Cancelled.")
     }
@@ -280,9 +316,20 @@ public actor ChemistryService {
         try await access(id, .edit)
         let p = try await store.load(id)
         guard let run = p.runs.first(where: { $0.id == runID }), run.status == .succeeded,
-              let source = run.result?["cjson"]?.string else { throw ChemistryError.invalid("No completed structure result to apply.") }
+              let result = run.result else { throw ChemistryError.invalid("No completed structure result to apply.") }
         guard expectedObjectRevision == run.input.revision else { throw ChemistryError.invalid("Result belongs to a different input revision.") }
-        return try await replaceObject(id, objectID: run.input.id, expectedObjectRevision: expectedObjectRevision, format: "cjson", source: source)
+        guard p.objects.first(where: { $0.id == run.input.id }) == run.input else {
+            throw ChemistryError.invalid("The input changed after this calculation. Keep the result or run the calculation again.")
+        }
+        // RDKit's MOL output retains explicit stereochemistry and 3D coordinates.
+        // Derived CJSON remains the fallback for engines without a richer structure.
+        if let mol = result["molblock"]?.string, !mol.isEmpty {
+            return try await replace(id, objectID: run.input.id, expectedObjectRevision: expectedObjectRevision,
+                                     format: "mol", source: mol, matchingInput: run.input, matchingRun: run)
+        }
+        guard let source = result["cjson"]?.string else { throw ChemistryError.invalid("No completed structure result to apply.") }
+        return try await replace(id, objectID: run.input.id, expectedObjectRevision: expectedObjectRevision,
+                                 format: "cjson", source: source, matchingInput: run.input, matchingRun: run)
     }
     public func export(_ id: UUID, objectID: UUID, format: String) async throws -> String {
         try await access(id, .export)

@@ -8,10 +8,30 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sign_app_store_extensions import APP_ID, EXTENSIONS, TEAM, inventory, validated_entitlements
+from sign_app_store_extensions import (APP_ID, EXTENSIONS, TEAM, inventory,
+    production_host_entitlements, validated_entitlements)
 
 
 class ExtensionSigningTests(unittest.TestCase):
+    def test_push_variable_requires_actual_production_bundle(self):
+        declared = {"aps-environment": "$(FLOE_APNS_ENVIRONMENT)"}
+        self.assertEqual(production_host_entitlements(declared, {"FloeAPNsEnvironment": "production"}),
+                         {"aps-environment": "production"})
+        self.assertEqual(declared["aps-environment"], "$(FLOE_APNS_ENVIRONMENT)")
+        for actual in ({}, {"FloeAPNsEnvironment": "development"}):
+            with self.assertRaises(ValueError): production_host_entitlements(declared, actual)
+        with self.assertRaises(ValueError):
+            production_host_entitlements({"aps-environment": "development"}, {"FloeAPNsEnvironment": "production"})
+
+    def test_push_grant_is_checked_after_variable_resolution(self):
+        declared = production_host_entitlements({**self.declared, "aps-environment": "$(FLOE_APNS_ENVIRONMENT)"},
+                                               {"FloeAPNsEnvironment": "production"})
+        with self.assertRaises(ValueError): self.validate(declared=declared)
+        self.profile["Entitlements"]["aps-environment"] = "development"
+        with self.assertRaises(ValueError): self.validate(declared=declared)
+        self.profile["Entitlements"]["aps-environment"] = "production"
+        self.assertEqual(self.validate(declared=declared)["aps-environment"], "production")
+
     def setUp(self):
         self.now = datetime(2026, 10, 22, tzinfo=timezone.utc)
         self.identifier = APP_ID + ".widgets"

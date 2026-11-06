@@ -1,6 +1,22 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "settings.licenses.document.chemistry.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chemistry engines and offline assets"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "化学引擎与离线资源"
+          }
+        }
+      }
+    },
     "settings.licenses.document.citadel.title": {
       "localizations": {
         "en": {

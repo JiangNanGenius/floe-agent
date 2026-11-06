@@ -3,11 +3,14 @@
 import Foundation
 import FloeCanvasCore
 import FloeCanvasIntegration
+import FloeCanvasTemplates
 import FloeDiagramCore
 import FloeDiagramIntegration
 import FloeManufacturingCore
 import FloeMusicCore
 import FloeMeetings
+import FloeChemistryCore
+import FloeCAD
 
 /// Shared by Files, Creative, and agent tools. Editor commits stay in the
 /// corresponding native repository; this service owns their durable location.
@@ -21,10 +24,46 @@ actor PersonalContentService {
 
     func library() throws -> PersonalContentLibrary { try storage.get() }
 
+    func createCanvas(template: CanvasTemplate?, chinese: Bool, goal: String? = nil) async throws -> PersonalContentRecord {
+        let id = UUID()
+        let title = template?.title.value(chinese: chinese) ?? (chinese ? "未命名画布" : "Untitled canvas")
+        let brief = goal?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard brief.utf8.count <= 128_000 else { throw PersonalContentError.invalidProject }
+        let snapshot: CanvasSnapshot
+        if let template {
+            snapshot = try CanvasTemplateEngine.instantiate(template, name: title,
+                inputs: brief.isEmpty ? [:] : ["brief": .text(brief)], newCanvasID: id).snapshot
+        } else {
+            var page = CanvasPageSnapshot(name: chinese ? "画布" : "Canvas")
+            if !brief.isEmpty {
+                page.nodes = [CanvasNodeSnapshot(title: chinese ? "创作目标" : "Goal", content: .text(brief),
+                    frame: .init(center: .zero, size: .init(width: 320, height: 200)))]
+            }
+            snapshot = CanvasSnapshot(id: id, name: title, pages: [page])
+        }
+        let library = try library()
+        return try await library.create(kind: .canvas, title: title, id: id) { directory, id in
+            let repository = try FileCanvasRepository(root: directory.appendingPathComponent("Canvas"))
+            try await repository.create(canvasID: id, snapshot: snapshot, requestID: UUID())
+        }
+    }
+
     func create(kind: PersonalContentKind, title: String, folders: [String] = [], id: UUID = UUID()) async throws -> PersonalContentRecord {
         let library = try library()
         let record = try await library.create(kind: kind, title: title, in: folders, id: id) { directory, id in
             switch kind {
+            case .image, .drawing, .video:
+                try await PersonalMediaFactory.create(kind: kind, title: title, id: id, directory: directory)
+            case .document:
+                let original = directory.appendingPathComponent("Original")
+                try FileManager.default.createDirectory(at: original, withIntermediateDirectories: true)
+                try Data(("# " + title + "\n\n").utf8).write(to: original.appendingPathComponent("Document.md"), options: .atomic)
+            case .cad2D, .cad3D:
+                let document = try await FloeCADDocument.create(at: directory.appendingPathComponent("Document.floecad"), name: title)
+                if kind == .cad2D { await document.activate2DWorkspace() }
+                let saved = await document.save()
+                await document.close()
+                guard saved.succeeded else { throw PersonalContentError.storageUnavailable }
             case .canvas:
                 let repository = try FileCanvasRepository(root: directory.appendingPathComponent("Canvas"))
                 let page = CanvasPageSnapshot(name: IDELanguageRunText.t("画布", "Canvas"))
@@ -45,6 +84,8 @@ actor PersonalContentService {
                 let repository = try NativeMusicRepository(root: directory.appendingPathComponent("Music"))
                 let document = try MusicDocument(id: .init(rawValue: id.uuidString.lowercased()), name: title)
                 _ = try await repository.save(document: document, expectedRevision: nil, fence: nil)
+            case .chemistry:
+                try await ChemistryHostFactory.create(id: id, title: title, directory: directory)
             case .meeting:
                 let destination = directory.appendingPathComponent("Meeting")
                 try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
@@ -62,6 +103,13 @@ actor PersonalContentService {
     func verify(_ record: PersonalContentRecord) async throws {
         let location = try await library().resolve(record.id)
         switch record.kind {
+        case .image, .drawing, .video:
+            try await PersonalMediaFactory.verify(kind: record.kind, id: record.id, directory: location.url)
+        case .document:
+            _ = try await originalFile(record.id)
+        case .cad2D, .cad3D:
+            let document = try await FloeCADDocument.open(at: location.url.appendingPathComponent("Document.floecad"))
+            await document.close()
         case .canvas:
             _ = try await FileCanvasRepository(root: location.url.appendingPathComponent("Canvas")).load(canvasID: record.id)
         case .diagram:
@@ -71,6 +119,8 @@ actor PersonalContentService {
         case .printing:
             let document = try await PrintProjectDisk(root: location.url.appendingPathComponent("Printing")).load()
             guard document.projectID == record.id else { throw PersonalContentError.invalidProject }
+        case .chemistry:
+            _ = try await ChemistryHostFactory.verifiedStore(id: record.id, directory: location.url)
         case .meeting:
             let file = location.url.appendingPathComponent("Meeting/meeting.sqlite")
             guard FileManager.default.fileExists(atPath: file.path) else { throw PersonalContentError.invalidProject }
@@ -137,6 +187,7 @@ extension PersonalContentKind {
         case .video: IDELanguageRunText.t("视频", "Video")
         case .music: IDELanguageRunText.t("音乐", "Music")
         case .meeting: IDELanguageRunText.t("会议", "Meeting")
+        case .chemistry: IDELanguageRunText.t("化学工程", "Chemistry project")
         case .cad2D: IDELanguageRunText.t("二维设计", "2D design")
         case .cad3D: IDELanguageRunText.t("三维设计", "3D design")
         case .printing: IDELanguageRunText.t("3D 打印", "3D printing")
@@ -153,6 +204,7 @@ extension PersonalContentKind {
         case .video: "film"
         case .music: "pianokeys"
         case .meeting: "waveform.and.mic"
+        case .chemistry: "atom"
         case .cad2D: "ruler"
         case .cad3D: "cube.transparent"
         case .printing: "printer"
@@ -160,6 +212,6 @@ extension PersonalContentKind {
         case .document: "doc"
         }
     }
-    static var creationKinds: [Self] { [.canvas, .diagram, .music, .meeting, .printing, .manufacturing] }
+    static var creationKinds: [Self] { [.canvas, .diagram, .music, .meeting, .chemistry, .printing, .manufacturing, .document, .drawing, .image, .video, .cad2D, .cad3D] }
 }
 #endif

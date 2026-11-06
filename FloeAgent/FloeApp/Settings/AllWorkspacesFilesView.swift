@@ -12,8 +12,9 @@ struct AllWorkspacesFilesView: View {
     @State private var pendingCleanupCount = 0
     @State private var retryingCleanup = false
 
-    init(environment: AppEnvironment) {
+    init(environment: AppEnvironment, initialFilter: Int = 0) {
         _center = StateObject(wrappedValue: WorkspaceCenter(environment: environment, publishesSharedState: false))
+        _filter = State(initialValue: (0...3).contains(initialFilter) ? initialFilter : 0)
     }
 
     private func owners(_ workspace: WorkspaceRecord) -> [ConversationRecord] {

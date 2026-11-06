@@ -20,6 +20,9 @@ public enum MusicEditOp: Sendable, Hashable, Codable {
     case insertBus(MusicBus)
     case removeBus(MusicBus.MusicBusID)
     case setBusSends(MusicBus.MusicBusID, [MusicBus.MusicBusID])
+    case setBusStrip(MusicBus.MusicBusID, MusicStripSettings)
+    case setBusEffects(MusicBus.MusicBusID, [MusicPluginState])
+    case setMasterStrip(MusicStripSettings)
     case upsertAutomationLane(MusicAutomationLane)
     case removeAutomationLane(String)
     case setName(String)
@@ -140,6 +143,18 @@ extension MusicDocument {
                 throw MusicError.invalidMixer(reason: "unknown bus \(id)")
             }
             buses[index].sends = sends
+        case .setBusStrip(let id, let strip):
+            guard let index = buses.firstIndex(where: { $0.id == id }) else {
+                throw MusicError.invalidMixer(reason: "unknown bus \(id)")
+            }
+            buses[index].strip = strip
+        case .setBusEffects(let id, let effects):
+            guard let index = buses.firstIndex(where: { $0.id == id }) else {
+                throw MusicError.invalidMixer(reason: "unknown bus \(id)")
+            }
+            buses[index].effects = effects
+        case .setMasterStrip(let strip):
+            masterStrip = strip
         case .upsertAutomationLane(let lane):
             if let index = automationLanes.firstIndex(where: { $0.id == lane.id }) {
                 automationLanes[index] = lane

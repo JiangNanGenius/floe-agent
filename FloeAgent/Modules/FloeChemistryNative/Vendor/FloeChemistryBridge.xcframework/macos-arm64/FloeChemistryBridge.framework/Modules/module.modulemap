@@ -1,0 +1,5 @@
+framework module FloeChemistryBridge {
+  umbrella header "FloeChemistryBridge.h"
+  export *
+  link "c++"
+}

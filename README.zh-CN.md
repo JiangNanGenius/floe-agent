@@ -58,6 +58,8 @@ iOS 设置向导提供四种推荐配置，帮助预填模型、搜索、语音�
 
 ## 主要功能
 
+**iOS 源码候选 1.8.0（321）**正在整批接入预研，面向内部 TestFlight。见[接入记录](docs/FLOE_PREDEVELOPMENT_APP_INTEGRATION.zh-CN.md)与[候选说明](docs/releases/notes/RELEASE_NOTES_1.8.0_BUILD_321.md)。源码接入、界面检查及渠道可安装状态分别记录。
+
 下表介绍 Floe 的核心工作流程，具体可用性因平台与发布版本而异；Android 测试版现状请见上方安装说明与 [Android 发布记录](https://www.floe-agent.com/releases?platform=android&utm_source=github&utm_medium=referral&utm_campaign=readme_zh)。
 
 | 工作方式 | 在 Floe 中做什么 | 操作指南 |

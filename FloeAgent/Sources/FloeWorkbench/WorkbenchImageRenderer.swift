@@ -117,8 +117,8 @@ public actor WorkbenchImageRenderer {
         resolveAsset: @Sendable (UUID) -> URL?,
         previewMaxEdge: Int? = nil
     ) throws -> CGImage {
-        guard project.prepared == nil else {
-            throw MediaPreparedCoreError.v1MutationRequiresPreparedEngine
+        if let prepared = project.prepared {
+            return try renderPrepared(prepared, canvas: canvas, resolveAsset: resolveAsset, previewMaxEdge: previewMaxEdge)
         }
         guard project.kind == .image else {
             throw WorkbenchImageError.unsupportedSource("not an image project")
@@ -149,6 +149,131 @@ public actor WorkbenchImageRenderer {
                                                resolveAsset: resolveAsset,
                                                previewMaxEdge: previewMaxEdge) else { return nil }
         return try place(image: unplaced, layer: layer, canvas: canvas)
+    }
+
+    /// Native v2 composition reads the authoritative typed layers, including
+    /// vectors, group transforms, masks and clipping. The frozen v1 projection
+    /// is never rendered in place of edited v2 content.
+    public func renderPrepared(_ document: MediaPreparedDocument, canvas: CGSize,
+                               resolveAsset: @Sendable (UUID) -> URL?, previewMaxEdge: Int? = nil,
+                               includeLayerIDs: Set<UUID>? = nil, applyCanvasAdjustment: Bool = true) throws -> CGImage {
+        try MediaPreparedIntegrity.validate(document)
+        guard document.kind == .image, document.unknownOperations.isEmpty,
+              canvas.width > 0, canvas.height > 0,
+              canvas.width * canvas.height <= Double(limits.maximumExportPixels) else {
+            throw WorkbenchImageError.unsupportedSource("unresolved image content or canvas bounds")
+        }
+        let extent = CGRect(origin: .zero, size: canvas)
+        let clear = CIImage(color: .clear).cropped(to: extent)
+        var cache: [UUID: CIImage] = [:]
+        func coverage(_ mask: MediaPreparedLayerMask) throws -> CIImage {
+            var image = CIImage(color: .white).cropped(to: extent)
+            if let vector = mask.vector { image = try applySelection(vector, to: image, canvas: canvas) }
+            if !mask.strokes.isEmpty { image = try applyMask(.init(strokes: mask.strokes), to: image, canvas: canvas) }
+            if mask.isInverted {
+                image = image.applyingFilter("CIColorMatrix", parameters: [
+                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: -1),
+                    "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 1)])
+            }
+            return image
+        }
+        func render(_ layer: MediaPreparedLayer) throws -> CIImage {
+            if let cached = cache[layer.id] { return cached }
+            if !layer.isVisible { return clear }
+            var legacy = ImageLayer(id: layer.id, kind: .fill, name: layer.name,
+                transform: layer.transform, opacity: layer.opacity, adjustment: layer.adjustment)
+            var unplaced: CIImage
+            switch layer.content {
+            case .raster(let raster):
+                switch raster.source {
+                case .asset(let id):
+                    guard resolveAsset(id) != nil else { throw WorkbenchImageError.decodeFailed("missing layer source") }
+                    legacy.kind = .image; legacy.assetID = id
+                    // Prepared selections/crops use top-leading Y; the legacy
+                    // CI raster crop receives a bottom-leading source rectangle.
+                    legacy.crop = raster.crop.map { .init(x: $0.x, y: 1 - $0.y - $0.height, width: $0.width, height: $0.height) }
+                case .solidColor(let hex): legacy.fillColorHex = hex
+                case .empty: return clear
+                }
+                guard let image = try unplacedLayer(legacy, canvas: canvas, resolveAsset: resolveAsset, previewMaxEdge: previewMaxEdge) else { throw WorkbenchImageError.decodeFailed("empty layer source") }
+                unplaced = image
+            case .text(let text): unplaced = try applyAdjustment(layer.adjustment, to: makeTextLayer(text, canvas: canvas))
+            case .strokes(let strokes):
+                var image = clear
+                for stroke in strokes.strokes {
+                    try Task.checkCancellation()
+                    let cg = try MediaPreparedImageDocumentAdapter.renderStroke(stroke, sourceWidth: Int(canvas.width), sourceHeight: Int(canvas.height))
+                    image = CIImage(cgImage: cg).composited(over: image)
+                }
+                unplaced = try applyAdjustment(layer.adjustment, to: image)
+            case .vectorPaths(let path): unplaced = try applyAdjustment(layer.adjustment, to: vectorImage(path, canvas: canvas))
+            case .group: unplaced = try applyAdjustment(layer.adjustment, to: compose(parent: layer.id))
+            case .adjustment: throw WorkbenchImageError.unsupportedSource("adjustment layer cannot be used as clipping base")
+            }
+            if let mask = layer.mask, mask.isEnabled {
+                unplaced = unplaced.applyingFilter("CIBlendWithAlphaMask", parameters: [kCIInputBackgroundImageKey: clear, kCIInputMaskImageKey: try coverage(mask)])
+            }
+            var placed = try place(image: unplaced, layer: legacy, canvas: canvas)
+            if let clip = layer.clip, let base = document.layer(clip.baseLayerID) {
+                var alpha = try render(base)
+                if clip.mode == .luminance { alpha = alpha.applyingFilter("CIMaskToAlpha") }
+                if clip.isInverted { alpha = alpha.applyingFilter("CIColorMatrix", parameters: ["inputAVector": CIVector(x: 0, y: 0, z: 0, w: -1), "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 1)]) }
+                placed = placed.applyingFilter("CIBlendWithAlphaMask", parameters: [kCIInputBackgroundImageKey: clear, kCIInputMaskImageKey: alpha])
+            }
+            cache[layer.id] = placed
+            return placed
+        }
+        func compose(parent: UUID?) throws -> CIImage {
+            var result = clear
+            for layer in document.layers where layer.parentID == parent && layer.isVisible {
+                if parent == nil, let includeLayerIDs, !includeLayerIDs.contains(layer.id) { continue }
+                try Task.checkCancellation()
+                if case .adjustment(let adjustment) = layer.content {
+                    let adjusted = try applyAdjustment(adjustment, to: result)
+                    var alpha = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: layer.opacity)).cropped(to: extent)
+                    if let mask = layer.mask, mask.isEnabled { alpha = try coverage(mask) }
+                    result = adjusted.applyingFilter("CIBlendWithAlphaMask", parameters: [kCIInputBackgroundImageKey: result, kCIInputMaskImageKey: alpha])
+                } else {
+                    let foreground = try render(layer)
+                    if case .group(let group) = layer.content, let mode = group.blendMode, mode != "normal" {
+                        let modes = ["multiply": "CIMultiplyBlendMode", "screen": "CIScreenBlendMode", "overlay": "CIOverlayBlendMode", "darken": "CIDarkenBlendMode", "lighten": "CILightenBlendMode"]
+                        guard let filter = modes[mode] else { throw WorkbenchImageError.unsupportedSource("group blend mode \(mode)") }
+                        result = foreground.applyingFilter(filter, parameters: [kCIInputBackgroundImageKey: result])
+                    } else { result = foreground.composited(over: result) }
+                }
+            }
+            return result
+        }
+        let image = try applyAdjustment(applyCanvasAdjustment ? document.canvasAdjustment : .init(), to: compose(parent: nil)).cropped(to: extent)
+        guard let cg = context.createCGImage(image, from: extent) else { throw WorkbenchImageError.encodeFailed("prepared image composition failed") }
+        return cg
+    }
+
+    private func vectorImage(_ vector: MediaVectorPath, canvas: CGSize) throws -> CIImage {
+        let cg = try CGImageRenderer(size: canvas, opaque: false).image { ctx in
+            func point(_ p: ImageFreehandStroke.Point) -> CGPoint { CGPoint(x: p.x * canvas.width, y: (1 - p.y) * canvas.height) }
+            let path = CGMutablePath()
+            for subpath in vector.subpaths {
+                guard let first = subpath.points.first else { continue }
+                path.move(to: point(first.point))
+                for index in subpath.points.indices.dropFirst() {
+                    let a = subpath.points[index - 1], b = subpath.points[index]
+                    if a.controlOut != nil || b.controlIn != nil { path.addCurve(to: point(b.point), control1: point(a.controlOut ?? a.point), control2: point(b.controlIn ?? b.point)) }
+                    else { path.addLine(to: point(b.point)) }
+                }
+                if subpath.isClosed { path.closeSubpath() }
+            }
+            ctx.setAlpha(vector.opacity)
+            if let fill = vector.fillColorHex {
+                ctx.addPath(path); ctx.setFillColor(UIColorLike.cgColor(fill)); ctx.drawPath(using: vector.fillRule == .evenOdd ? .eoFill : .fill)
+            }
+            if let stroke = vector.strokeColorHex, vector.strokeWidth > 0 {
+                ctx.addPath(path); ctx.setStrokeColor(UIColorLike.cgColor(stroke)); ctx.setLineWidth(vector.strokeWidth)
+                ctx.setLineCap(vector.lineCap == .round ? .round : vector.lineCap == .square ? .square : .butt)
+                ctx.setLineJoin(vector.lineJoin == .round ? .round : vector.lineJoin == .bevel ? .bevel : .miter); ctx.strokePath()
+            }
+        }
+        return CIImage(cgImage: cg)
     }
 
     /// Layer content after adjustments/selection/mask but before placement.
@@ -230,8 +355,16 @@ public actor WorkbenchImageRenderer {
         resolveAsset: @Sendable (UUID) -> URL?,
         previewMaxEdge: Int? = nil
     ) throws -> CGImage {
-        guard project.prepared == nil else {
-            throw MediaPreparedCoreError.v1MutationRequiresPreparedEngine
+        if let document = project.prepared {
+            let positions = document.layers.indices.filter { layerIDs.contains(document.layers[$0].id) }
+            guard layerIDs.count >= 2, positions.count == layerIDs.count,
+                  positions.last! - positions.first! + 1 == positions.count,
+                  document.layers.filter({ layerIDs.contains($0.id) }).allSatisfy({ $0.parentID == nil && $0.contentKind != .group && !$0.isLocked }),
+                  !document.layers.contains(where: { !layerIDs.contains($0.id) && $0.clip.map { layerIDs.contains($0.baseLayerID) } == true }) else {
+                throw WorkbenchImageError.unsupportedSource("select at least two unlocked top-level layers")
+            }
+            return try renderPrepared(document, canvas: canvas, resolveAsset: resolveAsset, previewMaxEdge: previewMaxEdge,
+                includeLayerIDs: layerIDs, applyCanvasAdjustment: false)
         }
         guard project.kind == .image else {
             throw WorkbenchImageError.unsupportedSource("not an image project")
@@ -705,10 +838,11 @@ private enum UIColorLike {
         var value = hex
         if value.hasPrefix("#") { value.removeFirst() }
         guard let int = UInt32(value, radix: 16) else { return (0, 0, 0, 1) }
-        let r = Double((int >> 16) & 0xFF) / 255
-        let g = Double((int >> 8) & 0xFF) / 255
-        let b = Double(int & 0xFF) / 255
-        return (r, g, b, 1)
+        let shift = value.count == 8 ? 8 : 0
+        let r = Double((int >> (16 + shift)) & 0xFF) / 255
+        let g = Double((int >> (8 + shift)) & 0xFF) / 255
+        let b = Double((int >> shift) & 0xFF) / 255
+        return (r, g, b, value.count == 8 ? Double(int & 0xFF) / 255 : 1)
     }
 }
 

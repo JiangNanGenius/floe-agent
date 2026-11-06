@@ -665,6 +665,21 @@ public enum MediaPreparedEngine {
                 ref: ref, containerID: trackID, position: clipIndex,
                 before: .clip(trackID: trackID, clip: clip), after: nil)]
 
+        case .replaceClip(let trackID, let clipID, let expectedRevision, var updated):
+            let ref = MediaPreparedObjectRef(kind: .clip, id: clipID)
+            let trackIndex = try trackIndex(trackID, in: document)
+            try requireUnlockedTrack(document.trackGraph.tracks[trackIndex])
+            let clipIndex = try clipIndex(clipID, inTrack: trackIndex, in: document)
+            let before = document.trackGraph.tracks[trackIndex].clips[clipIndex]
+            try requireRevision(before.revision, expectedRevision, ref: ref)
+            guard updated.id == clipID else { throw MediaPreparedCoreError.invalidOperation("clip identity cannot change") }
+            guard !sameClipIgnoringRevision(before, updated) else { return [] }
+            updated.revision = before.revision + 1
+            document.trackGraph.tracks[trackIndex].clips[clipIndex] = updated
+            document.trackGraph.tracks[trackIndex].revision += 1
+            return [MediaPreparedObjectChange(ref: ref, containerID: trackID, position: clipIndex,
+                before: .clip(trackID: trackID, clip: before), after: .clip(trackID: trackID, clip: updated))]
+
         case .replaceClipKeyframes(let trackID, let clipID, let expectedRevision,
                                    let keyframeTracks):
             let ref = MediaPreparedObjectRef(kind: .clip, id: clipID)

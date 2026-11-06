@@ -20,7 +20,7 @@ struct ChemistryTextDocument: FileDocument {
     @State private var iterations = 200
     @State private var tolerance = 0.0001
     @State private var method = "uff.optimize"
-    @State private var environments: [String: [String]] = [:]
+    private var environments: [String: [String]] { state.availableEnvironments }
     @State private var a = 2
     @State private var b = 2
     @State private var c = 2
@@ -38,17 +38,21 @@ struct ChemistryTextDocument: FileDocument {
         Form {
             if let object = state.selected {
                 Section(object.title) {
+                    if object.requiresPreparation {
+                        LabeledContent(chemistryText("Status", "状态"), value: chemistryText("Awaiting processing", "待处理"))
+                    } else {
                     LabeledContent(object.facts?["compositionOnly"] == .bool(true) ? chemistryText("Explicit composition", "显式原子组成") : chemistryText("Formula", "分子式"), value: object.facts?["formula"]?.string ?? "—")
                     if let mass = object.facts?["mass"]?.number { LabeledContent(object.facts?["compositionOnly"] == .bool(true) ? chemistryText("Explicit atom mass", "显式原子质量") : chemistryText("Molar mass", "摩尔质量"), value: mass.formatted() + " g/mol") }
                     if let count = object.facts?["atomCount"]?.number { LabeledContent(chemistryText("Atoms", "原子"), value: Int(count).description) }
                     if let count = object.facts?["residueCount"]?.number, count > 0 { LabeledContent(chemistryText("Residues", "残基"), value: Int(count).description) }
+                    }
                     Text(chemistryText("Object revision", "对象版本") + " \(object.revision)").font(.caption).foregroundStyle(.secondary)
                 }
-                if ![.note, .spectrum, .reaction].contains(object.kind) {
+                if ![.note, .spectrum].contains(object.kind) {
                     Section(chemistryText("Calculation", "计算")) {
                         Picker(chemistryText("Environment", "执行环境"), selection: Binding(get: { state.project?.defaultEnvironmentID ?? "native.local" }, set: { value in
                             Task { await state.perform { _ = try await state.service.setEnvironment(state.projectID, environmentID: value) } }
-                        })) { ForEach(environments.keys.sorted(), id: \.self) { Text(chemistryEnvironmentTitle($0)).tag($0) } }
+                        })) { ForEach(environments.keys.sorted(), id: \.self) { Text(state.environmentTitle($0)).tag($0) } }
                         Picker(chemistryText("Method", "方法"), selection: $method) {
                             ForEach((environments[state.project?.defaultEnvironmentID ?? "native.local"] ?? []).filter { !["parse","export","edit","reaction.balance","spectrum.analyze"].contains($0) }, id: \.self) { Text(chemistryMethodTitle($0)).tag($0) }
                         }
@@ -58,6 +62,7 @@ struct ChemistryTextDocument: FileDocument {
                             TextEditor(text: $advancedOptions).font(.system(.caption, design: .monospaced)).frame(minHeight: 100)
                         }
                     }
+                    if !object.requiresPreparation && object.kind != .reaction {
                     Section(chemistryText("Atoms and bonds", "原子与化学键")) {
                         Text(chemistryText("Tap atoms in the canvas to select them.", "点按画布中的原子进行选择。"))
                         Text(selectedAtoms.map { String($0 + 1) }.joined(separator: ", ")).font(.caption.monospaced())
@@ -90,10 +95,11 @@ struct ChemistryTextDocument: FileDocument {
                         Stepper("c × \(c)", value: $c, in: 1...100)
                         Button(chemistryText("Build supercell", "构建超胞")) { Task { await state.run(method: "crystal.supercell", options: .object(["a": .number(Double(a)), "b": .number(Double(b)), "c": .number(Double(c))])) } }
                     }
+                    }
                 }
                 Section(chemistryText("Export", "导出")) {
                     Picker(chemistryText("Format", "格式"), selection: $exportFormat) {
-                        ForEach(["xyz","sdf","mol","pdb","smi","cjson","qcschema","csv","reaction.json","text"], id: \.self) { Text($0.uppercased()).tag($0) }
+                        ForEach(["xyz","sdf","mol","pdb","smi","smiles","cif","mmcif","cjson","qcschema","rxn","ket","csv","reaction.json","text"], id: \.self) { Text($0.uppercased()).tag($0) }
                     }
                     Button(chemistryText("Export file", "导出文件"), systemImage: "square.and.arrow.up") {
                         Task { await state.perform {
@@ -105,20 +111,21 @@ struct ChemistryTextDocument: FileDocument {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            if let object = state.selected, ![.note, .spectrum, .reaction].contains(object.kind) {
+            if let object = state.selected, ![.note, .spectrum].contains(object.kind) {
                 runButton.buttonStyle(.borderedProminent).padding().frame(maxWidth: .infinity).background(.regularMaterial)
             }
         }
         .fileExporter(isPresented: $exporting, document: exportDocument, contentType: .plainText, defaultFilename: (state.selected?.title ?? "structure") + "." + exportFormat) { result in
             if case .failure(let error) = result { state.error = error.localizedDescription }
         }
-        .task { environments = await state.service.capabilities() }
-        .onChange(of: state.project?.defaultEnvironmentID) { _, id in
-            let methods = environments[id ?? "native.local"] ?? []
-            if !methods.contains(method) { method = methods.first(where: { !["parse","edit","export"].contains($0) }) ?? "analyze" }
+        .task { await state.refreshCapabilities() }
+        .onChange(of: environments) { _, _ in selectAvailableMethod() }
+        .onChange(of: state.project?.defaultEnvironmentID) { _, _ in
+            selectAvailableMethod()
         }
         .task(id: "\(state.selectedID?.uuidString ?? "")-\(state.selected?.revision ?? 0)-\(selectedAtoms.first ?? -1)") {
             guard let object = state.selected else { return }
+            if object.requiresPreparation { exportFormat = object.format; scene = ChemistryScene(); return }
             if let parsed = try? ChemistryScene.parse(object.facts?["cjson"]?.string ?? (object.format == "cjson" ? object.source : "{}")) {
                 scene = parsed
                 if let index = selectedAtoms.first, parsed.atoms.indices.contains(index) {
@@ -127,6 +134,11 @@ struct ChemistryTextDocument: FileDocument {
                 }
             }
         }
+    }
+    private func selectAvailableMethod() {
+        let methods = (environments[state.project?.defaultEnvironmentID ?? "native.local"] ?? [])
+            .filter { !["parse", "edit", "export", "reaction.balance", "spectrum.analyze"].contains($0) }
+        if !methods.contains(method) { method = methods.first ?? "analyze" }
     }
     private var runButton: some View {
         Button(chemistryText("Run calculation", "开始计算"), systemImage: "play.fill") {

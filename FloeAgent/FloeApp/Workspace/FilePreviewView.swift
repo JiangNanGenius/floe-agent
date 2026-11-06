@@ -114,6 +114,7 @@ struct FilePreviewView: View {
     /// bound to this file (a genuine ordinary task, no old form).
     @State private var fileDesignTarget: DesignTarget?
     @State private var basicMachiningSelection: CADSelectionContext?
+    @State private var printPreparation: PrintPreparationRequest?
 
     var body: some View {
         Group {
@@ -152,7 +153,7 @@ struct FilePreviewView: View {
                                                 workspaceRoot:center.fileService?.guardResolver.rootURL,
                                                 workspaceID:center.currentWorkspace?.id,
                                                 conversationID:engineeringConversationID,
-                                                externalCoverPresented:isBuildingPresented))
+                                                externalCoverPresented:isBuildingPresented || printPreparation != nil))
                     .modifier(CADSelectionAssistantEntry(document: floecadDocument, selection: basicMachiningSelection,
                         relativePath: displayedPath, root: center.fileService?.guardResolver.rootURL,
                         workspaceID: center.currentWorkspace?.id, conversationID: conversationID))
@@ -243,6 +244,9 @@ struct FilePreviewView: View {
         .navigationTitle(fileName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
+        .sheet(item: $printPreparation) { request in
+            PrintPreparationSheet(request: request)
+        }
         .sheet(item: $designTarget) { target in
             // In-conversation file design opens the original task's design
             // page (preview + conversation); the standalone owner form is
@@ -260,6 +264,7 @@ struct FilePreviewView: View {
         }
         .task(id: "\(relativePath)-\(usesExpandedReadOnly)-\(reloadGeneration)") { await load() }
         .onChange(of: relativePath) { _, _ in
+            printPreparation = nil
             invalidateDrawingTransferRoute()
             isBuildingPresented=false;incomingBuildingPlan=nil
             nativeModelImportPath = nil
@@ -274,9 +279,9 @@ struct FilePreviewView: View {
             recoverySheet = nil
             recoveredCopyNotice = nil
         }
-        .onChange(of: center.currentWorkspace?.id) { _, _ in invalidateDrawingTransferRoute() }
-        .onChange(of: center.fileService?.guardResolver.rootURL) { _, _ in invalidateDrawingTransferRoute() }
-        .onChange(of: engineeringConversationID) { _, _ in invalidateDrawingTransferRoute() }
+        .onChange(of: center.currentWorkspace?.id) { _, _ in printPreparation = nil; invalidateDrawingTransferRoute() }
+        .onChange(of: center.fileService?.guardResolver.rootURL) { _, _ in printPreparation = nil; invalidateDrawingTransferRoute() }
+        .onChange(of: engineeringConversationID) { _, _ in printPreparation = nil; invalidateDrawingTransferRoute() }
         .fullScreenCover(isPresented: $isDrawingTransferPresented, onDismiss: finishDrawingTransferPresentation) {
             if let destination = drawingTransferDestination {
                 CADFromDrawingWorkspaceView(destination: destination).id(destination.id)
@@ -395,12 +400,13 @@ struct FilePreviewView: View {
         // keeps workspace ownership. No environment id exists on the
         // conversation API, so none is invented.
         .fullScreenCover(item: $mediaEditorSource, onDismiss: { Task { await load() } }) { url in
-            WorkbenchBootstrapSheet(
-                center: environment.workbenchCenter,
-                title: url.lastPathComponent,
-                kind: .video,
-                urls: [url],
-                owner: workbenchOwner)
+            if ["wav", "mp3", "m4a", "aac", "aiff", "aif", "flac", "ogg", "mid", "midi"].contains(url.pathExtension.lowercased()) {
+                MusicWorkbenchBootstrapSheet(center: environment.workbenchCenter, title: url.lastPathComponent,
+                    sourceURL: url, owner: workbenchOwner)
+            } else {
+                WorkbenchBootstrapSheet(center: environment.workbenchCenter, title: url.lastPathComponent,
+                    kind: .video, urls: [url], owner: workbenchOwner)
+            }
         }
         // The workbench edits the selected workspace file and writes the
         // re-encoded result back through the same digest-checked commit path;
@@ -1160,6 +1166,24 @@ struct FilePreviewView: View {
             // Low-frequency actions live behind More instead of occupying a
             // permanent toolbar badge.
             Menu {
+                if canPreparePrint {
+                    Button {
+                        do {
+                            let sourceConversation = engineeringConversationID, sourceEnvironment = environment
+                            printPreparation = try PrintProjectHandoff.workspaceRequest(center: center,
+                                path: displayedPath, conversationID: sourceConversation, document: floecadDocument,
+                                validateAccess: { [weak sourceEnvironment] in
+                                    guard let sourceEnvironment else { throw FloeError.unauthorized }
+                                    if let id = sourceConversation, sourceEnvironment.conversationCenter.isTemporaryConversation(id) {
+                                        throw FloeError.unauthorized
+                                    }
+                                })
+                        } catch { previewError = error.localizedDescription }
+                    } label: {
+                        Label(IDELanguageRunText.t("准备打印", "Prepare Print"), systemImage: "printer")
+                    }
+                    .accessibilityIdentifier("file.preview.preparePrint")
+                }
                 // The parent's callback is bound to the file this preview was
                 // opened for. After a restore it would add the damaged
                 // package, so it stays available only for the original file.
@@ -1185,9 +1209,16 @@ struct FilePreviewView: View {
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel("file.preview.more")
             .accessibilityIdentifier("file.preview.more")
-            .disabled((onAddToContext == nil || isPresentingRecoveredCopy)
+            .disabled(!canPreparePrint && (onAddToContext == nil || isPresentingRecoveredCopy)
                       && (isTextual || nativeOfficeURL != nil || !quickLookAvailable))
         }
+    }
+
+    private var canPreparePrint: Bool {
+        if let id = engineeringConversationID, environment.conversationCenter.isTemporaryConversation(id) { return false }
+        guard loadError == nil, center.currentWorkspace != nil, center.currentRootURL != nil else { return false }
+        if let floecadDocument { return !floecadDocument.isClosed }
+        return PrintProjectHandoff.fileExtensions.contains((displayedPath as NSString).pathExtension.lowercased())
     }
 
     private var quickLookAvailable: Bool {

@@ -1,9 +1,20 @@
-# FloePrintKit predevelopment
+# FloePrintKit
 
-R10 adds source-only mesh snapshot/Float32 precision protection in the companion JS host, locks the existing FDM geometry policy explicitly, and identifies adapter `floe-print-p0-2` in the native contract. These changes and added regression sources have **not** been compiled, executed or sliced. Earlier qualification applies to the preserved p0-1 snapshot, not this working copy. Collect all three directories below plus `docs/`; mainline owns native iPad binding and verification. No display smoothing is applied to model positions.
+Swift 6 input, configuration, artifact, layer-preview and slicing-lifecycle contracts for the native print workbench. See [中文说明](README.zh-CN.md).
 
-Independent Swift 6 contracts, binary STL input, content identity, artifact inspection and an owned slicing service. No production App or root target registration is changed. See [中文说明](README.zh-CN.md) for the collection contract and limits.
+The App integration lives in `FloeApp/Space/Printing`, with its offline WebKit adapter in `FloeApp/Resources/Printing`. The adapter uses the pinned Kiri:Moto subset in `ThirdParty/KiriMoto`; it does not expose a general script runtime. The original independent runner remains in `Qualification/Printing`.
 
-Collect this package together with `../../ThirdParty/KiriMoto` and `../../Qualification/Printing`. The real FDM/CTB slicing runner executes on macOS Node; the backend protocol is not an implemented iPad WebKit adapter. iOS SDK object compilation is separate evidence from device runtime.
+- Immutable millimetre triangle meshes and bounded binary STL import.
+- Per-project plates and objects, revision-guarded edits, transforms and undo in the App session.
+- `PrintMachineConfiguration`: Cartesian/CoreXY/i3/Delta/SCARA firmware descriptions, bed size/origin, head and tool offsets, plain custom G-code blocks, and resin platform/lift/exposure layout.
+- `PrintInput`: geometry, process, complete machine configuration, pinned engine and adapter `floe-print-app-4` enter the content fingerprint.
+- `PrintArtifact`: validates actual G-code/CTB output against the requested machine and process. `PrintGCodePreview` and `PrintCTBPreview` read the saved output for layer playback.
+- `PrintSlicingService`: owns the serial backend and cancellation boundary independently of editor lifetime.
 
-Floe-authored code is MPL-2.0. Retain the selected upstream/third-party licenses and patches. Qualification uses independently decoded files and agent-inspected previews; exhaustive physical printing is not a delivery gate.
+The editor uses bed-centred XY geometry with Z=0 on the platform. FDM output applies origin/head/tool translation once and remains Cartesian; firmware owns motor mixing. Custom G-code uses fixed literal placeholders, never expression evaluation. Resin orientation changes the sliced layout; lift/exposure settings reach CTB. The printer owns its physical Z motor direction.
+
+Output currently supports one tool per plate, G-code and CTB v3. Multi-tool color changes within one plate, support painting, drainage holes, mesh repair, 3MF project roundtrip and printer-specific network transfer remain incomplete. The system share sheet exports the complete file. Generic profiles do not certify manufacturer hardware.
+
+Source compilation, actual App navigation/layout, slicing runtime and physical printing are distinct evidence. Prior FDM/CTB qualification is retained; it does not certify newly configured machines or hardware. Follow the current repository instructions for focused builds and acceptance.
+
+Floe code is MPL-2.0. Preserve upstream and dependency licenses and local patches. The independent decoder is qualification tooling and is not linked into the App.

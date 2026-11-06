@@ -144,6 +144,7 @@ public actor InteractiveSession {
             )
             result = RuntimeReceipt(state: next)
         }
+        guard !closed, message.leaseID == leaseID else { throw InteractiveError.staleRuntime }
         lastSequence = message.sequence
         return result
     }

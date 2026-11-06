@@ -16,7 +16,8 @@ struct TemplateTests {
 
     @Test func allPresetsCompileAndUseOneCanvasContract() throws {
         let all = BuiltInCanvasTemplates.all
-        #expect(all.count == 10)
+        #expect(all.count == 12)
+        #expect(all.filter { $0.category == .research }.count == 2)
         #expect(Set(all.map(\.id)).count == all.count)
         #expect(all.map(\.id) == BuiltInCanvasTemplates.all.map(\.id))
         for t in all {

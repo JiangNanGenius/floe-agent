@@ -105,6 +105,8 @@ public enum CapabilityExecutionRouter {
         ("canvas.", .metal, "native Canvas rendering surface"),
         ("cad.", .general, "native Rust/acadrust WASM CAD engine"),
         ("notes.", .general, "native Notes workspace"),
+        ("studio.", .general, "native personal creation services"),
+        ("toolbox.", .general, "native task-bound communication service"),
         ("browser.", .general, "in-app native browser surface"),
         ("vnc.", .general, "native VNC client"),
         ("apple.", .general, "Apple-native system integrations"),

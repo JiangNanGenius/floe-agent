@@ -572,7 +572,8 @@ public actor SQLitePersonalizationStore: PersonalizationDocumentStore {
             MemoryEvidenceReference(
                 id: $0.id,
                 messageID: $0.messageID,
-                excerpt: "sha256:\(MemoryContentDigest.make($0.excerpt))"
+                excerpt: "sha256:\(MemoryContentDigest.make($0.excerpt))",
+                source: $0.source
             )
         }
         let evidence = try Self.json(redactedEvidence)

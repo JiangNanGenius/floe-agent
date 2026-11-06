@@ -32,6 +32,21 @@ final class FloeApplicationDelegate: NSObject, UIApplicationDelegate {
         return true
     }
 
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        Task { @MainActor in await FloeAgentApp.liveEnvironment.apnsCenter.didRegister(token: deviceToken) }
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        Task { @MainActor in FloeAgentApp.liveEnvironment.apnsCenter.didFailRegistration(error) }
+    }
+
+    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+                     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        if APNsNotificationIntake.background(userInfo: userInfo,
+            center: { FloeAgentApp.liveEnvironment.apnsCenter }, completion: completionHandler) { return }
+        completionHandler(.noData)
+    }
+
     func applicationWillTerminate(_ application: UIApplication) {
         RuntimeDiagnostics.shared.normalTermination()
     }
@@ -207,6 +222,7 @@ struct FloeAgentApp: App {
                 .environmentObject(environment.speechService)
                 .environmentObject(environment.ttsSettingsService)
                 .environmentObject(environment.designEntryState)
+                .apnsReleasePresentation(center: environment.apnsCenter)
                 .environmentObject(environment.skillAuthoring)
                 .modifier(SkillAuthoringPresentationHost(coordinator: environment.skillAuthoring, router: router))
                 .task {
@@ -217,6 +233,7 @@ struct FloeAgentApp: App {
                     await FloeEntryQualification.awaitSceneBootstrapBarrierIfRequested()
                     #endif
                     await environment.bootstrap()
+                    await environment.apnsCenter.reconcile()
                     #if DEBUG
                     FloeEntryQualification.noteSceneBootstrapReturned()
                     // Temporary-chat GUI acceptance: optionally preset a
@@ -1638,6 +1655,7 @@ struct RootView: View {
             await environment.conversationCenter.reload()
         }
         .onChange(of: router.sidebarSelection) { oldValue, newValue in
+            if oldValue == .more(.notes), newValue != .more(.notes) { environment.leaveToolboxSurface() }
             applySidebarSelection(newValue)
             preferredCompactColumn = .detail
             discardTemporarySessionOnContentLeave(old: oldValue, new: newValue)

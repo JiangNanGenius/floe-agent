@@ -287,6 +287,9 @@ struct ThreadDetailView: View {
                 consumedInputID = input.id
                 onInputConsumed(input.id)
             }
+            .onReceive(NotificationCenter.default.publisher(for: .floeInteractiveMessageDidChange)) { notice in
+                if notice.object as? UUID == viewModel.conversationID { Task { await viewModel.refreshPresentedMessages() } }
+            }
             .onDisappear {
                 automaticRead.cancel()
                 viewModel.stopLiveUpdates()
@@ -744,10 +747,16 @@ struct ThreadDetailView: View {
                     ranges: searchRanges)
             } else if let persisted {
                 MessageBubble(message: persisted, displayedText: text, onSaveToNotes: onSaveToNotes,
+                    onContinueInteractive: { value in viewModel.draft += (viewModel.draft.isEmpty ? "" : "\n\n") + value },
                     onOpenAttachment: { item in
                         selectedAttachment = ChatAttachmentOpenRequest(conversationID: persisted.conversationID,
                             messageID: persisted.id, attachmentID: item.attachmentID)
                     })
+            } else if text.contains("```floe-interactive\n"), let sourceID = UUID(uuidString: idSuffix),
+                      let source = viewModel.events.first(where: { $0.id == sourceID && $0.kind == .assistantText }) {
+                InteractiveAnswerView(message: .init(id: sourceID, conversationID: viewModel.conversationID,
+                    role: "assistant", content: text, createdAt: source.createdAt, runID: source.runID),
+                    onContinue: { value in viewModel.draft += (viewModel.draft.isEmpty ? "" : "\n\n") + value }, onSaveToNotes: onSaveToNotes)
             } else {
                 AssistantMessageView(
                     text: text, isStreaming: false,
@@ -1806,6 +1815,7 @@ private struct MessageBubble: View {
     let message: PersistedMessage
     var displayedText: String? = nil
     var onSaveToNotes: ((String) -> Void)? = nil
+    var onContinueInteractive: ((String) -> Void)? = nil
     var onOpenAttachment: ((AttachmentChipItem) -> Void)? = nil
     @EnvironmentObject private var router: AppRouter
     /// Explicit design entrance: one chosen attachment of this message as a typed
@@ -1836,6 +1846,12 @@ private struct MessageBubble: View {
             if message.role == "user" {
                 UserMessageBubble(text: displayedText ?? message.content, attachments: attachmentItems,
                     onOpenAttachment: onOpenAttachment, onDesignAttachment: openAttachmentDesign)
+            } else if InteractiveAnswerView.contains(message, text: displayedText) {
+                VStack(alignment: .leading, spacing: 12) {
+                    InteractiveAnswerView(message: message, displayedText: displayedText,
+                        onContinue: onContinueInteractive, onSaveToNotes: onSaveToNotes)
+                    AttachmentChipRow(items: attachmentItems, alignment: .leading, onOpen: onOpenAttachment, onDesign: openAttachmentDesign)
+                }
             } else {
                 AssistantMessageView(
                     text: displayedText ?? message.content, isStreaming: false,

@@ -53,6 +53,9 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
     public init(service: ChemistryService, projectID: UUID) {
         _state = State(initialValue: ChemistryEditorState(service: service, projectID: projectID))
     }
+    /// The App owns one editor state and calculation service across Notes,
+    /// assistants and transient navigation. The standalone initializer remains.
+    public init(state: ChemistryEditorState) { _state = State(initialValue: state) }
     public var body: some View {
         GeometryReader { geometry in
             HStack(spacing: 0) {
@@ -131,7 +134,7 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
                     Image(systemName: object.kind == .spectrum ? "waveform.path" : (object.kind == .crystal ? "cube" : (object.kind == .reaction ? "arrow.right" : "atom"))).foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 4) {
                     Text(object.title).lineLimit(2)
-                    Text(object.facts?["formula"]?.string ?? object.kind.displayTitle).font(.caption).foregroundStyle(.secondary)
+                    Text(object.displaySummary).font(.caption).foregroundStyle(.secondary)
                     }
                 }.tag(object.id)
             }
@@ -144,10 +147,10 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(object.title).font(.headline)
-                        Text(object.facts?["formula"]?.string ?? object.kind.displayTitle).font(.caption).foregroundStyle(.secondary)
+                        Text(object.displaySummary).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if object.kind == .molecule || object.sketchDocument != nil {
+                    if !object.requiresPreparation && (object.kind == .molecule || object.sketchDocument != nil) {
                         Picker(chemistryText("Structure view", "结构视图"), selection: $drawing) {
                             Text(chemistryText("2D drawing", "二维绘图")).tag(true)
                             Text(chemistryText("3D view", "三维视图")).tag(false)
@@ -155,7 +158,22 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
                     }
                 }.padding(.horizontal).padding(.vertical, 8)
                 Divider()
-            if drawing && (object.kind == .molecule || object.sketchDocument != nil) {
+            if object.requiresPreparation {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Label(chemistryText("Awaiting processing", "待处理"), systemImage: "hourglass").font(.headline)
+                        Text(chemistryText("The original is saved. Choose a processing method in Properties and methods.", "原始内容已保存，可在“属性与方法”中选择处理方法。"))
+                            .foregroundStyle(.secondary)
+                        Button(chemistryText("Properties and methods", "属性与方法")) { sheet = .inspector }
+                        DisclosureGroup(chemistryText("Source preview", "原始内容预览")) {
+                            Text(String(object.source.prefix(65536))).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                            if object.source.prefix(65537).count > 65536 {
+                                Text(chemistryText("Export the original format to save the full source.", "导出为原始格式可保存完整内容。")).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding()
+                }.accessibilityIdentifier("chemistry.pendingPreparation")
+            } else if drawing && (object.kind == .molecule || object.sketchDocument != nil) {
                 ChemistryDrawing(state: state, object: object).id(object.id)
             } else
             if object.kind == .spectrum, let data = try? SpectrumAnalysis.csv(object.source) {
@@ -188,7 +206,7 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
                     VStack(alignment: .leading) {
                         if let id = block.objectID, let object = state.project?.objects.first(where: { $0.id == id }) {
                             Button { state.selectedID = id; mode = 0 } label: { Label(object.title, systemImage: "atom").font(.headline) }
-                            Text(object.facts?["formula"]?.string ?? object.kind.displayTitle).foregroundStyle(.secondary)
+                            Text(object.displaySummary).foregroundStyle(.secondary)
                         }
                         TextEditor(text: Binding(get: { state.drafts[block.id] ?? block.text }, set: { state.setText(block.id, text: $0) }))
                             .frame(minHeight: 100).border(.quaternary)
@@ -208,7 +226,7 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(run.input.title + " · " + chemistryMethodTitle(run.method)).font(.headline)
-                            Text(chemistryEnvironmentTitle(run.environmentID) + " · " + run.status.displayTitle).font(.caption).foregroundStyle(.secondary)
+                            Text(state.environmentTitle(run.environmentID) + " · " + run.status.displayTitle).font(.caption).foregroundStyle(.secondary)
                             if let energy = run.result?["energy"]?.number { Text("\(energy.formatted()) " + (run.result?["units"]?.string ?? "")) }
                             if let reason = run.result?["stopReason"]?.string, reason != "evaluated" {
                                 Text(reason == "converged" ? chemistryText("Converged", "已收敛") : (reason == "stalled" ? chemistryText("Stopped making progress · not converged", "优化停滞 · 未收敛") : chemistryText("Iteration limit reached · not converged", "达到迭代上限 · 未收敛")))
@@ -219,11 +237,11 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
                         Spacer()
                         if [.queued, .running].contains(run.status) {
                             ProgressView()
-                            Button(chemistryText("Stop", "停止")) { Task { await state.perform { try await state.service.cancel(state.projectID, runID: run.id) } } }
-                        } else if run.status == .succeeded, run.result?["cjson"] != nil {
+                            Button(chemistryText("Stop", "停止")) { Task { await state.cancel(runID: run.id) } }
+                        } else if run.status == .succeeded, run.result?["cjson"] != nil || run.result?["molblock"] != nil {
                             Button(chemistryText("Apply structure", "应用结构")) {
                                 Task { await state.perform { _ = try await state.service.apply(state.projectID, runID: run.id, expectedObjectRevision: run.input.revision) } }
-                            }.disabled(state.project?.objects.first(where: { $0.id == run.input.id })?.revision != run.input.revision)
+                            }.disabled(state.project?.objects.first(where: { $0.id == run.input.id }) != run.input)
                         }
                     }.padding(.horizontal)
                 }

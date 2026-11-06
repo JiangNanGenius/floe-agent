@@ -2,7 +2,7 @@ import Foundation
 import FloeChemistryCore
 import FloeChemistryNative
 
-public struct ChemistryRequest: Codable, Sendable {
+public struct ChemistryRequest: Codable, Sendable, Equatable {
     public var operation: String
     public var format: String
     public var data: String
@@ -11,11 +11,16 @@ public struct ChemistryRequest: Codable, Sendable {
         self.operation = operation; self.format = format; self.data = data; self.options = options
     }
 }
+public enum ChemistryBackendExecutionMode: Sendable { case immediate, externalJob }
 public protocol ChemistryBackend: Sendable {
     var environmentID: String { get }
     var engineVersion: String { get }
     var methods: Set<String> { get }
+    var executionMode: ChemistryBackendExecutionMode { get }
     func evaluate(_ request: ChemistryRequest) async throws -> JSONValue
+}
+public extension ChemistryBackend {
+    var executionMode: ChemistryBackendExecutionMode { .immediate }
 }
 
 public struct NativeChemistryBackend: ChemistryBackend {
@@ -59,10 +64,13 @@ public struct ConfiguredChemistryBackend: ChemistryBackend {
     public let environmentID: String
     public let engineVersion: String
     public let methods: Set<String>
+    public let executionMode: ChemistryBackendExecutionMode
     private let execute: @Sendable (ChemistryRequest) async throws -> JSONValue
     public init(environmentID: String, engineVersion: String, methods: Set<String>,
+                executionMode: ChemistryBackendExecutionMode = .immediate,
                 execute: @escaping @Sendable (ChemistryRequest) async throws -> JSONValue) {
-        self.environmentID = environmentID; self.engineVersion = engineVersion; self.methods = methods; self.execute = execute
+        self.environmentID = environmentID; self.engineVersion = engineVersion; self.methods = methods
+        self.executionMode = executionMode; self.execute = execute
     }
     public func evaluate(_ request: ChemistryRequest) async throws -> JSONValue {
         guard methods.contains(request.operation) else { throw ChemistryError.unavailable("Method is unavailable in this environment.") }

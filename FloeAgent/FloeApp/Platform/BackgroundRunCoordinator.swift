@@ -168,6 +168,8 @@ enum ContinuedProcessingExpirationSequence {
 @MainActor
 final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate {
     private unowned let environment: AppEnvironment
+    private var pushRefreshIDs: Set<UUID> = []
+    private var pushRefreshResults: [UUID: Bool] = [:]
     private nonisolated let userQuestionAnswers: AppUserQuestionIntegration
     struct ActiveRun {
         let conversationID: UUID?
@@ -2124,6 +2126,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
+        if APNsNotificationIntake.foreground(userInfo: notification.request.content.userInfo,
+            center: { [weak self] in self?.environment.apnsCenter }) {
+            completionHandler([]); return
+        }
         completionHandler([.banner, .list, .sound])
     }
 
@@ -3750,6 +3756,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         environment.backgroundVideoService.updateEffectiveScenePhase(pipPhase)
         guard effective != effectiveScenePhase else { return }
         effectiveScenePhase = effective
+        if effective == .active { Task { [weak self] in await self?.environment.apnsCenter.reconcile() } }
         visualSurfacePolicy.recordSceneTransition()
         persistVisualSurfacePolicy()
         FloeLogger(category: .app).info(
@@ -4335,6 +4342,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// completes or clears a newer one.
     private func finishRefreshGeneration(taskID: UUID, success: Bool) {
         guard refreshGeneration.complete(taskID) else { return }
+        if pushRefreshIDs.contains(taskID) { pushRefreshResults[taskID] = success }
         let task = activeRefreshTask
         activeRefreshTask = nil
         #if DEBUG
@@ -4551,6 +4559,62 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// or an upstream-success trigger). Same claim semantics as any wakeup.
     func runDueSchedulesNow() async {
         await runDueSchedules()
+        await environment.apnsCenter.reconcile()
+    }
+
+    /// APNs samples the scheduler's existing reconciled owners. A remote
+    /// payload supplies no prompt, task permission or execution environment.
+    func pushEligibilitySnapshot() async throws -> APNsEligibilitySnapshot {
+        try await environment.ensureDurableAutomationReady()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        try await reconcileScheduleOccurrencesOnce(store: store, now: Date())
+        let schedules = try await store.schedules()
+        let workspaces = SQLiteWorkspaceStore(database: environment.database)
+        var enabled = false
+        for schedule in schedules where schedule.isEnabled {
+            if let owner = schedule.originConversationID {
+                guard let conversation = try await environment.conversationStore.conversation(id: owner), conversation.purpose == .ordinary else { continue }
+            }
+            if let workspaceID = schedule.workspaceID, try await workspaces.workspace(id: workspaceID) == nil { continue }
+            if let environmentID = schedule.environmentID, await environment.environmentRegistry.record(id: environmentID) == nil { continue }
+            if let upstream = schedule.upstreamRunID, try await environment.runStore.run(id: upstream) == nil { continue }
+            enabled = true; break
+        }
+        let counts = try await workSessionCounts()
+        return .init(hasEnabledSchedule: enabled,
+            hasProgressableExecution: counts.liveRuns > 0 || counts.runningJobs > 0 || counts.queuedJobs > 0)
+    }
+
+    func performPushRefresh(_ request: APNsWakeRequest) async -> APNsWakeOutcome {
+        guard !Task.isCancelled, !request.cancellation.isCancelled, Date() < request.deadline,
+              refreshGeneration.activeID == nil else { return .deferred }
+        do {
+            guard try await pushEligibilitySnapshot().eligible else { return .noData }
+            guard !Task.isCancelled, !request.cancellation.isCancelled, Date() < request.deadline,
+                  refreshGeneration.activeID == nil else { return .deferred }
+            let before = try await workSessionCounts()
+            let id = UUID()
+            pushRefreshIDs.insert(id)
+            defer { pushRefreshIDs.remove(id); pushRefreshResults.removeValue(forKey: id) }
+            startRefreshGeneration(id, task: nil)
+            guard let work = refreshWork else { return .deferred }
+            let expiry = Task { [weak self] in
+                while !Task.isCancelled {
+                    guard let self, self.refreshGeneration.owns(id) else { return }
+                    if request.cancellation.isCancelled || Date() >= request.deadline { self.expireRefreshGeneration(taskID: id); return }
+                    try? await Task.sleep(for: .milliseconds(150))
+                }
+            }
+            defer { expiry.cancel() }
+            await withTaskCancellationHandler(operation: { await work.value }, onCancel: { [weak self] in
+                Task { @MainActor in self?.expireRefreshGeneration(taskID: id) }
+            })
+            guard pushRefreshResults[id] == true, !Task.isCancelled,
+                  !request.cancellation.isCancelled, Date() < request.deadline else { return .deferred }
+            let after = try await workSessionCounts()
+            return before.liveRuns != after.liveRuns || before.runningJobs != after.runningJobs
+                || before.queuedJobs != after.queuedJobs || before.claimedScheduleOccurrences != after.claimedScheduleOccurrences ? .newData : .noData
+        } catch { return .deferred }
     }
 
     /// One truthful startup reconciliation, shared by the background pass and
@@ -5876,6 +5940,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
+        if APNsNotificationIntake.tapped(userInfo: response.notification.request.content.userInfo,
+            center: { [weak self] in self?.environment.apnsCenter }, completion: completionHandler) { return }
         let completion = NotificationResponseCompletion(completionHandler)
         if UserQuestionNotificationBridge.handle(
             response: response,

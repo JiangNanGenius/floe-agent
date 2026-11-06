@@ -139,13 +139,14 @@ public final class MusicLiveInstrument {
     public let ownerToken: String
     public private(set) var isRunning = false
 
-    public init(ownerToken: String, authority: any MusicAudioAuthority, preset: Int = 0) throws {
+    public init(ownerToken: String, authority: any MusicAudioAuthority, preset: Int = 0,
+                parameters: [String: Double] = [:]) throws {
         guard !ownerToken.isEmpty, let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2) else {
             throw MusicNativeError.invalid("instrument owner or format")
         }
         self.ownerToken = ownerToken
         self.authority = authority
-        bank = try MusicSynthBank(engine: engine, format: format, preset: preset)
+        bank = try MusicSynthBank(engine: engine, format: format, parameters: parameters, preset: preset)
         engine.connect(bank.mixer, to: engine.mainMixerNode, format: format)
         engine.mainMixerNode.outputVolume = 0.8
     }

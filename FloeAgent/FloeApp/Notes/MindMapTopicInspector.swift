@@ -11,6 +11,7 @@ struct MindMapTopicInspector: View {
     let document: NoteDocument
     @State var node: MindMapNode
     var onOpenSource: ((NoteSourceReference) async -> Bool)? = nil
+    var onOpenWork: ((NoteWorkReference) -> Void)? = nil
     @State private var pendingSource: NoteSourceReference?
     @State private var savedRevision: Int?
     @State private var openedRevision: Int
@@ -32,16 +33,33 @@ struct MindMapTopicInspector: View {
     }
 
     init(session: NotesSession, document: NoteDocument, node: MindMapNode,
-         onOpenSource: ((NoteSourceReference) async -> Bool)? = nil) {
+         onOpenSource: ((NoteSourceReference) async -> Bool)? = nil, onOpenWork: ((NoteWorkReference) -> Void)? = nil) {
         self.session = session; self.document = document
         self._node = State(initialValue: node)
         self._openedRevision = State(initialValue: document.revision)
-        self.onOpenSource = onOpenSource
+        self.onOpenSource = onOpenSource; self.onOpenWork = onOpenWork
     }
 
     var body: some View {
         NavigationStack {
             Form {
+                if let reference = node.workReference, let onOpenWork {
+                    Section(IDELanguageRunText.t("关联工程", "Linked project")) {
+                        LabeledContent(IDELanguageRunText.t("插入时修订", "Inserted revision"), value: reference.revision.formatted())
+                        Button(IDELanguageRunText.t("保存并打开工程", "Save and open project"), systemImage: "arrow.up.forward.app") {
+                            busy = true
+                            Task {
+                                defer { busy = false }
+                                do {
+                                    if (savedNode ?? document.nodes.first(where: { $0.id == node.id })) != node {
+                                        _ = try await session.commit([.upsertNode(node)], documentID: document.id, expectedRevision: savedRevision ?? openedRevision)
+                                    }
+                                    onOpenWork(reference)
+                                } catch { self.error = error.localizedDescription }
+                            }
+                        }.disabled(busy)
+                    }
+                }
                 Section("notes.notes_document_editor.topic") {
                     TextField("shortcuts.floe_shortcuts.title", text: $node.title)
                     TextField("notes.mind_map_topic_inspector.details", text: $node.note, axis: .vertical).lineLimit(4...12)

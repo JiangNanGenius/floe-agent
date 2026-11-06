@@ -496,6 +496,7 @@ public struct MediaPreparedClip: Sendable, Codable, Hashable, Identifiable {
     /// Normalized crop inside the displayed source frame.
     public var crop: NormalizedRect?
     /// Audio fades for music/audio clips.
+    public var videoMask: ImageSelection?
     public var fadeIn: MediaRationalTime?
     public var fadeOut: MediaRationalTime?
     /// Caption/title text for `.caption` tracks; nil for media clips.
@@ -510,6 +511,7 @@ public struct MediaPreparedClip: Sendable, Codable, Hashable, Identifiable {
                 timelineRange: MediaTimeRange, sourceRange: MediaTimeRange,
                 speed: Double = 1, isMuted: Bool = false, volume: Double = 1,
                 rotationDegrees: Double = 0, crop: NormalizedRect? = nil,
+                videoMask: ImageSelection? = nil,
                 fadeIn: MediaRationalTime? = nil, fadeOut: MediaRationalTime? = nil,
                 captionText: String? = nil,
                 captionSource: CaptionSegment.CaptionSource? = nil,
@@ -526,6 +528,7 @@ public struct MediaPreparedClip: Sendable, Codable, Hashable, Identifiable {
         self.volume = volume
         self.rotationDegrees = rotationDegrees
         self.crop = crop
+        self.videoMask = videoMask
         self.fadeIn = fadeIn
         self.fadeOut = fadeOut
         self.captionText = captionText
@@ -855,6 +858,7 @@ public enum MediaPreparedAction: Sendable, Codable, Hashable {
                           isMuted: Bool?, isLocked: Bool?, volume: Double?)
 
     // Clips
+    case replaceClip(trackID: UUID, clipID: UUID, expectedRevision: UInt64, clip: MediaPreparedClip)
     case insertClip(trackID: UUID, clip: MediaPreparedClip, index: Int?)
     case removeClip(trackID: UUID, clipID: UUID, expectedRevision: UInt64)
     case replaceClipKeyframes(trackID: UUID, clipID: UUID, expectedRevision: UInt64,

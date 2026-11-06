@@ -4,7 +4,7 @@ import Foundation
 
 public enum MediaPreparedVideoDocumentAdapter {
     public static func resolve(_ document: MediaPreparedDocument,
-                               assetURLs: [UUID: URL]) throws -> PreparedVideoPlan {
+                               assetURLs: [UUID: URL], includeAudio: Bool = true) throws -> PreparedVideoPlan {
         try MediaPreparedIntegrity.validate(document)
         guard document.kind == .video, let canvas = document.canvas,
               let rawRate = document.trackGraph.frameRate else {
@@ -32,10 +32,12 @@ public enum MediaPreparedVideoDocumentAdapter {
         var captions: [PreparedVideoCaption] = []
         var used = Set<UUID>()
         for track in document.trackGraph.tracks {
+            if track.kind == .audio && !includeAudio { continue }
             var visualClips: [PreparedVideoClip] = []
             var audioClips: [PreparedVideoAudioClip] = []
             for clip in track.clips {
                 if track.kind == .caption {
+                    if track.isMuted || clip.isMuted { continue }
                     guard clip.keyframeTracks.isEmpty, let text = clip.captionText else {
                         throw PreparedVideoError.unsupportedCapability("animated or empty caption")
                     }
@@ -57,7 +59,7 @@ public enum MediaPreparedVideoDocumentAdapter {
                     guard clip.crop == nil else {
                         throw PreparedVideoError.unsupportedCapability("source crop adapter")
                     }
-                    if asset.kind == .video, !clip.isMuted, !track.isMuted,
+                    if includeAudio, asset.kind == .video, !clip.isMuted, !track.isMuted,
                        !document.trackGraph.masterMuted, clip.volume > 0, track.volume > 0 {
                         guard asset.metadata?.audioTracks == 0 else {
                             throw PreparedVideoError.unsupportedCapability("extract video source audio before resolving")
@@ -82,11 +84,22 @@ public enum MediaPreparedVideoDocumentAdapter {
                     if clip.leadingTransition == .crossDissolve, let duration = clip.transitionDuration {
                         transition = try .init(kind: .crossDissolve, duration: time(duration))
                     } else { transition = nil }
+                    var mask: PreparedVideoMask?
+                    if let selection = clip.videoMask {
+                        guard selection.shapes.count == 1, let shape = selection.shapes.first,
+                              shape.operation == .replace, shape.points.count == 2,
+                              shape.kind != .lasso else { throw PreparedVideoError.unsupportedCapability("compound video mask") }
+                        let a = shape.points[0], b = shape.points[1]
+                        mask = .init(shape: shape.kind == .rectangle ? .rectangle : .ellipse,
+                            centerX: (a.x + b.x) / 2, centerY: (a.y + b.y) / 2,
+                            width: abs(a.x - b.x), height: abs(a.y - b.y),
+                            feather: selection.feather, isInverted: selection.inverted)
+                    }
                     visualClips.append(try PreparedVideoClip(
                         id: clip.id, content: asset.kind == .image ? .image(assetID: id) : .video(assetID: id),
                         timelineRange: range(clip.timelineRange), sourceRange: range(clip.sourceRange),
                         speed: clip.speed, transform: .init(rotationDegrees: clip.rotationDegrees),
-                        keyframes: keyframes, leadingTransition: transition))
+                        keyframes: keyframes, mask: mask, leadingTransition: transition))
                 case .audio:
                     guard asset.kind == .audio, clip.speed == 1, clip.keyframeTracks.isEmpty else {
                         throw PreparedVideoError.unsupportedCapability("audio asset, retime or animation")
@@ -101,7 +114,7 @@ public enum MediaPreparedVideoDocumentAdapter {
                 }
             }
             switch track.kind {
-            case .visual: visuals.append(.init(id: track.id, name: track.name, clips: visualClips))
+            case .visual: visuals.append(.init(id: track.id, name: track.name, isHidden: track.isMuted, clips: visualClips))
             case .audio: audio.append(.init(id: track.id, name: track.name, isMuted: track.isMuted,
                                             volume: track.volume, clips: audioClips))
             case .caption: break
@@ -135,6 +148,6 @@ public enum MediaPreparedVideoDocumentAdapter {
             duration: PreparedVideoTime(seconds: document.trackGraph.totalDurationSeconds, timescale: scale),
             canvas: .init(width: canvas.width, height: canvas.height), assets: assets,
             visualTracks: visuals, captions: captions, captionStyle: captionStyle,
-            audio: .init(tracks: audio))
+            audio: .init(tracks: audio, masterVolume: document.trackGraph.masterMuted ? 0 : document.trackGraph.masterVolume))
     }
 }

@@ -10,7 +10,7 @@ public struct TemplateText: Codable, Hashable, Sendable {
 }
 
 public enum TemplateCategory: String, Codable, CaseIterable, Sendable {
-    case ideas, image, video, music, film, audio, design
+    case research, ideas, image, video, music, film, audio, design
 }
 
 public enum TemplateError: Error, Equatable, Sendable {

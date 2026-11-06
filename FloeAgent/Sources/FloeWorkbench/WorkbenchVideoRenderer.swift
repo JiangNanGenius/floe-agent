@@ -162,8 +162,14 @@ public actor WorkbenchVideoRenderer {
                        to relativeOutput: String, cancellation: CancellationToken? = nil,
                        mediaRoot: URL? = nil,
                        progress: @Sendable @escaping (Double) -> Void = { _ in }) async throws -> WorkbenchVideoExportReceipt {
-        guard project.prepared == nil else {
-            throw MediaPreparedCoreError.v1MutationRequiresPreparedEngine
+        if let document = project.prepared {
+            let root = try mediaRoot ?? resolveRoot()
+            var urls: [UUID: URL] = [:]
+            for asset in document.assets { urls[asset.id] = try resolve(asset.relativePath, rootOverride: root) }
+            let destination = try resolveOutput(relativeOutput, rootOverride: root)
+            return try await MediaPreparedVideoDelivery().export(document: document, assetURLs: urls,
+                options: options, destination: destination,
+                cancellation: .init(external: { cancellation?.isCancelled == true }), progress: progress)
         }
         // Freeze the media root BEFORE the first await: the shared renderer's
         // rootProvider is dynamic and a project switch during export must not
@@ -615,8 +621,14 @@ public actor WorkbenchVideoRenderer {
     /// playback renderer to drift out of sync.
     public func renderPreview(project: MediaProject,
                               cancellation: CancellationToken? = nil) async throws -> WorkbenchPreviewReceipt {
-        guard project.prepared == nil else {
-            throw MediaPreparedCoreError.v1MutationRequiresPreparedEngine
+        if let document = project.prepared, let canvas = document.canvas,
+           let rate = document.trackGraph.frameRate {
+            let scale = min(1, 1280.0 / Double(max(canvas.width, canvas.height)))
+            let options = VideoExportOptions(width: MediaResourceGuard.even(max(2, Int(Double(canvas.width) * scale))),
+                height: MediaResourceGuard.even(max(2, Int(Double(canvas.height) * scale))), frameRate: rate.seconds, quality: 0.6)
+            let receipt = try await export(project: project, options: options,
+                to: "Workbench/Previews/\(project.id.uuidString)-r\(project.revision)-\(UUID().uuidString).mp4", cancellation: cancellation)
+            return .init(url: receipt.url, width: receipt.width, height: receipt.height, durationSeconds: receipt.durationSeconds)
         }
         guard project.kind == .video, let timeline = project.videoTimeline else {
             throw FloeError.validationFailed("project has no video timeline")

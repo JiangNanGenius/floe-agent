@@ -5,15 +5,28 @@ import Foundation
 import Observation
 import FloeMeetings
 import FloeMeetingsAV
+import FloeNotes
+import FloeTools
 
 @MainActor @Observable final class MeetingProjectSession {
     private static var sessions: [UUID: MeetingProjectSession] = [:]
     let id: UUID
     let root: URL
     let service: MeetingService
-    private let backend = AVAudioRecorderCaptureBackend()
+    private let backend = MeetingSharedPCMBackend()
     private let audio: NativeCreativeAudioSession
-    private let environment: AppEnvironment
+    let environment: AppEnvironment
+    let notebook = NotesSession()
+    var intelligence = MeetingIntelligenceState()
+    var isAnalyzing = false
+    var intelligenceTask: Task<Void, Never>?
+    var summaryTimer: Task<Void, Never>?
+    var lastSummaryTranscriptCount = 0
+    var liveTranscription: MeetingLiveTranscription?
+    var rollingSummaryTask: Task<Void, Never>?
+    var isUpdatingMinutes = false
+    var rollingSummaryGeneration = UUID()
+    private var captureSettlement: Task<Void, Never>?
     private var audioHeld = false
     private var playbackHeld = false
     private(set) var meeting: MeetingSnapshot
@@ -24,7 +37,9 @@ import FloeMeetingsAV
     private(set) var decisions: [MeetingDecision] = []
     private(set) var speakers: [Speaker] = []
     private(set) var summaries: [SummaryRecord] = []
+    private(set) var markers: [TimeMarker] = []
     private(set) var isRecording = false
+    var isPaused = false
     private(set) var isProcessing = false
     private(set) var changingCapture = false
     private(set) var progress = 0.0
@@ -34,12 +49,19 @@ import FloeMeetingsAV
     private var analysisSessions: [UUID: UUID] = [:]
     var diagnostic: String?
     var export: URL?
+    var exportSourceIndex: URL?
+    var isExportingDocument = false
+    var documentExportTask: Task<Void, Never>?
+    var documentExportCancellation: CancellationToken?
+    var followups: MeetingFollowupCenter?
     var player: AVPlayer?
     var playingSession: CaptureSessionID?
 
     private init(id: UUID, root: URL, service: MeetingService, meeting: MeetingSnapshot, environment: AppEnvironment) {
         self.id = id; self.root = root; self.service = service; self.meeting = meeting
         self.environment = environment; audio = NativeCreativeAudioSession(environment: environment)
+        do { followups = try MeetingFollowupCenter(root: root) }
+        catch { diagnostic = error.localizedDescription }
         if let data = try? Data(contentsOf: root.appendingPathComponent("analysis-sessions.json")), data.count <= 1_024 * 1_024,
            let map = try? JSONDecoder().decode([UUID: UUID].self, from: data) { analysisSessions = map }
     }
@@ -50,12 +72,22 @@ import FloeMeetingsAV
         let service = MeetingService(database: try MeetingDatabase(path: file.path))
         let meeting = try await service.meeting(MeetingID(id))
         let value = MeetingProjectSession(id: id, root: directory, service: service, meeting: meeting, environment: environment)
+        value.liveTranscription = try MeetingLiveTranscription(meetingID: MeetingID(id), root: directory,
+            service: service, audio: environment.assistantAudioService, onChange: { [weak value] in
+                await value?.liveTranscriptDidChange()
+            })
         sessions[id] = value
-        await service.setCaptureEventHandler { [weak value] _ in
-            Task { @MainActor in await value?.refresh() }
+        await service.setCaptureEventHandler { [weak value] event in
+            Task { @MainActor in await value?.receiveCaptureEvent(event) }
         }
         await value.refresh()
+        await value.loadNotebook()
         return value
+    }
+    static func prepareForDeletion(id: UUID) async {
+        guard let value = sessions[id] else { return }
+        await value.stopOwnedProcessing()
+        sessions.removeValue(forKey: id)
     }
     func refresh() async {
         do {
@@ -67,6 +99,7 @@ import FloeMeetingsAV
             decisions = try await service.decisions(meeting: MeetingID(id))
             speakers = try await service.speakers(meeting: MeetingID(id))
             summaries = try await service.summaries(meeting: MeetingID(id))
+            markers = try await service.markers(meeting: MeetingID(id))
             isRecording = await service.activeCaptureSession != nil
             if !isRecording { releaseAudio() }
             if let failure = await service.capturePersistenceFailure { diagnostic = failure.localizedDescription }
@@ -80,10 +113,13 @@ import FloeMeetingsAV
             stopPlayback()
             guard await AVAudioApplication.requestRecordPermission() else { throw PersonalContentError.storageUnavailable }
             try audio.acquireRecording(); audioHeld = true
+            configureLiveTranscription()
             let directory = root.appendingPathComponent("Recordings")
             _ = try await service.startCapture(meeting: MeetingID(id), backend: backend,
                 configuration: .init(directory: directory))
+            isPaused = false
             await refresh()
+            synchronizeSummaryTimer()
         } catch { releaseAudio(); diagnostic = error.localizedDescription }
     }
     func stopRecording() async {
@@ -93,6 +129,23 @@ import FloeMeetingsAV
         do { _ = try await service.stopCapture() }
         catch { diagnostic = error.localizedDescription }
         await refresh()
+        captureSettlement?.cancel()
+        captureSettlement = Task { [weak self] in
+            guard let self else { return }
+            for _ in 0..<400 {
+                if Task.isCancelled { return }
+                if await self.service.activeCaptureSession == nil { await self.refresh(); return }
+                try? await Task.sleep(for: .milliseconds(25))
+            }
+            self.diagnostic = IDELanguageRunText.t("录音正在结束，原文件已保留。", "Recording is still finishing. Its original file was preserved.")
+        }
+        isPaused = false
+        synchronizeSummaryTimer()
+    }
+    func pauseRecording() async {
+        guard isRecording else { return }
+        await stopRecording()
+        if !isRecording { isPaused = true }
     }
     private func releaseAudio() {
         guard audioHeld else { return }
@@ -124,8 +177,10 @@ import FloeMeetingsAV
         let file: URL
         if let source = session.sourceFile { file = URL(fileURLWithPath: source) }
         else {
-            file = try AVAudioRecorderCaptureBackend.makeFileURL(
-                configuration: .init(directory: root.appendingPathComponent("Recordings")), session: session.id)
+            let configuration = CaptureConfiguration(directory: root.appendingPathComponent("Recordings"))
+            let pcm = try MeetingPCMChunkRecorder.originalURL(configuration: configuration, session: session.id)
+            file = FileManager.default.fileExists(atPath: pcm.path) ? pcm
+                : try AVAudioRecorderCaptureBackend.makeFileURL(configuration: configuration, session: session.id)
         }
         let resolved = file.standardizedFileURL.resolvingSymlinksInPath()
         guard resolved.path.hasPrefix(root.resolvingSymlinksInPath().path + "/"),
@@ -148,9 +203,21 @@ import FloeMeetingsAV
         player?.pause(); player = nil; playingSession = nil
         if playbackHeld { playbackHeld = false; audio.releasePlayback() }
     }
+    func originalCaptureSession(for session: CaptureSessionID) -> CaptureSessionID {
+        if let original = liveTranscription?.originalSession(for: session), original != session { return original }
+        if let original = analysisSessions.first(where: { $0.value == session.rawValue })?.key { return CaptureSessionID(original) }
+        return session
+    }
     func play(_ segment: TranscriptSegment) {
-        guard let session = recordings.first(where: { $0.id == segment.sessionID }) else { return }
+        let source = liveTranscription?.originalSession(for: segment.sessionID) ?? segment.sessionID
+        guard let session = recordings.first(where: { $0.id == source }) else { return }
         play(session, at: segment.range.start)
+    }
+    func play(_ source: SourceReference) {
+        if case .recording(let id, let range) = source,
+           let recording = recordings.first(where: { $0.id == (liveTranscription?.originalSession(for: id) ?? id) }) {
+            play(recording, at: range.start)
+        }
     }
     func transcribe(_ source: CaptureSessionSnapshot) {
         guard !isProcessing, source.state == .stopped else { return }
@@ -198,7 +265,10 @@ import FloeMeetingsAV
             }
         }
     }
-    func cancelProcessing() { processing?.cancel() }
+    func cancelProcessing() {
+        generation = UUID(); processing?.cancel(); processing = nil; isProcessing = false
+        liveTranscription?.cancel()
+    }
     func addNote(_ text: String) async -> Bool {
         do {
             _ = try await service.addNote(meeting: MeetingID(id), body: text, source: await currentSource())
@@ -252,7 +322,7 @@ import FloeMeetingsAV
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let file = directory.appendingPathComponent("meeting-" + UUID().uuidString + "." + (format == .markdown ? "md" : format.rawValue))
             try data.write(to: file, options: .atomic)
-            export = file
+            export = file; exportSourceIndex = nil
         } catch { diagnostic = error.localizedDescription }
     }
     func saveAsNote() async {

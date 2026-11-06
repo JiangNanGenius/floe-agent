@@ -37,6 +37,15 @@ public final class InteractiveWebController: NSObject, ObservableObject, WKNavig
         )
     }
 
+    /// Navigation and deletion fence the current DOM immediately. Cleanup may
+    /// finish later, but callbacks from this renderer can no longer publish.
+    public func invalidate() {
+        generation &+= 1; loadedLease = nil; isReady = false
+        onStateChange = nil
+        webView.loadHTMLString("<!doctype html><html><body></body></html>", baseURL: nil)
+        Task { try? await session.close() }
+    }
+
     public func resume() async {
         if hasUnsavedChanges, loadedLease != nil, isReady, !failed {
             // A failed commit must not destroy the still-recoverable DOM draft.

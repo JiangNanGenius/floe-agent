@@ -69,6 +69,7 @@ public struct NoteElement: Codable, Hashable, Identifiable, Sendable {
     public var textSlice: NoteTextSlice?
     public var isMarkdown: Bool { textFormat == "markdown" }
     public var source: NoteSourceReference?
+    public var workReference: NoteWorkReference? = nil
     public var isAIGenerated: Bool
     public init(id: UUID = UUID(), kind: Kind = .text, frame: NoteRect = .init(), text: String = "",
                 resourceID: UUID? = nil, color: String = "#202020", fontSize: Double = 20,
@@ -187,6 +188,7 @@ public struct MindMapNode: Codable, Hashable, Identifiable, Sendable {
     public var hyperLink: String?
     public var isAIGenerated: Bool?
     public var source: NoteSourceReference?
+    public var workReference: NoteWorkReference? = nil
     /// Manual world-space center. Nil joins the automatic tree layout.
     public var position: MindMapPoint?
     public init(id: UUID = UUID(), parentID: UUID? = nil, title: String, note: String = "", order: Int = 0,
@@ -369,6 +371,7 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
                 throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.the_pdf_page_reference_is_invalid"))
             }
             for element in page.elements {
+                try element.workReference?.validate()
                 guard element.frame.isValid, element.fontSize.isFinite, (1...512).contains(element.fontSize) else {
                     throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.invalid_page_content_size"))
                 }
@@ -424,6 +427,7 @@ public struct NoteDocument: Codable, Hashable, Identifiable, Sendable {
                 throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.a_mind_map_can_keep_at"))
             }
             for node in nodes {
+                try node.workReference?.validate()
                 let attachments = node.attachments ?? []
                 guard attachments.count <= 32, Set(attachments.map(\.id)).count == attachments.count else {
                     throw NoteError.invalidDocument(FloeL10n.l("notes.note_models.each_topic_keeps_at_most_32"))

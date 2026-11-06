@@ -22,7 +22,7 @@
     {
       "identity": "citadel",
       "license": "MIT",
-      "evidence": ".build/checkouts/citadel/LICENSE",
+      "evidence": "ThirdParty/Citadel/LICENSE",
       "sha256": "580a39b7c09cba3cd18a5b1e0d4376e9d1ac200d241bda87e95ed74917bc3b31",
       "revision": "ae8562f895de06ccb86fdb1cbb65fd99c8976e12",
       "source": "https://github.com/orlandos-nl/Citadel.git"

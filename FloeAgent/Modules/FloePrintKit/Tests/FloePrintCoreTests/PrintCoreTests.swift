@@ -63,7 +63,7 @@ private func request(_ value: PrintInput) -> PrintRequest {
     }
     let raw:[Float]=[3,4,0,8,4,0,3,9,0]
     #expect(try PrintMesh(positions:raw).positions == raw)
-    #expect(PrintInput.adapterVersion == "floe-print-p0-2")
+    #expect(PrintInput.adapterVersion == "floe-print-app-4")
 }
 
 @Test func hostileOrInvalidInputsAreRejected() throws {

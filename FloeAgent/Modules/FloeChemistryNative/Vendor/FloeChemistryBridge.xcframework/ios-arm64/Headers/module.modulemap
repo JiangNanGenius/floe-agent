@@ -1,5 +1,0 @@
-module FloeChemistryBridge {
-  header "FloeChemistryBridge.h"
-  export *
-  link "c++"
-}
