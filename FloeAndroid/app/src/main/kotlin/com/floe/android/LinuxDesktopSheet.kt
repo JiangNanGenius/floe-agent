@@ -59,7 +59,7 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
                 Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FloeCapsuleButton(selectedApp, onClick = { softwareVisible = true }, modifier = Modifier.weight(1f))
                     if (selectedPath.isNotBlank()) FloeCapsuleButton(stringResource(R.string.linux_desktop_open_file),
-                        onClick = { filesFailed = runCatching { service.openFile(selectedApp, selectedPath) }.isFailure },
+                        onClick = { filesFailed = runCatching { service.openFile(selectedApp, selectedPath, taskID, workspaceID) }.isFailure },
                         modifier = Modifier.weight(1f))
                     FloeCapsuleButton(stringResource(R.string.linux_desktop_stop), onClick = { stopRequested = true },
                         modifier = Modifier.weight(1f))

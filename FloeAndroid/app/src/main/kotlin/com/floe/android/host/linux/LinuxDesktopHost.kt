@@ -272,10 +272,11 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
         host.workspaceTerminal?.transportForTab(token)?.write("clean-cache:$nonce\n".toByteArray())
         refreshSoftware()
     }
-    fun openFile(application: String, logicalPath: String) {
+    fun openFile(application: String, logicalPath: String, taskID: String, workspaceID: String) {
         require(application in LinuxDesktopCommands.applications)
         require(com.floe.android.host.externaledit.ExternalEditPolicy.validPath(logicalPath))
-        if (!live() || state.value.phase != "running") return
+        check(live() && state.value.phase == "running")
+        check(state.value.workspaceID.equals(workspaceID, ignoreCase = true))
         check(state.value.softwareOperation == null)
         val token = terminalID ?: return
         val ownerTask = state.value.taskID ?: return
@@ -285,7 +286,14 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
         val operationID = UUID.randomUUID().toString()
         val opening = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             try {
-                val row = host.externalEdits.prepareLinux(ExternalEditOwner(ownerTask, workspace), logicalPath)
+                val caller = G04WorkspaceBridgeClient.bindExisting(host, taskID) {
+                    live() && epoch == admittedEpoch && terminalID == token
+                }
+                check(caller.workspaceID.equals(workspaceID, ignoreCase = true))
+                // The display may be reused by another task in this project.
+                // File authority belongs to this caller; guest reads keep the
+                // original PTY owner and its real session/generation fence.
+                val row = host.externalEdits.prepareLinux(ExternalEditOwner(taskID, workspace), logicalPath)
                 val path = checkNotNull(row.linuxWorkingPath)
                 val nonce = UUID.randomUUID().toString().replace("-", "")
                 fun encoded(value: String) = java.util.Base64.getEncoder().encodeToString(value.toByteArray(Charsets.UTF_8))

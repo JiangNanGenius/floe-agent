@@ -10,9 +10,15 @@ internal object LinuxDesktopCommands {
         require(nonce.matches(Regex("[a-f0-9]{32}")) && display in 10..209)
         require(width in 640..2560 && height in 480..1600)
         val installCommand = if (install) """
-            command -v apt-get >/dev/null || exit 72
-            apt-get update
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tigervnc-standalone-server tigervnc-tools dbus-x11 openbox xfce4-panel xterm mousepad pcmanfm
+            gui_missing=0
+            for gui_tool in Xtigervnc vncpasswd dbus-run-session openbox ${if (desktop) "xfce4-panel" else ""}; do
+              command -v "${'$'}gui_tool" >/dev/null 2>&1 || gui_missing=1
+            done
+            if test "${'$'}gui_missing" = 1; then
+              command -v apt-get >/dev/null || exit 72
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tigervnc-standalone-server tigervnc-tools dbus-x11 openbox xfce4-panel xterm mousepad pcmanfm
+            fi
         """.trimIndent() else ""
         val script = """
             set -eu

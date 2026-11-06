@@ -141,13 +141,33 @@ internal class G04WorkspaceEditorController(private val host: RuntimeHost) {
             if (drainingEpoch == epoch) throw G04WorkspaceBridgeClient.Failure("ownerStopping")
             val rows = bindings.filterKeys { it.taskID == taskID && it.epoch == epoch }.values.toList()
             rows.forEach { it.presenter.setInputAdmission(false) }
-            if (rows.any { !it.ide.isIdle() || it.presenter.hasUnsettledEdits() || it.presenter.state.value.tabs.any { tab -> tab.descriptor.dirty } }) {
-                rows.filter { it.isCurrent() }.forEach { it.presenter.setInputAdmission(true) }
-                throw G04WorkspaceBridgeClient.Failure("dirtyDocument")
-            }
             rows
         }
-        try { return operation() }
+        try {
+            // Read/selection refreshes after a viewer closes are not unsaved
+            // edits. Let already-admitted adapter work settle with input fenced,
+            // then recheck the same owners and genuine draft state before CAS.
+            val settled = withTimeoutOrNull(5_000) {
+                while (true) {
+                    val ready = lock.withLock {
+                        if (owned.any { !it.isCurrent() })
+                            throw G04WorkspaceBridgeClient.Failure("ownerChanged")
+                        val dirty = owned.sumOf { binding -> binding.presenter.state.value.tabs.count { it.descriptor.dirty } }
+                        val unsettled = owned.count { it.presenter.hasUnsettledEdits() }
+                        if (dirty > 0 || unsettled > 0) {
+                            android.util.Log.w("FloeWorkspaceEditor", "mutation_refused dirty_tabs=$dirty unsettled=$unsettled")
+                            throw G04WorkspaceBridgeClient.Failure("dirtyDocument")
+                        }
+                        owned.all { it.ide.isIdle() }
+                    }
+                    if (ready) return@withTimeoutOrNull true
+                    delay(25)
+                }
+                @Suppress("UNREACHABLE_CODE") false
+            } ?: false
+            if (!settled) throw G04WorkspaceBridgeClient.Failure("workspaceBusy")
+            return operation()
+        }
         finally {
             // Partial Git failures can still have changed disk files. The
             // native barrier rereads those before returning; refresh this
