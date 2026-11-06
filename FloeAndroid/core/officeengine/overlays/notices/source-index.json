@@ -598,7 +598,7 @@
         "path": "notices/index.html",
         "operation": "add",
         "originalSha256": null,
-        "newSha256": "bd9676c5956c01356149bd73e9a07016ef99af2070d78228a65c0a9da5234ada"
+        "newSha256": "5559adface233adbb402e4002fdd9a5514283a437633fdd707f31049e78660a0"
       },
       {
         "path": "share/theme_definitions/online/arrow-down.svg",
