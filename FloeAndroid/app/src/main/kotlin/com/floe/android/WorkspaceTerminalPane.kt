@@ -207,6 +207,13 @@ internal fun WorkspaceTerminalPane(
         val host = controller ?: return@LaunchedEffect
         openFailure = null
         showFailureDetails = false
+        // Read availability even after the last tab closed. A reconstructed
+        // empty pane starts with terminalReady=false; returning before this
+        // read hides both explicit new-tab controls behind a false setup error.
+        if (!host.availability().let { it.qualified && it.workspaceAttached }) {
+            host.refreshCapabilities()
+        }
+        terminalReady = host.availability().let { it.qualified && it.workspaceAttached }
         // Tab-era empty terminal: this conversation owned real native tabs and
         // the user closed the last one. That session has settled, so showing
         // the conversation-level singleton again would resurrect a removed
@@ -240,10 +247,6 @@ internal fun WorkspaceTerminalPane(
         // binding) before it decides to start or to explain. A true cached
         // gate is still re-validated natively — the open request consults
         // the SAME live ingress authority and fail-closed refuses on drift.
-        if (!host.availability().let { it.qualified && it.workspaceAttached }) {
-            host.refreshCapabilities()
-        }
-        terminalReady = host.availability().let { it.qualified && it.workspaceAttached }
         val current = host.currentSnapshot(conversationID)
         val needsStart = current == null || current.phase == TerminalSessionPhase.CLOSED
         // ONE bounded read of the ORIGINAL stage authority (the closed-token
