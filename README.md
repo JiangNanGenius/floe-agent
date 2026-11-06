@@ -58,7 +58,7 @@ The iOS setup guide offers four recommendations to prefill choices for models, s
 
 ## Features
 
-The **1.8.2 (322) iOS source candidate** integrates the predevelopment work for internal TestFlight. See the [integration record](docs/FLOE_PREDEVELOPMENT_APP_INTEGRATION.zh-CN.md) and [candidate notes](docs/releases/notes/RELEASE_NOTES_1.8.2_BUILD_322.md). Source integration, interface checks and channel availability are recorded separately.
+**iOS 1.8.2 (322)** integrates this round of predevelopment work and is available through internal TestFlight. Apple processing is valid, the build is unexpired, and Floe QA availability is verified. See the [integration record](docs/FLOE_PREDEVELOPMENT_APP_INTEGRATION.zh-CN.md) and [build notes](docs/releases/notes/RELEASE_NOTES_1.8.2_BUILD_322.md). Interface acceptance covers menus, pages opening, controls and the agreed layouts; comprehensive functional and stability qualification was not repeated.
 
 The features below describe Floe core workflows. Availability varies by platform and release; see the installation notes above and the [Android release](https://www.floe-agent.com/en/releases?platform=android&utm_source=github&utm_medium=referral&utm_campaign=readme_en) for the current Android alpha.
 
