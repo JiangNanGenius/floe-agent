@@ -633,7 +633,7 @@ internal class C04CadViewerController(
         try {
             if (!isCurrent(session)) throw SessionFailure(C04CadFailure.OWNER, "owner")
             client.handshake()
-            previewComponents.acquireCad("cad-view-${session.token}") { isCurrent(session) }
+            previewComponents.acquireCad("cad-view-${session.token}-${session.generation}") { isCurrent(session) }
             if (session.format == C04CadFormat.FLOECAD) {
                 runFloecadSession(session)
                 return
@@ -1468,7 +1468,7 @@ internal class C04CadViewerController(
     }
 
     private fun cleanupSession(session: Session) {
-        previewComponents.releaseCad("cad-view-${session.token}")
+        previewComponents.releaseCad("cad-view-${session.token}-${session.generation}")
         registry.remove(session.coreSessionID ?: "")
         val core = session.coreSessionID
         if (core != null) runCatching { client.end(core) }

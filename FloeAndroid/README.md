@@ -1,6 +1,14 @@
 # Floe for Android
 
-## Current checkpoint — G09-R2 (2026-11-01)
+## Current delivery — Android Alpha41 (2026-11-07)
+
+[Android 0.1.0-alpha.41](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.41), code60, is published from immutable source `aadcd9fd1af935ffe126e82d7e746b4ed874ec6b`. Full packaging, Play Kotlin compilation, signing/ARM64/16KiB checks, and all six public asset bytes passed. iOS Latest remains unchanged.
+
+On the physical Samsung Android13 phone, one four-triangle STL passed first display, fresh reopening with no active network, orbit input and real1080×2106 PNG export/readback. This does not cover every CAD format or the whole Android iteration. Phone multi-step automation, conditions, project isolation, retry component-lease hardening and compact UI work continue. The later lease-generation source correction is not in this frozen APK.
+
+当前已发布Alpha41/code60；三星实测覆盖一个STL的首帧、断网新预览和真实视口导出。整轮N01–N08继续推进，不把单一样例或公开发布当作全部功能完成。原失败、精确来源及未完成项见[交付记录](../docs/releases/ANDROID_ALPHA41_DELIVERY.md)与[当前推进计划](../docs/FLOE_ANDROID_NEXT_ITERATION_QA_20261106.zh-CN.md)。
+
+## Historical source checkpoint — G09-R2 (2026-11-01)
 
 Media timeline/playback/captions/audio, cloud-generation candidates, renderer/export,
 Design owner workflows and the actual App integration are code-ready. Swift 6 Core
@@ -9,13 +17,13 @@ syntax pass; unchanged component evidence is reused. Ask AI keeps readable draft
 text while the real run context carries the exact selected project as reference
 data, without granting authority. See the [current progress and limits](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md).
 
-This is a source checkpoint, not a new installable build. Alpha22/code24 remains
-current. G09-R3 owns the matching Android ARM64 Core, JNI link, APK, device/visual
+At R2 this was a source checkpoint, not a new installable build. Alpha22/code24 was
+current. G09-R3 then owned the matching Android ARM64 Core, JNI link, APK, device/visual
 acceptance, upgrade verification and the next Android prerelease. No live App
 provider call was made in R2; cloud subtitle transcription remains a follow-up.
 
-当前为 G09-R2 代码与组件检查点：完整 App／共享核心及定向检查通过；
-尚无新 APK。R3 再做同源二进制、平板／三星实际验收和新阶段发布，保留 iOS Latest。
+历史 G09-R2 代码与组件检查点：当时完整 App／共享核心及定向检查通过，
+尚无新 APK；当时计划由 R3 再做同源二进制、平板／三星实际验收和新阶段发布，保留 iOS Latest。
 
 Native Compose application with a Swift shared-core overlay. Development follows
 [the agreed plan](../docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md#23-目标模式执行顺序先代码完整-再集中调试).
