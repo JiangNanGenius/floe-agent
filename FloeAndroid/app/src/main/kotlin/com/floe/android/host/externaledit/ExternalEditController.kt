@@ -281,7 +281,7 @@ internal class ExternalEditController(private val context: Context, private val 
     }
 
     /** Android first. No external handler is an actionable result, not a fake Linux launch. */
-    fun openAndroid(activity: Activity, owner: ExternalEditOwner, path: String) {
+    fun openAndroid(activity: Activity, owner: ExternalEditOwner, path: String, existingID: String? = null) {
         if (!launchClaim.compareAndSet(false, true)) return
         mutableState.value = mutableState.value.copy(preparing = true,
             failure = if (journal == null) mutableState.value.failure else null)
@@ -289,7 +289,15 @@ internal class ExternalEditController(private val context: Context, private val 
         host.scope.launch(host.ioDispatcher) {
             var row: ExternalEditRecord? = null
             try {
-                row = prepare(owner, path)
+                row = if (existingID == null) prepare(owner, path) else lock.withLock {
+                    val existing = records[existingID] ?: throw Failure("copyUnavailable")
+                    if (!sameOwner(existing.owner, owner) || existing.linuxWorkingPath != null ||
+                        existing.phase !in setOf(ExternalEditPhase.EDITING, ExternalEditPhase.SAVED, ExternalEditPhase.PAUSED)) {
+                        throw Failure("ownerChanged")
+                    }
+                    measured(working(existing))
+                    existing
+                }
                 val binding = bind(row.owner)
                 val launch = intent(row, true)
                 if (context.packageManager.queryIntentActivities(launch, 0)

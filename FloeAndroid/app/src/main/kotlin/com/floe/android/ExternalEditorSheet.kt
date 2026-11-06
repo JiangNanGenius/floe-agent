@@ -60,6 +60,12 @@ internal fun ExternalEditorSheet(host: RuntimeHost, taskID: String, workspaceID:
                 FloeText(stringResource(label), color = Floe.colors.secondaryLabel)
                 if (row.errorCode == "noEditor") FloeText(stringResource(R.string.external_edit_no_handler))
                 val busy = row.id in state.busy
+                if (row.linuxWorkingPath == null && row.phase in setOf(
+                        ExternalEditPhase.EDITING, ExternalEditPhase.SAVED, ExternalEditPhase.PAUSED)) {
+                    FloeCapsuleButton(stringResource(R.string.external_edit_open),
+                        enabled = activity != null && !busy && !state.preparing,
+                        onClick = { activity?.let { service.openAndroid(it, owner, row.logicalPath, row.id) } })
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FloeCapsuleButton(stringResource(R.string.external_edit_view_copy), enabled = activity != null,
                         onClick = { activity?.let { service.viewCopy(it, row.id) } })
