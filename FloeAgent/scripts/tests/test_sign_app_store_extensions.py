@@ -10,9 +10,23 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sign_app_store_extensions import (APP_ID, EXTENSIONS, TEAM, inventory,
     production_host_entitlements, validated_entitlements)
+from ensure_apns_profile import exact_bundle_id
 
 
 class ExtensionSigningTests(unittest.TestCase):
+    def test_profile_lookup_ignores_nonexact_server_candidates(self):
+        exact = {"id": "expected-resource", "attributes": {"identifier": APP_ID}}
+        extras = [{"id": "extension", "attributes": {"identifier": APP_ID + ".share"}},
+                  {"id": "other", "attributes": {"identifier": "org.example.app"}}]
+        self.assertEqual(exact_bundle_id([*extras, exact]), "expected-resource")
+
+    def test_profile_lookup_keeps_zero_and_duplicate_exact_records_denied(self):
+        exact = {"id": "expected-resource", "attributes": {"identifier": APP_ID}}
+        for rows in ([], [{"id": "extension", "attributes": {"identifier": APP_ID + ".share"}}],
+                     [exact, exact], [exact, {**exact, "id": "second-resource"}]):
+            with self.subTest(rows=rows):
+                with self.assertRaises(ValueError): exact_bundle_id(rows)
+
     def test_push_variable_requires_actual_production_bundle(self):
         declared = {"aps-environment": "$(FLOE_APNS_ENVIRONMENT)"}
         self.assertEqual(production_host_entitlements(declared, {"FloeAPNsEnvironment": "production"}),

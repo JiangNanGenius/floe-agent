@@ -28,6 +28,13 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def exact_bundle_id(candidates):
+    # Apple's filter can include related identifiers; identity is still exact.
+    bundles = [row for row in candidates if row.get("attributes", {}).get("identifier") == APP_ID]
+    require(len(bundles) == 1, "Expected one exact registered App identifier")
+    return bundles[0]["id"]
+
+
 class AppleAPI:
     def __init__(self):
         self.token = subprocess.check_output(
@@ -74,10 +81,7 @@ def ensure_profile(api, profile_path, declared, report):
         report.update(state="existing-profile-verified", profileSHA256=digest(original))
         return
 
-    bundles = api.rows("/v1/bundleIds?" + urlencode({"filter[identifier]": APP_ID, "limit": 2}))
-    require(len(bundles) == 1 and bundles[0]["attributes"]["identifier"] == APP_ID,
-            "Expected one exact registered App identifier")
-    bundle_id = bundles[0]["id"]
+    bundle_id = exact_bundle_id(api.rows("/v1/bundleIds?" + urlencode({"filter[identifier]": APP_ID, "limit": 2})))
     caps_path = "/v1/bundleIds/" + bundle_id + "/bundleIdCapabilities?limit=200"
     caps = api.rows(caps_path)
     if not any(row["attributes"].get("capabilityType") == "PUSH_NOTIFICATIONS" for row in caps):
