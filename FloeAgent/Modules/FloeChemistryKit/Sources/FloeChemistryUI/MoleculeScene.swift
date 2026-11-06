@@ -35,4 +35,3 @@ public struct ChemistryScene: Sendable {
         return scene
     }
 }
-
