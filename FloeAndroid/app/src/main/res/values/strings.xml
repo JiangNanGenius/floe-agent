@@ -584,6 +584,7 @@
     <string name="reporting_remove">Remove local report</string>
     <string name="reporting_agree">Agree</string>
     <string name="linux_desktop_title">Linux applications</string>
+    <string name="linux_desktop_running">A graphical session is running.</string>
     <string name="linux_desktop_description">Use graphical applications in this workspace’s Linux environment. Install the basic desktop once, then install the editors you need. Closing this window leaves the session running. Stopping it closes the applications.</string>
     <string name="linux_desktop_open_file">Open selected file</string>
     <string name="linux_desktop_stop">Stop session</string>

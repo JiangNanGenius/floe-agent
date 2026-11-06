@@ -584,6 +584,7 @@
     <string name="reporting_remove">移除本机报告</string>
     <string name="reporting_agree">同意</string>
     <string name="linux_desktop_title">Linux 应用</string>
+    <string name="linux_desktop_running">图形会话正在运行。</string>
     <string name="linux_desktop_description">在当前工作区的 Linux 环境中使用图形软件。首次安装基础图形环境，再按需安装编辑器。关闭窗口后会话继续运行；停止会话将关闭软件。</string>
     <string name="linux_desktop_open_file">打开所选文件</string>
     <string name="linux_desktop_stop">停止会话</string>

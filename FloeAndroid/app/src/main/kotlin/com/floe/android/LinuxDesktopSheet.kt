@@ -81,6 +81,7 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
                     verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     FloeText(stringResource(R.string.linux_desktop_description), color = Floe.colors.secondaryLabel)
                     FloeText(stringResource(when (state.phase.takeIf { owned } ?: "idle") {
+                        "running" -> R.string.linux_desktop_running
                         "installing" -> R.string.linux_desktop_installing
                         "starting" -> R.string.linux_desktop_starting
                         "failed" -> R.string.linux_desktop_failed
@@ -101,15 +102,22 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
                     if (busy) FloeCapsuleButton(stringResource(R.string.linux_desktop_stop), onClick = { stopRequested = true })
                     if (!owned && state.workspaceID != null) FloeText(stringResource(R.string.linux_desktop_switch_notice))
                     FloeText(stringResource(R.string.linux_desktop_software))
+                    if (owned && state.softwareOperation != null) {
+                        FloeText(stringResource(R.string.linux_software_busy), color = Floe.colors.secondaryLabel)
+                    }
+                    if (owned && state.failure != null) {
+                        FloeText(stringResource(R.string.linux_desktop_operation_failed), color = Floe.colors.secondaryLabel)
+                    }
                     for (app in LinuxDesktopCommands.featuredApplications) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             FloeCapsuleButton(app, onClick = {
                                 selectedApp = app
                                 if (viewer != null) { service.application(app, false); softwareVisible = false }
-                            }, modifier = Modifier.weight(1f))
+                            }, enabled = state.softwareOperation == null, modifier = Modifier.weight(1f))
                             if (owned && state.phase == "running") FloeCapsuleButton(
                                 stringResource(R.string.linux_desktop_install_software),
-                                onClick = { service.application(app, true) }, modifier = Modifier.weight(1f))
+                                onClick = { service.application(app, true) }, enabled = state.softwareOperation == null,
+                                modifier = Modifier.weight(1f))
                         }
                     }
                 }
