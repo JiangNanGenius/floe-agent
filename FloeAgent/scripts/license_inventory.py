@@ -143,6 +143,17 @@ APP_ONLY_NOTICES = {
 # declared document path (compared byte for byte by --check).
 VENDORED_PACKAGES = (
     {
+        "identity": "citadel", "path": "ThirdParty/Citadel",
+        "revision": "ae8562f895de06ccb86fdb1cbb65fd99c8976e12",
+        "upstream": "https://github.com/orlandos-nl/Citadel.git", "license": "MIT",
+        "note": ("citadel_vendor", "Citadel retains its exact upstream source and full MIT license, with Floe's bounded authenticated file-channel API."),
+        "document": {
+            "id": "citadel", "repositoryPath": "FloeApp/Resources/Licenses/Citadel-LICENSE.txt",
+            "bundlePath": "Licenses/Citadel-LICENSE.txt", "titleKey": "settings.licenses.document.citadel.title",
+            "titleFallback": "Citadel", "kind": "full_text", "required": True, "section": "swift",
+        },
+    },
+    {
         "identity": "mlx-swift-lm",
         "path": "ThirdParty/MLXSwiftLM",
         "revision": "d5d8b290e601ac1bf11f24635f8f811a83b98bf8",

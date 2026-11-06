@@ -22,6 +22,7 @@ let package = Package(
         .library(name: "FloeDocuments", targets: ["FloeDocuments"]),
         .library(name: "FloeImages", targets: ["FloeImages"]),
         .library(name: "FloeSSH", targets: ["FloeSSH"]),
+        .library(name: "FloeToolboxSSH", targets: ["FloeToolboxSSH"]),
         .library(name: "FloeVNC", targets: ["FloeVNC"]),
         .library(name: "FloeMarkdown", targets: ["FloeMarkdown"]),
         .library(name: "FloeWorkspace", targets: ["FloeWorkspace"]),
@@ -55,8 +56,10 @@ let package = Package(
         // NOTE: dev plan pinned Citadel 0.11.0 (does not exist). Latest tag
         // 0.9.2 requires swift-crypto <2.1 (conflicts with our 4.1.0 pin);
         // main branch (this revision) supports swift-crypto 3.12.3+.
-        // Revision pin keeps the build reproducible. Deviation flagged.
-        .package(url: "https://github.com/orlandos-nl/Citadel.git", revision: "ae8562f895de06ccb86fdb1cbb65fd99c8976e12"),
+        // Exact upstream pin and additive patch are verified in ThirdParty/Citadel.
+        // Repository-owned source; never modify a shared SwiftPM checkout.
+        .package(name: "Citadel", path: "ThirdParty/Citadel"),
+        .package(name: "FloeToolbox", path: "Modules/FloeToolbox"),
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.10.0"),
         // NOTE: dev plan pinned swift-crypto 4.1.0, but Citadel (main) caps
         // at <4.0.0. 3.15.1 is the newest 3.x. Deviation flagged.
@@ -435,6 +438,25 @@ let package = Package(
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency"),
+                .enableUpcomingFeature("InferSendableFromCaptures"),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault")
+            ]
+        ),
+
+        .target(
+            name: "FloeToolboxSSH",
+            dependencies: [
+                "FloeSSH",
+                .product(name: "Citadel", package: "Citadel"),
+                .product(name: "FloeToolboxCore", package: "FloeToolbox"),
+                .product(name: "FloeToolboxRemoteFiles", package: "FloeToolbox"),
+                .product(name: "FloeToolboxFileTransports", package: "FloeToolbox"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOSSH", package: "swift-nio-ssh")
+            ],
+            path: "Sources/FloeToolboxSSH",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
                 .enableUpcomingFeature("InferSendableFromCaptures"),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault")
             ]

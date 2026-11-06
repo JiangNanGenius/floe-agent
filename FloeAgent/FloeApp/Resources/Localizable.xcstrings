@@ -1,6 +1,38 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "settings.licenses.document.citadel.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Citadel"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Citadel"
+          }
+        }
+      }
+    },
+    "settings.licenses.note.citadel_vendor": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Citadel retains its upstream MIT license and uses a bounded file-channel adapter."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Citadel 保留上游 MIT 许可证，并采用有界文件通道适配。"
+          }
+        }
+      }
+    },
   "space.title": {
     "extractionState": "manual",
     "localizations": {

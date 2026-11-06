@@ -1,0 +1,13 @@
+{
+  "upstream": "https://github.com/orlandos-nl/Citadel.git",
+  "revision": "ae8562f895de06ccb86fdb1cbb65fd99c8976e12",
+  "tree": "f738c3875e6656dbedfdd079ccebff1efbd3afcf",
+  "sourceArchiveSHA256": "920523e8ac8711e6ec7f339669fddeb1022bf15dc32d78fee605c5d45d4374cf",
+  "upstreamFiles": 58,
+  "licenseSHA256": "580a39b7c09cba3cd18a5b1e0d4376e9d1ac200d241bda87e95ed74917bc3b31",
+  "packageManifestUnchanged": true,
+  "additions": {
+    "Sources/Citadel/FloeFileChannels.swift": "db59a4ea380fc92591e6c4bd8905ac20efd65f5e8203d7f71a28564bc8d9d2c0"
+  },
+  "omitted": "Only upstream root examples/docs/CI/docker and Package.resolved; all declared Sources/Tests targets and complete licenses remain. Root Floe lock remains transitive pin authority."
+}

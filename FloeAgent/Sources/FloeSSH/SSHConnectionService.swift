@@ -185,14 +185,26 @@ public final class SSHConnectionService: SSHConnectionServiceProtocol, @unchecke
         }
     }
 
-    private func connectUnnormalized(
+    /// A temporary Toolbox machine does not create a saved host or remember new host keys.
+    public func connectTemporary(
         profile: RemoteHostProfile,
         credentialResolver: @escaping SSHCredentialResolver,
         hostKeyDecision: @escaping HostKeyDecisionHandler
     ) async throws -> SSHSessionHandle {
+        do { return try await connectUnnormalized(profile:profile,credentialResolver:credentialResolver,hostKeyDecision:hostKeyDecision,shouldPersist:false) }
+        catch let known as SSHConnectionError { throw known }
+        catch { throw Self.normalizedConnectionError(error,profile:profile) }
+    }
+
+    private func connectUnnormalized(
+        profile: RemoteHostProfile,
+        credentialResolver: @escaping SSHCredentialResolver,
+        hostKeyDecision: @escaping HostKeyDecisionHandler,
+        shouldPersist: Bool = true
+    ) async throws -> SSHSessionHandle {
         try profile.validate()
         guard profile.auth != .none else { throw SSHConnectionError.sshNotConfigured }
-        try await persist(profile)
+        if shouldPersist { try await persist(profile) }
 
         var clients: [SSHClient] = []
         if let first = profile.jumpChain.first {
@@ -204,7 +216,8 @@ public final class SSHConnectionService: SSHConnectionServiceProtocol, @unchecke
                 auth: first.auth,
                 policy: HostKeyPolicy.trustOnFirstUse,
                 credentialResolver: credentialResolver,
-                hostKeyDecision: hostKeyDecision
+                hostKeyDecision: hostKeyDecision,
+                rememberHostKey: shouldPersist
             )
             var client = try await SSHClient.connect(to: firstSettings)
             clients.append(client)
@@ -218,7 +231,8 @@ public final class SSHConnectionService: SSHConnectionServiceProtocol, @unchecke
                     auth: hop.auth,
                     policy: HostKeyPolicy.trustOnFirstUse,
                     credentialResolver: credentialResolver,
-                    hostKeyDecision: hostKeyDecision
+                    hostKeyDecision: hostKeyDecision,
+                rememberHostKey: shouldPersist
                 )
                 client = try await client.jump(to: hopSettings)
                 clients.append(client)
@@ -232,7 +246,8 @@ public final class SSHConnectionService: SSHConnectionServiceProtocol, @unchecke
                 auth: profile.auth,
                 policy: profile.hostKeyPolicy,
                 credentialResolver: credentialResolver,
-                hostKeyDecision: hostKeyDecision
+                hostKeyDecision: hostKeyDecision,
+                rememberHostKey: shouldPersist
             )
             let target = try await client.jump(to: targetSettings)
             clients.append(target)
@@ -245,7 +260,8 @@ public final class SSHConnectionService: SSHConnectionServiceProtocol, @unchecke
                 auth: profile.auth,
                 policy: profile.hostKeyPolicy,
                 credentialResolver: credentialResolver,
-                hostKeyDecision: hostKeyDecision
+                hostKeyDecision: hostKeyDecision,
+                rememberHostKey: shouldPersist
             )
             clients.append(try await SSHClient.connect(to: targetSettings))
         }
@@ -292,7 +308,8 @@ public final class SSHConnectionService: SSHConnectionServiceProtocol, @unchecke
         auth: SSHAuthMethod,
         policy: HostKeyPolicy,
         credentialResolver: @escaping SSHCredentialResolver,
-        hostKeyDecision: @escaping HostKeyDecisionHandler
+        hostKeyDecision: @escaping HostKeyDecisionHandler,
+        rememberHostKey: Bool = true
     ) async throws -> SSHClientSettings {
         let authentication = try await Self.authenticationFactory(
             user: user,
@@ -305,7 +322,8 @@ public final class SSHConnectionService: SSHConnectionServiceProtocol, @unchecke
             port: port,
             policy: policy,
             hostStore: hostStore,
-            decision: hostKeyDecision
+            decision: hostKeyDecision,
+            rememberHostKey: rememberHostKey
         )
         return SSHClientSettings(
             host: address,
@@ -433,6 +451,7 @@ private final class PersistentHostKeyValidator: NIOSSHClientServerAuthentication
     let policy: HostKeyPolicy
     let hostStore: RemoteHostStore
     let decision: HostKeyDecisionHandler
+    let rememberHostKey: Bool
 
     init(
         hostID: UUID,
@@ -440,7 +459,8 @@ private final class PersistentHostKeyValidator: NIOSSHClientServerAuthentication
         port: Int,
         policy: HostKeyPolicy,
         hostStore: RemoteHostStore,
-        decision: @escaping HostKeyDecisionHandler
+        decision: @escaping HostKeyDecisionHandler,
+        rememberHostKey: Bool
     ) {
         self.hostID = hostID
         self.address = address
@@ -448,6 +468,7 @@ private final class PersistentHostKeyValidator: NIOSSHClientServerAuthentication
         self.policy = policy
         self.hostStore = hostStore
         self.decision = decision
+        self.rememberHostKey = rememberHostKey
     }
 
     func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
@@ -481,18 +502,18 @@ private final class PersistentHostKeyValidator: NIOSSHClientServerAuthentication
                                 received: fingerprint
                             )
                         }
-                        try await hostStore.touch(id: known.id)
+                        if rememberHostKey { try await hostStore.touch(id: known.id) }
                     } else {
                         guard await decision(challenge) else {
                             throw SSHConnectionError.hostKeyRejected(challenge)
                         }
-                        try await hostStore.trust(KnownHostRecord(
+                        if rememberHostKey { try await hostStore.trust(KnownHostRecord(
                             hostID: hostID,
                             address: address,
                             port: port,
                             keyType: keyType,
                             fingerprintSHA256: fingerprint
-                        ))
+                        )) }
                     }
                 }
                 validationCompletePromise.succeed(())

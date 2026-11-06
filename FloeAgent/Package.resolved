@@ -29,15 +29,6 @@
         }
       },
       {
-        "package": "Citadel",
-        "repositoryURL": "https://github.com/orlandos-nl/Citadel.git",
-        "state": {
-          "branch": null,
-          "revision": "ae8562f895de06ccb86fdb1cbb65fd99c8976e12",
-          "version": null
-        }
-      },
-      {
         "package": "CryptoSwift",
         "repositoryURL": "https://github.com/royalapplications/CryptoSwift.git",
         "state": {
