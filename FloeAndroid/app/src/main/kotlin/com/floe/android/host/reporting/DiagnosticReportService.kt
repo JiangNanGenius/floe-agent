@@ -4,8 +4,6 @@ package com.floe.android.host.reporting
 import android.app.ActivityManager
 import android.app.ApplicationExitInfo
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
@@ -19,6 +17,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import com.floe.android.BuildConfig
 import com.floe.android.FloeApplication
 import com.floe.android.host.entryflow.C07EntryRedactor
@@ -142,32 +141,8 @@ internal class DiagnosticReportService(private val context: Context) {
 
     private fun importScreenshot(uri: Uri, destination: File): File {
         val source = File(root, "${UUID.randomUUID()}.import")
-        try {
-            context.contentResolver.openInputStream(uri).use { input ->
-                requireNotNull(input)
-                source.outputStream().use { output ->
-                    val buffer = ByteArray(32_768)
-                    var size = 0
-                    while (true) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        size += count; require(size <= 2 * 1_024 * 1_024)
-                        output.write(buffer, 0, count)
-                    }
-                }
-            }
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(source.path, bounds)
-            require(bounds.outWidth > 0 && bounds.outHeight > 0 &&
-                bounds.outWidth.toLong() * bounds.outHeight <= 24_000_000)
-            val bitmap = requireNotNull(BitmapFactory.decodeFile(source.path))
-            try {
-                destination.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.JPEG, 85, it)) }
-            } finally { bitmap.recycle() }
-            require(destination.length() <= 2 * 1_024 * 1_024)
-            return destination
-        } catch (error: Exception) { destination.delete(); throw error }
-        finally { source.delete() }
+        val input = context.contentResolver.openInputStream(uri) ?: throw java.io.IOException("image_unreadable")
+        return ReportScreenshot.prepare(input, source, destination)
     }
 
     private fun newRecord(kind: String, message: String, images: List<File>, anyNetwork: Boolean): JSONObject {
@@ -186,12 +161,18 @@ internal class DiagnosticReportService(private val context: Context) {
                 .put("locale", Locale.getDefault().toLanguageTag()).put("events", JSONArray().put(event)))
     }
 
-    suspend fun flush(): Boolean = uploadGate.withLock {
-        val rows = synchronized(gate) { records().filter { it.optString("state") == "queued" } }
-        for (row in rows.take(3)) {
+    suspend fun flush(reportID: String? = null): Boolean = uploadGate.withLock {
+        val rows = synchronized(gate) { records().filter {
+            it.optString("state") == "queued" && (reportID == null || it.optString("id") == reportID)
+        } }
+        for (row in rows) {
             if (row.getString("kind") != "manual" && !preferences.getBoolean("automatic", false)) continue
             val images = row.getJSONArray("images")
-            if (images.length() > 0 && !row.optBoolean("any_network") && !onWifi()) return@withLock false
+            if (images.length() > 0 && !row.optBoolean("any_network") && !onWifi()) {
+                synchronized(gate) { read(row.getString("id"))?.takeIf { it.optString("state") == "queued" }
+                    ?.let { save(it.put("error", "waiting_wifi")) } }
+                continue // A screenshot must not block later text-only reports.
+            }
             val attempts = row.optInt("attempts", 0)
             val admitted = synchronized(gate) {
                 val current = read(row.getString("id"))
@@ -227,17 +208,23 @@ internal class DiagnosticReportService(private val context: Context) {
                 synchronized(gate) {
                     if (file(row.getString("id")).exists()) save(row.put("state", "failed").put("error", "http_${failure.status}"))
                 }
-            } catch (_: Exception) {
+            } catch (failure: Exception) {
                 synchronized(gate) {
-                    if (file(row.getString("id")).exists() && attempts + 1 >= 5)
-                        save(row.put("state", "failed").put("error", "retry_limit"))
+                    if (file(row.getString("id")).exists())
+                        save(row.put("state", if (attempts + 1 >= 5) "failed" else "queued")
+                            .put("error", when (failure) {
+                                is ReportTransportFailure -> failure.code
+                                is java.net.UnknownHostException -> "network_dns"
+                                is java.net.SocketTimeoutException -> "network_timeout"
+                                is javax.net.ssl.SSLException -> "network_tls"
+                                else -> "network_connection"
+                            }))
                 }
-                refresh()
-                return@withLock false
             }
         }
         refresh()
-        synchronized(gate) { records().none { it.optString("state") == "queued" } }
+        synchronized(gate) { records().none { it.optString("state") == "queued" &&
+            (reportID == null || it.optString("id") == reportID) } }
     }
 
     private fun upload(row: JSONObject): String {
@@ -262,7 +249,7 @@ internal class DiagnosticReportService(private val context: Context) {
                 text("--$boundary--\r\n")
             }
             val status = connection.responseCode
-            if (status == 429 || status >= 500) throw java.io.IOException("retryable_report_transport")
+            if (status == 429 || status >= 500) throw ReportTransportFailure("http_$status")
             if (status !in 200..299) throw ReportRejected(status)
             val data = connection.inputStream.use { input ->
                 val output = java.io.ByteArrayOutputStream()
@@ -347,10 +334,20 @@ internal class DiagnosticReportService(private val context: Context) {
         val manager = context.getSystemService(ConnectivityManager::class.java)
         return manager.getNetworkCapabilities(manager.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
     }
-    private fun enqueue() { WorkManager.getInstance(context).enqueueUniqueWork("floe.diagnostics.upload",
-        ExistingWorkPolicy.APPEND_OR_REPLACE, OneTimeWorkRequestBuilder<DiagnosticReportWorker>()
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.MINUTES).build()) }
+    private fun enqueue() {
+        // Each report owns its retry. A waiting Wi-Fi attachment or an older
+        // retry backoff must not delay newly submitted text feedback.
+        val rows = synchronized(gate) { records().filter { it.optString("state") == "queued" } }
+        val work = WorkManager.getInstance(context)
+        for (row in rows) {
+            val id = row.getString("id")
+            work.enqueueUniqueWork("floe.diagnostics.upload.$id", ExistingWorkPolicy.KEEP,
+                OneTimeWorkRequestBuilder<DiagnosticReportWorker>().setInputData(workDataOf("report_id" to id))
+                    .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                    .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS).build())
+        }
+    }
+    private class ReportTransportFailure(val code: String) : java.io.IOException()
     private class ReportReceiptRejected : Exception()
     private class ReportRejected(val status: Int) : Exception()
     companion object {
@@ -375,6 +372,6 @@ internal class DiagnosticReportService(private val context: Context) {
 class DiagnosticReportWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val reporter = (applicationContext as? FloeApplication)?.diagnosticReporter ?: return Result.failure()
-        return if (reporter.flush()) Result.success() else Result.retry()
+        return if (reporter.flush(inputData.getString("report_id"))) Result.success() else Result.retry()
     }
 }

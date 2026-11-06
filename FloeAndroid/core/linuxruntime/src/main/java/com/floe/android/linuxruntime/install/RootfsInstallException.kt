@@ -83,6 +83,7 @@ open class RootfsInstallException(
     val failure: InstallFailure,
     val detail: String,
     cause: Throwable? = null,
+    val httpStatus: Int? = null,
 ) : Exception("${failure.name}: $detail", cause)
 
 /** Cooperative cancellation; distinct from failure so callers need not retry. */

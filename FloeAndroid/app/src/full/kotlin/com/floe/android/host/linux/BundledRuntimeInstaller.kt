@@ -105,7 +105,7 @@ object RuntimeInstallState {
     sealed interface Result {
         data object Idle : Result
         data class Confirmation(val sessionID: Int, val intent: Intent) : Result
-        data class Finished(val sessionID: Int, val success: Boolean) : Result
+        data class Finished(val sessionID: Int, val success: Boolean, val status: Int = Int.MIN_VALUE) : Result
     }
     internal val mutable = MutableStateFlow<Result>(Result.Idle)
     val state = mutable.asStateFlow()
@@ -115,7 +115,7 @@ class RuntimeInstallReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val sessionID = intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1)
         if (sessionID < 0 || sessionID != intent.getIntExtra("floeSessionID", -2)) return
-        when (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
+        when (val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 @Suppress("DEPRECATION")
                 val confirmation = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
@@ -126,7 +126,7 @@ class RuntimeInstallReceiver : BroadcastReceiver() {
                 // never launches an Activity from the background.
             }
             PackageInstaller.STATUS_SUCCESS -> RuntimeInstallState.mutable.value = RuntimeInstallState.Result.Finished(sessionID, true)
-            else -> RuntimeInstallState.mutable.value = RuntimeInstallState.Result.Finished(sessionID, false)
+            else -> RuntimeInstallState.mutable.value = RuntimeInstallState.Result.Finished(sessionID, false, status)
         }
     }
 }

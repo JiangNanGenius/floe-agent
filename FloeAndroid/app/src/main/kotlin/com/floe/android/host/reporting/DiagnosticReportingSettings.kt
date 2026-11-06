@@ -39,7 +39,7 @@ internal fun DiagnosticReportingSettings() {
     var anyNetwork by remember { mutableStateOf(false) }
     var diagnostics by remember { mutableStateOf(false) }
     var sending by remember { mutableStateOf(false) }
-    var failed by remember { mutableStateOf(false) }
+    var failure by remember { mutableStateOf<String?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
         images = it.take(3)
     }
@@ -71,7 +71,7 @@ internal fun DiagnosticReportingSettings() {
         }
         FloeActionRow(label = stringResource(if (sending) R.string.reporting_preparing else R.string.reporting_submit),
             enabled = !sending && problem.isNotBlank(), onClick = {
-                sending = true; failed = false
+                sending = true; failure = null
                 val currentProblem = problem
                 val currentImages = images
                 val includeDiagnostics = diagnostics
@@ -85,11 +85,22 @@ internal fun DiagnosticReportingSettings() {
                         reporter.submitManual(text, currentImages, network)
                         problem = ""; images = emptyList()
                     } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-                    catch (_: Exception) { failed = true }
+                    catch (error: Exception) {
+                        failure = when (error.message) {
+                            "image_too_large" -> "image_too_large"
+                            "image_invalid", "image_unreadable" -> "image_invalid"
+                            "image_memory" -> "image_memory"
+                            else -> "prepare_failed"
+                        }
+                    }
                     finally { sending = false }
                 }
             })
-        if (failed) FloeSectionRow(title = { FloeText(stringResource(R.string.reporting_prepare_failed)) })
+        if (images.isNotEmpty()) FloeSectionRow(title = {
+            FloeText(stringResource(R.string.reporting_compression), style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel)
+        })
+        failure?.let { FloeSectionRow(title = { FloeText(reportErrorMessage(it)) }) }
         for (row in state.reports.asReversed().take(20)) {
             FloeSectionRow(title = {
                 Column {
@@ -99,6 +110,10 @@ internal fun DiagnosticReportingSettings() {
                         "failed" -> stringResource(R.string.reporting_rejected)
                         else -> stringResource(R.string.reporting_queued)
                     }, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                    if (row.state != "sent") row.errorCode?.let {
+                        FloeText(reportErrorMessage(it), style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel)
+                    }
                     Spacer(Modifier.height(4.dp))
                 }
             })
@@ -114,3 +129,21 @@ internal fun DiagnosticReportingSettings() {
         onConfirm = { consent = false; scope.launch(Dispatchers.IO) { reporter.setAutomatic(true) } },
         onDismiss = { consent = false })
 }
+
+@Composable
+private fun reportErrorMessage(code: String): String = stringResource(when {
+    code == "waiting_wifi" -> R.string.reporting_waiting_wifi
+    code == "image_too_large" -> R.string.reporting_image_too_large
+    code == "image_invalid" -> R.string.reporting_image_invalid
+    code == "image_memory" -> R.string.reporting_image_memory
+    code == "network_dns" -> R.string.reporting_network_dns
+    code == "network_timeout" -> R.string.reporting_network_timeout
+    code == "network_tls" -> R.string.reporting_network_tls
+    code == "http_429" -> R.string.reporting_busy
+    code.startsWith("http_5") -> R.string.reporting_server_unavailable
+    code == "http_413" || code == "http_422" -> R.string.reporting_attachment_rejected
+    code == "invalid_receipt" -> R.string.reporting_receipt_unconfirmed
+    code == "network_connection" -> R.string.reporting_network_connection
+    code.startsWith("http_") -> R.string.reporting_rejected
+    else -> R.string.reporting_prepare_failed
+})

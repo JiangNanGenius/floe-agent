@@ -10,7 +10,7 @@ internal object LocalRuntimeDistribution {
         when (it) {
             RuntimeInstallState.Result.Idle -> null
             is RuntimeInstallState.Result.Confirmation -> ComponentInstallEvent.Confirm(it.intent)
-            is RuntimeInstallState.Result.Finished -> ComponentInstallEvent.Finished(it.success)
+            is RuntimeInstallState.Result.Finished -> ComponentInstallEvent.Finished(it.success, it.status)
         }
     }
     fun prepareComponent(context: Context): ComponentPreparation = when (val result = BundledRuntimeInstaller(context).install()) {

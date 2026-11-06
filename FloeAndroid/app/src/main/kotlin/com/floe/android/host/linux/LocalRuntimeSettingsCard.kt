@@ -2,6 +2,8 @@
 package com.floe.android.host.linux
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -11,6 +13,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.floe.android.FloeApplication
@@ -24,6 +28,7 @@ import io.github.robinpcrd.cupertino.section.SectionItem
 fun LocalRuntimeSettingsCard() {
     val context = LocalContext.current
     val app = context.applicationContext as FloeApplication
+    val clipboard = LocalClipboardManager.current
     val host = app.linuxSetup
     var visible by rememberSaveable { mutableStateOf(false) }
     val state by host.state.collectAsState()
@@ -51,7 +56,7 @@ fun LocalRuntimeSettingsCard() {
             heightFraction = if (wide) 0.66f else 0.74f,
             placement = if (wide) FloeSheetPlacement.CENTER else FloeSheetPlacement.BOTTOM,
             topInset = if (wide) 0.dp else FloeLayout.SettingsSheetTopInset) {
-            Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     FloeText(stringResource(R.string.linux_environment_title), style = Floe.typography.title,
                         color = Floe.colors.label, modifier = Modifier.weight(1f))
@@ -70,6 +75,29 @@ fun LocalRuntimeSettingsCard() {
                     LocalRuntimeSetupHost.Phase.STOPPING -> R.string.linux_environment_stopping
                     LocalRuntimeSetupHost.Phase.FAILED -> R.string.linux_environment_failed
                 }), style = Floe.typography.body, color = Floe.colors.label)
+                state.failure?.let { failure ->
+                    FloeText(stringResource(when (failure.category) {
+                        "storage" -> R.string.linux_failure_storage
+                        "dns" -> R.string.linux_failure_dns
+                        "timeout" -> R.string.linux_failure_timeout
+                        "tls" -> R.string.linux_failure_tls
+                        "network" -> R.string.linux_failure_network
+                        "server" -> R.string.linux_failure_server
+                        "archive" -> R.string.linux_failure_archive
+                        "permission" -> R.string.linux_failure_permission
+                        "cancelled" -> R.string.linux_failure_cancelled
+                        "compatibility" -> R.string.linux_failure_compatibility
+                        "busy" -> R.string.linux_failure_busy
+                        else -> R.string.linux_failure_unknown
+                    }), style = Floe.typography.body, color = Floe.colors.label)
+                    var details by remember(failure) { mutableStateOf(false) }
+                    FloeCapsuleAction(label = stringResource(R.string.linux_failure_details), onClick = { details = !details })
+                    if (details) {
+                        FloeText(host.diagnosticDetails(), style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                        FloeCapsuleAction(label = stringResource(R.string.linux_failure_copy),
+                            onClick = { clipboard.setText(AnnotatedString(host.diagnosticDetails())) })
+                    }
+                }
                 if (state.total > 0 && state.phase == LocalRuntimeSetupHost.Phase.INSTALLING) {
                     FloeText("${state.bytes / 1_048_576} / ${state.total / 1_048_576} MB",
                         style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)

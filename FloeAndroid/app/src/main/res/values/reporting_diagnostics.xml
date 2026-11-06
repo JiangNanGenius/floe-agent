@@ -1,0 +1,15 @@
+<resources>
+    <string name="reporting_image_memory">Not enough memory to process this image. Close other apps or choose a smaller screenshot.</string>
+    <string name="reporting_compression">Selected screenshots are resized and compressed before upload. Originals stay unchanged.</string>
+    <string name="reporting_waiting_wifi">Waiting for Wi-Fi. To use mobile data, remove this local report and submit again with “Allow attachments on any network”.</string>
+    <string name="reporting_image_too_large">This image is over the import limit (64 MB). Crop it or choose a smaller image.</string>
+    <string name="reporting_image_invalid">Cannot read this image. Choose a JPEG or PNG from your device again.</string>
+    <string name="reporting_network_dns">Cannot resolve the report server. Check your network or DNS; the report stays on this device.</string>
+    <string name="reporting_network_timeout">The upload timed out. The report is saved and will retry.</string>
+    <string name="reporting_network_tls">A secure connection could not be established. Check the device date, network and VPN.</string>
+    <string name="reporting_network_connection">Cannot connect to the report server. Check your network or VPN; the report is saved for retry.</string>
+    <string name="reporting_busy">The server is busy or limiting uploads. The report is saved and will retry.</string>
+    <string name="reporting_server_unavailable">The report service is temporarily unavailable. The report is saved and will retry.</string>
+    <string name="reporting_attachment_rejected">The server rejected the report format or attachment. Try submitting the description without screenshots.</string>
+    <string name="reporting_receipt_unconfirmed">The server receipt could not be confirmed. Retry to check delivery; the same report will not be counted twice.</string>
+</resources>

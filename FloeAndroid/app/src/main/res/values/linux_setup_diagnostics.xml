@@ -1,0 +1,16 @@
+<resources>
+    <string name="linux_failure_server">The download server rejected the request or is unavailable. Check the HTTP code in diagnostics. Try later or another network; if it repeats, send those details.</string>
+    <string name="linux_failure_storage">Not enough storage to prepare Linux. Free some internal storage, then try again. Existing files are preserved.</string>
+    <string name="linux_failure_dns">The download address could not be resolved. Check DNS, Wi-Fi or your VPN, then try again.</string>
+    <string name="linux_failure_timeout">The connection timed out. Try a stable network, then prepare again.</string>
+    <string name="linux_failure_tls">Secure connection failed. Check the device date and your network or VPN.</string>
+    <string name="linux_failure_network">The environment could not be downloaded. Check network access, try another network and retry.</string>
+    <string name="linux_failure_archive">The downloaded environment is incomplete, damaged or incompatible with its catalog. Retry on a stable network; if it repeats, send the diagnostic details.</string>
+    <string name="linux_failure_permission">Android blocked the operation. Check notifications and the permission to install apps from Floe, then continue.</string>
+    <string name="linux_failure_cancelled">Component installation was cancelled. Tap Prepare when you are ready, then confirm in the Android installer.</string>
+    <string name="linux_failure_compatibility">Android rejected this component version. Update Floe and its Linux component together, then retry.</string>
+    <string name="linux_failure_busy">Linux still has active work. Stop its terminals or services, then prepare again.</string>
+    <string name="linux_failure_unknown">Preparation failed. Open the diagnostic details to identify the stage and error. Retry once; if it repeats, include those details in feedback.</string>
+    <string name="linux_failure_details">Diagnostic details</string>
+    <string name="linux_failure_copy">Copy diagnostics</string>
+</resources>

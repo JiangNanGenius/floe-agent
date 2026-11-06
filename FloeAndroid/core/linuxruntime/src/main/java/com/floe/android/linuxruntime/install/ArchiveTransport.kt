@@ -43,7 +43,7 @@ class HttpsByteFetch(
             val code = connection.responseCode
             if (code != HttpURLConnection.HTTP_OK) {
                 throw RootfsInstallException(
-                    InstallFailure.TRANSPORT_FAILED, "HTTP $code from catalog source",
+                    InstallFailure.TRANSPORT_FAILED, "HTTP $code from catalog source", httpStatus = code,
                 )
             }
             // Every redirect hop must stay on HTTPS (URL's handler follows

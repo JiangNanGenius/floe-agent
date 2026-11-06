@@ -395,12 +395,24 @@ internal class LinuxRuntimeOperations(
                     CancellationCheck { cancelPreparation.get() || cancelled() })
             }
             check(!cancelPreparation.get() && !cancelled())
+            progress.set(JSONObject(progress.get().toString()).put("phase", "configure"))
             configure()
             progress.set(installedProgress(requestID = request.id))
             return JSONObject(progress.get().toString())
         } catch (failure: Exception) {
+            val previous = progress.get()
+            val cause = generateSequence(failure as Throwable) { it.cause }.take(8).firstOrNull {
+                it is java.net.UnknownHostException || it is java.net.SocketTimeoutException ||
+                    it is javax.net.ssl.SSLException || it is java.net.ConnectException
+            }
+            val installFailure = failure as? com.floe.android.linuxruntime.install.RootfsInstallException
+            val code = installFailure?.httpStatus?.let { "HTTP_$it" } ?: cause?.javaClass?.simpleName
+                ?: installFailure?.failure?.name
+                ?: failure.javaClass.simpleName
             progress.set(JSONObject().put("phase", if (cancelPreparation.get()) "cancelled" else "failed")
-                .put("requestID", request.id))
+                .put("requestID", request.id).put("failureCode", code)
+                .put("failureStage", previous.optString("phase", "configure"))
+                .put("failureType", failure.javaClass.simpleName))
             throw failure
         } finally { installID.compareAndSet(request.id, null) }
     }

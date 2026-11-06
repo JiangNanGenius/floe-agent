@@ -1,0 +1,15 @@
+<resources>
+    <string name="reporting_image_memory">处理图片时内存不足，请关闭其他应用或选择较小的截图。</string>
+    <string name="reporting_compression">所选截图会在上传前缩放压缩，原图保持不变。</string>
+    <string name="reporting_waiting_wifi">正在等待 Wi-Fi。如需使用移动网络，请移除此本机报告，重新提交时开启“允许附件使用任意网络”。</string>
+    <string name="reporting_image_too_large">图片超过导入上限（64 MB），请裁剪或选择较小的图片。</string>
+    <string name="reporting_image_invalid">无法读取图片，请重新选择设备上的 JPEG 或 PNG 图片。</string>
+    <string name="reporting_network_dns">无法解析上报服务器地址，请检查网络或 DNS。报告已保留在本机。</string>
+    <string name="reporting_network_timeout">上传超时，报告已保留，将自动重试。</string>
+    <string name="reporting_network_tls">无法建立安全连接，请检查设备日期、网络和 VPN。</string>
+    <string name="reporting_network_connection">无法连接上报服务器，请检查网络或 VPN。报告已保留待重试。</string>
+    <string name="reporting_busy">服务器繁忙或限制了上传频率，报告已保留，将自动重试。</string>
+    <string name="reporting_server_unavailable">上报服务暂时不可用，报告已保留，将自动重试。</string>
+    <string name="reporting_attachment_rejected">服务器未接受报告格式或附件，可先不附截图提交问题描述。</string>
+    <string name="reporting_receipt_unconfirmed">暂时无法确认服务器回执，可重试核对接收状态，同一报告不会重复计数。</string>
+</resources>

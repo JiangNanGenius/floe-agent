@@ -1,0 +1,16 @@
+<resources>
+    <string name="linux_failure_server">下载服务器拒绝请求或暂时不可用，诊断详情中有具体 HTTP 状态码。请稍后或换网络重试，持续失败时反馈详情。</string>
+    <string name="linux_failure_storage">准备 Linux 的存储空间不足。请清理部分内部存储后重试，已有文件会保留。</string>
+    <string name="linux_failure_dns">无法解析下载地址，请检查 DNS、Wi-Fi 或 VPN 后重试。</string>
+    <string name="linux_failure_timeout">连接超时，请换用稳定网络后重新准备。</string>
+    <string name="linux_failure_tls">安全连接失败，请检查设备日期、网络或 VPN。</string>
+    <string name="linux_failure_network">无法下载运行环境，请检查网络访问，或换个网络后重试。</string>
+    <string name="linux_failure_archive">下载的环境不完整、已损坏或与目录校验不符。请在稳定网络下重试；若仍失败，请反馈诊断详情。</string>
+    <string name="linux_failure_permission">安卓阻止了此操作，请检查通知权限及允许 Floe 安装应用的设置后继续。</string>
+    <string name="linux_failure_cancelled">组件安装已取消。需要时点击准备，并在安卓安装器中确认。</string>
+    <string name="linux_failure_compatibility">安卓拒绝了此组件版本，请一起更新 Floe 和 Linux 组件后重试。</string>
+    <string name="linux_failure_busy">Linux 仍有任务在运行，请停止其终端或服务后重新准备。</string>
+    <string name="linux_failure_unknown">环境准备失败。请打开诊断详情查看失败阶段和错误，重试后仍失败时可将详情附在反馈中。</string>
+    <string name="linux_failure_details">诊断详情</string>
+    <string name="linux_failure_copy">复制诊断信息</string>
+</resources>
