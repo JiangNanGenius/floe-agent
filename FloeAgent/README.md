@@ -3,7 +3,7 @@
 > 用户操作：[中文手册](../docs/USER_GUIDE.zh-CN.md) · [English manual](../docs/USER_GUIDE.md) · [当前版本与验证状态](../docs/CURRENT_STATUS.md)。工程构建证据与 TestFlight 可安装状态分别记录。
 
 
-Current iOS source candidate: **1.8.1 (321)**, with iOS/iPadOS 26 minimum and local Xcode 27.2 (27B52). This round integrates the predevelopment work into the existing App for internal TestFlight. See the [integration and validation record](../docs/FLOE_PREDEVELOPMENT_APP_INTEGRATION.zh-CN.md), [candidate notes](../docs/releases/notes/RELEASE_NOTES_1.8.1_BUILD_321.md) and [architecture](../docs/ARCHITECTURE_OVERVIEW.md). App compilation, interface checks, Apple processing and installability remain separate. The existing Build 315 formal-review and automatic-release choice is unchanged.
+Current iOS source candidate: **1.8.2 (322)**, with iOS/iPadOS 26 minimum and local Xcode 27.2 (27B52). This round integrates the predevelopment work into the existing App for internal TestFlight. See the [integration and validation record](../docs/FLOE_PREDEVELOPMENT_APP_INTEGRATION.zh-CN.md), [candidate notes](../docs/releases/notes/RELEASE_NOTES_1.8.2_BUILD_322.md) and [architecture](../docs/ARCHITECTURE_OVERVIEW.md). App compilation, interface checks, Apple processing and installability remain separate. The existing Build 315 formal-review and automatic-release choice is unchanged.
 
 当前源码与安装渠道分别核对。优先本地 Xcode 27 定向测试、完整 App 编译与模拟器/归档验证；CI 只作补充独立检查，不作为必须等待的门槛。旧构建过程记录保留在[历史工程记录](../docs/history/ENGINEERING_RELEASE_CHRONOLOGY.pre-20261009.md)。
 
