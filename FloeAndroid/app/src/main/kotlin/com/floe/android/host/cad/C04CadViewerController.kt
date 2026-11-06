@@ -13,7 +13,6 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
-import android.view.View
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
@@ -199,7 +198,6 @@ internal class C04CadViewerController(
         var missing: List<String> = emptyList()
         var boundSurface: WebView? = null
         var surfaceLoadedFor: WebView? = null
-        @Volatile var pendingSurfaceStart: MeasuredSurfaceStart? = null
         var renderTimeout: Job? = null
         var previewDirectory: File? = null
         var packageFacts: C04FloecadPreview? = null
@@ -223,43 +221,6 @@ internal class C04CadViewerController(
         val detail: String?,
         val retryable: Boolean = true,
     ) : Exception(detail ?: failure.name)
-
-    /** AndroidView's factory runs before attachment/measurement. Loading the
-     * document there can give Chromium a zero-height initial viewport. Wait
-     * for real native bounds, and remove both listeners on start or retirement. */
-    private class MeasuredSurfaceStart(
-        val view: WebView,
-        private val current: () -> Boolean,
-        private val load: () -> Unit,
-    ) : View.OnLayoutChangeListener, View.OnAttachStateChangeListener {
-        private var pending = true
-
-        fun start() {
-            view.addOnLayoutChangeListener(this)
-            view.addOnAttachStateChangeListener(this)
-            attempt()
-        }
-
-        fun cancel() {
-            if (!pending) return
-            pending = false
-            view.removeOnLayoutChangeListener(this)
-            view.removeOnAttachStateChangeListener(this)
-        }
-
-        private fun attempt() {
-            if (!pending) return
-            if (!current()) { cancel(); return }
-            if (!view.isAttachedToWindow || view.width < 2 || view.height < 2) return
-            cancel()
-            load()
-        }
-
-        override fun onViewAttachedToWindow(v: View) = attempt()
-        override fun onViewDetachedFromWindow(v: View) = Unit
-        override fun onLayoutChange(v: View, left: Int, top: Int, right: Int, bottom: Int,
-            oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int) = attempt()
-    }
 
     // ------------------------------------------------------------------
     // Public UI contract
@@ -1310,8 +1271,7 @@ internal class C04CadViewerController(
     }
 
     private fun loadSurface(session: Session, view: WebView) {
-        if (session.coreSessionID == null || !isCurrent(session) || surface !== view) return
-        cancelSurfaceStart(session)
+        val token = session.coreSessionID ?: return
         view.setBackgroundColor(
             if (session.dark) 0xFF181E28.toInt() else 0xFFF5F6F8.toInt())
         session.boundSurface = view
@@ -1331,35 +1291,14 @@ internal class C04CadViewerController(
         session.renderTimeout = scope.launch {
             kotlinx.coroutines.delay(45_000L)
             if (isCurrent(session) && mutableState.value is C04CadViewerState.Rendering) {
-                handleRenderFailure(session, "timeout",
-                    if (session.pendingSurfaceStart != null) "surfaceNotMeasured" else "renderTimeout")
+                handleRenderFailure(session, "timeout", "renderTimeout")
             }
         }
-        val start = MeasuredSurfaceStart(view,
-            current = { isCurrent(session) && surface === view && session.boundSurface === view },
-            load = {
-                session.pendingSurfaceStart = null
-                loadMeasuredSurface(session, view, theme, language)
-            })
-        session.pendingSurfaceStart = start
-        start.start()
-    }
-
-    private fun loadMeasuredSurface(session: Session, view: WebView, theme: String, language: String) {
-        val token = session.coreSessionID ?: return
-        if (!isCurrent(session) || surface !== view || session.boundSurface !== view) return
         val packageQuery = if (session.format == C04CadFormat.FLOECAD) "&package=1" else ""
         view.loadUrl(
             "${C04CadWebAssetServer.ORIGIN}${C04CadWebAssetServer.VIEWER_PATH}" +
                 "?session=$token&theme=$theme&language=$language$packageQuery",
         )
-    }
-
-    private fun cancelSurfaceStart(session: Session) {
-        val pending = session.pendingSurfaceStart ?: return
-        session.pendingSurfaceStart = null
-        if (Looper.myLooper() == Looper.getMainLooper()) pending.cancel()
-        else mainHandler.post { pending.cancel() }
     }
 
     private fun destroySurfaceFor(session: Session?) {
@@ -1372,7 +1311,6 @@ internal class C04CadViewerController(
             if (view == null) return
             if (surface === view) surface = null
             if (session != null) {
-                cancelSurfaceStart(session)
                 if (session.boundSurface === view) session.boundSurface = null
                 if (session.surfaceLoadedFor === view) session.surfaceLoadedFor = null
             }
@@ -1381,7 +1319,6 @@ internal class C04CadViewerController(
     }
 
     private fun destroySurfaceLocked(view: WebView) {
-        active?.takeIf { it.pendingSurfaceStart?.view === view }?.let(::cancelSurfaceStart)
         runCatching { view.removeJavascriptInterface("C04Bridge") }
         runCatching { view.stopLoading() }
         runCatching { view.webChromeClient = WebChromeClient() }
@@ -1526,7 +1463,6 @@ internal class C04CadViewerController(
 
     private fun markClosedLocked(session: Session): Session {
         session.closed = true
-        cancelSurfaceStart(session)
         session.renderTimeout?.cancel()
         session.renderTimeout = null
         return session

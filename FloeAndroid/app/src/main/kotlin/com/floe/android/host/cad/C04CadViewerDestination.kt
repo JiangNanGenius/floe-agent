@@ -8,6 +8,7 @@
 package com.floe.android.host.cad
 
 import android.app.Activity
+import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -173,7 +174,12 @@ private fun C04CadViewerSurface(controller: C04CadViewerController) {
     AndroidView(
         modifier = Modifier.fillMaxSize().testTag("workspace.cadViewer"),
         factory = { context ->
-            WebView(context).also { controller.attachSurface(it) }
+            WebView(context).apply {
+                // Compose's measured bounds alone do not clear WebView's
+                // WRAP_CONTENT mode, which collapses percentage-height HTML.
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            }.also { controller.attachSurface(it) }
         },
         update = { view -> controller.attachSurface(view) },
         onRelease = { view -> controller.detachSurface(view) },
