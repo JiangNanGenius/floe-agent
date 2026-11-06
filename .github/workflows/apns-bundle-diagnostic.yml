@@ -1,0 +1,44 @@
+name: Read-only APNs bundle identifier diagnostic
+'on':
+  workflow_dispatch:
+    inputs:
+      ci_product_id:
+        description: Optional known CI product resource ID for a direct relationship read
+        required: false
+        default: ''
+        type: string
+      bundle_resource_id:
+        description: Optional known bundleIds resource ID for a direct read
+        required: false
+        default: ''
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: floe-readonly-apns-bundle-diagnostic
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - name: Read identifier routes with existing ASC credential
+      env:
+        ASC_API_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64 }}
+        ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+        ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        EXPECTED_IDENTIFIER: org.floeagent.ios
+        CI_PRODUCT_ID: ${{ inputs.ci_product_id }}
+        BUNDLE_RESOURCE_ID: ${{ inputs.bundle_resource_id }}
+      run: python3 -B FloeAgent/scripts/diagnose_asc_bundle_ids.py --report "$RUNNER_TEMP/asc-bundle-diagnostic.json"
+    - name: Retain only redacted identifier diagnostic
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: asc-bundle-identifier-diagnostic
+        path: ${{ runner.temp }}/asc-bundle-diagnostic.json
+        if-no-files-found: warn
