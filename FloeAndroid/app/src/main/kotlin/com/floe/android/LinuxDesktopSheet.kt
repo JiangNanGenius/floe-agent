@@ -50,16 +50,19 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
         Column(Modifier.fillMaxSize().background(Floe.colors.readingSurface).safeDrawingPadding()) {
             Row(Modifier.fillMaxWidth().padding(10.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 FloeText(stringResource(R.string.linux_desktop_title))
-                FloeCapsuleButton(stringResource(R.string.external_edit_done), onClick = onDismiss)
+                FloeCapsuleButton(stringResource(R.string.external_edit_done), onClick = onDismiss,
+                    modifier = Modifier.widthIn(min = 64.dp, max = 96.dp))
             }
             val owned = state.workspaceID.equals(workspaceID, true)
             val viewer = state.vnc?.takeIf { owned }
             if (viewer != null && !softwareVisible) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FloeCapsuleButton(selectedApp, onClick = { softwareVisible = true })
+                    FloeCapsuleButton(selectedApp, onClick = { softwareVisible = true }, modifier = Modifier.weight(1f))
                     if (selectedPath.isNotBlank()) FloeCapsuleButton(stringResource(R.string.linux_desktop_open_file),
-                        onClick = { filesFailed = runCatching { service.openFile(selectedApp, selectedPath) }.isFailure })
-                    FloeCapsuleButton(stringResource(R.string.linux_desktop_stop), onClick = { stopRequested = true })
+                        onClick = { filesFailed = runCatching { service.openFile(selectedApp, selectedPath) }.isFailure },
+                        modifier = Modifier.weight(1f))
+                    FloeCapsuleButton(stringResource(R.string.linux_desktop_stop), onClick = { stopRequested = true },
+                        modifier = Modifier.weight(1f))
                 }
                 if (state.phase in setOf("save_pending", "close_pending")) {
                     FloeText(stringResource(R.string.linux_desktop_save_pending))
@@ -103,10 +106,10 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
                             FloeCapsuleButton(app, onClick = {
                                 selectedApp = app
                                 if (viewer != null) { service.application(app, false); softwareVisible = false }
-                            })
+                            }, modifier = Modifier.weight(1f))
                             if (owned && state.phase == "running") FloeCapsuleButton(
                                 stringResource(R.string.linux_desktop_install_software),
-                                onClick = { service.application(app, true) })
+                                onClick = { service.application(app, true) }, modifier = Modifier.weight(1f))
                         }
                     }
                 }
