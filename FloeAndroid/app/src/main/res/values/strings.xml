@@ -538,6 +538,7 @@
     <string name="external_edit_preparing">Preparing copy…</string>
     <string name="external_edit_no_handler">No suitable editor was found. Use a Linux editor, or install another app and try again.</string>
     <string name="external_edit_retry_error">Changes are kept. Check again when the file and its workspace are available.</string>
+    <string name="external_edit_already_open">This file is already being edited. End that editing session before switching apps.</string>
     <string name="external_edit_waiting">Waiting for saved changes</string>
     <string name="external_edit_saving">Returning saved changes…</string>
     <string name="external_edit_saved">Saved back to the project</string>

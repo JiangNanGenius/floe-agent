@@ -618,6 +618,7 @@ dependencies {
     // permission callbacks require a supported Fragment runtime.
     implementation("androidx.fragment:fragment:1.9.1")
     implementation("com.getkeepsafe.relinker:relinker:1.4.4")
+    implementation("com.caverock:androidsvg-aar:1.4")
     implementation(project(":feature:ide"))
     implementation(project(":feature:terminal"))
     implementation(project(":feature:browser"))

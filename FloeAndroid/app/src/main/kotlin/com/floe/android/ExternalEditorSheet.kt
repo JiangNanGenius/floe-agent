@@ -55,8 +55,11 @@ internal fun ExternalEditorSheet(host: RuntimeHost, taskID: String, workspaceID:
                 enabled = path.isNotBlank() && !state.preparing,
                 onClick = { onOpenLinux(path.trim()) })
             state.failure?.let { code ->
-                FloeText(stringResource(if (code == "noEditor") R.string.external_edit_no_handler else
-                    R.string.external_edit_retry_error), color = Floe.colors.secondaryLabel)
+                FloeText(stringResource(when (code) {
+                    "noEditor" -> R.string.external_edit_no_handler
+                    "editorAlreadyOpen" -> R.string.external_edit_already_open
+                    else -> R.string.external_edit_retry_error
+                }), color = Floe.colors.secondaryLabel)
             }
             rows.forEach { row ->
                 FloeSectionHeader(row.displayName)

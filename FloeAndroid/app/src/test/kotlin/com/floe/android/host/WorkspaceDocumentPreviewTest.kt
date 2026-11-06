@@ -26,11 +26,11 @@ class WorkspaceDocumentPreviewTest {
 
     @Test fun onlyRealPdfAndBitmapFamilyExtensionsReachThePreview() {
         assertEquals(WorkspacePreviewKind.PDF, WorkspaceDocumentPreviewPolicy.kindForPath("docs/Q3 report.PDF"))
-        for (name in listOf("a.png", "b.jpg", "c.jpeg", "d.webp", "e.gif", "f.bmp", "g.heic", "h.heif")) {
+        for (name in listOf("a.png", "b.jpg", "c.jpeg", "d.webp", "e.gif", "f.bmp", "g.heic", "h.heif", "icon.SVG")) {
             assertEquals(name, WorkspacePreviewKind.IMAGE, WorkspaceDocumentPreviewPolicy.kindForPath("shots/$name"))
         }
         // Explicitly NOT claimed: no decoder exists in this App.
-        for (name in listOf("icon.svg", "scan.tiff", "scan.TIF")) {
+        for (name in listOf("scan.tiff", "scan.TIF")) {
             assertNull(name, WorkspaceDocumentPreviewPolicy.kindForPath(name))
             assertTrue(name, WorkspaceDocumentPreviewPolicy.isUnsupportedImage(name))
         }

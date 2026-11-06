@@ -319,9 +319,8 @@ internal fun WorkspaceDocumentDestination(
         LaunchedEffect(request.token) { onBackToFiles() }
         return
     }
-    // PDF/raster are the only two typed surfaces with a real viewer in this
-    // batch. The extension policy (not a content guess) decides; SVG/TIFF
-    // stay on the honest typed cover.
+    // PDF and supported raster/vector images use the owned snapshot viewer.
+    // TIFF still has no decoder and stays on the typed cover.
     val previewKind = remember(request.path, request.surface) {
         when (request.surface) {
             WorkspaceDocumentSurface.PDF, WorkspaceDocumentSurface.IMAGE ->
@@ -516,7 +515,7 @@ internal fun WorkspaceDocumentDestination(
                                 null
                             },
                         )
-                        // SVG/TIFF routed to IMAGE but has no claimed decoder:
+                        // TIFF routed to IMAGE but has no claimed decoder:
                         // keep the honest typed cover instead of failing late.
                         previewKind == null -> WorkspaceTypedDocumentSurface(
                             request = request,

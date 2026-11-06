@@ -538,6 +538,7 @@
     <string name="external_edit_preparing">正在准备副本…</string>
     <string name="external_edit_no_handler">未找到合适的编辑器。可以使用 Linux 编辑器，或安装其他应用后重试。</string>
     <string name="external_edit_retry_error">修改已保留。文件和工作区可用后，可再次核对保存。</string>
+    <string name="external_edit_already_open">此文件仍在编辑。请结束当前编辑后再切换应用。</string>
     <string name="external_edit_waiting">等待编辑器保存</string>
     <string name="external_edit_saving">正在回传已保存的修改…</string>
     <string name="external_edit_saved">已保存回项目</string>

@@ -14,7 +14,7 @@
     <string name="workspace_document_preview_password_needed">Enter the password to open this PDF.</string>
     <string name="workspace_document_preview_password_rejected">That password didn\'t work.</string>
     <string name="workspace_document_preview_password_unsupported">This device\'s PDF viewer can\'t open protected PDFs.</string>
-    <string name="workspace_document_image_unsupported_body">This build can\'t display SVG or TIFF images. The file was not read or changed.</string>
+    <string name="workspace_document_image_unsupported_body">This build can\'t display TIFF images. The file was not read or changed.</string>
     <string name="workspace_document_pdf_page_indicator">%1$d of %2$d</string>
     <string name="workspace_document_pdf_prev">Previous page</string>
     <string name="workspace_document_pdf_next">Next page</string>

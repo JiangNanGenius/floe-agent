@@ -102,6 +102,9 @@ internal class ExternalEditController(private val context: Context, private val 
         (journal ?: throw Failure("journalUnavailable")).save(row)
         records[row.id] = row
         publish()
+        if (row.phase == ExternalEditPhase.FINISHED && mutableState.value.failure == "editorAlreadyOpen") {
+            mutableState.value = mutableState.value.copy(failure = null)
+        }
     }
 
     private fun sameOwner(a: ExternalEditOwner, b: ExternalEditOwner) =

@@ -97,3 +97,7 @@ work dispatch. It is published by the Android Open Source Project under the
 Apache License, Version 2.0. Exact resolved transitive dependencies remain
 recorded in the Gradle dependency lockfiles; their upstream notices remain
 controlling. The Gradle coordinate is `androidx.work:work-runtime:2.12.0`.
+
+## AndroidSVG 1.4
+
+Copyright 2013 Paul LeBeau, Apache License 2.0. Unmodified pinned Maven Central dependency `com.caverock:androidsvg-aar:1.4`, used for bounded offline static SVG preview. Full licence and artifact record: `androidsvg/`.

@@ -164,3 +164,9 @@ Read-only Android Health Connect uses the pinned AndroidX connect-client 1.1.0 u
 ## C05 RDP
 
 The Android RDP bridge uses pinned FreeRDP 3.31.1/WinPR and OpenSSL 4.0.1 under Apache-2.0. Immutable source hashes and the Android static-build recipe are recorded in FloeAndroid/licenses/rdp/ and scripts/rdp/. Their exact license texts and runtime source lock are bundled in the application legal assets. No Apple binary is included.
+
+## AndroidSVG 1.4
+
+Copyright 2013 Paul LeBeau. Apache License 2.0. Unmodified Maven Central dependency
+`com.caverock:androidsvg-aar:1.4` for bounded offline static SVG preview.
+See `licenses/androidsvg/` for the licence and pinned artifact record.

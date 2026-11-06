@@ -140,12 +140,12 @@ internal object WorkspaceDocumentPreviewPolicy {
      * unsupported state instead of the app claiming support.
      */
     val IMAGE_FORMAT_EXTENSIONS: Set<String> = setOf(
-        "png", "jpg", "jpeg", "webp", "gif", "bmp", "heic", "heif",
+        "png", "jpg", "jpeg", "webp", "gif", "bmp", "heic", "heif", "svg",
     )
 
-    /** Routed to IMAGE by the shared classifier but explicitly NOT claimed:
-     * SVG/TIFF have no decoder in this App and stay on the typed cover. */
-    val UNSUPPORTED_IMAGE_EXTENSIONS: Set<String> = setOf("svg", "tiff", "tif")
+    /** TIFF has no decoder and stays on the typed cover. SVG uses the
+     * bounded offline vector renderer rather than BitmapFactory. */
+    val UNSUPPORTED_IMAGE_EXTENSIONS: Set<String> = setOf("tiff", "tif")
 
     /** One image snapshot cap: below the generic 256 MiB egress cap because
      * preview decoding is a bounded screen operation, not a document copy. */
@@ -655,7 +655,22 @@ internal class WorkspaceDocumentPreviewController internal constructor(
             fail(session, WorkspacePreviewState.Failure.TOO_LARGE)
             return
         }
-        val decoded = decodeBounded(snapshot.file)
+        val decoded = if (session.relativePath.substringAfterLast('.').equals("svg", true)) {
+            try {
+                val bitmap = WorkspaceSvgPreview.render(snapshot.file) {
+                    if (Thread.currentThread().isInterrupted || !sessionAlive(session)) throw CancellationException()
+                }
+                Decoded(bitmap, bitmap.width, bitmap.height)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (rejected: WorkspaceSvgPolicy.Rejected) {
+                fail(session, if (rejected.reason == WorkspaceSvgPolicy.Reason.TOO_LARGE)
+                    WorkspacePreviewState.Failure.TOO_LARGE else WorkspacePreviewState.Failure.UNSUPPORTED)
+                return
+            } catch (_: Exception) {
+                fail(session, WorkspacePreviewState.Failure.INVALID)
+                return
+            }
+        } else decodeBounded(snapshot.file)
         if (decoded == null) {
             fail(session, WorkspacePreviewState.Failure.UNSUPPORTED)
             return

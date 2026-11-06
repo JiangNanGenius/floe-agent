@@ -311,7 +311,17 @@ internal fun WorkspaceFilesPane(
     var externalEditorVisible by remember(owner) { mutableStateOf(false) }
     var linuxDesktopVisible by remember(owner) { mutableStateOf(false) }
     var linuxDesktopPath by remember(owner) { mutableStateOf("") }
-    var externalEditorPath by remember(owner) { mutableStateOf("") }
+    var externalEditorPath by rememberSaveable(owner) { mutableStateOf(documentPath ?: activeDocumentPath.orEmpty()) }
+    // Typed previews do not change the IDE's old active text tab. Remember
+    // explicit file selections for BOTH external edit routes; update from
+    // native tab selection only while that text editor is actually visible.
+    LaunchedEffect(activeDocumentPath, compactLevel) {
+        if (!activeDocumentPath.isNullOrBlank() &&
+            (documentRequest?.surface == WorkspaceDocumentSurface.CODE_EDITOR ||
+                (documentRequest == null && compactLevel == IdeCompactLevel.EDITOR))) {
+            externalEditorPath = activeDocumentPath.orEmpty()
+        }
+    }
     var recoveryVisible by remember(owner) { mutableStateOf(false) }
     var networkVisible by remember(owner) { mutableStateOf(false) }
     var action by remember(owner) { mutableStateOf<WorkspaceAction?>(null) }
@@ -547,7 +557,7 @@ internal fun WorkspaceFilesPane(
             items = listOf(
                 WorkspaceMenuItem(stringResource(R.string.linux_desktop_title), enabled = !busy) {
                     toolbarMenu = null
-                    linuxDesktopPath = activeDocumentPath.orEmpty()
+                    linuxDesktopPath = externalEditorPath.ifBlank { activeDocumentPath.orEmpty() }
                     linuxDesktopVisible = true
                 },
                 WorkspaceMenuItem(stringResource(R.string.external_edit_title), enabled = !busy) {
