@@ -583,22 +583,28 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
             do {
                 result = try await submit(entry: entry, argumentsJSON: argumentsJSON,
                                           owner: owner, cancellation: context.cancellation)
-            } catch PlatformToolTransportError.remoteFailed(let code, _)
-                where ["phone_presence_required", "phone_unlock_required", "phone_unlock_needs_user"].contains(code)
+            } catch PlatformToolTransportError.remoteFailed(let code, let detail)
+                where ["phone_presence_required", "phone_unlock_required", "phone_unlock_needs_user", "phone_paused_by_user"].contains(code)
                     && ["phone.observe", "phone.act", "phone.screenshot"].contains(toolName) {
-                // No UI action was dispatched. Park through the SAME durable
-                // question coordinator, after the transport ticket has retired.
+                // Park through the SAME durable question coordinator, after
+                // the transport ticket has retired. Pause fences observations;
+                // an interrupted action's old observation must be refreshed.
                 // Background jobs and other platform tickets remain independent.
                 guard let coordinator = UserQuestionHostAPI.shared.current(epoch: boundEpoch),
                       !owner.toolCallID.isEmpty else { throw PlatformToolTransportError.hostFenced }
                 let chinese = Locale.current.identifier.lowercased().hasPrefix("zh")
-                let unlocking = code != "phone_presence_required"
-                let question = UserQuestionDraft(id: "phone-control-presence",
-                    question: unlocking
+                let paused = code == "phone_paused_by_user"
+                let pauseID = paused ? detail.flatMap(UUID.init(uuidString:)) : nil
+                if paused && pauseID == nil { throw PlatformToolTransportError.hostFenced }
+                let unlocking = !paused && code != "phone_presence_required"
+                let question = UserQuestionDraft(id: pauseID.map { "phone-control-paused-\($0.uuidString.lowercased())" } ?? "phone-control-presence",
+                    question: paused
+                        ? (chinese ? "手机操作已暂停。允许这个任务继续吗？" : "Phone control is paused. Allow this task to continue?")
+                        : unlocking
                         ? (chinese ? "请在手机上解锁后选择继续。" : "Unlock the phone, then choose Continue.")
                         : (chinese ? "你正在使用手机，允许任务接管屏幕吗？" : "Allow the task to use the screen while you are using the phone?"),
                     options: [
-                        UserQuestionOption(id: "allow", label: chinese ? (unlocking ? "继续" : "允许") : (unlocking ? "Continue" : "Allow")),
+                        UserQuestionOption(id: "allow", label: chinese ? (unlocking || paused ? "继续" : "允许") : (unlocking || paused ? "Continue" : "Allow")),
                         UserQuestionOption(id: "keep-control", label: chinese ? "保留我的控制权" : "Keep control")
                     ], allowsFreeText: false)
                 let receipt = try await coordinator.ask(
@@ -616,7 +622,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
                 // not from model arguments. Existing task/approval ceilings remain.
                 result = try await submit(entry: entry, argumentsJSON: argumentsJSON,
                     owner: owner, cancellation: context.cancellation,
-                    presenceApprovedAtMillis: Int64(answeredAt.timeIntervalSince1970 * 1_000))
+                    presenceApprovedAtMillis: Int64(answeredAt.timeIntervalSince1970 * 1_000), pauseApprovalID: pauseID)
             }
         } catch let error as PlatformToolTransportError {
             if context.cancellation.isCancelled { throw FloeError.cancelled }
@@ -637,7 +643,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
     public func submit(entry: PlatformToolCatalogEntry,
                        argumentsJSON: Data,
                        owner: PlatformToolOwner,
-                       cancellation: CancellationToken, presenceApprovedAtMillis: Int64 = 0) async throws
+                       cancellation: CancellationToken, presenceApprovedAtMillis: Int64 = 0, pauseApprovalID: UUID? = nil) async throws
         -> PlatformToolResult {
         guard argumentsJSON.count > 0,
               argumentsJSON.count <= PlatformToolHostLimits.maximumArgumentsBytes
@@ -648,7 +654,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
         }
         guard let descriptor = Self.descriptorJSON(
             entry: entry, owner: owner, arguments: argumentsJSON,
-            presenceApprovedAtMillis: presenceApprovedAtMillis),
+            presenceApprovedAtMillis: presenceApprovedAtMillis, pauseApprovalID: pauseApprovalID),
               descriptor.count <= PlatformToolHostLimits.maximumTicketDescriptorBytes
         else { throw PlatformToolTransportError.oversized }
 
@@ -1108,7 +1114,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
 
     private static func descriptorJSON(entry: PlatformToolCatalogEntry,
                                        owner: PlatformToolOwner,
-                                       arguments: Data, presenceApprovedAtMillis: Int64 = 0) -> Data? {
+                                       arguments: Data, presenceApprovedAtMillis: Int64 = 0, pauseApprovalID: UUID? = nil) -> Data? {
         let scopeData = (try? JSONEncoder().encode(owner.scope)) ?? Data()
         guard scopeData.count > 0,
               scopeData.count <= PlatformToolHostLimits.maximumScopeBytes,
@@ -1118,6 +1124,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
             "version": 1,
             "operation": "platformTool.execute",
             "presenceApprovedAtMillis": max(0, presenceApprovedAtMillis),
+            "phonePauseApprovalID": pauseApprovalID?.uuidString.lowercased() ?? "",
             "tool": entry.name,
             "epoch": String(owner.epoch),
             "taskID": owner.taskID.uuidString,

@@ -31,6 +31,7 @@ internal data class PlatformToolCall(
     val arguments: JSONObject,
     val argumentsBytes: ByteArray,
     val presenceApprovedAtMillis: Long = 0,
+    val pauseApprovalID: UUID? = null,
 )
 
 internal sealed interface PlatformToolOutcome {
@@ -324,6 +325,11 @@ internal class PlatformToolHostPump(
         } catch (_: Throwable) {
             return null
         }
+        val pauseRaw = root.optString("phonePauseApprovalID")
+        val pauseID = if (pauseRaw.isEmpty()) null else {
+            runCatching { UUID.fromString(pauseRaw).also { require(it.toString() == pauseRaw) } }.getOrNull()
+                ?: return null
+        }
         return PlatformToolCall(
             claim = claim,
             tool = tool,
@@ -338,6 +344,7 @@ internal class PlatformToolHostPump(
             presenceApprovedAtMillis = root.optLong("presenceApprovedAtMillis", 0).takeIf {
                 it in 0..System.currentTimeMillis() + 5_000
             } ?: 0,
+            pauseApprovalID = pauseID,
         )
     }
 

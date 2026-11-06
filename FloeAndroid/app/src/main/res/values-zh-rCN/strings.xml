@@ -560,11 +560,15 @@
     <string name="phone_automation_credential">设备 PIN 或密码</string>
     <string name="phone_automation_consent_unlock">同意并保存到本机</string>
     <string name="phone_automation_forget">删除已保存的解锁凭据</string>
-    <string name="phone_automation_floating">显示悬浮停止按钮</string>
+    <string name="phone_automation_floating">显示悬浮控制</string>
     <string name="phone_automation_in_use">允许任务使用屏幕？</string>
     <string name="phone_automation_in_use_hint">你正在使用手机，任务已暂停。允许后继续操作，也可以取消并保留控制权。</string>
     <string name="phone_automation_allow">允许</string>
     <string name="phone_automation_stop">接管</string>
+    <string name="phone_automation_pause">暂停</string>
+    <string name="phone_automation_resume">继续</string>
+    <string name="phone_automation_paused">手机操作已暂停</string>
+    <string name="phone_automation_resume_failed">无法继续，请打开任务重试。</string>
     <string name="phone_automation_credential_failed">无法更新解锁凭据，请重试。</string>
     <string name="reporting_title">诊断与反馈</string>
     <string name="reporting_automatic">自动上报应用故障</string>

@@ -37,6 +37,14 @@ import com.floe.android.DeviceAccessUiError
 import com.floe.android.R
 import com.floe.android.credentials.AndroidKeystoreCredentialStore
 import com.floe.android.host.RuntimeHost
+import com.floe.android.host.HostCommandRequest
+import com.floe.android.host.HostOperationOutcome
+import com.floe.android.host.HostScope
+import com.floe.android.host.questions.UserQuestionWire
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import com.floe.android.host.settings.DistributionSettingsFeature
 import com.floe.android.phonecontrol.PhoneControlAction
 import com.floe.android.phonecontrol.PhoneControlAuthority
@@ -198,7 +206,12 @@ internal class DeviceAccessHost(
     private var settings = AccessSettings()
     private val automationMutex = Mutex()
     private val unlockCredentials = AndroidKeystoreCredentialStore(context, "phone-unlock")
-    private val automationControls = PhoneAutomationControls(context) { stopActiveTask(takeOver = true) }
+    private val pauseSaved = preferences.getString(KEY_PHONE_PAUSE, null)
+    private val phonePause = PhoneAutomationPause(PhoneAutomationPause.Snapshot.decode(pauseSaved))
+    private val phoneControlRevision = java.util.concurrent.atomic.AtomicLong()
+    @Volatile private var explicitResumeOwner: PhoneControlOwner? = null
+    @Volatile private var pauseStateInvalid = pauseSaved != null && phonePause.snapshot == null
+    private val automationControls = PhoneAutomationControls(context, ::onAutomationControl)
     @Volatile private var automatedOwner: PhoneControlOwner? = null
     private var unlockConfigured = false
     @Volatile
@@ -1251,9 +1264,13 @@ internal class DeviceAccessHost(
         markStoppedOwnerSettled()
         automatedOwner?.takeUnless { isOwnerRunLive(it) }?.let { ended ->
             automatedOwner = null
+            if (explicitResumeOwner == ended) explicitResumeOwner = null
             if (armedOwner == ended) armedOwner = null
             phoneClient?.finishAutomation(ended)
             automationControls.clear()
+        }
+        automatedOwner?.takeIf { !userStopped && isOwnerRunLive(it) }?.let {
+            automationControls.show(it, titleFor(it), settings.floatingControls, phonePause.isPaused(it))
         }
         reconcileScreenShare()
         val candidate = currentCandidate()
@@ -1277,10 +1294,11 @@ internal class DeviceAccessHost(
                 } else {
                     titleFor(it.owner)
                 },
-                phase = it.phase,
+                phase = if (phonePause.isPaused(it.owner)) DeviceAccessTaskPhaseUi.WAITING_FOR_USER else it.phase,
             )
         }
-        val control = ownership?.control ?: DeviceAccessTaskControlUi.OFF
+        val control = if (ownership != null && phonePause.isPaused(ownership.owner)) DeviceAccessTaskControlUi.OFF
+            else ownership?.control ?: DeviceAccessTaskControlUi.OFF
         val roots = cachedRoots
         val writableSelected = hasWritableSelection()
         val targets = DeviceAccessTargetsUi(
@@ -1463,7 +1481,17 @@ internal class DeviceAccessHost(
             return
         }
         val client = phoneClient ?: return
+        // Settings Allow is an explicit fresh user gesture too. It can
+        // resume this exact task, never a foreign retained pause.
+        val paused = phonePause.snapshot?.takeIf { it.owner == owner }
+        if (pauseStateInvalid || paused != null) {
+            val cleared = if (paused != null) phonePause.resume(owner, paused.id, ::clearPersistedPause)
+                else clearPersistedPause()
+            if (!cleared) { resumeFailed(); return }
+            pauseStateInvalid = false
+        }
         busy = DeviceAccessBusyUi.PHONE_ARM
+        val armRevision = phoneControlRevision.get()
         error = null
         publish()
         scope.launch(io) {
@@ -1490,7 +1518,12 @@ internal class DeviceAccessHost(
                 }
                 when (val result = client.arm(principal)) {
                     is PhoneControlResult.Ok -> {
+                        if (phoneControlRevision.get() != armRevision || phonePause.isPaused(owner)) {
+                            client.takeover()
+                            return@launch
+                        }
                         armedOwner = owner
+                        automatedOwner = owner
                         phoneStatus = result.value
                         userStopped = false
                         lastStoppedOwner = null
@@ -1523,9 +1556,81 @@ internal class DeviceAccessHost(
         }
     }
 
-    private fun stopActiveTask(takeOver: Boolean) {
-        if (busy != DeviceAccessBusyUi.NONE) return
-        val owner = armedOwner ?: armingOwner ?: currentCandidate()?.owner ?: return
+    private fun controlOwner(): PhoneControlOwner? = armingOwner ?: phoneStatus.activeOwner ?: armedOwner ?: automatedOwner
+
+    private fun clearPersistedPause(): Boolean = preferences.edit().remove(KEY_PHONE_PAUSE).commit()
+
+    private fun resumeFailed() {
+        error = DeviceAccessUiError(context.getString(R.string.phone_automation_resume_failed), "phone_resume_failed")
+        publish()
+    }
+
+    /** Notification/overlay callbacks carry their exact owner. A different
+     * task becoming visible cannot turn an old action into a fresh grant. */
+    private fun onAutomationControl(owner: PhoneControlOwner, action: PhoneAutomationControls.Action) {
+        if (closed || userStopped || !isOwnerRunLive(owner) || controlOwner() != owner) return
+        when (action) {
+            PhoneAutomationControls.Action.PAUSE -> {
+                phoneControlRevision.incrementAndGet()
+                explicitResumeOwner = null
+                val pause = phonePause.pause(owner, System.currentTimeMillis())
+                if (!preferences.edit().putString(KEY_PHONE_PAUSE, pause.encode()).commit()) resumeFailed()
+                armedOwner = null
+                // Fences live gestures/observations but DOES NOT cancel the
+                // Agent run or its independent background operations.
+                phoneClient?.takeover()
+                publish()
+            }
+            PhoneAutomationControls.Action.RESUME -> {
+                val pause = phonePause.snapshot?.takeIf { it.owner == owner } ?: return
+                if (!phonePause.resume(owner, pause.id, ::clearPersistedPause)) { resumeFailed(); return }
+                explicitResumeOwner = owner
+                publish()
+                resumePausedQuestion(owner, pause.id)
+            }
+            PhoneAutomationControls.Action.TAKE_OVER -> stopActiveTask(takeOver = true, expectedOwner = owner)
+        }
+    }
+
+    /** A real user Continue settles only the matching durable pause question
+     * through its existing digest/nonce/revision CAS. No synthetic run start. */
+    private fun resumePausedQuestion(owner: PhoneControlOwner, pauseID: UUID) {
+        if (!host.readiness.value.conversationDomainAdmitted) return
+        val revision = phoneControlRevision.get()
+        val conversation = owner.taskID.toString()
+        host.trackOperation(HostCommandRequest(command = "question.pending",
+            scope = HostScope.ConversationLifecycle(conversation), stateful = false,
+            correlationID = "phone-pause-pending-${UUID.randomUUID()}")) { outcome ->
+            if (closed || userStopped || !isOwnerRunLive(owner) || controlOwner() != owner ||
+                phoneControlRevision.get() != revision || phonePause.isPaused(owner)) return@trackOperation
+            val completed = outcome as? HostOperationOutcome.Completed ?: run { resumeFailed(); return@trackOperation }
+            val pending = completed.value?.let(UserQuestionWire::decodePending) ?: run { resumeFailed(); return@trackOperation }
+            val question = pending.filter {
+                it.conversationId.equals(conversation, true) && it.runId.equals(owner.runID.toString(), true) && !it.isEphemeral
+            }.flatMap { it.questions }.singleOrNull { it.isPending && it.questionId == "phone-control-paused-$pauseID" }
+                ?: return@trackOperation // paused between tools: no question exists yet
+            val payload = JsonObject(mapOf(
+                "requestID" to JsonPrimitive(question.requestId), "requestDigest" to JsonPrimitive(question.requestDigest),
+                "questionID" to JsonPrimitive(question.questionId), "runID" to JsonPrimitive(question.runId),
+                "expectedRevision" to JsonPrimitive(question.revision), "answerNonce" to JsonPrimitive(question.answerNonce),
+                "source" to JsonPrimitive("human"), "selectedOptionIDs" to JsonArray(listOf(JsonPrimitive("allow"))),
+                "freeText" to JsonNull))
+            host.trackOperation(HostCommandRequest(command = "question.answer",
+                scope = HostScope.ConversationLifecycle(conversation), stateful = false,
+                correlationID = "phone-pause-answer-${UUID.randomUUID()}", payload = payload)) { answer ->
+                if (closed || phoneControlRevision.get() != revision || controlOwner() != owner || !isOwnerRunLive(owner)) return@trackOperation
+                val receipt = (answer as? HostOperationOutcome.Completed)?.value?.let(UserQuestionWire::decodeReceipt)
+                if (receipt?.accepted != true && receipt?.alreadySettled != true) resumeFailed()
+            }
+        }
+    }
+
+    private fun stopActiveTask(takeOver: Boolean, expectedOwner: PhoneControlOwner? = null) {
+        if (busy != DeviceAccessBusyUi.NONE && expectedOwner == null) return
+        val owner = expectedOwner ?: armedOwner ?: armingOwner ?: currentCandidate()?.owner ?: return
+        if (expectedOwner != null && (!isOwnerRunLive(owner) || controlOwner() != owner)) return
+        phoneControlRevision.incrementAndGet()
+        explicitResumeOwner = null
         busy = if (takeOver) {
             DeviceAccessBusyUi.TASK_TAKE_OVER
         } else {
@@ -1537,6 +1642,7 @@ internal class DeviceAccessHost(
             // publishes the reduced availability mask; phone tools disappear
             // from discovery until a fresh USER arm).
             userStopped = true
+            phonePause.snapshot?.takeIf { it.owner == owner }?.let { phonePause.resume(owner, it.id, ::clearPersistedPause) }
             automationControls.clear()
             lastStoppedOwner = owner
             stoppedOwnerSettled = false
@@ -2371,6 +2477,7 @@ internal class DeviceAccessHost(
 
     private fun authorizePhone(principal: PhoneControlPrincipal): PhoneControlGrant? {
         if (closed) return null
+        if (pauseStateInvalid || phonePause.isPaused(principal.owner)) return null
         val epoch = host.nativeRootEpoch() ?: return null
         if (principal.epoch != epoch) return null
         val packages = settings.allowedPackages
@@ -2410,8 +2517,9 @@ internal class DeviceAccessHost(
 
     // -------------------------------------------------------------- tool entry
 
-    private suspend fun executeTool(call: PlatformToolCall): PlatformToolOutcome =
-        when (call.tool) {
+    private suspend fun executeTool(call: PlatformToolCall): PlatformToolOutcome {
+        val revision = phoneControlRevision.get()
+        val outcome = when (call.tool) {
             DeviceAccessToolCatalog.PHONE_OBSERVE -> phoneObserve(call)
             DeviceAccessToolCatalog.PHONE_ACT -> phoneAct(call)
             DeviceAccessToolCatalog.PHONE_SCREENSHOT -> phoneScreenshot(call)
@@ -2428,6 +2536,12 @@ internal class DeviceAccessHost(
             DeviceAccessToolCatalog.SYSTEM_PACKAGES_FORCE_STOP -> systemForceStop(call)
             else -> PlatformToolOutcome.Failure("unknown_tool")
         }
+        if (call.tool.startsWith("phone.") && phonePause.isPaused(ownerOf(call)))
+            return PlatformToolOutcome.Failure("phone_paused_by_user", phonePause.snapshot?.id?.toString())
+        if (call.tool.startsWith("phone.") && revision != phoneControlRevision.get())
+            return PlatformToolOutcome.Failure("phone_interrupted", "Observe the current screen before continuing phone actions.")
+        return outcome
+    }
 
     // ---------------------------------------------------------------- phone tools
 
@@ -2437,6 +2551,7 @@ internal class DeviceAccessHost(
     private fun phonePrincipal(call: PlatformToolCall): PhoneControlPrincipal? {
         if (userStopped) return null
         val owner = ownerOf(call)
+        if (pauseStateInvalid || phonePause.isPaused(owner)) return null
         if (armedOwner != owner) return null
         val packages = settings.allowedPackages
         if (packages.isEmpty()) return null
@@ -2472,12 +2587,25 @@ internal class DeviceAccessHost(
      * replaces the repetitive per-run settings gesture, never canonical tool approval. */
     private suspend fun preparePhoneAutomation(call: PlatformToolCall): PlatformToolOutcome? = automationMutex.withLock {
         val owner = ownerOf(call)
+        if (pauseStateInvalid) return@withLock PlatformToolOutcome.Failure("phone_pause_state_unavailable")
+        if (phonePause.isPaused(owner)) {
+            if (!PlatformToolsNativeLive.isLive(call.claim) || PlatformToolsNativeLive.shouldStop(call.claim))
+                return@withLock PlatformToolOutcome.Failure("cancelled")
+            if (!userStopped && phonePause.resumeAfterHumanAnswer(owner, call.pauseApprovalID, call.presenceApprovedAtMillis, ::clearPersistedPause)) {
+                explicitResumeOwner = owner
+            } else {
+                automatedOwner = owner
+                automationControls.show(owner, titleFor(owner), settings.floatingControls, paused = true)
+                return@withLock PlatformToolOutcome.Failure("phone_paused_by_user", phonePause.snapshot?.id?.toString())
+            }
+        }
         val client = phoneClient ?: return@withLock null
-        if (userStopped || !settings.automaticPhoneControl) return@withLock null
+        if (userStopped) return@withLock null
         if (!PlatformToolsNativeLive.isLive(call.claim) || PlatformToolsNativeLive.shouldStop(call.claim))
             return@withLock PlatformToolOutcome.Failure("cancelled")
         if (settings.allowedPackages.isEmpty() || !phoneServiceUsable()) return@withLock null
         if (armedOwner == owner && phoneStatus.activeOwner == owner) return@withLock null
+        if (!settings.automaticPhoneControl && explicitResumeOwner != owner) return@withLock null
         if (phoneStatus.activeOwner != null && phoneStatus.activeOwner != owner)
             return@withLock PlatformToolOutcome.Failure("phone_busy")
         val keyguard = context.getSystemService(KeyguardManager::class.java)
@@ -2488,6 +2616,7 @@ internal class DeviceAccessHost(
             return@withLock PlatformToolOutcome.Failure("phone_presence_required")
         }
         armingOwner = owner
+        val armRevision = phoneControlRevision.get()
         bindPhoneCall(call)
         try {
             val principal = PhoneControlPrincipal(owner, call.epoch, settings.allowedPackages,
@@ -2510,7 +2639,14 @@ internal class DeviceAccessHost(
                     return@withLock PlatformToolOutcome.Failure("phone_unlock_needs_user")
             }
             when (val result = client.arm(principal)) {
-                is PhoneControlResult.Ok -> { armedOwner = owner; phoneStatus = result.value; publish(); null }
+                is PhoneControlResult.Ok -> {
+                    if (userStopped || phonePause.isPaused(owner) || armRevision != phoneControlRevision.get()) {
+                        client.takeover()
+                        PlatformToolOutcome.Failure(if (phonePause.isPaused(owner)) "phone_paused_by_user" else "phone_interrupted")
+                    } else {
+                        armedOwner = owner; explicitResumeOwner = null; phoneStatus = result.value; publish(); null
+                    }
+                }
                 is PhoneControlResult.Denied -> deniedOutcome(result.reason)
                 is PhoneControlResult.Unavailable -> unavailableOutcome(result.reason)
                 is PhoneControlResult.Failed -> failedOutcome(result.reason)
@@ -2520,6 +2656,7 @@ internal class DeviceAccessHost(
 
     private fun phonePrecondition(call: PlatformToolCall, requireApproval: Boolean): PlatformToolOutcome? {
         rememberToolTask(call)
+        if (phonePause.isPaused(ownerOf(call))) return PlatformToolOutcome.Failure("phone_paused_by_user")
         val client = phoneClient
         if (client == null || client.isClosed) {
             return PlatformToolOutcome.Failure("phone_unavailable")
@@ -2570,7 +2707,7 @@ internal class DeviceAccessHost(
                 client.observe(principal, request)
             }) {
                 is PhoneControlResult.Ok -> {
-                    if (userStopped || armedOwner != ownerOf(call)) {
+                    if (userStopped || phonePause.isPaused(ownerOf(call)) || armedOwner != ownerOf(call)) {
                         PlatformToolOutcome.Failure("phone_stopped_by_user")
                     } else {
                         observationOutcome(result.value)
@@ -2607,7 +2744,7 @@ internal class DeviceAccessHost(
                 else client.perform(principal, observationId, action)
             }) {
                 is PhoneControlResult.Ok -> {
-                    if (userStopped || armedOwner != ownerOf(call)) {
+                    if (userStopped || phonePause.isPaused(ownerOf(call)) || armedOwner != ownerOf(call)) {
                         PlatformToolOutcome.Failure("phone_stopped_by_user")
                     } else {
                         actionOutcome(result.value)
@@ -2631,6 +2768,7 @@ internal class DeviceAccessHost(
         val principal = phonePrincipal(call)
             ?: return PlatformToolOutcome.Failure("phone_arm_required")
         val owner = ownerOf(call)
+        val captureRevision = phoneControlRevision.get()
         val dispatchEpoch = host.nativeRootEpoch()?.takeIf { it > 0 }
             ?: return PlatformToolOutcome.Failure("runtime_not_ready")
         if (dispatchEpoch != call.epoch) {
@@ -2683,7 +2821,7 @@ internal class DeviceAccessHost(
             }
             return when (result) {
                 is PhoneControlResult.Ok -> {
-                    if (userStopped || armedOwner != owner) {
+                    if (userStopped || phonePause.isPaused(owner) || captureRevision != phoneControlRevision.get() || armedOwner != owner) {
                         result.value.bytes.fill(0)
                         return PlatformToolOutcome.Failure("phone_stopped_by_user")
                     }
@@ -3478,6 +3616,7 @@ internal class DeviceAccessHost(
 
     private companion object {
         const val CREDENTIAL_NAMESPACE = "floe-system-access-v1"
+        const val KEY_PHONE_PAUSE = "phone_paused_run_v1"
         const val KEY_PACKAGES = "allowed_packages"
         const val KEY_ROOTS = "file_roots"
         const val KEY_APP_DATA_ROOTS = "app_data_roots"
