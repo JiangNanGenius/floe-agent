@@ -26,7 +26,6 @@ internal object LinuxDesktopCommands {
         val script = """
             set -eu
             umask 077
-            $installCommand
             command -v Xtigervnc >/dev/null || exit 73
             command -v vncpasswd >/dev/null || exit 74
             gui_dir="${'$'}{TMPDIR:-/tmp}/floe-gui-$nonce"
@@ -54,7 +53,7 @@ internal object LinuxDesktopCommands {
             gui_vnc=${'$'}!
             sleep 1
             kill -0 "${'$'}gui_vnc"
-            ${if (desktop) "dbus-run-session -- sh -c 'openbox & xfce4-panel & wait'" else "dbus-run-session -- openbox --config-file \"${'$'}gui_dir/rc.xml\""} > "${'$'}gui_dir/desktop.log" 2>&1 &
+            ${if (desktop) "sh -c 'openbox & xfce4-panel & wait'" else "openbox --config-file \"${'$'}gui_dir/rc.xml\""} > "${'$'}gui_dir/desktop.log" 2>&1 &
             gui_wm=${'$'}!
             launch_app() {
               gui_ack="${'$'}1"; gui_editor="${'$'}2"; shift 2
@@ -72,6 +71,7 @@ internal object LinuxDesktopCommands {
             }
             printf '%s%s\n' 'FLOE_READY:' '$nonce'
             while IFS= read -r gui_action; do
+              gui_action="${'$'}{gui_action%${'$'}'\r'}"
               case "${'$'}gui_action" in
                 ping:*) printf '\nFLOE_PONG:%s\n' "${'$'}{gui_action#ping:}" ;;
                 run:*)
@@ -129,7 +129,10 @@ internal object LinuxDesktopCommands {
               esac
             done
         """.trimIndent()
-        return "bash -c ${quote(script)}\n"
+        // One bus per owned desktop: applications must inherit the same
+        // session as its window manager, rather than autolaunching another bus.
+        val bootstrap = "set -eu\n$installCommand\nexec dbus-run-session -- bash -c ${quote(script)}"
+        return "bash -c ${quote(bootstrap)}\n"
     }
 
     fun application(name: String, install: Boolean, nonce: String? = null): ByteArray {
