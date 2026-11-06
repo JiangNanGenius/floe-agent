@@ -1,0 +1,40 @@
+{
+  "url": "https://github.com/epam/ketcher/releases/download/v3.18.0/ketcher-standalone-3.18.0.zip",
+  "assetID": 541228049,
+  "sha256": "484e7f10a0e74808ae5f43f0e6448db6f4d884bdd2189aa271108474167a3e7e",
+  "version": "3.18.0",
+  "omittedUnusedEntrypoints": [
+    "duo.html",
+    "popup.html",
+    "iframe.html",
+    "closable.html",
+    "static/css/closable.96b87be0.css",
+    "static/css/popup.96b87be0.css",
+    "static/css/duo.5970bf8e.css",
+    "static/js/duo.299d8306.js.LICENSE.txt",
+    "static/js/popup.39267369.js",
+    "static/js/popup.39267369.js.LICENSE.txt",
+    "static/js/duo.299d8306.js",
+    "static/js/closable.4741fe94.js.LICENSE.txt",
+    "static/js/closable.4741fe94.js"
+  ],
+  "bundledFiles": {
+    "apple-touch-icon.png": "f414dcb2c13ea591559b6373070b7a5d4f59b59ef5910c5fa013a80c74a162a2",
+    "asset-manifest.json": "499dc7fdb220527d4e01810315763c920d276811460d9bda2e32092c0eecf1f0",
+    "favicon-16x16.png": "b17e9b5e3467455a41e611edc0f49b05cf2f02d7569524a958cfdb5d22c989d9",
+    "favicon-32x32.png": "5cc22edce0ac5dd4b4a20b9a4b828d08ae312941b03f60aa3fe467a6bf9db561",
+    "favicon.ico": "87a3fe8c44e333cfeaaa3e69151bfb36d0302b5e97bb392219cf1489be274760",
+    "index.html": "7541f4a58a3d8616ecd3d4c3bc80c3ec365b10748136686b54a104c041358174",
+    "logo.svg": "0cc1fa734753e99ae6bc8edaaae519b67c8fde53142761a730b0c0a510496812",
+    "manifest.json": "59292c1075edbc4bf0b8dddcaa50220bb8eae8c3f01ada8d0428f4762d30ac57",
+    "robots.txt": "90d24bc3bf698ac1e173739502298ccca72adf1f564fab05f484b8c48d1cadd2",
+    "serve.json": "2e92566bf89257dea9041b5fc2b7d73e467fd55dbc801a87f3ce17d54799d133",
+    "static/css/main.96b87be0.css": "ec2018005014cba5df4a14abf86a3fc43be54711a711fab2cd989439214e35b1",
+    "static/js/114.cd66d630.chunk.js": "fa3aa63280958a4b8c07203e69fede3b7c6367af47773d062083cb09abbb1cca",
+    "static/js/127.aa15387f.chunk.js": "6d10519a52025d6f181bfb4aed8bf937171ee1efc2d3429273b638f7c94337d4",
+    "static/js/127.aa15387f.chunk.js.LICENSE.txt": "d6f631a317b53b4cab89179e3cfb894fde163e08fd65815b1a955d3f4a1a9b5b",
+    "static/js/609.d5254829.chunk.js": "0c8f0f966b89cee9cdcd9de859fed430eafd46de89134319f8be5f135fe87ee7",
+    "static/js/main.e47c48ad.js": "b8716a39486e7259e7c2cfcd29278044768d22cb60018589b1d5c1175c27f583",
+    "static/js/main.e47c48ad.js.LICENSE.txt": "d8a8836ee5eca7097c14f7beddf6e18209a6132bcc8b8939580af8fd85b6a2c2"
+  }
+}

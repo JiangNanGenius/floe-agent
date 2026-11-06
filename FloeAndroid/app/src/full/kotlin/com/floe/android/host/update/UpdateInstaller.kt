@@ -920,11 +920,12 @@ internal class AppUpdateInstaller(
 /** Private callback: the pending confirmation intent is never exposed to a model. */
 class AppUpdateInstallReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val sessionID = intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1)
-        if (sessionID <= 0 || sessionID != intent.getIntExtra(AppUpdateInstaller.EXTRA_SESSION_ID, -2)) {
-            return
-        }
         val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
+        val reportedID = intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1)
+        val record = PendingInstall.fromJson(SharedPrefsUpdateStore(context).pendingInstallJson)
+        val sessionID = UpdateInstallCallbackPolicy.owner(record,
+            intent.getIntExtra(AppUpdateInstaller.EXTRA_SESSION_ID, -1), reportedID,
+            status == PackageInstaller.STATUS_PENDING_USER_ACTION) ?: return
         when (status) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 @Suppress("DEPRECATION")
@@ -933,7 +934,8 @@ class AppUpdateInstallReceiver : BroadcastReceiver() {
                 } else {
                     intent.getParcelableExtra(Intent.EXTRA_INTENT)
                 }
-                if (confirmation != null) {
+                if (confirmation != null &&
+                    confirmation.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1) == reportedID) {
                     AppUpdateInstallEvents.publish(
                         InstallEvent.Confirmation(sessionID, confirmation),
                     )

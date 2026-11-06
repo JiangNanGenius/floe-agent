@@ -1,0 +1,229 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#ifndef AVOGADRO_CORE_GAUSSIANSETTOOLS_H
+#define AVOGADRO_CORE_GAUSSIANSETTOOLS_H
+
+#include "avogadrocoreexport.h"
+
+#include "basisset.h"
+#include "gaussianset.h"
+#include "vector.h"
+
+#include <vector>
+
+namespace Avogadro::Core {
+
+class Cube;
+class Molecule;
+
+/**
+ * @brief Pre-packed shell metadata for fast evaluation.
+ * Concentrates all per-shell data from GaussianSet into a single contiguous
+ * struct, eliminating repeated indirect lookups into separate vectors during
+ * the hot evaluation loop.
+ */
+struct ShellInfo
+{
+  int type;               //! Shell type enum (GaussianSet::S, P, D, etc.)
+  int L;                  //! Angular momentum (0=S, 1=P, 2=D, ...)
+  unsigned int atomIndex; //! Index into atom positions
+  unsigned int moIndex;   //! Starting row in MO matrix for this shell
+  unsigned int gtoStart;  //! First primitive index in exponent/coeff arrays
+  unsigned int gtoEnd;    //! One-past-last primitive index
+  unsigned int cStart;    //! First index into normalized coefficient array
+  int nComponents;        //! Number of basis functions in this shell
+  double cutoffSquared;   //! Precomputed cutoff distance squared
+  double centerBohr[3];   //! Shell center in Bohr (precomputed)
+};
+
+/**
+ * @class GaussianSetTools gaussiansettools.h <avogadro/core/gaussiansettools.h>
+ * @brief Provide tools to calculate molecular orbitals, electron densities and
+ * other derived data stored in a GaussianSet result.
+ * @author Marcus D. Hanwell
+ */
+
+class AVOGADROCORE_EXPORT GaussianSetTools
+{
+public:
+  explicit GaussianSetTools(Molecule* mol = nullptr);
+  ~GaussianSetTools() = default;
+
+  /**
+   * @brief Set the electron type, must be called once MOs are available
+   * @param type The electron type - Alpha, Beta, or Paired (default).
+   */
+  void setElectronType(BasisSet::ElectronType type) { m_type = type; }
+
+  /**
+   * @brief Populate the cube with values for the molecular orbital.
+   * @param cube The cube to be populated with values.
+   * @param molecularOrbitalNumber The molecular orbital number.
+   * @return True on success, false on failure.
+   */
+  bool calculateMolecularOrbital(Cube& cube, int molecularOrbitalNumber) const;
+
+  /**
+   * @brief Populate an x-slab [iStart, iEnd) of the cube with MO values.
+   * Threads can call this concurrently with non-overlapping i ranges; each
+   * slab maps to a contiguous region of the cube buffer so writes never
+   * conflict. Out-of-range bounds are clamped to [0, nx).
+   *
+   * The slab functions read only the basis set the tools were built from,
+   * not the molecule's current one, so the caller must keep that basis set
+   * alive (e.g. with Molecule::sharedBasisSet()) and check isValid() first.
+   * @return True on success, false on failure.
+   */
+  bool calculateMolecularOrbitalSlab(Cube& cube, int molecularOrbitalNumber,
+                                     int iStart, int iEnd) const;
+
+  /**
+   * @brief Calculate the value of the specified molecular orbital at the
+   * position specified.
+   * @param position The position in space to calculate the value.
+   * @param molecularOrbitalNumber The molecular orbital number.
+   * @return The value of the molecular orbital at the position specified.
+   */
+  double calculateMolecularOrbital(const Vector3& position,
+                                   int molecularOrbitalNumber) const;
+
+  /**
+   * @brief Populate the cube with values for the electron density.
+   * @param cube The cube to be populated with values.
+   * @return True on success, false on failure.
+   */
+  bool calculateElectronDensity(Cube& cube) const;
+
+  /**
+   * @brief Populate an x-slab [iStart, iEnd) of the cube with electron density.
+   * Safe to call from concurrent threads on non-overlapping slabs.
+   * @return True on success, false on failure.
+   */
+  bool calculateElectronDensitySlab(Cube& cube, int iStart, int iEnd) const;
+
+  /**
+   * @brief Calculate the value of the electron density at the position
+   * specified.
+   * @param position The position in space to calculate the value.
+   * @return The value of the electron density at the position specified.
+   */
+  double calculateElectronDensity(const Vector3& position) const;
+
+  /**
+   * @brief Populate the cube with values for the spin density.
+   * @param cube The cube to be populated with values.
+   * @return True on success, false on failure.
+   */
+  bool calculateSpinDensity(Cube& cube) const;
+
+  /**
+   * @brief Populate an x-slab [iStart, iEnd) of the cube with spin density.
+   * Safe to call from concurrent threads on non-overlapping slabs.
+   * @return True on success, false on failure.
+   */
+  bool calculateSpinDensitySlab(Cube& cube, int iStart, int iEnd) const;
+
+  /**
+   * @brief Calculate the value of the electron spin density at the position
+   * specified.
+   * @param position The position in space to calculate the value.
+   * @return The value of the spin density at the position specified.
+   */
+  double calculateSpinDensity(const Vector3& position) const;
+
+  /**
+   * @brief Check that the basis set is valid and can be used.
+   * @return True if valid, false otherwise.
+   */
+  bool isValid() const;
+
+private:
+  Molecule* m_molecule;
+  GaussianSet* m_basis = nullptr;
+  BasisSet::ElectronType m_type = BasisSet::Paired;
+
+  // Pre-packed shell data built once in the constructor
+  std::vector<ShellInfo> m_shells;
+  // Local contiguous copies of exponents and normalized coefficients
+  std::vector<double> m_gtoA;
+  std::vector<double> m_gtoCN;
+  // False if buildShellData() rejected the basis set as inconsistent
+  bool m_valid = true;
+  // Rows an MO or density matrix needs to cover every evaluated shell
+  size_t m_requiredRows = 0;
+
+  // Build m_shells and local coefficient copies from GaussianSet
+  void buildShellData();
+
+  // True if the matrix has a row for every basis function the shells use
+  bool moMatrixFits(const MatrixX& moMat) const;
+
+  // Calculate cutoff distance for a single shell
+  double calculateShellCutoff(const ShellInfo& shell) const;
+
+  // Shell-major grid evaluation (full grid). Retained as private wrappers for
+  // backwards compatibility — both delegate to the slab methods with the full
+  // [0, nx) range.
+  bool calculateMolecularOrbitalGrid(Cube& cube, int moNumber) const;
+  bool calculateElectronDensityGrid(Cube& cube) const;
+
+  // Returns false (writing nothing) if moMat or moIndex do not fit the shells.
+  // Evaluate a single MO into an x-slab [iStart, iEnd) of a double-precision
+  // grid buffer. The buffer is sized (iEnd - iStart) * ny * nz and indexed
+  // via (i - iStart) * ny * nz + j * nz + k inside the shell evaluators.
+  bool evaluateMOGrid(int moIndex, const MatrixX& moMat, const Vector3& minBohr,
+                      const Vector3& spBohr, const std::vector<double>& gridX,
+                      const std::vector<double>& gridY,
+                      const std::vector<double>& gridZ, int nx, int ny, int nz,
+                      int iStart, int iEnd, double* output) const;
+
+  // Backwards-compatible overload of evaluateMOGrid: equivalent to passing
+  // iStart=0, iEnd=nx (full grid).
+  bool evaluateMOGrid(int moIndex, const MatrixX& moMat, const Vector3& minBohr,
+                      const Vector3& spBohr, const std::vector<double>& gridX,
+                      const std::vector<double>& gridY,
+                      const std::vector<double>& gridZ, int nx, int ny, int nz,
+                      double* output) const;
+
+  /**
+   * @brief Calculate the values at this position in space. The public calculate
+   * functions call this function to prepare values before multiplying by the
+   * molecular orbital or density matrix elements.
+   * @param position The position in space to calculate the value.
+   * @param values Output vector to store basis function values (will be resized
+   * and zeroed).
+   */
+  void calculateValues(const Vector3& position, Eigen::VectorXd& values) const;
+
+  void pointS(const ShellInfo& shell, double dr2,
+              Eigen::VectorXd& values) const;
+  void pointP(const ShellInfo& shell, const Vector3& delta, double dr2,
+              Eigen::VectorXd& values) const;
+  void pointD(const ShellInfo& shell, const Vector3& delta, double dr2,
+              Eigen::VectorXd& values) const;
+  void pointD5(const ShellInfo& shell, const Vector3& delta, double dr2,
+               Eigen::VectorXd& values) const;
+  void pointF(const ShellInfo& shell, const Vector3& delta, double dr2,
+              Eigen::VectorXd& values) const;
+  void pointF7(const ShellInfo& shell, const Vector3& delta, double dr2,
+               Eigen::VectorXd& values) const;
+  void pointG(const ShellInfo& shell, const Vector3& delta, double dr2,
+              Eigen::VectorXd& values) const;
+  void pointG9(const ShellInfo& shell, const Vector3& delta, double dr2,
+               Eigen::VectorXd& values) const;
+
+  // Map from shell type enum to angular momentum
+  // S, SP, P, D, D5, F, F7, G, G9, H, H11, I, I13
+  static constexpr int symToL[13] = { 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6 };
+
+  // Map from shell type enum to number of basis function components
+  static constexpr int symToNComp[13] = { 1,  4, 3,  6,  5,  10, 7,
+                                          15, 9, 21, 11, 28, 13 };
+};
+
+} // namespace Avogadro::Core
+
+#endif // AVOGADRO_CORE_GAUSSIANSETTOOLS_H

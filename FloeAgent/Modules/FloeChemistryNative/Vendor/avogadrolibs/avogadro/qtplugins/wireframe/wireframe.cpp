@@ -1,0 +1,260 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "wireframe.h"
+
+#include <avogadro/core/elements.h>
+#include <avogadro/core/utilities.h>
+#include <avogadro/qtgui/molecule.h>
+#include <avogadro/rendering/geometrynode.h>
+#include <avogadro/rendering/groupnode.h>
+#include <avogadro/rendering/widelinegeometry.h>
+#include <avogadro/rendering/spheregeometry.h>
+
+#include <QtCore/QPointer>
+#include <QtCore/QSettings>
+#include <QtWidgets/QCheckBox>
+#include <QtWidgets/QDoubleSpinBox>
+#include <QtWidgets/QFormLayout>
+#include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QLabel>
+#include <QtWidgets/QVBoxLayout>
+#include <QtWidgets/QWidget>
+
+#include <algorithm>
+#include <cmath>
+#include <locale>
+#include <sstream>
+
+namespace Avogadro::QtPlugins {
+
+using Core::Array;
+using Core::Elements;
+using QtGui::PluginLayerManager;
+using Rendering::GeometryNode;
+using Rendering::GroupNode;
+using Rendering::SphereGeometry;
+using Rendering::WideLineGeometry;
+
+namespace {
+// See the comment in label.cpp: tokens are always written with a
+// classic-locale stream, but older settings saved under a comma-decimal
+// locale (Qt calls setlocale(LC_ALL, "") on Unix) may still use ','.
+std::string commaToDot(std::string token)
+{
+  std::replace(token.begin(), token.end(), ',', '.');
+  return token;
+}
+} // namespace
+
+struct LayerWireframe : Core::LayerData
+{
+  // The panel is parented elsewhere (a dock), which may delete it first.
+  QPointer<QWidget> widget;
+  bool multiBonds = true;
+  bool showHydrogens = true;
+  float lineWidth = 1.0f;
+
+  LayerWireframe()
+  {
+    widget = nullptr;
+    QSettings settings;
+    multiBonds = settings.value("wireframe/multiBonds", true).toBool();
+    showHydrogens = settings.value("wireframe/showHydrogens", true).toBool();
+    lineWidth = settings.value("wireframe/lineWidth", 1.0).toDouble();
+  }
+
+  LayerWireframe(std::string settings)
+  {
+    widget = nullptr;
+    deserialize(settings);
+  }
+
+  LayerData* clone() final
+  {
+    // The settings widget belongs to this layer, so the copy must not
+    // share it: the copy's destructor would delete it.
+    auto* copy = new LayerWireframe(*this);
+    copy->widget = nullptr;
+    return copy;
+  }
+
+  ~LayerWireframe() override
+  {
+    if (widget)
+      widget->deleteLater();
+  }
+
+  std::string serialize() final
+  {
+    std::ostringstream output;
+    output.imbue(std::locale::classic());
+    output << boolToString(multiBonds) << " " << boolToString(showHydrogens)
+           << " " << lineWidth;
+    return output.str();
+  }
+  void deserialize(std::string text) final
+  {
+    std::stringstream ss(text);
+    std::string aux;
+    if (ss >> aux)
+      multiBonds = stringToBool(aux);
+    if (ss >> aux)
+      showHydrogens = stringToBool(aux);
+    if (ss >> aux) {
+      if (auto v = Core::lexicalCast<float>(commaToDot(aux));
+          v && std::isfinite(*v) && *v > 0.0f)
+        // the "Line width" spin box range in setupWidget()
+        lineWidth = std::clamp(*v, 0.5f, 5.0f);
+    }
+  }
+
+  void setupWidget(Wireframe* slot)
+  {
+    if (!widget) {
+      widget = new QWidget(qobject_cast<QWidget*>(slot->parent()));
+      auto* v = new QVBoxLayout;
+
+      // line width
+      auto* spin = new QDoubleSpinBox;
+      spin->setRange(0.5, 5.0);
+      spin->setSingleStep(0.25);
+      spin->setDecimals(2);
+      spin->setValue(lineWidth);
+      QObject::connect(spin, SIGNAL(valueChanged(double)), slot,
+                       SLOT(setWidth(double)));
+      auto* form = new QFormLayout;
+      form->addRow(QObject::tr("Line width:"), spin);
+      v->addLayout(form);
+
+      // options
+      auto* check = new QCheckBox(QObject::tr("Show multiple bonds"));
+      check->setChecked(multiBonds);
+      QObject::connect(check, &QCheckBox::clicked, slot,
+                       &Wireframe::multiBonds);
+      v->addWidget(check);
+
+      check = new QCheckBox(QObject::tr("Show hydrogens"));
+      check->setChecked(showHydrogens);
+      QObject::connect(check, &QCheckBox::clicked, slot,
+                       &Wireframe::showHydrogens);
+      v->addWidget(check);
+
+      v->addStretch(1);
+      widget->setLayout(v);
+    }
+  }
+};
+
+Wireframe::Wireframe(QObject* p) : ScenePlugin(p), m_group(nullptr)
+{
+  m_layerManager = PluginLayerManager(m_name);
+}
+
+Wireframe::~Wireframe() {}
+
+void Wireframe::process(const QtGui::Molecule& molecule,
+                        Rendering::GroupNode& node)
+{
+  m_layerManager.load<LayerWireframe>();
+  // Add a node to contain all of the lines.
+  m_group = &node;
+  auto* geometry = new GeometryNode;
+  node.addChild(geometry);
+
+  auto* lines = new WideLineGeometry;
+  lines->identifier().molecule = &molecule;
+  lines->identifier().type = Rendering::BondType;
+  // add tiny atom sites for selection
+  auto* atoms = new SphereGeometry;
+  atoms->identifier().molecule = &molecule;
+  atoms->identifier().type = Rendering::AtomType;
+  auto* selectedAtoms = new SphereGeometry;
+  selectedAtoms->setOpacity(0.42);
+  Vector3ub selectedColor(0, 0, 255);
+
+  geometry->addDrawable(lines);
+  geometry->addDrawable(atoms);
+  geometry->addDrawable(selectedAtoms);
+  auto layers = m_layerManager.snapshot<LayerWireframe>();
+  lines->reserve(molecule.bondCount());
+  for (Index i = 0; i < molecule.bondCount(); ++i) {
+    Core::Bond bond = molecule.bond(i);
+    Index a1 = bond.atom1().index();
+    Index a2 = bond.atom2().index();
+    size_t layer1 = layers.getLayerID(a1);
+    size_t layer2 = layers.getLayerID(a2);
+    if (!layers.layerEnabled(layer1) && !layers.layerEnabled(layer2)) {
+      continue;
+    }
+    auto* interface1 = layers.setting(layer1);
+    auto* interface2 = layers.setting(layer2);
+    if (!interface1->showHydrogens && !interface2->showHydrogens &&
+        (bond.atom1().atomicNumber() == 1 ||
+         bond.atom2().atomicNumber() == 1)) {
+      continue;
+    }
+    Vector3f pos1 = bond.atom1().position3d().cast<float>();
+    Vector3f pos2 = bond.atom2().position3d().cast<float>();
+    Vector3ub color1(Elements::color(bond.atom1().atomicNumber()));
+    Vector3ub color2(Elements::color(bond.atom2().atomicNumber()));
+    float lineWidth = interface1->lineWidth;
+
+    if (interface1->multiBonds || interface2->multiBonds)
+      lineWidth *= bond.order();
+    // Scale from the old pixel-based range (0.5-5.0) to world-space units
+    lines->addLine(pos1, pos2, color1, color2,
+                   lineWidth * WideLineGeometry::lineWidthScale);
+    // add small spheres to allow the selection tool to work
+    // smaller than this gets ignored
+    atoms->addSphere(pos1, color1, 0.001f, a1);
+    atoms->addSphere(pos2, color2, 0.001f, a2);
+    if (bond.atom1().selected())
+      selectedAtoms->addSphere(pos1, selectedColor, 0.3f, i);
+    if (bond.atom2().selected())
+      selectedAtoms->addSphere(pos2, selectedColor, 0.3f, i);
+  }
+}
+
+QWidget* Wireframe::setupWidget()
+{
+  auto* interface = m_layerManager.getSetting<LayerWireframe>();
+  interface->setupWidget(this);
+  return interface->widget;
+}
+
+void Wireframe::multiBonds(bool show)
+{
+  auto* interface = m_layerManager.getSetting<LayerWireframe>();
+  if (show != interface->multiBonds) {
+    interface->multiBonds = show;
+    emit drawablesChanged();
+  }
+  QSettings settings;
+  settings.setValue("wireframe/multiBonds", show);
+}
+
+void Wireframe::showHydrogens(bool show)
+{
+  auto* interface = m_layerManager.getSetting<LayerWireframe>();
+  if (show != interface->showHydrogens) {
+    interface->showHydrogens = show;
+    emit drawablesChanged();
+  }
+  QSettings settings;
+  settings.setValue("wireframe/showHydrogens", show);
+}
+
+void Wireframe::setWidth(double width)
+{
+  auto* interface = m_layerManager.getSetting<LayerWireframe>();
+  interface->lineWidth = float(width);
+  emit drawablesChanged();
+
+  QSettings settings;
+  settings.setValue("wireframe/lineWidth", width);
+}
+
+} // namespace Avogadro::QtPlugins

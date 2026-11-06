@@ -1,0 +1,21 @@
+# Security Policy
+
+## Supported Versions
+
+We support security updates on the most recent release and current nightly snapshots.
+We will work with distributions (e.g., Ubuntu, FreeBSD, etc.) to provide security patches for widely used long-term-support OS.
+
+Going forward, we will indicate particular releases for long-term-support, although we intend to keep to a frequent release schedule.
+
+| Version | Supported          |
+| ------- | ------------------ |
+| 2.1.x   | :white_check_mark: |
+| 2.0.x   | :white_check_mark: |
+| < 2.x   | :x:                |
+
+## Reporting a Vulnerability
+
+We currently support private security vulnerability reporting through our
+[GitHub](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing/privately-reporting-a-security-vulnerability)
+pages. We will work to verify the security vulnerability within 14 days
+and a patch or new release within 30 days of reporting.

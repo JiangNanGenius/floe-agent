@@ -1,0 +1,395 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "obfileformat.h"
+
+#include "obprocess.h"
+
+#include <avogadro/core/molecule.h>
+#include <avogadro/core/spacegroups.h>
+#include <avogadro/core/utilities.h>
+#include <avogadro/io/cifsymmetry.h>
+
+#include <QtCore/QCoreApplication>
+#include <QtCore/QDebug>
+#include <QtCore/QFileInfo>
+#include <QtCore/QTemporaryFile>
+#include <QtCore/QTimer>
+
+using namespace std::string_literals;
+
+namespace Avogadro::QtPlugins {
+
+namespace {
+
+// Open Babel reduces the space group of a CIF file to a symbol, which often
+// leaves out the origin choice or the axes (the IZA zeolites write 'F d 3 m'
+// for origin choice 2) and sometimes disagrees with the file's own symmetry
+// operations. Resolve the setting from the operations, which are not
+// ambiguous, and then from an exact Hall symbol. Whatever the reader found is
+// kept if neither of them identifies an entry of the table.
+//
+// This re-scan of the file is needed because Open Babel's CJSON writer emits
+// only the space group symbol; it can go once Open Babel writes the hall
+// number.
+void resolveCifSpaceGroup(std::string_view cifText, Core::Molecule& molecule)
+{
+  if (molecule.unitCell() == nullptr)
+    return;
+
+  const Io::CifSymmetry symmetry = Io::readCifSymmetry(cifText);
+
+  // The operations of the file are in no table entry (a non-standard setting
+  // such as I-1, or an origin that Open Babel's symbol does not carry), so no
+  // Hall number can describe the structure. The file's own operations beat
+  // Open Babel's guess of the group: expand the atoms with them, like reading
+  // a calculation where all the atoms are there, and call the result P1.
+  if (symmetry.hasUntabulatedOperations()) {
+    const unsigned short previous = molecule.hallNumber();
+    const std::size_t before = molecule.atomCount();
+    if (Io::expandCifAtoms(symmetry, molecule)) {
+      qDebug() << "CIF space group: the" << symmetry.operations.size()
+               << "symmetry operations match no table entry; expanded" << before
+               << "atoms to" << molecule.atomCount()
+               << "with them and set P1 (was Hall number" << previous << ")";
+      return;
+    }
+    qDebug() << "CIF space group: the symmetry operations match no table"
+             << "entry and could not be applied; keeping the reader's result";
+  }
+
+  const unsigned short found = symmetry.hallNumber();
+  if (found == 0)
+    return;
+
+  if (symmetry.hallFromOperations != 0 && symmetry.hallFromSymbol != 0 &&
+      symmetry.hallFromOperations != symmetry.hallFromSymbol) {
+    qDebug() << "CIF space group: the symmetry operations give Hall number"
+             << symmetry.hallFromOperations << "but the Hall symbol"
+             << symmetry.hallSymbol.c_str() << "gives"
+             << symmetry.hallFromSymbol << "- using the operations";
+  }
+
+  const char* key = Core::SpaceGroups::internationalNumberKey();
+  const unsigned short previous = molecule.hallNumber();
+  // read before setHallNumber() below, which removes the key
+  const bool hadNumber = molecule.hasData(key);
+
+  // Only the identity is listed (or the Hall symbol is "P 1"), yet the reader
+  // found a larger group. Either every atom is already in the file, so
+  // expanding with that group adds nothing, or the operations were stripped
+  // from the file, and P1 would drop the symmetry-related atoms. The group
+  // that the file names is right, or harmless, in both cases.
+  if (found == 1 && ((previous != 0 && previous != 1) || hadNumber)) {
+    qDebug() << "CIF space group: only the identity is listed but the file"
+             << "names Hall number" << previous << "- keeping the latter";
+    return;
+  }
+
+  if (previous != found) {
+    qDebug() << "CIF space group: Hall number" << found
+             << "from the symmetry in the file, replacing" << previous;
+  }
+
+  molecule.setHallNumber(found);
+}
+
+bool isCifFormat(const std::vector<std::string>& extensions)
+{
+  for (const std::string& extension : extensions) {
+    if (Core::caseInsensitiveEquals(extension, "cif"))
+      return true;
+  }
+  return false;
+}
+
+} // namespace
+
+/**
+ * @brief The ProcessListener class allows synchronous use of OBProcess.
+ */
+class OBFileFormat::ProcessListener : public QObject
+{
+  Q_OBJECT
+public:
+  ProcessListener() : m_finished(false) {}
+
+  bool waitForOutput(QByteArray& output, int msTimeout = 120000)
+  {
+    if (!wait(msTimeout))
+      return false;
+
+    // success!
+    output = m_output;
+    return true;
+  }
+
+public slots:
+  void responseReceived(const QByteArray& output)
+  {
+    m_finished = true;
+    m_output = output;
+  }
+
+private:
+  bool wait(int msTimeout)
+  {
+    QTimer timer;
+    timer.start(msTimeout);
+
+    while (timer.isActive() && !m_finished)
+      qApp->processEvents(QEventLoop::ExcludeUserInputEvents, 500);
+
+    return m_finished;
+  }
+
+  OBProcess* m_process;
+  bool m_finished;
+  QByteArray m_output;
+};
+
+OBFileFormat::OBFileFormat(const std::string& name_,
+                           const std::string& identifier_,
+                           const std::string& description_,
+                           const std::string& specificationUrl_,
+                           const std::vector<std::string> fileExtensions_,
+                           const std::vector<std::string> mimeTypes_,
+                           const std::string& defaultFormat_, bool fileOnly_)
+  : m_description(description_), m_fileExtensions(fileExtensions_),
+    m_mimeTypes(mimeTypes_), m_identifier(identifier_), m_name(name_),
+    m_specificationUrl(specificationUrl_), m_defaultFormat(defaultFormat_),
+    m_fileOnly(fileOnly_)
+{
+}
+
+OBFileFormat::~OBFileFormat() {}
+
+bool OBFileFormat::read(std::istream& in, Core::Molecule& molecule)
+{
+  // Allow blocking until the read is completed.
+  OBProcess proc;
+  ProcessListener listener;
+  QObject::connect(&proc, SIGNAL(convertFinished(QByteArray)), &listener,
+                   SLOT(responseReceived(QByteArray)));
+
+  // Just grab the first file extension from the list -- all extensions for a
+  // given format map to the same parsers in OB.
+  if (m_fileExtensions.empty()) {
+    appendError("Internal error: No file extensions set.");
+    return false;
+  }
+
+  // If we are reading a pure-2D format, generate 3D coordinates:
+  QStringList options;
+  QStringList formats2D;
+  formats2D << "smi"
+            << "smiles"
+            << "can"
+            << "inchi"
+            << "wln";
+  if (formats2D.contains(QString::fromStdString(m_fileExtensions.front())))
+    options << "--gen3d";
+
+  // Check if we have extra arguments for open babel
+  std::vector<std::string> extraArgs;
+  stringArrayOption("arguments", extraArgs);
+  for (const std::string& arg : extraArgs)
+    options << QString::fromStdString(arg);
+
+  // check if we're going to read to a different format
+  // default is CML or CJSON
+  std::string formatOption = m_defaultFormat;
+  stringOption("format", formatOption);
+  QString format = QString::fromStdString(formatOption);
+
+  // The text of a CIF file, to read its symmetry operations: Open Babel's
+  // conversion keeps only the space group symbol.
+  const bool isCif = isCifFormat(m_fileExtensions);
+  QByteArray cifText;
+
+  if (!m_fileOnly) {
+    // Determine length of data
+    in.seekg(0, std::ios_base::end);
+    std::istream::pos_type length = in.tellg();
+    in.seekg(0, std::ios_base::beg);
+    in.clear();
+
+    // Extract char data
+    QByteArray input;
+    input.resize(static_cast<int>(length));
+    in.read(input.data(), length);
+    if (in.gcount() != length) {
+      appendError("Error reading stream into buffer!");
+      return false;
+    }
+    if (isCif)
+      cifText = input;
+
+    // Perform the conversion.
+    if (!proc.convert(input, QString::fromStdString(m_fileExtensions.front()),
+                      format, options)) {
+      appendError("OpenBabel conversion failed!");
+      return false;
+    }
+  } else {
+    // Can only read files. Need absolute path.
+    QString filename = QString::fromStdString(fileName());
+    if (filename.isEmpty()) {
+      // no choice but to write to a temporary file
+      in.seekg(0, std::ios_base::end);
+      std::istream::pos_type length = in.tellg();
+      in.seekg(0, std::ios_base::beg);
+      in.clear();
+
+      // Extract data, hope it's not big
+      QByteArray input;
+      input.resize(static_cast<int>(length));
+      in.read(input.data(), length);
+
+      QTemporaryFile tmpFile;
+      tmpFile.setAutoRemove(false);
+      if (!tmpFile.open()) {
+        appendError("Internal error -- failed to create a temporary file");
+        return false;
+      }
+      tmpFile.write(input.data());
+      tmpFile.close();
+      filename = tmpFile.fileName();
+    }
+
+    if (!QFileInfo(filename).isAbsolute()) {
+      appendError("Internal error -- filename must be absolute! " +
+                  filename.toStdString());
+      return false;
+    }
+
+    // Perform the conversion.
+    if (!proc.convert(filename,
+                      QString::fromStdString(m_fileExtensions.front()), format,
+                      options)) {
+      appendError("OpenBabel conversion failed!");
+      return false;
+    }
+  }
+
+  QByteArray output;
+  if (!listener.waitForOutput(output)) {
+    appendError("Conversion timed out."s);
+    return false;
+  }
+
+  if (output.isEmpty()) {
+    appendError("OpenBabel error: conversion failed."s);
+    return false;
+  }
+
+  if (format == "cml") {
+    if (!m_cmlFormat.readString(std::string(output.constData()), molecule)) {
+      appendError("Error while reading OpenBabel-generated CML:"s);
+      appendError(m_cmlFormat.error());
+      return false;
+    }
+  } else if (format == "cjson") {
+    if (!m_cjsonFormat.readString(std::string(output.constData()), molecule)) {
+      appendError("Error while reading OpenBabel-generated CJSON:"s);
+      appendError(m_cjsonFormat.error());
+      return false;
+    }
+  } else if (format == "pdb") {
+    if (!m_pdbFormat.readString(std::string(output.constData()), molecule)) {
+      appendError("Error while reading OpenBabel-generated PDB:"s);
+      appendError(m_pdbFormat.error());
+      return false;
+    }
+  } else {
+    return false; // unknown format
+  }
+
+  if (!cifText.isEmpty()) {
+    resolveCifSpaceGroup(
+      std::string_view(cifText.constData(),
+                       static_cast<std::size_t>(cifText.size())),
+      molecule);
+  }
+
+  return true;
+}
+
+bool OBFileFormat::write(std::ostream& out, const Core::Molecule& molecule)
+{
+  // Check if we have extra arguments for open babel
+  QStringList options;
+  std::vector<std::string> extraArgs;
+  stringArrayOption("arguments", extraArgs);
+  for (const std::string& arg : extraArgs)
+    options << QString::fromStdString(arg);
+
+#ifndef NDEBUG
+  qDebug() << " writing to " << m_defaultFormat.c_str();
+#endif
+
+  // Generate CML or CJSON to give to OpenBabel
+  std::string outputString;
+  if (m_defaultFormat == "cml") {
+    if (!m_cmlFormat.writeString(outputString, molecule)) {
+      appendError("Error while writing CML:"s);
+      appendError(m_cmlFormat.error());
+      return false;
+    }
+  } else if (m_defaultFormat == "cjson") {
+    if (!m_cjsonFormat.writeString(outputString, molecule)) {
+      appendError("Error while writing CJSON:"s);
+      appendError(m_cjsonFormat.error());
+      return false;
+    }
+  }
+
+  // Block until the OpenBabel conversion finishes:
+  OBProcess proc;
+  ProcessListener listener;
+  QObject::connect(&proc, SIGNAL(convertFinished(QByteArray)), &listener,
+                   SLOT(responseReceived(QByteArray)));
+
+  // Just grab the first file extension from the list -- all extensions for a
+  // given format map to the same parsers in OB.
+  if (m_fileExtensions.empty()) {
+    appendError("Internal error: No file extensions set.");
+    return false;
+  }
+
+  proc.convert(QByteArray(outputString.c_str()), m_defaultFormat.c_str(),
+               QString::fromStdString(m_fileExtensions.front()), options);
+
+  QByteArray output;
+  if (!listener.waitForOutput(output)) {
+    appendError("Conversion timed out."s);
+    return false;
+  }
+
+  if (output.isEmpty()) {
+    appendError("OpenBabel error: conversion failed."s);
+    return false;
+  }
+
+  out.write(output.constData(), output.size());
+
+  return true;
+}
+
+void OBFileFormat::clear()
+{
+  Io::FileFormat::clear();
+}
+
+Io::FileFormat* OBFileFormat::newInstance() const
+{
+  return new OBFileFormat(m_name, m_identifier, m_description,
+                          m_specificationUrl, m_fileExtensions, m_mimeTypes,
+                          m_defaultFormat, m_fileOnly);
+}
+
+} // namespace Avogadro::QtPlugins
+
+#include "obfileformat.moc"

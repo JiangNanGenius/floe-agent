@@ -1,0 +1,1540 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "orca.h"
+
+#include <avogadro/core/elements.h>
+#include <avogadro/core/conformerquantity.h>
+#include <avogadro/core/molecule.h>
+#include <avogadro/core/utilities.h>
+
+#include <algorithm>
+#include <cstddef>
+#include <memory>
+#include <iostream>
+#include <fstream>
+
+using std::string;
+using std::vector;
+
+namespace Avogadro::QuantumIO {
+
+using Core::Array;
+using Core::Atom;
+using Core::GaussianSet;
+
+ORCAOutput::ORCAOutput() {}
+
+ORCAOutput::~ORCAOutput()
+{
+  clearBasisFunctions();
+}
+
+void ORCAOutput::clearBasisFunctions()
+{
+  for (auto* atomShells : m_basisFunctions) {
+    if (!atomShells)
+      continue;
+    for (auto* shell : *atomShells) {
+      delete shell;
+    }
+    delete atomShells;
+  }
+  m_basisFunctions.clear();
+}
+
+namespace {
+// ORCA prints MO coefficients as fixed-width columns of the form
+// [-]dd.dddddd. Adjacent (negative) values can run together with no
+// separating whitespace, so we can't simply split on spaces. This extracts
+// the same tokens as the regex "[-]?[0-9]{1,2}[.][0-9]{6}" (leftmost,
+// non-overlapping matches) but without constructing and running a
+// std::regex for every line of a potentially huge output file.
+void extractOrcaCoefficients(const std::string& line,
+                             std::vector<std::string>& list)
+{
+  list.clear();
+  const std::size_t n = line.size();
+  std::size_t i = 0;
+  while (i < n) {
+    const std::size_t start = i;
+    // optional leading minus sign
+    if (line[i] == '-')
+      ++i;
+    // one or two integer digits
+    std::size_t intDigits = 0;
+    while (i < n && intDigits < 2 && line[i] >= '0' && line[i] <= '9') {
+      ++i;
+      ++intDigits;
+    }
+    // decimal point followed by exactly six fractional digits
+    if (intDigits >= 1 && i < n && line[i] == '.') {
+      ++i;
+      std::size_t fracDigits = 0;
+      while (i < n && fracDigits < 6 && line[i] >= '0' && line[i] <= '9') {
+        ++i;
+        ++fracDigits;
+      }
+      if (fracDigits == 6) {
+        list.push_back(line.substr(start, i - start));
+        continue; // resume scanning after the match
+      }
+    }
+    // no match at this position, advance by one character
+    i = start + 1;
+  }
+}
+
+// Return the whitespace-delimited token at position @p index (0-based) of
+// @p line, without allocating a vector of every token. Matches the semantics
+// of Core::split(line, ' ') with skipEmpty = true (runs of spaces are
+// collapsed). Returns an empty string if there is no such token.
+std::string nthSpaceToken(const std::string& line, std::size_t index)
+{
+  const std::size_t n = line.size();
+  std::size_t i = 0;
+  std::size_t token = 0;
+  while (i < n) {
+    while (i < n && line[i] == ' ')
+      ++i;
+    if (i >= n)
+      break;
+    const std::size_t start = i;
+    while (i < n && line[i] != ' ')
+      ++i;
+    if (token == index)
+      return line.substr(start, i - start);
+    ++token;
+  }
+  return std::string();
+}
+} // namespace
+
+void ORCAOutput::flushVibrationData()
+{
+  // A set is only usable if the displacements and IR intensities line up with
+  // the frequencies, and the normal modes were actually printed. A job that
+  // died part way through a Hessian leaves frequencies whose displacements
+  // are all zero - modes that would list in the dialog but not animate - so
+  // drop that set rather than hand it to the molecule.
+  if (!m_frequencies.empty() && m_haveNormalModes &&
+      m_frequencies.size() == m_vibDisplacements.size() &&
+      m_frequencies.size() == m_IRintensities.size()) {
+    VibrationSet set;
+    set.conformerIndex = m_vibrationConformer;
+    // Core::Array has no move constructor, so swap rather than assign: the
+    // accumulators are cleared below either way.
+    set.frequencies.swap(m_frequencies);
+    set.irIntensities.swap(m_IRintensities);
+    set.ramanIntensities.swap(m_RamanIntensities);
+    set.displacements.swap(m_vibDisplacements);
+    set.vcdIntensities.swap(m_vcdIntensities);
+    m_vibrationSets.push_back(std::move(set));
+  }
+
+  m_frequencies.clear();
+  m_IRintensities.clear();
+  m_RamanIntensities.clear();
+  m_vcdIntensities.clear();
+  m_vibDisplacements.clear();
+  m_haveNormalModes = false;
+}
+
+std::vector<std::string> ORCAOutput::fileExtensions() const
+{
+  std::vector<std::string> extensions;
+  extensions.emplace_back("orca");
+  return extensions;
+}
+
+std::vector<std::string> ORCAOutput::mimeTypes() const
+{
+  return std::vector<std::string>();
+}
+
+bool ORCAOutput::read(std::istream& in, Core::Molecule& molecule)
+{
+  // Read the log file line by line
+  auto basis = std::make_unique<GaussianSet>();
+
+  while (!in.eof())
+    processLine(in, basis.get());
+
+  // Set up the molecule. m_atomNums and m_atomPos are filled by different
+  // blocks, so a truncated or malformed file can leave fewer positions than
+  // atomic numbers; take only the atoms that have both. If that is none, the
+  // "no atomic coordinates" error below fires as it always did.
+  const size_t atomsWithPositions =
+    std::min(m_atomNums.size(), m_atomPos.size());
+  for (size_t i = 0; i < atomsWithPositions; i++) {
+    Vector3 pos = m_atomPos[i] * BOHR_TO_ANGSTROM;
+    molecule.addAtom(static_cast<unsigned char>(m_atomNums[i]), pos);
+  }
+
+  if (0 == molecule.atomCount()) {
+    appendError("Could not find any atomic coordinates! Are you sure this is "
+                "an ORCA output file?");
+    return false;
+  }
+
+  // Store the conformers in trajectory order: m_coordSets holds every
+  // geometry except the last, which is still in m_atomPos (and is what the
+  // atoms were added with above). Keeping the file's own order is what lets
+  // a Hessian be matched to the geometry it was computed at.
+  for (unsigned int i = 0; i < m_coordSets.size(); i++) {
+    // Each entry holds exactly what its geometry block listed, which in a
+    // malformed file need not be every atom. A frame with no position for
+    // every atom is not a usable conformer, so skip it rather than read off
+    // the end of it. The index is still consumed: conformer numbers are
+    // m_coordSets indices, which is the relationship m_vibrationConformer
+    // relies on to match a Hessian to the geometry it was computed at.
+    if (m_coordSets[i].size() < molecule.atomCount())
+      continue;
+    Array<Vector3> positions;
+    positions.reserve(molecule.atomCount());
+    for (size_t j = 0; j < molecule.atomCount(); ++j) {
+      positions.push_back(m_coordSets[i][j] * BOHR_TO_ANGSTROM);
+    }
+    molecule.setCoordinate3d(positions, i);
+  }
+  const size_t finalConformer = m_coordSets.size();
+  molecule.setCoordinate3d(molecule.atomPositions3d(), finalConformer);
+  // Open on the final geometry - the optimized structure is what the user
+  // expects to see - while the earlier steps stay available as a trajectory.
+  molecule.setCoordinate3d(static_cast<int>(finalConformer));
+
+  // guess bonds and bond orders
+  molecule.perceiveBondsSimple();
+  molecule.perceiveBondOrders();
+
+  // Bank the last Hessian, which has no following header to trigger a flush.
+  flushVibrationData();
+
+  for (const auto& set : m_vibrationSets) {
+    // A geometry that was never stored cannot carry modes. This should not
+    // happen, but a malformed file must not create a phantom conformer.
+    if (set.conformerIndex > finalConformer)
+      continue;
+
+    Core::Molecule::VibrationData data;
+    data.frequencies = set.frequencies;
+    data.irIntensities = set.irIntensities;
+    data.ramanIntensities = set.ramanIntensities;
+    data.lx = set.displacements;
+    molecule.setVibrationData(data, set.conformerIndex);
+
+    // Spectra are not per-conformer, so the last set carrying VCD data wins.
+    // Building it here rather than in a second pass avoids allocating a
+    // matrix for every earlier set only to overwrite it.
+    const auto& frequencies = set.frequencies;
+    if (!set.vcdIntensities.empty() &&
+        set.vcdIntensities.size() == frequencies.size()) {
+      MatrixX vcdData(frequencies.size(), 2);
+      for (size_t i = 0; i < frequencies.size(); ++i) {
+        vcdData(i, 0) = frequencies[i];
+        vcdData(i, 1) = set.vcdIntensities[i];
+      }
+      molecule.setSpectra("VibrationalCD", vcdData);
+    }
+  }
+
+  if (!m_electronicTransitions.empty() &&
+      m_electronicTransitions.size() == m_electronicIntensities.size()) {
+    MatrixX electronicData(m_electronicTransitions.size(), 2);
+    for (size_t i = 0; i < m_electronicTransitions.size(); ++i) {
+      electronicData(i, 0) = m_electronicTransitions[i];
+      electronicData(i, 1) = m_electronicIntensities[i];
+    }
+    molecule.setSpectra("Electronic", electronicData);
+
+    if (m_electronicRotations.size() == m_electronicTransitions.size()) {
+      MatrixX electronicRotations(m_electronicTransitions.size(), 2);
+      for (size_t i = 0; i < m_electronicTransitions.size(); ++i) {
+        electronicRotations(i, 0) = m_electronicTransitions[i];
+        electronicRotations(i, 1) = m_electronicRotations[i];
+      }
+      molecule.setSpectra("CircularDichroism", electronicRotations);
+    }
+  }
+
+  if (!m_magneticTransitions.empty() &&
+      m_magneticTransitions.size() == m_magneticCD.size()) {
+    MatrixX magneticData(m_magneticTransitions.size(), 2);
+    for (size_t i = 0; i < m_magneticTransitions.size(); ++i) {
+      magneticData(i, 0) = m_magneticTransitions[i];
+      magneticData(i, 1) = m_magneticCD[i];
+    }
+    molecule.setSpectra("MagneticCD", magneticData);
+  }
+
+  if (!m_nmrShifts.empty()) {
+    MatrixX nmrData(m_nmrShifts.size(), 2);
+    // nmr_shifts has an entry for every atom even if not computed
+    for (size_t i = 0; i < m_nmrShifts.size(); ++i) {
+      nmrData(i, 0) = m_nmrShifts[i];
+      nmrData(i, 1) = 1.0;
+    }
+    molecule.setSpectra("NMR", nmrData);
+  }
+
+  // check bonds from calculated bond orders
+  if (!m_bondOrders.empty()) {
+    for (unsigned int i = 0; i < m_bondOrders.size(); i++) {
+      // m_bondOrders[i][0] is the first atom
+      // m_bondOrders[i][1] is the second atom
+      // m_bondOrders[i][2] is the bond order
+      if (m_bondOrders[i].size() > 2) {
+        auto bond = molecule.bond(m_bondOrders[i][0], m_bondOrders[i][1]);
+        if (bond.isValid() && bond.order() != m_bondOrders[i][2]) {
+          // if the bond order is different, change it
+          bond.setOrder(static_cast<unsigned char>(m_bondOrders[i][2]));
+        }
+      }
+    }
+  }
+
+  molecule.setBasisSet(basis.release());
+  molecule.basisSet()->setMolecule(&molecule);
+  load(dynamic_cast<GaussianSet*>(molecule.basisSet()), molecule.atomCount());
+
+  // we have to do a few things *after* any modifications to bonds / atoms
+  // because those automatically clear partial charges and data
+
+  // add the partial charges
+  if (!m_partialCharges.empty()) {
+    for (auto it = m_partialCharges.begin(); it != m_partialCharges.end();
+         ++it) {
+      molecule.setPartialCharges(it->first, it->second);
+    }
+  }
+
+  molecule.setData("totalCharge", m_charge);
+  molecule.setData("totalSpinMultiplicity", m_spin);
+  molecule.setData("dipoleMoment", m_dipoleMoment);
+  molecule.setData("totalEnergy", m_totalEnergy);
+  if (m_energies.size() > 1)
+    molecule.setData("energies", m_energies);
+  // ORCA prints FINAL SINGLE POINT ENERGY in Hartree, and these are stored as
+  // printed, so nothing downstream has to ask the user what they are.
+  Core::setEnergyUnit(molecule, "Hartree");
+
+  return true;
+}
+
+void ORCAOutput::processLine(std::istream& in,
+                             [[maybe_unused]] GaussianSet* basis)
+{
+  // First truncate the line, remove trailing white space and check
+  string line;
+  if (!Core::getLine(in, line) || Core::trimmed(line).empty())
+    return;
+
+  string key = Core::trimmed(line);
+  vector<string> list;
+  int nGTOs = 0;
+  [[maybe_unused]] float vibScaling = 1.0f;
+
+  if (Core::contains(key, "CARTESIAN COORDINATES (A.U.)")) {
+    m_coordFactor = 1.; // leave the coords in BOHR ....
+    m_currentMode = Atoms;
+    // if there are any current coordinates, push them back
+    if (!m_atomPos.empty()) {
+      m_coordSets.push_back(m_atomPos);
+    }
+    m_atomPos.clear();
+    m_atomNums.clear();
+    m_atomLabel.clear();
+    Core::getLine(in, key); // skip ----- line
+    Core::getLine(in, key); // column titles
+  } else if (Core::contains(key, "BASIS SET INFORMATION")) {
+    if (!Core::contains(key, "AUXILIARY")) { // skip auxiliary basis set infos
+      m_currentMode = GTO;
+      Core::getLine(in, key); // skip ----- line
+
+      // Number of groups of distinct atoms
+      Core::getLine(in, key);
+      list = Core::split(key, ' ');
+      if (list.size() > 3) {
+        m_nGroups = Core::lexicalCast<int>(list[2]).value_or(0);
+      } else {
+        return;
+      }
+      Core::getLine(in, key); // skip blank line
+      for (int i = 0; i < m_nGroups; ++i) {
+        Core::getLine(in, key); // skip group information
+      }
+      Core::getLine(in, key); // skip blank line
+      for (unsigned int i = 0; i < m_atomNums.size(); ++i) {
+        Core::getLine(in, key); // skip group information
+      }
+
+      // now skip
+      // blank line
+      // ----------------------------
+      // # Basis set for element : x
+      // ----------------------------
+      // blank line
+      for (unsigned int i = 0; i < 6; ++i) {
+        Core::getLine(in, key);
+      }
+    }
+  } else if (Core::contains(key, "Total Charge")) {
+    list = Core::split(key, ' ');
+    if (list.size() > 4)
+      m_charge = Core::lexicalCast<int>(list[4]).value_or(0);
+  } else if (Core::contains(key, "Multiplicity")) {
+    list = Core::split(key, ' ');
+    if (list.size() > 3)
+      m_spin = Core::lexicalCast<int>(list[3]).value_or(1);
+  } else if (Core::contains(key, "FINAL SINGLE POINT ENERGY")) {
+    list = Core::split(key, ' ');
+    if (list.size() > 4)
+      m_totalEnergy = Core::lexicalCast<double>(list[4]).value_or(0.0);
+    m_energies.push_back(m_totalEnergy);
+  } else if (Core::contains(key, "TOTAL NUMBER OF BASIS SET")) {
+    m_currentMode = NotParsing; // no longer reading GTOs
+  } else if (Core::contains(key, "NUMBER OF CARTESIAN GAUSSIAN BASIS")) {
+    m_currentMode = NotParsing; // no longer reading GTOs
+  } else if (Core::contains(key, "Number of Electrons")) {
+    list = Core::split(key, ' ');
+    if (list.size() > 5)
+      m_electrons = Core::lexicalCast<int>(list[5]).value_or(0);
+  } else if (Core::contains(key, "Total Dipole Moment")) {
+    list = Core::split(key, ' ');
+    if (list.size() > 6) {
+      m_dipoleMoment =
+        Eigen::Vector3d(Core::lexicalCast<double>(list[4]).value_or(0.0),
+                        Core::lexicalCast<double>(list[5]).value_or(0.0),
+                        Core::lexicalCast<double>(list[6]).value_or(0.0));
+      // convert from atomic units to Debye
+      // e.g. https://en.wikipedia.org/wiki/Debye
+      m_dipoleMoment *= 2.54174628;
+    }
+  } else if (Core::contains(key, "Mayer bond orders")) {
+    m_currentMode = BondOrders;
+    // starts at the next line
+  } else if (Core::contains(
+               key,
+               "ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS")) {
+    m_currentMode = Electronic;
+    for (int i = 0; i < 4; ++i) {
+      Core::getLine(in, key); // skip header
+    }
+    // starts at the next line
+  } else if (Core::contains(key, "CD SPECTRUM") &&
+             !Core::contains(key, "VCD SPECTRUM") &&
+             !Core::contains(key, "TRANSITION VELOCITY DIPOLE")) {
+    m_currentMode = ECD;
+    for (int i = 0; i < 4; ++i) {
+      Core::getLine(in, key); // skip header
+    }
+  } else if (Core::contains(key, "ORBITAL ENERGIES")) {
+    m_currentMode = OrbitalEnergies;
+    Core::getLine(in, key); // skip ------------
+    Core::getLine(in, key); // check if SPIN UP ORBITALS are present
+    if (Core::contains(key, "SPIN UP ORBITALS")) {
+      m_openShell = true;
+      m_readBeta = false;
+    } else {
+      m_openShell = false;
+      m_readBeta = false;
+    }
+    Core::getLine(in, key); // skip column titles
+  } else if (Core::contains(key, "SPIN DOWN ORBITALS")) {
+    m_currentMode = OrbitalEnergies;
+    m_openShell = true;
+    m_readBeta = true;
+    Core::getLine(in, key); // skip column headers
+  } else if (Core::contains(key, "MOLECULAR ORBITALS")) {
+    m_currentMode = MO;
+    Core::getLine(in, key); //------------
+  } else if (Core::contains(key, "HIRSHFELD ANALYSIS")) {
+    m_currentMode = HirshfeldCharges;
+    m_chargeType = "Hirshfeld";
+    for (unsigned int i = 0; i < 6; ++i) {
+      Core::getLine(in, key); // skip header
+    }
+  } else if (Core::contains(key, "MBIS ANALYSIS")) {
+    // MBIS analysis is similar to Hirshfeld, but with different headers
+    m_currentMode = HirshfeldCharges;
+    m_chargeType = "MBIS";
+    for (unsigned int i = 0; i < 9; ++i) {
+      Core::getLine(in, key); // skip header
+    }
+  } else if (Core::contains(key, "CHELPG Charges")) {
+    // similar to standard charges
+    m_currentMode = Charges;
+    m_chargeType = "CHELPG";
+    Core::getLine(in, key); // skip ------------
+  } else if (Core::contains(key, "RESP Charges")) {
+    m_currentMode = Charges;
+    m_chargeType = "RESP";
+    Core::getLine(in, key); // skip ------------
+  } else if (Core::contains(key, "ATOMIC CHARGES")) {
+    m_currentMode = Charges;
+    // figure out what type of charges we have
+    list = Core::split(key, ' ');
+    if (list.size() > 2) {
+      m_chargeType = Core::trimmed(list[0]); // e.g. MULLIKEN or LOEWDIN
+    }
+    // lowercase everything except the first letter
+    for (unsigned int i = 1; i < m_chargeType.size(); ++i) {
+      m_chargeType[i] = tolower(m_chargeType[i]);
+    }
+    Core::getLine(in, key); // skip ------------
+  } else if (Core::contains(key, "VIBRATIONAL FREQUENCIES")) {
+    m_currentMode = Frequencies;
+    // A new Hessian starts here. Bank the previous one against the geometry
+    // it was computed at, rather than appending to it: a transition state
+    // search recomputes the Hessian every few optimization cycles, and
+    // running the sets together produced one list of 3N x (number of
+    // Hessians) bogus modes.
+    flushVibrationData();
+    // The most recently parsed geometry is the one this Hessian describes.
+    // m_coordSets holds the geometries completed before it, so its size is
+    // that geometry's index.
+    m_vibrationConformer = m_coordSets.size();
+    Core::getLine(in, key); // skip ------------
+    Core::getLine(in, key); // skip blank line
+    Core::getLine(in, key); // scaling factor
+    // Scaling factor for frequencies =  1.000000000
+    list = Core::split(key, ' ');
+    if (list.size() > 6)
+      vibScaling = Core::lexicalCast<float>(list[5]).value_or(0);
+    Core::getLine(in, key); // skip blank line or "Point group" line
+  } else if (Core::contains(key, "NORMAL MODES")) {
+    m_currentMode = VibrationalModes;
+
+    Core::getLine(in, key); // skip ------------
+    Core::getLine(in, key); // skip blank line
+    Core::getLine(in, key); // skip comment
+    Core::getLine(in, key); // skip more comments
+    Core::getLine(in, key); // skip even more comment
+    Core::getLine(in, key); // skip blank line
+  } else if (Core::contains(key, "IR SPECTRUM")) {
+    m_currentMode = IR;
+    Core::getLine(in, key); // skip ------------
+    Core::getLine(in, key); // skip blank line
+    Core::getLine(in, key); // skip column titles
+    Core::getLine(in, key); // skip more column titles
+    Core::getLine(in, key); // skip ------------
+  } else if (Core::contains(key, "RAMAN SPECTRUM")) {
+    m_currentMode = Raman;
+    Core::getLine(in, key); // skip ------------
+    Core::getLine(in, key); // skip blank line
+    Core::getLine(in, key); // skip column titles
+    Core::getLine(in, key); // skip ------------
+  } else if (Core::contains(key, "VCD SPECTRUM")) {
+    m_currentMode = VCD;
+    // look for "Mode" and "Freq"
+    int maxLines = 10; // reasonable limit for header lines
+    while (!Core::contains(key, "Mode") && !Core::contains(key, "Freq") &&
+           maxLines-- > 0 && !in.eof())
+      Core::getLine(in, key);
+    if (maxLines <= 0 || in.eof()) {
+      m_currentMode = NotParsing;
+      return;
+    }
+    // units
+    Core::getLine(in, key);
+    Core::getLine(in, key); // skip ------------
+  } else if (Core::contains(key, "MCD Transitions")) {
+    parseMCD();
+  } else if (Core::contains(key, "CHEMICAL SHIELDING SUMMARY (ppm)")) {
+    m_currentMode = NMR;
+    for (int i = 0; i < 4; ++i) {
+      Core::getLine(in, key); // skip header
+    }
+  } else {
+
+    vector<vector<double>> columns;
+    unsigned int numColumns, numRows;
+    numColumns = 0;
+    numRows = 0;
+    // number of basis functions (rows) per MO block, learned from the first
+    // block and used to pre-reserve storage for subsequent blocks
+    unsigned int expectedRows = 0;
+    // parsing a line -- what mode are we in?
+
+    switch (m_currentMode) {
+      case Atoms: {
+        if (key.empty())
+          break;
+        list = Core::split(key, ' ');
+        while (!key.empty()) {
+          if (list.size() < 8) {
+            break;
+          }
+          Eigen::Vector3d pos(
+            Core::lexicalCast<double>(list[5]).value_or(0.0) * m_coordFactor,
+            Core::lexicalCast<double>(list[6]).value_or(0.0) * m_coordFactor,
+            Core::lexicalCast<double>(list[7]).value_or(0.0) * m_coordFactor);
+
+          unsigned char atomicNum =
+            Core::Elements::atomicNumberFromSymbol(Core::trimmed(list[1]));
+          m_atomNums.push_back(atomicNum);
+          m_atomPos.push_back(pos);
+          m_atomLabel.push_back(Core::trimmed(list[1]));
+          Core::getLine(in, key);
+          key = Core::trimmed(key);
+          list = Core::split(key, ' ');
+        }
+        m_currentMode = NotParsing;
+        break;
+      }
+      case HirshfeldCharges: {
+        // should start at the first atom
+        if (key.empty())
+          break;
+
+        if (m_atomNums.empty())
+          break;
+
+        Eigen::MatrixXd charges(m_atomNums.size(), 1);
+        charges.setZero();
+
+        list = Core::split(key, ' ');
+        bool invalidIndex = false;
+        while (!key.empty()) {
+          if (list.size() < 4) {
+            break;
+          }
+          // e.g. index atom charge spin
+          // e.g. 0 O   -0.714286   0.000
+          int atomIndex = Core::lexicalCast<int>(list[0]).value_or(0);
+          double charge = Core::lexicalCast<double>(list[2]).value_or(0.0);
+          if (atomIndex < 0 || atomIndex >= charges.rows()) {
+            invalidIndex = true;
+            break;
+          }
+          charges(atomIndex, 0) = charge;
+
+          Core::getLine(in, key);
+          key = Core::trimmed(key);
+          list = Core::split(key, ' ');
+        }
+
+        if (!invalidIndex)
+          m_partialCharges[m_chargeType] = charges;
+        m_currentMode = NotParsing;
+        break;
+      }
+      case Charges: {
+        // should start at the first atom
+        if (key.empty())
+          break;
+
+        if (m_atomNums.empty())
+          break;
+
+        Eigen::MatrixXd charges(m_atomNums.size(), 1);
+        charges.setZero();
+
+        list = Core::split(key, ' ');
+        bool invalidIndex = false;
+        while (!key.empty()) {
+          if (list.size() != 4) {
+            break;
+          }
+          // e.g. 0 O :   -0.714286
+          int atomIndex = Core::lexicalCast<int>(list[0]).value_or(0);
+          double charge = Core::lexicalCast<double>(list[3]).value_or(0.0);
+          if (atomIndex < 0 || atomIndex >= charges.rows()) {
+            invalidIndex = true;
+            break;
+          }
+          charges(atomIndex, 0) = charge;
+
+          Core::getLine(in, key);
+          key = Core::trimmed(key);
+          list = Core::split(key, ' ');
+        }
+        if (!invalidIndex)
+          m_partialCharges[m_chargeType] = charges;
+        m_currentMode = NotParsing;
+        break;
+      }
+      case BondOrders: {
+        if (key.empty())
+          break;
+
+        m_bondOrders.clear();
+        constexpr size_t kMinBondOrderLineLength = 27;
+        while (!key.empty() && key[0] == 'B') {
+          if (key.size() < kMinBondOrderLineLength || key[1] != '(') {
+            Core::getLine(in, key);
+            key = Core::trimmed(key);
+            continue;
+          }
+          // @todo .. parse the bonds based on character position
+          // e.g. B(  0-Ru,  1-C ) :   0.4881 B(  0-Ru,  4-C ) :   0.6050
+          Index firstAtom =
+            Core::lexicalCast<Index>(key.substr(2, 3)).value_or(0);
+          Index secondAtom =
+            Core::lexicalCast<Index>(key.substr(9, 3)).value_or(0);
+          double bondOrder =
+            Core::lexicalCast<double>(key.substr(18, 9)).value_or(0.0);
+
+          if (bondOrder > 1.6) {
+            std::vector<int> bond;
+            bond.push_back(static_cast<int>(firstAtom));
+            bond.push_back(static_cast<int>(secondAtom));
+            bond.push_back(static_cast<int>(std::round(bondOrder)));
+            m_bondOrders.push_back(bond);
+          }
+
+          if (key.size() > 54 && key[28] == 'B') {
+            firstAtom = Core::lexicalCast<Index>(key.substr(30, 3)).value_or(0);
+            secondAtom =
+              Core::lexicalCast<Index>(key.substr(37, 3)).value_or(0);
+            bondOrder =
+              Core::lexicalCast<double>(key.substr(46, 9)).value_or(0.0);
+
+            if (bondOrder > 1.6) {
+              std::vector<int> bond;
+              bond.push_back(static_cast<int>(firstAtom));
+              bond.push_back(static_cast<int>(secondAtom));
+              bond.push_back(static_cast<int>(std::round(bondOrder)));
+              m_bondOrders.push_back(bond);
+            }
+          }
+          if (key.size() > 82 && key[56] == 'B') {
+            firstAtom = Core::lexicalCast<Index>(key.substr(58, 3)).value_or(0);
+            secondAtom =
+              Core::lexicalCast<Index>(key.substr(65, 3)).value_or(0);
+            bondOrder =
+              Core::lexicalCast<double>(key.substr(74, 9)).value_or(0.0);
+
+            if (bondOrder > 1.6) {
+              std::vector<int> bond;
+              bond.push_back(static_cast<int>(firstAtom));
+              bond.push_back(static_cast<int>(secondAtom));
+              bond.push_back(static_cast<int>(std::round(bondOrder)));
+              m_bondOrders.push_back(bond);
+            }
+          }
+
+          Core::getLine(in, key);
+          key = Core::trimmed(key);
+        }
+
+        m_currentMode = NotParsing;
+        break;
+      }
+      case OrbitalEnergies: {
+        if (key.empty())
+          break;
+
+        // should start at the first orbital
+        if (!m_readBeta)
+          m_orbitalEnergy.clear();
+        else
+          m_betaOrbitalEnergy.clear();
+
+        list = Core::split(key, ' ');
+        while (!key.empty()) {
+          if (list.size() != 4) {
+            break;
+          }
+
+          // energy in Hartree in 3rd column in eV in 4th column
+          double energy = Core::lexicalCast<double>(list[3]).value_or(0.0);
+          if (!m_readBeta)
+            m_orbitalEnergy.push_back(energy);
+          else
+            m_betaOrbitalEnergy.push_back(energy);
+
+          Core::getLine(in, key);
+          key = Core::trimmed(key);
+          list = Core::split(key, ' ');
+        }
+        m_currentMode = NotParsing;
+        break;
+      }
+      case Frequencies: {
+        // should start at the first frequency - include zeros or "Irrep" label
+        if (key.empty())
+          break;
+        list = Core::split(key, ' ');
+        // If symmetry is enabled, a line with "Irrep" label comes
+        std::size_t extraColumns = 0;
+        if (!list.empty() && list[0] == "Irrep") {
+          // Job with symmetry
+          extraColumns = 1;
+          Core::getLine(in, key); // Get first freq
+          key = Core::trimmed(key);
+          if (key.empty())
+            break;
+          list = Core::split(key, ' ');
+        }
+        while (!key.empty()) {
+          // imaginary frequencies can have an additional comment:
+          // ***imaginary mode***
+          if (list.size() != 3 + extraColumns &&
+              (list.size() != 5 + extraColumns ||
+               list[3 + extraColumns] != "***imaginary" ||
+               list[4 + extraColumns] != "mode***")) {
+            break;
+          }
+          // e.g. 0:         0.00 cm**-1
+          double freq = Core::lexicalCast<double>(list[1]).value_or(0.0);
+          m_frequencies.push_back(freq);
+
+          Core::getLine(in, key);
+          key = Core::trimmed(key);
+          list = Core::split(key, ' ');
+        }
+
+        // okay, now set up the normal mode arrays
+        m_vibDisplacements.resize(m_frequencies.size());
+        m_IRintensities.resize(m_frequencies.size());
+        // we don't bother with Raman, because that's less common
+        for (unsigned int i = 0; i < m_frequencies.size(); i++) {
+          m_IRintensities[i] = 0.0;
+          // One displacement per atom. resize() already creates them, so do
+          // not also push_back: that produced arrays of 2N entries, leaving
+          // the trailing N uninitialized. Zero them so a truncated NORMAL
+          // MODES block cannot leave garbage displacements behind either.
+          m_vibDisplacements[i].resize(m_atomNums.size(),
+                                       Eigen::Vector3d::Zero());
+        }
+
+        m_currentMode = NotParsing;
+        break;
+      }
+      case VCD: {
+        // should be mode, frequency, IR intensity
+        if (key.empty())
+          break;
+        list = Core::split(key, ' ');
+        m_vcdIntensities.resize(m_frequencies.size(), 0.0);
+
+        while (!key.empty()) {
+          // e.g. 0:         0.00 cm**-1
+
+          if (list.size() != 3) {
+            break;
+          }
+          unsigned index = Core::lexicalCast<std::size_t>(list[0]).value_or(0);
+          if (index >= m_frequencies.size()) {
+            break;
+          }
+          m_vcdIntensities[index] =
+            Core::lexicalCast<double>(list[2]).value_or(0.0);
+
+          Core::getLine(in, key);
+          key = Core::trimmed(key);
+          list = Core::split(key, ' ');
+        }
+
+        m_currentMode = NotParsing;
+        break;
+      }
+      case VibrationalModes: {
+        if (key.empty())
+          break;
+        list = Core::split(key, ' ');
+        bool has_sym = false;
+        if (!list.empty() && list[0] == "Point") {
+          // Job with symmetry
+          Core::getLine(in, key); // skip blank line
+          has_sym = true;
+          Core::getLine(in, key); // Get the indices
+          key = Core::trimmed(key);
+          if (key.empty())
+            break;
+          list = Core::split(key, ' ');
+        }
+        vector<std::size_t> modeIndex;
+        bool invalid_index = false;
+        while (!key.empty()) {
+          // first we get a set of column numbers
+          // e.g. 1  2  3  4  5  6  7  8  9 10
+          modeIndex.clear();
+          for (const auto& index_str : list) {
+            auto index = Core::lexicalCast<std::size_t>(index_str).value_or(0);
+            if (index >= m_frequencies.size()) {
+              invalid_index = true;
+              break;
+            }
+            modeIndex.push_back(index);
+          }
+          // invalid column index
+          if (invalid_index)
+            break;
+
+          // If has symmetry, skip symmetry labels
+          if (has_sym) {
+            Core::getLine(
+              in, key); // e.g.: 1-A1       1-B1       1-B2       1-A2 2-B1...
+          }
+
+          // now we read the displacements .. there should be 3N lines
+          // x,y,z for each atom
+          Core::getLine(in, key);
+          key = Core::trimmed(key);
+          list = Core::split(key, ' ');
+          for (unsigned int i = 0; i < 3 * m_atomNums.size(); i++) {
+            // the line holds an index followed by one column per mode, so a
+            // shorter line means the block was truncated
+            if (list.size() <= modeIndex.size())
+              break;
+            unsigned int atomIndex = i / 3;
+            unsigned int coordIndex = i % 3;
+            for (unsigned int j = 0; j < modeIndex.size(); j++) {
+              // modeIndex was checked against m_frequencies, but the arrays
+              // written here are sized in the frequency block above, which a
+              // file need not contain -- and m_atomNums can have grown since.
+              // Both indices therefore have to be checked against the arrays
+              // themselves, or a crafted file writes outside them.
+              if (modeIndex[j] >= m_vibDisplacements.size() ||
+                  atomIndex >= m_vibDisplacements[modeIndex[j]].size())
+                break;
+              m_vibDisplacements[modeIndex[j]][atomIndex][coordIndex] =
+                Core::lexicalCast<double>(list[j + 1]).value_or(0.0);
+            }
+            m_haveNormalModes = true;
+
+            Core::getLine(in, key);
+            key = Core::trimmed(key);
+            list = Core::split(key, ' ');
+          }
+          // If has symmetry, read next to account for blank line between blocks
+          if (has_sym) {
+            Core::getLine(in, key);
+            key = Core::trimmed(key);
+            list = Core::split(key, ' ');
+          }
+        }
+
+        m_currentMode = NotParsing;
+        break;
+      }
+      case IR: {
+        if (key.empty())
+          break;
+        list = Core::split(key, ' ');
+        while (!key.empty()) {
+          // e.g. 6:   1711.76   0.014736   74.47  0.002686  (-0.021704 0.027180
+          // 0.038427)
+          if (list.size() < 7) {
+            break;
+          }
+          // the first entry might be 5 or 6 because of removed rotations /
+          // translations
+          auto index = Core::lexicalCast<std::size_t>(list[0]).value_or(0);
+          // invalid index
+          if (index >= m_frequencies.size())
+            break;
+
+          double intensity = Core::lexicalCast<double>(list[3]).value_or(0.0);
+          m_IRintensities[index] = intensity;
+
+          Core::getLine(in, key);
+          key = Core::trimmed(key);
+          list = Core::split(key, ' ');
+        }
+
+        m_currentMode = NotParsing;
+        break;
+      }
+      case Raman: {
+        if (key.empty())
+          break;
+        list = Core::split(key, ' ');
+        while (!key.empty()) {
+          // e.g.    6:        76.62      0.000000      0.465517
+          if (list.size() != 4) {
+            break;
+          }
+          // the first entry might be 5 or 6 because of removed rotations /
+          // translations
+          auto index = Core::lexicalCast<std::size_t>(list[0]).value_or(0);
+          // invalid index
+          if (index >= m_frequencies.size())
+            break;
+          if (m_RamanIntensities.empty()) {
+            while (m_RamanIntensities.size() < index) {
+              m_RamanIntensities.push_back(0.0);
+            }
+          }
+          // index, frequency, activity, depolarization
+          double activity = Core::lexicalCast<double>(list[2]).value_or(0.0);
+          m_RamanIntensities.push_back(activity);
+
+          Core::getLine(in, key);
+          key = Core::trimmed(key);
+          list = Core::split(key, ' ');
+        }
+
+        m_currentMode = NotParsing;
+        break;
+      }
+      case Electronic: {
+        if (key.empty())
+          break;
+        list = Core::split(key, ' ');
+        double wavenumbers;
+        while (!key.empty()) {
+          // should have 8 columns
+          if (list.size() < 8) {
+            Core::getLine(in, key);
+            key = Core::trimmed(key);
+            list = Core::split(key, ' ');
+            continue; // skip any spin-forbidden transitions
+          }
+
+          if (list.size() == 8) {
+            wavenumbers = Core::lexicalCast<double>(list[1]).value_or(0.0);
+            // convert to eV
+            m_electronicTransitions.push_back(wavenumbers / 8065.544);
+            m_electronicIntensities.push_back(
+              Core::lexicalCast<double>(list[3]).value_or(0.0));
+          } else if (list.size() == 11) {
+            // directly use the eV
+            m_electronicTransitions.push_back(
+              Core::lexicalCast<double>(list[3]).value_or(0.0));
+            m_electronicIntensities.push_back(
+              Core::lexicalCast<double>(list[6]).value_or(0.0));
+          }
+
+          Core::getLine(in, key);
+          key = Core::trimmed(key);
+          list = Core::split(key, ' ');
+          if (list.size() < 2)
+            break; // hit the blank line
+        }
+        m_currentMode = NotParsing;
+        break;
+      }
+      case ECD: {
+        if (key.empty())
+          break;
+        list = Core::split(key, ' ');
+
+        while (!key.empty()) {
+          // should have 7 columns
+          if (list.size() < 7) {
+            Core::getLine(in, key);
+            key = Core::trimmed(key);
+            list = Core::split(key, ' ');
+            continue; // skip any spin-forbidden transitions
+          }
+
+          if (list.size() == 7)
+            m_electronicRotations.push_back(
+              Core::lexicalCast<double>(list[3]).value_or(0.0));
+          else if (list.size() == 10)
+            m_electronicRotations.push_back(
+              Core::lexicalCast<double>(list[6]).value_or(0.0));
+
+          Core::getLine(in, key);
+          key = Core::trimmed(key);
+          list = Core::split(key, ' ');
+          if (list.size() < 2)
+            break; // hit the blank line
+        }
+        m_currentMode = NotParsing;
+        break;
+      }
+      case NMR: {
+        if (key.empty())
+          break;
+        list = Core::split(key, ' ');
+        // default to filling m_nmrShifts with zeros
+        m_nmrShifts.resize(m_atomNums.size(), 0.0);
+        while (!key.empty()) {
+          // need at least index, element, value
+          if (list.size() < 3) {
+            break;
+          }
+
+          // e.g.  1  C  0.0000  0.0000  0.0000  0.0000
+          int atomIndex = Core::lexicalCast<int>(list[0]).value_or(0);
+          double shift = Core::lexicalCast<double>(list[2]).value_or(0.0);
+          // ignore the anisotropy for now
+          if (!m_nmrShifts.empty()) {
+            const int maxIndex = static_cast<int>(m_nmrShifts.size());
+            if (atomIndex >= 1 && atomIndex <= maxIndex) {
+              m_nmrShifts[atomIndex - 1] = shift; // ORCA uses 1-based indices
+            } else if (atomIndex >= 0 && atomIndex < maxIndex) {
+              m_nmrShifts[atomIndex] = shift; // tolerate 0-based indices
+            }
+          }
+
+          Core::getLine(in, key);
+          key = Core::trimmed(key);
+          list = Core::split(key, ' ');
+        }
+
+        m_currentMode = NotParsing;
+        break;
+      }
+      case GTO: {
+        //            // should start at the first newGTO
+        if (key.empty())
+          break;
+        nGTOs = 0;
+        list = Core::split(key, ' ');
+        int nShells;
+        // init all vectors etc.
+        m_basisAtomLabel.clear();
+        m_orcaNumShells.resize(0);
+        clearBasisFunctions();
+        m_orcaShellTypes.resize(0);
+
+        m_a.resize(0);
+        m_c.resize(0);
+        m_shellNums.resize(0);
+        m_shellTypes.resize(0);
+        m_shelltoAtom.resize(0);
+        while (!list.empty() && Core::trimmed(list[0]) == "NewGTO") {
+          // "NewGTO <label>" - without the label there is no basis to read
+          if (list.size() < 2)
+            break;
+          m_basisAtomLabel.push_back(Core::trimmed(list[1]));
+
+          Core::getLine(in, key);
+          key = Core::trimmed(key);
+
+          list = Core::split(key, ' ');
+
+          nShells = 0;
+          m_basisFunctions.push_back(
+            new std::vector<std::vector<Eigen::Vector2d>*>);
+          shellFunctions.resize(0);
+          shellTypes.resize(0);
+          while (!list.empty() && Core::trimmed(list[0]) != "end;") {
+            // "<shell type> <number of primitives>"
+            if (list.size() < 2)
+              break;
+
+            int nFunc =
+              Core::lexicalCast<int>(Core::trimmed(list[1])).value_or(0);
+            // a shell with no primitives is malformed, and a negative count
+            // would be converted to a huge size when sizing the vector below
+            if (nFunc <= 0)
+              break;
+            shellTypes.push_back(orbitalIdx(Core::trimmed(list[0])));
+            shellFunctions.push_back(nFunc);
+            // m_basisFunctions gained this element's entry (index nGTOs)
+            // above, and this shell's (index nShells) just below.
+            m_basisFunctions[nGTOs]->push_back(
+              new std::vector<Eigen::Vector2d>(nFunc, Eigen::Vector2d::Zero()));
+
+            for (int i = 0; i < nFunc; i++) {
+              Core::getLine(in, key);
+              key = Core::trimmed(key);
+
+              list = Core::split(key, ' ');
+              // "<index> <exponent> <coefficient>"
+              if (list.size() < 3)
+                break;
+              (*(*m_basisFunctions[nGTOs])[nShells])[i].x() =
+                Core::lexicalCast<double>(list[1]).value_or(0.0); // exponent
+              (*(*m_basisFunctions[nGTOs])[nShells])[i].y() =
+                Core::lexicalCast<double>(list[2]).value_or(0.0); // coeff
+            }
+
+            nShells++;
+            Core::getLine(in, key);
+            key = Core::trimmed(key);
+
+            list = Core::split(key, ' ');
+          }
+          m_orcaShellTypes.emplace_back(shellTypes.size());
+          m_orcaShellTypes[nGTOs] = shellTypes;
+          m_orcaNumShells.emplace_back(shellFunctions.size());
+          m_orcaNumShells[nGTOs] = shellFunctions;
+          nGTOs++;
+
+          Core::getLine(in, key);
+          Core::getLine(in, key);
+          Core::getLine(in, key);
+          key = Core::trimmed(key);
+
+          list = Core::split(key, ' ');
+          if (list.empty())
+            break; // unexpected structure - suppose no more NewGTOs
+        }
+
+        // create input for gaussian basisset
+        int nBasis = nGTOs;
+        int nAtoms = m_atomLabel.size();
+        m_currentAtom = 0;
+        for (int i = 0; i < nAtoms; i++) {
+          m_currentAtom++;
+          for (int j = 0; j < nBasis; j++) {
+            // m_basisAtomLabel, m_basisFunctions, m_orcaNumShells and
+            // m_orcaShellTypes all gained one entry per NewGTO above, and a
+            // shell's primitive count is the size of its primitive vector.
+            if (m_atomLabel[i] == m_basisAtomLabel[j]) {
+              const auto& shells = *m_basisFunctions[j];
+              for (unsigned int k = 0; k < m_orcaNumShells[j].size(); k++) {
+                for (int l = 0; l < m_orcaNumShells[j][k]; l++) {
+                  m_a.push_back((*shells[k])[l].x());
+                  m_c.push_back((*shells[k])[l].y());
+                }
+                m_shellNums.push_back(m_orcaNumShells[j][k]);
+                m_shellTypes.push_back(m_orcaShellTypes[j][k]);
+                m_shelltoAtom.push_back(m_currentAtom);
+              }
+              break;
+            }
+          }
+        }
+        m_currentMode = NotParsing;
+        break;
+      }
+      case MO: {
+
+        m_MOcoeffs.clear();      // if the orbitals were punched multiple times
+        m_orbitalEnergy.clear(); // we can get the energies here
+        std::vector<std::string> orcaOrbitals;
+
+        while (!Core::trimmed(key).empty()) {
+          // currently reading the sequence number
+          Core::getLine(in, key); // energies
+          list = Core::split(key, ' ');
+          // convert these all to double and add to m_orbitalEnergy
+          for (unsigned int i = 0; i < list.size(); i++) {
+            // convert from Hartree to eV
+            m_orbitalEnergy.push_back(
+              Core::lexicalCast<double>(list[i]).value_or(0.0) *
+              HARTREE_TO_EV_D);
+          }
+
+          Core::getLine(in, key); // occupations
+          Core::getLine(in, key); // skip -----------
+          Core::getLine(in, key); // now we've got coefficients
+
+          // coefficients are optionally a -, one or two digits, a decimal
+          // point, and then 6 digits; adjacent negative values can run
+          // together, so scan for the fixed-width fields directly
+          extractOrcaCoefficients(key, list);
+
+          numColumns = list.size();
+          columns.resize(numColumns);
+          // once we know how many basis functions (rows) a block holds, we can
+          // pre-allocate to avoid repeated reallocation on huge outputs
+          if (expectedRows > 0) {
+            for (unsigned int i = 0; i < numColumns; ++i)
+              columns[i].reserve(expectedRows);
+            orcaOrbitals.reserve(expectedRows);
+            m_MOcoeffs.reserve(static_cast<std::size_t>(expectedRows) *
+                               expectedRows);
+          }
+          while (!list.empty()) {
+            // get the '2s' or '1dx2y2' piece from the line (the orbital label)
+            // so we can re-order the orbitals later
+            orcaOrbitals.push_back(nthSpaceToken(key, 1));
+
+            for (unsigned int i = 0; i < numColumns; ++i) {
+              columns[i].push_back(
+                Core::lexicalCast<double>(list[i]).value_or(0.0));
+            }
+
+            Core::getLine(in, key);
+            extractOrcaCoefficients(key, list);
+
+            if (list.size() != numColumns)
+              break;
+
+          } // ok, we've finished one batch of MO coeffs
+          // now reorder the p orbitals from "orcaStyle" (pz, px,py)
+          // to expected Avogadro (px,py,pz)
+          std::size_t idx = 0;
+          while (idx < orcaOrbitals.size()) {
+            if (Core::contains(orcaOrbitals[idx], "pz")) {
+              for (unsigned int i = 0; i < numColumns; i++) {
+                if (idx + 1 >= columns[i].size())
+                  break;
+                std::swap(columns[i][idx], columns[i][idx + 1]);
+              }
+              idx++;
+              for (unsigned int i = 0; i < numColumns; i++) {
+                if (idx + 1 >= columns[i].size())
+                  break;
+                std::swap(columns[i][idx], columns[i][idx + 1]);
+              }
+              idx++;
+              idx++;
+            } else {
+              idx++;
+            }
+          }
+
+          // Now we need to re-order the MO coeffs, so we insert one MO at a
+          // time
+          for (unsigned int i = 0; i < numColumns; ++i) {
+            numRows = columns[i].size();
+            for (unsigned int j = 0; j < numRows; ++j) {
+              m_MOcoeffs.push_back(columns[i][j]);
+            }
+          }
+          expectedRows = numRows; // reserve subsequent blocks up front
+          columns.clear();
+          orcaOrbitals.clear();
+
+        } // finished parsing MOs
+        if (m_MOcoeffs.size() != numRows * numRows) {
+          m_orcaSuccess = false;
+        }
+        m_numBasisFunctions = numRows;
+        if (m_openShell) {
+          // TODO: parse both alpha and beta orbitals
+          m_BetaMOcoeffs.clear(); // if the orbitals were punched multiple times
+          m_betaOrbitalEnergy.clear(); // we can get the energies here
+          Core::getLine(in, key);
+          while (!Core::trimmed(key).empty()) {
+            // currently reading the sequence number
+            Core::getLine(in, key); // energies
+
+            list = Core::split(key, ' ');
+            // convert these all to double and add to m_betaOrbitalEnergy
+            for (unsigned int i = 0; i < list.size(); i++) {
+              // convert from Hartree to eV
+              m_betaOrbitalEnergy.push_back(
+                Core::lexicalCast<double>(list[i]).value_or(0.0) *
+                HARTREE_TO_EV_D);
+            }
+
+            Core::getLine(in, key); // symmetries
+            Core::getLine(in, key); // skip -----------
+            Core::getLine(in, key); // now we've got coefficients
+
+            extractOrcaCoefficients(key, list);
+
+            numColumns = list.size();
+            columns.resize(numColumns);
+            if (expectedRows > 0) {
+              for (unsigned int i = 0; i < numColumns; ++i)
+                columns[i].reserve(expectedRows);
+              orcaOrbitals.reserve(expectedRows);
+              m_BetaMOcoeffs.reserve(static_cast<std::size_t>(expectedRows) *
+                                     expectedRows);
+            }
+            while (!list.empty()) {
+              // get the '2s' or '1dx2y2' piece from the line (orbital label)
+              // so we can re-order the orbitals later
+              orcaOrbitals.push_back(nthSpaceToken(key, 1));
+
+              for (unsigned int i = 0; i < numColumns; ++i) {
+                columns[i].push_back(
+                  Core::lexicalCast<double>(list[i]).value_or(0.0));
+              }
+
+              Core::getLine(in, key);
+              extractOrcaCoefficients(key, list);
+
+              if (list.size() != numColumns)
+                break;
+
+            } // ok, we've finished one batch of MO coeffs
+            // now reorder the p orbitals from "orcaStyle" (pz, px,py) to
+            // expected Avogadro (px,py,pz)
+
+            std::size_t idx = 0;
+            while (idx < orcaOrbitals.size()) {
+              if (Core::contains(orcaOrbitals[idx], "pz")) {
+                for (unsigned int i = 0; i < numColumns; i++) {
+                  if (idx + 1 >= columns[i].size())
+                    break;
+                  std::swap(columns[i][idx], columns[i][idx + 1]);
+                }
+                idx++;
+                for (unsigned int i = 0; i < numColumns; i++) {
+                  if (idx + 1 >= columns[i].size())
+                    break;
+                  std::swap(columns[i][idx], columns[i][idx + 1]);
+                }
+                idx++;
+                idx++;
+              } else {
+                idx++;
+              }
+            }
+
+            // Now we need to re-order the MO coeffs, so we insert one MO at a
+            // time
+            for (unsigned int i = 0; i < numColumns; ++i) {
+              numRows = columns[i].size();
+              for (unsigned int j = 0; j < numRows; ++j) {
+                m_BetaMOcoeffs.push_back(columns[i][j]);
+              }
+            }
+            expectedRows = numRows; // reserve subsequent blocks up front
+            columns.clear();
+            orcaOrbitals.clear();
+
+            if (Core::trimmed(key).empty())
+              Core::getLine(in, key); // skip the blank line after the MOs
+          }                           // finished parsing 2nd. MOs
+          if (m_MOcoeffs.size() != numRows * numRows) {
+            m_orcaSuccess = false;
+          }
+          m_numBasisFunctions = numRows;
+        }
+
+        m_currentMode = NotParsing;
+        break;
+      }
+      default:;
+    } // end switch
+  }   // end if (mode)
+}
+
+void ORCAOutput::load(GaussianSet* basis, Index atomCount)
+{
+  // Now load up our basis set
+  basis->setElectronCount(m_electrons);
+  if (m_openShell)
+    basis->setScfType(Core::Uhf);
+
+  // Check the shells before adding any. A malformed basis set is skipped
+  // whole, which also leaves the MO coefficients below unloaded (they need
+  // the basis functions), but keeps everything else read from the file.
+  bool shellsValid = m_shellNums.size() == m_shellTypes.size() &&
+                     m_shelltoAtom.size() == m_shellTypes.size();
+  size_t numPrimitives = 0;
+  size_t numSPPrimitives = 0;
+  for (size_t i = 0; shellsValid && i < m_shellTypes.size(); ++i) {
+    // Shell atoms are numbered from one, in the order of the coordinates.
+    if (m_shelltoAtom[i] < 1 ||
+        static_cast<Index>(m_shelltoAtom[i]) > atomCount || m_shellNums[i] < 0)
+      shellsValid = false;
+    numPrimitives += static_cast<size_t>(m_shellNums[i]);
+    // SP shells also need a P coefficient for every primitive.
+    if (m_shellTypes[i] == GaussianSet::SP)
+      numSPPrimitives += static_cast<size_t>(m_shellNums[i]);
+  }
+  if (numPrimitives > m_a.size() || numPrimitives > m_c.size() ||
+      numSPPrimitives > m_csp.size())
+    shellsValid = false;
+  if (!shellsValid)
+    appendError("Inconsistent basis set information; skipping the basis set "
+                "and molecular orbitals.");
+
+  // Set up the GTO primitive counter, go through the shells and add them
+  int nGTO = 0;
+  int nSP = 0; // number of SP shells
+  for (unsigned int i = 0; shellsValid && i < m_shellTypes.size(); ++i) {
+    // Handle the SP case separately - this should possibly be a distinct type
+    if (m_shellTypes[i] == GaussianSet::SP) {
+      // SP orbital type - currently have to unroll into two shells
+      int tmpGTO = nGTO;
+      int s = basis->addBasis(m_shelltoAtom[i] - 1, GaussianSet::S);
+      for (int j = 0; j < m_shellNums[i]; ++j) {
+        basis->addGto(s, m_c[nGTO], m_a[nGTO]);
+        ++nGTO;
+      }
+      int p = basis->addBasis(m_shelltoAtom[i] - 1, GaussianSet::P);
+      for (int j = 0; j < m_shellNums[i]; ++j) {
+        basis->addGto(p, m_csp[nSP], m_a[tmpGTO]);
+        ++tmpGTO;
+        ++nSP;
+      }
+    } else {
+      int b = basis->addBasis(m_shelltoAtom[i] - 1, m_shellTypes[i]);
+      for (int j = 0; j < m_shellNums[i]; ++j) {
+        basis->addGto(b, m_c[nGTO], m_a[nGTO]);
+        ++nGTO;
+      }
+    }
+  }
+
+  // Now to load in the MO coefficients
+  if (shellsValid && !m_MOcoeffs.empty())
+    basis->setMolecularOrbitals(m_MOcoeffs);
+  if (shellsValid && !m_BetaMOcoeffs.empty())
+    basis->setMolecularOrbitals(m_BetaMOcoeffs, Core::BasisSet::Beta);
+
+  if (!m_orbitalEnergy.empty())
+    basis->setMolecularOrbitalEnergy(m_orbitalEnergy);
+  if (!m_betaOrbitalEnergy.empty())
+    basis->setMolecularOrbitalEnergy(m_betaOrbitalEnergy, Core::BasisSet::Beta);
+
+  // TODO: set orbital symmetries
+  // TODO: set vibrational symmetries
+
+  m_homo = ceil(m_electrons / 2.0);
+  // if (m_MOcoeffs.size() > 0)
+  // basis->generateDensityMatrix();
+}
+
+void ORCAOutput::parseMCD()
+{
+  // look for files with "dipole-length.1.mcd"
+  std::string filename = fileName();
+  // probably something like test.out
+  // we need to look for test.cis-el.dipole-length.1.mcd
+  // remove the extension
+  size_t pos = filename.find_last_of('.');
+  if (pos != std::string::npos) {
+    filename = filename.substr(0, pos);
+  }
+  filename += ".cis-el.dipole-length.1.mcd";
+  std::ifstream in(filename.c_str());
+  if (!in) {
+    std::cerr << "Cannot open: " << filename << "\n";
+    return;
+  }
+
+  // read in line by line
+  // frequency, mcd, absorption
+  Real frequency, mcd, absorption;
+  frequency = mcd = absorption = 0.0;
+  while (in) {
+    in >> frequency >> mcd >> absorption;
+    if (!in)
+      break;
+
+    // if frequency goes down, we are done
+    // (or we hit the end of the file)
+    if (!m_magneticTransitions.empty() &&
+        frequency < m_magneticTransitions.back())
+      break;
+
+    m_magneticTransitions.push_back(frequency);
+    m_magneticCD.push_back(mcd);
+  }
+
+  in.close();
+}
+
+GaussianSet::orbital ORCAOutput::orbitalIdx(std::string txt)
+{
+  if (txt == "S")
+    return GaussianSet::S;
+  if (txt == "SP")
+    return GaussianSet::SP;
+  if (txt == "P")
+    return GaussianSet::P;
+  if (txt == "D")
+    return GaussianSet::D5; //// orca only uses Spherical - 5 d components
+  if (txt == "D5")
+    return GaussianSet::D5;
+  if (txt == "F")
+    return GaussianSet::F7; //// orca only uses Spherical - 7 f components
+  if (txt == "F7")
+    return GaussianSet::F7;
+  if (txt == "G")
+    return GaussianSet::G9; //// orca only uses Spherical - 9 g components
+  if (txt == "G9")
+    return GaussianSet::G9;
+  if (txt == "H")
+    return GaussianSet::H11; //// orca only uses Spherical - 11 h
+                             /// components
+  if (txt == "H11")
+    return GaussianSet::H11;
+  if (txt == "I")
+    return GaussianSet::I13; //// orca only uses Spherical - 13 i
+                             /// components
+  if (txt == "I13")
+    return GaussianSet::I13;
+  return GaussianSet::UU;
+}
+
+} // namespace Avogadro::QuantumIO

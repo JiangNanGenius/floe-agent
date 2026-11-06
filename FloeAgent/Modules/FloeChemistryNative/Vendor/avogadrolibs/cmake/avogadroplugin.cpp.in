@@ -1,0 +1,36 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include <QtCore/QtPlugin>
+
+@PluginIncludes@
+
+namespace Avogadro::QtPlugins {
+
+class @PluginName@Factory : public QObject, public QtGui::@PluginType@Factory
+{
+  Q_OBJECT
+  Q_PLUGIN_METADATA(IID "org.openchemistry.avogadro.@PluginType@Factory")
+  Q_INTERFACES(Avogadro::QtGui::@PluginType@Factory)
+
+public:
+  explicit @PluginName@Factory(QObject* parent_ = nullptr) : QObject(parent_) {}
+
+  QtGui::@PluginType@* createInstance(QObject* parent_ = nullptr) override
+  {
+    auto* object = new @PluginClass@(parent_);
+    object->setObjectName("@PluginName@");
+    return object;
+  }
+
+  QString identifier() const override { return "@PluginName@"; }
+
+  QString description() const override { return "@PluginDescription@"; }
+
+};
+
+} // namespace Avogadro::QtPlugins
+
+#include "@PluginName@Plugin.moc"

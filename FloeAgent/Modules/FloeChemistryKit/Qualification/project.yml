@@ -1,0 +1,67 @@
+name: FloeChemistryQualification
+options:
+  deploymentTarget:
+    iOS: '26.0'
+    macOS: '15.0'
+packages:
+  FloeChemistryKit:
+    path: ..
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+targets:
+  ChemistryHost:
+    type: application
+    platform: iOS
+    sources: [Host.swift]
+    dependencies:
+      - package: FloeChemistryKit
+        product: FloeChemistryUI
+      - package: FloeChemistryKit
+        product: FloeChemistryEngine
+      - package: FloeChemistryKit
+        product: FloeChemistryCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.chemistry
+        TARGETED_DEVICE_FAMILY: '1,2'
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+  ChemistryMacHost:
+    type: application
+    platform: macOS
+    sources: [Host.swift]
+    dependencies:
+      - package: FloeChemistryKit
+        product: FloeChemistryUI
+      - package: FloeChemistryKit
+        product: FloeChemistryEngine
+      - package: FloeChemistryKit
+        product: FloeChemistryCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.chemistry.mac
+  ChemistryHostUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests.swift]
+    dependencies:
+      - target: ChemistryHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.chemistry.uitests
+        TEST_TARGET_NAME: ChemistryHost
+schemes:
+  ChemistryQualificationUI:
+    build:
+      targets:
+        ChemistryHost: all
+        ChemistryHostUITests: [test]
+    test:
+      targets:
+        - name: ChemistryHostUITests
+          parallelizable: false

@@ -1,0 +1,169 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#ifndef AVOGADRO_QTPLUGINS_SCRIPTENERGY_H
+#define AVOGADRO_QTPLUGINS_SCRIPTENERGY_H
+
+#include <avogadro/calc/energycalculator.h>
+
+#include <avogadro/core/avogadrocore.h>
+
+#include <QtCore/QCoreApplication>
+#include <QtCore/QJsonObject>
+#include <QtCore/QString>
+#include <QtCore/QVariantMap>
+
+namespace Avogadro {
+
+namespace Io {
+class FileFormat;
+}
+
+namespace QtGui {
+class PythonScript;
+}
+
+namespace QtPlugins {
+
+class ScriptEnergy : public Avogadro::Calc::EnergyCalculator
+{
+  Q_DECLARE_TR_FUNCTIONS(ScriptEnergy)
+
+public:
+  /** Formats that may be written to the script's input. */
+  enum Format
+  {
+    NotUsed,
+    Cjson,
+    Cml,
+    Mdl,
+    Pdb,
+    Sdf,
+    Xyz
+  };
+
+  /** Protocol for coordinate/energy/gradient transport. */
+  enum class Protocol
+  {
+    TextV1,
+    // "binary-v1" uses little-endian float64 values on the wire.
+    BinaryV1
+  };
+
+  ScriptEnergy(const QString& scriptFileName = "");
+  ~ScriptEnergy() override;
+
+  /**
+   * Configure the interpreter for package-based (pixi) execution.
+   */
+  void setPackageInfo(const QString& packageDir, const QString& command,
+                      const QString& identifier);
+
+  /**
+   * Populate metadata fields from a QVariantMap (e.g. from pyproject.toml)
+   * instead of calling the script with --metadata.
+   */
+  void readMetaData(const QVariantMap& metadata);
+
+  QString scriptFilePath() const;
+
+  Format inputFormat() const { return m_inputFormat; }
+  bool isValid() const { return m_valid; }
+
+  Calc::EnergyCalculator* newInstance() const override;
+
+  std::string identifier() const override { return m_identifier; }
+  std::string name() const override { return m_name; }
+  std::string description() const override { return m_description; }
+  std::string userOptions() const override;
+  bool setUserOptions(const std::string& optionsJson) override;
+
+  Core::Molecule::ElementMask elements() const override { return m_elements; }
+  bool supportsGradients() const { return m_gradients; }
+  // True batch transport is only available for binary-v1 scripts that opt in
+  // via support.batch in their metadata.
+  bool supportsBatch() const override
+  {
+    return m_batch && m_protocol == Protocol::BinaryV1;
+  }
+  bool acceptsIons() const override { return m_ions; }
+  bool acceptsRadicals() const override { return m_radicals; }
+  bool acceptsUnitCell() const override { return m_unitCells; }
+
+  // This will check if the molecule is valid for this script
+  // and then start the external process
+  void setMolecule(Core::Molecule* mol) override;
+  // energy
+  Real value(const Eigen::VectorXd& x) override;
+  // gradient (which may be unsupported and fall back to numeric)
+  void gradient(const Eigen::VectorXd& x, Eigen::VectorXd& grad) override;
+  // fused energy + gradient
+  Real evaluate(const Eigen::VectorXd& x, Eigen::VectorXd* grad) override;
+  // hessian (falls back to finite difference if unsupported by script)
+  void hessian(const Eigen::VectorXd& x, Eigen::MatrixXd& hess) override;
+  // batch energy / gradient (true batch over binary-v1, else loop fallback)
+  std::vector<Real> valueBatch(
+    const std::vector<Eigen::VectorXd>& coords) override;
+  void gradientBatch(const std::vector<Eigen::VectorXd>& coords,
+                     std::vector<Eigen::VectorXd>& grads) override;
+
+private:
+  static Format stringToFormat(const std::string& str);
+  static Protocol stringToProtocol(const std::string& str);
+  static Io::FileFormat* createFileFormat(Format fmt);
+  void resetMetaData();
+  void processElementString(const QString& str);
+  void copyMetaDataFrom(const ScriptEnergy& other);
+
+  QByteArray writeCoordinatesText(const Eigen::VectorXd& x);
+  QByteArray writeCoordinatesBinary(const Eigen::VectorXd& x,
+                                    quint16 requestFlags) const;
+  QByteArray writeBatchCoordinatesBinary(
+    const std::vector<Eigen::VectorXd>& coords, quint16 requestFlags) const;
+  bool parseResponseBinary(const QByteArray& response, quint16 requestFlags,
+                           double* energy, Eigen::VectorXd* grad,
+                           Eigen::MatrixXd* hess) const;
+  bool parseBatchResponseBinary(const QByteArray& response,
+                                quint16 requestFlags, std::size_t expectedBatch,
+                                std::vector<double>* energies,
+                                std::vector<Eigen::VectorXd>* grads) const;
+  bool readBinaryFrame(const QByteArray& input, QByteArray& frame,
+                       int timeoutMs = 5000);
+  bool evaluateBinary(const Eigen::VectorXd& x, quint16 requestFlags,
+                      double* energy = nullptr, Eigen::VectorXd* grad = nullptr,
+                      Eigen::MatrixXd* hess = nullptr);
+  bool evaluateBatchBinary(const std::vector<Eigen::VectorXd>& coords,
+                           quint16 requestFlags, std::vector<double>* energies,
+                           std::vector<Eigen::VectorXd>* grads);
+  bool buildBootstrapInput(QByteArray& input) const;
+
+private:
+  QtGui::PythonScript* m_interpreter;
+  Format m_inputFormat;
+  Protocol m_protocol;
+  Core::Molecule* m_molecule;
+
+  // what's supported by this script
+  Core::Molecule::ElementMask m_elements;
+  bool m_valid;
+  bool m_gradients;
+  bool m_hessians;
+  bool m_batch;
+  bool m_ions;
+  bool m_radicals;
+  bool m_unitCells;
+
+  std::string m_identifier;
+  std::string m_name;
+  std::string m_description;
+  QString m_formatString;
+  QJsonObject m_userOptionsSchema;
+  QJsonObject m_userOptionsValues;
+};
+
+} // namespace QtPlugins
+} // namespace Avogadro
+
+#endif // AVOGADRO_QTPLUGINS_SCRIPTENERGY_H

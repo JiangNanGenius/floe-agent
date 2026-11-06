@@ -1,0 +1,1483 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "iotests.h"
+
+#include <gtest/gtest.h>
+
+#include <avogadro/core/constraint.h>
+#include <avogadro/core/cube.h>
+#include <avogadro/core/gaussianset.h>
+#include <avogadro/core/matrix.h>
+#include <avogadro/core/layermanager.h>
+#include <avogadro/core/molecule.h>
+#include <avogadro/core/residue.h>
+#include <avogadro/core/spacegroups.h>
+#include <avogadro/core/unitcell.h>
+
+#include <avogadro/io/cjsonformat.h>
+
+#include <nlohmann/json.hpp>
+
+using Avogadro::Index;
+using Avogadro::MatrixX;
+using Avogadro::PI_F;
+using Avogadro::Real;
+using Avogadro::Core::Atom;
+using Avogadro::Core::Bond;
+using Avogadro::Core::Constraint;
+using Avogadro::Core::GaussianSet;
+using Avogadro::Core::Molecule;
+using Avogadro::Core::Residue;
+using Avogadro::Core::SpaceGroups;
+using Avogadro::Core::UnitCell;
+using Avogadro::Core::Variant;
+using Avogadro::Io::CjsonFormat;
+using namespace std::string_literals;
+
+TEST(CjsonTest, readFile)
+{
+  CjsonFormat cjson;
+  Molecule molecule;
+  bool success = cjson.readFile(
+    std::string(AVOGADRO_DATA) + "/data/cjson/ethane.cjson", molecule);
+  EXPECT_TRUE(success);
+  EXPECT_EQ(cjson.error(), "");
+  EXPECT_EQ(molecule.data("name").type(), Variant::String);
+  EXPECT_EQ(molecule.data("name").toString(), "Ethane");
+
+  EXPECT_EQ(molecule.data("inchi").type(), Variant::String);
+  EXPECT_EQ(molecule.data("inchi").toString(), "1/C2H6/c1-2/h1-2H3");
+}
+
+TEST(CjsonTest, atomicNumberEdgeCase)
+{
+  for (const auto* s : {
+         R"({"chemicalJson": 0, "name": "negative Z",
+  "atoms": {"coords": {"3d": [1.0, 2.0, 3.0]}, "elements": {"number": [-1]}}})",
+
+         R"({"chemicalJson": 1, "name": "ununennium",
+  "atoms": {"coords": {"3d": [1.0, 2.0, 3.0]}, "elements": {"number": [119]}},
+  "properties": {"totalCharge": 1, "totalSpinMultiplicity": 1}})",
+       }) {
+    CjsonFormat cjson;
+    Molecule molecule;
+    EXPECT_FALSE(cjson.readString(s, molecule)) << s;
+    EXPECT_EQ(cjson.error(), "Error: atomic number is invalid.\n");
+  }
+
+  for (const auto* s : {
+         R"({"chemicalJson": 0, "name": "ghost",
+  "atoms": {"coords": {"3d": [1.0, 2.0, 3.0]}, "elements": {"number": [0]}}})",
+
+         R"({"chemicalJson": 1, "name": "oganesson",
+  "atoms": {"coords": {"3d": [1.0, 2.0, 3.0]}, "elements": {"number": [118]}},
+  "properties": {"totalCharge": 0, "totalSpinMultiplicity": 1}})",
+       }) {
+    CjsonFormat cjson;
+    Molecule molecule;
+    EXPECT_TRUE(cjson.readString(s, molecule)) << s;
+  }
+}
+
+TEST(CjsonTest, readNegativeBond)
+{
+  CjsonFormat cjson;
+  Molecule molecule;
+  EXPECT_FALSE(cjson.readString(R"({"chemicalJson": 1,
+  "atoms": {
+    "coords": { "3d": [ 0.0, 0.0, 0.0, 1.0, 0.0, 0.0 ] },
+    "elements": { "number": [ 1, 9 ] }
+  },
+  "bonds": {
+    "connections": { "index": [ 0, 1 ] },
+    "order": [ -1 ]
+}})",
+                                molecule));
+  EXPECT_EQ(cjson.error(), "Error: bond order is invalid.\n");
+}
+
+TEST(CjsonTest, readInvalidPeriodicFile)
+{
+  const auto error_cell_params =
+    "cell parameters do not give linear-independent lattice vectors\n"s;
+  const auto error_cellVectors = "cellVectors are not linear independent\n"s;
+  for (const auto& [file, err] : {
+         std::make_pair("impossible.cjson"s, error_cell_params),
+         std::make_pair("lin-dep-cellVectors.cjson"s, error_cellVectors),
+         std::make_pair("lin-dep2.cjson"s, error_cell_params),
+         std::make_pair("zero-a-cellVectors.cjson"s, error_cellVectors),
+         std::make_pair("zero-a.cjson"s, error_cell_params),
+         std::make_pair("zero-alpha.cjson"s, error_cell_params),
+         std::make_pair("zero-b-cellVectors.cjson"s, error_cellVectors),
+         std::make_pair("zero-b.cjson"s, error_cell_params),
+         std::make_pair("zero-beta.cjson"s, error_cell_params),
+         std::make_pair("zero-c-cellVectors.cjson"s, error_cellVectors),
+         std::make_pair("zero-c.cjson"s, error_cell_params),
+         std::make_pair("zero-gamma.cjson"s, error_cell_params),
+       }) {
+    CjsonFormat cjson;
+    Molecule molecule;
+    auto f = std::string(AVOGADRO_DATA) + "/data/cjson/singular/" + file;
+    EXPECT_FALSE(cjson.readFile(f, molecule)) << f;
+    EXPECT_EQ(cjson.error(), err) << f;
+  }
+}
+
+TEST(CjsonTest, atoms)
+{
+  CjsonFormat cjson;
+  Molecule molecule;
+  bool success = cjson.readFile(
+    std::string(AVOGADRO_DATA) + "/data/cjson/ethane.cjson", molecule);
+  EXPECT_TRUE(success);
+  EXPECT_EQ(cjson.error(), "");
+  EXPECT_EQ(molecule.data("name").toString(), "Ethane");
+  EXPECT_EQ(molecule.atomCount(), static_cast<size_t>(8));
+  Atom atom = molecule.atom(0);
+  EXPECT_EQ(atom.atomicNumber(), static_cast<unsigned char>(1));
+  atom = molecule.atom(1);
+  EXPECT_EQ(atom.atomicNumber(), static_cast<unsigned char>(6));
+  EXPECT_EQ(atom.position3d().x(), 0.751621);
+  EXPECT_EQ(atom.position3d().y(), -0.022441);
+  EXPECT_EQ(atom.position3d().z(), -0.020839);
+
+  atom = molecule.atom(7);
+  EXPECT_EQ(atom.atomicNumber(), static_cast<unsigned char>(1));
+  EXPECT_EQ(atom.position3d().x(), -1.184988);
+  EXPECT_EQ(atom.position3d().y(), 0.004424);
+  EXPECT_EQ(atom.position3d().z(), -0.987522);
+}
+
+TEST(CjsonTest, bonds)
+{
+  CjsonFormat cjson;
+  Molecule molecule;
+  bool success = cjson.readFile(
+    std::string(AVOGADRO_DATA) + "/data/cjson/ethane.cjson", molecule);
+  EXPECT_TRUE(success);
+  EXPECT_EQ(cjson.error(), "");
+  EXPECT_EQ(molecule.data("name").toString(), "Ethane");
+  EXPECT_EQ(molecule.atomCount(), static_cast<size_t>(8));
+  EXPECT_EQ(molecule.bondCount(), static_cast<size_t>(7));
+
+  Bond bond = molecule.bond(0);
+  EXPECT_EQ(bond.atom1().index(), static_cast<size_t>(0));
+  EXPECT_EQ(bond.atom2().index(), static_cast<size_t>(1));
+  EXPECT_EQ(bond.order(), static_cast<unsigned char>(1));
+  bond = molecule.bond(6);
+  EXPECT_EQ(bond.atom1().index(), static_cast<size_t>(4));
+  EXPECT_EQ(bond.atom2().index(), static_cast<size_t>(7));
+  EXPECT_EQ(bond.order(), static_cast<unsigned char>(1));
+}
+
+TEST(CjsonTest, crystal)
+{
+  CjsonFormat cjson;
+  Molecule molecule;
+  bool success = cjson.readFile(
+    std::string(AVOGADRO_DATA) + "/data/cjson/rutile.cjson", molecule);
+  EXPECT_TRUE(success);
+  EXPECT_EQ(cjson.error(), "");
+  EXPECT_EQ(molecule.data("name").toString(), "TiO2 rutile");
+  EXPECT_EQ(molecule.atomCount(), static_cast<size_t>(6));
+  EXPECT_EQ(molecule.bondCount(), static_cast<size_t>(0));
+
+  const UnitCell* unitCell = molecule.unitCell();
+  ASSERT_NE(unitCell, (UnitCell*)nullptr);
+  EXPECT_TRUE(std::fabs((float)unitCell->a() - 2.95812f) < 1e-5f);
+  EXPECT_TRUE(std::fabs((float)unitCell->b() - 4.59373f) < 1e-5f);
+  EXPECT_TRUE(std::fabs((float)unitCell->c() - 4.59373f) < 1e-5f);
+  EXPECT_TRUE(std::fabs((float)unitCell->alpha() - (.5f * PI_F)) < 1e-5f);
+  EXPECT_TRUE(std::fabs((float)unitCell->beta() - (.5f * PI_F)) < 1e-5f);
+  EXPECT_TRUE(std::fabs((float)unitCell->gamma() - (.5f * PI_F)) < 1e-5f);
+
+  Atom atom = molecule.atom(5);
+  EXPECT_EQ(atom.atomicNumber(), 8);
+  EXPECT_TRUE(std::fabs((float)atom.position3d().x() - 1.479060f) < 1e-5f);
+  EXPECT_TRUE(std::fabs((float)atom.position3d().y() - 3.699331f) < 1e-5f);
+  EXPECT_TRUE(std::fabs((float)atom.position3d().z() - 0.894399f) < 1e-5f);
+
+  std::string cjsonStr;
+  cjson.writeString(cjsonStr, molecule);
+  Molecule otherMolecule;
+  cjson.readString(cjsonStr, otherMolecule);
+
+  const UnitCell* otherUnitCell = otherMolecule.unitCell();
+  ASSERT_NE(otherUnitCell, (UnitCell*)nullptr);
+  EXPECT_FLOAT_EQ((float)otherUnitCell->a(), (float)unitCell->a());
+  EXPECT_FLOAT_EQ((float)otherUnitCell->b(), (float)unitCell->b());
+  EXPECT_FLOAT_EQ((float)otherUnitCell->c(), (float)unitCell->c());
+  EXPECT_FLOAT_EQ((float)otherUnitCell->alpha(), (float)unitCell->alpha());
+  EXPECT_FLOAT_EQ((float)otherUnitCell->beta(), (float)unitCell->beta());
+  EXPECT_FLOAT_EQ((float)otherUnitCell->gamma(), (float)unitCell->gamma());
+
+  Atom otherAtom = otherMolecule.atom(5);
+  EXPECT_EQ(otherAtom.atomicNumber(), atom.atomicNumber());
+  EXPECT_FLOAT_EQ((float)otherAtom.position3d().x(),
+                  (float)atom.position3d().x());
+  EXPECT_FLOAT_EQ((float)otherAtom.position3d().y(),
+                  (float)atom.position3d().y());
+  EXPECT_FLOAT_EQ((float)otherAtom.position3d().z(),
+                  (float)atom.position3d().z());
+}
+
+TEST(CjsonTest, saveFile)
+{
+  CjsonFormat cjson;
+  Molecule savedMolecule, molecule;
+  bool success = cjson.readFile(
+    std::string(AVOGADRO_DATA) + "/data/cjson/ethane.cjson", savedMolecule);
+  EXPECT_TRUE(success);
+  EXPECT_EQ(cjson.error(), "");
+
+  success = cjson.writeFile("ethanetmp.cjson", savedMolecule);
+  EXPECT_TRUE(success);
+  EXPECT_EQ(cjson.error(), "");
+
+  // Now read the file back in and check a few key values are still present.
+  success = cjson.readFile("ethanetmp.cjson", molecule);
+  EXPECT_TRUE(success);
+  EXPECT_EQ(cjson.error(), "");
+  EXPECT_EQ(molecule.data("name").toString(), "Ethane");
+  EXPECT_EQ(molecule.atomCount(), static_cast<size_t>(8));
+  EXPECT_EQ(molecule.bondCount(), static_cast<size_t>(7));
+  Atom atom = molecule.atom(7);
+  EXPECT_EQ(atom.atomicNumber(), static_cast<unsigned char>(1));
+  EXPECT_EQ(atom.position3d().x(), -1.184988);
+  EXPECT_EQ(atom.position3d().y(), 0.004424);
+  EXPECT_EQ(atom.position3d().z(), -0.987522);
+  Bond bond = molecule.bond(0);
+  EXPECT_EQ(bond.atom1().index(), static_cast<size_t>(0));
+  EXPECT_EQ(bond.atom2().index(), static_cast<size_t>(1));
+  EXPECT_EQ(bond.order(), static_cast<unsigned char>(1));
+}
+
+TEST(CjsonTest, conformers)
+{
+  CjsonFormat cjson;
+  Molecule molecule;
+  bool success = cjson.readFile(
+    std::string(AVOGADRO_DATA) + "/data/cjson/conformers.cjson", molecule);
+  EXPECT_TRUE(success);
+  EXPECT_EQ(cjson.error(), "");
+  EXPECT_EQ(molecule.atomCount(), static_cast<size_t>(14));
+  EXPECT_EQ(molecule.bondCount(), static_cast<size_t>(13));
+  EXPECT_EQ(molecule.coordinate3dCount(), static_cast<size_t>(3));
+
+  // okay now save it and make sure we still have the same number
+  success = cjson.writeFile("conformertmp.cjson", molecule);
+  EXPECT_TRUE(success);
+  EXPECT_EQ(cjson.error(), "");
+
+  Molecule otherMolecule;
+  success = cjson.readFile("conformertmp.cjson", otherMolecule);
+  EXPECT_TRUE(success);
+  EXPECT_EQ(cjson.error(), "");
+  EXPECT_EQ(otherMolecule.atomCount(), static_cast<size_t>(14));
+  EXPECT_EQ(otherMolecule.bondCount(), static_cast<size_t>(13));
+  EXPECT_EQ(otherMolecule.coordinate3dCount(), static_cast<size_t>(3));
+}
+
+TEST(CjsonTest, partialCharges)
+{
+  CjsonFormat cjson;
+  Molecule molecule;
+  bool success = cjson.readFile(
+    std::string(AVOGADRO_DATA) + "/data/cjson/formaldehyde.cjson", molecule);
+  EXPECT_TRUE(success);
+  EXPECT_EQ(cjson.error(), "");
+  EXPECT_EQ(molecule.atomCount(), static_cast<size_t>(4));
+  EXPECT_EQ(molecule.bondCount(), static_cast<size_t>(3));
+  EXPECT_EQ(molecule.coordinate3dCount(), static_cast<size_t>(7));
+
+  // check partial charges
+  auto types = molecule.partialChargeTypes();
+  // should be Loewdin and Mulliken
+  EXPECT_EQ(types.size(), static_cast<size_t>(2));
+  MatrixX loewdinCharges = molecule.partialCharges("Loewdin");
+  // should be 4 atoms
+  EXPECT_EQ(loewdinCharges.rows(), static_cast<size_t>(4));
+  // check the charges on atoms
+  EXPECT_EQ(loewdinCharges(0, 0), 0.133356);
+  EXPECT_EQ(loewdinCharges(1, 0), -0.112557);
+
+  MatrixX mullikenCharges = molecule.partialCharges("Mulliken");
+  // should be 4 atoms
+  EXPECT_EQ(mullikenCharges.rows(), static_cast<size_t>(4));
+  // check the charges on atoms
+  EXPECT_EQ(mullikenCharges(0, 0), 0.16726);
+  EXPECT_EQ(mullikenCharges(1, 0), -0.201292);
+
+  // okay now save it and make sure we still have the same number
+  success = cjson.writeFile("formaldehysetmp.cjson", molecule);
+  EXPECT_TRUE(success);
+  EXPECT_EQ(cjson.error(), "");
+
+  Molecule otherMolecule;
+  success = cjson.readFile("formaldehysetmp.cjson", otherMolecule);
+  EXPECT_TRUE(success);
+  EXPECT_EQ(cjson.error(), "");
+  EXPECT_EQ(otherMolecule.atomCount(), static_cast<size_t>(4));
+  EXPECT_EQ(otherMolecule.bondCount(), static_cast<size_t>(3));
+  EXPECT_EQ(otherMolecule.coordinate3dCount(), static_cast<size_t>(7));
+  // check partial charges
+  types = otherMolecule.partialChargeTypes();
+  // should be Loewdin and Mulliken
+  EXPECT_EQ(types.size(), static_cast<size_t>(2));
+  loewdinCharges = otherMolecule.partialCharges("Loewdin");
+  // should be 4 atoms
+  EXPECT_EQ(loewdinCharges.rows(), static_cast<size_t>(4));
+  // check the charges on atoms
+  EXPECT_EQ(loewdinCharges(0, 0), 0.133356);
+  EXPECT_EQ(loewdinCharges(1, 0), -0.112557);
+  mullikenCharges = otherMolecule.partialCharges("Mulliken");
+  // should be 4 atoms
+  EXPECT_EQ(mullikenCharges.rows(), static_cast<size_t>(4));
+  // check the charges on atoms
+  EXPECT_EQ(mullikenCharges(0, 0), 0.16726);
+  EXPECT_EQ(mullikenCharges(1, 0), -0.201292);
+}
+
+TEST(CjsonTest, atomPropertiesRoundTrip)
+{
+  // Create a molecule with custom atom properties
+  Molecule molecule;
+  molecule.addAtom(8);
+  molecule.addAtom(1);
+  molecule.addAtom(1);
+  molecule.addBond(0, 1, 1);
+  molecule.addBond(0, 2, 1);
+
+  molecule.atomProperties().setDouble("mulliken_charge", 0, -0.3);
+  molecule.atomProperties().setDouble("mulliken_charge", 1, 0.15);
+  molecule.atomProperties().setDouble("mulliken_charge", 2, 0.15);
+  molecule.atomProperties().setInt("type_index", 0, 42);
+  molecule.atomProperties().setInt("type_index", 1, 7);
+  molecule.atomProperties().setInt("type_index", 2, 7);
+  molecule.atomProperties().setString("atom_type", 0, "O.3");
+  molecule.atomProperties().setString("atom_type", 1, "H");
+  molecule.atomProperties().setString("atom_type", 2, "H");
+
+  // Write to CJSON
+  CjsonFormat cjson;
+  std::string output;
+  ASSERT_TRUE(cjson.writeString(output, molecule));
+
+  // Read back
+  Molecule readMol;
+  ASSERT_TRUE(cjson.readString(output, readMol));
+
+  // Verify double properties
+  auto charge0 = readMol.atomProperties().getDouble("mulliken_charge", 0);
+  ASSERT_TRUE(charge0.has_value());
+  EXPECT_DOUBLE_EQ(*charge0, -0.3);
+  auto charge2 = readMol.atomProperties().getDouble("mulliken_charge", 2);
+  ASSERT_TRUE(charge2.has_value());
+  EXPECT_DOUBLE_EQ(*charge2, 0.15);
+
+  // Verify int properties
+  auto type0 = readMol.atomProperties().getInt("type_index", 0);
+  ASSERT_TRUE(type0.has_value());
+  EXPECT_EQ(*type0, 42);
+
+  // Verify string properties
+  auto atomType0 = readMol.atomProperties().getString("atom_type", 0);
+  ASSERT_TRUE(atomType0.has_value());
+  EXPECT_EQ(*atomType0, "O.3");
+  auto atomType1 = readMol.atomProperties().getString("atom_type", 1);
+  ASSERT_TRUE(atomType1.has_value());
+  EXPECT_EQ(*atomType1, "H");
+}
+
+TEST(CjsonTest, bondPropertiesRoundTrip)
+{
+  Molecule molecule;
+  molecule.addAtom(8);
+  molecule.addAtom(1);
+  molecule.addAtom(1);
+  molecule.addBond(0, 1, 1);
+  molecule.addBond(0, 2, 1);
+
+  molecule.bondProperties().setDouble("wiberg_index", 0, 0.95);
+  molecule.bondProperties().setDouble("wiberg_index", 1, 0.93);
+
+  CjsonFormat cjson;
+  std::string output;
+  ASSERT_TRUE(cjson.writeString(output, molecule));
+
+  Molecule readMol;
+  ASSERT_TRUE(cjson.readString(output, readMol));
+
+  auto wi0 = readMol.bondProperties().getDouble("wiberg_index", 0);
+  ASSERT_TRUE(wi0.has_value());
+  EXPECT_DOUBLE_EQ(*wi0, 0.95);
+  auto wi1 = readMol.bondProperties().getDouble("wiberg_index", 1);
+  ASSERT_TRUE(wi1.has_value());
+  EXPECT_DOUBLE_EQ(*wi1, 0.93);
+}
+
+TEST(CjsonTest, conformerPropertiesRoundTrip)
+{
+  // Build a molecule with multiple conformers and per-conformer properties.
+  // Per-atom 3D positions must also be set; the CJSON writer only emits
+  // the conformer "3dSets" block alongside an existing "3d" coords block.
+  Molecule molecule;
+  Atom o = molecule.addAtom(8);
+  Atom h1 = molecule.addAtom(1);
+  Atom h2 = molecule.addAtom(1);
+  o.setPosition3d(Avogadro::Vector3(0.0, 0.0, 0.0));
+  h1.setPosition3d(Avogadro::Vector3(0.6, -0.5, 0.0));
+  h2.setPosition3d(Avogadro::Vector3(-0.6, -0.5, 0.0));
+
+  Avogadro::Core::Array<Avogadro::Vector3> frame0;
+  frame0.push_back(Avogadro::Vector3(0.0, 0.0, 0.0));
+  frame0.push_back(Avogadro::Vector3(0.6, -0.5, 0.0));
+  frame0.push_back(Avogadro::Vector3(-0.6, -0.5, 0.0));
+  Avogadro::Core::Array<Avogadro::Vector3> frame1;
+  frame1.push_back(Avogadro::Vector3(0.0, 0.1, 0.0));
+  frame1.push_back(Avogadro::Vector3(0.7, -0.4, 0.0));
+  frame1.push_back(Avogadro::Vector3(-0.7, -0.4, 0.0));
+  Avogadro::Core::Array<Avogadro::Vector3> frame2;
+  frame2.push_back(Avogadro::Vector3(0.0, 0.2, 0.0));
+  frame2.push_back(Avogadro::Vector3(0.8, -0.3, 0.0));
+  frame2.push_back(Avogadro::Vector3(-0.8, -0.3, 0.0));
+  molecule.setCoordinate3d(frame0, 0);
+  molecule.setCoordinate3d(frame1, 1);
+  molecule.setCoordinate3d(frame2, 2);
+
+  // Per-conformer dense columns plus one sparse matrix column.
+  molecule.conformerProperties().setDouble("energy", 0, -76.4);
+  molecule.conformerProperties().setDouble("energy", 1, -76.2);
+  molecule.conformerProperties().setDouble("energy", 2, -76.0);
+  molecule.conformerProperties().setString("method", 0, "B3LYP");
+  molecule.conformerProperties().setString("method", 1, "B3LYP");
+  molecule.conformerProperties().setString("method", 2, "B3LYP");
+
+  MatrixX forces0(3, 3);
+  forces0 << 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09;
+  molecule.conformerProperties().setMatrix("forces", 0, forces0);
+
+  CjsonFormat cjson;
+  std::string output;
+  ASSERT_TRUE(cjson.writeString(output, molecule));
+
+  Molecule readMol;
+  ASSERT_TRUE(cjson.readString(output, readMol));
+
+  EXPECT_EQ(readMol.coordinate3dCount(), static_cast<size_t>(3));
+
+  auto e0 = readMol.conformerProperties().getDouble("energy", 0);
+  ASSERT_TRUE(e0.has_value());
+  EXPECT_DOUBLE_EQ(*e0, -76.4);
+  auto e2 = readMol.conformerProperties().getDouble("energy", 2);
+  ASSERT_TRUE(e2.has_value());
+  EXPECT_DOUBLE_EQ(*e2, -76.0);
+
+  auto m0 = readMol.conformerProperties().getString("method", 0);
+  ASSERT_TRUE(m0.has_value());
+  EXPECT_EQ(*m0, "B3LYP");
+
+  auto f0 = readMol.conformerProperties().getMatrix("forces", 0);
+  ASSERT_TRUE(f0.has_value());
+  EXPECT_TRUE(f0->isApprox(forces0));
+  EXPECT_FALSE(
+    readMol.conformerProperties().getMatrix("forces", 1).has_value());
+}
+
+TEST(CjsonTest, matrixPropertiesRoundTrip)
+{
+  // NMR tensors live on a sparse matrix column — verify round-trip.
+  Molecule molecule;
+  molecule.addAtom(6);
+  molecule.addAtom(1);
+  molecule.addAtom(1);
+
+  MatrixX tensor0(3, 3);
+  tensor0 << 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0;
+  MatrixX tensor2(2, 3);
+  tensor2 << -1.5, 2.5, 3.5, 4.5, -5.5, 6.5;
+
+  molecule.atomProperties().setMatrix("nmr_tensor", 0, tensor0);
+  molecule.atomProperties().setMatrix("nmr_tensor", 2, tensor2);
+
+  CjsonFormat cjson;
+  std::string output;
+  ASSERT_TRUE(cjson.writeString(output, molecule));
+
+  Molecule readMol;
+  ASSERT_TRUE(cjson.readString(output, readMol));
+
+  auto t0 = readMol.atomProperties().getMatrix("nmr_tensor", 0);
+  ASSERT_TRUE(t0.has_value());
+  EXPECT_EQ(t0->rows(), 3);
+  EXPECT_EQ(t0->cols(), 3);
+  EXPECT_TRUE(t0->isApprox(tensor0));
+
+  auto t2 = readMol.atomProperties().getMatrix("nmr_tensor", 2);
+  ASSERT_TRUE(t2.has_value());
+  EXPECT_EQ(t2->rows(), 2);
+  EXPECT_EQ(t2->cols(), 3);
+  EXPECT_TRUE(t2->isApprox(tensor2));
+
+  // Sparse: index 1 was never set, must remain unset.
+  EXPECT_FALSE(readMol.atomProperties().getMatrix("nmr_tensor", 1).has_value());
+}
+
+TEST(CjsonTest, residuePropertiesRoundTrip)
+{
+  // Build a minimal molecule with residues
+  Molecule molecule;
+  Atom a1 = molecule.addAtom(6); // C
+  Atom a2 = molecule.addAtom(7); // N
+
+  std::string name1 = std::string("ALA");
+  Index id1 = 1;
+  char chain1 = 'A';
+  Residue r1(name1, id1, chain1);
+  r1.addResidueAtom("CA", a1);
+  molecule.addResidue(r1);
+
+  std::string name2 = std::string("GLY");
+  Index id2 = 2;
+  char chain2 = 'A';
+  Residue r2(name2, id2, chain2);
+  r2.addResidueAtom("CA", a2);
+  molecule.addResidue(r2);
+
+  molecule.residueProperties().setDouble("bfactor", 0, 15.2);
+  molecule.residueProperties().setDouble("bfactor", 1, 22.7);
+
+  CjsonFormat cjson;
+  std::string output;
+  ASSERT_TRUE(cjson.writeString(output, molecule));
+
+  Molecule readMol;
+  ASSERT_TRUE(cjson.readString(output, readMol));
+
+  EXPECT_EQ(readMol.residueCount(), 2);
+  auto bf0 = readMol.residueProperties().getDouble("bfactor", 0);
+  ASSERT_TRUE(bf0.has_value());
+  EXPECT_DOUBLE_EQ(*bf0, 15.2);
+  auto bf1 = readMol.residueProperties().getDouble("bfactor", 1);
+  ASSERT_TRUE(bf1.has_value());
+  EXPECT_DOUBLE_EQ(*bf1, 22.7);
+}
+
+// A calculation can produce a Hessian at more than one geometry, so the
+// vibrations are written as a sparse map keyed by conformer index. Every set
+// has to come back against the geometry it was computed at, not merged into
+// one or collapsed onto the first conformer.
+TEST(CjsonTest, perConformerVibrationsRoundTrip)
+{
+  Molecule molecule;
+  Atom h1 = molecule.addAtom(1);
+  Atom h2 = molecule.addAtom(1);
+  h1.setPosition3d(Avogadro::Vector3(0.0, 0.0, 0.0));
+  h2.setPosition3d(Avogadro::Vector3(0.0, 0.0, 0.74));
+
+  // Four conformers, with a Hessian on only the first and last: the sparse
+  // case a dense array parallel to the coordinate sets would pad out.
+  for (size_t i = 0; i < 4; ++i) {
+    Avogadro::Core::Array<Avogadro::Vector3> frame;
+    frame.push_back(Avogadro::Vector3(0.0, 0.0, 0.0));
+    frame.push_back(Avogadro::Vector3(0.0, 0.0, 0.74 + 0.01 * i));
+    molecule.setCoordinate3d(frame, i);
+  }
+
+  Avogadro::Core::Array<double> first(1, 1600.0);
+  Avogadro::Core::Array<double> last(1, 1750.0);
+  molecule.setVibrationFrequencies(first, 0);
+  molecule.setVibrationIRIntensities(Avogadro::Core::Array<double>(1, 12.0), 0);
+  molecule.setVibrationFrequencies(last, 3);
+  molecule.setVibrationIRIntensities(Avogadro::Core::Array<double>(1, 30.0), 3);
+  molecule.setVibrationRamanIntensities(Avogadro::Core::Array<double>(1, 4.5),
+                                        3);
+
+  Avogadro::Core::Array<Avogadro::Core::Array<Avogadro::Vector3>> modes0(
+    1, Avogadro::Core::Array<Avogadro::Vector3>(2, Avogadro::Vector3(1, 0, 0)));
+  Avogadro::Core::Array<Avogadro::Core::Array<Avogadro::Vector3>> modes3(
+    1, Avogadro::Core::Array<Avogadro::Vector3>(2, Avogadro::Vector3(0, 0, 1)));
+  molecule.setVibrationLx(modes0, 0);
+  molecule.setVibrationLx(modes3, 3);
+
+  // Open on the last conformer, as an optimization would.
+  ASSERT_TRUE(molecule.setCoordinate3d(3));
+
+  CjsonFormat writer;
+  std::string json;
+  ASSERT_TRUE(writer.writeString(json, molecule));
+
+  Molecule readMol;
+  CjsonFormat reader;
+  ASSERT_TRUE(reader.readString(json, readMol));
+
+  EXPECT_EQ(readMol.coordinate3dCount(), 4u);
+  // The conformer that was on screen is restored, so the active vibration
+  // view still describes the same geometry.
+  EXPECT_EQ(readMol.coordinate3d(), 3);
+
+  ASSERT_EQ(readMol.vibrationConformerCount(), 2u);
+  ASSERT_EQ(readMol.vibrationConformers().size(), 2u);
+  EXPECT_EQ(readMol.vibrationConformers()[0], 0u);
+  EXPECT_EQ(readMol.vibrationConformers()[1], 3u);
+
+  ASSERT_EQ(readMol.vibrationFrequencies(0).size(), 1u);
+  EXPECT_DOUBLE_EQ(readMol.vibrationFrequencies(0)[0], 1600.0);
+  EXPECT_DOUBLE_EQ(readMol.vibrationIRIntensities(0)[0], 12.0);
+  EXPECT_EQ(readMol.vibrationLx(0, 0)[0], Avogadro::Vector3(1, 0, 0));
+
+  ASSERT_EQ(readMol.vibrationFrequencies(3).size(), 1u);
+  EXPECT_DOUBLE_EQ(readMol.vibrationFrequencies(3)[0], 1750.0);
+  EXPECT_DOUBLE_EQ(readMol.vibrationIRIntensities(3)[0], 30.0);
+  EXPECT_DOUBLE_EQ(readMol.vibrationRamanIntensities(3)[0], 4.5);
+  EXPECT_EQ(readMol.vibrationLx(0, 3)[0], Avogadro::Vector3(0, 0, 1));
+
+  // The conformers with no Hessian stay empty rather than being padded.
+  EXPECT_FALSE(readMol.hasVibrations(1));
+  EXPECT_FALSE(readMol.hasVibrations(2));
+}
+
+// A file with a single Hessian keeps the flat layout CJSON has always used,
+// so it stays readable by anything that predates the sparse map.
+TEST(CjsonTest, singleHessianKeepsTheFlatLayout)
+{
+  Molecule molecule;
+  Atom h1 = molecule.addAtom(1);
+  Atom h2 = molecule.addAtom(1);
+  h1.setPosition3d(Avogadro::Vector3(0.0, 0.0, 0.0));
+  h2.setPosition3d(Avogadro::Vector3(0.0, 0.0, 0.74));
+  molecule.setVibrationFrequencies(Avogadro::Core::Array<double>(1, 1600.0));
+
+  CjsonFormat writer;
+  std::string json;
+  ASSERT_TRUE(writer.writeString(json, molecule));
+
+  EXPECT_NE(json.find("\"frequencies\""), std::string::npos);
+  EXPECT_EQ(json.find("\"conformers\""), std::string::npos);
+
+  Molecule readMol;
+  CjsonFormat reader;
+  ASSERT_TRUE(reader.readString(json, readMol));
+  ASSERT_EQ(readMol.vibrationFrequencies().size(), 1u);
+  EXPECT_DOUBLE_EQ(readMol.vibrationFrequencies()[0], 1600.0);
+}
+
+// Back compatibility: a file written before the sparse map has its flat
+// vibration block loaded against the active conformer.
+TEST(CjsonTest, flatVibrationsWithoutConformerMapStillRead)
+{
+  CjsonFormat reader;
+  Molecule molecule;
+  ASSERT_TRUE(
+    reader.readFile(AVOGADRO_DATA "/data/cjson/raman.cjson", molecule));
+
+  EXPECT_EQ(molecule.vibrationFrequencies().size(), 12u);
+  EXPECT_EQ(molecule.vibrationConformerCount(), 1u);
+  EXPECT_TRUE(molecule.hasVibrations());
+}
+
+// The vibrations to write are decided by which conformers have a Hessian, not
+// by whether the one on screen does. Browsing to a conformer with no modes and
+// saving used to drop every Hessian in the file.
+TEST(CjsonTest, vibrationsSurviveSavingFromAConformerWithoutThem)
+{
+  Molecule molecule;
+  Atom h1 = molecule.addAtom(1);
+  Atom h2 = molecule.addAtom(1);
+  h1.setPosition3d(Avogadro::Vector3(0.0, 0.0, 0.0));
+  h2.setPosition3d(Avogadro::Vector3(0.0, 0.0, 0.74));
+  for (size_t i = 0; i < 4; ++i) {
+    Avogadro::Core::Array<Avogadro::Vector3> frame;
+    frame.push_back(Avogadro::Vector3(0.0, 0.0, 0.0));
+    frame.push_back(Avogadro::Vector3(0.0, 0.0, 0.74 + 0.01 * i));
+    molecule.setCoordinate3d(frame, i);
+  }
+  molecule.setVibrationFrequencies(Avogadro::Core::Array<double>(1, 1600.0), 3);
+
+  // Step to a conformer that carries no Hessian, as a user browsing would.
+  ASSERT_TRUE(molecule.setCoordinate3d(1));
+  ASSERT_FALSE(molecule.hasVibrations());
+
+  CjsonFormat writer;
+  std::string json;
+  ASSERT_TRUE(writer.writeString(json, molecule));
+
+  Molecule readMol;
+  CjsonFormat reader;
+  ASSERT_TRUE(reader.readString(json, readMol));
+
+  ASSERT_EQ(readMol.vibrationConformerCount(), 1u);
+  ASSERT_EQ(readMol.vibrationFrequencies(3).size(), 1u);
+  EXPECT_DOUBLE_EQ(readMol.vibrationFrequencies(3)[0], 1600.0);
+}
+
+// Scan coordinates ride in the property map, so saving and reloading a scan
+// must keep the coordinate that was scanned -- otherwise the plot falls back
+// to frame numbers the next time the file is opened.
+TEST(CjsonTest, scanCoordinatesRoundTrip)
+{
+  Molecule molecule;
+  for (int i = 0; i < 4; ++i)
+    molecule.addAtom(6);
+
+  molecule.addScanCoordinate(Constraint(0, 1));       // distance
+  molecule.addScanCoordinate(Constraint(0, 1, 2));    // angle
+  molecule.addScanCoordinate(Constraint(0, 1, 2, 3)); // torsion
+
+  CjsonFormat cjson;
+  std::string output;
+  ASSERT_TRUE(cjson.writeString(output, molecule));
+
+  Molecule readMol;
+  ASSERT_TRUE(cjson.readString(output, readMol));
+
+  const std::vector<Constraint> coordinates = readMol.scanCoordinates();
+  ASSERT_EQ(coordinates.size(), 3u);
+
+  // The type is inferred from which atoms are set, so an unused slot coming
+  // back as 0 rather than MaxIndex would turn a distance into a torsion.
+  EXPECT_EQ(coordinates[0].type(), Constraint::DistanceConstraint);
+  EXPECT_EQ(coordinates[0].aIndex(), 0u);
+  EXPECT_EQ(coordinates[0].bIndex(), 1u);
+
+  EXPECT_EQ(coordinates[1].type(), Constraint::AngleConstraint);
+  EXPECT_EQ(coordinates[1].cIndex(), 2u);
+
+  EXPECT_EQ(coordinates[2].type(), Constraint::TorsionConstraint);
+  EXPECT_EQ(coordinates[2].dIndex(), 3u);
+}
+
+// Any property holding an array of unequal-length rows used to be read into a
+// matrix that was grown row by row, leaving the earlier rows' extra columns
+// uninitialized.
+TEST(CjsonTest, raggedPropertyArraysReadWithoutGarbage)
+{
+  const std::string input = R"({
+    "chemicalJson": 1,
+    "atoms": {
+      "elements": { "number": [6, 6] },
+      "coords": { "3d": [0.0, 0.0, 0.0, 1.5, 0.0, 0.0] }
+    },
+    "properties": { "ragged": [[1, 2], [3, 4, 5, 6]] }
+  })";
+
+  Molecule molecule;
+  CjsonFormat cjson;
+  ASSERT_TRUE(cjson.readString(input, molecule));
+
+  ASSERT_TRUE(molecule.hasData("ragged"));
+  const MatrixX matrix = molecule.data("ragged").toMatrix();
+  ASSERT_EQ(matrix.rows(), 2);
+  ASSERT_EQ(matrix.cols(), 4);
+
+  EXPECT_DOUBLE_EQ(matrix(0, 0), 1.0);
+  EXPECT_DOUBLE_EQ(matrix(0, 1), 2.0);
+  // The short row is padded with zeros, not with whatever was on the heap.
+  EXPECT_DOUBLE_EQ(matrix(0, 2), 0.0);
+  EXPECT_DOUBLE_EQ(matrix(0, 3), 0.0);
+
+  EXPECT_DOUBLE_EQ(matrix(1, 0), 3.0);
+  EXPECT_DOUBLE_EQ(matrix(1, 3), 6.0);
+}
+
+namespace {
+// LayerData's own serialize() returns "" by design -- only subclasses emit
+// real content -- so the round trip needs a subclass to carry anything.
+struct TestLayerData : Avogadro::Core::LayerData
+{
+  explicit TestLayerData(std::string save = "") { deserialize(save); }
+  std::string serialize() override { return m_save; }
+  LayerData* clone() override { return new TestLayerData(m_save); }
+};
+} // namespace
+
+// Layers and their per-plugin settings round-trip through CJSON. Nothing
+// covered this before, and the settings are now owned handles rather than raw
+// pointers, so the write path has to cope with an empty slot too.
+TEST(CjsonTest, layerRoundTrip)
+{
+  Molecule molecule;
+  for (int i = 0; i < 4; ++i)
+    molecule.addAtom(6);
+  molecule.layer().addLayer();
+  molecule.layer().addAtom(1, 2);
+  molecule.layer().addAtom(1, 3);
+
+  auto info = molecule.layerInfo();
+  info->visible.assign(2, true);
+  info->locked.assign(2, false);
+  info->enable["TestPlugin"] = std::vector<bool>{ true, false };
+  info->settings["TestPlugin"] =
+    Avogadro::Core::Array<Avogadro::Core::LayerDataPtr>();
+  info->settings["TestPlugin"].push_back(
+    std::make_shared<TestLayerData>("first"));
+  info->settings["TestPlugin"].push_back(nullptr); // must not crash on write
+
+  CjsonFormat cjson;
+  std::string serialized;
+  ASSERT_TRUE(cjson.writeString(serialized, molecule)) << cjson.error();
+
+  Molecule restored;
+  ASSERT_TRUE(cjson.readString(serialized, restored)) << cjson.error();
+
+  EXPECT_EQ(restored.layer().maxLayer(), molecule.layer().maxLayer());
+  EXPECT_EQ(restored.layer().getLayerID(2), 1u);
+  EXPECT_EQ(restored.layer().getLayerID(0), 0u);
+
+  auto restoredInfo = restored.layerInfo();
+  ASSERT_TRUE(restoredInfo != nullptr);
+
+  // MoleculeInfo starts with one default entry in each of these; the reader
+  // used to append the file's on top, leaving an extra entry and shifting
+  // every layer's flags by one.
+  EXPECT_EQ(restoredInfo->visible.size(), 2u);
+  EXPECT_EQ(restoredInfo->locked.size(), 2u);
+
+  // A null slot means "no settings for this layer" and has to stay distinct
+  // from settings that serialize to an empty string.
+  ASSERT_EQ(restoredInfo->settings["TestPlugin"].size(), 2u);
+  EXPECT_TRUE(restoredInfo->settings["TestPlugin"][1] == nullptr)
+    << "a null settings slot came back as an empty object";
+  EXPECT_EQ(restoredInfo->enable["TestPlugin"].size(), 2u);
+  EXPECT_TRUE(restoredInfo->enable["TestPlugin"][0]);
+  EXPECT_FALSE(restoredInfo->enable["TestPlugin"][1]);
+
+  // The write path emits one serialized string per layer, so the settings have
+  // to come back as well.
+  ASSERT_EQ(restoredInfo->settings["TestPlugin"].size(), 2u)
+    << "per-plugin layer settings were dropped by the round trip";
+  ASSERT_TRUE(restoredInfo->settings["TestPlugin"][0] != nullptr);
+  EXPECT_EQ(restoredInfo->settings["TestPlugin"][0]->getSave(), "first");
+}
+
+// A fuzzer found that "cube": "caffeine" (a string where the reader expects
+// an object) made cubeObj["origin"] throw type_error.305. The rest of the
+// file is otherwise valid and must still load, just without the cube.
+TEST(CjsonTest, cubeThatIsNotAnObjectIsSkipped)
+{
+  CjsonFormat cjson;
+  Molecule molecule;
+  const std::string input = R"({
+    "chemicalJson": 1,
+    "atoms": {
+      "elements": { "number": [6] },
+      "coords": { "3d": [0.0, 0.0, 0.0] }
+    },
+    "cube": "caffeine"
+  })";
+  ASSERT_TRUE(cjson.readString(input, molecule)) << cjson.error();
+  EXPECT_EQ(molecule.atomCount(), static_cast<size_t>(1));
+  EXPECT_EQ(molecule.cubeCount(), static_cast<size_t>(0));
+}
+
+// A mutation sweep over CJSON found the same class of bug throughout the
+// reader: a wrong-typed optional section must be skipped, not fail the whole
+// file (via a throw the guardedParse wrapper turns into "file failed to
+// load").
+TEST(CjsonTest, wrongTypedSectionsAreSkipped)
+{
+  const std::string input = R"({
+    "chemicalJson": 1,
+    "atoms": {
+      "elements": { "number": [6] },
+      "coords": { "3d": [0.0, 0.0, 0.0] }
+    },
+    "layer": 5,
+    "bonds": { "connections": "x" },
+    "basisSet": {
+      "shellTypes": [0],
+      "primitivesPerShell": [1],
+      "shellToAtomMap": [0],
+      "exponents": [1.0],
+      "coefficients": [1.0]
+    },
+    "orbitals": { "moCoefficients": [1.0] },
+    "properties": { "totalCharge": "0" }
+  })";
+  CjsonFormat cjson;
+  Molecule molecule;
+  ASSERT_TRUE(cjson.readString(input, molecule)) << cjson.error();
+  EXPECT_EQ(molecule.atomCount(), static_cast<size_t>(1));
+  EXPECT_EQ(molecule.bondCount(), static_cast<size_t>(0));
+  // orbitals had no electronCount, so the reader must not have thrown trying
+  // to read one -- the basis set (valid on its own) still attaches.
+  ASSERT_NE(molecule.basisSet(), nullptr);
+  // A string where an int was expected is skipped, not stored as 0.
+  EXPECT_FALSE(molecule.hasData("totalCharge"));
+}
+
+// atoms.layer used to drive `while (layerJson[i] > layer.maxLayer())
+// layer.addLayer();`, which spins effectively forever given a huge id --
+// including the MaxIndex sentinel the writer itself emits for an atom in no
+// layer.
+TEST(CjsonTest, hugeLayerIdDoesNotHang)
+{
+  for (const auto* layerLiteral :
+       { "[1e300]", "[1000000]", "[18446744073709551615]" }) {
+    const std::string input = std::string(R"({
+      "chemicalJson": 1,
+      "atoms": {
+        "elements": { "number": [6] },
+        "coords": { "3d": [0.0, 0.0, 0.0] },
+        "layer": )") + layerLiteral +
+                              "}}";
+    CjsonFormat cjson;
+    Molecule molecule;
+    ASSERT_TRUE(cjson.readString(input, molecule)) << layerLiteral;
+    EXPECT_EQ(molecule.atomCount(), static_cast<size_t>(1));
+    auto info = Avogadro::Core::LayerManager::getMoleculeInfo(&molecule);
+    EXPECT_LT(info->layer.maxLayer(), static_cast<size_t>(255)) << layerLiteral;
+  }
+}
+
+// The allocation Cube::setLimits() performs is sized from "dimensions" alone;
+// it must be tied to the scalar data actually present before it runs, so a
+// small file cannot claim a huge cube and force a multi-gigabyte allocation.
+TEST(CjsonTest, cubeDimensionsMustMatchScalars)
+{
+  {
+    const std::string input = R"({
+      "chemicalJson": 1,
+      "atoms": {
+        "elements": { "number": [6] },
+        "coords": { "3d": [0.0, 0.0, 0.0] }
+      },
+      "cube": {
+        "origin": [0.0, 0.0, 0.0],
+        "spacing": [1.0, 1.0, 1.0],
+        "dimensions": [800, 800, 800]
+      }
+    })";
+    CjsonFormat cjson;
+    Molecule molecule;
+    ASSERT_TRUE(cjson.readString(input, molecule)) << cjson.error();
+    EXPECT_EQ(molecule.cubeCount(), static_cast<size_t>(0));
+  }
+  {
+    // A small cube whose scalars do match still loads, with the right data.
+    const std::string input = R"({
+      "chemicalJson": 1,
+      "atoms": {
+        "elements": { "number": [6] },
+        "coords": { "3d": [0.0, 0.0, 0.0] }
+      },
+      "cube": {
+        "origin": [0.0, 0.0, 0.0],
+        "spacing": [1.0, 1.0, 1.0],
+        "dimensions": [2, 2, 2],
+        "scalars": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+      }
+    })";
+    CjsonFormat cjson;
+    Molecule molecule;
+    ASSERT_TRUE(cjson.readString(input, molecule)) << cjson.error();
+    ASSERT_EQ(molecule.cubeCount(), static_cast<size_t>(1));
+    const auto* cube = molecule.cube(0);
+    ASSERT_NE(cube, nullptr);
+    ASSERT_EQ(cube->data()->size(), static_cast<size_t>(8));
+    EXPECT_FLOAT_EQ((*cube->data())[0], 0.0f);
+    EXPECT_FLOAT_EQ((*cube->data())[7], 7.0f);
+  }
+  {
+    // 5 * 1718039348 * 2147418113 is exactly 2^64 + 4: every dimension fits
+    // in an int, but a 64-bit product wraps to 4, which four scalars would
+    // match. Cube then multiplies the dimensions again as an int, which
+    // overflows. The point count has to be bounded, not just compared.
+    const std::string input = R"({
+      "chemicalJson": 1,
+      "atoms": {
+        "elements": { "number": [6] },
+        "coords": { "3d": [0.0, 0.0, 0.0] }
+      },
+      "cube": {
+        "origin": [0.0, 0.0, 0.0],
+        "spacing": [1.0, 1.0, 1.0],
+        "dimensions": [5, 1718039348, 2147418113],
+        "scalars": [0.0, 1.0, 2.0, 3.0]
+      }
+    })";
+    CjsonFormat cjson;
+    Molecule molecule;
+    ASSERT_TRUE(cjson.readString(input, molecule)) << cjson.error();
+    EXPECT_EQ(molecule.cubeCount(), static_cast<size_t>(0));
+  }
+}
+
+// nlohmann's numeric conversion is a bare static_cast, so a double outside
+// the target integer's range is undefined behaviour rather than an error --
+// UBSan (which CI runs this suite under) would catch it if toInteger() let
+// one through.
+TEST(CjsonTest, outOfRangeNumbersAreSkipped)
+{
+  const std::string input = R"({
+    "chemicalJson": 1,
+    "atoms": {
+      "elements": { "number": [6, 1] },
+      "coords": { "3d": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0] },
+      "formalCharges": [1e300, 0],
+      "isotopes": [-1, 2]
+    },
+    "bonds": {
+      "connections": { "index": [0, 1] },
+      "order": [1e300]
+    }
+  })";
+  CjsonFormat cjson;
+  Molecule molecule;
+  // The bond order fails to convert, which -- like an out-of-range order --
+  // is an invalid file, not a crash.
+  EXPECT_FALSE(cjson.readString(input, molecule));
+  EXPECT_EQ(cjson.error(), "Error: bond order is invalid.\n");
+
+  const std::string input2 = R"({
+    "chemicalJson": 1,
+    "atoms": {
+      "elements": { "number": [6, 1] },
+      "coords": { "3d": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0] },
+      "formalCharges": [1e300, 3],
+      "isotopes": [-1, 2]
+    }
+  })";
+  Molecule molecule2;
+  ASSERT_TRUE(cjson.readString(input2, molecule2)) << cjson.error();
+  EXPECT_EQ(molecule2.atomCount(), static_cast<size_t>(2));
+  // formalCharges[0] failed to convert and is skipped (default 0); [1] loads.
+  EXPECT_EQ(molecule2.formalCharge(0), 0);
+  EXPECT_EQ(molecule2.formalCharge(1), 3);
+  // isotopes[0] (-1) does not fit unsigned short and is skipped; [1] loads.
+  EXPECT_EQ(molecule2.isotope(0), 0);
+  EXPECT_EQ(molecule2.isotope(1), 2);
+}
+
+// On Windows avogadroapp stored "fileName" in the local 8-bit code page, so a
+// path such as ...\Moléculas\... held a bare Latin-1 0xE9. nlohmann's dump()
+// threw type_error 316 on it and the whole write failed, breaking every
+// input generator for that molecule.
+TEST(CjsonTest, invalidUtf8StringsAreReplacedOnWrite)
+{
+  Molecule molecule;
+  molecule.addAtom(6).setPosition3d(Avogadro::Vector3(0.0, 0.0, 0.0));
+  molecule.setData("name", "Mol\xE9"
+                           "cula"s);
+  molecule.setData("fileName", "C:\\Users\\Usuario\\Mol\xE9"
+                               "culas\\agua.xyz"s);
+
+  CjsonFormat cjson;
+  std::string serialized;
+  ASSERT_TRUE(cjson.writeString(serialized, molecule)) << cjson.error();
+
+  // The bad byte becomes U+FFFD; everything around it survives.
+  Molecule readBack;
+  ASSERT_TRUE(cjson.readString(serialized, readBack)) << cjson.error();
+  EXPECT_EQ(readBack.atomCount(), static_cast<size_t>(1));
+  EXPECT_EQ(readBack.data("name").toString(), "Mol\xEF\xBF\xBD"
+                                              "cula");
+  EXPECT_EQ(readBack.data("fileName").toString(),
+            "C:\\Users\\Usuario\\Mol\xEF\xBF\xBD"
+            "culas\\agua.xyz");
+}
+
+namespace {
+Molecule makeCubeMolecule()
+{
+  Molecule molecule;
+  molecule.addAtom(6).setPosition3d(Avogadro::Vector3(0.0, 0.0, 0.0));
+  molecule.addAtom(8).setPosition3d(Avogadro::Vector3(1.2, 0.0, 0.0));
+  molecule.addBond(0, 1, 2);
+
+  Avogadro::Core::Cube* cube = molecule.addCube();
+  cube->setCubeType(Avogadro::Core::Cube::MO);
+  cube->setName("test orbital");
+  cube->setLimits(Avogadro::Vector3(-1.0, -1.0, -1.0),
+                  Avogadro::Vector3i(2, 2, 2), 0.5);
+  std::vector<float> data;
+  for (int i = 0; i < 8; ++i)
+    data.push_back(0.25f * static_cast<float>(i));
+  cube->setData(data);
+  return molecule;
+}
+} // namespace
+
+TEST(CjsonTest, writeCubesByDefault)
+{
+  Molecule molecule = makeCubeMolecule();
+
+  CjsonFormat cjson;
+  std::string serialized;
+  ASSERT_TRUE(cjson.writeString(serialized, molecule)) << cjson.error();
+  EXPECT_NE(serialized.find("\"cube\""), std::string::npos);
+
+  // Explicitly asking for cubes is the same as the default.
+  CjsonFormat explicitCubes;
+  explicitCubes.setOptions(R"({"cubes": true})");
+  std::string withOption;
+  ASSERT_TRUE(explicitCubes.writeString(withOption, molecule))
+    << explicitCubes.error();
+  EXPECT_EQ(serialized, withOption);
+
+  Molecule readBack;
+  ASSERT_TRUE(cjson.readString(serialized, readBack)) << cjson.error();
+  ASSERT_EQ(readBack.cubeCount(), static_cast<size_t>(1));
+  const auto* cube = readBack.cube(0);
+  EXPECT_EQ(cube->dimensions().x(), 2);
+  ASSERT_EQ(cube->data()->size(), static_cast<size_t>(8));
+  EXPECT_FLOAT_EQ((*cube->data())[7], 1.75f);
+}
+
+TEST(CjsonTest, cubesOptionFalseSkipsCube)
+{
+  Molecule molecule = makeCubeMolecule();
+
+  CjsonFormat cjson;
+  cjson.setOptions(R"({"cubes": false})");
+  std::string serialized;
+  ASSERT_TRUE(cjson.writeString(serialized, molecule)) << cjson.error();
+  EXPECT_EQ(serialized.find("\"cube\""), std::string::npos);
+  EXPECT_EQ(serialized.find("\"scalars\""), std::string::npos);
+
+  // Everything else is intact.
+  CjsonFormat reader;
+  Molecule readBack;
+  ASSERT_TRUE(reader.readString(serialized, readBack)) << reader.error();
+  EXPECT_EQ(readBack.cubeCount(), static_cast<size_t>(0));
+  EXPECT_EQ(readBack.atomCount(), static_cast<size_t>(2));
+  EXPECT_EQ(readBack.bondCount(), static_cast<size_t>(1));
+  EXPECT_EQ(readBack.atomicNumber(1), static_cast<unsigned char>(8));
+  EXPECT_EQ(readBack.bond(0).order(), static_cast<unsigned char>(2));
+
+  // The molecule being written is not modified.
+  EXPECT_EQ(molecule.cubeCount(), static_cast<size_t>(1));
+}
+
+TEST(CjsonTest, defaultOutputUnchangedWithoutCubes)
+{
+  // With no cube, the option makes no difference to the output.
+  Molecule molecule = makeCubeMolecule();
+  molecule.clearCubes();
+
+  CjsonFormat plain;
+  std::string a;
+  ASSERT_TRUE(plain.writeString(a, molecule)) << plain.error();
+  CjsonFormat noCubes;
+  noCubes.setOptions(R"({"cubes": false})");
+  std::string b;
+  ASSERT_TRUE(noCubes.writeString(b, molecule)) << noCubes.error();
+  EXPECT_EQ(a, b);
+}
+
+namespace {
+
+// A cubic crystal as Open Babel writes it, with the given "spaceGroup"
+std::string crystalWithSpaceGroup(const std::string& spaceGroupJson)
+{
+  return R"({"chemicalJson": 1,
+    "unitCell": {"a": 5.0, "b": 5.0, "c": 5.0,
+                 "alpha": 90.0, "beta": 90.0, "gamma": 90.0,
+                 "spaceGroup": )" +
+         spaceGroupJson + R"(},
+    "atoms": {"elements": {"number": [11]},
+              "coords": {"3dFractional": [0.0, 0.0, 0.0]}}})";
+}
+
+} // namespace
+
+TEST(CjsonTest, spaceGroupFromOpenBabel)
+{
+  CjsonFormat cjson;
+
+  // What a "spaceGroup" in the unit cell gives: the Hall number if one
+  // setting fits, otherwise the international number that is kept (0: none).
+  struct Case
+  {
+    const char* description;
+    const char* spaceGroupJson;
+    unsigned short hallNumber;
+    int keptNumber;
+  };
+  const Case cases[] = {
+    // a spelling that is not the table's: screw axis without underscore
+    { "screw axis without underscore", "\"P 63/m m c\"", 488, 0 },
+    // a symbol with a setting suffix
+    { "setting suffix", "\"F d -3 m :2\"", 526, 0 },
+    // a bare number with one setting is resolved ...
+    { "number with one setting", "\"229\"", 529, 0 },
+    // ... a number with several is not guessed, but is remembered
+    { "number with several settings", "\"74\"", 0, 74 },
+    // the same for a number that is a JSON number
+    { "JSON number", "74", 0, 74 },
+    // a symbol that fits several origins: the number is known as well
+    { "symbol with several origins", "\"P n 3 m\"", 0, 224 },
+    // nonsense leaves nothing
+    { "nonsense", "\"C 1\"", 0, 0 },
+  };
+  for (const Case& test : cases) {
+    SCOPED_TRACE(test.description);
+    Molecule molecule;
+    ASSERT_TRUE(
+      cjson.readString(crystalWithSpaceGroup(test.spaceGroupJson), molecule));
+    EXPECT_EQ(molecule.hallNumber(), test.hallNumber);
+    const char* key = SpaceGroups::internationalNumberKey();
+    EXPECT_EQ(molecule.hasData(key), test.keptNumber != 0);
+    if (test.keptNumber != 0)
+      EXPECT_EQ(molecule.data(key).toInt(), test.keptNumber);
+  }
+
+  Molecule ambiguous;
+  ASSERT_TRUE(cjson.readString(crystalWithSpaceGroup("\"74\""), ambiguous));
+  ASSERT_TRUE(ambiguous.hasData(SpaceGroups::internationalNumberKey()));
+
+  // the remembered number is not written out
+  std::string output;
+  ASSERT_TRUE(cjson.writeString(output, ambiguous));
+  EXPECT_EQ(output.find("internationalNumber"), std::string::npos) << output;
+  Molecule roundTrip;
+  ASSERT_TRUE(cjson.readString(output, roundTrip));
+  EXPECT_FALSE(roundTrip.hasData(SpaceGroups::internationalNumberKey()));
+  EXPECT_EQ(roundTrip.hallNumber(), 0);
+}
+
+namespace {
+
+// A small basis: s (2 primitives), p (1), s (3) on two atoms.
+GaussianSet* attachSmallBasis(Molecule& molecule)
+{
+  molecule.addAtom(8, Avogadro::Vector3(0.0, 0.0, 0.0));
+  molecule.addAtom(1, Avogadro::Vector3(0.0, 0.0, 0.74));
+  auto* basis = new GaussianSet;
+  basis->setMolecule(&molecule);
+  unsigned int s0 = basis->addBasis(0, GaussianSet::S);
+  basis->addGto(s0, 0.4, 5.0);
+  basis->addGto(s0, 0.7, 1.2);
+  unsigned int p0 = basis->addBasis(0, GaussianSet::P);
+  basis->addGto(p0, 1.0, 0.9);
+  unsigned int s1 = basis->addBasis(1, GaussianSet::S);
+  basis->addGto(s1, 0.5, 3.0);
+  basis->addGto(s1, 0.6, 0.5);
+  basis->addGto(s1, 0.2, 0.1);
+  // five basis functions, five MOs
+  std::vector<double> mos(25, 0.0);
+  for (size_t i = 0; i < 5; ++i)
+    mos[i * 5 + i] = 1.0;
+  basis->setMolecularOrbitals(mos);
+  basis->setElectronCount(2);
+  molecule.setBasisSet(basis);
+  return basis;
+}
+
+} // namespace
+
+// Writing a molecule whose basis has been initialized (for example after an
+// orbital was rendered) used to add a trailing zero to primitivesPerShell,
+// one more for every further initialization, so the array no longer had one
+// entry per shell.
+TEST(CjsonTest, basisSetWrittenAfterInitialization)
+{
+  Molecule molecule;
+  GaussianSet* basis = attachSmallBasis(molecule);
+
+  for (int init = 0; init < 3; ++init) {
+    // Evaluating an orbital initializes the basis; setting the MOs again
+    // makes the next evaluation initialize it once more.
+    basis->initCalculation();
+    basis->setMolecularOrbitals(std::vector<double>(25, 0.5));
+
+    CjsonFormat cjson;
+    std::string output;
+    ASSERT_TRUE(cjson.writeString(output, molecule)) << cjson.error();
+    const auto root = nlohmann::json::parse(output);
+    const auto& written = root.at("basisSet");
+    EXPECT_EQ(written.at("shellTypes"), nlohmann::json::parse("[0, 1, 0]"));
+    EXPECT_EQ(written.at("primitivesPerShell"),
+              nlohmann::json::parse("[2, 1, 3]"))
+      << "after " << (init + 1) << " initializations";
+    EXPECT_EQ(written.at("shellToAtomMap"), nlohmann::json::parse("[0, 0, 1]"));
+    EXPECT_EQ(written.at("exponents").size(), static_cast<size_t>(6));
+    EXPECT_EQ(written.at("coefficients").size(), static_cast<size_t>(6));
+  }
+}
+
+TEST(CjsonTest, basisSetRoundTripAfterInitialization)
+{
+  Molecule molecule;
+  GaussianSet* basis = attachSmallBasis(molecule);
+  basis->initCalculation();
+  basis->setMolecularOrbitals(std::vector<double>(25, 0.5));
+  basis->initCalculation();
+
+  CjsonFormat cjson;
+  std::string output;
+  ASSERT_TRUE(cjson.writeString(output, molecule)) << cjson.error();
+
+  Molecule reread;
+  ASSERT_TRUE(cjson.readString(output, reread)) << cjson.error();
+  auto* copy = dynamic_cast<GaussianSet*>(reread.basisSet());
+  ASSERT_NE(copy, nullptr);
+  EXPECT_EQ(copy->symmetry(), basis->symmetry());
+  EXPECT_EQ(copy->atomIndices(), basis->atomIndices());
+  EXPECT_EQ(copy->gtoA(), basis->gtoA());
+  EXPECT_EQ(copy->gtoC(), basis->gtoC());
+
+  // The shell boundaries survive too: a freshly read basis and the original
+  // describe the same primitive ranges per shell.
+  copy->initCalculation();
+  EXPECT_EQ(copy->gtoIndices(), basis->gtoIndices());
+  EXPECT_EQ(copy->gtoCN(), basis->gtoCN());
+}
+
+namespace {
+
+// Cartesian d shell (two primitives) plus an s shell on one atom.
+GaussianSet* attachCartesianBasis(Molecule& molecule)
+{
+  molecule.addAtom(8, Avogadro::Vector3(0.0, 0.0, 0.0));
+  auto* basis = new GaussianSet;
+  basis->setMolecule(&molecule);
+  unsigned int s = basis->addBasis(0, GaussianSet::S);
+  basis->addGto(s, 0.7, 1.4);
+  unsigned int d = basis->addBasis(0, GaussianSet::D);
+  basis->addGto(d, 0.6, 1.3);
+  basis->addGto(d, 0.4, 0.35);
+  std::vector<double> mos(49, 0.0);
+  for (size_t i = 0; i < 7; ++i)
+    mos[i * 7 + i] = 1.0;
+  basis->setMolecularOrbitals(mos);
+  basis->setElectronCount(2);
+  molecule.setBasisSet(basis);
+  return basis;
+}
+
+const char* const NORMALIZATION_INPUT_TEMPLATE = R"({
+  "chemicalJson": 1,
+  "atoms": { "elements": { "number": [8] }, "coords": { "3d": [0.0, 0.0, 0.0] } },
+  "basisSet": {
+    "shellTypes": [SHELLTYPE],
+    "primitivesPerShell": [1],
+    "shellToAtomMap": [0],
+    "exponents": [1.0],
+    "coefficients": [1.0]PRIMNORM
+  }
+})";
+
+std::string normalizationInput(const std::string& shellType,
+                               const std::string& key)
+{
+  std::string text = NORMALIZATION_INPUT_TEMPLATE;
+  text.replace(text.find("SHELLTYPE"), 9, shellType);
+  text.replace(text.find("PRIMNORM"), 8, key);
+  return text;
+}
+
+} // namespace
+
+TEST(CjsonTest, asIsBasisRoundTrip)
+{
+  using Normalization = GaussianSet::PrimitiveNormalization;
+  Molecule molecule;
+  GaussianSet* basis = attachCartesianBasis(molecule);
+  ASSERT_TRUE(basis->setPrimitiveNormalization(Normalization::AsIs));
+
+  CjsonFormat cjson;
+  std::string output;
+  ASSERT_TRUE(cjson.writeString(output, molecule)) << cjson.error();
+  const auto root = nlohmann::json::parse(output);
+  EXPECT_EQ(root.at("basisSet").at("primitiveNormalization"), "asIs");
+
+  Molecule reread;
+  ASSERT_TRUE(cjson.readString(output, reread)) << cjson.error();
+  EXPECT_EQ(cjson.error(), "");
+  auto* copy = dynamic_cast<GaussianSet*>(reread.basisSet());
+  ASSERT_NE(copy, nullptr);
+  EXPECT_EQ(copy->primitiveNormalization(), Normalization::AsIs);
+  EXPECT_EQ(copy->gtoC(), basis->gtoC());
+  EXPECT_EQ(copy->gtoA(), basis->gtoA());
+
+  // The prepared coefficients are the raw ones, once per component.
+  copy->initCalculation();
+  basis->initCalculation();
+  EXPECT_EQ(copy->gtoCN(), basis->gtoCN());
+  EXPECT_EQ(copy->gtoCN().size(), static_cast<size_t>(1 + 2 * 6));
+  EXPECT_EQ(copy->gtoCN()[1], 0.6);
+}
+
+TEST(CjsonTest, radialIncludedBasisRoundTrip)
+{
+  using Normalization = GaussianSet::PrimitiveNormalization;
+  Molecule molecule;
+  GaussianSet* basis = attachCartesianBasis(molecule);
+  ASSERT_TRUE(basis->setPrimitiveNormalization(Normalization::RadialIncluded));
+
+  CjsonFormat cjson;
+  std::string output;
+  ASSERT_TRUE(cjson.writeString(output, molecule)) << cjson.error();
+  const auto root = nlohmann::json::parse(output);
+  EXPECT_EQ(root.at("basisSet").at("primitiveNormalization"), "radialIncluded");
+
+  Molecule reread;
+  ASSERT_TRUE(cjson.readString(output, reread)) << cjson.error();
+  EXPECT_EQ(cjson.error(), "");
+  auto* copy = dynamic_cast<GaussianSet*>(reread.basisSet());
+  ASSERT_NE(copy, nullptr);
+  EXPECT_EQ(copy->primitiveNormalization(), Normalization::RadialIncluded);
+  EXPECT_EQ(copy->gtoC(), basis->gtoC());
+}
+
+TEST(CjsonTest, normalizedBasisWritesNoPrimitiveNormalizationKey)
+{
+  Molecule molecule;
+  attachCartesianBasis(molecule);
+
+  CjsonFormat cjson;
+  std::string output;
+  ASSERT_TRUE(cjson.writeString(output, molecule)) << cjson.error();
+  const auto root = nlohmann::json::parse(output);
+  ASSERT_TRUE(root.contains("basisSet"));
+  EXPECT_FALSE(root.at("basisSet").contains("primitiveNormalization"));
+  EXPECT_EQ(output.find("primitiveNormalization"), std::string::npos);
+}
+
+TEST(CjsonTest, primitiveNormalizationReading)
+{
+  using Normalization = GaussianSet::PrimitiveNormalization;
+  struct Case
+  {
+    std::string shellType;
+    std::string key;
+    Normalization expected;
+    bool warns;
+  };
+  const Case cases[] = {
+    { "2", "", Normalization::Normalize, false },
+    { "2", ", \"primitiveNormalization\": \"normalize\"",
+      Normalization::Normalize, false },
+    { "2", ", \"primitiveNormalization\": \"asIs\"", Normalization::AsIs,
+      false },
+    { "2", ", \"primitiveNormalization\": \"radialIncluded\"",
+      Normalization::RadialIncluded, false },
+    // radialIncluded is fine for spherical shells too
+    { "-2", ", \"primitiveNormalization\": \"radialIncluded\"",
+      Normalization::RadialIncluded, false },
+    // unknown value and a wrong type keep the default and warn
+    { "2", ", \"primitiveNormalization\": \"unnormalized\"",
+      Normalization::Normalize, true },
+    { "2", ", \"primitiveNormalization\": 3", Normalization::Normalize, true },
+    // spherical d with asIs: the setter refuses
+    { "-2", ", \"primitiveNormalization\": \"asIs\"", Normalization::Normalize,
+      true },
+  };
+  for (const Case& c : cases) {
+    CjsonFormat cjson;
+    Molecule molecule;
+    const std::string input = normalizationInput(c.shellType, c.key);
+    ASSERT_TRUE(cjson.readString(input, molecule)) << input;
+    auto* basis = dynamic_cast<GaussianSet*>(molecule.basisSet());
+    ASSERT_NE(basis, nullptr) << input;
+    EXPECT_EQ(basis->primitiveNormalization(), c.expected) << input;
+    if (c.warns)
+      EXPECT_NE(cjson.error().find("Warning"), std::string::npos) << input;
+    else
+      EXPECT_EQ(cjson.error(), "") << input;
+  }
+}

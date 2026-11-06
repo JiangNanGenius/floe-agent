@@ -1,0 +1,1313 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "uff.h"
+#include "uffdata.h"
+#include "gradients.h"
+
+#include <Eigen/src/Core/util/Meta.h>
+#include <avogadro/core/angleiterator.h>
+#include <avogadro/core/angletools.h>
+#include <avogadro/core/array.h>
+#include <avogadro/core/dihedraliterator.h>
+#include <avogadro/core/elements.h>
+#include <avogadro/core/molecule.h>
+#include <avogadro/core/unitcell.h>
+
+#include <cstdint>
+#include <unordered_set>
+
+namespace Avogadro::Calc {
+
+using namespace Core;
+using Eigen::Vector3d;
+
+enum Coordination
+{
+  Resonant = 0,             // conjugated / aromatic
+  Linear = 1,               // sp linear
+  Trigonal = 2,             // sp2 planar
+  Tetrahedral = 3,          // sp3 tetrahedral
+  SquarePlanar = 4,         // square planar
+  TrigonalBipyramidal = 5,  // trigonal bipyramidal
+  Octahedral = 6,           // octahedral
+  TrigonalBipentagonal = 7, // trigonal bipentagonal
+  Other = 8                 // including higher coordination
+};
+
+class UFFBond // track the bond parameters
+{
+public:
+  Index _atom1;
+  Index _atom2;
+  Real _r0;
+  Real _kb;
+};
+
+class UFFAngle
+{
+public:
+  Index _atom1;
+  Index _atom2;
+  Index _atom3;
+  Real _theta0;
+  Real _kijk;
+  Real _c0;
+  Real _c1;
+  Real _c2;
+  Coordination coordination;
+};
+
+class UFFTorsion
+{
+public:
+  Index _atom1;
+  Index _atom2;
+  Index _atom3;
+  Index _atom4;
+  Real _cos_phi0;
+  Real _ijkl;
+  short _n; // periodicity
+};
+
+class UFFOOP
+{
+public:
+  Index _atom1; // central atom
+  Index _atom2;
+  Index _atom3;
+  Index _atom4;
+  Real _c0;
+  Real _c1;
+  Real _c2;
+  Real _koop;
+};
+
+class UFFVdW
+{
+public:
+  Index _atom1;
+  Index _atom2;
+  Real _depth;
+  Real _x;
+  Real _x6;  // precomputed x^6
+  Real _x12; // precomputed x^12
+};
+
+// VdW distance cutoff squared (10 Angstrom cutoff).
+// UFF equilibrium VdW distances are 2.5-4.5 Angstroms,
+// so at ~2.5x the largest, LJ energy is negligible.
+static constexpr Real VDW_CUTOFF_SQ = 100.0;
+// Rebuild VdW pair list when max atom displacement exceeds 2 Angstroms
+static constexpr Real VDW_REBUILD_THRESHOLD_SQ = 4.0;
+// Only check for rebuild every N evaluations
+static constexpr int VDW_REBUILD_CHECK_INTERVAL = 10;
+
+class UFFPrivate // track the particular calculations for a molecule
+{
+public:
+  std::vector<int> m_atomTypes; // entry row in uffparams
+  std::vector<UFFBond> m_bonds;
+  std::vector<UFFAngle> m_angles;
+  std::vector<UFFOOP> m_oops;
+  std::vector<UFFTorsion> m_torsions;
+  std::vector<UFFVdW> m_vdws;
+  std::unordered_set<uint64_t> m_excludedPairs; // 1-2 and 1-3 pairs
+  Eigen::VectorXd m_lastVdWPositions; // positions when VdW list was last built
+  int m_vdwCallCount = 0;             // counter for rebuild check interval
+  Core::Molecule* m_molecule;
+  Core::UnitCell* m_cell;
+
+  static uint64_t pairKey(Index i, Index j)
+  {
+    return i < j ? (uint64_t(i) << 32 | uint64_t(j))
+                 : (uint64_t(j) << 32 | uint64_t(i));
+  }
+
+  UFFPrivate(Core::Molecule* mol = nullptr) : m_molecule(mol), m_cell(nullptr)
+  {
+    if (mol == nullptr || mol->atomCount() < 2) {
+      return; // nothing to do
+    }
+
+    m_cell = mol->unitCell(); // could be nullptr
+
+    setAtomTypes();
+    // An element with no UFF type (> 102) leaves -1 in m_atomTypes, which
+    // would index uffparams[-1] below. Leave the molecule with no terms.
+    for (int type : m_atomTypes) {
+      if (type < 0) {
+        m_atomTypes.clear();
+        return;
+      }
+    }
+    setBonds();
+    setAngles();
+    setOOPs();
+    setTorsions();
+    buildExclusionSet();
+
+    // Extract initial positions for VdW cutoff. Positions may be missing or
+    // short; rebuildVdWsIfNeeded() builds the list on the first evaluate().
+    Core::Array<Vector3> pos = mol->atomPositions3d();
+    if (pos.size() == static_cast<size_t>(mol->atomCount())) {
+      Eigen::Map<Eigen::VectorXd> posMap(pos[0].data(), 3 * mol->atomCount());
+      setVdWs(posMap);
+    }
+  }
+
+  void setAtomTypes()
+  {
+    // set up the calculations including atom types and parameters
+    // loop through atoms to get the atom types
+    m_atomTypes.reserve(m_molecule->atomCount());
+    for (Index i = 0; i < m_molecule->atomCount(); ++i) {
+      const Core::Atom& atom = m_molecule->atom(i);
+      int atomicNumber = atom.atomicNumber();
+      int atomType = -1;
+      for (int j = 0; j < 126; ++j) {
+        if (uffparams[j].element == atomicNumber) {
+          atomType = j;
+          // not guaranteed - only the first type for this element
+          // we can peek ahead to see if there are any more for this element
+          if (j < 125 && uffparams[j + 1].element == atomicNumber) {
+            // there are multiple types for this element
+            const Array<Bond> bonds = m_molecule->bonds(i);
+            if (atomicNumber == 1) {
+              // hydrogen has two types, so count the bonds
+              if (bonds.size() == 1) {
+                atomType = j; // hydrogen with one bond
+                break;
+              } else { // hydrogen with more than one bond = bridging type
+                atomType = j + 1;
+                break;
+              }
+            }
+
+            // remaining elements, we want the coordination number
+            // and possibly formal charge
+            [[maybe_unused]] int charge = m_molecule->formalCharge(i);
+            // UFF fortunately only has square planar as special cases
+            // so if it's more than 4 bonds, we just use that type
+            if (bonds.size() > 4) {
+              // check the atom type symbols
+              char coord = '4' + (bonds.size() - 4);
+              if (uffparams[j].label[2] == coord) {
+                atomType = j;
+                break;
+              } else {
+                // check the next one
+                if (uffparams[j + 1].label[2] == coord) {
+                  atomType = j + 1;
+                  break;
+                }
+              }
+            } else {
+              // count double and triple bonds
+              int doubleBonds = 0;
+              int tripleBonds = 0;
+              for (const Bond bond : bonds) {
+                unsigned char order = bond.order();
+                if (order == 2) {
+                  ++doubleBonds;
+                } else if (order == 3) {
+                  ++tripleBonds;
+                }
+              }
+              char coord = '3';
+              if (tripleBonds > 0 || doubleBonds > 1)
+                coord = '1'; // sp linear
+              else if (doubleBonds == 1)
+                coord = '2'; // sp2 trigonal
+              else if (doubleBonds == 0 && tripleBonds == 0)
+                coord = '3'; // sp3 tetrahedral
+
+              // check the atom type symbols
+              if (uffparams[j].label[2] == coord) {
+                atomType = j;
+                break;
+              } else {
+                // bump up until we find one
+                while (j < 125 && uffparams[j].label[2] != coord) {
+                  ++j;
+                }
+                atomType = j;
+                break;
+              }
+            }
+            break;
+          }
+
+          // nope it's the only one for this element
+          // we're done
+          break;
+        }
+      }
+      m_atomTypes.push_back(atomType);
+    }
+    // we need to do one more pass to set aromatic / resonance types
+    // i.e., if an sp2 atom has neighbors, mark them as resonant
+    for (Index i = 0; i < m_molecule->atomCount(); ++i) {
+      const Core::Atom& atom = m_molecule->atom(i);
+      int atomicNumber = atom.atomicNumber();
+      // carbon, nitrogen, oxygen and sulfur sp2 atoms
+      if (atomicNumber == 6 || atomicNumber == 7 || atomicNumber == 8 ||
+          atomicNumber == 16) {
+
+        const char symbolChar = uffparams[m_atomTypes[i]].label[2];
+
+        // we might have an aromatic / resonant N, O, or S
+        // e.g., furan, thiophene .. we also mark amide N
+        // if it's an sp3 carbon, skip it
+        if (atomicNumber == 6 && symbolChar == '3')
+          continue;
+
+        // check the neighbors
+        const std::vector<Index>& neighbors = m_molecule->graph().neighbors(i);
+
+        // we can skip carbonyl oxygen (i.e., only one neighbor)
+        if ((atomicNumber == 8 || atomicNumber == 16) && neighbors.size() == 1)
+          continue;
+
+        bool resonant = false;
+        for (Index j : neighbors) {
+          // untyped neighbor (unsupported element)
+          if (m_atomTypes[j] < 0)
+            continue;
+          auto symbolLabel = uffparams[m_atomTypes[j]].label;
+          if (symbolLabel.size() < 3)
+            continue; // not a resonant type
+
+          if (symbolLabel[2] == '2' || symbolLabel[2] == 'R') {
+            resonant = true;
+            break;
+          }
+        }
+        if (resonant) {
+          // set the resonant type
+          if (atomicNumber == 7 && symbolChar == '3')
+            m_atomTypes[i] = m_atomTypes[i] + 1; // N_R after N_3
+          else if (atomicNumber == 8 && symbolChar == '3')
+            m_atomTypes[i] = m_atomTypes[i] + 2; // O_R after O_3 and O_3_z
+          else if (atomicNumber == 16 && symbolChar == '3') {
+            // loop until we find 'R' .. might be a few different S types
+            while (uffparams[m_atomTypes[i]].label[2] != 'R')
+              ++m_atomTypes[i];
+          } else
+            m_atomTypes[i] = m_atomTypes[i] - 1; // C_R before C_2
+        }
+      }
+    }
+  }
+
+  // calculate the ideal bond distance between two atoms
+  // used in a few places
+  Real calculateRij(Index atom1, Index atom2)
+  {
+    Real ri = uffparams[m_atomTypes[atom1]].r1;
+    Real rj = uffparams[m_atomTypes[atom2]].r1;
+    Real r0 = ri + rj;
+    // bond order correction
+    Bond bond = m_molecule->bond(atom1, atom2);
+    Real order = static_cast<Real>(bond.order());
+    // order 0 would give log(0) = -inf in the bond-order correction
+    if (order < 1.0)
+      order = 1.0;
+    // check if it's a resonant / aromatic bond
+    auto symbol1 = uffparams[m_atomTypes[atom1]].label;
+    auto symbol2 = uffparams[m_atomTypes[atom2]].label;
+    if (symbol1.size() > 2 && symbol1[2] == 'R' && symbol2.size() > 2 &&
+        symbol2[2] == 'R') {
+      order = 1.5;
+      // tweak for amide
+      if ((symbol1[0] == 'N' && symbol2[0] == 'C') ||
+          (symbol1[0] == 'C' && symbol2[0] == 'N'))
+        order = 1.41;
+    }
+    Real rbo = -0.1332 * r0 * log(order);
+
+    // electronegativity correction
+    Real chi1 = uffparams[m_atomTypes[atom1]].Xi;
+    Real chi2 = uffparams[m_atomTypes[atom2]].Xi;
+    Real ren =
+      ri * rj * pow((sqrt(chi1) - sqrt(chi2)), 2) / (chi1 * ri + chi2 * rj);
+
+    // UFF publication has an error (electronegativity correction):
+    // https://towhee.sourceforge.net/forcefields/uff.html
+    return r0 + rbo - ren;
+  }
+
+  void setBonds()
+  {
+    // loop through the bonds
+    for (Index i = 0; i < m_molecule->bondCount(); ++i) {
+      const Core::Bond& bond = m_molecule->bond(i);
+      Index atom1 = bond.atom1().index();
+      Index atom2 = bond.atom2().index();
+      UFFBond b;
+      b._atom1 = atom1;
+      b._atom2 = atom2;
+
+      b._r0 = calculateRij(atom1, atom2);
+      Real z1 = uffparams[m_atomTypes[atom1]].Z1;
+      Real z2 = uffparams[m_atomTypes[atom2]].Z1;
+      b._kb = 664.12 * z1 * z2 / pow((b._r0), 3);
+      m_bonds.push_back(b);
+
+      /*
+      std::cout << " bond " << atom1 << " "
+                << uffparams[m_atomTypes[atom1]].label << " " << atom2 << " "
+                << uffparams[m_atomTypes[atom2]].label << " " << b._r0 << " "
+                << b._kb << std::endl;
+                */
+    }
+  }
+
+  void setAngles()
+  {
+    AngleIterator ai(m_molecule);
+    auto angle = ai.begin();
+    while (angle != ai.end()) {
+      Index i = std::get<0>(angle);
+      Index j = std::get<1>(angle);
+      Index k = std::get<2>(angle);
+      UFFAngle a;
+      a._atom1 = i;
+      a._atom2 = j;
+      a._atom3 = k;
+
+      Real theta0 = uffparams[m_atomTypes[j]].theta0 * DEG_TO_RAD;
+      a._theta0 = theta0 * RAD_TO_DEG; // store in degrees for consistency
+
+      // calculate the kijk
+      Real rij = calculateRij(i, j);
+      Real rjk = calculateRij(j, k);
+
+      /*
+      std::cout << " Angle " << i << " " << j << " " << k << " " << rij << " "
+                << rjk << " " << theta0 << std::endl;
+                */
+
+      Real rik = sqrt(rij * rij + rjk * rjk - 2 * rij * rjk * cos(theta0));
+      Real Zi = uffparams[m_atomTypes[i]].Z1;
+      Real Zk = uffparams[m_atomTypes[k]].Z1;
+      Real cosTheta0 = cos(theta0);
+      Real cosTheta0Sq = cosTheta0 * cosTheta0;
+      // see https://towhee.sourceforge.net/forcefields/uff.html
+      // e.g., original paper had some typos
+      a._kijk = 664.12 / (rij * rjk) * (Zi * Zk) / (pow(rik, 5)) * rij * rjk;
+      a._kijk *= (3 * rij * rjk * (1 - cosTheta0Sq) - rik * rik * cosTheta0);
+
+      // calculate the c0, c1, c2 terms
+      // based on coordination of the central atom
+      std::string label = uffparams[m_atomTypes[j]].label;
+      auto neighbors = m_molecule->graph().neighbors(j);
+      a._c0 = 0.0;
+      a._c1 = 0.0;
+      a._c2 = 0.0;
+
+      if (label.size() < 3 || neighbors.size() == 1 || label[2] == '1') {
+        // linear
+        a.coordination = Linear;
+        a._c0 = 1.0;
+      } else if ((label[2] == '2' || label[2] == 'R') &&
+                 neighbors.size() == 3) {
+        a.coordination = Trigonal;
+        a._kijk = a._kijk / 9.0; // divide by n**2
+        a._c0 = 3.0;
+      } else if (label[2] == '4') {
+        a.coordination = SquarePlanar;
+        a._kijk = a._kijk / 16.0;
+        a._c0 = 4.0;
+      } else if (label[2] == '5') {
+        // TODO
+        a.coordination = TrigonalBipyramidal;
+      } else if (label[2] == '6') {
+        a.coordination = Octahedral;
+        a._kijk = a._kijk / 16.0;
+        a._c0 = 4.0;
+      } else if (neighbors.size() > 6) {
+        // TODO - trigonal bipentagonal and higher coordination
+        // (e.g., as a repulsion between the other atoms)
+        a.coordination = Other;
+      } else {
+        a.coordination = Tetrahedral;
+        Real sinTheta0 = sin(theta0);
+        a._c2 = 1.0 / (4.0 * sinTheta0 * sinTheta0);
+        a._c1 = -4.0 * a._c2 * cosTheta0;
+        a._c0 = a._c2 * (2.0 * cosTheta0 * cosTheta0 + 1.0);
+      }
+
+      m_angles.push_back(a);
+      angle = ++ai;
+    }
+  }
+
+  void setOOPs()
+  {
+    // loop through atoms checking for cases with 3 neighbors
+    for (Index i = 0; i < m_molecule->atomCount(); ++i) {
+      auto neighbors = m_molecule->graph().neighbors(i);
+      if (neighbors.size() != 3)
+        continue;
+
+      // also only for certain elements
+      const Core::Atom& atom = m_molecule->atom(i);
+      int atomicNumber = atom.atomicNumber();
+      switch (atomicNumber) {
+        case 6:  // carbon
+        case 7:  // nitrogen
+        case 8:  // oxygen
+        case 15: // phos.
+        case 33: // as
+        case 51: // sb
+        case 83: // bi
+          break;
+        default: // no inversion term for this element
+          continue;
+      }
+
+      UFFOOP oop;
+      oop._atom1 = i;
+      oop._atom2 = neighbors[0];
+      oop._atom3 = neighbors[1];
+      oop._atom4 = neighbors[2];
+
+      std::string symbol = uffparams[m_atomTypes[i]].label;
+      if (symbol == "N_R" || symbol == "N_2" || symbol == "O_R" ||
+          symbol == "O_2") {
+        oop._c0 = 1.0;
+        oop._c1 = -1.0;
+        oop._c2 = 0.0;
+        oop._koop = 6.0;
+      } else if (symbol == "P_3+3" || symbol == "As3+3" || symbol == "Sb3+3" ||
+                 symbol == "Bi3+3") {
+
+        Real phi;
+        switch (atomicNumber) {
+          case 15: // P
+            phi = 84.4339 * DEG_TO_RAD;
+            break;
+          case 33: // As
+            phi = 86.9735 * DEG_TO_RAD;
+            break;
+          case 51: // Sb
+            phi = 87.7047 * DEG_TO_RAD;
+            break;
+          case 83: // Bi
+          default:
+            phi = 90.0;
+        }
+        oop._c1 = -4.0 * cos(phi);
+        oop._c2 = 1.0;
+        oop._c0 = -1.0 * oop._c1 * cos(phi) + oop._c2 * cos(2.0 * phi);
+        oop._koop = 22.0;
+      } else if (symbol == "C_2" || symbol == "C_R") {
+        oop._c0 = 1.0;
+        oop._c1 = -1.0;
+        oop._c2 = 0.0;
+        oop._koop = 6.0;
+        // check if one of the other atoms is "O_2"
+        if (uffparams[m_atomTypes[neighbors[0]]].label == "O_2" ||
+            uffparams[m_atomTypes[neighbors[1]]].label == "O_2" ||
+            uffparams[m_atomTypes[neighbors[2]]].label == "O_2") {
+          oop._koop = 50.0;
+        }
+      } else {
+        continue;
+      }
+
+      m_oops.push_back(oop);
+    }
+  }
+
+  void setTorsions()
+  {
+    DihedralIterator di(m_molecule);
+    auto dihedral = di.begin();
+    while (dihedral != di.end()) {
+      Index i = std::get<0>(dihedral);
+      Index j = std::get<1>(dihedral);
+      Index k = std::get<2>(dihedral);
+      Index l = std::get<3>(dihedral);
+
+      // check the bond order of j-k
+      // (if it's not rotatable, we can skip this one)
+      Bond bond = m_molecule->bond(j, k);
+      if (bond.order() != 1) {
+        dihedral = ++di;
+        continue;
+      }
+
+      UFFTorsion t;
+      t._atom1 = i;
+      t._atom2 = j;
+      t._atom3 = k;
+      t._atom4 = l;
+
+      // default is for sp3-sp3
+      Real order = static_cast<Real>(bond.order());
+
+      auto symbol1 = uffparams[m_atomTypes[j]].label;
+      auto symbol2 = uffparams[m_atomTypes[k]].label;
+
+      // TODO: a bunch of special cases
+      if (symbol1.size() < 3 || symbol2.size() < 3 || symbol1[2] == '3' ||
+          symbol2[2] == '3') {
+        // default is sp3-sp3
+        t._n = 3;
+        Real Vi_j = uffparams[m_atomTypes[j]].Vi;
+        Real Vi_k = uffparams[m_atomTypes[k]].Vi;
+        Real phi0 = 60.0;
+
+        // handle some special cases
+        // e.g. a pair of group 6 sp3 atoms
+        auto atomicNumberJ = m_molecule->atom(j).atomicNumber();
+        auto atomicNumberK = m_molecule->atom(k).atomicNumber();
+        switch (atomicNumberJ) {
+          case 8: // oxygen
+            t._n = 2;
+            phi0 = 90.0; // hydrogen peroxide H-O-O-H
+            Vi_j = 2.0;
+            break;
+          case 16: // sulfur
+          case 34: // selenium
+          case 52: // tellurium
+          case 84: // polonium
+            Vi_j = 6.8;
+            t._n = 2;
+            phi0 = 90.0;
+          default:
+            break;
+        }
+        switch (atomicNumberK) {
+          case 8: // oxygen
+            t._n = 2;
+            phi0 = 90.0; // hydrogen peroxide H-O-O-H
+            Vi_k = 2.0;
+            break;
+          case 16: // sulfur
+          case 34: // selenium
+          case 52: // tellurium
+          case 84: // polonium
+            Vi_k = 6.8;
+            t._n = 2;
+            phi0 = 90.0;
+          default:
+            break;
+        }
+
+        t._cos_phi0 = cos(t._n * phi0 * DEG_TO_RAD);
+        // geometric mean of the two V1 parameters
+        t._ijkl = 0.5 * sqrt(Vi_j * Vi_k);
+      } else if (symbol1[2] == 'R' && symbol2[2] == 'R') {
+        order = 1.5;
+        // tweak for amide
+        if ((symbol1[0] == 'N' && symbol2[0] == 'C') ||
+            (symbol1[0] == 'C' && symbol2[0] == 'N'))
+          order = 1.41;
+        t._n = 2;
+        t._cos_phi0 = cos(t._n * 180.0 * DEG_TO_RAD);
+        t._ijkl = 5.0 * sqrt(uffparams[m_atomTypes[j]].Uj *
+                             uffparams[m_atomTypes[k]].Uj);
+        t._ijkl *= 0.5 * (1.0 + 4.18 * log(order));
+      } else if ((symbol1[2] == '2' && symbol2[2] == '3') ||
+                 (symbol1[2] == '3' && symbol2[2] == '2')) {
+        // sp2-sp3
+        t._cos_phi0 = cos(0.0 * DEG_TO_RAD);
+        t._n = 6;
+        t._ijkl = 0.5;
+
+        // exceptions for Oxygen, Sulfur, Selenium, Tellurium, Polonium
+        auto atomicNumberJ = m_molecule->atom(j).atomicNumber();
+        auto atomicNumberK = m_molecule->atom(k).atomicNumber();
+        if (atomicNumberJ == 8 || atomicNumberK == 8 || atomicNumberJ == 16 ||
+            atomicNumberK == 16 || atomicNumberJ == 34 || atomicNumberK == 34 ||
+            atomicNumberJ == 52 || atomicNumberK == 52 || atomicNumberJ == 84 ||
+            atomicNumberK == 84) {
+          t._n = 2;
+          t._cos_phi0 = cos(90.0 * DEG_TO_RAD);
+        }
+
+      } else {
+        dihedral = ++di;
+        continue;
+      }
+
+      m_torsions.push_back(t);
+      dihedral = ++di;
+    }
+  }
+
+  // Build a hash set of all 1-2 and 1-3 atom pairs for O(1) exclusion lookup
+  void buildExclusionSet()
+  {
+    const auto& graph = m_molecule->graph();
+    for (Index i = 0; i < m_molecule->atomCount(); ++i) {
+      const std::vector<Index>& neighbors = graph.neighbors(i);
+      for (Index j : neighbors) {
+        // 1-2 pair
+        m_excludedPairs.insert(pairKey(i, j));
+        // 1-3 pairs: neighbors of j that aren't i
+        const std::vector<Index>& neighbors2 = graph.neighbors(j);
+        for (Index k : neighbors2) {
+          if (k != i)
+            m_excludedPairs.insert(pairKey(i, k));
+        }
+      }
+    }
+  }
+
+  // Check if atoms i and j are 1-2 or 1-3 connected (O(1) lookup)
+  bool areExcluded(Index i, Index j) const
+  {
+    return m_excludedPairs.count(pairKey(i, j)) > 0;
+  }
+
+  // Build or rebuild the VdW pair list with distance cutoff
+  void setVdWs(const Eigen::VectorXd& x)
+  {
+    m_vdws.clear();
+    m_lastVdWPositions = x;
+
+    // m_atomTypes is empty for a molecule with unsupported elements
+    if (m_atomTypes.empty())
+      return;
+
+    const Index n = m_molecule->atomCount();
+    for (Index i = 0; i < n; ++i) {
+      for (Index j = i + 1; j < n; ++j) {
+        if (areExcluded(i, j))
+          continue;
+
+        // Apply distance cutoff
+        Real r2;
+        if (m_cell == nullptr) {
+          const Vector3d diff = x.segment<3>(3 * i) - x.segment<3>(3 * j);
+          r2 = diff.squaredNorm();
+        } else {
+          r2 = m_cell->distanceSquared(Vector3(x.segment<3>(3 * i)),
+                                       Vector3(x.segment<3>(3 * j)));
+        }
+        if (r2 > VDW_CUTOFF_SQ)
+          continue;
+
+        UFFVdW v;
+        v._atom1 = i;
+        v._atom2 = j;
+        v._depth =
+          sqrt(uffparams[m_atomTypes[i]].D1 * uffparams[m_atomTypes[j]].D1);
+        v._x =
+          sqrt(uffparams[m_atomTypes[i]].x1 * uffparams[m_atomTypes[j]].x1);
+        Real x3 = v._x * v._x * v._x;
+        v._x6 = x3 * x3;
+        v._x12 = v._x6 * v._x6;
+        m_vdws.push_back(v);
+      }
+    }
+  }
+
+  // Rebuild the VdW pair list if any atom has moved significantly.
+  // Only checks every N calls to avoid O(N) overhead on every evaluation.
+  void rebuildVdWsIfNeeded(const Eigen::VectorXd& x)
+  {
+    if (m_lastVdWPositions.size() != x.size()) {
+      setVdWs(x);
+      return;
+    }
+
+    if (++m_vdwCallCount % VDW_REBUILD_CHECK_INTERVAL != 0)
+      return;
+
+    // Check max squared displacement across all atoms
+    const Index n = m_molecule->atomCount();
+    for (Index i = 0; i < n; ++i) {
+      const Vector3d disp =
+        x.segment<3>(3 * i) - m_lastVdWPositions.segment<3>(3 * i);
+      if (disp.squaredNorm() > VDW_REBUILD_THRESHOLD_SQ) {
+        setVdWs(x);
+        return;
+      }
+    }
+  }
+
+  void bondEvaluate(const Eigen::VectorXd& x, Real* energy,
+                    Eigen::VectorXd* grad)
+  {
+    for (const UFFBond& bond : m_bonds) {
+      const Index i = bond._atom1;
+      const Index j = bond._atom2;
+      const Vector3d diff = x.segment<3>(3 * i) - x.segment<3>(3 * j);
+      const Real r = diff.norm();
+      const Real dr = r - bond._r0;
+
+      if (energy != nullptr) {
+        // the 0.5 * kb is already in kb to save a multiplication
+        *energy += bond._kb * dr * dr;
+      }
+
+      if (grad == nullptr || r < 1e-3)
+        continue;
+
+      const Real dEdr = 2.0 * bond._kb * dr;
+      const Vector3d direction = diff / r;
+      grad->segment<3>(3 * i) += dEdr * direction;
+      grad->segment<3>(3 * j) -= dEdr * direction;
+    }
+  }
+
+  void angleEvaluate(const Eigen::VectorXd& x, Real* energy,
+                     Eigen::VectorXd* grad)
+  {
+    const bool needsGradient = grad != nullptr;
+    const bool needsEnergy = energy != nullptr;
+
+    for (const UFFAngle& angle : m_angles) {
+      const Index i = angle._atom1;
+      const Index j = angle._atom2;
+      const Index k = angle._atom3;
+      const Real theta0 = angle._theta0 * DEG_TO_RAD;
+      const Real kijk = angle._kijk;
+      const Real c0 = angle._c0;
+      const Real c1 = angle._c1;
+      const Real c2 = angle._c2;
+
+      const Vector3d vi = x.segment<3>(3 * i);
+      const Vector3d vj = x.segment<3>(3 * j);
+      const Vector3d vk = x.segment<3>(3 * k);
+
+      Real thetaGradient = 0.0;
+      Vector3d grad_i = Vector3d::Zero();
+      Vector3d grad_j = Vector3d::Zero();
+      Vector3d grad_k = Vector3d::Zero();
+      if (needsGradient) {
+        thetaGradient =
+          ::Avogadro::Calc::angleGradient(vi, vj, vk, grad_i, grad_j, grad_k);
+      }
+
+      if (needsEnergy) {
+        // Match the legacy value() path: use acos-based angle in [0, pi].
+        const Vector3d ij = vi - vj;
+        const Vector3d kj = vk - vj;
+        const Real r1 = ij.norm();
+        const Real r2 = kj.norm();
+        // coincident atoms give 0/0, and std::clamp passes NaN through
+        const Real thetaEnergy =
+          (r1 > 1e-6 && r2 > 1e-6)
+            ? acos(std::clamp(ij.dot(kj) / (r1 * r2), -1.0, 1.0))
+            : 0.0;
+        switch (angle.coordination) {
+          case Linear:
+            // fixed typo in UFF paper (it's 1+cos(theta), not 1-cos(theta))
+            *energy += kijk * (1 + cos(c0 * thetaEnergy));
+            break;
+          case Trigonal:
+          case Resonant:
+          case SquarePlanar:
+          case Octahedral:
+            *energy += kijk * (1 - cos(c0 * thetaEnergy)) +
+                       exp(-20.0 * (thetaEnergy - theta0 + 0.25));
+            break;
+          case Tetrahedral: {
+            const Real cosTheta = cos(thetaEnergy);
+            // use cos(2t) = 2cos^2(t) - 1
+            *energy +=
+              kijk * (c0 + c1 * cosTheta + c2 * (2 * cosTheta * cosTheta - 1));
+            break;
+          }
+          case TrigonalBipyramidal:
+          case TrigonalBipentagonal:
+          case Other:
+          default:
+            // fallback to harmonic potential for unsupported coordinations
+            *energy += kijk * (thetaEnergy - theta0) * (thetaEnergy - theta0);
+            break;
+        }
+      }
+
+      if (!needsGradient || thetaGradient <= 0.1)
+        continue;
+
+      Real dEdTheta = 0.0;
+      switch (angle.coordination) {
+        case Linear:
+          dEdTheta = -kijk * c0 * sin(c0 * thetaGradient);
+          break;
+        case Trigonal:
+        case Resonant:
+        case SquarePlanar:
+        case Octahedral:
+          dEdTheta = kijk * c0 * sin(c0 * thetaGradient) -
+                     20.0 * exp(-20.0 * (thetaGradient - theta0 + 0.25));
+          break;
+        case Tetrahedral: {
+          const Real cosTheta = cos(thetaGradient);
+          const Real sinTheta = sin(thetaGradient);
+          dEdTheta =
+            -kijk * (c1 * sinTheta + c2 * 2 * (2 * cosTheta * sinTheta));
+          break;
+        }
+        case TrigonalBipyramidal:
+        case TrigonalBipentagonal:
+        case Other:
+        default:
+          dEdTheta = 2.0 * kijk * (thetaGradient - theta0) * sin(thetaGradient);
+          break;
+      }
+
+      if (std::isnan(dEdTheta))
+        continue;
+
+      grad->segment<3>(3 * i) += dEdTheta * grad_i;
+      grad->segment<3>(3 * j) += dEdTheta * grad_j;
+      grad->segment<3>(3 * k) += dEdTheta * grad_k;
+    }
+  }
+
+  void oopEvaluate(const Eigen::VectorXd& x, Real* energy,
+                   Eigen::VectorXd* grad)
+  {
+    const bool needsGradient = grad != nullptr;
+
+    for (const UFFOOP& oop : m_oops) {
+      // for UFF, i is the central atom
+      const Index i = oop._atom1;
+      const Index j = oop._atom2;
+      const Index k = oop._atom3;
+      const Index l = oop._atom4;
+
+      const Real koop = oop._koop;
+      const Real c0 = oop._c0;
+      const Real c1 = oop._c1;
+      const Real c2 = oop._c2;
+
+      const Vector3d vi = x.segment<3>(3 * i);
+      const Vector3d vj = x.segment<3>(3 * j);
+      const Vector3d vk = x.segment<3>(3 * k);
+      const Vector3d vl = x.segment<3>(3 * l);
+
+      Real angleGradient = 0.0;
+      Vector3d grad_i = Vector3d::Zero();
+      Vector3d grad_j = Vector3d::Zero();
+      Vector3d grad_k = Vector3d::Zero();
+      Vector3d grad_l = Vector3d::Zero();
+      if (needsGradient) {
+        angleGradient = ::Avogadro::Calc::outOfPlaneGradient(
+          vi, vj, vk, vl, grad_i, grad_j, grad_k, grad_l);
+      }
+
+      if (energy != nullptr) {
+        // Match the legacy value() path.
+        const Real angleEnergy = outOfPlaneAngle(vi, vj, vk, vl) * DEG_TO_RAD;
+        *energy +=
+          koop * (c0 + c1 * cos(angleEnergy) + c2 * cos(2 * angleEnergy));
+      }
+
+      if (!needsGradient)
+        continue;
+
+      const Real dE =
+        koop * (-c1 * sin(angleGradient) - 2.0 * c2 * sin(2.0 * angleGradient));
+      if (std::isnan(dE))
+        continue;
+
+      grad->segment<3>(3 * i) += dE * grad_i;
+      grad->segment<3>(3 * j) += dE * grad_j;
+      grad->segment<3>(3 * k) += dE * grad_k;
+      grad->segment<3>(3 * l) += dE * grad_l;
+    }
+  }
+
+  void torsionEvaluate(const Eigen::VectorXd& x, Real* energy,
+                       Eigen::VectorXd* grad)
+  {
+    const bool needsGradient = grad != nullptr;
+
+    for (const UFFTorsion& torsion : m_torsions) {
+      const Index i = torsion._atom1;
+      const Index j = torsion._atom2;
+      const Index k = torsion._atom3;
+      const Index l = torsion._atom4;
+
+      const Vector3d vi = x.segment<3>(3 * i);
+      const Vector3d vj = x.segment<3>(3 * j);
+      const Vector3d vk = x.segment<3>(3 * k);
+      const Vector3d vl = x.segment<3>(3 * l);
+
+      Real phiGradient = 0.0;
+      Vector3d grad_i = Vector3d::Zero();
+      Vector3d grad_j = Vector3d::Zero();
+      Vector3d grad_k = Vector3d::Zero();
+      Vector3d grad_l = Vector3d::Zero();
+      if (needsGradient) {
+        phiGradient =
+          dihedralGradient(vi, vj, vk, vl, grad_i, grad_j, grad_k, grad_l);
+      }
+
+      const Real cosPhi0 = torsion._cos_phi0;
+      const Real kijkl = torsion._ijkl;
+      if (energy != nullptr) {
+        // Match the legacy value() path. Skip zero-length bonds, which make
+        // calculateDihedral() return NaN (the gradient skips them too).
+        const Vector3d ijv = vj - vi;
+        const Vector3d jkv = vk - vj;
+        const Vector3d klv = vl - vk;
+        if (ijv.norm() > 1e-6 && jkv.norm() > 1e-6 && klv.norm() > 1e-6) {
+          const Real phiEnergy = calculateDihedral(vi, vj, vk, vl) * DEG_TO_RAD;
+          *energy += kijkl * (1.0 - cosPhi0 * cos(torsion._n * phiEnergy));
+        }
+      }
+
+      if (!needsGradient)
+        continue;
+
+      const Real dE =
+        kijkl * torsion._n * sin(torsion._n * phiGradient) * cosPhi0;
+      if (std::isnan(dE))
+        continue;
+
+      grad->segment<3>(3 * i) += dE * grad_i;
+      grad->segment<3>(3 * j) += dE * grad_j;
+      grad->segment<3>(3 * k) += dE * grad_k;
+      grad->segment<3>(3 * l) += dE * grad_l;
+    }
+  }
+
+  void vdwEvaluate(const Eigen::VectorXd& x, Real* energy,
+                   Eigen::VectorXd* grad)
+  {
+    rebuildVdWsIfNeeded(x);
+
+    const bool needsGradient = grad != nullptr;
+
+    for (const UFFVdW& vdw : m_vdws) {
+      const Index i = vdw._atom1;
+      const Index j = vdw._atom2;
+      const Vector3d vi = x.segment<3>(3 * i);
+      const Vector3d vj = x.segment<3>(3 * j);
+
+      Vector3d diff = Vector3d::Zero();
+      Real r2 = 0.0;
+      if (m_cell == nullptr) {
+        diff = vi - vj;
+        r2 = diff.squaredNorm();
+      } else if (needsGradient) {
+        diff = m_cell->minimumImage(vi - vj);
+        r2 = diff.squaredNorm();
+      } else {
+        r2 = m_cell->distanceSquared(vi, vj);
+      }
+
+      // Skip pairs that moved beyond the cutoff since the list was built
+      if (r2 > VDW_CUTOFF_SQ)
+        continue;
+
+      const Real r6 = r2 * r2 * r2;
+      if (energy != nullptr) {
+        // Overlapping atoms make x12/r12 and x6/r6 both +inf, and
+        // inf - inf == NaN. Floor the energy at r = 0.1 A, as LennardJones
+        // does; the gradient below has its own r < 1e-3 guard.
+        const Real r6e = std::max(r6, 1e-6);
+        const Real r12e = r6e * r6e;
+        *energy += vdw._depth * (vdw._x12 / r12e - 2 * vdw._x6 / r6e);
+      }
+
+      if (!needsGradient)
+        continue;
+
+      const Real r = sqrt(r2);
+      if (r < 1e-3)
+        continue;
+
+      const Vector3d direction = diff / r;
+      const Real r7 = r6 * r;
+      const Real dEdr = 12 * vdw._depth * vdw._x6 / r7 * (1 - vdw._x6 / r6);
+      grad->segment<3>(3 * i) += dEdr * direction;
+      grad->segment<3>(3 * j) -= dEdr * direction;
+    }
+  }
+
+  void evaluate(const Eigen::VectorXd& x, Real* energy, Eigen::VectorXd* grad)
+  {
+    bondEvaluate(x, energy, grad);
+    angleEvaluate(x, energy, grad);
+    torsionEvaluate(x, energy, grad);
+    oopEvaluate(x, energy, grad);
+    vdwEvaluate(x, energy, grad);
+  }
+
+  Real bondEnergies(const Eigen::VectorXd& x)
+  {
+    Real energy = 0.0;
+    bondEvaluate(x, &energy, nullptr);
+    return energy;
+  }
+
+  Real angleEnergies(const Eigen::VectorXd& x)
+  {
+    Real energy = 0.0;
+    angleEvaluate(x, &energy, nullptr);
+    return energy;
+  }
+
+  Real oopEnergies(const Eigen::VectorXd& x)
+  {
+    Real energy = 0.0;
+    oopEvaluate(x, &energy, nullptr);
+    return energy;
+  }
+
+  Real torsionEnergies(const Eigen::VectorXd& x)
+  {
+    Real energy = 0.0;
+    torsionEvaluate(x, &energy, nullptr);
+    return energy;
+  }
+
+  Real vdwEnergies(const Eigen::VectorXd& x)
+  {
+    Real energy = 0.0;
+    vdwEvaluate(x, &energy, nullptr);
+    return energy;
+  }
+
+  void bondGradient(const Eigen::VectorXd& x, Eigen::VectorXd& grad)
+  {
+    bondEvaluate(x, nullptr, &grad);
+  }
+
+  void angleGradient(const Eigen::VectorXd& x, Eigen::VectorXd& grad)
+  {
+    angleEvaluate(x, nullptr, &grad);
+  }
+
+  void oopGradient(const Eigen::VectorXd& x, Eigen::VectorXd& grad)
+  {
+    oopEvaluate(x, nullptr, &grad);
+  }
+
+  void torsionGradient(const Eigen::VectorXd& x, Eigen::VectorXd& grad)
+  {
+    torsionEvaluate(x, nullptr, &grad);
+  }
+
+  void vdwGradient(const Eigen::VectorXd& x, Eigen::VectorXd& grad)
+  {
+    vdwEvaluate(x, nullptr, &grad);
+  }
+};
+
+UFF::UFF() : d(nullptr)
+{
+  // defined for 1-102
+  for (unsigned int i = 0; i <= 102; ++i) {
+    m_elements.set(i);
+  }
+}
+
+UFF::~UFF()
+{
+  delete d;
+  d = nullptr;
+}
+
+void UFF::setMolecule(Core::Molecule* mol)
+{
+  if (d != nullptr) {
+    delete d;
+    d = nullptr;
+  }
+
+  m_molecule = mol;
+
+  if (mol == nullptr) {
+    return; // nothing to do
+  }
+
+  setMaskFromMolecule(*mol);
+
+  int numAtoms = mol->atomCount();
+  if (numAtoms < 2)
+    return; // nothing to do for single atoms
+
+  // start with assigning atom types
+  d = new UFFPrivate(mol);
+}
+
+Real UFF::value(const Eigen::VectorXd& x)
+{
+  if (!m_molecule || !d ||
+      x.size() != static_cast<Eigen::Index>(3 * m_molecule->atomCount()))
+    return 0.0;
+  if (m_molecule->atomCount() < 2)
+    return 0.0; // no bonds
+
+  Real energy = 0.0;
+  d->evaluate(x, &energy, nullptr);
+  // UFF terms are in kcal/mol; restraints are already in kJ/mol
+  return energy * KCAL_TO_KJ + constraintEnergies(x);
+}
+
+Real UFF::evaluate(const Eigen::VectorXd& x, Eigen::VectorXd* grad)
+{
+  if (grad != nullptr) {
+    if (grad->rows() != x.rows())
+      grad->resize(x.rows());
+    grad->setZero();
+  }
+
+  if (!m_molecule || !d ||
+      x.size() != static_cast<Eigen::Index>(3 * m_molecule->atomCount()))
+    return 0.0;
+  if (m_molecule->atomCount() < 2)
+    return 0.0; // no bonds
+
+  Real energy = 0.0;
+  d->evaluate(x, &energy, grad);
+
+  // Convert the UFF terms from kcal/mol to kJ/mol before adding restraints,
+  // which are already in kJ/mol (see core/constraint.h)
+  energy = energy * KCAL_TO_KJ + constraintEnergies(x);
+
+  if (grad != nullptr) {
+    *grad *= KCAL_TO_KJ;
+    cleanGradients(*grad);
+    constraintGradients(x, *grad);
+  }
+
+  return energy;
+}
+
+Real UFF::bondEnergy(const Eigen::VectorXd& x)
+{
+  Real energy = 0.0;
+
+  if (!m_molecule || !d ||
+      x.size() != static_cast<Eigen::Index>(3 * m_molecule->atomCount()))
+    return energy; // nothing to do
+  if (m_molecule->atomCount() < 2)
+    return energy; // no bonds
+
+  energy = d->bondEnergies(x);
+  return energy;
+}
+
+Real UFF::angleEnergy(const Eigen::VectorXd& x)
+{
+  Real energy = 0.0;
+
+  if (!m_molecule || !d ||
+      x.size() != static_cast<Eigen::Index>(3 * m_molecule->atomCount()))
+    return energy; // nothing to do
+  if (m_molecule->atomCount() < 3)
+    return energy; // no angle
+
+  energy = d->angleEnergies(x);
+  return energy;
+}
+
+Real UFF::oopEnergy(const Eigen::VectorXd& x)
+{
+  Real energy = 0.0;
+
+  if (!m_molecule || !d ||
+      x.size() != static_cast<Eigen::Index>(3 * m_molecule->atomCount()))
+    return energy; // nothing to do
+  if (m_molecule->atomCount() < 4)
+    return energy; // no oop
+
+  energy = d->oopEnergies(x);
+  return energy;
+}
+
+Real UFF::torsionEnergy(const Eigen::VectorXd& x)
+{
+  Real energy = 0.0;
+
+  if (!m_molecule || !d ||
+      x.size() != static_cast<Eigen::Index>(3 * m_molecule->atomCount()))
+    return energy; // nothing to do
+  if (m_molecule->atomCount() < 4)
+    return energy; // no torsion
+
+  energy = d->torsionEnergies(x);
+  return energy;
+}
+
+Real UFF::vdwEnergy(const Eigen::VectorXd& x)
+{
+  Real energy = 0.0;
+
+  if (!m_molecule || !d ||
+      x.size() != static_cast<Eigen::Index>(3 * m_molecule->atomCount()))
+    return energy; // nothing to do
+  if (m_molecule->atomCount() < 2)
+    return energy; // nothing to do
+
+  energy = d->vdwEnergies(x);
+  return energy;
+}
+
+void UFF::gradient(const Eigen::VectorXd& x, Eigen::VectorXd& grad)
+{
+  evaluate(x, &grad);
+}
+
+void UFF::bondGradient(const Eigen::VectorXd& x, Eigen::VectorXd& grad)
+{
+  if (!m_molecule || !d ||
+      x.size() != static_cast<Eigen::Index>(3 * m_molecule->atomCount()))
+    return; // nothing to do
+  if (m_molecule->atomCount() < 2)
+    return; // no bonds
+
+  d->bondGradient(x, grad);
+}
+
+void UFF::angleGradient(const Eigen::VectorXd& x, Eigen::VectorXd& grad)
+{
+  if (!m_molecule || !d ||
+      x.size() != static_cast<Eigen::Index>(3 * m_molecule->atomCount()))
+    return; // nothing to do
+  if (m_molecule->atomCount() < 3)
+    return; // no bonds
+
+  d->angleGradient(x, grad);
+}
+
+void UFF::oopGradient(const Eigen::VectorXd& x, Eigen::VectorXd& grad)
+{
+  if (!m_molecule || !d ||
+      x.size() != static_cast<Eigen::Index>(3 * m_molecule->atomCount()))
+    return; // nothing to do
+  if (m_molecule->atomCount() < 4)
+    return; // no bonds
+
+  d->oopGradient(x, grad);
+}
+
+void UFF::torsionGradient(const Eigen::VectorXd& x, Eigen::VectorXd& grad)
+{
+  if (!m_molecule || !d ||
+      x.size() != static_cast<Eigen::Index>(3 * m_molecule->atomCount()))
+    return; // nothing to do
+  if (m_molecule->atomCount() < 4)
+    return; // no bonds
+
+  d->torsionGradient(x, grad);
+}
+
+void UFF::vdwGradient(const Eigen::VectorXd& x, Eigen::VectorXd& grad)
+{
+  if (!m_molecule || !d ||
+      x.size() != static_cast<Eigen::Index>(3 * m_molecule->atomCount()))
+    return; // nothing to do
+  if (m_molecule->atomCount() < 2)
+    return; // no bonds
+
+  d->vdwGradient(x, grad);
+}
+
+} // namespace Avogadro::Calc

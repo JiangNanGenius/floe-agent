@@ -1,0 +1,208 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "geometryvisitor.h"
+
+#include "curvegeometry.h"
+#include "linestripgeometry.h"
+#include "meshgeometry.h"
+#include "spheregeometry.h"
+#include "widelinegeometry.h"
+
+namespace Avogadro::Rendering {
+
+GeometryVisitor::GeometryVisitor()
+  : m_center(Vector3f::Zero()), m_radius(0.0f), m_dirty(false)
+{
+}
+
+GeometryVisitor::~GeometryVisitor() {}
+
+void GeometryVisitor::visit(Drawable&) {}
+
+void GeometryVisitor::visit(SphereGeometry& geometry)
+{
+  const Core::Array<SphereColor>& spheres = geometry.spheres();
+  if (spheres.empty())
+    return;
+
+  m_dirty = true;
+
+  Vector3f tmpCenter(Vector3f::Zero());
+  // First find the center of the sphere geometry.
+  auto it = spheres.begin();
+  for (; it != spheres.end(); ++it)
+    tmpCenter += it->center;
+  tmpCenter /= static_cast<float>(spheres.size());
+
+  // Now find its radius.
+  float tmpRadius(0.0f);
+  if (spheres.size() > 1) {
+    for (it = spheres.begin(); it != spheres.end(); ++it) {
+      float distance = (it->center - tmpCenter).squaredNorm();
+      if (distance > tmpRadius)
+        tmpRadius = distance;
+    }
+  }
+  tmpRadius = std::sqrt(tmpRadius);
+  m_centers.push_back(tmpCenter);
+  m_radii.push_back(tmpRadius);
+}
+
+void GeometryVisitor::visit(MeshGeometry& mesh)
+{
+  // 2D overlay meshes (e.g. the selection rubber band) are in screen
+  // coordinates, not scene coordinates.
+  if (mesh.renderPass() == Overlay2DPass)
+    return;
+
+  // Use the bounding box cached by the mesh rather than scanning vertices;
+  // surface meshes can have tens of millions of them.
+  Vector3f minimum, maximum;
+  if (!mesh.bounds(minimum, maximum))
+    return;
+
+  m_dirty = true;
+  m_centers.push_back(0.5f * (minimum + maximum));
+  m_radii.push_back(0.5f * (maximum - minimum).norm());
+}
+
+void GeometryVisitor::visit(CurveGeometry& cg)
+{
+  const auto& lines = cg.lines();
+  if (lines.empty()) {
+    return;
+  }
+  m_dirty = true;
+  float qtty = 0.0f;
+  Vector3f tmpCenter(Vector3f::Zero());
+  for (const auto& line : lines) {
+    for (const auto& point : line->points) {
+      tmpCenter += point.pos;
+    }
+    qtty += line->points.size();
+  }
+  tmpCenter /= qtty;
+
+  float tmpRadius = 0.0f;
+  for (const auto& line : lines) {
+    for (const auto& point : line->points) {
+      float distance = (point.pos - tmpCenter).squaredNorm();
+      if (distance > tmpRadius)
+        tmpRadius = distance;
+    }
+  }
+  m_centers.push_back(tmpCenter);
+  m_radii.push_back(std::sqrt(tmpRadius));
+}
+
+void GeometryVisitor::visit(LineStripGeometry& lsg)
+{
+  using VertexArray = Core::Array<LineStripGeometry::PackedVertex>;
+  const VertexArray verts(lsg.vertices());
+  if (verts.empty())
+    return;
+
+  m_dirty = true;
+
+  Vector3f tmpCenter(Vector3f::Zero());
+  for (const auto& vert : verts) {
+    tmpCenter += vert.vertex;
+  }
+  tmpCenter /= static_cast<float>(verts.size());
+
+  float tmpRadius(0.f);
+  for (const auto& vert : verts) {
+    float distance = (vert.vertex - tmpCenter).squaredNorm();
+    if (distance > tmpRadius)
+      tmpRadius = distance;
+  }
+
+  m_centers.push_back(tmpCenter);
+  m_radii.push_back(std::sqrt(tmpRadius));
+}
+
+void GeometryVisitor::visit(WideLineGeometry& wlg)
+{
+  size_t numLines = wlg.lineCount();
+  if (numLines == 0)
+    return;
+
+  m_dirty = true;
+
+  // Each line segment has 4 vertices (2 endpoints x 2 sides).
+  // Only sample unique endpoints: indices 0 and 2 per quad.
+  const auto& verts = wlg.vertices();
+  Vector3f tmpCenter(Vector3f::Zero());
+  for (size_t i = 0; i < verts.size(); i += 4) {
+    tmpCenter += verts[i].position;
+    tmpCenter += verts[i + 2].position;
+  }
+  tmpCenter /= static_cast<float>(numLines * 2);
+
+  float tmpRadius(0.f);
+  for (size_t i = 0; i < verts.size(); i += 4) {
+    float d1 = (verts[i].position - tmpCenter).squaredNorm();
+    float d2 = (verts[i + 2].position - tmpCenter).squaredNorm();
+    if (d1 > tmpRadius)
+      tmpRadius = d1;
+    if (d2 > tmpRadius)
+      tmpRadius = d2;
+  }
+
+  m_centers.push_back(tmpCenter);
+  m_radii.push_back(std::sqrt(tmpRadius));
+}
+
+void GeometryVisitor::clear()
+{
+  m_center = Vector3f::Zero();
+  m_radius = 0.0f;
+  m_dirty = false;
+  m_centers.clear();
+  m_radii.clear();
+}
+
+Vector3f GeometryVisitor::center()
+{
+  average();
+  return m_center;
+}
+
+float GeometryVisitor::radius()
+{
+  average();
+  return m_radius;
+}
+
+void GeometryVisitor::average()
+{
+  if (!m_dirty)
+    return;
+
+  // Find the average position of the center, then the minimal enclosing radius.
+  m_dirty = false;
+  if (m_centers.size() == 1) {
+    m_center = m_centers[0];
+    m_radius = m_radii[0];
+  } else {
+    m_center = Vector3f::Zero();
+    std::vector<Vector3f>::const_iterator cit;
+    for (cit = m_centers.begin(); cit != m_centers.end(); ++cit)
+      m_center += *cit;
+    m_center /= static_cast<float>(m_centers.size());
+    // Now find the smallest enclosing radius for the new center.
+    m_radius = 0.0f;
+    std::vector<float>::const_iterator rit;
+    for (cit = m_centers.begin(), rit = m_radii.begin();
+         cit != m_centers.end() && rit != m_radii.end(); ++cit, ++rit) {
+      float distance = (m_center - (*cit)).norm() + (*rit);
+      if (distance > m_radius)
+        m_radius = distance;
+    }
+  }
+}
+
+} // namespace Avogadro::Rendering

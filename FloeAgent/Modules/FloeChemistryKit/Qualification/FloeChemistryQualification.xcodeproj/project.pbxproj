@@ -1,0 +1,525 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		2C3A2F29F5D08230967CB0A7 /* FloeChemistryEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 694EBCD39A0A99E40E1464E1 /* FloeChemistryEngine */; };
+		5319242356BE02A855E8F92A /* Host.swift in Sources */ = {isa = PBXBuildFile; fileRef = 401FBC2FD9765BD66B6EDD2B /* Host.swift */; };
+		8FEBD2EA439C876E88DFF971 /* FloeChemistryEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 39336EE7A7579E919815F4CF /* FloeChemistryEngine */; };
+		98275313FB4D127158709132 /* FloeChemistryCore in Frameworks */ = {isa = PBXBuildFile; productRef = B636456D2BA656ACB6836639 /* FloeChemistryCore */; };
+		A824ABD6670E491B4C861BF7 /* UITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAC771583E88FB282B605C95 /* UITests.swift */; };
+		D4A443F56E4D2E704A96C419 /* FloeChemistryUI in Frameworks */ = {isa = PBXBuildFile; productRef = 9C3B225E5CF93B156C28CC9A /* FloeChemistryUI */; };
+		E4216F6E38EB27B625CD61C1 /* FloeChemistryUI in Frameworks */ = {isa = PBXBuildFile; productRef = A35D1794CDE64ECAE2CBF36C /* FloeChemistryUI */; };
+		E8AA43EE442656E8F4CD3B2C /* FloeChemistryCore in Frameworks */ = {isa = PBXBuildFile; productRef = 53625054CA772BB8B905EC09 /* FloeChemistryCore */; };
+		F5CF8EEC72F8BBF8274A8ECA /* Host.swift in Sources */ = {isa = PBXBuildFile; fileRef = 401FBC2FD9765BD66B6EDD2B /* Host.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B1D5A7EA91F4F6ECB8A35272 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9491A5A5D582D0C200E40BF9 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7E73914C5AA78827A54C9498;
+			remoteInfo = ChemistryHost;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		1AD74C825EFE64178E6D2D60 /* FloeChemistryKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeChemistryKit; path = ..; sourceTree = SOURCE_ROOT; };
+		34DDB1E7BAA079F32898A646 /* ChemistryHost.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ChemistryHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		401FBC2FD9765BD66B6EDD2B /* Host.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Host.swift; sourceTree = "<group>"; };
+		4A36457BB0141F4E48A0EF10 /* ChemistryHostUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ChemistryHostUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		809B6D90AC084D8852933E44 /* ChemistryMacHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ChemistryMacHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AAC771583E88FB282B605C95 /* UITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		27272AAB246A26A559323312 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D4A443F56E4D2E704A96C419 /* FloeChemistryUI in Frameworks */,
+				8FEBD2EA439C876E88DFF971 /* FloeChemistryEngine in Frameworks */,
+				98275313FB4D127158709132 /* FloeChemistryCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5BF540E43E47568E0065F9DF /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E4216F6E38EB27B625CD61C1 /* FloeChemistryUI in Frameworks */,
+				2C3A2F29F5D08230967CB0A7 /* FloeChemistryEngine in Frameworks */,
+				E8AA43EE442656E8F4CD3B2C /* FloeChemistryCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		312A1AB5878B7917520F9143 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				34DDB1E7BAA079F32898A646 /* ChemistryHost.app */,
+				4A36457BB0141F4E48A0EF10 /* ChemistryHostUITests.xctest */,
+				809B6D90AC084D8852933E44 /* ChemistryMacHost.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		8153DB3D37F6F183B4B9A90A = {
+			isa = PBXGroup;
+			children = (
+				401FBC2FD9765BD66B6EDD2B /* Host.swift */,
+				AAC771583E88FB282B605C95 /* UITests.swift */,
+				ACA0425B47CB3B51932D8EF9 /* Packages */,
+				312A1AB5878B7917520F9143 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		ACA0425B47CB3B51932D8EF9 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				1AD74C825EFE64178E6D2D60 /* FloeChemistryKit */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		4531D8147E16AD74E4908036 /* ChemistryHostUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 15F331D7D9844FB97A238AD0 /* Build configuration list for PBXNativeTarget "ChemistryHostUITests" */;
+			buildPhases = (
+				B30C0B48CF411390C341DB85 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				9BDD32F1FB73D3B1A31001E8 /* PBXTargetDependency */,
+			);
+			name = ChemistryHostUITests;
+			packageProductDependencies = (
+			);
+			productName = ChemistryHostUITests;
+			productReference = 4A36457BB0141F4E48A0EF10 /* ChemistryHostUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		4BF4E95EC3331E1904C030A5 /* ChemistryMacHost */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FE9EC495DB89004D5149438E /* Build configuration list for PBXNativeTarget "ChemistryMacHost" */;
+			buildPhases = (
+				E6459390D7349EE598C38B1C /* Sources */,
+				27272AAB246A26A559323312 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ChemistryMacHost;
+			packageProductDependencies = (
+				9C3B225E5CF93B156C28CC9A /* FloeChemistryUI */,
+				39336EE7A7579E919815F4CF /* FloeChemistryEngine */,
+				B636456D2BA656ACB6836639 /* FloeChemistryCore */,
+			);
+			productName = ChemistryMacHost;
+			productReference = 809B6D90AC084D8852933E44 /* ChemistryMacHost.app */;
+			productType = "com.apple.product-type.application";
+		};
+		7E73914C5AA78827A54C9498 /* ChemistryHost */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B77B0D231B357CFD4B22D109 /* Build configuration list for PBXNativeTarget "ChemistryHost" */;
+			buildPhases = (
+				DF15D196ADB3765F933E286A /* Sources */,
+				5BF540E43E47568E0065F9DF /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ChemistryHost;
+			packageProductDependencies = (
+				A35D1794CDE64ECAE2CBF36C /* FloeChemistryUI */,
+				694EBCD39A0A99E40E1464E1 /* FloeChemistryEngine */,
+				53625054CA772BB8B905EC09 /* FloeChemistryCore */,
+			);
+			productName = ChemistryHost;
+			productReference = 34DDB1E7BAA079F32898A646 /* ChemistryHost.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		9491A5A5D582D0C200E40BF9 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					4531D8147E16AD74E4908036 = {
+						TestTargetID = 7E73914C5AA78827A54C9498;
+					};
+				};
+			};
+			buildConfigurationList = 7146A494C228F9512B9950F0 /* Build configuration list for PBXProject "FloeChemistryQualification" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 8153DB3D37F6F183B4B9A90A;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				44A31981E1E56007E7FAF872 /* XCLocalSwiftPackageReference ".." */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 312A1AB5878B7917520F9143 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				7E73914C5AA78827A54C9498 /* ChemistryHost */,
+				4BF4E95EC3331E1904C030A5 /* ChemistryMacHost */,
+				4531D8147E16AD74E4908036 /* ChemistryHostUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		B30C0B48CF411390C341DB85 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A824ABD6670E491B4C861BF7 /* UITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DF15D196ADB3765F933E286A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F5CF8EEC72F8BBF8274A8ECA /* Host.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E6459390D7349EE598C38B1C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5319242356BE02A855E8F92A /* Host.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		9BDD32F1FB73D3B1A31001E8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7E73914C5AA78827A54C9498 /* ChemistryHost */;
+			targetProxy = B1D5A7EA91F4F6ECB8A35272 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		11FC485EC68303F38C00F56D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.floe.qualification.chemistry;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		5EC2460126FF19F7EA3364CF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.floe.qualification.chemistry.mac;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		69A664DE08BC4548B0134323 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.floe.qualification.chemistry.mac;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		6B6FD02DB321D8F2FBBB5383 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.floe.qualification.chemistry;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		8E6488A6C1C4858025F72F0A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		9B7FB0FB10B0905703130902 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.floe.qualification.chemistry.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = ChemistryHost;
+			};
+			name = Debug;
+		};
+		B9743182C7AC3E36D33C6AC8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.floe.qualification.chemistry.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = ChemistryHost;
+			};
+			name = Release;
+		};
+		DB82F2832141EF5F55D9C85E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		15F331D7D9844FB97A238AD0 /* Build configuration list for PBXNativeTarget "ChemistryHostUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9B7FB0FB10B0905703130902 /* Debug */,
+				B9743182C7AC3E36D33C6AC8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		7146A494C228F9512B9950F0 /* Build configuration list for PBXProject "FloeChemistryQualification" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DB82F2832141EF5F55D9C85E /* Debug */,
+				8E6488A6C1C4858025F72F0A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B77B0D231B357CFD4B22D109 /* Build configuration list for PBXNativeTarget "ChemistryHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				11FC485EC68303F38C00F56D /* Debug */,
+				6B6FD02DB321D8F2FBBB5383 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		FE9EC495DB89004D5149438E /* Build configuration list for PBXNativeTarget "ChemistryMacHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5EC2460126FF19F7EA3364CF /* Debug */,
+				69A664DE08BC4548B0134323 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		44A31981E1E56007E7FAF872 /* XCLocalSwiftPackageReference ".." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ..;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		39336EE7A7579E919815F4CF /* FloeChemistryEngine */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeChemistryEngine;
+		};
+		53625054CA772BB8B905EC09 /* FloeChemistryCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeChemistryCore;
+		};
+		694EBCD39A0A99E40E1464E1 /* FloeChemistryEngine */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeChemistryEngine;
+		};
+		9C3B225E5CF93B156C28CC9A /* FloeChemistryUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeChemistryUI;
+		};
+		A35D1794CDE64ECAE2CBF36C /* FloeChemistryUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeChemistryUI;
+		};
+		B636456D2BA656ACB6836639 /* FloeChemistryCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeChemistryCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 9491A5A5D582D0C200E40BF9 /* Project object */;
+}

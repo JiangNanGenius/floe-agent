@@ -1,0 +1,311 @@
+# CppNumericalSolvers
+
+A header-only C++17 optimization library that is fast, reliable, and
+easy to integrate.
+
+On a [376-problem benchmark][bench] against Nocedal's Fortran L-BFGS,
+libLBFGS, LBFGSpp, and LBFGS-Lite, CppNumericalSolvers has the
+highest reliability (95% converged), the most first-place wins
+(230 / 376, 2× the next library), and the lowest mean nfev of any
+solver tested.
+
+[bench]: https://patwie.github.io/CppNumericalSolversBenchmark/
+
+## Quick Start
+
+```cpp
+#include "cppoptlib/function.h"
+#include "cppoptlib/solver/lbfgs.h"
+
+// f(x) = 5*x0^2 + 100*x1^2 + 5
+class Quadratic : public cppoptlib::function::FunctionCRTP<
+    Quadratic, double, cppoptlib::function::DifferentiabilityMode::First, 2> {
+ public:
+  ScalarType operator()(const VectorType &x, VectorType *grad) const {
+    if (grad) *grad = Eigen::Vector2d(10 * x[0], 200 * x[1]);
+    return 5 * x[0] * x[0] + 100 * x[1] * x[1] + 5;
+  }
+};
+
+int main() {
+  Quadratic f;
+  Eigen::Vector2d x0(-10, 2);
+  cppoptlib::solver::Lbfgs<Quadratic> solver;
+  auto [solution, state] = solver.Minimize(f, cppoptlib::function::FunctionState(x0));
+  // solution.x ≈ (0, 0), solution.value ≈ 5
+}
+```
+
+## Integration
+
+The only dependency is Eigen3.
+
+### CMake (FetchContent)
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(cppoptlib
+  GIT_REPOSITORY https://github.com/PatWie/CppNumericalSolvers.git
+  GIT_TAG main)
+FetchContent_MakeAvailable(cppoptlib)
+
+find_package(Eigen3 REQUIRED NO_MODULE)
+target_link_libraries(your_target PRIVATE CppNumericalSolvers Eigen3::Eigen)
+```
+
+### CMake (find_package after install)
+
+```bash
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --install build
+```
+
+Then in your project:
+
+```cmake
+find_package(CppNumericalSolvers REQUIRED)
+find_package(Eigen3 REQUIRED NO_MODULE)
+target_link_libraries(your_target PRIVATE CppNumericalSolvers::CppNumericalSolvers Eigen3::Eigen)
+```
+
+### pkg-config (after install)
+
+```bash
+g++ -std=c++17 $(pkg-config --cflags cppoptlib) main.cpp -o main
+```
+
+### Bazel
+
+Add to your `MODULE.bazel`:
+
+```starlark
+bazel_dep(name = "cppoptlib", version = "2.0.0")
+git_override(
+    module_name = "cppoptlib",
+    remote = "https://github.com/PatWie/CppNumericalSolvers.git",
+    commit = "<commit>",
+)
+```
+
+Then depend on `@cppoptlib//include:cppoptlib`:
+
+```starlark
+cc_binary(
+    name = "main",
+    srcs = ["main.cpp"],
+    deps = [
+        "@cppoptlib//include:cppoptlib",
+        "@eigen//:eigen",
+    ],
+)
+```
+
+## Solvers
+
+| Solver | Header | Order | Constraints |
+|---|---|---|---|
+| Gradient Descent | `solver/gradient_descent.h` | 1st | — |
+| Conjugate Gradient | `solver/conjugated_gradient_descent.h` | 1st | — |
+| L-BFGS | `solver/lbfgs.h` | 1st | — |
+| BFGS | `solver/bfgs.h` | 1st | — |
+| Newton | `solver/newton_descent.h` | 2nd | — |
+| Trust-Region Newton | `solver/trust_region_newton.h` | 2nd | — |
+| Nelder-Mead | `solver/nelder_mead.h` | 0th | — |
+| L-BFGS-B | `solver/lbfgsb.h` | 1st | box |
+| Augmented Lagrangian | `solver/augmented_lagrangian.h` | any | equality / inequality |
+
+## Expression Templates
+
+Build complex objectives from reusable parts without boilerplate.
+Example: Ridge Regression *F(x) = ||Ax - y||² + λ||x||²*.
+
+```cpp
+#include "cppoptlib/function.h"
+#include "cppoptlib/solver/lbfgs.h"
+
+class SquaredError : public cppoptlib::function::FunctionCRTP<
+    SquaredError, double, cppoptlib::function::DifferentiabilityMode::Second> {
+  const Eigen::MatrixXd &A;
+  const Eigen::VectorXd &y;
+ public:
+  SquaredError(const Eigen::MatrixXd &A, const Eigen::VectorXd &y) : A(A), y(y) {}
+  int GetDimension() const { return A.cols(); }
+  ScalarType operator()(const VectorType &x, VectorType *grad, MatrixType *hess) const {
+    Eigen::VectorXd r = A * x - y;
+    if (grad) *grad = 2 * A.transpose() * r;
+    if (hess) *hess = 2 * A.transpose() * A;
+    return r.squaredNorm();
+  }
+};
+
+class L2Reg : public cppoptlib::function::FunctionCRTP<
+    L2Reg, double, cppoptlib::function::DifferentiabilityMode::Second> {
+  int dim;
+ public:
+  explicit L2Reg(int d) : dim(d) {}
+  int GetDimension() const { return dim; }
+  ScalarType operator()(const VectorType &x, VectorType *grad, MatrixType *hess) const {
+    if (grad) *grad = 2 * x;
+    if (hess) { hess->setIdentity(dim, dim); *hess *= 2; }
+    return x.squaredNorm();
+  }
+};
+
+int main() {
+  Eigen::MatrixXd A(3, 2);  A << 1,2, 3,4, 5,6;
+  Eigen::VectorXd y(3);     y << 7, 8, 9;
+  double lambda = 0.1;
+
+  // Compose: F(x) = ||Ax-y||^2 + 0.1 * ||x||^2
+  cppoptlib::function::FunctionExpr objective(SquaredError(A, y) + lambda * L2Reg(A.cols()));
+
+  Eigen::VectorXd x0 = Eigen::VectorXd::Zero(A.cols());
+  cppoptlib::solver::Lbfgs<decltype(objective)> solver;
+  auto [sol, state] = solver.Minimize(objective, cppoptlib::function::FunctionState(x0));
+  std::cout << "x* = " << sol.x.transpose() << ", f* = " << sol.value << "\n";
+}
+```
+
+## Constrained Optimization
+
+Solve *min x₀ + x₁* subject to *x₀² + x₁² = 2* using the Augmented
+Lagrangian method:
+
+```cpp
+#include "cppoptlib/function.h"
+#include "cppoptlib/solver/augmented_lagrangian.h"
+#include "cppoptlib/solver/lbfgs.h"
+
+class Sum : public cppoptlib::function::FunctionXd<Sum> {
+ public:
+  ScalarType operator()(const VectorType &x, VectorType *g) const {
+    if (g) *g = VectorType::Ones(x.size());
+    return x.sum();
+  }
+};
+
+class CircleNorm : public cppoptlib::function::FunctionXd<CircleNorm> {
+ public:
+  ScalarType operator()(const VectorType &x, VectorType *g) const {
+    if (g) *g = 2 * x;
+    return x.squaredNorm();
+  }
+};
+
+int main() {
+  cppoptlib::function::FunctionExpr objective = Sum();
+  cppoptlib::function::FunctionExpr constraint = cppoptlib::function::FunctionExpr(CircleNorm()) - 2.0;
+
+  cppoptlib::function::ConstrainedOptimizationProblem problem(objective, {constraint});
+
+  cppoptlib::solver::Lbfgs<decltype(problem)::ObjectiveFunctionType> inner;
+  cppoptlib::solver::AugmentedLagrangian solver(problem, inner);
+
+  Eigen::VectorXd x0(2);  x0 << 5, -3;
+  auto [sol, state] = solver.Minimize(problem,
+      cppoptlib::solver::AugmentedLagrangeState<double>(x0, 1, 0, 10.0));
+  // sol.x ≈ (-1, -1), f* ≈ -2
+}
+```
+
+## Defining Functions
+
+Inherit from `FunctionCRTP` and implement `operator()`.  The template
+parameters control scalar type, differentiability order, and
+(optionally) compile-time dimension.
+
+```cpp
+// Dynamic-dimension, first-order:
+class MyFunc : public cppoptlib::function::FunctionCRTP<
+    MyFunc, double, cppoptlib::function::DifferentiabilityMode::First> { ... };
+
+// Fixed 3D, second-order:
+class My3D : public cppoptlib::function::FunctionCRTP<
+    My3D, double, cppoptlib::function::DifferentiabilityMode::Second, 3> { ... };
+```
+
+Use `cppoptlib::utils::IsGradientCorrect` and `IsHessianCorrect` to
+verify your derivatives against finite differences during development.
+
+## Stopping criteria
+
+Every solver accepts a `Progress` state at construction that
+configures when `Minimize` should return.  Two presets are
+shipped; pick the one that matches the shape of your problem.
+
+### Default preset: `DefaultStoppingSolverProgress`
+
+```cpp
+auto stop = cppoptlib::solver::DefaultStoppingSolverProgress<Fn, State>();
+cppoptlib::solver::Lbfgs<Fn> solver(stop);
+```
+
+Accepts convergence as soon as either test fires:
+
+- **Gradient norm.** `|g|_inf < 1e-5 * max(1, |x|_inf)`.
+- **Plateau.** The objective has moved by less than `1e-6`
+  (relative to `max(1, |f|)`) over the last 3 iterations.
+
+This is the preset the default-constructed solver uses and it is
+the right choice for well-conditioned problems where the
+gradient drops cleanly to the noise floor as the iterate
+approaches the minimum.  It exits quickly on such problems.
+
+### Alternative: `ConservativeStoppingSolverProgress`
+
+```cpp
+auto stop = cppoptlib::solver::ConservativeStoppingSolverProgress<Fn, State>();
+cppoptlib::solver::Lbfgs<Fn> solver(stop);
+```
+
+Same stopping mechanism as the default, but every tolerance is
+tightened:
+
+- **Gradient norm** `5e-6` (default: `1e-5`).
+- **Plateau window** `past = 5` (default: `3`).
+- **Plateau delta** `past_delta = 1e-10` (default: `1e-6`).
+
+The plateau test becomes very hard to trigger, so the solver
+terminates almost exclusively on the gradient-norm check.  Use
+this preset when the objective has genuinely flat regions on the
+way to the minimum -- a higher-order-contact stationary point, a
+degenerate saddle, or a Powell-singular-style valley -- where
+the default preset would mistake an intermediate plateau for the
+minimum.  Expect several times more function evaluations than
+the default on well-behaved problems.
+
+### Per-field overrides
+
+Both helpers return a plain struct; a caller that needs a
+different combination can tweak individual fields without
+copying the whole preset:
+
+```cpp
+auto stop = cppoptlib::solver::DefaultStoppingSolverProgress<Fn, State>();
+stop.num_iterations = 500;
+stop.gradient_norm = 1e-7;
+cppoptlib::solver::Lbfgs<Fn> solver(stop);
+```
+
+## Benchmark
+
+Full reproducible benchmark with driver sources, per-iteration
+convergence traces, interactive performance profiles, and
+per-problem side-by-side results:
+**[View results](https://patwie.github.io/CppNumericalSolversBenchmark/)** ·
+[Source](https://github.com/PatWie/CppNumericalSolversBenchmark).
+
+## Citation
+
+```bibtex
+@misc{wieschollek2016cppoptimizationlibrary,
+  title={CppOptimizationLibrary},
+  author={Wieschollek, Patrick},
+  year={2016},
+  howpublished={\url{https://github.com/PatWie/CppNumericalSolvers}},
+}
+```
+
+## License
+
+MIT.  See [LICENSE](LICENSE) for details.

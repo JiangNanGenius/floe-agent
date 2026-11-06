@@ -1,0 +1,135 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "scriptcharges.h"
+
+#include "scriptchargemodel.h"
+
+#include <avogadro/calc/chargemanager.h>
+#include <avogadro/calc/chargemodel.h>
+
+#include <avogadro/qtgui/packagemanager.h>
+#include <avogadro/qtgui/utilities.h>
+
+#include <QtCore/QDebug>
+
+namespace Avogadro::QtPlugins {
+
+ScriptCharges::ScriptCharges(QObject* p) : ExtensionPlugin(p)
+{
+  refreshModels();
+
+  // Connect to PackageManager for pyproject.toml-based packages
+  auto* pm = QtGui::PackageManager::instance();
+  connect(pm, &QtGui::PackageManager::featureRegistered, this,
+          &ScriptCharges::registerFeature);
+  connect(pm, &QtGui::PackageManager::featureRemoved, this,
+          &ScriptCharges::unregisterFeature);
+
+  // If PackageManager already replayed cached features before this plugin was
+  // constructed, we would miss those registrations. Replay only
+  // electrostatic-models here to catch up.
+  pm->loadRegisteredPackages(QStringLiteral("electrostatic-models"));
+}
+
+ScriptCharges::~ScriptCharges() {}
+
+QList<QAction*> ScriptCharges::actions() const
+{
+  return QList<QAction*>();
+}
+
+QStringList ScriptCharges::menuPath(QAction*) const
+{
+  return QStringList();
+}
+
+void ScriptCharges::setMolecule(QtGui::Molecule*) {}
+
+void ScriptCharges::refreshModels()
+{
+  unregisterModels();
+  qDeleteAll(m_models);
+  m_models.clear();
+  m_packageModels.clear();
+  registerModels();
+}
+
+void ScriptCharges::unregisterModels()
+{
+  for (auto* model : m_models)
+    Calc::ChargeManager::unregisterModel(model->identifier());
+}
+
+void ScriptCharges::registerModels()
+{
+  for (auto* model : m_models) {
+    if (!Calc::ChargeManager::registerModel(model->newInstance())) {
+      qDebug() << "Could not register model" << model->identifier().c_str()
+               << "due to name conflict.";
+    }
+  }
+}
+
+void ScriptCharges::registerFeature(const QString& type,
+                                    const QString& packageDir,
+                                    const QString& command,
+                                    const QString& identifier,
+                                    const QVariantMap& metadata)
+{
+  if (type != QLatin1String("electrostatic-models"))
+    return;
+
+  const QString featureKey =
+    QtGui::PackageManager::packageFeatureKey(packageDir, command, identifier);
+  // Ignore duplicate feature emissions for the same package feature key.
+  // This can happen when replaying cached registrations in addition to live
+  // registration events.
+  if (m_packageModels.contains(featureKey))
+    return;
+
+  auto* model = new ScriptChargeModel();
+  model->setPackageInfo(packageDir, command, identifier);
+  model->readMetaData(metadata);
+  if (model->isValid()) {
+    QString managerId = QString::fromStdString(model->identifier());
+    if (!Calc::ChargeManager::registerModel(model->newInstance())) {
+      qDebug() << "Could not register charge model" << identifier
+               << "due to name conflict.";
+      delete model;
+    } else {
+      m_models.push_back(model);
+      m_packageModels.insert(featureKey, managerId);
+    }
+  } else {
+    delete model;
+  }
+}
+
+void ScriptCharges::unregisterFeature(const QString& type,
+                                      const QString& packageDir,
+                                      const QString& command,
+                                      const QString& identifier)
+{
+  if (type != QLatin1String("electrostatic-models"))
+    return;
+
+  const QString featureKey =
+    QtGui::PackageManager::packageFeatureKey(packageDir, command, identifier);
+  const QList<QString> managerIds = m_packageModels.values(featureKey);
+  if (managerIds.isEmpty())
+    return;
+
+  m_packageModels.remove(featureKey);
+  for (const QString& managerId : managerIds) {
+    Calc::ChargeManager::unregisterModel(managerId.toStdString());
+    for (int i = m_models.size() - 1; i >= 0; --i) {
+      if (QString::fromStdString(m_models[i]->identifier()) == managerId)
+        delete m_models.takeAt(i);
+    }
+  }
+}
+
+} // namespace Avogadro::QtPlugins

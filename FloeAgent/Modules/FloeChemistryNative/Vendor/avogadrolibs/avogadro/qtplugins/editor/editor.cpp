@@ -1,0 +1,1259 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "editor.h"
+
+#include "editortoolwidget.h"
+
+#include <avogadro/core/atom.h>
+#include <avogadro/core/atomutilities.h>
+#include <avogadro/core/bond.h>
+#include <avogadro/core/contrastcolor.h>
+#include <avogadro/core/elements.h>
+#include <avogadro/core/vector.h>
+
+#include <avogadro/qtgui/hydrogentools.h>
+#include <avogadro/qtgui/molecule.h>
+#include <avogadro/qtgui/rwmolecule.h>
+
+#include <avogadro/qtopengl/glwidget.h>
+
+#include <avogadro/rendering/camera.h>
+#include <avogadro/rendering/geometrynode.h>
+#include <avogadro/rendering/glrenderer.h>
+
+#include <avogadro/rendering/groupnode.h>
+#include <avogadro/rendering/textlabel2d.h>
+#include <avogadro/rendering/textlabel3d.h>
+#include <avogadro/rendering/textproperties.h>
+
+#include <QAction>
+#include <QtGui/QGuiApplication>
+#include <QtGui/QIcon>
+#include <QtGui/QKeyEvent>
+#include <QtGui/QMouseEvent>
+#include <QtGui/QUndoStack>
+#include <QtGui/QWheelEvent>
+#include <QtWidgets/QApplication>
+#include <QtWidgets/QComboBox>
+#include <QtWidgets/QWidget>
+
+#include <QtCore/QTimer>
+
+#include <QDebug>
+
+#include <cmath>
+#include <limits>
+
+namespace {
+const unsigned char INVALID_ATOMIC_NUMBER =
+  std::numeric_limits<unsigned char>::max();
+
+// Helpers for the RPC commands. Options arrive from JSON, so numbers may be
+// of any numeric QVariant type.
+bool isNumber(const QVariant& value)
+{
+  switch (value.typeId()) {
+    case QMetaType::Double:
+    case QMetaType::Float:
+    case QMetaType::Int:
+    case QMetaType::UInt:
+    case QMetaType::LongLong:
+    case QMetaType::ULongLong:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// A whole number in [0, limit), compared as doubles so huge values cannot
+// overflow Index.
+bool toIndex(const QVariant& value, Avogadro::Index limit,
+             Avogadro::Index& index)
+{
+  if (!isNumber(value))
+    return false;
+  const double raw = value.toDouble();
+  if (std::isnan(raw) || std::floor(raw) != raw || raw < 0.0 ||
+      !(raw < static_cast<double>(limit)))
+    return false;
+  index = static_cast<Avogadro::Index>(raw);
+  return true;
+}
+
+// Parse "atoms": [i, j] for a pair of distinct, valid atoms.
+bool parseAtomPair(const QVariantMap& options, Avogadro::Index atomCount,
+                   Avogadro::Index& first, Avogadro::Index& second,
+                   QString& error)
+{
+  const QVariant value = options.value(QStringLiteral("atoms"));
+  if (value.typeId() != QMetaType::QVariantList || value.toList().size() != 2) {
+    error = Avogadro::QtPlugins::Editor::tr(
+      "atoms must list exactly 2 atom indices.");
+    return false;
+  }
+  const QVariantList list = value.toList();
+  if (!toIndex(list[0], atomCount, first) ||
+      !toIndex(list[1], atomCount, second)) {
+    error = Avogadro::QtPlugins::Editor::tr(
+      "atoms must be whole-number atom indices within the molecule.");
+    return false;
+  }
+  if (first == second) {
+    error =
+      Avogadro::QtPlugins::Editor::tr("atoms must be two different atoms.");
+    return false;
+  }
+  return true;
+}
+
+// Parse an optional bond order (1-3, default 1) stored under @p key.
+bool parseBondOrder(const QVariantMap& options, const QString& key,
+                    unsigned char& order, QString& error)
+{
+  order = 1;
+  if (!options.contains(key))
+    return true;
+  const QVariant value = options.value(key);
+  const double raw = isNumber(value) ? value.toDouble() : 0.0;
+  if (!isNumber(value) || raw != std::floor(raw) || raw < 1.0 || raw > 3.0) {
+    error = Avogadro::QtPlugins::Editor::tr("%1 must be 1, 2 or 3.").arg(key);
+    return false;
+  }
+  order = static_cast<unsigned char>(raw);
+  return true;
+}
+} // namespace
+
+namespace Avogadro::QtPlugins {
+
+using QtGui::Molecule;
+using QtGui::RWAtom;
+using QtGui::RWBond;
+
+using Avogadro::Core::contrastColor;
+using Avogadro::Core::Elements;
+using Avogadro::Rendering::GeometryNode;
+using Avogadro::Rendering::GroupNode;
+using Avogadro::Rendering::Identifier;
+using Avogadro::Rendering::TextLabel2D;
+using Avogadro::Rendering::TextProperties;
+
+Editor::Editor(QObject* parent_)
+  : QtGui::ToolPlugin(parent_), m_activateAction(new QAction(this)),
+    m_molecule(nullptr), m_glWidget(nullptr), m_renderer(nullptr),
+    m_toolWidget(new EditorToolWidget(qobject_cast<QWidget*>(parent_))),
+    m_pressedButtons(Qt::NoButton),
+    m_clickedAtomicNumber(INVALID_ATOMIC_NUMBER), m_bondAdded(false),
+    m_fixValenceLater(false), m_dragCancelled(false), m_layerManager("Editor")
+{
+  QString shortcut = tr("Ctrl+2", "control-key 2");
+  m_activateAction->setText(tr("Draw"));
+  m_activateAction->setToolTip(
+    tr("Draw Tool\t(%1)\n\n"
+       "Left Mouse:\tClick and Drag to create Atoms and Bond\n"
+       "Right Mouse:\tDelete Atom")
+      .arg(shortcut));
+  m_keyPressTimer = new QTimer(this);
+  m_keyPressTimer->setSingleShot(true);
+  m_keyPressTimer->setInterval(2000);
+  connect(m_keyPressTimer, &QTimer::timeout, this,
+          &Editor::clearKeyPressBuffer);
+
+  setIcon();
+  reset();
+}
+
+Editor::~Editor()
+{
+  delete m_toolWidget;
+}
+
+void Editor::setIcon(bool darkTheme)
+{
+  if (darkTheme)
+    m_activateAction->setIcon(QIcon(":/icons/editor_dark.svg"));
+  else
+    m_activateAction->setIcon(QIcon(":/icons/editor_light.svg"));
+}
+
+QWidget* Editor::toolWidget() const
+{
+  return m_toolWidget;
+}
+
+QUndoCommand* Editor::mousePressEvent(QMouseEvent* e)
+{
+  clearKeyPressBuffer();
+  if (!m_renderer || !m_molecule)
+    return nullptr;
+
+  updatePressedButtons(e, false);
+  m_clickPosition = e->pos();
+
+  if (m_layerManager.activeLayerLocked()) {
+    // revert to navigation mode
+    return nullptr;
+  }
+
+  // check if we have modifier keys
+  // if so, revert to navigation mode
+  // e.g., rotate, zoom, pan
+  if (e->modifiers() == Qt::ShiftModifier ||
+      e->modifiers() == Qt::AltModifier ||
+      e->modifiers() == Qt::ControlModifier ||
+      e->modifiers() == Qt::MetaModifier)
+    return nullptr;
+
+  if (m_pressedButtons & Qt::LeftButton) {
+    m_clickedObject = m_renderer->hit(e->pos().x(), e->pos().y());
+    switch (m_clickedObject.type) {
+      case Rendering::InvalidType:
+        m_molecule->beginMergeMode(tr("Draw Atom"));
+        emptyLeftClick(e);
+        return nullptr;
+      case Rendering::AtomType: {
+        // Refuse, like a locked active layer (revert to navigation), if the
+        // click would change a locked atom: the atom itself, or the
+        // hydrogens that automatic adjustment may add or remove.
+        const Neighbors scope = m_toolWidget->adjustHydrogens()
+                                  ? Neighbors::Hydrogens
+                                  : Neighbors::None;
+        if (touchesLockedAtom(m_clickedObject.index, scope)) {
+          m_clickedObject = Identifier();
+          return nullptr;
+        }
+        // We don't know yet if we are drawing a bond/atom or replacing an atom
+        // unfortunately...
+        m_molecule->beginMergeMode(tr("Draw"));
+        atomLeftClick(e);
+        return nullptr;
+      }
+      case Rendering::BondType: {
+        if (bondTouchesLockedAtom(m_clickedObject.index)) {
+          m_clickedObject = Identifier();
+          return nullptr;
+        }
+        m_molecule->beginMergeMode(tr("Change Bond Type"));
+        bondLeftClick(e);
+        return nullptr;
+      }
+    }
+  } else if (m_pressedButtons & Qt::RightButton) {
+    // Just record what was hit. The actual deletion is deferred to
+    // mouseReleaseEvent() so that a right-drag can be told apart from a
+    // right-click: a drag is reserved for camera navigation, so the event
+    // must stay ignored here to let the default Navigator tool see the
+    // press and start panning.
+    m_clickedObject = m_renderer->hit(e->pos().x(), e->pos().y());
+  }
+
+  return nullptr;
+}
+
+QUndoCommand* Editor::mouseReleaseEvent(QMouseEvent* e)
+{
+  if (!m_renderer || !m_molecule)
+    return nullptr;
+  if (m_layerManager.activeLayerLocked()) {
+    e->accept();
+    return nullptr;
+  }
+  updatePressedButtons(e, true);
+
+  if (m_clickedObject.type == Rendering::InvalidType)
+    return nullptr;
+
+  switch (e->button()) {
+    case Qt::LeftButton: {
+      const bool cancelled = m_dragCancelled;
+      reset();
+      e->accept();
+      m_molecule->endMergeMode();
+      if (cancelled) {
+        // Revert the drag's provisional edits, then drop the entry: an
+        // obsolete command is deleted by redo() instead of re-applied.
+        QUndoStack& stack = m_molecule->undoStack();
+        if (stack.canUndo()) {
+          stack.undo();
+          const_cast<QUndoCommand*>(stack.command(stack.index()))
+            ->setObsolete(true);
+          stack.redo();
+        }
+      }
+      // Let's cover all possible changes - the undo stack won't update
+      // without this
+      m_molecule->emitChanged(Molecule::Atoms | Molecule::Bonds |
+                              Molecule::Added | Molecule::Removed |
+                              Molecule::Modified);
+      break;
+    }
+    case Qt::RightButton: {
+      // Only delete on release if this was a click, not a drag: a
+      // right-drag is reserved for camera navigation, so the deletion that
+      // used to happen unconditionally on press is deferred here.
+      bool isClick = (e->pos() - m_clickPosition).manhattanLength() <
+                     QApplication::startDragDistance();
+      // A delete that touches a locked atom (the atom, a bonded atom whose
+      // bond would go, or hydrogens that adjustment would change) is refused.
+      bool refused = false;
+      if (isClick && m_clickedObject.type == Rendering::AtomType) {
+        refused = touchesLockedAtom(m_clickedObject.index, Neighbors::All);
+      } else if (isClick && m_clickedObject.type == Rendering::BondType) {
+        refused = bondTouchesLockedAtom(m_clickedObject.index);
+      }
+      if (isClick && !refused) {
+        switch (m_clickedObject.type) {
+          case Rendering::AtomType:
+            m_molecule->beginMergeMode(tr("Remove Atom"));
+            atomRightClick(e);
+            m_molecule->endMergeMode();
+            break;
+          case Rendering::BondType:
+            m_molecule->beginMergeMode(tr("Remove Bond"));
+            bondRightClick(e);
+            m_molecule->endMergeMode();
+            break;
+          default:
+            break;
+        }
+        // Let's cover all possible changes - the undo stack won't update
+        // without this
+        m_molecule->emitChanged(Molecule::Atoms | Molecule::Bonds |
+                                Molecule::Added | Molecule::Removed |
+                                Molecule::Modified);
+      }
+      reset();
+      // atomRightClick()/bondRightClick() accept the event internally;
+      // ignore it again so the release still reaches the default Navigator
+      // tool, which needs to reset its own internal action state machine.
+      e->ignore();
+      break;
+    }
+    default:
+      break;
+  }
+
+  return nullptr;
+}
+
+QUndoCommand* Editor::mouseMoveEvent(QMouseEvent* e)
+{
+  if (!m_renderer)
+    return nullptr;
+  if (m_pressedButtons & Qt::LeftButton)
+    if (m_clickedObject.type == Rendering::AtomType) {
+      if (m_layerManager.activeLayerLocked()) {
+        e->accept();
+        return nullptr;
+      }
+      atomLeftDrag(e);
+    }
+
+  return nullptr;
+}
+
+QUndoCommand* Editor::keyPressEvent(QKeyEvent* e)
+{
+  if (e->text().isEmpty())
+    return nullptr;
+  e->accept();
+
+  if (m_layerManager.activeLayerLocked()) {
+    return nullptr;
+  }
+  // The typing limit applies between keys: restart the timer on every key
+  m_keyPressTimer->start();
+
+  m_keyPressBuffer.append(m_keyPressBuffer.isEmpty() ? e->text().toUpper()
+                                                     : e->text().toLower());
+
+  if (m_keyPressBuffer.size() >= 3) {
+    clearKeyPressBuffer();
+    return nullptr;
+  }
+
+  bool ok = false;
+  int atomicNum;
+  int bondOrder = m_keyPressBuffer.toInt(&ok);
+
+  if (ok && bondOrder > 0 && bondOrder <= 4) {
+    m_toolWidget->setBondOrder(static_cast<unsigned char>(bondOrder));
+  } else {
+    atomicNum =
+      Core::Elements::atomicNumberFromSymbol(m_keyPressBuffer.toStdString());
+
+    if (atomicNum != Avogadro::InvalidElement)
+      m_toolWidget->setAtomicNumber(static_cast<unsigned char>(atomicNum));
+  }
+
+  return nullptr;
+}
+
+void Editor::draw(Rendering::GroupNode& node)
+{
+  if (fabs(m_bondDistance) < 0.3)
+    return;
+
+  auto* geo = new GeometryNode;
+  node.addChild(geo);
+
+  // Determine the field width. Negate it to indicate left-alignment.
+  QString distanceLabel = tr("Distance:");
+  int labelWidth = -distanceLabel.size();
+
+  QString overlayText = QString("%1 %L2 Å")
+                          .arg(distanceLabel, labelWidth)
+                          .arg(m_bondDistance, 9, 'f', 3);
+
+  Vector3ub color(64, 255, 220);
+  if (m_renderer) {
+    auto backgroundColor = m_renderer->scene().backgroundColor();
+    color = contrastColor(
+      Vector3ub(backgroundColor[0], backgroundColor[1], backgroundColor[2]));
+  }
+
+  TextProperties overlayTProp;
+  overlayTProp.setFontFamily(TextProperties::Mono);
+  overlayTProp.setColorRgb(color[0], color[1], color[2]);
+  overlayTProp.setAlign(TextProperties::HLeft, TextProperties::VBottom);
+
+  auto* label = new TextLabel2D;
+  label->setText(overlayText.toStdString());
+  label->setTextProperties(overlayTProp);
+  label->setRenderPass(Rendering::Overlay2DPass);
+  label->setAnchor(Vector2i(10, 10));
+
+  geo->addDrawable(label);
+}
+
+void Editor::updatePressedButtons(QMouseEvent* e, bool release)
+{
+  /// @todo Use modifier keys on mac
+  if (release)
+    m_pressedButtons &= e->buttons();
+  else
+    m_pressedButtons |= e->buttons();
+}
+
+void Editor::reset()
+{
+  if (m_fixValenceLater) {
+    Index a1 = m_newObject.index;
+    Index a2 = m_bondedAtom.index;
+    Index a3 = m_clickedObject.index;
+
+    // don't order them
+    // this caused bug:
+    // https://github.com/OpenChemistry/avogadrolibs/issues/678
+    /*
+    if (a1 > a2)
+      std::swap(a1, a2);
+    if (a1 > a3)
+      std::swap(a1, a3);
+    if (a2 > a3)
+      std::swap(a2, a3);
+    */
+
+    // This preserves the order so they are adjusted in order.
+    // This is important for the undo stack to work correctly.
+    Core::Array<Index> atomIds;
+    atomIds.push_back(a3);
+    atomIds.push_back(a2);
+    atomIds.push_back(a1);
+    // This function checks to make sure the ids are valid, so no need
+    // to check out here.
+    m_molecule->adjustHydrogens(atomIds);
+
+    Molecule::MoleculeChanges changes = Molecule::Atoms | Molecule::Added;
+    changes |= Molecule::Bonds | Molecule::Added | Molecule::Removed;
+
+    m_molecule->emitChanged(changes);
+
+    m_fixValenceLater = false;
+  }
+
+  m_clickedObject = Identifier();
+  m_newObject = Identifier();
+  m_bondedAtom = Identifier();
+  m_clickPosition = QPoint();
+  m_pressedButtons = Qt::NoButton;
+  m_clickedAtomicNumber = INVALID_ATOMIC_NUMBER;
+  m_bondAdded = false;
+  m_dragCancelled = false;
+
+  m_bondDistance = 0.0f;
+  emit drawablesChanged();
+}
+
+bool Editor::touchesLockedAtom(Index atom, Neighbors scope) const
+{
+  if (m_molecule == nullptr || atom >= m_molecule->atomCount())
+    return false;
+  if (m_layerManager.atomLocked(atom))
+    return true;
+  if (scope == Neighbors::None)
+    return false;
+  const Core::Array<RWBond> atomBonds = m_molecule->bonds(atom);
+  for (const RWBond& bond : atomBonds) {
+    const Index other = bond.getOtherAtom(atom).index();
+    if (scope == Neighbors::Hydrogens &&
+        m_molecule->atomicNumber(other) != Core::Hydrogen)
+      continue;
+    if (m_layerManager.atomLocked(other))
+      return true;
+  }
+  return false;
+}
+
+bool Editor::bondTouchesLockedAtom(Index bondIndex) const
+{
+  if (m_molecule == nullptr || bondIndex >= m_molecule->bondCount())
+    return false;
+  const std::pair<Index, Index> pair = m_molecule->bondPair(bondIndex);
+  const Neighbors scope =
+    m_toolWidget->adjustHydrogens() ? Neighbors::Hydrogens : Neighbors::None;
+  return touchesLockedAtom(pair.first, scope) ||
+         touchesLockedAtom(pair.second, scope);
+}
+
+void Editor::emptyLeftClick(QMouseEvent* e)
+{
+  // Add an atom at the clicked position
+  Vector2f windowPos(e->localPos().x(), e->localPos().y());
+  Vector3f atomPos = m_renderer->camera().unProject(windowPos);
+  RWAtom newAtom =
+    m_molecule->addAtom(m_toolWidget->atomicNumber(), atomPos.cast<double>());
+
+  Molecule::MoleculeChanges changes = Molecule::Atoms | Molecule::Modified;
+
+  if (m_toolWidget->adjustHydrogens()) {
+    m_fixValenceLater = true;
+  }
+
+  // Update the clicked object. The molecule must be the QtGui::Molecule
+  // address that scene plugins put in their identifiers, or comparisons
+  // against renderer hits never match.
+  m_clickedObject.type = Rendering::AtomType;
+  m_clickedObject.molecule = &m_molecule->molecule();
+  m_clickedObject.index = newAtom.index();
+
+  // Emit changed signal
+  m_molecule->emitChanged(changes);
+
+  e->accept();
+}
+
+void Editor::atomLeftClick(QMouseEvent* e)
+{
+  RWAtom atom = m_molecule->atom(m_clickedObject.index);
+  if (atom.isValid()) {
+    // Store the original atomic number of the clicked atom before updating it.
+    unsigned char atomicNumber = m_toolWidget->atomicNumber();
+    if (atom.atomicNumber() != atomicNumber) {
+      // Okay, we're changing this element
+      m_clickedAtomicNumber = atom.atomicNumber();
+      atom.setAtomicNumber(atomicNumber);
+
+      const auto& atomBonds = m_molecule->bonds(atom);
+      RWBond bond;
+      if (atomBonds.size() == 1) {
+        // If the clicked atom only has one bond, we can adjust the bond length
+        bond = atomBonds[0];
+      } else if (atomBonds.size() > 1 && m_toolWidget->adjustHydrogens()) {
+        // loop through to see if there's one bond and *only* one bond
+        // that's not a hydrogen
+        for (const RWBond& b : atomBonds) {
+          RWAtom otherAtom = b.getOtherAtom(atom);
+          if (otherAtom.atomicNumber() != Core::Hydrogen) {
+            if (bond.isValid()) {
+              // More than one non-H bond, so we can't adjust the bond length
+              bond = RWBond();
+              break;
+            }
+            bond = b;
+          }
+        }
+      }
+
+      // If we found a valid bond, adjust the bond distance
+      if (bond.isValid() && m_toolWidget->adjustBondLengths()) {
+        RWAtom atom2 = bond.getOtherAtom(atom);
+
+        m_bondDistance = Core::AtomUtilities::idealBondLength(
+          atomicNumber, atom2.atomicNumber(), bond.order());
+
+        Vector3 bondVector = atom.position3d() - atom2.position3d();
+        bondVector.normalize();
+        bondVector *= m_bondDistance;
+        // okay set my new position
+        Vector3 newPos = atom2.position3d() + bondVector;
+        atom.setPosition3d(newPos);
+      }
+
+      Molecule::MoleculeChanges changes = Molecule::Atoms | Molecule::Modified;
+
+      if (m_toolWidget->adjustHydrogens())
+        m_fixValenceLater = true;
+
+      m_molecule->emitChanged(changes);
+    }
+    e->accept();
+  }
+}
+
+void Editor::bondLeftClick(QMouseEvent* e)
+{
+  RWBond bond = m_molecule->bond(m_clickedObject.index);
+  bond.setOrder(static_cast<unsigned char>((bond.order() % 3) + 1));
+
+  Molecule::MoleculeChanges changes = Molecule::Bonds | Molecule::Modified;
+
+  // see if we should adjust the bond length
+  bool adjustBondLength = false;
+  RWAtom atom1 = bond.atom1();
+  RWAtom atom2 = bond.atom2();
+
+  // Estimate the adjusted bond length
+  Real distance = Core::AtomUtilities::idealBondLength(
+    atom1.atomicNumber(), atom2.atomicNumber(), bond.order());
+
+  // check if at least one of the atoms either has only one bond
+  // or all the other bonds are hydrogens
+  const Core::Array<RWBond>& atom1Bonds = m_molecule->bonds(atom1);
+  const Core::Array<RWBond>& atom2Bonds = m_molecule->bonds(atom2);
+  // if both atoms have only one bond, we're set
+  if (atom1Bonds.size() == 1 && atom2Bonds.size() == 1) {
+    adjustBondLength = true;
+  } else if (atom1Bonds.size() > 1) {
+    // check to see if all the other bonds are hydrogens
+    for (const RWBond& b : atom1Bonds) {
+      RWAtom bondedAtom = b.getOtherAtom(atom1);
+      if (bondedAtom == atom2)
+        continue; // skip the bond we're changing
+      if (bondedAtom.atomicNumber() != Core::Hydrogen) {
+        adjustBondLength = false;
+        break;
+      }
+      adjustBondLength = true;
+    }
+  }
+
+  // can we move atom1?
+  if (adjustBondLength && m_toolWidget->adjustBondLengths()) {
+    Vector3 bondVector = atom1.position3d() - atom2.position3d();
+    bondVector.normalize();
+    bondVector *= distance;
+    // okay move the atom
+    Vector3 newPos = atom2.position3d() + bondVector;
+    m_molecule->setAtomPosition3d(atom1.index(), newPos);
+    changes |= Molecule::Atoms;
+  } else { // instead, check if we can move atom2
+    for (const RWBond& b : atom2Bonds) {
+      RWAtom bondedAtom = b.getOtherAtom(atom2);
+      if (bondedAtom == atom1)
+        continue; // skip the bond we're changing
+      if (bondedAtom.atomicNumber() != Core::Hydrogen) {
+        adjustBondLength = false;
+        break;
+      }
+      adjustBondLength = true;
+    }
+    if (adjustBondLength && m_toolWidget->adjustBondLengths()) {
+      Vector3 bondVector = atom2.position3d() - atom1.position3d();
+      bondVector.normalize();
+      bondVector *= distance;
+      // okay move the atom
+      Vector3 newPos = atom1.position3d() + bondVector;
+      m_molecule->setAtomPosition3d(atom2.index(), newPos);
+      changes |= Molecule::Atoms;
+    }
+  }
+
+  if (m_toolWidget->adjustHydrogens()) {
+    // change for the new bond order
+    QtGui::HydrogenTools::adjustHydrogens(atom1);
+    QtGui::HydrogenTools::adjustHydrogens(atom2);
+
+    changes |= Molecule::Atoms | Molecule::Added | Molecule::Removed;
+  }
+
+  m_molecule->emitChanged(changes);
+  e->accept();
+}
+
+void Editor::atomRightClick(QMouseEvent* e)
+{
+  e->accept();
+
+  // check to see if we need to adjust hydrogens
+  Core::Array<Index> bondedAtoms;
+  Core::Array<Index> hToRemove; // atoms to remove
+  RWAtom atom = m_molecule->atom(m_clickedObject.index);
+  if (m_toolWidget->adjustHydrogens()) {
+    // before we remove the atom, we need to delete any H atoms
+    // that are bonded to it -- unless it's a hydrogen atom itself
+    if (atom.isValid() && atom.atomicNumber() != Core::Hydrogen) {
+      // get the list of bonded atoms
+      Core::Array<RWBond> atomBonds = m_molecule->bonds(atom);
+      for (const RWBond& bond : atomBonds) {
+        RWAtom bondedAtom = bond.getOtherAtom(atom);
+        if (bondedAtom.atomicNumber() == Core::Hydrogen) {
+          // remove the H atom
+          hToRemove.push_back(m_molecule->atomUniqueId(bondedAtom));
+        } else {
+          // save the atom to adjust after we remove the target
+          bondedAtoms.push_back(m_molecule->atomUniqueId(bondedAtom));
+        }
+      }
+    }
+  }
+  if (atom.isValid())
+    m_molecule->removeAtom(atom);
+
+  // remove the hydrogens
+  for (Index hIndex : hToRemove) {
+    RWAtom hAtom = m_molecule->atomByUniqueId(hIndex);
+    if (hAtom.isValid()) {
+      m_molecule->removeAtom(hAtom);
+    }
+  }
+
+  // okay, now adjust any valence on the bonded atoms
+  // (e.g., add back some hydrogens)
+  for (Index atomIndex : bondedAtoms) {
+    RWAtom atomToAdjust = m_molecule->atomByUniqueId(atomIndex);
+    if (atomToAdjust.isValid())
+      QtGui::HydrogenTools::adjustHydrogens(atomToAdjust,
+                                            QtGui::HydrogenTools::Add);
+  }
+
+  m_molecule->emitChanged(Molecule::Atoms | Molecule::Removed);
+}
+
+void Editor::bondRightClick(QMouseEvent* e)
+{
+  e->accept();
+  // see if we need to adjust hydrogens
+  RWBond bond = m_molecule->bond(m_clickedObject.index);
+  RWAtom atom1 = bond.atom1();
+  RWAtom atom2 = bond.atom2();
+  m_molecule->removeBond(m_clickedObject.index);
+
+  if (m_toolWidget->adjustHydrogens()) {
+    QtGui::HydrogenTools::adjustHydrogens(atom1);
+    QtGui::HydrogenTools::adjustHydrogens(atom2);
+  }
+  m_molecule->emitChanged(Molecule::Atoms | Molecule::Bonds |
+                          Molecule::Removed);
+}
+
+int expectedBondOrder(RWAtom atom1, RWAtom atom2)
+{
+  double bondDistance = (atom1.position3d() - atom2.position3d()).norm();
+
+  // Pick the order whose ideal length is closest to the distance drawn, so the
+  // cutoffs sit midway between the single, double and triple lengths for this
+  // particular element pair.
+  int bondOrder = 1;
+  double closest = -1.0;
+  for (unsigned char order = 1; order <= 3; ++order) {
+    double difference = std::fabs(
+      bondDistance - Core::AtomUtilities::idealBondLength(
+                       atom1.atomicNumber(), atom2.atomicNumber(), order));
+    if (closest < 0.0 || difference < closest) {
+      closest = difference;
+      bondOrder = order;
+    }
+  }
+
+  return bondOrder;
+}
+
+void Editor::atomLeftDrag(QMouseEvent* e)
+{
+  // Always accept move events when atoms are clicked:
+  e->accept();
+  m_dragCancelled = false;
+
+  // Build up a MoleculeChanges bitfield
+  Molecule::MoleculeChanges changes = Molecule::NoChange;
+
+  // Get the list of hits at the current mouse position:
+  const std::multimap<float, Identifier> hits =
+    m_renderer->hits(e->pos().x(), e->pos().y());
+
+  // Check if the previously clicked atom is still under the mouse.
+  float depth = -1.0f;
+  for (const auto& hit : hits) {
+    if (hit.second == m_clickedObject) {
+      depth = hit.first;
+      break;
+    }
+  }
+
+  // The first other atom under the cursor, if any. A locked one (or one whose
+  // hydrogens would be adjusted) must not be touched, so hovering it acts as
+  // if the cursor were back over the clicked atom: nothing new is drawn.
+  bool overLockedAtom = false;
+  for (const auto& hit : hits) {
+    const Identifier& ident = hit.second;
+    if (ident.type == Rendering::AtomType && ident != m_newObject &&
+        ident != m_clickedObject) {
+      const Neighbors scope = m_toolWidget->adjustHydrogens()
+                                ? Neighbors::Hydrogens
+                                : Neighbors::None;
+      overLockedAtom = touchesLockedAtom(ident.index, scope);
+      break;
+    }
+  }
+
+  // If the clicked atom is under the mouse...
+  if (depth >= 0.f || overLockedAtom) {
+    bool undone = false;
+    // ...over a locked atom, a bond already drawn to another atom goes too...
+    if (overLockedAtom && m_bondedAtom.isValid()) {
+      RWAtom bondedAtom = m_molecule->atom(m_bondedAtom.index);
+      RWAtom clickedAtom = m_molecule->atom(m_clickedObject.index);
+      if (m_bondAdded)
+        m_molecule->removeBond(clickedAtom, bondedAtom);
+      changes |= Molecule::Bonds | Molecule::Removed;
+      m_bondedAtom = Identifier();
+      m_bondAdded = false;
+      undone = true;
+    }
+    // ...and if we've created a new atom, remove the new atom and reset the
+    // clicked atom's atomic number
+    if (m_newObject.type == Rendering::AtomType &&
+        m_newObject.molecule == &m_molecule->molecule()) {
+      m_molecule->removeAtom(m_newObject.index);
+      changes |= Molecule::Atoms | Molecule::Bonds | Molecule::Removed;
+      m_newObject = Identifier();
+      undone = true;
+    }
+    if (undone) {
+      RWAtom atom = m_molecule->atom(m_clickedObject.index);
+      if (atom.atomicNumber() != m_toolWidget->atomicNumber()) {
+        m_clickedAtomicNumber = atom.atomicNumber();
+        atom.setAtomicNumber(m_toolWidget->atomicNumber());
+        changes |= Molecule::Atoms | Molecule::Modified;
+      }
+      m_molecule->emitChanged(changes);
+    }
+    // Over a locked atom with the clicked atom's element unchanged, the drag
+    // adds nothing: no hydrogen fix-up, and the release drops the undo entry.
+    if (overLockedAtom && m_clickedAtomicNumber == INVALID_ATOMIC_NUMBER) {
+      m_fixValenceLater = false;
+      m_dragCancelled = true;
+    }
+
+    // If there is nothing to undo, do nothing.
+    return;
+  }
+
+  // If we get here, the clicked atom is no longer under the cursor.
+  // If the clicked atom's identity has been changed from the initial click,
+  // reset its atomic number
+  if (m_clickedAtomicNumber != INVALID_ATOMIC_NUMBER) {
+    RWAtom clickedAtom = m_molecule->atom(m_clickedObject.index);
+    clickedAtom.setAtomicNumber(m_clickedAtomicNumber);
+    m_clickedAtomicNumber = INVALID_ATOMIC_NUMBER;
+    changes |= Molecule::Atoms | Molecule::Modified;
+  }
+
+  // Does a bonded atom already exist?
+  if (m_bondedAtom.isValid()) {
+    // Is it still under the mouse?
+    depth = -1.0f;
+    for (const auto& hit : hits) {
+      if (hit.second == m_bondedAtom) {
+        depth = hit.first;
+        break;
+      }
+    }
+
+    // If the bonded atom is no longer under the mouse, remove the bond.
+    if (depth < 0.f) {
+      RWAtom bondedAtom = m_molecule->atom(m_bondedAtom.index);
+      RWAtom clickedAtom = m_molecule->atom(m_clickedObject.index);
+      if (m_bondAdded)
+        m_molecule->removeBond(clickedAtom, bondedAtom);
+      changes |= Molecule::Bonds | Molecule::Removed;
+      m_bondedAtom = Identifier();
+      m_bondAdded = false;
+    }
+  }
+
+  // Is there another atom under the cursor, besides newAtom? If so, we'll draw
+  // a bond to it.
+  Identifier atomToBond;
+  for (const auto& hit : hits) {
+    const Identifier& ident = hit.second;
+    // Are we on an atom
+    if (ident.type == Rendering::AtomType)
+      // besides the one that was clicked or a new atom
+      if (ident != m_newObject && ident != m_clickedObject) {
+        // then we have an atom that we should be drawing a bond to.
+        atomToBond = ident;
+        break;
+      }
+  }
+
+  if (atomToBond.isValid() && (atomToBond.index != m_newObject.index)) {
+    // If we have a newAtom, destroy it
+    if (m_newObject.isValid() && m_newObject.type == Rendering::AtomType) {
+      m_molecule->removeAtom(m_newObject.index);
+      changes |= Molecule::Atoms | Molecule::Bonds | Molecule::Removed;
+      m_newObject = Identifier();
+    }
+
+    // Skip the rest of this block if atomToBond is already bonded
+    if (m_bondedAtom != atomToBond) {
+      // If the currently bonded atom exists, break the bond
+      if (m_bondedAtom.isValid() && m_clickedObject.isValid() &&
+          m_bondedAtom.index < m_molecule->atomCount() &&
+          m_clickedObject.index < m_molecule->atomCount() &&
+          m_molecule->bond(m_bondedAtom.index, m_clickedObject.index)
+            .isValid()) {
+        if (m_molecule->removeBond(m_molecule->atom(m_bondedAtom.index),
+                                   m_molecule->atom(m_clickedObject.index))) {
+          changes |= Molecule::Bonds | Molecule::Removed;
+        }
+        m_bondedAtom = Identifier();
+      }
+
+      // Create a new bond between clicked atom and atomToBond.
+      RWAtom clickedAtom = m_molecule->atom(m_clickedObject.index);
+      RWAtom bondedAtom = m_molecule->atom(atomToBond.index);
+      if (!m_molecule->bond(clickedAtom, bondedAtom).isValid()) {
+
+        int bondOrder = m_toolWidget->bondOrder();
+        if (bondOrder == 0) {
+          // automatic - guess the size
+          bondOrder = expectedBondOrder(clickedAtom, bondedAtom);
+        }
+        m_molecule->addBond(clickedAtom, bondedAtom, bondOrder);
+        m_bondAdded = true;
+      } // we have a bond, but it might be the wrong order
+      else {
+        RWBond bond = m_molecule->bond(clickedAtom, bondedAtom);
+        int bondOrder = m_toolWidget->bondOrder();
+        if (bondOrder == 0) {
+          // automatic - guess the size
+          bondOrder = expectedBondOrder(clickedAtom, bondedAtom);
+        }
+        if (bond.order() != bondOrder)
+          bond.setOrder(bondOrder);
+      }
+
+      m_bondedAtom = atomToBond;
+      changes |= Molecule::Bonds | Molecule::Added;
+    }
+    m_molecule->emitChanged(changes);
+    return;
+  }
+
+  // If we make it here, the cursor is not over any existing atom, with the
+  // possible exception of a new atom we've added that's bonded to clicked atom.
+  // We just need to create the new atom (if we haven't already), then update
+  // its position.
+  RWAtom newAtom;
+  if (!m_newObject.isValid()) {
+    // Add a new atom bonded to the clicked atom
+    RWAtom clickedAtom = m_molecule->atom(m_clickedObject.index);
+    newAtom = m_molecule->addAtom(m_toolWidget->atomicNumber(),
+                                  clickedAtom.position3d());
+
+    // Handle the automatic bond order
+    int bondOrder = m_toolWidget->bondOrder();
+    if (bondOrder == 0) {
+      // automatic - guess the size
+      bondOrder = expectedBondOrder(clickedAtom, newAtom);
+    }
+    m_molecule->addBond(clickedAtom, newAtom, bondOrder);
+
+    // now if we need to adjust hydrogens, do it
+    if (m_toolWidget->adjustHydrogens())
+      m_fixValenceLater = true;
+
+    changes |= Molecule::Atoms | Molecule::Bonds | Molecule::Added;
+    m_newObject.type = Rendering::AtomType;
+    m_newObject.index = newAtom.index();
+    // Not via a Core::Molecule pointer: the base-class conversion shifts the
+    // address past QObject, so the new atom would never match its own hit
+    // and would hide any atom behind it from atomToBond below.
+    m_newObject.molecule = &m_molecule->molecule();
+  } else if (m_newObject.type == Rendering::AtomType) {
+    // Grab the previously created atom
+    newAtom = m_molecule->atom(m_newObject.index);
+  } else {
+    // Shouldn't happen
+
+    qWarning() << "Editor::atomLeftDrag: m_newObject already set and not an "
+                  "atom? This is a bug.";
+  }
+
+  if (newAtom.isValid()) {
+    Vector2f windowPos(e->localPos().x(), e->localPos().y());
+    Vector3f oldPos(newAtom.position3d().cast<float>());
+    Vector3f newPos = m_renderer->camera().unProject(windowPos, oldPos);
+    newAtom.setPosition3d(newPos.cast<double>());
+
+    changes |= Molecule::Atoms | Molecule::Modified;
+
+    RWAtom clickedAtom = m_molecule->atom(m_clickedObject.index);
+    if (clickedAtom.isValid()) {
+      Vector3f bondVector = clickedAtom.position3d().cast<float>() - newPos;
+      m_bondDistance = bondVector.norm();
+
+      // need to check if bond order needs to change
+      if (m_toolWidget->bondOrder() == 0) { // automatic
+        RWBond bond = m_molecule->bond(newAtom, clickedAtom);
+        if (bond.isValid()) {
+          int bondOrder = expectedBondOrder(newAtom, clickedAtom);
+          if (bondOrder != bond.order())
+            bond.setOrder(bondOrder);
+
+          changes |= Molecule::Bonds | Molecule::Modified;
+        }
+      } // otherwise see if the bond order is different than what's there
+      else {
+        int bondOrder = m_toolWidget->bondOrder();
+        RWBond bond = m_molecule->bond(newAtom, clickedAtom);
+        if (bond.isValid() && bondOrder != bond.order())
+          bond.setOrder(bondOrder);
+
+        changes |= Molecule::Bonds | Molecule::Modified;
+      }
+    }
+  }
+
+  m_molecule->emitChanged(changes);
+}
+
+void Editor::registerCommands()
+{
+  emit registerCommand("addAtom",
+                       tr("Add an atom. Options: \"element\" (symbol or atomic "
+                          "number), \"position\" ([x, y, z] in Angstroms), "
+                          "optional \"bondTo\" (atom index) and \"bondOrder\" "
+                          "(1-3). Returns the new atom \"index\"."));
+  emit registerCommand("addBond",
+                       tr("Add a bond between two unbonded atoms. Options: "
+                          "\"atoms\" ([i, j]) and optional \"order\" (1-3). "
+                          "Returns the bond \"index\"."));
+  emit registerCommand("removeBond", tr("Remove the bond between two atoms. "
+                                        "Options: \"atoms\" ([i, j])."));
+  emit registerCommand(
+    "removeSelectedAtoms",
+    tr("Remove the selected atoms and their bonds. Returns the "
+       "number \"removed\"."));
+}
+
+bool Editor::handleCommand(const QString& command, const QVariantMap& options)
+{
+  const bool isAddAtom = command == QLatin1String("addAtom");
+  const bool isAddBond = command == QLatin1String("addBond");
+  const bool isRemoveBond = command == QLatin1String("removeBond");
+  const bool isRemoveSelected = command == QLatin1String("removeSelectedAtoms");
+  if (!isAddAtom && !isAddBond && !isRemoveBond && !isRemoveSelected)
+    return false; // not one of our commands
+
+  if (m_molecule == nullptr) {
+    emit commandFailed(tr("No molecule"));
+    return true;
+  }
+
+  // Like the mouse handlers, which only ever consult the active layer: a
+  // locked active layer refuses every edit. (Locks on other atoms' layers
+  // are not checked by the GUI, so they are not checked here either.)
+  const QString lockedMessage =
+    tr("The active layer is locked; unlock it to edit.");
+  if (!isRemoveSelected && m_layerManager.activeLayerLocked()) {
+    emit commandFailed(lockedMessage);
+    return true;
+  }
+  // An edit also touches the atoms it bonds to, unbonds or deletes; if any
+  // of them is in a locked layer the whole command is refused.
+  auto lockedAtomMessage = [](Index atom) {
+    return tr("Atom %1 is in a locked layer; unlock it to edit.").arg(atom);
+  };
+
+  const Molecule::MoleculeChanges allChanges =
+    Molecule::Atoms | Molecule::Bonds | Molecule::Added | Molecule::Removed |
+    Molecule::Modified;
+  QString error;
+
+  if (isAddAtom) {
+    if (!options.contains(QStringLiteral("element"))) {
+      emit commandFailed(
+        tr("addAtom requires an \"element\" option (an element symbol or "
+           "atomic number)."));
+      return true;
+    }
+    const QVariant elementData = options.value(QStringLiteral("element"));
+    int atomicNum = InvalidElement;
+    if (elementData.typeId() == QMetaType::QString) {
+      atomicNum = Core::Elements::atomicNumberFromSymbol(
+        elementData.toString().toStdString());
+    }
+    if (atomicNum == InvalidElement) {
+      const double raw = isNumber(elementData) ? elementData.toDouble() : 0.0;
+      if (!isNumber(elementData) || raw != std::floor(raw)) {
+        emit commandFailed(
+          tr("Unknown element \"%1\".").arg(elementData.toString()));
+        return true;
+      }
+      if (raw < 1.0 || !(raw < Core::Elements::elementCount())) {
+        emit commandFailed(tr("Atomic number %1 is out of range (1 to %2).")
+                             .arg(raw, 0, 'f', 0)
+                             .arg(Core::Elements::elementCount() - 1));
+        return true;
+      }
+      atomicNum = static_cast<int>(raw);
+    }
+
+    const QVariant positionData = options.value(QStringLiteral("position"));
+    if (positionData.typeId() != QMetaType::QVariantList ||
+        positionData.toList().size() != 3) {
+      emit commandFailed(
+        tr("position must be a list of 3 numbers [x, y, z] in Angstroms."));
+      return true;
+    }
+    Vector3 position = Vector3::Zero();
+    const QVariantList coords = positionData.toList();
+    for (int i = 0; i < 3; ++i) {
+      if (!isNumber(coords[i]) || !std::isfinite(coords[i].toDouble())) {
+        emit commandFailed(
+          tr("position must be a list of 3 finite numbers [x, y, z]."));
+        return true;
+      }
+      position[i] = coords[i].toDouble();
+    }
+
+    bool bonded = false;
+    Index bondTo = 0;
+    unsigned char order = 1;
+    if (options.contains(QStringLiteral("bondTo"))) {
+      if (!toIndex(options.value(QStringLiteral("bondTo")),
+                   m_molecule->atomCount(), bondTo)) {
+        emit commandFailed(
+          tr("bondTo must be the index of an atom in the molecule."));
+        return true;
+      }
+      bonded = true;
+    }
+    if (!parseBondOrder(options, QStringLiteral("bondOrder"), order, error)) {
+      emit commandFailed(error);
+      return true;
+    }
+
+    if (bonded && touchesLockedAtom(bondTo, Neighbors::None)) {
+      emit commandFailed(lockedAtomMessage(bondTo));
+      return true;
+    }
+
+    m_molecule->beginMergeMode(tr("Draw Atom"));
+    RWAtom newAtom =
+      m_molecule->addAtom(static_cast<unsigned char>(atomicNum), position);
+    if (bonded)
+      m_molecule->addBond(newAtom.index(), bondTo, order);
+    m_molecule->endMergeMode();
+    m_molecule->emitChanged(allChanges);
+
+    QVariantMap result;
+    result[QStringLiteral("index")] = static_cast<qlonglong>(newAtom.index());
+    emit commandFinished(QString(), result);
+    return true;
+  }
+
+  if (isAddBond || isRemoveBond) {
+    Index first = 0;
+    Index second = 0;
+    if (!parseAtomPair(options, m_molecule->atomCount(), first, second,
+                       error)) {
+      emit commandFailed(error);
+      return true;
+    }
+
+    for (Index atom : { first, second }) {
+      if (touchesLockedAtom(atom, Neighbors::None)) {
+        emit commandFailed(lockedAtomMessage(atom));
+        return true;
+      }
+    }
+
+    if (isRemoveBond) {
+      if (!m_molecule->bond(first, second).isValid()) {
+        emit commandFailed(tr("There is no bond between those atoms."));
+        return true;
+      }
+      m_molecule->beginMergeMode(tr("Remove Bond"));
+      m_molecule->removeBond(first, second);
+      m_molecule->endMergeMode();
+      m_molecule->emitChanged(allChanges);
+      emit commandFinished(QString(), QVariantMap());
+      return true;
+    }
+
+    unsigned char order = 1;
+    if (!parseBondOrder(options, QStringLiteral("order"), order, error)) {
+      emit commandFailed(error);
+      return true;
+    }
+    // RWMolecule::addBond() would quietly change an existing bond's order;
+    // this command must refuse instead.
+    if (m_molecule->bond(first, second).isValid()) {
+      emit commandFailed(tr("Those atoms are already bonded."));
+      return true;
+    }
+    m_molecule->beginMergeMode(tr("Draw"));
+    RWBond bond = m_molecule->addBond(first, second, order);
+    m_molecule->endMergeMode();
+    m_molecule->emitChanged(allChanges);
+
+    QVariantMap result;
+    result[QStringLiteral("index")] = static_cast<qlonglong>(bond.index());
+    emit commandFinished(QString(), result);
+    return true;
+  }
+
+  // removeSelectedAtoms: same approach as CopyPaste::clear(), removing from
+  // the largest index down so the remaining indices stay valid.
+  qlonglong removed = 0;
+  for (Index i = 0; i < m_molecule->atomCount(); ++i) {
+    if (m_molecule->atomSelected(i))
+      ++removed;
+  }
+  if (removed > 0 && m_layerManager.activeLayerLocked()) {
+    emit commandFailed(lockedMessage);
+    return true;
+  }
+  // Refuse entirely (no partial delete) if a selected atom, or any atom
+  // bonded to one, is locked: removing the atom removes that bond.
+  for (Index i = 0; i < m_molecule->atomCount(); ++i) {
+    if (m_molecule->atomSelected(i) && touchesLockedAtom(i, Neighbors::All)) {
+      emit commandFailed(tr("Atom %1 or a bonded atom is in a locked layer; "
+                            "unlock it to edit.")
+                           .arg(i));
+      return true;
+    }
+  }
+  if (removed > 0) {
+    m_molecule->beginMergeMode(tr("Remove Atom"));
+    for (Index i = m_molecule->atomCount(); i > 0; --i) {
+      if (m_molecule->atomSelected(i - 1))
+        m_molecule->removeAtom(i - 1);
+    }
+    m_molecule->endMergeMode();
+    m_molecule->emitChanged(allChanges);
+  }
+  QVariantMap result;
+  result[QStringLiteral("removed")] = removed;
+  emit commandFinished(QString(), result);
+  return true;
+}
+
+} // namespace Avogadro::QtPlugins

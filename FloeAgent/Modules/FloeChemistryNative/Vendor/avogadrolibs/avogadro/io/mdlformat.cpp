@@ -1,0 +1,1127 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "mdlformat.h"
+
+#include "fileformatmanager.h"
+
+#include <avogadro/core/elements.h>
+#include <avogadro/core/kekulize.h>
+#include <avogadro/core/molecule.h>
+#include <avogadro/core/spacegroups.h>
+#include <avogadro/core/stereo.h>
+#include <avogadro/core/utilities.h>
+#include <avogadro/core/vector.h>
+
+#include <chrono>
+#include <iomanip>
+#include <iostream>
+#include <istream>
+#include <ostream>
+#include <sstream>
+#include <string>
+#include <utility>
+
+using Avogadro::Core::Array;
+using Avogadro::Core::Atom;
+using Avogadro::Core::Bond;
+using Avogadro::Core::Elements;
+using Avogadro::Core::endsWith;
+using Avogadro::Core::lexicalCast;
+using Avogadro::Core::split;
+using Avogadro::Core::startsWith;
+using Avogadro::Core::toLower;
+using Avogadro::Core::trimmed;
+
+using std::istringstream;
+using std::setprecision;
+using std::setw;
+using std::string;
+
+namespace {
+// Element symbols are case-sensitive in the element table, but many files
+// (e.g. RCSB Chemical Component Dictionary SDFs) write them in upper case
+// ("FE", "CL"). Normalise to first upper, rest lower. This also makes "d" and
+// "t" match the deuterium / tritium checks. Only A-Z / a-z change, whatever
+// the C locale: std::tolower() under a Turkish LC_CTYPE turns the "I" of "SI"
+// into a dotless i, and the lookup then fails.
+std::string normalizeSymbol(const std::string& symbol)
+{
+  std::string result = toLower(symbol);
+  if (!result.empty() && result[0] >= 'a' && result[0] <= 'z')
+    result[0] = static_cast<char>(result[0] - 'a' + 'A');
+  return result;
+}
+} // namespace
+
+namespace Avogadro::Io {
+
+using chargePair = std::pair<size_t, int>;
+namespace {
+
+// Helper function to handle partial charge property blocks
+// e.g. PUBCHEM_MMFF94_PARTIAL_CHARGES
+void handlePartialCharges(Core::Molecule& mol, std::string data,
+                          std::string name = "MMFF94")
+{
+  // the string starts with the number of charges
+  // then atom index  charge
+  MatrixX charges(mol.atomCount(), 1);
+  std::istringstream iss(data);
+  size_t numCharges;
+  iss >> numCharges;
+  if (numCharges == 0 || numCharges > mol.atomCount()) {
+    return;
+  }
+
+  for (size_t i = 0; i < numCharges; ++i) {
+    if (!iss.good()) {
+      return;
+    }
+
+    size_t index = 0;
+    Real charge = 0.0;
+
+    iss >> index;
+    if (iss.fail() || index == 0 || index > mol.atomCount()) {
+      return;
+    }
+
+    iss >> charge;
+    if (iss.fail()) {
+      return;
+    }
+    // prints with atom index 1, not zero
+    charges(index - 1, 0) = charge;
+  }
+
+  // if present, remove atom.dpos and CHARGES from the string
+  if (startsWith(name, "atom.dpos")) {
+    name = name.substr(9, name.size() - 16);
+  }
+  if (endsWith(name, "CHARGES")) {
+    name = name.substr(0, name.size() - 7);
+  }
+
+  mol.setPartialCharges(name, charges);
+}
+
+// The "> <key>" data blocks that follow a molecule, one per entry of the data
+// map except for the ones that are not properties of the file.
+void writeDataBlocks(std::ostream& out, const Core::VariantMap& dataMap)
+{
+  for (const auto& key : dataMap.names()) {
+    // skip some keys
+    if (key == "modelView" || key == "projection" ||
+        key == Core::SpaceGroups::internationalNumberKey())
+      continue;
+
+    out << "> <" << key << ">\n";
+    out << dataMap.value(key).toString() << "\n";
+    out << "\n"; // empty line between data blocks
+  }
+}
+} // namespace
+
+bool MdlFormat::read(std::istream& in, Core::Molecule& mol)
+{
+  string buffer;
+  int spinMultiplicity = 1; // check for RAD lines
+
+  // The first line is the molecule name.
+  Core::getLine(in, buffer);
+  buffer = trimmed(buffer);
+  // Check for the record separator in SDF, and skip if found.
+  if (buffer == "$$$$") {
+    Core::getLine(in, buffer);
+    buffer = trimmed(buffer);
+  }
+  if (!buffer.empty())
+    mol.setData("name", buffer);
+
+  if (!in.good()) {
+    appendError("Error reading molecule name.");
+    return false;
+  }
+
+  // check the generator line for 2D vs 3D
+  Core::getLine(in, buffer);
+  // e.g.   -OEChem-01062507112D
+  // check the last 2 characters
+  if (buffer.size() >= 2 && buffer.compare(buffer.size() - 2, 2, "2D") == 0) {
+    m_is2D = true;
+
+    // we should use Open Babel and --gen3D
+    FileFormat* reader = nullptr;
+    std::vector<const FileFormat*> readers =
+      Io::FileFormatManager::instance().fileFormatsFromFileExtension(
+        "sdf", FileFormat::File | FileFormat::Read);
+
+    // loop through writers to check for "cclib" or "Open Babel"
+    for (const FileFormat* r : readers) {
+      if (r->identifier().compare(0, 9, "OpenBabel") == 0) {
+        reader = r->newInstance();
+        break;
+      }
+    }
+
+    // make sure to generate 3D coordinates
+    std::string options("{ \"arguments\": [\"--gen3D\"] }");
+    auto currentPos = in.tellg();
+    if (reader) {
+      reader->setOptions(options);
+      in.clear();
+      in.seekg(0);
+      if (reader->read(in, mol)) {
+        delete reader;
+        return true;
+      } else {
+        in.clear();
+        in.seekg(currentPos);
+        // continue with normal parsing
+      }
+      delete reader;
+    }
+  }
+
+  Core::getLine(in, buffer);
+  if (!in.good()) {
+    appendError("Error reading generator and comment lines.");
+    return false;
+  }
+
+  // The counts line, and version identifier.
+  Core::getLine(in, buffer);
+  // The atom and bond counts are required, e.g.
+  //   5  4  0  0  0  0  0  0  0  0999 V2000
+  if (!in.good() || buffer.size() < 6) {
+    appendError("Error reading counts line.");
+    return false;
+  }
+
+  bool ok(false);
+  int numAtoms(lexicalCast<int>(buffer.substr(0, 3), ok));
+  if (!ok) {
+    appendError("Error parsing number of atoms.");
+    return false;
+  }
+  int numBonds(lexicalCast<int>(buffer.substr(3, 3), ok));
+  if (!ok) {
+    appendError("Error parsing number of bonds.");
+    return false;
+  }
+  // Both counts reach reserve() below, and a negative one converts to a huge
+  // size_t there, which throws std::length_error rather than failing the read.
+  if (numAtoms < 0 || numBonds < 0) {
+    appendError("Negative atom or bond count in the counts line.");
+    return false;
+  }
+  // A missing version field means V2000 (e.g., GaussView writes none)
+  string mdlVersion(buffer.size() > 33 ? trimmed(buffer.substr(33)) : string());
+  if (mdlVersion == "V3000")
+    return readV3000(in, mol);
+
+  // Parse the atom block.
+  std::vector<chargePair> chargeList;
+  std::vector<unsigned char> atomicNumbers; // Store for conformer validation
+  atomicNumbers.reserve(numAtoms);
+  for (int i = 0; i < numAtoms; ++i) {
+    Vector3 pos;
+    Core::getLine(in, buffer);
+    //     0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+    if (!in.good() || buffer.size() < 40) {
+      appendError("Error reading atom block.");
+      return false;
+    }
+
+    pos.x() = lexicalCast<Real>(buffer.substr(0, 10), ok);
+    if (!ok) {
+      appendError("Failed to parse x coordinate: " + buffer.substr(0, 10));
+      return false;
+    }
+    pos.y() = lexicalCast<Real>(buffer.substr(10, 10), ok);
+    if (!ok) {
+      appendError("Failed to parse y coordinate: " + buffer.substr(10, 10));
+      return false;
+    }
+    pos.z() = lexicalCast<Real>(buffer.substr(20, 10), ok);
+    if (!ok) {
+      appendError("Failed to parse z coordinate: " + buffer.substr(20, 10));
+      return false;
+    }
+
+    string element(normalizeSymbol(trimmed(buffer.substr(31, 3))));
+    auto charge(lexicalCast<int>(trimmed(buffer.substr(36, 3))).value_or(0));
+    if (!buffer.empty()) {
+      unsigned char atomicNum = Elements::atomicNumberFromSymbol(element);
+      if (element == "D" || element == "T")
+        atomicNum = 1; // Deuterium and Tritium are hydrogen
+      atomicNumbers.push_back(atomicNum);
+      Atom newAtom = mol.addAtom(atomicNum);
+      if (element == "D") {
+        newAtom.setIsotope(2);
+      } else if (element == "T") {
+        newAtom.setIsotope(3);
+      }
+
+      newAtom.setPosition3d(pos);
+      // In case there's no CHG property
+      if (charge == 4) // doublet radical
+        spinMultiplicity += 1;
+
+      charge = (charge > 4) ? ((charge <= 7) ? 4 - charge : 0)
+                            : ((charge < 4) ? charge : 0);
+      if (charge)
+        chargeList.emplace_back(newAtom.index(), charge);
+
+      // vvv field: valence (columns 48-50), 0 = default
+      if (buffer.size() >= 51) {
+        int valence =
+          lexicalCast<int>(trimmed(buffer.substr(48, 3))).value_or(0);
+        if (valence > 0 && valence <= 6) {
+          Core::AtomHybridization hyb = Core::HybridizationUnknown;
+          if (valence <= 2)
+            hyb = Core::SP;
+          else if (valence == 3)
+            hyb = Core::SP2;
+          else if (valence == 4)
+            hyb = Core::SP3;
+          else if (valence == 5)
+            hyb = Core::TrigonalBipyramidal;
+          else if (valence == 6)
+            hyb = Core::Octahedral;
+          mol.setHybridization(newAtom.index(), hyb);
+        }
+      }
+      continue;
+    } else {
+      appendError("Error parsing atom block: " + buffer);
+      return false;
+    }
+  }
+
+  // Parse the bond block.
+  std::vector<bool> aromaticBonds;
+  aromaticBonds.reserve(numBonds);
+  bool anyAromaticBond = false;
+  for (int i = 0; i < numBonds; ++i) {
+    // Bond atom indices start at 1, -1 for C++.
+    Core::getLine(in, buffer);
+    //   1  2  1  0  0  0  0
+    if (!in.good() || buffer.size() < 10) {
+      appendError("Error reading bond block.");
+      return false;
+    }
+
+    int begin(lexicalCast<int>(buffer.substr(0, 3), ok) - 1);
+    if (!ok) {
+      appendError("Error parsing beginning bond index:" + buffer.substr(0, 3));
+      return false;
+    }
+    int end(lexicalCast<int>(buffer.substr(3, 3), ok) - 1);
+    if (!ok) {
+      appendError("Error parsing end bond index:" + buffer.substr(3, 3));
+      return false;
+    }
+    int order(lexicalCast<int>(buffer.substr(6, 3), ok));
+    if (!ok) {
+      appendError("Error parsing bond order:" + buffer.substr(6, 3));
+      return false;
+    }
+    if (begin < 0 || begin >= numAtoms || end < 0 || end >= numAtoms) {
+      appendError("Bond read in with out of bounds index.");
+      return false;
+    }
+    // Bond type 4 is aromatic. It used to be passed straight through to
+    // addBond(), which made it a quadruple bond; add it as a single-bond
+    // placeholder instead and let kekulize() assign its real order below.
+    // Query types 5-8 are left exactly as they were: out of scope here.
+    unsigned char bondOrder = static_cast<unsigned char>(order);
+    bool aromatic = false;
+    if (order == 4) {
+      aromatic = true;
+      anyAromaticBond = true;
+      bondOrder = 1;
+    }
+    Bond newBond = mol.addBond(mol.atom(begin), mol.atom(end), bondOrder);
+    aromaticBonds.push_back(aromatic);
+
+    // The stereo column is optional, and a file that omits it is simply
+    // saying nothing about configuration.
+    if (buffer.size() >= 12) {
+      const int stereo(lexicalCast<int>(buffer.substr(9, 3), ok));
+      if (ok) {
+        // 3 on a double bond is "cis or trans, either", and 4 on a single bond
+        // is a wedge drawn as "either". Both mean the author declined to state
+        // a configuration, so the coordinates must not be read as one.
+        if (order == 2 && stereo == 3)
+          setBondStereoUnspecified(mol, newBond.index());
+        else if (order == 1 && stereo == 4)
+          setAtomStereoUnspecified(mol, static_cast<Index>(begin));
+      }
+    }
+  }
+
+  // Parse the properties block until the end of the file.
+  // Property lines count is not used, as it it now unsupported.
+  bool foundEnd(false);
+  bool foundChgProperty(false);
+  while (Core::getLine(in, buffer)) {
+    if (!in.good() || buffer.size() < 5) {
+      break;
+    }
+
+    if (startsWith(buffer, "M  END") || startsWith(buffer, "M END")) {
+      foundEnd = true;
+      break;
+    } else if (buffer.size() >= 6 && buffer.substr(0, 6) == "M  CHG") {
+      if (!foundChgProperty)
+        chargeList.clear(); // Forget old-style charges
+      size_t entryCount(lexicalCast<int>(buffer.substr(6, 3), ok));
+      if (buffer.length() < 17 + 8 * (entryCount - 1)) {
+        appendError("Error parsing charge block.");
+        std::cout << " " << entryCount << " " << buffer.length() << '\n';
+        return false;
+      }
+
+      for (size_t i = 0; i < entryCount; i++) {
+        size_t index(lexicalCast<size_t>(buffer.substr(10 + 8 * i, 3), ok) - 1);
+        if (!ok) {
+          appendError("Error parsing charged atom index:" +
+                      buffer.substr(10 + 8 * i, 3));
+          return false;
+        }
+        auto charge(lexicalCast<int>(buffer.substr(14 + 8 * i, 3), ok));
+        if (!ok) {
+          appendError("Error parsing atom charge:" +
+                      buffer.substr(14 + 8 * i, 3));
+          return false;
+        }
+        if (charge)
+          chargeList.emplace_back(index, charge);
+      }
+    } else if (buffer.size() >= 6 && buffer.substr(0, 6) == "M  RAD") {
+      // radical center
+      spinMultiplicity = 1; // reset and count
+      size_t entryCount(lexicalCast<int>(buffer.substr(6, 3), ok));
+      if (buffer.length() < 17 + 8 * (entryCount - 1)) {
+        appendError("Error parsing radical block.");
+        return false;
+      }
+
+      for (size_t i = 0; i < entryCount; i++) {
+        [[maybe_unused]] size_t index(
+          lexicalCast<size_t>(buffer.substr(10 + 8 * i, 3), ok) - 1);
+        if (!ok) {
+          appendError("Error parsing radical atom index:" +
+                      buffer.substr(10 + 8 * i, 3));
+          return false;
+        }
+        auto radical(lexicalCast<int>(buffer.substr(14 + 8 * i, 3), ok));
+        if (!ok) {
+          appendError("Error parsing radical type:" +
+                      buffer.substr(14 + 8 * i, 3));
+          return false;
+        }
+        // we don't set radical centers, just count them
+        // for the total spin multiplicity
+        if (radical == 2) // doublet
+          spinMultiplicity += 1;
+        else if (radical == 3) // triplet
+          spinMultiplicity += 2;
+      }
+    } else if (buffer.size() >= 6 && buffer.substr(0, 6) == "M  ISO") {
+      // isotope
+      size_t entryCount(lexicalCast<int>(buffer.substr(6, 3), ok));
+      if (buffer.length() < 17 + 8 * (entryCount - 1)) {
+        appendError("Error parsing isotope block.");
+        return false;
+      }
+
+      for (size_t i = 0; i < entryCount; i++) {
+        size_t index(lexicalCast<size_t>(buffer.substr(10 + 8 * i, 3), ok) - 1);
+        if (!ok) {
+          appendError("Error parsing isotope atom index:" +
+                      buffer.substr(10 + 8 * i, 3));
+          return false;
+        }
+        auto isotope(lexicalCast<int>(buffer.substr(14 + 8 * i, 3), ok));
+        if (!ok) {
+          appendError("Error parsing isotope type:" +
+                      buffer.substr(14 + 8 * i, 3));
+          return false;
+        }
+        mol.setIsotope(index, isotope);
+      }
+    } // isotope
+#ifndef NDEBUG
+    else if (buffer.size() >= 6) {
+      std::cout << " prefix " << buffer.substr(0, 6) << std::endl;
+    }
+#endif
+  }
+
+  if (!foundEnd) {
+    appendError("Error, ending tag for file not found.");
+    // return false;
+  }
+
+  // Apply charges.
+  for (auto& i : chargeList) {
+    size_t index = i.first;
+    signed int charge = i.second;
+    mol.setFormalCharge(index, charge);
+  }
+
+  // Aromatic (type 4) bonds were added above as single-bond placeholders;
+  // replace them with a real alternation now. This has to wait until here,
+  // after charges are applied, since a charged aromatic atom (a pyridinium
+  // nitrogen, for instance) classifies differently than a neutral one.
+  if (anyAromaticBond) {
+    Index failedAtom = MaxIndex;
+    if (!Core::kekulize(mol, aromaticBonds, &failedAtom)) {
+      appendError(Core::kekulizeFailureMessage(failedAtom));
+      return false;
+    }
+  }
+
+  // Set the total spin multiplicity
+  if (spinMultiplicity > 1)
+    mol.setData("totalSpinMultiplicity", spinMultiplicity);
+
+  // Check that all atoms were handled.
+  if (mol.atomCount() != static_cast<size_t>(numAtoms) ||
+      mol.bondCount() != static_cast<size_t>(numBonds)) {
+    std::ostringstream errorStream;
+    errorStream << "Error parsing file, got " << mol.atomCount()
+                << "atoms, expected " << numAtoms << ", got " << mol.bondCount()
+                << ", expected " << numBonds << ".";
+    appendError(errorStream.str());
+    return false;
+  }
+
+  // Per-conformer energies, collected in parallel with the coordinate sets so
+  // that data("energies") can drive the conformer energy plot. The first entry
+  // corresponds to coordinate set 0 (this initial block).
+  std::vector<double> energies;
+  auto isEnergyTag = [](const std::string& name) {
+    return toLower(name) == "energy";
+  };
+
+  // Now parse the data block.
+  bool inValue(false);
+  string dataName;
+  string dataValue;
+  while (Core::getLine(in, buffer) && in.good()) {
+    if (trimmed(buffer) == "$$$$")
+      break;
+    if (inValue) {
+      // Use trimmed() to handle Windows CRLF line endings where \r remains
+      if (trimmed(buffer).empty() && !dataName.empty()) {
+        // check for partial charges
+        if (dataName == "PUBCHEM_MMFF94_PARTIAL_CHARGES")
+          handlePartialCharges(mol, dataValue);
+        else if (startsWith(dataName, "atom.dpos") &&
+                 endsWith(dataName, "CHARGES"))
+          // remove the "CHARGES" from the end of the string
+          handlePartialCharges(mol, dataValue, dataName);
+        else {
+          if (isEnergyTag(dataName)) {
+            if (auto e = lexicalCast<double>(trimmed(dataValue)))
+              energies.push_back(*e);
+          }
+          mol.setData(dataName, dataValue);
+        }
+
+        dataName.clear();
+        dataValue.clear();
+        inValue = false;
+      } else {
+        if (!dataValue.empty())
+          dataValue += "\n";
+        dataValue += trimmed(buffer);
+      }
+    } else if (startsWith(buffer, "> ")) {
+      // This is a data header, read the name of the entry, and the value on
+      // the following lines.
+      // e.g., > <propName>
+      // dataName will be anything from < to >
+      size_t start = buffer.find('<');
+      size_t end = buffer.find('>', start);
+      if (start != string::npos && end != string::npos) {
+        dataName = buffer.substr(start + 1, end - start - 1);
+        inValue = true;
+      }
+    }
+  }
+
+  // handle pKa from QupKake model
+  if (mol.hasData("pka") && mol.hasData("idx")) {
+    // pka can sometimes say "tensor(3.1452)" or "3.1452"
+    // just convert to a string with 2 decimal places
+    std::string pka = mol.data("pka").toString();
+    if (startsWith(pka, "tensor("))
+      pka = pka.substr(7, pka.size() - 8);
+    // find the decimal to only keep 2 decimal places
+    size_t decimal = pka.find('.');
+    if (decimal != std::string::npos)
+      pka = pka.substr(0, decimal + 3);
+    mol.setData("pka", pka);
+    // convert the idx to an atom index
+    // and set the label
+    std::string idx = mol.data("idx").toString();
+    size_t atomIdx = lexicalCast<size_t>(idx).value_or(0);
+    mol.setAtomLabel(atomIdx, pka);
+  }
+
+  // Read additional conformers from the file
+  // Save the initial coordinates as coordinate set 0
+  mol.setCoordinate3d(mol.atomPositions3d(), 0);
+  int coordSet = 1;
+
+  // Look for additional molecule blocks after $$$$
+  // (in case there are multiple conformers / coordinates)
+  // e.g. this is a multi-conformer or trajectory file
+  while (in.good()) {
+    // Save position at start of potential molecule block
+    std::streampos molPos = in.tellg();
+
+    // Skip to start of next molecule (should already be at $$$$ or past it)
+    // Read the molecule name line
+    if (!Core::getLine(in, buffer))
+      break;
+    buffer = trimmed(buffer);
+
+    // Skip $$$$ if we encounter it
+    if (buffer == "$$$$") {
+      // Update position to after $$$$, at start of next molecule
+      molPos = in.tellg();
+      if (!Core::getLine(in, buffer))
+        break;
+      buffer = trimmed(buffer);
+    }
+
+    // Empty line or EOF means no more molecules
+    if (buffer.empty() && !in.good())
+      break;
+
+    // Skip generator and comment lines
+    if (!Core::getLine(in, buffer) || !Core::getLine(in, buffer))
+      break;
+
+    // Read counts line
+    if (!Core::getLine(in, buffer) || buffer.size() < 6)
+      break;
+
+    // Check if this is V3000 - skip if so
+    // (that would be weird mixing V2000 and V3000)
+    string version(buffer.size() > 33 ? trimmed(buffer.substr(33)) : string());
+    if (version == "V3000") {
+      // Restore stream position for potential future reading
+      if (molPos != std::streampos(-1))
+        in.seekg(molPos);
+      break;
+    }
+
+    // Parse atom count and verify it matches
+    int confAtoms = lexicalCast<int>(buffer.substr(0, 3), ok);
+    if (!ok || confAtoms != numAtoms) {
+      // Different molecule - restore stream position
+      if (molPos != std::streampos(-1))
+        in.seekg(molPos);
+      break;
+    }
+
+    int confBonds = lexicalCast<int>(buffer.substr(3, 3), ok);
+    if (!ok)
+      break;
+
+    // Parse atom block and collect positions
+    Array<Vector3> positions;
+    positions.reserve(numAtoms);
+    bool validConformer = true;
+
+    for (int i = 0; i < confAtoms; ++i) {
+      if (!Core::getLine(in, buffer) || buffer.size() < 40) {
+        validConformer = false;
+        break;
+      }
+
+      Vector3 pos;
+      pos.x() = lexicalCast<Real>(buffer.substr(0, 10), ok);
+      if (!ok) {
+        validConformer = false;
+        break;
+      }
+      pos.y() = lexicalCast<Real>(buffer.substr(10, 10), ok);
+      if (!ok) {
+        validConformer = false;
+        break;
+      }
+      pos.z() = lexicalCast<Real>(buffer.substr(20, 10), ok);
+      if (!ok) {
+        validConformer = false;
+        break;
+      }
+
+      // Check element matches
+      string element(normalizeSymbol(trimmed(buffer.substr(31, 3))));
+      unsigned char atomicNum = Elements::atomicNumberFromSymbol(element);
+      if (element == "D" || element == "T")
+        atomicNum = 1;
+
+      if (atomicNum != atomicNumbers[i]) {
+        validConformer = false;
+        break; // Different element, not the same molecule
+      }
+
+      positions.push_back(pos);
+    }
+
+    if (!validConformer) {
+      // Different molecule or parse error - restore stream position
+      if (molPos != std::streampos(-1))
+        in.seekg(molPos);
+      break;
+    }
+
+    // Skip bond block
+    for (int i = 0; i < confBonds; ++i) {
+      if (!Core::getLine(in, buffer))
+        break;
+    }
+
+    // Skip properties block until M  END
+    // TODO: Consider reading properties in the future
+    // (e.g. if radicals or charges change during a trajectory)
+    while (Core::getLine(in, buffer)) {
+      if (startsWith(buffer, "M  END") || startsWith(buffer, "M END"))
+        break;
+    }
+
+    // Read the data block until $$$$, capturing an energy field if present so
+    // it stays parallel with the coordinate sets.
+    // TODO: Consider reading other per-conformer data in the future.
+    bool inEnergyValue = false;
+    while (Core::getLine(in, buffer)) {
+      if (trimmed(buffer) == "$$$$")
+        break;
+      if (inEnergyValue) {
+        if (auto e = lexicalCast<double>(trimmed(buffer)))
+          energies.push_back(*e);
+        inEnergyValue = false;
+      } else if (startsWith(buffer, "> ")) {
+        size_t start = buffer.find('<');
+        size_t end = buffer.find('>', start);
+        if (start != string::npos && end != string::npos &&
+            isEnergyTag(buffer.substr(start + 1, end - start - 1)))
+          inEnergyValue = true;
+      }
+    }
+
+    // Add the conformer coordinates
+    mol.setCoordinate3d(positions, coordSet++);
+  }
+
+  // Only expose energies if every coordinate set contributed one, keeping the
+  // array aligned with the conformers for the energy plot / property table.
+  if (energies.size() > 1 && energies.size() == static_cast<size_t>(coordSet))
+    mol.setData("energies", energies);
+
+  return true;
+}
+
+bool MdlFormat::readV3000(std::istream& in, Core::Molecule& mol)
+{
+  string buffer;
+  int spinMultiplicity = 1; // check for RAD lines
+  // we should have M  V30 BEGIN CTAB
+  Core::getLine(in, buffer);
+  if (trimmed(buffer) != "M  V30 BEGIN CTAB") {
+    appendError("Error parsing V3000 file, expected 'M  V30 BEGIN CTAB'.");
+    return false;
+  }
+  // now we should get the counts line
+  // e.g. 'M  V30 COUNTS 23694 24297 0 0 1'
+  Core::getLine(in, buffer);
+  // split by whitespace
+  std::vector<string> counts = split(trimmed(buffer), ' ');
+  if (counts.size() < 5) {
+    appendError("Error parsing V3000 counts line.");
+    return false;
+  }
+  bool ok(false);
+  int numAtoms(lexicalCast<int>(counts[3], ok));
+  if (!ok) {
+    appendError("Error parsing number of atoms.");
+    return false;
+  }
+  int numBonds(lexicalCast<int>(counts[4], ok));
+  if (!ok) {
+    appendError("Error parsing number of bonds.");
+    return false;
+  }
+  // Unlike V2000 these come from free-form fields rather than three-character
+  // columns, so they can be negative or arbitrarily large. Both are used to
+  // reserve() below, where a negative value becomes a huge size_t and throws.
+  if (numAtoms < 0 || numBonds < 0) {
+    appendError("Negative atom or bond count in the V3000 counts line.");
+    return false;
+  }
+
+  // Parse the atom block.
+  // 'M  V30 BEGIN ATOM'
+  // 'M  V30 1 N 171.646 251.874 224.877 0'
+  Core::getLine(in, buffer);
+  if (trimmed(buffer) != "M  V30 BEGIN ATOM") {
+    appendError("Error parsing V3000 atom block.");
+    return false;
+  }
+  for (int i = 0; i < numAtoms; ++i) {
+    Core::getLine(in, buffer);
+    std::vector<string> atomData = split(trimmed(buffer), ' ');
+    if (atomData.size() < 7) {
+      appendError("Error parsing V3000 atom line.");
+      return false;
+    }
+
+    string element(normalizeSymbol(trimmed(atomData[3])));
+    unsigned char atomicNum = Elements::atomicNumberFromSymbol(element);
+    Atom newAtom = mol.addAtom(atomicNum);
+    if (element == "D") {
+      newAtom.setAtomicNumber(1);
+      newAtom.setIsotope(2);
+    } else if (element == "T") {
+      newAtom.setAtomicNumber(1);
+      newAtom.setIsotope(3);
+    }
+
+    Vector3 pos;
+    pos.x() = lexicalCast<Real>(atomData[4], ok);
+    if (!ok) {
+      appendError("Failed to parse x coordinate: " + atomData[3]);
+      return false;
+    }
+    pos.y() = lexicalCast<Real>(atomData[5], ok);
+    if (!ok) {
+      appendError("Failed to parse y coordinate: " + atomData[4]);
+      return false;
+    }
+    pos.z() = lexicalCast<Real>(atomData[6], ok);
+    if (!ok) {
+      appendError("Failed to parse z coordinate: " + atomData[5]);
+      return false;
+    }
+    newAtom.setPosition3d(pos);
+    // check for formal charge in the atom block
+    // CHG=1 for example
+    if (atomData.size() > 8) {
+      // loop through the key=value pairs
+      for (size_t j = 8; j < atomData.size(); ++j) {
+        const string& key = atomData[j];
+        if (startsWith(key, "CHG=")) {
+          int charge = lexicalCast<int>(key.substr(4), ok);
+          if (!ok) {
+            appendError("Failed to parse atom charge: " + key);
+            return false;
+          }
+          newAtom.setFormalCharge(charge);
+        } else if (startsWith(key, "RAD=")) {
+          // radical center
+          int radical = lexicalCast<int>(key.substr(4), ok);
+          if (!ok) {
+            appendError("Failed to parse radical type: " + key);
+            return false;
+          }
+          // we don't set radical centers, just count them
+          // for the total spin multiplicity
+          if (radical == 2) // doublet
+            spinMultiplicity += 1;
+          else if (radical == 3) // triplet
+            spinMultiplicity += 2;
+        } else if (startsWith(key, "ISO=")) {
+          // isotope
+          int isotope = lexicalCast<int>(key.substr(4), ok);
+          if (!ok) {
+            appendError("Failed to parse isotope type: " + key);
+            return false;
+          }
+          mol.setIsotope(newAtom.index(), isotope);
+        } else if (startsWith(key, "VAL=")) {
+          // explicit valence — map to hybridization
+          int valence = lexicalCast<int>(key.substr(4), ok);
+          if (!ok) {
+            appendError("Failed to parse valence: " + key);
+            return false;
+          }
+          // VAL=0 means "no marking" (default), VAL=-1 means zero valence
+          if (valence > 0 && valence <= 6) {
+            Core::AtomHybridization hyb = Core::HybridizationUnknown;
+            if (valence <= 2)
+              hyb = Core::SP;
+            else if (valence == 3)
+              hyb = Core::SP2;
+            else if (valence == 4)
+              hyb = Core::SP3;
+            else if (valence == 5)
+              hyb = Core::TrigonalBipyramidal;
+            else if (valence == 6)
+              hyb = Core::Octahedral;
+            mol.setHybridization(newAtom.index(), hyb);
+          }
+        } else {
+#ifndef NDEBUG
+          std::cerr << "Unknown key: " << key << std::endl;
+#endif
+        }
+      } // end of key-value loop
+    }
+  } // end of atom block
+  Core::getLine(in, buffer);
+  // check for END ATOM
+  if (trimmed(buffer) != "M  V30 END ATOM") {
+    appendError("Error parsing V3000 atom block.");
+    return false;
+  }
+
+  // bond block
+  // 'M  V30 BEGIN BOND'
+  // 'M  V30 1 1 1 2'
+  Core::getLine(in, buffer);
+  if (trimmed(buffer) != "M  V30 BEGIN BOND") {
+    appendError("Error parsing V3000 bond block.");
+    return false;
+  }
+  std::vector<bool> aromaticBonds;
+  aromaticBonds.reserve(numBonds);
+  bool anyAromaticBond = false;
+  for (int i = 0; i < numBonds; ++i) {
+    // END BOND always follows the bond block, so end of input here means the
+    // bond count is larger than the file.
+    if (!Core::getLine(in, buffer) || !in.good()) {
+      appendError("Error reading V3000 bond block.");
+      return false;
+    }
+    std::vector<string> bondData = split(trimmed(buffer), ' ');
+    // Six fields, because bondData[5] is read below: "M  V30 <i> <order>
+    // <atom1> <atom2>". The old bound of 5 let a five-field line index one
+    // past the end of the vector.
+    if (bondData.size() < 6) {
+      appendError("Error parsing V3000 bond line.");
+      return false;
+    }
+    int order = lexicalCast<int>(bondData[3], ok);
+    if (!ok) {
+      appendError("Failed to parse bond order: " + bondData[3]);
+      return false;
+    }
+    int atom1 = lexicalCast<int>(bondData[4], ok) - 1;
+    if (!ok) {
+      appendError("Failed to parse bond atom1: " + bondData[4]);
+      return false;
+    }
+    int atom2 = lexicalCast<int>(bondData[5], ok) - 1;
+    if (!ok) {
+      appendError("Failed to parse bond atom2: " + bondData[5]);
+      return false;
+    }
+    // Same bounds check the V2000 branch already makes. Without it a bad
+    // index reaches Graph::edges(), whose only guard is an assert() and so
+    // reads out of bounds in any release build.
+    if (atom1 < 0 || atom1 >= numAtoms || atom2 < 0 || atom2 >= numAtoms) {
+      appendError("Bond read in with out of bounds index.");
+      return false;
+    }
+    // Order 4 is aromatic here exactly as it is in V2000: add a single bond
+    // as a placeholder and let kekulize() below assign the real order.
+    unsigned char bondOrder = static_cast<unsigned char>(order);
+    bool aromatic = false;
+    if (order == 4) {
+      aromatic = true;
+      anyAromaticBond = true;
+      bondOrder = 1;
+    }
+    mol.addBond(mol.atom(atom1), mol.atom(atom2), bondOrder);
+    aromaticBonds.push_back(aromatic);
+  } // end of bond block
+
+  // Unlike V2000, charges arrive with the atoms (CHG= in the atom block), so
+  // by here everything kekulize() classifies from is already in place.
+  if (anyAromaticBond) {
+    Index failedAtom = MaxIndex;
+    if (!Core::kekulize(mol, aromaticBonds, &failedAtom)) {
+      appendError(Core::kekulizeFailureMessage(failedAtom));
+      return false;
+    }
+  }
+
+  // look for M  END
+  while (Core::getLine(in, buffer)) {
+    if (trimmed(buffer) == "M  END")
+      break;
+  }
+  // read in any properties
+  while (Core::getLine(in, buffer)) {
+    if (startsWith(buffer, "> <")) {
+      string key = trimmed(buffer.substr(3, buffer.length() - 4));
+      string value;
+      while (Core::getLine(in, buffer)) {
+        if (trimmed(buffer).empty())
+          break;
+        value += buffer + "\n";
+      }
+      mol.setData(key, value);
+    }
+  }
+
+  // if we have a spin multiplicity, set it
+  if (spinMultiplicity > 1)
+    mol.setData("totalSpinMultiplicity", spinMultiplicity);
+
+  return true;
+}
+
+bool MdlFormat::writeV3000(std::ostream& out, const Core::Molecule& mol)
+{
+  // write the "fake" counts line
+  out << "  0  0  0     0  0            999 V3000\n";
+  out << "M  V30 BEGIN CTAB\n";
+  out << "M  V30 COUNTS " << mol.atomCount() << ' ' << mol.bondCount()
+      << " 0 0 0\n";
+  // atom block
+  out << "M  V30 BEGIN ATOM\n";
+  for (size_t i = 0; i < mol.atomCount(); ++i) {
+    Atom atom = mol.atom(i);
+    out << "M  V30 " << i + 1 << ' ' << Elements::symbol(atom.atomicNumber())
+        << ' ' << atom.position3d().x() << ' ' << atom.position3d().y() << ' '
+        << atom.position3d().z() << " 0";
+    if (atom.formalCharge())
+      out << " CHG=" << atom.formalCharge();
+    out << "\n";
+  }
+  out << "M  V30 END ATOM\n";
+  // bond block
+  out << "M  V30 BEGIN BOND\n";
+  for (size_t i = 0; i < mol.bondCount(); ++i) {
+    Bond bond = mol.bond(i);
+    out << "M  V30 " << i + 1 << ' ' << static_cast<int>(bond.order()) << ' '
+        << (bond.atom1().index() + 1) << ' ' << (bond.atom2().index() + 1)
+        << " \n";
+  }
+  out << "M  V30 END BOND\n";
+  out << "M  V30 END CTAB\n";
+  out << "M  END\n";
+
+  // TODO: isotopes, radicals, etc.
+  if (m_writeProperties) {
+    writeDataBlocks(out, mol.dataMap());
+  }
+
+  if (m_writeProperties || isMode(FileFormat::MultiMolecule))
+    out << "$$$$\n";
+
+  return true;
+}
+
+bool MdlFormat::write(std::ostream& out, const Core::Molecule& mol)
+{
+  // Header lines.
+  out << mol.data("name").toString() << "\n";
+
+  // Mol block header - need to indicate 3D coords
+  // e.g.   Avogadro08072512293D
+  // name of program MMDDYYHM3D
+  auto now = std::chrono::system_clock::now();
+  // Convert to time_t for use with ctime functions
+  std::time_t time_t_now = std::chrono::system_clock::to_time_t(now);
+  // Convert to a local time structure (tm)
+  std::tm* local_time = std::localtime(&time_t_now);
+
+  // Format the time using std::put_time
+  // %m: Month as decimal number (01-12)
+  // %d: Day of the month as decimal number (01-31)
+  // %y: Year without century (00-99)
+  // %H: Hour in 24-hour format (00-23)
+  // %M: Minute as decimal number (00-59)
+  out << "  Avogadro" << std::put_time(local_time, "%m%d%y%H%M") << "3D\n\n";
+
+  // Counts line.
+  if (mol.atomCount() > 999 || mol.bondCount() > 999) {
+    // we need V3000 support for big molecules
+    return writeV3000(out, mol);
+  }
+
+  out << setw(3) << std::right << mol.atomCount() << setw(3) << mol.bondCount()
+      << "  0  0  0  0  0  0  0  0999 V2000\n";
+  // Atom block.
+  std::vector<chargePair> chargeList;
+  for (size_t i = 0; i < mol.atomCount(); ++i) {
+    Atom atom = mol.atom(i);
+    signed int charge = atom.formalCharge();
+    if (charge)
+      chargeList.emplace_back(atom.index(), charge);
+    unsigned int chargeField = (charge < 0) ? ((charge >= -3) ? 4 - charge : 0)
+                                            : ((charge <= 3) ? charge : 0);
+    out << setw(10) << std::right << std::fixed << setprecision(4)
+        << atom.position3d().x() << setw(10) << atom.position3d().y()
+        << setw(10) << atom.position3d().z() << ' ' << setw(3) << std::left
+        << Elements::symbol(atom.atomicNumber()) << " 0" << setw(3)
+        << std::right << chargeField /* for compatibility */
+        << "  0  0  0  0  0  0  0  0  0  0\n";
+  }
+  // Bond block.
+  for (size_t i = 0; i < mol.bondCount(); ++i) {
+    Bond bond = mol.bond(i);
+
+    // Carry an undefined configuration back out. Writing 0 here would assert
+    // that the coordinates mean something, which is the claim reading the flag
+    // was meant to avoid making.
+    int stereo = 0;
+    if (bond.order() == 2 && bondStereoUnspecified(mol, i))
+      stereo = 3; // cis or trans, either
+    else if (bond.order() == 1 &&
+             atomStereoUnspecified(mol, bond.atom1().index()))
+      stereo = 4; // a wedge drawn as either
+
+    out.unsetf(std::ios::floatfield);
+    out << setw(3) << std::right << bond.atom1().index() + 1 << setw(3)
+        << bond.atom2().index() + 1 << setw(3) << static_cast<int>(bond.order())
+        << setw(3) << stereo << "  0  0  0\n";
+  }
+  // Properties block.
+  for (auto& i : chargeList) {
+    Index atomIndex = i.first;
+    signed int atomCharge = i.second;
+    out << "M  CHG  1 " << setw(3) << std::right << atomIndex + 1 << ' '
+        << setw(3) << atomCharge << "\n";
+  }
+  // TODO: isotopes, etc.
+  out << "M  END\n";
+  // Data block
+  if (m_writeProperties) {
+    writeDataBlocks(out, mol.dataMap());
+  }
+
+  if (m_writeProperties || isMode(FileFormat::MultiMolecule))
+    out << "$$$$\n";
+
+  return true;
+}
+
+std::vector<std::string> MdlFormat::fileExtensions() const
+{
+  std::vector<std::string> ext;
+  ext.emplace_back("mol");
+  return ext;
+}
+
+std::vector<std::string> MdlFormat::mimeTypes() const
+{
+  std::vector<std::string> mime;
+  mime.emplace_back("chemical/x-mdl-molfile");
+  return mime;
+}
+
+} // namespace Avogadro::Io

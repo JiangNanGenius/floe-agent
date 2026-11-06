@@ -1,0 +1,151 @@
+name: Build Wheels
+# adapted from https://github.com/pypa/cibuildwheel/blob/main/examples/github-deploy.yml
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    # Bot branches get built by their pull_request event; building the push
+    # too just doubles the jobs. The tags line is required: with only a
+    # branch filter, tag pushes (release builds) would stop triggering.
+    branches-ignore:
+      - 'dependabot/**'
+      - 'update-i18n-templates'
+    tags:
+      - '**'
+  release:
+    types:
+      - published
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # builds to skip (e.g. skip 32-bit windows)
+  CIBW_SKIP: "cp39-* *-manylinux_i686 *-win32"
+
+  # Need to do some setup before repairing the wheel on linux...
+  CIBW_REPAIR_WHEEL_COMMAND_LINUX: bash scripts/github-actions/repair_command_linux.sh
+
+  CIBW_BEFORE_ALL_LINUX: bash scripts/github-actions/repair-linux.sh
+
+  # Specify eigen location for windows
+  CIBW_ENVIRONMENT_WINDOWS: "CMAKE_ARGS=-DEIGEN3_INCLUDE_DIR:PATH=/c/eigen"
+
+  # cibuildwheel 4.0+ runs delvewheel on Windows by default. Our CMake install
+  # already places the Avogadro DLLs next to the extension modules, so tell
+  # delvewheel not to look for them outside the wheel (it only searches the
+  # wheel itself with --ignore-existing). It still vendors the MSVC runtime.
+  CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --ignore-existing -w {dest_dir} -v {wheel}"
+
+  # Run tests
+  CIBW_TEST_REQUIRES: pytest
+
+  # Run a very simple test, plus the binding safety tests, to make sure the
+  # wheels are working
+  CIBW_TEST_COMMAND: >
+    pytest {project}/scripts/github-actions/simple_test.py
+    {project}/python/tests/test_core_bindings.py
+    {project}/python/tests/test_io_bindings.py
+    {project}/python/tests/test_calc_bindings.py
+
+  # We can't currently test Mac arm64 builds on x64
+  CIBW_TEST_SKIP: "*_arm64"
+
+
+# Use bash by default for the run command
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build_wheels:
+    name: Build wheels for ${{ matrix.os }}
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux-intel
+            runs-on: ubuntu-latest
+          - os: linux-arm
+            runs-on: ubuntu-24.04-arm
+          - os: windows-intel
+            runs-on: windows-latest
+          #- os: windows-arm
+          #  runs-on: windows-11-arm
+          - os: macos-intel
+            # macos-15-intel is the last x86_64 runner
+            runs-on: macos-15-intel
+          - os: macos-arm
+            # macos-14+ (including latest) are ARM64 runners
+            runs-on: macos-latest
+          #- os: pyodide
+          #  runs-on: ubuntu-latest
+          #  platform: pyodide
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Grab the whole history so that setuptools-scm can see the tags and
+          # give it a correct version even on non-tag push.
+          fetch-depth: 0
+
+      - name: Ensure vcpkg is up to date
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/update-vcpkg
+
+      - name: Install dependencies
+        run: . ./scripts/github-actions/install.sh
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e # v4.3.5
+        env:
+          CIBW_PLATFORM: ${{ matrix.platform || 'auto' }}
+          CIBW_ARCHS: ${{ matrix.archs || 'auto' }}
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
+          path: ./wheelhouse/*.whl
+
+  build_sdist:
+    name: Build source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Grab the whole history so that setuptools-scm can see the tags and
+          # give it a correct version even on non-tag push.
+          fetch-depth: 0
+
+      - name: Build sdist
+        run: pipx run build --sdist
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cibw-sdist
+          path: dist/*.tar.gz
+
+  upload_pypi:
+    needs: [build_wheels, build_sdist]
+    name: Upload wheels to PyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/avogadro
+    permissions:
+      id-token: write
+    if: github.event_name == 'push' && startsWith(github.event.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          # unpacks all CIBW artifacts into dist/
+          pattern: cibw-*
+          path: dist
+          merge-multiple: true
+
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          password: ${{ secrets.pypi_api_token }}

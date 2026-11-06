@@ -1,0 +1,69 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#ifndef AVOGADRO_IO_CJSONFORMAT_H
+#define AVOGADRO_IO_CJSONFORMAT_H
+
+#include "fileformat.h"
+
+namespace Avogadro {
+namespace Core {
+class GaussianSet;
+}
+namespace Io {
+
+/**
+ * @class CjsonFormat cjsonformat.h <avogadro/io/cjsonformat.h>
+ * @brief Implementation of the Chemical JSON format.
+ *
+ * Writing accepts these options (a JSON object passed to setOptions()):
+ * - `"properties"` (bool, default true): write the molecule's property map.
+ * - `"cubes"` (bool, default true): write the first volumetric data set as the
+ *   `"cube"` object. Set to false to omit it, which keeps the file small;
+ *   basis set and orbital coefficients are still written, so cubes can be
+ *   recomputed.
+ */
+
+class AVOGADROIO_EXPORT CjsonFormat : public FileFormat
+{
+public:
+  CjsonFormat() = default;
+  ~CjsonFormat() override = default;
+
+  Operations supportedOperations() const override
+  {
+    return ReadWrite | File | Stream | String;
+  }
+
+  FileFormat* newInstance() const override { return new CjsonFormat; }
+  std::string identifier() const override { return "Avogadro: CJSON"; }
+  std::string name() const override { return "Chemical JSON"; }
+  std::string description() const override
+  {
+    return "CJSON format is a lightweight intermediate format used to exchange "
+           "information between Avogadro and other data parsing applications";
+  }
+
+  std::string specificationUrl() const override
+  {
+    return "https://github.com/openchemistry/chemicaljson";
+  }
+
+  std::vector<std::string> fileExtensions() const override;
+  std::vector<std::string> mimeTypes() const override;
+
+  [[nodiscard]] bool read(std::istream& in, Core::Molecule& molecule) override;
+  [[nodiscard]] bool write(std::ostream& out,
+                           const Core::Molecule& molecule) override;
+
+  // internal - shared by read()/write()
+  bool deserialize(std::istream& in, Core::Molecule& molecule);
+  bool serialize(std::ostream& out, const Core::Molecule& molecule);
+};
+
+} // namespace Io
+} // namespace Avogadro
+
+#endif // AVOGADRO_IO_CJSONFORMAT_H

@@ -1,0 +1,395 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "energycalculator.h"
+#include "gradients.h"
+
+#include <cppoptlib/utils/derivatives.h>
+
+#include <algorithm>
+#include <cmath>
+#include <iostream>
+#include <avogadro/core/angletools.h>
+
+using Eigen::Vector3d;
+
+namespace Avogadro::Calc {
+
+namespace {
+struct FiniteDifferenceObjective
+{
+  using ScalarType = Real;
+  using VectorType = Eigen::VectorXd;
+
+  explicit FiniteDifferenceObjective(EnergyCalculator* calculator_)
+    : calculator(calculator_)
+  {
+  }
+
+  ScalarType operator()(const VectorType& x) const
+  {
+    return calculator->value(x);
+  }
+
+  EnergyCalculator* calculator;
+};
+
+// Torsions are periodic, so the shortest path to the restrained value has to
+// be used. Without this a current angle of -179 degrees reads as 358 degrees
+// away from a +179 degree restraint instead of 2, and the restraint drives the
+// torsion the long way around.
+inline Real wrapToPi(Real delta)
+{
+  return std::remainder(delta, 2.0 * PI);
+}
+} // namespace
+
+Real EnergyCalculator::evaluate(const Eigen::VectorXd& x, Eigen::VectorXd* grad)
+{
+  if (grad != nullptr) {
+    // Solvers may pass an uninitialized gradient buffer.
+    // Ensure derived implementations can safely index into grad.
+    if (grad->rows() != x.rows())
+      grad->resize(x.rows());
+    grad->setZero();
+    gradient(x, *grad);
+  }
+  return value(x);
+}
+
+void EnergyCalculator::finiteGradient(const Eigen::VectorXd& x,
+                                      Eigen::VectorXd& grad, int accuracy)
+{
+  const int accuracyLevel = std::clamp(accuracy, 0, 3);
+  FiniteDifferenceObjective objective(this);
+  cppoptlib::utils::ComputeFiniteGradient(objective, x, &grad, accuracyLevel);
+}
+
+void EnergyCalculator::gradient(const Eigen::VectorXd& x, Eigen::VectorXd& grad)
+{
+  // Derived value() implementations add constraintEnergies(), so the finite
+  // difference already contains the restraint terms - adding
+  // constraintGradients() here as well would count them twice.
+  finiteGradient(x, grad);
+  // clean and handle frozen atoms
+  cleanGradients(grad);
+}
+
+std::vector<Real> EnergyCalculator::valueBatch(
+  const std::vector<Eigen::VectorXd>& coords)
+{
+  // Default: loop one coordinate set at a time. Derived classes with a true
+  // batch transport (e.g. ScriptEnergy over binary-v1) override this.
+  std::vector<Real> energies;
+  energies.reserve(coords.size());
+  for (const auto& x : coords)
+    energies.push_back(value(x));
+  return energies;
+}
+
+void EnergyCalculator::gradientBatch(const std::vector<Eigen::VectorXd>& coords,
+                                     std::vector<Eigen::VectorXd>& grads)
+{
+  // Default: loop one coordinate set at a time. gradient() already cleans and
+  // applies constraints, so the fallback matches the single-shot path.
+  grads.resize(coords.size());
+  for (std::size_t i = 0; i < coords.size(); ++i)
+    gradient(coords[i], grads[i]);
+}
+
+void EnergyCalculator::hessian(const Eigen::VectorXd& x, Eigen::MatrixXd& hess)
+{
+  finiteHessian(x, hess);
+}
+
+void EnergyCalculator::finiteHessian(const Eigen::VectorXd& x,
+                                     Eigen::MatrixXd& hess, int accuracy)
+{
+  const int accuracyLevel = std::clamp(accuracy, 0, 1);
+  FiniteDifferenceObjective objective(this);
+  cppoptlib::utils::ComputeFiniteHessian(objective, x, &hess, accuracyLevel);
+}
+
+void EnergyCalculator::cleanGradients(Eigen::VectorXd& grad)
+{
+  unsigned int size = grad.rows();
+  // check for overflows -- in case of divide by zero, etc.
+  for (unsigned int i = 0; i < size; ++i) {
+    if (!std::isfinite(grad[i])) {
+      grad[i] = 0.0;
+    }
+  }
+
+  // freeze any masked atoms or coordinates
+  if (m_mask.rows() == size)
+    grad = grad.cwiseProduct(m_mask);
+  else if (m_mask.rows() > 0)
+    std::cerr << "Error: mask size " << m_mask.rows() << " " << grad.rows()
+              << '\n';
+}
+
+void EnergyCalculator::setMaskFromMolecule(const Core::Molecule& molecule)
+{
+  const auto size = static_cast<Eigen::Index>(3 * molecule.atomCount());
+  m_mask = molecule.frozenAtomMask();
+  if (m_mask.rows() != size)
+    m_mask = Eigen::VectorXd::Ones(size);
+}
+
+void EnergyCalculator::appendError(const std::string& errorString,
+                                   bool newLine) const
+{
+  m_error += errorString;
+  if (newLine)
+    m_error += "\n";
+}
+
+void EnergyCalculator::setConstraints(
+  const std::vector<Core::Constraint>& constraints)
+{
+  m_distanceConstraints.clear();
+  m_angleConstraints.clear();
+  m_torsionConstraints.clear();
+  m_outOfPlaneConstraints.clear();
+
+  for (const auto& constraint : constraints) {
+    switch (constraint.type()) {
+      case Core::Constraint::DistanceConstraint:
+        m_distanceConstraints.push_back(constraint);
+        break;
+      case Core::Constraint::AngleConstraint:
+        m_angleConstraints.push_back(constraint);
+        break;
+      case Core::Constraint::TorsionConstraint:
+        m_torsionConstraints.push_back(constraint);
+        break;
+      case Core::Constraint::OutOfPlaneConstraint:
+        m_outOfPlaneConstraints.push_back(constraint);
+        break;
+      default:
+        std::cerr << "Unknown constraint type: " << constraint.type() << '\n';
+    }
+  }
+}
+
+std::vector<Core::Constraint> EnergyCalculator::constraints() const
+{
+  Index totalSize = m_distanceConstraints.size() + m_angleConstraints.size() +
+                    m_torsionConstraints.size() +
+                    m_outOfPlaneConstraints.size();
+  std::vector<Core::Constraint> allConstraints;
+  allConstraints.reserve(totalSize);
+
+  for (const auto& constraint : m_distanceConstraints)
+    allConstraints.push_back(constraint);
+
+  for (const auto& constraint : m_angleConstraints)
+    allConstraints.push_back(constraint);
+
+  for (const auto& constraint : m_torsionConstraints)
+    allConstraints.push_back(constraint);
+
+  for (const auto& constraint : m_outOfPlaneConstraints)
+    allConstraints.push_back(constraint);
+
+  return allConstraints;
+}
+
+Real EnergyCalculator::constraintEnergies(const Eigen::VectorXd& x)
+{
+  Real totalEnergy = 0.0;
+  const auto n = static_cast<Index>(x.size());
+
+  for (const auto& constraint : m_distanceConstraints) {
+    const Index a = constraint.aIndex();
+    const Index b = constraint.bIndex();
+    // size of the problem
+    if ((3 * a + 2 >= n) || (3 * b + 2 >= n))
+      // shouldn't happen - invalid constraint
+      continue;
+
+    const Vector3d vA = x.segment<3>(3 * a);
+    const Vector3d vB = x.segment<3>(3 * b);
+    const Vector3d vAB = vA - vB;
+    const Real distance = vAB.norm();
+    const Real delta = distance - constraint.value();
+
+    // harmonic restraint
+    totalEnergy += constraint.k() * delta * delta;
+  }
+
+  for (const auto& constraint : m_angleConstraints) {
+    const Index a = constraint.aIndex();
+    const Index b = constraint.bIndex();
+    const Index c = constraint.cIndex();
+    if ((3 * a + 2 >= n) || (3 * b + 2 >= n) || (3 * c + 2 >= n))
+      // shouldn't happen, invalid constraint
+      continue;
+
+    const Vector3d vA = x.segment<3>(3 * a);
+    const Vector3d vB = x.segment<3>(3 * b);
+    const Vector3d vC = x.segment<3>(3 * c);
+    // work in radians to match the analytic gradients in constraintGradients()
+    const Real angle = calculateAngle(vA, vB, vC) * DEG_TO_RAD;
+    const Real delta = angle - constraint.value() * DEG_TO_RAD;
+
+    // harmonic restraint
+    totalEnergy += constraint.k() * delta * delta;
+  }
+
+  for (const auto& constraint : m_torsionConstraints) {
+    const Index a = constraint.aIndex();
+    const Index b = constraint.bIndex();
+    const Index c = constraint.cIndex();
+    const Index d = constraint.dIndex();
+    if ((3 * a + 2 >= n) || (3 * b + 2 >= n) || (3 * c + 2 >= n) ||
+        (3 * d + 2 >= n))
+      // shouldn't happen, invalid constraint
+      continue;
+
+    const Vector3d vA = x.segment<3>(3 * a);
+    const Vector3d vB = x.segment<3>(3 * b);
+    const Vector3d vC = x.segment<3>(3 * c);
+    const Vector3d vD = x.segment<3>(3 * d);
+    const Real angle = calculateDihedral(vA, vB, vC, vD) * DEG_TO_RAD;
+    const Real delta = wrapToPi(angle - constraint.value() * DEG_TO_RAD);
+
+    // harmonic restraint
+    totalEnergy += constraint.k() * delta * delta;
+  }
+
+  for (const auto& constraint : m_outOfPlaneConstraints) {
+    const Index a = constraint.aIndex();
+    const Index b = constraint.bIndex();
+    const Index c = constraint.cIndex();
+    const Index d = constraint.dIndex();
+    if ((3 * a + 2 >= n) || (3 * b + 2 >= n) || (3 * c + 2 >= n) ||
+        (3 * d + 2 >= n))
+      // shouldn't happen, invalid constraint
+      continue;
+
+    const Vector3d vA = x.segment<3>(3 * a);
+    const Vector3d vB = x.segment<3>(3 * b);
+    const Vector3d vC = x.segment<3>(3 * c);
+    const Vector3d vD = x.segment<3>(3 * d);
+    // Wilson angles are limited to +/- 90 degrees, so no wrapping needed
+    const Real angle = outOfPlaneAngle(vA, vB, vC, vD) * DEG_TO_RAD;
+    const Real delta = angle - constraint.value() * DEG_TO_RAD;
+
+    // harmonic restraint
+    totalEnergy += constraint.k() * delta * delta;
+  }
+
+  return totalEnergy;
+}
+
+void EnergyCalculator::constraintGradients(const Eigen::VectorXd& x,
+                                           Eigen::VectorXd& grad)
+{
+  const auto n = static_cast<Index>(x.size());
+  for (const auto& constraint : m_distanceConstraints) {
+    const Index a = constraint.aIndex();
+    const Index b = constraint.bIndex();
+    // size of the problem
+    if ((3 * a + 2 >= n) || (3 * b + 2 >= n))
+      // shouldn't happen - invalid constraint
+      continue;
+
+    const Vector3d vA = x.segment<3>(3 * a);
+    const Vector3d vB = x.segment<3>(3 * b);
+    const Vector3d vAB = vA - vB;
+    const Real distance = vAB.norm();
+    const Real delta = distance - constraint.value();
+    const Real dE = constraint.k() * 2 * delta;
+
+    grad.segment<3>(3 * a) += (dE * vAB) / distance;
+    grad.segment<3>(3 * b) -= (dE * vAB) / distance;
+  }
+
+  for (const auto& constraint : m_angleConstraints) {
+    const Index a = constraint.aIndex();
+    const Index b = constraint.bIndex();
+    const Index c = constraint.cIndex();
+    if ((3 * a + 2 >= n) || (3 * b + 2 >= n) || (3 * c + 2 >= n))
+      // shouldn't happen, invalid constraint
+      continue;
+
+    const Vector3d vA = x.segment<3>(3 * a);
+    const Vector3d vB = x.segment<3>(3 * b);
+    const Vector3d vC = x.segment<3>(3 * c);
+
+    Vector3d aGrad, bGrad, cGrad;
+    // angleGradient() returns radians and d(radians)/dx
+    Real angle = angleGradient(vA, vB, vC, aGrad, bGrad, cGrad);
+    const Real delta = angle - constraint.value() * DEG_TO_RAD;
+    const Real dE = constraint.k() * 2 * delta;
+
+    grad.segment<3>(3 * a) += dE * aGrad;
+    grad.segment<3>(3 * b) += dE * bGrad;
+    grad.segment<3>(3 * c) += dE * cGrad;
+  }
+
+  for (const auto& constraint : m_torsionConstraints) {
+    const Index a = constraint.aIndex();
+    const Index b = constraint.bIndex();
+    const Index c = constraint.cIndex();
+    const Index d = constraint.dIndex();
+    if ((3 * a + 2 >= n) || (3 * b + 2 >= n) || (3 * c + 2 >= n) ||
+        (3 * d + 2 >= n))
+      // shouldn't happen, invalid constraint
+      continue;
+
+    const Vector3d vA = x.segment<3>(3 * a);
+    const Vector3d vB = x.segment<3>(3 * b);
+    const Vector3d vC = x.segment<3>(3 * c);
+    const Vector3d vD = x.segment<3>(3 * d);
+    Vector3d aGrad, bGrad, cGrad, dGrad;
+    // dihedralGradient() returns radians and d(radians)/dx
+    const Real angle =
+      dihedralGradient(vA, vB, vC, vD, aGrad, bGrad, cGrad, dGrad);
+    const Real delta = wrapToPi(angle - constraint.value() * DEG_TO_RAD);
+    const Real dE = constraint.k() * 2 * delta;
+
+    grad.segment<3>(3 * a) += dE * aGrad;
+    grad.segment<3>(3 * b) += dE * bGrad;
+    grad.segment<3>(3 * c) += dE * cGrad;
+    grad.segment<3>(3 * d) += dE * dGrad;
+  }
+
+  for (const auto& constraint : m_outOfPlaneConstraints) {
+
+    const Index a = constraint.aIndex();
+    const Index b = constraint.bIndex();
+    const Index c = constraint.cIndex();
+    const Index d = constraint.dIndex();
+    if ((3 * a + 2 >= n) || (3 * b + 2 >= n) || (3 * c + 2 >= n) ||
+        (3 * d + 2 >= n))
+      // shouldn't happen, invalid constraint
+      continue;
+
+    const Vector3d vA = x.segment<3>(3 * a);
+    const Vector3d vB = x.segment<3>(3 * b);
+    const Vector3d vC = x.segment<3>(3 * c);
+    const Vector3d vD = x.segment<3>(3 * d);
+    Vector3d aGrad, bGrad, cGrad, dGrad;
+    // outOfPlaneGradient() returns radians and d(radians)/dx
+    const Real angle =
+      outOfPlaneGradient(vA, vB, vC, vD, aGrad, bGrad, cGrad, dGrad);
+    const Real delta = angle - constraint.value() * DEG_TO_RAD;
+    const Real dE = constraint.k() * 2 * delta;
+
+    grad.segment<3>(3 * a) += dE * aGrad;
+    grad.segment<3>(3 * b) += dE * bGrad;
+    grad.segment<3>(3 * c) += dE * cGrad;
+    grad.segment<3>(3 * d) += dE * dGrad;
+  }
+
+  // Callers mask frozen atoms before adding these terms, so re-apply the mask
+  // here - otherwise a restraint can drag a frozen atom around.
+  if (m_mask.rows() == grad.rows())
+    grad = grad.cwiseProduct(m_mask);
+}
+
+} // namespace Avogadro::Calc

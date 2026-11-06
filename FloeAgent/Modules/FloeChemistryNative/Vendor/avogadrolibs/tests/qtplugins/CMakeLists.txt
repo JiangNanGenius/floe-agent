@@ -1,0 +1,282 @@
+# Command-boundary tests for qtplugins: each plugin's handleCommand() driven
+# in-process through CommandTestHarness, with no MainWindow. See the 2.1
+# release plan, section 4.2.
+#
+# The plugins are linked as static libraries and instantiated directly, so
+# this needs BUILD_STATIC_PLUGINS; tests/CMakeLists.txt skips the directory
+# otherwise.
+
+find_package(Qt${QT_VERSION} COMPONENTS Widgets Test REQUIRED)
+
+# Plugin targets under test, and the test file for each (lowercased name).
+# Only plugins that need nothing but a molecule (and, for Focus, a plain
+# Rendering::Camera/Scene); tools needing a GLWidget or renderer are tested
+# through avogadroapp's RPC harness instead.
+set(plugins
+  AlignTool
+  ApplyColors
+  Bonding
+  ConstraintsExtension
+  Crystal
+  Editor
+  Focus
+  Forcefield
+  MeasureTool
+  PlayerTool
+  ScriptFileFormats
+  Select
+  SpaceGroup
+  Surfaces
+  TemplateTool
+)
+
+set(testSrcs "")
+set(pluginTargets "")
+set(pluginIncludes "")
+foreach(plugin ${plugins})
+  if(NOT TARGET ${plugin})
+    message(STATUS "QtPlugins tests: no ${plugin} target, skipping it.")
+    continue()
+  endif()
+  message(STATUS "Adding ${plugin} command test.")
+  string(TOLOWER ${plugin} pluginname)
+  list(APPEND testSrcs ${pluginname}test.cpp)
+  list(APPEND pluginTargets ${plugin})
+  # The plugin headers are not installed; include them from the source tree.
+  get_target_property(pluginDir ${plugin} SOURCE_DIR)
+  list(APPEND pluginIncludes "${pluginDir}")
+endforeach()
+
+# Scene plugins whose per-layer settings are saved as text, covered together by
+# scenepluginserializetest.cpp rather than one test file each.
+set(scenePlugins
+  BallStick
+  Cartoons
+  Label
+  Licorice
+  VanDerWaals
+  Wireframe
+)
+set(haveScenePlugins ON)
+foreach(plugin ${scenePlugins})
+  if(NOT TARGET ${plugin})
+    message(STATUS "QtPlugins tests: no ${plugin} target, skipping the "
+                   "scene plugin serialize test.")
+    set(haveScenePlugins OFF)
+  endif()
+endforeach()
+if(haveScenePlugins)
+  message(STATUS "Adding scene plugin serialize test.")
+  list(APPEND testSrcs scenepluginserializetest.cpp labelchargetest.cpp)
+  foreach(plugin ${scenePlugins})
+    list(APPEND pluginTargets ${plugin})
+    get_target_property(pluginDir ${plugin} SOURCE_DIR)
+    list(APPEND pluginIncludes "${pluginDir}")
+  endforeach()
+endif()
+
+# GLWidget re-entrancy regression test (needs the QtOpenGL library).
+set(haveGLWidgetTest OFF)
+if(TARGET Avogadro::QtOpenGL)
+  set(haveGLWidgetTest ON)
+  list(APPEND testSrcs glwidgetreentrytest.cpp)
+endif()
+
+if(NOT testSrcs)
+  return()
+endif()
+
+add_executable(AvogadroQtPluginsTests
+  qtpluginstestmain.cpp
+  commandtestharness.cpp
+  commandtestharnessgtest.cpp
+  commandtestharnesstest.cpp
+  ${testSrcs})
+target_include_directories(AvogadroQtPluginsTests PRIVATE ${pluginIncludes})
+# Our own main() creates the QApplication, so link gtest without gtest_main.
+target_link_libraries(AvogadroQtPluginsTests
+  ${pluginTargets}
+  Avogadro::QtGui
+  ${GTEST_LIBRARIES} ${EXTRA_LINK_LIB}
+  Qt${QT_VERSION}::Widgets Qt${QT_VERSION}::Test)
+
+if(haveGLWidgetTest)
+  target_link_libraries(AvogadroQtPluginsTests Avogadro::QtOpenGL)
+endif()
+
+# Plugin headers include rendering headers, and the Focus test builds a
+# Camera and Scene of its own.
+if(TARGET Avogadro::Rendering)
+  target_link_libraries(AvogadroQtPluginsTests Avogadro::Rendering)
+endif()
+
+# surfaces.h and applycolors.h include tinycolormap.hpp.
+if((TARGET Surfaces OR TARGET ApplyColors) AND TARGET tinycolormap)
+  target_link_libraries(AvogadroQtPluginsTests tinycolormap)
+endif()
+
+set(testNames CommandTestHarness)
+foreach(plugin ${pluginTargets})
+  if(NOT plugin IN_LIST scenePlugins OR NOT haveScenePlugins)
+    list(APPEND testNames ${plugin})
+  endif()
+endforeach()
+if(haveScenePlugins)
+  list(APPEND testNames ScenePluginSerialize)
+endif()
+
+foreach(plugin ${testNames})
+  if(plugin STREQUAL "CommandTestHarness")
+    set(filter "CommandTestHarnessTest.*")
+  elseif(plugin STREQUAL "ScenePluginSerialize")
+    set(filter "*ScenePluginSerializeTest.*")
+  elseif(plugin STREQUAL "ConstraintsExtension")
+    # The suite is named ConstraintsCommandTest, not ConstraintsExtension*.
+    set(filter "ConstraintsCommandTest.*")
+  elseif(plugin STREQUAL "MeasureTool")
+    # measuretooltest.cpp also defines MeasureWidgetTest.
+    set(filter "MeasureToolCommandTest.*:MeasureWidgetTest.*")
+  elseif(plugin STREQUAL "Surfaces")
+    # surfacestest.cpp also defines SurfacesResolutionTest.
+    set(filter "SurfacesCommandTest.*:SurfacesResolutionTest.*")
+  else()
+    set(filter "${plugin}CommandTest.*")
+  endif()
+  add_test(NAME "QtPlugins-${plugin}"
+    COMMAND AvogadroQtPluginsTests "--gtest_filter=${filter}")
+  set_tests_properties("QtPlugins-${plugin}" PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    TIMEOUT 120)
+endforeach()
+
+if(haveGLWidgetTest)
+  add_test(NAME "QtPlugins-GLWidgetReentry"
+    COMMAND AvogadroQtPluginsTests "--gtest_filter=GLWidgetReentryTest.*")
+  set_tests_properties("QtPlugins-GLWidgetReentry" PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    TIMEOUT 120)
+endif()
+
+# Label's text labels make OpenGL calls, which the offscreen platform cannot
+# provide; macOS has a real (headless-capable) platform plugin for it. Elsewhere
+# the tests skip themselves when no context can be created.
+if(haveScenePlugins)
+  if(APPLE)
+    set(labelChargePlatform "cocoa")
+  else()
+    set(labelChargePlatform "offscreen")
+  endif()
+  add_test(NAME "QtPlugins-LabelCharge"
+    COMMAND AvogadroQtPluginsTests "--gtest_filter=LabelChargeTest.*")
+  set_tests_properties("QtPlugins-LabelCharge" PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=${labelChargePlatform}"
+    TIMEOUT 120)
+endif()
+
+# Tests that find plugins through the PluginManager, as the application does,
+# instead of linking and constructing each one. A separate executable:
+# AvogadroQtPluginsTests links individual plugin libraries, while
+# Avogadro::QtPlugins already contains all of them, so the two must not mix.
+if(TARGET Avogadro::QtPlugins)
+  add_executable(AvogadroQtPluginSmokeTests
+    pluginsmoketestmain.cpp
+    pluginmanagertest.cpp
+    plugintestutils.cpp)
+  target_include_directories(AvogadroQtPluginSmokeTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(AvogadroQtPluginSmokeTests
+    Avogadro::QtPlugins Avogadro::QtGui
+    ${GTEST_LIBRARIES} ${EXTRA_LINK_LIB}
+    Qt${QT_VERSION}::Widgets Qt${QT_VERSION}::Test)
+
+  add_test(NAME "QtPlugins-PluginManager"
+    COMMAND AvogadroQtPluginSmokeTests
+      "--gtest_filter=PluginManagerTest.*")
+  set_tests_properties("QtPlugins-PluginManager" PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    TIMEOUT 120)
+
+  # Tool mouse and key handling, through a GLWidget that is never shown.
+  if(TARGET Avogadro::QtOpenGL)
+    target_sources(AvogadroQtPluginSmokeTests PRIVATE
+      pluginsmoketest.cpp
+      toolinteractiontest.cpp
+      toolinteractionharness.cpp
+      commandtestharness.cpp
+      commandtestharnessgtest.cpp)
+    target_link_libraries(AvogadroQtPluginSmokeTests
+      Avogadro::QtOpenGL Avogadro::Rendering)
+    # Fixtures are read from the test data.
+    target_compile_definitions(AvogadroQtPluginSmokeTests PRIVATE
+      AVOGADRO_DATA_ROOT="${AVOGADRO_DATA_ROOT}")
+
+    # Text labels need an OpenGL context: macOS' offscreen platform has none,
+    # so use the real (headless-capable) one there, as LabelCharge does.
+    # Elsewhere the tests that need a context skip themselves without one.
+    if(APPLE)
+      set(smokePlatform "cocoa")
+    else()
+      set(smokePlatform "offscreen")
+    endif()
+    # One gtest test per plugin and kind of check; see pluginsmoketest.cpp.
+    foreach(suite Extension Actions Scene Tool)
+      add_test(NAME "QtPlugins-Smoke-${suite}"
+        COMMAND AvogadroQtPluginSmokeTests
+          "--gtest_filter=PluginSmoke/${suite}.*")
+      set_tests_properties("QtPlugins-Smoke-${suite}" PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=${smokePlatform}"
+        TIMEOUT 600)
+    endforeach()
+    add_test(NAME "QtPlugins-ToolInteraction"
+      COMMAND AvogadroQtPluginSmokeTests
+        "--gtest_filter=ToolInteractionTest.*")
+    set_tests_properties("QtPlugins-ToolInteraction" PROPERTIES
+      ENVIRONMENT "QT_QPA_PLATFORM=${smokePlatform}"
+      TIMEOUT 300)
+  endif()
+endif()
+
+# fuzz_qtplugin_commands: libFuzzer drives random command sequences through
+# CommandTestHarness, in-process (2.1 release plan, section 4.2). Same plugins
+# as the tests above, minus Surfaces: every Surfaces command starts a worker
+# thread and a grid computation sized by a caller-supplied resolution, which is
+# neither deterministic nor cheap, so it is exercised by the Surfaces tests
+# only. Linux-only in CI: the Windows fuzz job builds with USE_QT=OFF.
+if(ENABLE_FUZZ OR DEFINED ENV{LIB_FUZZING_ENGINE})
+  set(fuzzPlugins AlignTool Bonding Crystal Editor Focus MeasureTool Select)
+  set(fuzzIncludes "")
+  set(fuzzReady TRUE)
+  foreach(plugin ${fuzzPlugins})
+    if(TARGET ${plugin})
+      get_target_property(pluginDir ${plugin} SOURCE_DIR)
+      list(APPEND fuzzIncludes "${pluginDir}")
+    else()
+      set(fuzzReady FALSE)
+    endif()
+  endforeach()
+
+  if(fuzzReady AND TARGET Avogadro::Rendering)
+    add_executable(fuzz_qtplugin_commands
+      fuzz-qtplugin-commands.cpp
+      commandtestharness.cpp)
+    target_include_directories(fuzz_qtplugin_commands
+      PRIVATE ${fuzzIncludes} ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(fuzz_qtplugin_commands
+      PRIVATE ${fuzzPlugins} Avogadro::QtGui Avogadro::Rendering
+      Qt${QT_VERSION}::Widgets Qt${QT_VERSION}::Test)
+    if(DEFINED ENV{LIB_FUZZING_ENGINE})
+      target_link_libraries(fuzz_qtplugin_commands
+        PRIVATE $ENV{LIB_FUZZING_ENGINE})
+    else()
+      target_compile_options(fuzz_qtplugin_commands
+        PRIVATE ${AvogadroLibs_FUZZ_COMPILE_OPTIONS})
+      target_link_options(fuzz_qtplugin_commands
+        PRIVATE ${AvogadroLibs_FUZZ_LINK_OPTIONS})
+      target_link_libraries(fuzz_qtplugin_commands
+        PRIVATE ${AvogadroLibs_FUZZ_LINK_LIBS})
+    endif()
+  else()
+    message(STATUS "Skipping fuzz_qtplugin_commands: a plugin target is "
+      "missing.")
+  endif()
+endif()

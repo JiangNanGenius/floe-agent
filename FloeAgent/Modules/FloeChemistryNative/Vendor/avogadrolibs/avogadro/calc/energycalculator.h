@@ -1,0 +1,245 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#ifndef AVOGADRO_CALC_ENERGYCALCULATOR_H
+#define AVOGADRO_CALC_ENERGYCALCULATOR_H
+
+#include "avogadrocalcexport.h"
+
+#include <avogadro/core/avogadrocore.h>
+#include <avogadro/core/constraint.h>
+#include <avogadro/core/molecule.h>
+#include <avogadro/core/variantmap.h>
+#include <avogadro/core/vector.h>
+
+namespace Avogadro {
+namespace Core {
+class Molecule;
+}
+
+namespace Calc {
+
+// Alias the shared constant in avogadrocore.h so the value lives in one place.
+constexpr Real KCAL_TO_KJ = Avogadro::KCAL_TO_KJ;
+
+class AVOGADROCALC_EXPORT EnergyCalculator
+{
+public:
+  EnergyCalculator() = default;
+  virtual ~EnergyCalculator() = default;
+
+  /**
+   * Create a new instance of the model. Ownership passes to the
+   * caller.
+   */
+  virtual EnergyCalculator* newInstance() const = 0;
+
+  /**
+   * @return a unique identifier for this calculator.
+   */
+  virtual std::string identifier() const = 0;
+
+  /**
+   * @return A short translatable name for this method (e.g., MMFF94, UFF, etc.)
+   */
+  virtual std::string name() const = 0;
+
+  /**
+   * @return a description of the method
+   */
+  virtual std::string description() const = 0;
+
+  /**
+   * @brief Return a JSON object string describing optional user-editable
+   * settings for this model. Empty string means no user options.
+   */
+  virtual std::string userOptions() const { return std::string(); }
+
+  /**
+   * @brief Set user-selected options serialized as a JSON object string.
+   * @return True on success.
+   */
+  virtual bool setUserOptions([[maybe_unused]] const std::string& optionsJson)
+  {
+    return true;
+  }
+
+  /**
+   * @brief Indicate if your method only treats a subset of elements
+   * @return an element mask corresponding to the defined subset
+   */
+  virtual Core::Molecule::ElementMask elements() const = 0;
+
+  /**
+   * @brief Indicate if your method can handle unit cells
+   * @return true if unit cells are supported
+   */
+  virtual bool acceptsUnitCell() const { return false; }
+
+  /**
+   * @brief Indicate if your method can handle ions
+   * Many methods only treat neutral systems, either
+   * a neutral molecule or a neutral unit cell.
+   *
+   * @return true if ions are supported
+   */
+  virtual bool acceptsIons() const { return false; }
+
+  /**
+   * @brief Indicate if your method can handle radicals
+   * Most methods only treat closed-shell molecules.
+   * @return true if radicals are supported
+   */
+  virtual bool acceptsRadicals() const { return false; }
+
+  /**
+   * Calculate the energy for this method.
+   */
+  virtual Real value(const Eigen::VectorXd& x) = 0;
+
+  /**
+   * Calculate the gradients for this method, defaulting to numerical
+   * finite-difference methods
+   */
+  virtual void gradient(const Eigen::VectorXd& x, Eigen::VectorXd& grad);
+
+  /**
+   * Calculate numerical gradients for this method.
+   */
+  void finiteGradient(const Eigen::VectorXd& x, Eigen::VectorXd& grad,
+                      int accuracy = 0);
+
+  /**
+   * Evaluate the energy and optionally gradients in one call.
+   *
+   * Derived classes with efficient fused implementations should override this.
+   */
+  virtual Real evaluate(const Eigen::VectorXd& x,
+                        Eigen::VectorXd* grad = nullptr);
+
+  /**
+   * @brief Indicate if this method can evaluate many coordinate sets in a
+   * single call (e.g. an external script that batches frames).
+   *
+   * When false (the default), valueBatch()/gradientBatch() simply loop over
+   * the supplied coordinate sets, calling value()/gradient() once each.
+   */
+  virtual bool supportsBatch() const { return false; }
+
+  /**
+   * Evaluate the energy for several coordinate sets (e.g. conformers or
+   * trajectory frames).
+   *
+   * The default implementation loops over @p coords calling value(). Derived
+   * classes with a true batch transport should override this.
+   *
+   * @param coords A vector of coordinate vectors, each of length 3 * atomCount.
+   * @return One energy per coordinate set, in the same order as @p coords.
+   */
+  virtual std::vector<Real> valueBatch(
+    const std::vector<Eigen::VectorXd>& coords);
+
+  /**
+   * Evaluate the gradients for several coordinate sets.
+   *
+   * The default implementation loops over @p coords calling gradient().
+   * Derived classes with a true batch transport should override this.
+   *
+   * @param coords A vector of coordinate vectors, each of length 3 * atomCount.
+   * @param grads Filled with one gradient vector per coordinate set, in the
+   * same order as @p coords (resized as needed).
+   */
+  virtual void gradientBatch(const std::vector<Eigen::VectorXd>& coords,
+                             std::vector<Eigen::VectorXd>& grads);
+
+  /**
+   * Calculate the Hessian matrix for this method, defaulting to numerical
+   * finite-difference methods.
+   */
+  virtual void hessian(const Eigen::VectorXd& x, Eigen::MatrixXd& hess);
+
+  /**
+   * Calculate numerical Hessian for this method.
+   */
+  void finiteHessian(const Eigen::VectorXd& x, Eigen::MatrixXd& hess,
+                     int accuracy = 0);
+
+  /**
+   * Called to 'clean' gradients @param grad (e.g., for constraints)
+   */
+  void cleanGradients(Eigen::VectorXd& grad);
+
+  /**
+   * Called to get the energies for the current set of constraints.
+   * which should be added to the value() method for real energies
+   * in derived classes
+   * @return the sum of the constraint energies
+   */
+  Real constraintEnergies(const Eigen::VectorXd& x);
+
+  /**
+   * Called to get the gradients for the current set of constraints.
+   * which should be added to the gradient() method in derived classes.
+   * @param x the current coordinates
+   * @param grad the gradient vector to be updated with constraint gradients
+   */
+  void constraintGradients(const Eigen::VectorXd& x, Eigen::VectorXd& grad);
+
+  /**
+   * Called to get the constraints for this method.
+   * @return the constraints for this method
+   */
+  std::vector<Core::Constraint> constraints() const;
+
+  // Set the constraints for this method
+  void setConstraints(const std::vector<Core::Constraint>& constraints);
+
+  /**
+   * Called to update the "frozen" mask (e.g., during editing)
+   */
+  void setMask(Eigen::VectorXd mask) { m_mask = mask; }
+
+  /**
+   * @return the frozen atoms mask
+   */
+  Eigen::VectorXd mask() const { return m_mask; }
+
+  /**
+   * Called when the current molecule changes. Implementations should call
+   * setMaskFromMolecule() so the mask starts from the molecule's frozen
+   * atoms; callers can still override it afterwards with setMask().
+   */
+  virtual void setMolecule(Core::Molecule* mol) = 0;
+
+protected:
+  /**
+   * Reset the mask to the molecule's frozen atoms, or free every atom if the
+   * molecule has no frozen-atom mask of the right size.
+   */
+  void setMaskFromMolecule(const Core::Molecule& molecule);
+
+  /**
+   * @brief Append an error to the error string for the model.
+   * @param errorString The error to be added.
+   * @param newLine Add a new line after the error string?
+   */
+  void appendError(const std::string& errorString, bool newLine = true) const;
+
+  Eigen::VectorXd m_mask; // optimize or frozen atom mask
+  // Separate the constraints into different types
+  // for speed and convenience.
+  std::vector<Core::Constraint> m_distanceConstraints;
+  std::vector<Core::Constraint> m_angleConstraints;
+  std::vector<Core::Constraint> m_torsionConstraints;
+  std::vector<Core::Constraint> m_outOfPlaneConstraints;
+
+private:
+  mutable std::string m_error;
+};
+
+} // end namespace Calc
+} // end namespace Avogadro
+
+#endif // AVOGADRO_CALC_ENERGYCALCULATOR_H

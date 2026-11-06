@@ -1,0 +1,259 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#ifndef AVOGADRO_QTGUI_TOOLPLUGIN_H
+#define AVOGADRO_QTGUI_TOOLPLUGIN_H
+
+#include "avogadroqtguiexport.h"
+
+#include <QtCore/QJsonObject>
+#include <QtCore/QObject>
+#include <QtCore/QVariantMap>
+
+#include <memory>
+
+class QAction;
+class QKeyEvent;
+class QMouseEvent;
+class QUndoCommand;
+class QWheelEvent;
+
+namespace Avogadro {
+
+namespace Rendering {
+class GroupNode;
+class GLRenderer;
+} // namespace Rendering
+
+namespace QtOpenGL {
+class GLWidget;
+}
+
+namespace QtGui {
+class CommandRegistry;
+class Molecule;
+class RWMolecule;
+
+/**
+ * @class ToolPlugin toolplugin.h <avogadro/qtgui/toolplugin.h>
+ * @brief The base class for plugins that interact with QtOpenGL::GLWidget.
+ * @author Allison Vacanti
+ *
+ * Tool commands can be described with a CommandRegistry, in the same way as
+ * for ExtensionPlugin.
+ * @sa ExtensionPlugin
+ */
+class AVOGADROQTGUI_EXPORT ToolPlugin : public QObject
+{
+  Q_OBJECT
+
+public:
+  explicit ToolPlugin(QObject* parent = nullptr);
+  ~ToolPlugin() override;
+
+  /**
+   * The name of the tool, will be displayed in the user interface.
+   */
+  virtual QString name() const = 0;
+
+  /**
+   * A description of the tool, may be displayed in the user interface.
+   */
+  virtual QString description() const = 0;
+
+  /**
+   * A priority of the tool for sorting in the user interface.
+   */
+  virtual unsigned char priority() const = 0;
+
+  /**
+   * @return The QAction that will cause this tool to become active.
+   */
+  virtual QAction* activateAction() const = 0;
+
+  /**
+   * Set the tool icon (based on dark / light theme).
+   */
+  virtual void setIcon(bool darkTheme = false) = 0;
+
+  /**
+   * @return A QWidget that will be displayed to the user while this tool is
+   * active.
+   */
+  virtual QWidget* toolWidget() const = 0;
+
+  /**
+   * Respond to user-input events.
+   * @param e The QEvent object.
+   * @return A QUndoCommand that can be used to undo any changes to the
+   * molecule. If no undoable change is made, the method may return nullptr.
+   * @{
+   */
+  virtual QUndoCommand* mousePressEvent(QMouseEvent* e);
+  virtual QUndoCommand* mouseReleaseEvent(QMouseEvent* e);
+  virtual QUndoCommand* mouseMoveEvent(QMouseEvent* e);
+  virtual QUndoCommand* mouseDoubleClickEvent(QMouseEvent* e);
+  virtual QUndoCommand* wheelEvent(QWheelEvent* e);
+  virtual QUndoCommand* keyPressEvent(QKeyEvent* e);
+  virtual QUndoCommand* keyReleaseEvent(QKeyEvent* e);
+  /**@}*/
+
+  /**
+   * Override this method to add drawables to the scene graph.
+   */
+  virtual void draw(Rendering::GroupNode& node);
+
+  /**
+   * Called by the app to handle a command registered by the plugin.
+   * (e.g., "renderMovie" or "drawAtom", etc.)
+   *
+   * The app will turn the command into a string and pass it to the tool.
+   * and any options will go from a JSON dictionary to a QVariantMap.
+   *
+   * @return true if the command was handled, false otherwise.
+   */
+  virtual bool handleCommand(const QString& command,
+                             const QVariantMap& options);
+
+  /**
+   * Called by the app to tell the tool to register commands.
+   * The default emits registerCommand() for every command in the
+   * commandRegistry(), in registration order. Override it only for commands
+   * that are not in the registry (and call the base to keep both).
+   */
+  virtual void registerCommands();
+
+  /**
+   * @return A JSON Schema (draft 2020-12) describing the options accepted by
+   * @p command, or an empty object if the plugin does not describe it.
+   *
+   * The default implementation exports the command registry (see
+   * commandRegistry()), including the "x-avogadro-async" and
+   * "x-avogadro-needs-molecule" keys. Plugins that override handleCommand()
+   * without using the registry need not change anything.
+   */
+  virtual QJsonObject commandSchema(const QString& command) const;
+
+signals:
+  /**
+   * Emitted when draw() needs to be called again due to updates.
+   */
+  void drawablesChanged();
+
+  /**
+   * Emitted when something changed (camera, etc) and the molecule should be
+   * redrawn.
+   */
+  void updateRequested();
+
+  /**
+   * Register a new command with the application. The command will be available
+   * through scripting (e.g., "renderMovie" or "generateSurface", etc.)
+   *
+   * @param command The name of the command to register.
+   * @param description A description of the command.
+   *
+   * @sa handleCommand
+   */
+  void registerCommand(QString command, QString description);
+
+  /**
+   * Request a specific display type (or types) are made active.
+   * This can be useful when loading a specific type of data that
+   * would be most readily viewed with a specialized view.
+   */
+  void requestActiveDisplayTypes(QStringList displayTypes);
+
+  /**
+   * Indicate that a command has been started, but is not yet finished --
+   * for example, work that handleCommand() handed to a background thread.
+   *
+   * The application holds the caller's reply until the command completes.
+   * Once this is emitted, every code path must end in commandFinished() or
+   * commandFailed(), or the caller waits until the command times out.
+   *
+   * @sa commandFinished, commandFailed
+   */
+  void commandStarted();
+
+  /**
+   * Indicate that a particular script command is finished.
+   * (e.g., from handleCommand)
+   * @param message An optional message to the script or user
+   * @param result Optional results for the caller, e.g. an energy or a
+   * gradient. Only types with a JSON equivalent survive the trip to a
+   * script, so convert Eigen and Core::Array values to lists of numbers
+   * before adding them.
+   */
+  void commandFinished(const QString& message = QString(),
+                       const QVariantMap& result = QVariantMap());
+
+  /**
+   * Indicate that a command failed. This covers a synchronous refusal
+   * (bad options, no molecule, an unknown option) as well as a started
+   * command that cannot be completed.
+   * @param message A message to the script or user explaining the failure
+   * @sa commandStarted
+   */
+  void commandFailed(const QString& message = QString());
+
+public slots:
+  /**
+   * Called when the current molecule changes.
+   */
+  virtual void setMolecule(QtGui::Molecule* mol) = 0;
+  virtual void setEditMolecule(QtGui::RWMolecule*) {}
+
+  /**
+   * Set the GLWidget used by the tool.
+   */
+  virtual void setGLWidget(QtOpenGL::GLWidget*) {}
+
+  /**
+   * Set the active widget used by the tool, this can be anything derived from
+   * QWidget.
+   */
+  virtual void setActiveWidget(QWidget*) {}
+
+  /**
+   * Set the GLRenderer used by the tool.
+   */
+  virtual void setGLRenderer(Rendering::GLRenderer*) {}
+
+protected:
+  /**
+   * @return The registry of validated commands for this plugin, created on
+   * first use. Failures it finds are reported through commandFailed().
+   * See the ExtensionPlugin class documentation for an example.
+   */
+  CommandRegistry& commandRegistry();
+
+private:
+  /** Created on first use by commandRegistry(); null if never used. */
+  std::unique_ptr<CommandRegistry> m_commandRegistry;
+};
+
+/**
+ * @class ToolPluginFactory toolplugin.h <avogadro/qtgui/toolplugin.h>
+ * @brief The base class for tool plugin factories in Avogadro.
+ * @author Allison Vacanti
+ */
+class AVOGADROQTGUI_EXPORT ToolPluginFactory
+{
+public:
+  virtual ~ToolPluginFactory();
+
+  virtual ToolPlugin* createInstance(QObject* parent = nullptr) = 0;
+  virtual QString identifier() const = 0;
+  virtual QString description() const = 0;
+};
+
+} // namespace QtGui
+} // namespace Avogadro
+
+Q_DECLARE_INTERFACE(Avogadro::QtGui::ToolPluginFactory,
+                    "org.openchemistry.avogadro.ToolPluginFactory")
+
+#endif // AVOGADRO_QTGUI_TOOLPLUGIN_H

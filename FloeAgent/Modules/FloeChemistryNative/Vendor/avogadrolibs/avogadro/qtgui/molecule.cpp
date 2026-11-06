@@ -1,0 +1,500 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "molecule.h"
+
+#include "gaussiansetconcurrent.h"
+#include "meshgenerator.h"
+#include "slatersetconcurrent.h"
+#include "rwmolecule.h"
+
+#include <iostream>
+
+#include <avogadro/core/basisset.h>
+
+// for HTML-formatted formulas
+#include <QtCore/QRegularExpression>
+#include <QtCore/QString>
+
+namespace Avogadro::QtGui {
+
+using std::swap;
+
+Molecule::Molecule(QObject* p)
+  : QObject(p), m_undoMolecule(new RWMolecule(*this, this))
+{
+  m_undoMolecule->setInteractive(false);
+}
+
+Molecule::Molecule(const Molecule& other)
+  : Core::Molecule(other), m_undoMolecule(new RWMolecule(*this, this))
+{
+  m_undoMolecule->setInteractive(false);
+  // Now assign the unique ids
+  for (Index i = 0; i < atomCount(); i++)
+    m_atomUniqueIds.push_back(i);
+
+  for (Index i = 0; i < bondCount(); i++)
+    m_bondUniqueIds.push_back(i);
+}
+
+Molecule::Molecule(const Core::Molecule& other)
+  : Core::Molecule(other), m_undoMolecule(new RWMolecule(*this, this))
+{
+  // As in the two constructors above: without this the undo molecule was
+  // left uninitialized, so undoMolecule() handed back a wild pointer and the
+  // null check in isInteractive() never fired.
+  m_undoMolecule->setInteractive(false);
+
+  // Now assign the unique ids
+  for (Index i = 0; i < atomCount(); i++)
+    m_atomUniqueIds.push_back(i);
+
+  for (Index i = 0; i < bondCount(); i++)
+    m_bondUniqueIds.push_back(i);
+}
+
+Molecule& Molecule::operator=(const Molecule& other)
+{
+  // Call the base classes assignment operator
+  Core::Molecule::operator=(other);
+
+  // Copy over the unique ids
+  m_atomUniqueIds = other.m_atomUniqueIds;
+  m_bondUniqueIds = other.m_bondUniqueIds;
+
+  return *this;
+}
+
+Molecule& Molecule::operator=(const Core::Molecule& other)
+{
+  // Call the base classes assignment operator
+  Core::Molecule::operator=(other);
+
+  // Reset the unique ids.
+  m_atomUniqueIds.clear();
+  for (Index i = 0; i < atomCount(); ++i)
+    m_atomUniqueIds.push_back(i);
+
+  m_bondUniqueIds.clear();
+  for (Index i = 0; i < bondCount(); ++i)
+    m_bondUniqueIds.push_back(i);
+
+  return *this;
+}
+
+Molecule::~Molecule() {}
+
+Molecule::AtomType Molecule::addAtom(unsigned char number)
+{
+  m_atomUniqueIds.push_back(atomCount());
+  AtomType a = Core::Molecule::addAtom(number);
+  return a;
+}
+
+Molecule::AtomType Molecule::addAtom(unsigned char number, Index uniqueId)
+{
+  // A unique id one past the end is the fresh id AddAtomCommand carries on its
+  // first run, and addAtom() appends exactly that id. The overload taking a
+  // position has always handled it this way; without it here,
+  // RWMolecule::addAtom(number, /* usingPositions = */ false) added no atom at
+  // all while reporting one, and the undo that followed removed whichever atom
+  // had taken the index it recorded.
+  if (uniqueId == static_cast<Index>(m_atomUniqueIds.size()))
+    return addAtom(number);
+
+  if (uniqueId > static_cast<Index>(m_atomUniqueIds.size()) ||
+      m_atomUniqueIds[uniqueId] != MaxIndex) {
+    return AtomType();
+  }
+  m_atomUniqueIds[uniqueId] = atomCount();
+  AtomType a = Core::Molecule::addAtom(number);
+  return a;
+}
+
+Molecule::AtomType Molecule::addAtom(unsigned char number, Vector3 position3d,
+                                     Index uniqueId)
+{
+  // Store the position first, as Core::Molecule::addAtom() does, so the atom
+  // is added to the coordinate sets with it.
+  const bool covered = m_positions3d.size() == atomCount();
+  if (covered)
+    m_positions3d.push_back(position3d);
+
+  // Add atom using our own addAtom (which handles unique IDs)
+  auto atom = uniqueId >= static_cast<Index>(m_atomUniqueIds.size())
+                ? Molecule::addAtom(number)
+                : Molecule::addAtom(number, uniqueId);
+  if (!atom.isValid()) {
+    // A refused add leaves the molecule as it was.
+    if (covered)
+      m_positions3d.pop_back();
+    return atom;
+  }
+
+  // Positions that did not cover the atoms yet are extended by this.
+  atom.setPosition3d(position3d);
+  return atom;
+}
+
+bool Molecule::removeAtom(Index index)
+{
+  if (index >= atomCount())
+    return false;
+  Index uniqueId = findAtomUniqueId(index);
+  if (uniqueId == MaxIndex)
+    return false;
+
+  // Unique ID of an atom that was removed:
+  m_atomUniqueIds[uniqueId] = MaxIndex;
+  auto newSize = static_cast<Index>(atomCount() - 1);
+
+  // Before removing the atom we must first remove any bonds to it.
+  Core::Molecule::removeAtom(index);
+
+  if (index != newSize) {
+    // movedAtomUID
+    uniqueId = findAtomUniqueId(newSize);
+    assert(uniqueId != MaxIndex);
+    m_atomUniqueIds[uniqueId] = index;
+  }
+  return true;
+}
+
+bool Molecule::removeAtom(const AtomType& atom_)
+{
+  return removeAtom(atom_.index());
+}
+
+Molecule::AtomType Molecule::atomByUniqueId(Index uniqueId)
+{
+  if (uniqueId >= static_cast<Index>(m_atomUniqueIds.size()) ||
+      m_atomUniqueIds[uniqueId] == MaxIndex) {
+    return AtomType();
+  } else {
+    return AtomType(this, m_atomUniqueIds[uniqueId]);
+  }
+}
+
+Index Molecule::atomUniqueId(const AtomType& a) const
+{
+  if (a.molecule() != this)
+    return MaxIndex;
+  return findAtomUniqueId(a.index());
+}
+
+Index Molecule::atomUniqueId(Index a) const
+{
+  return findAtomUniqueId(a);
+}
+
+Molecule::BondType Molecule::addBond(const AtomType& a, const AtomType& b,
+                                     unsigned char order)
+{
+  assert(a.isValid() && a.molecule() == this);
+  assert(b.isValid() && b.molecule() == this);
+
+  return addBond(a.index(), b.index(), order);
+}
+
+Molecule::BondType Molecule::addBond(Avogadro::Index atomId1,
+                                     Avogadro::Index atomId2,
+                                     unsigned char order)
+{
+  const Index before = bondCount();
+  BondType bond_ = Core::Molecule::addBond(atomId1, atomId2, order);
+
+  // Only a bond that was actually created gets a unique id. Core::addBond()
+  // refuses out-of-range atom indices, and for a pair that is already bonded
+  // it updates the order and hands back the existing bond -- in both cases
+  // bondCount() does not grow. A unique id pushed anyway would point at a bond
+  // index that does not exist, and m_bondUniqueIds would stay one longer than
+  // the bond list for the rest of the molecule's life: findBondUniqueId()
+  // then answers with the stale id, and the undo command that stored it
+  // swaps a bond index that is no longer a bond.
+  if (bond_.isValid() && bondCount() > before)
+    m_bondUniqueIds.push_back(bond_.index());
+
+  return bond_;
+}
+
+void Molecule::addBonds(const Core::Array<std::pair<Index, Index>>& bonds,
+                        const Core::Array<unsigned char>& orders)
+{
+  assert(orders.size() == bonds.size());
+  for (Index i = 0; i < orders.size(); ++i) {
+    addBond(bonds[i].first, bonds[i].second, orders[i]);
+  }
+}
+void Molecule::swapBond(Index a, Index b)
+{
+  Index uniqueA = findBondUniqueId(a);
+  Index uniqueB = findBondUniqueId(b);
+  // A released build has no assert. An undo command can hold a bond index
+  // that is no longer a bond, and findBondUniqueId() answers MaxIndex for it
+  // -- indexing m_bondUniqueIds with that writes far outside the array, which
+  // corrupts the heap rather than failing here.
+  if (uniqueA == MaxIndex || uniqueB == MaxIndex)
+    return;
+  swap(m_bondUniqueIds[uniqueA], m_bondUniqueIds[uniqueB]);
+  Core::Molecule::swapBond(a, b);
+}
+
+void Molecule::swapAtom(Index a, Index b)
+{
+  if (a == b) {
+    return;
+  }
+  Index uniqueA = findAtomUniqueId(a);
+  Index uniqueB = findAtomUniqueId(b);
+  // See swapBond(): the assert is gone in a released build, and MaxIndex here
+  // would be an out-of-bounds write into m_atomUniqueIds.
+  if (uniqueA == MaxIndex || uniqueB == MaxIndex)
+    return;
+  swap(m_atomUniqueIds[uniqueA], m_atomUniqueIds[uniqueB]);
+  Core::Molecule::swapAtom(a, b);
+}
+
+Molecule::BondType Molecule::addBond(Index a, Index b, unsigned char order,
+                                     Index uniqueId)
+{
+  if (uniqueId >= static_cast<Index>(m_bondUniqueIds.size()) ||
+      m_bondUniqueIds[uniqueId] != MaxIndex) {
+    return BondType();
+  }
+
+  // As in the overload above: claim the unique id only once the bond exists,
+  // or a refused add leaves the id pointing at a bond index that is not one.
+  const Index before = bondCount();
+  BondType bond_ = Core::Molecule::addBond(a, b, order);
+  if (bond_.isValid() && bondCount() > before)
+    m_bondUniqueIds[uniqueId] = bond_.index();
+
+  return bond_;
+}
+
+Molecule::BondType Molecule::addBond(const AtomType& a, const AtomType& b,
+                                     unsigned char order, Index uniqueId)
+{
+  assert(a.isValid() && a.molecule() == this);
+  assert(b.isValid() && b.molecule() == this);
+
+  return addBond(a.index(), b.index(), order, uniqueId);
+}
+
+bool Molecule::removeBond(Index index)
+{
+  if (index >= bondCount())
+    return false;
+  Index uniqueId = findBondUniqueId(index);
+  if (uniqueId == MaxIndex)
+    return false;
+
+  m_bondUniqueIds[uniqueId] = MaxIndex; // Unique ID of a bond that was removed.
+
+  auto newSize = static_cast<Index>(bondCount() - 1);
+  if (index != newSize) {
+    Index movedBondUID = findBondUniqueId(newSize);
+    assert(movedBondUID != MaxIndex);
+    m_bondUniqueIds[movedBondUID] = index;
+  }
+  Core::Molecule::removeBond(index);
+  return true;
+}
+
+bool Molecule::removeBond(const BondType& bond_)
+{
+  return removeBond(bond_.index());
+}
+
+bool Molecule::removeBond(const AtomType& a, const AtomType& b)
+{
+  return removeBond(bond(a, b).index());
+}
+
+bool Molecule::removeBond(Index a, Index b)
+{
+  return removeBond(bond(a, b).index());
+}
+
+Molecule::BondType Molecule::bondByUniqueId(Index uniqueId)
+{
+  if (uniqueId >= static_cast<Index>(m_bondUniqueIds.size()) ||
+      m_bondUniqueIds[uniqueId] == MaxIndex) {
+    return BondType();
+  } else {
+    return BondType(this, static_cast<Index>(m_bondUniqueIds[uniqueId]));
+  }
+}
+
+Index Molecule::bondUniqueId(const BondType& b) const
+{
+  if (b.molecule() != this)
+    return MaxIndex;
+  return findBondUniqueId(b.index());
+}
+
+Index Molecule::bondUniqueId(Index b) const
+{
+  return findBondUniqueId(b);
+}
+
+bool Molecule::invalidatesDerivedData(unsigned int changes)
+{
+  // Structural changes invalidate derived computational data. Moving atoms is
+  // not structural: vibration animation, trajectory playback and interactive
+  // optimization all move atoms on every frame, and the vibration modes and
+  // orbitals being displayed have to survive that.
+  const bool movedOnly =
+    (changes & Moved) && !(changes & (Added | Removed | Modified));
+  return (changes & (Atoms | Bonds)) && !movedOnly;
+}
+
+void Molecule::emitChanged(unsigned int change)
+{
+  if (change != NoChange) {
+    // A replacement carries its own derived data, so only an in-place edit
+    // discards it. RWMolecule::modifyMolecule has already stopped the workers
+    // that were using what the replacement swapped out.
+    if (invalidatesDerivedData(change) && !(change & Replaced)) {
+      // Worker threads may still be reading the basis set and writing into
+      // the cubes and meshes that are about to be deleted.
+      GaussianSetConcurrent::cancelAllCalculations();
+      SlaterSetConcurrent::cancelAllCalculations();
+      MeshGenerator::cancelAllCalculations();
+      clearCubes();
+      clearMeshes();
+      m_basisSet.reset();
+      m_spectra.clear();
+      clearVibrations();
+      // Charges computed or read for the old structure no longer describe it.
+      for (const std::string& type : partialChargeTypes())
+        removePartialCharges(type);
+    }
+    emit changed(change);
+  }
+}
+
+void Molecule::emitUpdate() const
+{
+  emit update();
+}
+
+Index Molecule::findAtomUniqueId(Index index) const
+{
+  for (Index i = 0; i < static_cast<Index>(m_atomUniqueIds.size()); ++i) {
+    if (m_atomUniqueIds[i] == index)
+      return i;
+  }
+  return MaxIndex;
+}
+
+Index Molecule::findBondUniqueId(Index index) const
+{
+  for (Index i = 0; i < static_cast<Index>(m_bondUniqueIds.size()); ++i)
+    if (m_bondUniqueIds[i] == index)
+      return i;
+  return MaxIndex;
+}
+
+RWMolecule* Molecule::undoMolecule()
+{
+  return m_undoMolecule;
+}
+
+QString Molecule::formattedFormula() const
+{
+  // Get composition from core (handles isotopes and unit cell fractions)
+  std::map<std::string, size_t> componentsCount = formulaComposition();
+
+  QString formula;
+  // loop through the components
+  // if carbon is present, it goes first
+  // if carbon is present, hydrogen is next
+  // then alphabetical
+  // and any components with a number in front get a superscript
+
+  std::map<std::string, size_t>::iterator iter;
+  iter = componentsCount.find("C");
+  if (iter != componentsCount.end()) {
+    formula += "C";
+    if (iter->second > 1)
+      formula += QString("<sub>%1</sub>").arg(iter->second);
+    componentsCount.erase(iter);
+
+    // hydrogen goes next if carbon is present
+    iter = componentsCount.find("H");
+    if (iter != componentsCount.end()) {
+      formula += "H";
+      if (iter->second > 1)
+        formula += QString("<sub>%1</sub>").arg(iter->second);
+      componentsCount.erase(iter);
+    }
+    // also deuterium and tritium
+    iter = componentsCount.find("D");
+    if (iter != componentsCount.end()) {
+      formula += "D";
+      if (iter->second > 1)
+        formula += QString("<sub>%1</sub>").arg(iter->second);
+      componentsCount.erase(iter);
+    }
+    iter = componentsCount.find("T");
+    if (iter != componentsCount.end()) {
+      formula += "T";
+      if (iter->second > 1)
+        formula += QString("<sub>%1</sub>").arg(iter->second);
+      componentsCount.erase(iter);
+    }
+  }
+
+  for (iter = componentsCount.begin(); iter != componentsCount.end(); ++iter) {
+    // check if iter->first starts with a digit
+    if (iter->first[0] >= '0' && iter->first[0] <= '9') {
+      // get the digits for a superscript
+      QString digits;
+      for (unsigned int i = 0; i < iter->first.length(); ++i) {
+        if (iter->first[i] >= '0' && iter->first[i] <= '9')
+          digits += iter->first[i];
+      }
+      formula += QString("<sup>%1</sup>").arg(digits);
+      // take the substring from the digit to the end
+      formula += QString::fromStdString(iter->first.substr(digits.length()));
+    } else
+      formula += QString::fromStdString(iter->first);
+
+    if (iter->second > 1)
+      formula += QString("<sub>%1</sub>").arg(iter->second);
+  }
+
+  // add total charge as a superscript
+  int charge = totalCharge();
+  if (charge == -1)
+    formula += QString("<sup>-</sup>");
+  else if (charge < -1)
+    formula += QString("<sup>%1</sup>").arg(charge);
+  else if (charge == 1)
+    formula += QString("<sup>+</sup>");
+  else if (charge > 1)
+    formula += QString("<sup>+%1</sup>").arg(charge);
+
+  // add doublet or triplet for spin multiplicity as radical dot
+  int spinMultiplicity = totalSpinMultiplicity();
+  if (spinMultiplicity == 2)
+    formula += "<sup>•</sup>";
+  else if (spinMultiplicity == 3)
+    formula += "<sup>••</sup>";
+
+  return formula;
+}
+
+bool Molecule::isInteractive() const
+{
+  if (m_undoMolecule == nullptr)
+    return false;
+
+  return m_undoMolecule->isInteractive();
+}
+
+} // namespace Avogadro::QtGui

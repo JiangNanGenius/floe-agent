@@ -1,0 +1,338 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include <QAction>
+#include <QByteArray>
+#include <QCoreApplication>
+#include <QDebug>
+#include <QDialog>
+#include <QFile>
+#include <QMessageBox>
+#include <QProcess>
+#include <QRegularExpression>
+#include <QString>
+
+#include <avogadro/io/fileformatmanager.h>
+#include <avogadro/qtgui/molecule.h>
+#include <avogadro/qtgui/chartdialog.h>
+#include <avogadro/qtgui/chartwidget.h>
+#include <avogadro/qtgui/utilities.h>
+
+#include "plotxrd.h"
+#include "xrdoptionsdialog.h"
+
+using Avogadro::QtGui::Molecule;
+
+namespace Avogadro::QtPlugins {
+
+PlotXrd::PlotXrd(QObject* parent_)
+  : Avogadro::QtGui::ExtensionPlugin(parent_), m_molecule(nullptr),
+    m_xrdOptionsDialog(new XrdOptionsDialog(qobject_cast<QWidget*>(parent()))),
+    m_displayDialogAction(new QAction(this))
+{
+  m_displayDialogAction->setText(tr("Plot Theoretical XRD Pattern…"));
+  connect(m_displayDialogAction.get(), &QAction::triggered, this,
+          &PlotXrd::displayDialog);
+  m_actions.push_back(m_displayDialogAction.get());
+  m_displayDialogAction->setProperty("menu priority", 90);
+
+  updateActions();
+}
+
+PlotXrd::~PlotXrd() = default;
+
+QList<QAction*> PlotXrd::actions() const
+{
+  return m_actions;
+}
+
+QStringList PlotXrd::menuPath(QAction*) const
+{
+  return QStringList() << tr("&Crystal");
+}
+
+void PlotXrd::setMolecule(QtGui::Molecule* mol)
+{
+  if (m_molecule == mol)
+    return;
+
+  if (m_molecule)
+    m_molecule->disconnect(this);
+
+  m_molecule = mol;
+
+  if (m_molecule)
+    connect(m_molecule, SIGNAL(changed(uint)), SLOT(moleculeChanged(uint)));
+
+  updateActions();
+}
+
+void PlotXrd::moleculeChanged(unsigned int c)
+{
+  Q_ASSERT(m_molecule == qobject_cast<Molecule*>(sender()));
+
+  auto changes = static_cast<Molecule::MoleculeChanges>(c);
+
+  if (changes & Molecule::UnitCell) {
+    if (changes & Molecule::Added || changes & Molecule::Removed)
+      updateActions();
+  }
+}
+
+void PlotXrd::updateActions()
+{
+  // Disable everything for nullptr molecules.
+  if (!m_molecule) {
+    foreach (QAction* action, m_actions)
+      action->setEnabled(false);
+    return;
+  }
+
+  // Only display the actions if there is a unit cell
+  if (m_molecule->unitCell()) {
+    foreach (QAction* action, m_actions)
+      action->setEnabled(true);
+  } else {
+    foreach (QAction* action, m_actions)
+      action->setEnabled(false);
+  }
+}
+
+void PlotXrd::displayDialog()
+{
+  // check if there's already an XRD in the molecule spectra
+  bool hasXRD = false;
+  std::vector<float> xData;
+  std::vector<float> yData;
+
+  for (const auto& type : m_molecule->spectraTypes()) {
+    if (type == "XRD" || type == "xrd") {
+      hasXRD = true;
+      break;
+    }
+  }
+
+  if (hasXRD) {
+    // make sure it works
+    auto spectra = m_molecule->spectra("XRD");
+    // should be a MatrixXd with 2 columns
+    if (spectra.cols() != 2 || spectra.rows() < 2) {
+      hasXRD = false; // re-generate it
+    } else {
+      for (int i = 0; i < spectra.rows(); i++) {
+        xData.push_back(spectra(i, 0));
+        yData.push_back(spectra(i, 1));
+      }
+    }
+  }
+
+  if (!hasXRD) {
+    // we have to generate the XRD pattern
+    // Do nothing if the user cancels
+    if (m_xrdOptionsDialog->exec() != QDialog::Accepted)
+      return;
+
+    // Otherwise, fetch the options and perform the run
+    double wavelength = m_xrdOptionsDialog->wavelength();
+    double peakwidth = m_xrdOptionsDialog->peakWidth();
+    size_t numpoints = m_xrdOptionsDialog->numDataPoints();
+    double max2theta = m_xrdOptionsDialog->max2Theta();
+
+    QString err;
+    XrdData results;
+    if (!generateXrdPattern(*m_molecule, results, err, wavelength, peakwidth,
+                            numpoints, max2theta)) {
+      QMessageBox::critical(qobject_cast<QWidget*>(parent()),
+                            tr("Failed to generate XRD pattern"),
+                            tr("Error message: ") + err);
+      return;
+    }
+    // Now generate a plot with the data
+    for (const auto& item : results) {
+      xData.push_back(item.first);
+      yData.push_back(item.second);
+    }
+  }
+
+  QString xTitle = "2θ (°)";
+  QString yTitle = "Intensity";
+  const char* windowName = "Theoretical XRD Pattern";
+
+  if (!m_chartDialog)
+    m_chartDialog.reset(
+      new QtGui::ChartDialog(qobject_cast<QWidget*>(this->parent())));
+
+  m_chartDialog->setWindowTitle(windowName);
+  auto* chart = m_chartDialog->chartWidget();
+  chart->clearPlots();
+  chart->addPlot(xData, yData, QtGui::color4ub{ 255, 0, 0, 255 });
+  chart->setXAxisTitle(xTitle);
+  chart->setYAxisTitle(yTitle);
+  m_chartDialog->show();
+  m_chartDialog->raise();
+  m_chartDialog->activateWindow();
+}
+
+bool PlotXrd::generateXrdPattern(const QtGui::Molecule& mol, XrdData& results,
+                                 QString& err, double wavelength,
+                                 double peakwidth, size_t numpoints,
+                                 double max2theta)
+{
+  // Get the molecule as a cif file
+  std::string cifData;
+  if (!Io::FileFormatManager::instance().writeString(mol, cifData, "cif")) {
+    err = tr("Failed to convert molecule to CIF format.");
+    qDebug() << "Error in" << __FUNCTION__ << ":" << err;
+    return false;
+  }
+
+  // Now, execute genXrdPattern with the given inputs
+  QStringList args;
+  args << "--read-from-stdin"
+       << "--wavelength=" + QString::number(wavelength)
+       << "--peakwidth=" + QString::number(peakwidth)
+       << "--numpoints=" + QString::number(numpoints)
+       << "--max2theta=" + QString::number(max2theta);
+
+  QByteArray output;
+  if (!executeGenXrdPattern(args, cifData.c_str(), output, err)) {
+    qDebug() << "Error in" << __FUNCTION__ << ":" << err;
+    return false;
+  }
+
+  // Store the results
+  results.clear();
+
+  // Find the section of data in the output
+  bool dataStarted = false;
+  QStringList lines =
+    QString(output).split(QRegularExpression("[\r\n]"), Qt::SkipEmptyParts);
+  for (const auto& line : lines) {
+    if (!dataStarted && line.contains("#    2Theta/TOF    ICalc")) {
+      dataStarted = true;
+      continue;
+    }
+
+    if (dataStarted) {
+      QStringList rowData = line.split(" ", Qt::SkipEmptyParts);
+      if (rowData.size() != 2) {
+        err = tr("Data read from genXrdPattern appears to be corrupt!");
+        qDebug() << "Error in" << __FUNCTION__ << err;
+        qDebug() << "Data is:";
+        for (const auto& lineTmp : lines)
+          qDebug() << lineTmp;
+        return false;
+      }
+      results.emplace_back(rowData[0].toDouble(), rowData[1].toDouble());
+    }
+  }
+
+  return true;
+}
+
+bool PlotXrd::executeGenXrdPattern(const QStringList& args,
+                                   const QByteArray& input, QByteArray& output,
+                                   QString& err)
+{
+  QString program;
+  // If the GENXRDPATTERN_EXECUTABLE environment variable is set, then
+  // use that
+  QByteArray xrdExec = qgetenv("GENXRDPATTERN_EXECUTABLE");
+  if (!xrdExec.isEmpty()) {
+    program = xrdExec;
+  } else {
+// Otherwise, search in the current directory, and then ../bin
+#ifdef _WIN32
+    QString executable = "genXrdPattern.exe";
+#else
+    QString executable = "genXrdPattern";
+#endif
+
+    program = QtGui::Utilities::findExecutablePath(executable);
+    if (program.isEmpty()) {
+      err = tr("Error: could not find genXrdPattern executable!");
+      qDebug() << err;
+      return false;
+    } else {
+      program += "/" + executable;
+    }
+  }
+
+  QProcess p;
+  p.start(program, args);
+
+  if (!p.waitForStarted()) {
+    err = tr("Error: " + program.toLocal8Bit() + " failed to start");
+    qDebug() << err;
+    return false;
+  }
+
+  // Give it the input!
+  p.write(input.data());
+
+  // Close the write channel
+  p.closeWriteChannel();
+
+  if (!p.waitForFinished()) {
+    err = tr("Error: " + program.toLocal8Bit() + " failed to finish");
+    qDebug() << err;
+    output = p.readAll();
+    qDebug() << "Output is as follows:\n" << output;
+    return false;
+  }
+
+  int exitStatus = p.exitStatus();
+  output = p.readAll();
+
+  if (exitStatus == QProcess::CrashExit) {
+    err = tr("Error: " + program.toLocal8Bit() + " crashed!");
+    qDebug() << err;
+    qDebug() << "Output is as follows:\n" << output;
+    return false;
+  }
+
+  if (exitStatus != QProcess::NormalExit) {
+    err = tr("Error: " + program.toLocal8Bit() +
+             " finished abnormally with exit code " +
+             QString::number(exitStatus).toLocal8Bit());
+    qDebug() << err;
+    qDebug() << "Output is as follows:\n" << output;
+    return false;
+  }
+
+  // We did it!
+  return true;
+}
+
+void PlotXrd::registerCommands()
+{
+  emit registerCommand("showXrdPlot", tr("Show XRD plot."));
+}
+
+bool PlotXrd::handleCommand(const QString& command,
+                            [[maybe_unused]] const QVariantMap& options)
+{
+  if (command != "showXrdPlot")
+    return false; // not one of our commands
+
+  if (m_molecule == nullptr) {
+    emit commandFailed(tr("No molecule"));
+    return true;
+  }
+
+  if (m_molecule->unitCell() == nullptr) {
+    emit commandFailed(tr("The molecule has no unit cell."));
+    return true;
+  }
+
+  if (command == "showXrdPlot") {
+    displayDialog();
+    return true;
+  }
+
+  return false;
+}
+
+} // namespace Avogadro::QtPlugins

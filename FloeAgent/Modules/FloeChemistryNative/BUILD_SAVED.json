@@ -1,0 +1,77 @@
+{
+  "upstream": {
+    "repository": "https://github.com/OpenChemistry/avogadrolibs",
+    "commit": "a5947518efb84132a44110dbdecab94fc87ce3b8",
+    "archive": "https://codeload.github.com/OpenChemistry/avogadrolibs/tar.gz/a5947518efb84132a44110dbdecab94fc87ce3b8",
+    "sha256": "eb2795096ee954494b91777e07de40dc98e70d4f894d45509ec68d28c8a079c9"
+  },
+  "targets": [
+    "macos",
+    "ios",
+    "simulator"
+  ],
+  "sourceFiles": [
+    {
+      "path": "Native/bridge.cpp",
+      "sha256": "138b6403630f7c0a3d3f2b0636bf91df92cdff9bcedbdee65a5962a3cd9bab2d"
+    },
+    {
+      "path": "Native/CMakeLists.txt",
+      "sha256": "f20e3fa53a9e6d794b3da1ee86bd140821a7890db4c33317a560762fa95212dd"
+    },
+    {
+      "path": "Native/include/FloeChemistryBridge.h",
+      "sha256": "7801d6a53cccc4dcffc2bc284dcd7d3c134264bdb723aab6d0b8e4efb012c82b"
+    },
+    {
+      "path": "Native/include/module.modulemap",
+      "sha256": "e21cb1c227e39dd95260b6d9cd11ad362a64e528b59b3a0b809760d2883ea5cd"
+    },
+    {
+      "path": "UPSTREAM.json",
+      "sha256": "9632e65c1eca2b3609d48ceb750b0fd82f64704928f912f1c8b5c32bfd32eaa3"
+    }
+  ],
+  "files": [
+    {
+      "path": "Info.plist",
+      "sha256": "d89500965ccbdf5dc58d42f43904c8d358df352ae06557d67df320bd33ddcaa7"
+    },
+    {
+      "path": "ios-arm64/Headers/FloeChemistryBridge.h",
+      "sha256": "7801d6a53cccc4dcffc2bc284dcd7d3c134264bdb723aab6d0b8e4efb012c82b"
+    },
+    {
+      "path": "ios-arm64/Headers/module.modulemap",
+      "sha256": "e21cb1c227e39dd95260b6d9cd11ad362a64e528b59b3a0b809760d2883ea5cd"
+    },
+    {
+      "path": "ios-arm64/libFloeChemistryBridge.a",
+      "sha256": "e52f1b612f2218c5053ea2b3639909873f09a76d2111364fb7d3f098618f1582"
+    },
+    {
+      "path": "ios-arm64-simulator/Headers/FloeChemistryBridge.h",
+      "sha256": "7801d6a53cccc4dcffc2bc284dcd7d3c134264bdb723aab6d0b8e4efb012c82b"
+    },
+    {
+      "path": "ios-arm64-simulator/Headers/module.modulemap",
+      "sha256": "e21cb1c227e39dd95260b6d9cd11ad362a64e528b59b3a0b809760d2883ea5cd"
+    },
+    {
+      "path": "ios-arm64-simulator/libFloeChemistryBridge.a",
+      "sha256": "a3faa2353a620969b09d98936167b55c5435f95cf99d2c67d6585c463ca6863f"
+    },
+    {
+      "path": "macos-arm64/Headers/FloeChemistryBridge.h",
+      "sha256": "7801d6a53cccc4dcffc2bc284dcd7d3c134264bdb723aab6d0b8e4efb012c82b"
+    },
+    {
+      "path": "macos-arm64/Headers/module.modulemap",
+      "sha256": "e21cb1c227e39dd95260b6d9cd11ad362a64e528b59b3a0b809760d2883ea5cd"
+    },
+    {
+      "path": "macos-arm64/libFloeChemistryBridge.a",
+      "sha256": "6007711381d30ff301fe5d5f53976461deb0ce9643b22f2fc1d8c846216e6aad"
+    }
+  ]
+}

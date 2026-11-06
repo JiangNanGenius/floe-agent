@@ -1,0 +1,1592 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include <gtest/gtest.h>
+
+#include <avogadro/qtgui/packagemanager.h>
+#include <avogadro/qtgui/utilities.h>
+
+#include <QtCore/QCoreApplication>
+#include <QtCore/QCryptographicHash>
+#include <QtCore/QDir>
+#include <QtCore/QFile>
+#include <QtCore/QFileInfo>
+#include <QtCore/QProcessEnvironment>
+#include <QtCore/QSettings>
+#include <QtCore/QTemporaryDir>
+#include <QtCore/QVersionNumber>
+#include <QtCore/QVariantMap>
+
+#include <QSignalSpy>
+
+using Avogadro::QtGui::PackageManager;
+
+namespace {
+// Ensure a QCoreApplication exists and that QSettings has an organisation and
+// application to write under. findExecutablePath(), reached via
+// resolveCommandLine(), searches applicationDirPath(), which warns and returns
+// an empty string without an application object — turning the first search
+// entries into root-relative paths. The test binary uses gtest_main, which
+// creates none. argv[0] matches the name set below, so the QSettings scope is
+// the same either way.
+void ensureSettingsContext()
+{
+  if (!QCoreApplication::instance()) {
+    static int argc = 1;
+    static char name[] = "AvogadroLibsTests";
+    static char* argv[] = { name, nullptr };
+    static QCoreApplication app(argc, argv);
+  }
+  if (QCoreApplication::organizationName().isEmpty())
+    QCoreApplication::setOrganizationName(QStringLiteral("OpenChemistry"));
+  if (QCoreApplication::applicationName().isEmpty())
+    QCoreApplication::setApplicationName(QStringLiteral("AvogadroLibsTests"));
+}
+
+QString writeTextFile(const QString& path, const QByteArray& content)
+{
+  QFile file(path);
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+    return {};
+  if (file.write(content) != content.size())
+    return {};
+  return path;
+}
+} // namespace
+
+class PackageManagerTest : public testing::Test
+{
+protected:
+  void SetUp() override
+  {
+    ensureSettingsContext();
+
+    // Write a minimal pyproject.toml into a temp directory
+    m_tmpDir.reset(new QTemporaryDir);
+    ASSERT_TRUE(m_tmpDir->isValid());
+    m_packageDir = m_tmpDir->path();
+
+    QFile f(m_packageDir + "/pyproject.toml");
+    ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Text));
+    f.write(sampleToml());
+    f.close();
+
+    // Clear any previous test data from QSettings
+    QSettings settings;
+    settings.beginGroup("plugins");
+    settings.remove("test-plugin");
+    settings.endGroup();
+    settings.remove("pluginInstallFailures");
+    settings.sync();
+  }
+
+  void TearDown() override
+  {
+    // Clean up QSettings
+    QSettings settings;
+    settings.beginGroup("plugins");
+    settings.remove("test-plugin");
+    settings.endGroup();
+    settings.remove("pluginInstallFailures");
+    settings.sync();
+  }
+
+public:
+  static QByteArray sampleToml()
+  {
+    return R"(
+[project]
+name = "test-plugin"
+version = "1.2.3"
+description = "A test plugin"
+
+[project.scripts]
+avogadro-test-plugin = "test_plugin:main"
+
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
+[tool.avogadro]
+minimum-avogadro-version = "1.103"
+
+[[tool.avogadro.menu-commands]]
+identifier = "do-something"
+input-format = "cjson"
+path.menu = "Extensions"
+path.entry = { label = "Do Something", priority = 200 }
+
+[[tool.avogadro.menu-commands]]
+identifier = "do-other"
+input-format = "cjson"
+path.menu = "Build"
+path.entry = { label = "Do Other", priority = 100 }
+
+[[tool.avogadro.electrostatic-models]]
+identifier = "test_charges"
+model-name = "TestCharges"
+input-format = "sdf"
+support.charges = true
+support.potentials = false
+support.elements = "1-18"
+
+[[tool.avogadro.energy-models]]
+identifier = "test_energy"
+model-name = "TestEnergy"
+input-format = "cjson"
+support.gradients = true
+support.elements = "1-86"
+
+[[tool.avogadro.file-formats]]
+identifier = "tst"
+format-name = "TST format"
+file-extensions = ["tst", "tst2"]
+support.read = true
+support.write = false
+output-format = "cjson"
+
+[[tool.avogadro.input-generators]]
+identifier = "test_input"
+program-name = "Test Input Gen"
+input-format = "cjson"
+)";
+  }
+
+protected:
+  std::unique_ptr<QTemporaryDir> m_tmpDir;
+  QString m_packageDir;
+};
+
+TEST_F(PackageManagerTest, featureTypes)
+{
+  QStringList types = PackageManager::featureTypes();
+  EXPECT_EQ(types.size(), 5);
+  EXPECT_TRUE(types.contains("menu-commands"));
+  EXPECT_TRUE(types.contains("electrostatic-models"));
+  EXPECT_TRUE(types.contains("energy-models"));
+  EXPECT_TRUE(types.contains("file-formats"));
+  EXPECT_TRUE(types.contains("input-generators"));
+}
+
+TEST_F(PackageManagerTest, registerPackageSuccess)
+{
+  auto* pm = PackageManager::instance();
+
+  QSignalSpy spy(pm, &PackageManager::featureRegistered);
+  ASSERT_TRUE(spy.isValid());
+
+  bool ok = pm->registerPackage(m_packageDir);
+  EXPECT_TRUE(ok);
+
+  // 2 menu-commands + 1 charges + 1 energy + 1 file-format + 1 input-gen = 6
+  EXPECT_EQ(spy.count(), 6);
+}
+
+TEST_F(PackageManagerTest, registerPackageEmitsCorrectSignals)
+{
+  auto* pm = PackageManager::instance();
+
+  QSignalSpy spy(pm, &PackageManager::featureRegistered);
+  pm->registerPackage(m_packageDir);
+
+  // Collect all emitted (type, identifier) pairs
+  QMap<QString, QStringList> featuresByType;
+  for (int i = 0; i < spy.count(); ++i) {
+    QList<QVariant> args = spy.at(i);
+    QString type = args.at(0).toString();
+    QString identifier = args.at(3).toString();
+    featuresByType[type].append(identifier);
+  }
+
+  EXPECT_EQ(featuresByType["menu-commands"].size(), 2);
+  EXPECT_TRUE(featuresByType["menu-commands"].contains("do-something"));
+  EXPECT_TRUE(featuresByType["menu-commands"].contains("do-other"));
+
+  EXPECT_EQ(featuresByType["electrostatic-models"].size(), 1);
+  EXPECT_TRUE(featuresByType["electrostatic-models"].contains("test_charges"));
+
+  EXPECT_EQ(featuresByType["energy-models"].size(), 1);
+  EXPECT_TRUE(featuresByType["energy-models"].contains("test_energy"));
+
+  EXPECT_EQ(featuresByType["file-formats"].size(), 1);
+  EXPECT_TRUE(featuresByType["file-formats"].contains("tst"));
+
+  EXPECT_EQ(featuresByType["input-generators"].size(), 1);
+  EXPECT_TRUE(featuresByType["input-generators"].contains("test_input"));
+}
+
+TEST_F(PackageManagerTest, signalCarriesCorrectMetadata)
+{
+  auto* pm = PackageManager::instance();
+
+  QSignalSpy spy(pm, &PackageManager::featureRegistered);
+  pm->registerPackage(m_packageDir);
+
+  // Find the "do-something" menu-command signal
+  for (int i = 0; i < spy.count(); ++i) {
+    QList<QVariant> args = spy.at(i);
+    if (args.at(3).toString() == "do-something") {
+      EXPECT_EQ(args.at(0).toString(), "menu-commands");
+      EXPECT_EQ(args.at(1).toString(), QDir(m_packageDir).absolutePath());
+      EXPECT_EQ(args.at(2).toString(), "avogadro-test-plugin");
+
+      QVariantMap meta = args.at(4).toMap();
+      EXPECT_EQ(meta["input-format"].toString(), "cjson");
+
+      // Nested table: path.menu
+      QVariantMap path = meta["path"].toMap();
+      EXPECT_EQ(path["menu"].toString(), "Extensions");
+
+      QVariantMap entry = path["entry"].toMap();
+      EXPECT_EQ(entry["label"].toString(), "Do Something");
+      EXPECT_EQ(entry["priority"].toLongLong(), 200);
+      return;
+    }
+  }
+  FAIL() << "did not find 'do-something' feature in signals";
+}
+
+TEST_F(PackageManagerTest, signalCarriesArrayMetadata)
+{
+  auto* pm = PackageManager::instance();
+
+  QSignalSpy spy(pm, &PackageManager::featureRegistered);
+  pm->registerPackage(m_packageDir);
+
+  // Find the "tst" file-format signal
+  for (int i = 0; i < spy.count(); ++i) {
+    QList<QVariant> args = spy.at(i);
+    if (args.at(3).toString() == "tst") {
+      QVariantMap meta = args.at(4).toMap();
+      QVariantList exts = meta["file-extensions"].toList();
+      EXPECT_EQ(exts.size(), 2);
+      EXPECT_EQ(exts.at(0).toString(), "tst");
+      EXPECT_EQ(exts.at(1).toString(), "tst2");
+
+      QVariantMap support = meta["support"].toMap();
+      EXPECT_TRUE(support["read"].toBool());
+      EXPECT_FALSE(support["write"].toBool());
+      return;
+    }
+  }
+  FAIL() << "did not find 'tst' feature in signals";
+}
+
+TEST_F(PackageManagerTest, packageInfoAfterRegister)
+{
+  auto* pm = PackageManager::instance();
+  pm->registerPackage(m_packageDir);
+
+  auto info = pm->packageInfo("test-plugin");
+  EXPECT_EQ(info.name, "test-plugin");
+  EXPECT_EQ(info.version, "1.2.3");
+  EXPECT_EQ(info.description, "A test plugin");
+  EXPECT_EQ(info.command, "avogadro-test-plugin");
+  EXPECT_EQ(info.directory, QDir(m_packageDir).absolutePath());
+}
+
+TEST_F(PackageManagerTest, registeredPackagesList)
+{
+  auto* pm = PackageManager::instance();
+  pm->registerPackage(m_packageDir);
+
+  QStringList packages = pm->registeredPackages();
+  EXPECT_TRUE(packages.contains("test-plugin"));
+}
+
+TEST_F(PackageManagerTest, loadRegisteredPackagesReplaysSignals)
+{
+  auto* pm = PackageManager::instance();
+
+  // Register first (this caches to QSettings)
+  pm->registerPackage(m_packageDir);
+
+  // Now spy and replay from cache
+  QSignalSpy spy(pm, &PackageManager::featureRegistered);
+  pm->loadRegisteredPackages();
+
+  EXPECT_EQ(spy.count(), 6);
+}
+
+TEST_F(PackageManagerTest, loadRegisteredPackagesTypeFilterReplaysOnlyMatches)
+{
+  auto* pm = PackageManager::instance();
+
+  // Register first (this caches to QSettings)
+  pm->registerPackage(m_packageDir);
+
+  // Replay only electrostatic models from cache.
+  QSignalSpy spy(pm, &PackageManager::featureRegistered);
+  pm->loadRegisteredPackages(QStringLiteral("electrostatic-models"));
+
+  ASSERT_EQ(spy.count(), 1);
+  const QList<QVariant> args = spy.at(0);
+  ASSERT_EQ(args.size(), 5);
+  EXPECT_EQ(args.at(0).toString(), QStringLiteral("electrostatic-models"));
+  EXPECT_EQ(args.at(3).toString(), QStringLiteral("test_charges"));
+}
+
+TEST_F(PackageManagerTest, unregisterPackage)
+{
+  auto* pm = PackageManager::instance();
+  pm->registerPackage(m_packageDir);
+
+  QSignalSpy removedSpy(pm, &PackageManager::featureRemoved);
+  bool ok = pm->unregisterPackage("test-plugin");
+  EXPECT_TRUE(ok);
+
+  // Should have emitted featureRemoved for all 6 features
+  EXPECT_EQ(removedSpy.count(), 6);
+  for (int i = 0; i < removedSpy.count(); ++i) {
+    const QList<QVariant> args = removedSpy.at(i);
+    ASSERT_EQ(args.size(), 4);
+    EXPECT_FALSE(args.at(0).toString().isEmpty()); // type
+    EXPECT_EQ(args.at(1).toString(), QDir(m_packageDir).absolutePath());
+    EXPECT_EQ(args.at(2).toString(), "avogadro-test-plugin");
+    EXPECT_FALSE(args.at(3).toString().isEmpty()); // identifier
+  }
+
+  // Package should no longer be in the list
+  EXPECT_FALSE(pm->registeredPackages().contains("test-plugin"));
+}
+
+TEST_F(PackageManagerTest, registerInvalidDirFails)
+{
+  auto* pm = PackageManager::instance();
+  bool ok = pm->registerPackage("/nonexistent/path");
+  EXPECT_FALSE(ok);
+}
+
+TEST_F(PackageManagerTest, registerDirWithoutTomlFails)
+{
+  QTemporaryDir emptyDir;
+  ASSERT_TRUE(emptyDir.isValid());
+
+  auto* pm = PackageManager::instance();
+  bool ok = pm->registerPackage(emptyDir.path());
+  EXPECT_FALSE(ok);
+}
+
+TEST_F(PackageManagerTest, unregisterNonexistentFails)
+{
+  auto* pm = PackageManager::instance();
+  bool ok = pm->unregisterPackage("no-such-package");
+  EXPECT_FALSE(ok);
+}
+
+TEST_F(PackageManagerTest, loadOptionsFromFileJson)
+{
+  const QString path = QDir(m_packageDir).filePath("user-options.json");
+  ASSERT_FALSE(
+    writeTextFile(path, R"({"alpha": 1, "name": "demo"})").isEmpty());
+
+  // loadOptionsFromFile() wraps a bare JSON root under "userOptions" so
+  // resolveUserOptions() can handle the old wrapping-object and new
+  // bare-array styles uniformly.
+  const QJsonObject options = PackageManager::loadOptionsFromFile(path);
+  ASSERT_TRUE(options.contains("userOptions"));
+  const QJsonObject inner = options.value("userOptions").toObject();
+  EXPECT_EQ(inner.value("alpha").toInt(), 1);
+  EXPECT_EQ(inner.value("name").toString(), "demo");
+}
+
+TEST_F(PackageManagerTest, loadOptionsFromFileToml)
+{
+  const QString path = QDir(m_packageDir).filePath("user-options.toml");
+  ASSERT_FALSE(writeTextFile(path, "alpha = 2\nname = \"demo\"\n").isEmpty());
+
+  const QJsonObject options = PackageManager::loadOptionsFromFile(path);
+  ASSERT_FALSE(options.isEmpty());
+  EXPECT_EQ(options.value("alpha").toInt(), 2);
+  EXPECT_EQ(options.value("name").toString(), "demo");
+}
+
+TEST_F(PackageManagerTest, loadOptionsFromFileMissingReturnsEmpty)
+{
+  const QString path = QDir(m_packageDir).filePath("does-not-exist.json");
+  const QJsonObject options = PackageManager::loadOptionsFromFile(path);
+  EXPECT_TRUE(options.isEmpty());
+}
+
+TEST_F(PackageManagerTest, loadOptionsFromFileInvalidJsonReturnsEmpty)
+{
+  const QString path = QDir(m_packageDir).filePath("invalid.json");
+  ASSERT_FALSE(writeTextFile(path, R"({"broken": )").isEmpty());
+
+  const QJsonObject options = PackageManager::loadOptionsFromFile(path);
+  EXPECT_TRUE(options.isEmpty());
+}
+
+TEST_F(PackageManagerTest, loadOptionsFromFileInvalidTomlReturnsEmpty)
+{
+  const QString path = QDir(m_packageDir).filePath("invalid.toml");
+  ASSERT_FALSE(writeTextFile(path, "broken =\n").isEmpty());
+
+  const QJsonObject options = PackageManager::loadOptionsFromFile(path);
+  EXPECT_TRUE(options.isEmpty());
+}
+
+TEST_F(PackageManagerTest, mergeOptionsFromFileOverridesExistingKeys)
+{
+  // Use TOML: parseTomlToJson returns the top-level table directly, while
+  // loadOptionsFromFile() would wrap a JSON root under "userOptions".
+  const QString path = QDir(m_packageDir).filePath("merge.toml");
+  ASSERT_FALSE(writeTextFile(path, "alpha = 5\nbeta = \"added\"\n").isEmpty());
+
+  QJsonObject options;
+  options.insert("alpha", 1);
+  options.insert("keep", true);
+  PackageManager::mergeOptionsFromFile(options, path);
+
+  EXPECT_EQ(options.value("alpha").toInt(), 5);
+  EXPECT_EQ(options.value("beta").toString(), "added");
+  EXPECT_TRUE(options.value("keep").toBool());
+}
+
+// ---------------------------------------------------------------------------
+// TOML parsing edge-case tests
+// ---------------------------------------------------------------------------
+
+// Helper: write a pyproject.toml with custom [tool.avogadro] content,
+// keeping the required [project] and [project.scripts] boilerplate.
+static QString writeToml(QTemporaryDir& dir, const QByteArray& avogadroBlock)
+{
+  ensureSettingsContext();
+
+  QByteArray toml = R"(
+[project]
+name = "parse-test"
+version = "0.1.0"
+description = "parsing tests"
+
+[project.scripts]
+avogadro-parse-test = "parse_test:main"
+
+[tool.avogadro]
+minimum-avogadro-version = "1.103"
+
+)" + avogadroBlock;
+
+  QFile f(dir.path() + "/pyproject.toml");
+  if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
+    return {};
+  f.write(toml);
+  f.close();
+  return dir.path();
+}
+
+// Find the first signal with the given identifier and return its metadata.
+static QVariantMap findFeatureMetadata(const QSignalSpy& spy,
+                                       const QString& identifier)
+{
+  for (int i = 0; i < spy.count(); ++i) {
+    if (spy.at(i).at(3).toString() == identifier)
+      return spy.at(i).at(4).toMap();
+  }
+  return {};
+}
+
+TEST(TomlParsing, stringValues)
+{
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+
+  QString path = writeToml(dir, R"(
+[[tool.avogadro.menu-commands]]
+identifier = "str-test"
+simple = "hello world"
+empty = ""
+unicode = "café ☕"
+)");
+
+  auto* pm = PackageManager::instance();
+  QSignalSpy spy(pm, &PackageManager::featureRegistered);
+  ASSERT_TRUE(pm->registerPackage(path));
+
+  QVariantMap meta = findFeatureMetadata(spy, "str-test");
+  ASSERT_FALSE(meta.isEmpty());
+  EXPECT_EQ(meta["simple"].toString(), "hello world");
+  EXPECT_EQ(meta["empty"].toString(), "");
+  EXPECT_EQ(meta["unicode"].toString(), QString::fromUtf8("café ☕"));
+
+  pm->unregisterPackage("parse-test");
+}
+
+TEST(TomlParsing, integerValues)
+{
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+
+  QString path = writeToml(dir, R"(
+[[tool.avogadro.menu-commands]]
+identifier = "int-test"
+positive = 42
+zero = 0
+negative = -7
+large = 2147483648
+)");
+
+  auto* pm = PackageManager::instance();
+  QSignalSpy spy(pm, &PackageManager::featureRegistered);
+  ASSERT_TRUE(pm->registerPackage(path));
+
+  QVariantMap meta = findFeatureMetadata(spy, "int-test");
+  ASSERT_FALSE(meta.isEmpty());
+  EXPECT_EQ(meta["positive"].toLongLong(), 42);
+  EXPECT_EQ(meta["zero"].toLongLong(), 0);
+  EXPECT_EQ(meta["negative"].toLongLong(), -7);
+  EXPECT_EQ(meta["large"].toLongLong(), 2147483648LL);
+
+  pm->unregisterPackage("parse-test");
+}
+
+TEST(TomlParsing, floatingPointValues)
+{
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+
+  QString path = writeToml(dir, R"(
+[[tool.avogadro.menu-commands]]
+identifier = "float-test"
+pi = 3.14159
+negative = -0.5
+zero = 0.0
+)");
+
+  auto* pm = PackageManager::instance();
+  QSignalSpy spy(pm, &PackageManager::featureRegistered);
+  ASSERT_TRUE(pm->registerPackage(path));
+
+  QVariantMap meta = findFeatureMetadata(spy, "float-test");
+  ASSERT_FALSE(meta.isEmpty());
+  EXPECT_DOUBLE_EQ(meta["pi"].toDouble(), 3.14159);
+  EXPECT_DOUBLE_EQ(meta["negative"].toDouble(), -0.5);
+  EXPECT_DOUBLE_EQ(meta["zero"].toDouble(), 0.0);
+
+  pm->unregisterPackage("parse-test");
+}
+
+TEST(TomlParsing, booleanValues)
+{
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+
+  QString path = writeToml(dir, R"(
+[[tool.avogadro.menu-commands]]
+identifier = "bool-test"
+yes = true
+no = false
+)");
+
+  auto* pm = PackageManager::instance();
+  QSignalSpy spy(pm, &PackageManager::featureRegistered);
+  ASSERT_TRUE(pm->registerPackage(path));
+
+  QVariantMap meta = findFeatureMetadata(spy, "bool-test");
+  ASSERT_FALSE(meta.isEmpty());
+  EXPECT_TRUE(meta["yes"].toBool());
+  EXPECT_FALSE(meta["no"].toBool());
+
+  pm->unregisterPackage("parse-test");
+}
+
+TEST(TomlParsing, nestedTables)
+{
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+
+  QString path = writeToml(dir, R"(
+[[tool.avogadro.menu-commands]]
+identifier = "nested-test"
+path.menu = "Extensions"
+path.submenu.menu = "Demo"
+path.submenu.priority = 500
+path.entry = { label = "Hello", priority = 100 }
+)");
+
+  auto* pm = PackageManager::instance();
+  QSignalSpy spy(pm, &PackageManager::featureRegistered);
+  ASSERT_TRUE(pm->registerPackage(path));
+
+  QVariantMap meta = findFeatureMetadata(spy, "nested-test");
+  ASSERT_FALSE(meta.isEmpty());
+
+  QVariantMap pathMap = meta["path"].toMap();
+  EXPECT_EQ(pathMap["menu"].toString(), "Extensions");
+
+  QVariantMap submenu = pathMap["submenu"].toMap();
+  EXPECT_EQ(submenu["menu"].toString(), "Demo");
+  EXPECT_EQ(submenu["priority"].toLongLong(), 500);
+
+  QVariantMap entry = pathMap["entry"].toMap();
+  EXPECT_EQ(entry["label"].toString(), "Hello");
+  EXPECT_EQ(entry["priority"].toLongLong(), 100);
+
+  pm->unregisterPackage("parse-test");
+}
+
+TEST(TomlParsing, arrays)
+{
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+
+  QString path = writeToml(dir, R"(
+[[tool.avogadro.menu-commands]]
+identifier = "array-test"
+string-list = ["alpha", "beta", "gamma"]
+int-list = [1, 2, 3]
+mixed-nested = [{ name = "a" }, { name = "b" }]
+empty-list = []
+)");
+
+  auto* pm = PackageManager::instance();
+  QSignalSpy spy(pm, &PackageManager::featureRegistered);
+  ASSERT_TRUE(pm->registerPackage(path));
+
+  QVariantMap meta = findFeatureMetadata(spy, "array-test");
+  ASSERT_FALSE(meta.isEmpty());
+
+  QVariantList strings = meta["string-list"].toList();
+  ASSERT_EQ(strings.size(), 3);
+  EXPECT_EQ(strings[0].toString(), "alpha");
+  EXPECT_EQ(strings[1].toString(), "beta");
+  EXPECT_EQ(strings[2].toString(), "gamma");
+
+  QVariantList ints = meta["int-list"].toList();
+  ASSERT_EQ(ints.size(), 3);
+  EXPECT_EQ(ints[0].toLongLong(), 1);
+  EXPECT_EQ(ints[1].toLongLong(), 2);
+  EXPECT_EQ(ints[2].toLongLong(), 3);
+
+  QVariantList nested = meta["mixed-nested"].toList();
+  ASSERT_EQ(nested.size(), 2);
+  EXPECT_EQ(nested[0].toMap()["name"].toString(), "a");
+  EXPECT_EQ(nested[1].toMap()["name"].toString(), "b");
+
+  QVariantList empty = meta["empty-list"].toList();
+  EXPECT_EQ(empty.size(), 0);
+
+  pm->unregisterPackage("parse-test");
+}
+
+TEST(TomlParsing, multipleFeatureTypes)
+{
+  // Verify that a single package can register features across different types
+  // and each gets the correct type string.
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+
+  QString path = writeToml(dir, R"(
+[[tool.avogadro.menu-commands]]
+identifier = "cmd1"
+
+[[tool.avogadro.electrostatic-models]]
+identifier = "charge1"
+model-name = "C1"
+
+[[tool.avogadro.energy-models]]
+identifier = "energy1"
+model-name = "E1"
+
+[[tool.avogadro.file-formats]]
+identifier = "fmt1"
+format-name = "F1"
+
+[[tool.avogadro.input-generators]]
+identifier = "gen1"
+program-name = "G1"
+)");
+
+  auto* pm = PackageManager::instance();
+  QSignalSpy spy(pm, &PackageManager::featureRegistered);
+  ASSERT_TRUE(pm->registerPackage(path));
+
+  EXPECT_EQ(spy.count(), 5);
+
+  // Check each signal got the right type
+  QMap<QString, QString> typeForId;
+  for (int i = 0; i < spy.count(); ++i) {
+    typeForId[spy.at(i).at(3).toString()] = spy.at(i).at(0).toString();
+  }
+  EXPECT_EQ(typeForId["cmd1"], "menu-commands");
+  EXPECT_EQ(typeForId["charge1"], "electrostatic-models");
+  EXPECT_EQ(typeForId["energy1"], "energy-models");
+  EXPECT_EQ(typeForId["fmt1"], "file-formats");
+  EXPECT_EQ(typeForId["gen1"], "input-generators");
+
+  pm->unregisterPackage("parse-test");
+}
+
+TEST(TomlParsing, missingProjectTableFails)
+{
+  ensureSettingsContext();
+
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+
+  QFile f(dir.path() + "/pyproject.toml");
+  ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Text));
+  f.write(R"(
+[tool.avogadro]
+minimum-avogadro-version = "1.103"
+)");
+  f.close();
+
+  auto* pm = PackageManager::instance();
+  EXPECT_FALSE(pm->registerPackage(dir.path()));
+}
+
+TEST(TomlParsing, missingScriptsEntryFails)
+{
+  ensureSettingsContext();
+
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+
+  QFile f(dir.path() + "/pyproject.toml");
+  ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Text));
+  f.write(R"(
+[project]
+name = "no-scripts"
+version = "0.1.0"
+
+[project.scripts]
+not-avogadro = "foo:bar"
+
+[tool.avogadro]
+minimum-avogadro-version = "1.103"
+)");
+  f.close();
+
+  auto* pm = PackageManager::instance();
+  EXPECT_FALSE(pm->registerPackage(dir.path()));
+}
+
+TEST(TomlParsing, missingToolAvogadroFails)
+{
+  ensureSettingsContext();
+
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+
+  QFile f(dir.path() + "/pyproject.toml");
+  ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Text));
+  f.write(R"(
+[project]
+name = "no-tool"
+version = "0.1.0"
+
+[project.scripts]
+avogadro-no-tool = "no_tool:main"
+)");
+  f.close();
+
+  auto* pm = PackageManager::instance();
+  EXPECT_FALSE(pm->registerPackage(dir.path()));
+}
+
+TEST(TomlParsing, featureWithoutIdentifierSkipped)
+{
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+
+  QString path = writeToml(dir, R"(
+[[tool.avogadro.menu-commands]]
+identifier = "good"
+input-format = "cjson"
+
+[[tool.avogadro.menu-commands]]
+input-format = "cjson"
+)");
+
+  auto* pm = PackageManager::instance();
+  QSignalSpy spy(pm, &PackageManager::featureRegistered);
+  ASSERT_TRUE(pm->registerPackage(path));
+
+  // Only the one with an identifier should be emitted
+  EXPECT_EQ(spy.count(), 1);
+  EXPECT_EQ(spy.at(0).at(3).toString(), "good");
+
+  pm->unregisterPackage("parse-test");
+}
+
+TEST(TomlParsing, invalidTomlSyntaxFails)
+{
+  ensureSettingsContext();
+
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+
+  QFile f(dir.path() + "/pyproject.toml");
+  ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Text));
+  f.write("this is not valid [[[toml syntax");
+  f.close();
+
+  auto* pm = PackageManager::instance();
+  EXPECT_FALSE(pm->registerPackage(dir.path()));
+}
+
+TEST(TomlParsing, cacheRoundTrip)
+{
+  // Verify that data survives a register → load-from-cache round-trip,
+  // including nested tables, arrays, and all scalar types.
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+
+  QString path = writeToml(dir, R"(
+[[tool.avogadro.menu-commands]]
+identifier = "roundtrip"
+str = "hello"
+num = 42
+pi = 3.14
+flag = true
+tags = ["a", "b"]
+nested.key = "val"
+)");
+
+  auto* pm = PackageManager::instance();
+
+  // Register (writes to QSettings)
+  pm->registerPackage(path);
+
+  // Replay from cache
+  QSignalSpy spy(pm, &PackageManager::featureRegistered);
+  pm->loadRegisteredPackages();
+
+  QVariantMap meta = findFeatureMetadata(spy, "roundtrip");
+  ASSERT_FALSE(meta.isEmpty());
+  EXPECT_EQ(meta["str"].toString(), "hello");
+  // Note: JSON round-trip converts integers to double
+  EXPECT_EQ(meta["num"].toInt(), 42);
+  EXPECT_DOUBLE_EQ(meta["pi"].toDouble(), 3.14);
+  EXPECT_TRUE(meta["flag"].toBool());
+
+  QVariantList tags = meta["tags"].toList();
+  ASSERT_EQ(tags.size(), 2);
+  EXPECT_EQ(tags[0].toString(), "a");
+  EXPECT_EQ(tags[1].toString(), "b");
+
+  QVariantMap nested = meta["nested"].toMap();
+  EXPECT_EQ(nested["key"].toString(), "val");
+
+  pm->unregisterPackage("parse-test");
+}
+
+// ---------------------------------------------------------------------------
+// Installed-environment probing
+//
+// Package commands run as "pixi run --as-is", which is shorthand for
+// --no-install --frozen and so never creates a missing environment. A package
+// installed while pixi was absent lives in .venv instead, and must keep
+// running from there until it is installed again.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Relative path of the directory a console script is installed into.
+QString pixiBinDir()
+{
+#ifdef Q_OS_WIN
+  return QStringLiteral("/.pixi/envs/default/Scripts");
+#else
+  return QStringLiteral("/.pixi/envs/default/bin");
+#endif
+}
+
+QString venvBinDir()
+{
+#ifdef Q_OS_WIN
+  return QStringLiteral("/.venv/Scripts");
+#else
+  return QStringLiteral("/.venv/bin");
+#endif
+}
+
+// Create a stand-in for a pip/pixi installed console script.
+//
+// Windows has no executable bit. Unless an application opts into NTFS
+// permission checks, Qt reports a file as executable from its suffix alone
+// (.exe/.com/.bat/.cmd/.pif), so QFile::setPermissions() cannot make a .exe
+// unrunnable. A file that cannot be run is instead one that is not a runnable
+// type, so drop the suffix rather than the permission bit there.
+bool createConsoleScript(const QString& binDir, const QString& command,
+                         bool executable = true)
+{
+  if (!QDir().mkpath(binDir))
+    return false;
+
+#ifdef Q_OS_WIN
+  const QString path =
+    binDir + '/' + command + (executable ? QStringLiteral(".exe") : QString());
+#else
+  const QString path = binDir + '/' + command;
+#endif
+  if (writeTextFile(path, "#!/bin/sh\n").isEmpty())
+    return false;
+
+  QFile::Permissions perms = QFile::ReadOwner | QFile::WriteOwner;
+  if (executable)
+    perms |= QFile::ExeOwner;
+  return QFile::setPermissions(path, perms);
+}
+
+} // namespace
+
+TEST_F(PackageManagerTest, scriptPathsEmptyWithoutEnvironment)
+{
+  EXPECT_TRUE(
+    PackageManager::pixiScriptPath(m_packageDir, "avogadro-test-plugin")
+      .isEmpty());
+  EXPECT_TRUE(
+    PackageManager::venvScriptPath(m_packageDir, "avogadro-test-plugin")
+      .isEmpty());
+}
+
+TEST_F(PackageManagerTest, scriptPathsRejectEmptyArguments)
+{
+  ASSERT_TRUE(createConsoleScript(m_packageDir + pixiBinDir(), "cmd"));
+
+  EXPECT_TRUE(PackageManager::pixiScriptPath(QString(), "cmd").isEmpty());
+  EXPECT_TRUE(
+    PackageManager::pixiScriptPath(m_packageDir, QString()).isEmpty());
+  EXPECT_TRUE(PackageManager::venvScriptPath(QString(), "cmd").isEmpty());
+  EXPECT_TRUE(
+    PackageManager::venvScriptPath(m_packageDir, QString()).isEmpty());
+}
+
+TEST_F(PackageManagerTest, pixiScriptPathFindsInstalledCommand)
+{
+  ASSERT_TRUE(createConsoleScript(m_packageDir + pixiBinDir(), "avo-cmd"));
+
+  const QString found = PackageManager::pixiScriptPath(m_packageDir, "avo-cmd");
+  ASSERT_FALSE(found.isEmpty());
+  EXPECT_TRUE(found.startsWith(m_packageDir + pixiBinDir()));
+  EXPECT_TRUE(QFileInfo(found).isExecutable());
+
+  // A pixi environment is not a venv, and vice versa.
+  EXPECT_TRUE(
+    PackageManager::venvScriptPath(m_packageDir, "avo-cmd").isEmpty());
+}
+
+TEST_F(PackageManagerTest, venvScriptPathFindsInstalledCommand)
+{
+  ASSERT_TRUE(createConsoleScript(m_packageDir + venvBinDir(), "avo-cmd"));
+
+  const QString found = PackageManager::venvScriptPath(m_packageDir, "avo-cmd");
+  ASSERT_FALSE(found.isEmpty());
+  EXPECT_TRUE(found.startsWith(m_packageDir + venvBinDir()));
+
+  EXPECT_TRUE(
+    PackageManager::pixiScriptPath(m_packageDir, "avo-cmd").isEmpty());
+}
+
+TEST_F(PackageManagerTest, scriptPathsIgnoreNonExecutableFiles)
+{
+  // A package directory copied off a read-only medium (or unpacked without
+  // permissions) can hold a .pixi tree whose contents cannot be run. On
+  // Windows that is a leftover with no executable suffix -- see
+  // createConsoleScript().
+  ASSERT_TRUE(
+    createConsoleScript(m_packageDir + pixiBinDir(), "avo-cmd", false));
+
+  EXPECT_TRUE(
+    PackageManager::pixiScriptPath(m_packageDir, "avo-cmd").isEmpty());
+}
+
+// ---------------------------------------------------------------------------
+// scanDirectory() environment checks
+//
+// The pyproject.toml hash alone is not enough to decide that a registered
+// package is ready to use: installing pixi after a package was pip-installed
+// leaves the manifest untouched but changes which backend we should use.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// scanDirectory() looks at the immediate subdirectories of what it is given,
+// so nest a package one level below the directory that will be scanned.
+// Returns the package directory, or an empty string on failure.
+QString createScannablePackage(const QString& scanDir, const QByteArray& toml)
+{
+  const QString packageDir = scanDir + "/test-plugin";
+  if (!QDir().mkpath(packageDir))
+    return {};
+  if (writeTextFile(packageDir + "/pyproject.toml", toml).isEmpty())
+    return {};
+  return packageDir;
+}
+
+// Whether this machine has anything capable of building an environment.
+// scanDirectory() will not ask to re-install when it cannot help.
+bool pixiIsInstalled()
+{
+#ifdef Q_OS_WIN
+  return !Avogadro::QtGui::Utilities::findExecutablePath("pixi.exe").isEmpty();
+#else
+  return !Avogadro::QtGui::Utilities::findExecutablePath("pixi").isEmpty();
+#endif
+}
+
+bool canInstallPackages()
+{
+#ifdef Q_OS_WIN
+  const QStringList pythonNames = { "python.exe", "python3.exe" };
+#else
+  const QStringList pythonNames = { "python3", "python" };
+#endif
+  for (const QString& name : pythonNames) {
+    if (!Avogadro::QtGui::Utilities::findExecutablePath(name).isEmpty())
+      return true;
+  }
+  return pixiIsInstalled();
+}
+
+} // namespace
+
+TEST_F(PackageManagerTest, scanDirectoryReturnsUnregisteredPackage)
+{
+  const QString scanDir = m_packageDir + "/scan";
+  const QString pkgDir = createScannablePackage(scanDir, sampleToml());
+  ASSERT_FALSE(pkgDir.isEmpty());
+
+  EXPECT_TRUE(PackageManager::instance()->scanDirectory(scanDir).contains(
+    QDir(pkgDir).absolutePath()));
+}
+
+TEST_F(PackageManagerTest, scanDirectorySkipsPackageWithPixiEnvironment)
+{
+  const QString scanDir = m_packageDir + "/scan";
+  const QString pkgDir = createScannablePackage(scanDir, sampleToml());
+  ASSERT_FALSE(pkgDir.isEmpty());
+
+  auto* pm = PackageManager::instance();
+  ASSERT_TRUE(pm->registerPackage(pkgDir));
+  ASSERT_TRUE(
+    createConsoleScript(pkgDir + pixiBinDir(), "avogadro-test-plugin"));
+
+  // Manifest unchanged and the preferred backend is in place: nothing to do.
+  EXPECT_FALSE(
+    pm->scanDirectory(scanDir).contains(QDir(pkgDir).absolutePath()));
+}
+
+TEST_F(PackageManagerTest, scanDirectoryRescansPackageWithMissingEnvironment)
+{
+  if (!canInstallPackages())
+    GTEST_SKIP() << "no pixi or python available to install with";
+
+  const QString scanDir = m_packageDir + "/scan";
+  const QString pkgDir = createScannablePackage(scanDir, sampleToml());
+  ASSERT_FALSE(pkgDir.isEmpty());
+
+  auto* pm = PackageManager::instance();
+  ASSERT_TRUE(pm->registerPackage(pkgDir));
+
+  // Registered, manifest unchanged, but nothing was ever installed — the
+  // install failed, or the environment was removed. Offer to install again.
+  EXPECT_TRUE(pm->scanDirectory(scanDir).contains(QDir(pkgDir).absolutePath()));
+}
+
+TEST_F(PackageManagerTest, scanDirectoryRescansVenvPackageOncePixiIsAvailable)
+{
+  const QString scanDir = m_packageDir + "/scan";
+  // Only a package that brings its own pixi workspace can be migrated to one.
+  const QString pkgDir = createScannablePackage(
+    scanDir, sampleToml() + "\n[tool.pixi.workspace]\n"
+                            "channels = [\"conda-forge\"]\n");
+  ASSERT_FALSE(pkgDir.isEmpty());
+
+  auto* pm = PackageManager::instance();
+  ASSERT_TRUE(pm->registerPackage(pkgDir));
+  ASSERT_TRUE(
+    createConsoleScript(pkgDir + venvBinDir(), "avogadro-test-plugin"));
+
+  // A pip-installed package still runs, so it is only worth re-installing in
+  // order to migrate it to pixi — and only if pixi is actually here now.
+  EXPECT_EQ(pm->scanDirectory(scanDir).contains(QDir(pkgDir).absolutePath()),
+            pixiIsInstalled());
+}
+
+TEST_F(PackageManagerTest, scanDirectoryKeepsVenvPackageThatCannotUsePixi)
+{
+  const QString scanDir = m_packageDir + "/scan";
+  // sampleToml() declares no [tool.pixi] table, so pixi would install some
+  // ancestor's workspace rather than this package.
+  const QString pkgDir = createScannablePackage(scanDir, sampleToml());
+  ASSERT_FALSE(pkgDir.isEmpty());
+
+  auto* pm = PackageManager::instance();
+  ASSERT_TRUE(pm->registerPackage(pkgDir));
+  ASSERT_TRUE(
+    createConsoleScript(pkgDir + venvBinDir(), "avogadro-test-plugin"));
+
+  // The .venv is the only environment this package can ever have, so pixi
+  // turning up is no reason to reinstall it. Asking anyway would put the
+  // install prompt up on every single launch, for ever.
+  EXPECT_FALSE(
+    pm->scanDirectory(scanDir).contains(QDir(pkgDir).absolutePath()));
+}
+
+// ---------------------------------------------------------------------------
+// Remembered install failures
+//
+// An install that fails for a given pyproject.toml fails again for the same
+// one, so scanDirectory() must not offer it on every launch (#3124).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+QByteArray sha256Hex(const QByteArray& data)
+{
+  return QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex();
+}
+
+// The hash of the manifest as written: Text mode turns "\n" into "\r\n" on
+// Windows, so hashing the in-memory bytes would not match what
+// scanDirectory() reads.
+QByteArray fileSha256Hex(const QString& path)
+{
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly))
+    return {};
+  return sha256Hex(file.readAll());
+}
+
+// What installPackages() records; the key is the package directory's name.
+void recordFailure(const QString& key, const QString& name,
+                   const QByteArray& hash)
+{
+  QSettings settings;
+  settings.setValue("pluginInstallFailures/" + key + "/" + name, hash);
+  settings.sync();
+}
+
+} // namespace
+
+TEST_F(PackageManagerTest, scanDirectorySkipsPackageWithRecordedFailure)
+{
+  const QString scanDir = m_packageDir + "/scan";
+  const QString pkgDir = createScannablePackage(scanDir, sampleToml());
+  ASSERT_FALSE(pkgDir.isEmpty());
+  auto* pm = PackageManager::instance();
+
+  recordFailure("test-plugin", "installFailedHash",
+                fileSha256Hex(pkgDir + "/pyproject.toml"));
+
+  EXPECT_FALSE(pm->scanDirectory(scanDir).contains(pkgDir));
+  // A failed package is not a registered one.
+  EXPECT_FALSE(pm->registeredPackages().contains("test-plugin"));
+}
+
+TEST_F(PackageManagerTest, scanDirectoryOffersFailedPackageAgainOnceTomlChanges)
+{
+  const QString scanDir = m_packageDir + "/scan";
+  const QString pkgDir = createScannablePackage(scanDir, sampleToml());
+  ASSERT_FALSE(pkgDir.isEmpty());
+  auto* pm = PackageManager::instance();
+
+  recordFailure("test-plugin", "installFailedHash",
+                fileSha256Hex(pkgDir + "/pyproject.toml"));
+  ASSERT_FALSE(pm->scanDirectory(scanDir).contains(pkgDir));
+
+  ASSERT_FALSE(
+    writeTextFile(pkgDir + "/pyproject.toml", sampleToml() + "\n# changed\n")
+      .isEmpty());
+  EXPECT_TRUE(pm->scanDirectory(scanDir).contains(pkgDir));
+}
+
+TEST_F(PackageManagerTest, clearInstallFailureOffersPackageAgain)
+{
+  const QString scanDir = m_packageDir + "/scan";
+  const QString pkgDir = createScannablePackage(scanDir, sampleToml());
+  ASSERT_FALSE(pkgDir.isEmpty());
+  auto* pm = PackageManager::instance();
+
+  recordFailure("test-plugin", "installFailedHash",
+                fileSha256Hex(pkgDir + "/pyproject.toml"));
+  ASSERT_FALSE(pm->scanDirectory(scanDir).contains(pkgDir));
+
+  PackageManager::clearInstallFailure(pkgDir);
+  EXPECT_TRUE(pm->scanDirectory(scanDir).contains(pkgDir));
+}
+
+TEST_F(PackageManagerTest, unregisterPackageClearsInstallFailure)
+{
+  const QString scanDir = m_packageDir + "/scan";
+  const QString pkgDir = createScannablePackage(scanDir, sampleToml());
+  ASSERT_FALSE(pkgDir.isEmpty());
+  auto* pm = PackageManager::instance();
+
+  ASSERT_TRUE(pm->registerPackage(pkgDir));
+  recordFailure("test-plugin", "installFailedHash",
+                fileSha256Hex(pkgDir + "/pyproject.toml"));
+  ASSERT_TRUE(pm->unregisterPackage("test-plugin"));
+
+  EXPECT_TRUE(pm->scanDirectory(scanDir).contains(pkgDir));
+}
+
+TEST_F(PackageManagerTest, scanDirectoryKeepsVenvPackageWherePixiFailed)
+{
+  const QString scanDir = m_packageDir + "/scan";
+  // Declares a pixi workspace, so only the recorded failure keeps it quiet.
+  const QByteArray toml = sampleToml() + "\n[tool.pixi.workspace]\n"
+                                         "channels = [\"conda-forge\"]\n";
+  const QString pkgDir = createScannablePackage(scanDir, toml);
+  ASSERT_FALSE(pkgDir.isEmpty());
+  auto* pm = PackageManager::instance();
+
+  ASSERT_TRUE(pm->registerPackage(pkgDir));
+  ASSERT_TRUE(
+    createConsoleScript(pkgDir + venvBinDir(), "avogadro-test-plugin"));
+  recordFailure("test-plugin", "pixiFailedHash",
+                fileSha256Hex(pkgDir + "/pyproject.toml"));
+
+  // pip got it working after pixi failed: don't try pixi on every launch.
+  EXPECT_FALSE(pm->scanDirectory(scanDir).contains(pkgDir));
+}
+
+// ---------------------------------------------------------------------------
+// removeSupersededVenv()
+//
+// Deleting the pip-installed tree is the one destructive step in a migration,
+// so it must happen only once pixi can demonstrably run the command.
+// ---------------------------------------------------------------------------
+
+TEST_F(PackageManagerTest, removeSupersededVenvDeletesVenvOncePixiProvidesIt)
+{
+  ASSERT_TRUE(createConsoleScript(m_packageDir + venvBinDir(), "avo-cmd"));
+  ASSERT_TRUE(createConsoleScript(m_packageDir + pixiBinDir(), "avo-cmd"));
+
+  EXPECT_TRUE(PackageManager::removeSupersededVenv(m_packageDir, "avo-cmd"));
+  EXPECT_FALSE(QDir(m_packageDir + "/.venv").exists());
+
+  // The pixi environment must be left alone.
+  EXPECT_FALSE(
+    PackageManager::pixiScriptPath(m_packageDir, "avo-cmd").isEmpty());
+}
+
+TEST_F(PackageManagerTest, removeSupersededVenvKeepsVenvWithoutPixiCommand)
+{
+  ASSERT_TRUE(createConsoleScript(m_packageDir + venvBinDir(), "avo-cmd"));
+
+  // No pixi environment at all: removing the venv would leave the package
+  // with no way to run.
+  EXPECT_FALSE(PackageManager::removeSupersededVenv(m_packageDir, "avo-cmd"));
+  EXPECT_TRUE(QDir(m_packageDir + "/.venv").exists());
+}
+
+TEST_F(PackageManagerTest, removeSupersededVenvKeepsVenvWhenPixiEnvLacksCommand)
+{
+  ASSERT_TRUE(createConsoleScript(m_packageDir + venvBinDir(), "avo-cmd"));
+  // A pixi environment exists, but the install did not put our command in it.
+  ASSERT_TRUE(createConsoleScript(m_packageDir + pixiBinDir(), "other-cmd"));
+
+  EXPECT_FALSE(PackageManager::removeSupersededVenv(m_packageDir, "avo-cmd"));
+  EXPECT_TRUE(QDir(m_packageDir + "/.venv").exists());
+}
+
+TEST_F(PackageManagerTest, removeSupersededVenvIgnoresPackageWithoutVenv)
+{
+  ASSERT_TRUE(createConsoleScript(m_packageDir + pixiBinDir(), "avo-cmd"));
+
+  EXPECT_FALSE(PackageManager::removeSupersededVenv(m_packageDir, "avo-cmd"));
+}
+
+TEST_F(PackageManagerTest, removeSupersededVenvRejectsEmptyArguments)
+{
+  ASSERT_TRUE(createConsoleScript(m_packageDir + venvBinDir(), "avo-cmd"));
+  ASSERT_TRUE(createConsoleScript(m_packageDir + pixiBinDir(), "avo-cmd"));
+
+  // An empty package directory must never be turned into a path to delete,
+  // and an unknown command is not evidence that pixi can take over.
+  EXPECT_FALSE(PackageManager::removeSupersededVenv(QString(), "avo-cmd"));
+  EXPECT_FALSE(PackageManager::removeSupersededVenv(m_packageDir, QString()));
+  EXPECT_TRUE(QDir(m_packageDir + "/.venv").exists());
+}
+
+// ---------------------------------------------------------------------------
+// resolveCommandLine()
+//
+// The single place that decides which backend runs a package command, so both
+// the run sites (PythonScript and loadOptionsFromScript) inherit the policy.
+// ---------------------------------------------------------------------------
+
+TEST_F(PackageManagerTest, resolveCommandLinePrefersPixiEnvironment)
+{
+  ASSERT_TRUE(createConsoleScript(m_packageDir + pixiBinDir(), "avo-cmd"));
+  ASSERT_TRUE(createConsoleScript(m_packageDir + venvBinDir(), "avo-cmd"));
+
+  const auto commandLine =
+    PackageManager::resolveCommandLine(m_packageDir, "avo-cmd");
+
+  // Only meaningful where pixi is installed; elsewhere the venv is the only
+  // option and the fallback case below covers it.
+#ifdef Q_OS_WIN
+  const bool pixiInstalled =
+    !Avogadro::QtGui::Utilities::findExecutablePath("pixi.exe").isEmpty();
+#else
+  const bool pixiInstalled =
+    !Avogadro::QtGui::Utilities::findExecutablePath("pixi").isEmpty();
+#endif
+  if (!pixiInstalled)
+    GTEST_SKIP() << "pixi is not installed on this machine";
+
+  EXPECT_TRUE(commandLine.program.endsWith("pixi") ||
+              commandLine.program.endsWith("pixi.exe"));
+  EXPECT_EQ(commandLine.prefixArgs,
+            QStringList({ "run", "--as-is", "avo-cmd" }));
+}
+
+TEST_F(PackageManagerTest, resolveCommandLineFallsBackToVenvScript)
+{
+  ASSERT_TRUE(createConsoleScript(m_packageDir + venvBinDir(), "avo-cmd"));
+
+  // No pixi environment, so the console script is run directly and needs no
+  // arguments in front of its own.
+  const auto commandLine =
+    PackageManager::resolveCommandLine(m_packageDir, "avo-cmd");
+
+  EXPECT_EQ(commandLine.program,
+            PackageManager::venvScriptPath(m_packageDir, "avo-cmd"));
+  EXPECT_TRUE(commandLine.prefixArgs.isEmpty());
+}
+
+// The pixi executable is passed in explicitly below, so these do not depend
+// on whether pixi happens to be installed (or discoverable, e.g. in
+// /opt/homebrew/bin on macOS) on the machine running the tests.
+TEST_F(PackageManagerTest, resolveCommandLineRunsPixiScriptWhenPixiMissing)
+{
+  ASSERT_TRUE(createConsoleScript(m_packageDir + pixiBinDir(), "avo-cmd"));
+  ASSERT_TRUE(createConsoleScript(m_packageDir + venvBinDir(), "avo-cmd"));
+
+  const auto commandLine =
+    PackageManager::resolveCommandLine(m_packageDir, "avo-cmd", QString());
+
+  // The pixi environment wins over the venv, and is run without pixi.
+  EXPECT_EQ(commandLine.program,
+            PackageManager::pixiScriptPath(m_packageDir, "avo-cmd"));
+  EXPECT_TRUE(commandLine.prefixArgs.isEmpty());
+  EXPECT_EQ(commandLine.environmentBinDir,
+            QFileInfo(commandLine.program).absolutePath());
+  EXPECT_EQ(commandLine.environmentPrefix,
+            m_packageDir + "/.pixi/envs/default");
+
+  // Nothing activated the environment, so it is applied by hand.
+  QProcessEnvironment environment;
+  environment.insert("PATH", "/somewhere/else");
+  EXPECT_TRUE(commandLine.applyEnvironment(environment));
+  EXPECT_TRUE(
+    environment.value("PATH").startsWith(commandLine.environmentBinDir));
+  EXPECT_TRUE(environment.value("PATH").endsWith("/somewhere/else"));
+  EXPECT_EQ(environment.value("CONDA_PREFIX"), commandLine.environmentPrefix);
+}
+
+TEST_F(PackageManagerTest, resolveCommandLineUsesPixiWhenFound)
+{
+  ASSERT_TRUE(createConsoleScript(m_packageDir + pixiBinDir(), "avo-cmd"));
+
+  const auto commandLine = PackageManager::resolveCommandLine(
+    m_packageDir, "avo-cmd", "/fake/bin/pixi");
+
+  // pixi activates the environment itself.
+  EXPECT_EQ(commandLine.program, QString("/fake/bin/pixi"));
+  EXPECT_EQ(commandLine.prefixArgs,
+            QStringList({ "run", "--as-is", "avo-cmd" }));
+  EXPECT_TRUE(commandLine.environmentBinDir.isEmpty());
+  EXPECT_TRUE(commandLine.environmentPrefix.isEmpty());
+
+  QProcessEnvironment environment;
+  EXPECT_FALSE(commandLine.applyEnvironment(environment));
+}
+
+TEST_F(PackageManagerTest, resolveCommandLineVenvFallbackSetsBinDir)
+{
+  ASSERT_TRUE(createConsoleScript(m_packageDir + venvBinDir(), "avo-cmd"));
+
+  // With or without pixi: no pixi environment, so the venv is run directly.
+  for (const QString pixi : { QString(), QString("/fake/bin/pixi") }) {
+    const auto commandLine =
+      PackageManager::resolveCommandLine(m_packageDir, "avo-cmd", pixi);
+    EXPECT_EQ(commandLine.program,
+              PackageManager::venvScriptPath(m_packageDir, "avo-cmd"));
+    EXPECT_EQ(commandLine.environmentBinDir,
+              QFileInfo(commandLine.program).absolutePath());
+    EXPECT_TRUE(commandLine.environmentPrefix.isEmpty());
+  }
+}
+
+TEST_F(PackageManagerTest, resolveCommandLineEmptyWithoutAnyEnvironment)
+{
+  const auto commandLine =
+    PackageManager::resolveCommandLine(m_packageDir, "avo-cmd");
+
+  EXPECT_TRUE(commandLine.program.isEmpty());
+  EXPECT_TRUE(commandLine.prefixArgs.isEmpty());
+}
+
+// ---------------------------------------------------------------------------
+// packageVersion()
+//
+// MainWindow decides whether to refresh its bundled copy of a package by
+// comparing versions, never content: the plugin downloader installs over the
+// very same directory, so a package the user has updated themselves must not
+// be reverted to the bundled copy on the next launch.
+// ---------------------------------------------------------------------------
+
+TEST_F(PackageManagerTest, packageVersionReadsProjectVersion)
+{
+  EXPECT_EQ(PackageManager::packageVersion(m_packageDir), "1.2.3");
+}
+
+TEST_F(PackageManagerTest, packageVersionEmptyWithoutAPackage)
+{
+  const QString pkgDir = m_packageDir + "/no-manifest";
+  ASSERT_TRUE(QDir().mkpath(pkgDir));
+
+  EXPECT_TRUE(PackageManager::packageVersion(pkgDir).isEmpty());
+  EXPECT_TRUE(PackageManager::packageVersion(QString()).isEmpty());
+}
+
+TEST_F(PackageManagerTest, packageVersionOrdersAnAddedSegmentAsNewer)
+{
+  // The real case this was written for: avogenerators shipped "2.0" before it
+  // declared a pixi workspace and "2.0.0" after, so the repaired package has
+  // to compare as newer than the copy already sitting in the user's plugin
+  // directory.
+  EXPECT_GT(QVersionNumber::fromString(QStringLiteral("2.0.0")),
+            QVersionNumber::fromString(QStringLiteral("2.0")));
+
+  // ... while a package the user has updated past the bundled one does not.
+  EXPECT_GT(QVersionNumber::fromString(QStringLiteral("2.1.0")),
+            QVersionNumber::fromString(QStringLiteral("2.0.0")));
+}
+
+// ---------------------------------------------------------------------------
+// hasPixiManifest()
+//
+// pixi finds its manifest by walking up from the directory it is run in, so a
+// package declaring none is not merely unsupported: "pixi install" silently
+// installs some ancestor's workspace instead and reports success.
+// ---------------------------------------------------------------------------
+
+TEST_F(PackageManagerTest, hasPixiManifestFalseWithoutPixiTable)
+{
+  // sampleToml() has a [tool.avogadro] table but no [tool.pixi].
+  EXPECT_FALSE(PackageManager::hasPixiManifest(m_packageDir));
+}
+
+TEST_F(PackageManagerTest, hasPixiManifestTrueWithPixiWorkspaceTable)
+{
+  const QString pkgDir = m_packageDir + "/with-workspace";
+  ASSERT_TRUE(QDir().mkpath(pkgDir));
+  ASSERT_FALSE(writeTextFile(pkgDir + "/pyproject.toml",
+                             "[tool.pixi.workspace]\n"
+                             "channels = [\"conda-forge\"]\n")
+                 .isEmpty());
+
+  EXPECT_TRUE(PackageManager::hasPixiManifest(pkgDir));
+}
+
+TEST_F(PackageManagerTest, hasPixiManifestTrueWithBarePixiToml)
+{
+  const QString pkgDir = m_packageDir + "/with-pixi-toml";
+  ASSERT_TRUE(QDir().mkpath(pkgDir));
+  // The pyproject.toml alone declares no [tool.pixi] table; the standalone
+  // pixi.toml beside it is what makes this directory a workspace.
+  ASSERT_FALSE(
+    writeTextFile(pkgDir + "/pyproject.toml", sampleToml()).isEmpty());
+  ASSERT_FALSE(writeTextFile(pkgDir + "/pixi.toml", "[workspace]\n").isEmpty());
+
+  EXPECT_TRUE(PackageManager::hasPixiManifest(pkgDir));
+}
+
+TEST_F(PackageManagerTest, hasPixiManifestFalseWithoutAnyManifest)
+{
+  const QString pkgDir = m_packageDir + "/no-manifest";
+  ASSERT_TRUE(QDir().mkpath(pkgDir));
+
+  EXPECT_FALSE(PackageManager::hasPixiManifest(pkgDir));
+}
+
+// ---------------------------------------------------------------------------
+// scanDirectory() with a stale entry from a renamed package
+//
+// A package renamed upstream leaves its old cache entry behind, pointing at
+// the same directory but carrying the hash of a pyproject.toml that will
+// never be seen again. That stale entry must not shadow a healthy, current
+// one that also names the directory.
+// ---------------------------------------------------------------------------
+
+TEST_F(PackageManagerTest, scanDirectoryIgnoresStaleEntryForSameDirectory)
+{
+  const QString scanDir = m_packageDir + "/scan";
+  const QString pkgDir = createScannablePackage(scanDir, sampleToml());
+  ASSERT_FALSE(pkgDir.isEmpty());
+
+  auto* pm = PackageManager::instance();
+  ASSERT_TRUE(pm->registerPackage(pkgDir));
+  ASSERT_TRUE(
+    createConsoleScript(pkgDir + pixiBinDir(), "avogadro-test-plugin"));
+
+  // A stale entry left behind by the package's old name: same directory, but
+  // a hash the current pyproject.toml will never match again.
+  {
+    QSettings settings;
+    settings.setValue("plugins/old-test-plugin/directory",
+                      pm->packageInfo("test-plugin").directory);
+    settings.setValue("plugins/old-test-plugin/command", "avogadro-old-name");
+    settings.setValue("plugins/old-test-plugin/tomlHash",
+                      QByteArray("deadbeef"));
+    settings.sync();
+  }
+
+  // The healthy "test-plugin" entry (unchanged hash, command installed) is
+  // enough on its own to say nothing needs to happen here.
+  EXPECT_FALSE(
+    pm->scanDirectory(scanDir).contains(QDir(pkgDir).absolutePath()));
+
+  QSettings settings;
+  settings.beginGroup("plugins");
+  settings.remove("old-test-plugin");
+  settings.endGroup();
+  settings.sync();
+}
+
+// ---------------------------------------------------------------------------
+// loadFromCache() / loadRegisteredPackages() pruning a renamed package
+//
+// A package renamed upstream (avogenerators: avogadro-avogenerators ->
+// avogadro-generators) leaves its old cache entry behind. The directory and
+// its pyproject.toml still exist, but the file now describes a different
+// package, so replaying that entry would register features for a name that
+// no longer exists.
+// ---------------------------------------------------------------------------
+
+TEST_F(PackageManagerTest, loadRegisteredPackagesPrunesRenamedEntry)
+{
+  // m_packageDir's pyproject.toml (sampleToml()) declares
+  // [project.name] = "test-plugin", so a cache entry under any other name is
+  // stale.
+  {
+    QSettings settings;
+    settings.setValue("plugins/old-name/directory", m_packageDir);
+    settings.setValue("plugins/old-name/command", "avogadro-old-name");
+    settings.setValue("plugins/old-name/version", "0.0");
+    settings.sync();
+  }
+  ASSERT_TRUE(
+    PackageManager::instance()->registeredPackages().contains("old-name"));
+
+  PackageManager::instance()->loadRegisteredPackages();
+
+  EXPECT_FALSE(
+    PackageManager::instance()->registeredPackages().contains("old-name"));
+
+  // In case the assertion above failed and left the entry behind.
+  QSettings settings;
+  settings.beginGroup("plugins");
+  settings.remove("old-name");
+  settings.endGroup();
+  settings.sync();
+}

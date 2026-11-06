@@ -1,0 +1,199 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#ifndef AVOGADRO_RENDERING_CYLINDERGEOMETRY_H
+#define AVOGADRO_RENDERING_CYLINDERGEOMETRY_H
+
+#include "drawable.h"
+
+#include <vector>
+
+namespace Avogadro {
+namespace Rendering {
+
+struct ColorNormalVertex;
+
+struct CylinderColor
+{
+  CylinderColor(const Vector3f& pos1, const Vector3f& pos2, float r,
+                const Vector3ub& c, const Vector3ub& c2 = Vector3ub::Zero())
+    : end1(pos1), end2(pos2), radius(r), color(c), color2(c2)
+  {
+  }
+
+  Vector3f end1;
+  Vector3f end2;
+  float radius;
+  Vector3ub color;
+  Vector3ub color2;
+};
+
+/**
+ * @class CylinderGeometry cylindergeometry.h
+ * <avogadro/rendering/cylindergeometry.h>
+ * @brief The CylinderGeometry contains one or more cylinders.
+ * @author Marcus D. Hanwell
+ */
+
+class AVOGADRORENDERING_EXPORT CylinderGeometry : public Drawable
+{
+public:
+  CylinderGeometry();
+  CylinderGeometry(const CylinderGeometry& other);
+  ~CylinderGeometry() override;
+
+  CylinderGeometry& operator=(CylinderGeometry);
+  friend void swap(CylinderGeometry& lhs, CylinderGeometry& rhs);
+
+  /**
+   * Accept a visit from our friendly visitor.
+   */
+  void accept(Visitor&) override;
+
+  /**
+   * Build the triangle mesh for all of the cylinders on the CPU. No OpenGL
+   * is touched, so this is safe to call without a context (and from another
+   * thread, provided the cylinders are not modified meanwhile).
+   * @param vertices Output vertices (cleared first): for each cylinder, two
+   * rings of 8 vertices, interleaved end1/end2 per point on the circle.
+   * @param indices Output triangle list into @p vertices (cleared first).
+   */
+  void tessellate(std::vector<ColorNormalVertex>& vertices,
+                  std::vector<unsigned int>& indices) const;
+
+  /**
+   * @brief Update the VBOs, IBOs etc ready for rendering.
+   */
+  void update();
+
+  /**
+   * @brief Render the cylinder geometry.
+   * @param camera The current camera to be used for rendering.
+   */
+  void render(const Camera& camera) override;
+
+  /**
+   * Return the primitives that are hit by the ray.
+   * @param rayOrigin Origin of the ray.
+   * @param rayEnd End point of the ray.
+   * @param rayDirection Normalized direction of the ray.
+   * @return Sorted collection of primitives that were hit.
+   */
+  std::multimap<float, Identifier> hits(
+    const Vector3f& rayOrigin, const Vector3f& rayEnd,
+    const Vector3f& rayDirection) const override;
+
+  /**
+   * @brief Add a cylinder to the geometry object.
+   * @param pos1 Base of the cylinder axis.
+   * @param pos2 Top of the cylinder axis.
+   * @param radius Radius of the cylinder.
+   * @param color Color the cylinder will be rendered.
+   */
+  void addCylinder(const Vector3f& pos1, const Vector3f& pos2, float radius,
+                   const Vector3ub& color);
+
+  /**
+   * @brief Add a cylinder to the geometry object.
+   * @param pos1 Base of the cylinder axis.
+   * @param pos2 Top of the cylinder axis.
+   * @param radius Radius of the cylinder.
+   * @param color1 Color the start of the base of the cylinder.
+   * @param color2 Color of the end of the cylinder.
+   */
+  void addCylinder(const Vector3f& pos1, const Vector3f& pos2, float radius,
+                   const Vector3ub& color1, const Vector3ub& color2);
+
+  /**
+   * @brief Add a cylinder to the geometry object.
+   * @param pos1 Base of the cylinder axis.
+   * @param pos2 Top of the cylinder axis.
+   * @param radius Radius of the cylinder.
+   * @param color Color the cylinder will be rendered.
+   * @param index The index of the cylinder being added.
+   */
+  void addCylinder(const Vector3f& pos1, const Vector3f& pos2, float radius,
+                   const Vector3ub& color, size_t index);
+
+  /**
+   * @brief Add a cylinder to the geometry object.
+   * @param pos1 Base of the cylinder axis.
+   * @param pos2 Top of the cylinder axis.
+   * @param radius Radius of the cylinder.
+   * @param color Color the start of the base of the cylinder.
+   * @param color2 Color of the end of the cylinder.
+   * @param index The index of the cylinder being added.
+   */
+  void addCylinder(const Vector3f& pos1, const Vector3f& pos2, float radius,
+                   const Vector3ub& color, const Vector3ub& color2,
+                   size_t index);
+
+  /**
+   * Get a reference to the cylinders.
+   */
+  std::vector<CylinderColor>& cylinders() { return m_cylinders; }
+  const std::vector<CylinderColor>& cylinders() const { return m_cylinders; }
+
+  /**
+   * Clear the contents of the node.
+   */
+  void clear() override;
+
+  /**
+   * Get the number of cylinders in the node object.
+   */
+  size_t size() const { return m_cylinders.size(); }
+
+  /**
+   * Set the opacity of the cylinders in this group.
+   */
+  void setOpacity(float o)
+  {
+    m_opacity = o;
+    if (o < 1.0f)
+      setRenderPass(TranslucentPass);
+  }
+
+  /**
+   * The opacity of the cylinders in this group (0.0 to 1.0).
+   */
+  float opacity() const { return m_opacity; }
+
+private:
+  std::vector<CylinderColor> m_cylinders;
+  std::vector<size_t> m_indices;
+  // Explicit index of the cylinder at each position, or MaxIndex. May be
+  // shorter than m_cylinders; positions past the end have no explicit index.
+  std::vector<size_t> m_indexMap;
+  void setIndex(size_t cylinder, size_t index);
+  float m_opacity = 1.0f;
+
+  bool m_dirty;
+
+  class Private;
+  Private* d;
+};
+
+inline CylinderGeometry& CylinderGeometry::operator=(CylinderGeometry other)
+{
+  using std::swap;
+  swap(*this, other);
+  return *this;
+}
+
+inline void swap(CylinderGeometry& lhs, CylinderGeometry& rhs)
+{
+  using std::swap;
+  swap(static_cast<Drawable&>(lhs), static_cast<Drawable&>(rhs));
+  swap(lhs.m_cylinders, rhs.m_cylinders);
+  swap(lhs.m_indices, rhs.m_indices);
+  swap(lhs.m_indexMap, rhs.m_indexMap);
+  lhs.m_dirty = rhs.m_dirty = true;
+}
+
+} // End namespace Rendering
+} // End namespace Avogadro
+
+#endif // AVOGADRO_RENDERING_CYLINDERGEOMETRY_H

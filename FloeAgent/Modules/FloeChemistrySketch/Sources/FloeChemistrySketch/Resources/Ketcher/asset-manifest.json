@@ -1,0 +1,24 @@
+{
+  "files": {
+    "main.css": "./static/css/main.96b87be0.css",
+    "main.js": "./static/js/main.e47c48ad.js",
+    "popup.css": "./static/css/popup.96b87be0.css",
+    "popup.js": "./static/js/popup.39267369.js",
+    "duo.css": "./static/css/duo.5970bf8e.css",
+    "duo.js": "./static/js/duo.299d8306.js",
+    "closable.css": "./static/css/closable.96b87be0.css",
+    "closable.js": "./static/js/closable.4741fe94.js",
+    "static/js/127.aa15387f.chunk.js": "./static/js/127.aa15387f.chunk.js",
+    "static/js/609.d5254829.chunk.js": "./static/js/609.d5254829.chunk.js",
+    "static/js/114.cd66d630.chunk.js": "./static/js/114.cd66d630.chunk.js",
+    "closable.html": "./closable.html",
+    "popup.html": "./popup.html",
+    "duo.html": "./duo.html",
+    "index.html": "./index.html",
+    "serve.json": "./serve.json"
+  },
+  "entrypoints": [
+    "static/css/main.96b87be0.css",
+    "static/js/main.e47c48ad.js"
+  ]
+}

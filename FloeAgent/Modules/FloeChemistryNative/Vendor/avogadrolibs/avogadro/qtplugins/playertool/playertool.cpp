@@ -1,0 +1,732 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "playertool.h"
+
+#include <gif.h>
+#include <gwavi.h>
+
+#include <avogadro/core/vector.h>
+#include <avogadro/qtgui/molecule.h>
+#include <avogadro/qtgui/utilities.h>
+#include <avogadro/qtopengl/glwidget.h>
+#include <avogadro/qtopengl/imagesizedialog.h>
+
+#include <QAction>
+#include <QOpenGLWidget>
+#include <QtCore/QBuffer>
+#include <QtGui/QIcon>
+#include <QtGui/QKeyEvent>
+#include <QtGui/QWindow>
+#include <QtWidgets/QApplication>
+#include <QtWidgets/QCheckBox>
+#include <QtWidgets/QFileDialog>
+#include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QLabel>
+#include <QtWidgets/QLineEdit>
+#include <QtWidgets/QMessageBox>
+#include <QtWidgets/QPushButton>
+#include <QtWidgets/QSlider>
+#include <QtWidgets/QSpinBox>
+#include <QtWidgets/QVBoxLayout>
+
+#include <algorithm>
+#include <cmath>
+
+namespace Avogadro::QtPlugins {
+
+using QtGui::Molecule;
+
+namespace {
+
+// Flags for advancing to another coordinate set. Re-perceiving bonds is a
+// structural edit; a plain frame change only moves atoms, and pairing it with
+// Moved keeps derived data (vibrations, orbitals) alive across playback --
+// see QtGui::Molecule::invalidatesDerivedData().
+unsigned int frameChangeFlags(bool dynamicBonding)
+{
+  if (dynamicBonding)
+    return Molecule::Atoms | Molecule::Bonds | Molecule::Removed |
+           Molecule::Added | Molecule::Conformer;
+  return Molecule::Atoms | Molecule::Moved | Molecule::Conformer;
+}
+
+} // namespace
+
+PlayerTool::PlayerTool(QObject* parent_)
+  : QtGui::ToolPlugin(parent_), m_activateAction(new QAction(this)),
+    m_molecule(nullptr), m_renderer(nullptr), m_currentFrame(0),
+    m_frameCount(0), m_updatingWidgets(false), m_toolWidget(nullptr),
+    m_timer(this), m_animationFPS(nullptr), m_frameIdx(nullptr),
+    m_firstFrameIdx(nullptr), m_lastFrameIdx(nullptr),
+    m_dynamicBonding(nullptr), m_glWidget(nullptr), m_slider(nullptr),
+    playButton(nullptr)
+{
+  m_timer.setTimerType(Qt::PreciseTimer);
+  connect(&m_timer, &QTimer::timeout, this, &PlayerTool::animateDue);
+
+  QString shortcut = tr("Ctrl+9", "control-key 9");
+  m_activateAction->setText(tr("Player"));
+  m_activateAction->setToolTip(tr("Animation Tool\t(%1)").arg(shortcut));
+  setIcon();
+}
+
+PlayerTool::~PlayerTool() {}
+
+void PlayerTool::setIcon(bool darkTheme)
+{
+  if (darkTheme) {
+    m_activateAction->setIcon(QIcon(":/icons/player_dark.svg"));
+  } else {
+    m_activateAction->setIcon(QIcon(":/icons/player_light.svg"));
+  }
+}
+
+QWidget* PlayerTool::toolWidget() const
+{
+  if (!m_toolWidget) {
+    m_toolWidget = new QWidget(qobject_cast<QWidget*>(parent()));
+    auto* layout = new QVBoxLayout;
+    auto* controls = new QHBoxLayout;
+    controls->addStretch(1);
+    auto* leftButton = new QPushButton("<");
+    connect(leftButton, SIGNAL(clicked()), SLOT(back()));
+    controls->addWidget(leftButton);
+
+    int maxFrame =
+      m_molecule ? static_cast<int>(m_molecule->coordinate3dCount()) : 0;
+    if (maxFrame < 1)
+      maxFrame = 1;
+    const int frame = std::clamp(m_currentFrame, 0, maxFrame - 1);
+
+    auto* frameLabel = new QLabel(tr("Frame:"));
+    controls->addWidget(frameLabel);
+    m_frameIdx = new QSpinBox;
+    m_frameIdx->setMinimum(1);
+    m_frameIdx->setMaximum(maxFrame);
+    m_frameIdx->setValue(frame + 1);
+    m_frameIdx->setSuffix("/" + QString::number(maxFrame));
+    connect(m_frameIdx, SIGNAL(valueChanged(int)),
+            SLOT(spinnerPositionChanged(int)));
+    controls->addWidget(m_frameIdx);
+
+    auto* rightButton = new QPushButton(">");
+    connect(rightButton, SIGNAL(clicked()), SLOT(forward()));
+    controls->addWidget(rightButton);
+    controls->addStretch(1);
+    layout->addLayout(controls);
+
+    auto* sliderLayout = new QHBoxLayout;
+    m_slider = new QSlider(Qt::Horizontal);
+    m_slider->setMinimum(0);
+    m_slider->setMaximum(maxFrame - 1);
+    m_slider->setTickInterval(1);
+    m_slider->setValue(frame);
+    connect(m_slider, SIGNAL(valueChanged(int)),
+            SLOT(sliderPositionChanged(int)));
+    sliderLayout->addWidget(m_slider);
+    layout->addLayout(sliderLayout);
+
+    // start / end frame limits
+    auto* frameLayout = new QHBoxLayout;
+    auto* label3 = new QLabel(tr("Start:", "start or first frame index"));
+    m_firstFrameIdx = new QSpinBox;
+    m_firstFrameIdx->setMinimum(1);
+    m_firstFrameIdx->setMaximum(maxFrame);
+    m_firstFrameIdx->setValue(1);
+    connect(m_firstFrameIdx, SIGNAL(valueChanged(int)),
+            SLOT(firstFramePositionChanged(int)));
+    frameLayout->addWidget(label3);
+    frameLayout->addWidget(m_firstFrameIdx);
+
+    // last frame index
+    auto* label5 = new QLabel(tr("End:", "end or last frame index"));
+    m_lastFrameIdx = new QSpinBox;
+    m_lastFrameIdx->setMinimum(1);
+    m_lastFrameIdx->setMaximum(maxFrame);
+    m_lastFrameIdx->setValue(maxFrame);
+    connect(m_lastFrameIdx, SIGNAL(valueChanged(int)),
+            SLOT(lastFramePositionChanged(int)));
+    frameLayout->addWidget(label5);
+    frameLayout->addWidget(m_lastFrameIdx);
+
+    layout->addLayout(frameLayout);
+
+    auto* bonding = new QHBoxLayout;
+    bonding->addStretch(1);
+    m_dynamicBonding = new QCheckBox(tr("Dynamic bonding?"));
+    m_dynamicBonding->setChecked(false);
+    bonding->addWidget(m_dynamicBonding);
+    bonding->addStretch(1);
+    layout->addLayout(bonding);
+
+    auto* frames = new QHBoxLayout;
+    frames->addStretch(1);
+    auto* label = new QLabel(tr("Frame rate:"));
+    frames->addWidget(label);
+    m_animationFPS = new QSpinBox;
+    m_animationFPS->setValue(5);
+    m_animationFPS->setMinimum(1);
+    m_animationFPS->setMaximum(1000);
+    m_animationFPS->setSuffix(tr(" FPS", "frames per second"));
+    frames->addWidget(m_animationFPS);
+    frames->addStretch(1);
+    layout->addLayout(frames);
+
+    auto* recordLayout = new QHBoxLayout;
+    recordLayout->addStretch(1);
+
+    playButton = new QPushButton(tr("Play"));
+    playButton->setIcon(QIcon::fromTheme("media-playback-start"));
+    connect(playButton, SIGNAL(clicked()), SLOT(play()));
+    recordLayout->addWidget(playButton);
+
+    auto* recordButton = new QPushButton(tr("Record…"));
+    recordButton->setIcon(QIcon::fromTheme("media-record"));
+    connect(recordButton, SIGNAL(clicked()), SLOT(recordMovie()));
+    recordLayout->addWidget(recordButton);
+    recordLayout->addStretch(1);
+    layout->addLayout(recordLayout);
+
+    m_toolWidget->setLayout(layout);
+  }
+  return m_toolWidget;
+}
+
+QUndoCommand* PlayerTool::mousePressEvent(QMouseEvent*)
+{
+  return nullptr;
+}
+
+QUndoCommand* PlayerTool::mouseReleaseEvent(QMouseEvent*)
+{
+  return nullptr;
+}
+
+QUndoCommand* PlayerTool::mouseDoubleClickEvent(QMouseEvent*)
+{
+  return nullptr;
+}
+
+QUndoCommand* PlayerTool::keyPressEvent(QKeyEvent* e)
+{
+  switch (e->key()) {
+    case Qt::Key_Space:
+      // start or stop
+      play();
+      e->accept();
+      break;
+    case Qt::Key_Right:
+      // go forward
+      if (e->modifiers() & Qt::ShiftModifier)
+        animate(10);
+      else
+        animate(1);
+      e->accept();
+      break;
+    case Qt::Key_Left:
+      // go back
+      if (e->modifiers() & Qt::ShiftModifier)
+        animate(-10);
+      else
+        animate(-1);
+      e->accept();
+      break;
+    case Qt::Key_Up:
+      // go to first frame
+      if (m_firstFrameIdx)
+        animate(m_firstFrameIdx->value() - 1 - m_currentFrame);
+      e->accept();
+      break;
+    case Qt::Key_Down:
+      // go to last frame
+      if (m_lastFrameIdx)
+        animate(m_lastFrameIdx->value() - 1 - m_currentFrame);
+      e->accept();
+      break;
+    default:
+      e->ignore();
+      break;
+  }
+  return nullptr;
+}
+
+void PlayerTool::setMolecule(QtGui::Molecule* mol)
+{
+  if (m_molecule == mol)
+    return;
+
+  if (m_molecule)
+    disconnect(m_molecule, &Molecule::changed, this,
+               &PlayerTool::moleculeChanged);
+
+  m_molecule = mol;
+
+  if (m_molecule)
+    connect(m_molecule, &Molecule::changed, this, &PlayerTool::moleculeChanged);
+
+  // Adopt whichever coordinate set the new molecule is already showing.
+  m_currentFrame = m_molecule ? m_molecule->coordinate3d() : 0;
+  m_frameCount =
+    m_molecule ? static_cast<int>(m_molecule->coordinate3dCount()) : 0;
+  stop();
+  updateLimits();
+}
+
+void PlayerTool::moleculeChanged(unsigned int changes)
+{
+  if (!m_molecule)
+    return;
+
+  // Reading or editing the molecule can add or drop coordinate sets.
+  auto count = static_cast<int>(m_molecule->coordinate3dCount());
+  if (count != m_frameCount) {
+    m_frameCount = count;
+    m_currentFrame = m_molecule->coordinate3d();
+    updateLimits();
+  }
+
+  if (!(changes & Molecule::Conformer))
+    return;
+
+  // Another plugin (the conformer plot, a script, ...) moved to a new frame.
+  int frame = m_molecule->coordinate3d();
+  if (frame == m_currentFrame)
+    return;
+
+  m_currentFrame = frame;
+  syncWidgets();
+}
+
+void PlayerTool::setActiveWidget(QWidget* widget)
+{
+  m_glWidget = qobject_cast<QOpenGLWidget*>(widget);
+}
+
+void PlayerTool::back()
+{
+  animate(-1);
+}
+
+void PlayerTool::forward()
+{
+  animate(1);
+}
+
+void PlayerTool::play()
+{
+  if (m_timer.isActive()) {
+    stop();
+    return;
+  } else if (playButton) {
+    // change the button to stop / pause
+    playButton->setText(tr("Pause"));
+    playButton->setIcon(QIcon::fromTheme("media-playback-pause"));
+  }
+
+  auto fps =
+    m_animationFPS ? static_cast<double>(m_animationFPS->value()) : 5.0;
+  if (fps < 0.00001)
+    fps = 5;
+  int timeOut = static_cast<int>(1000 / fps);
+  if (m_timer.isActive())
+    m_timer.stop();
+  m_playFps = fps;
+  m_playTicks = 0;
+  m_playClock.start();
+  m_timer.start(timeOut);
+}
+
+void PlayerTool::animateDue()
+{
+  // Advance by the frames due on the wall clock so playback skips frames,
+  // rather than falling behind, when rendering can't keep up. Rounding puts
+  // each tick mid-frame, so timer jitter can't flip between skip and repeat;
+  // a tick that arrives before the next frame is due does nothing.
+  const auto due =
+    static_cast<qint64>(m_playClock.elapsed() * m_playFps / 1000.0 + 0.5);
+  if (due <= m_playTicks)
+    return;
+  const auto advance = static_cast<int>(due - m_playTicks);
+  m_playTicks = due;
+  animate(advance);
+}
+
+void PlayerTool::stop()
+{
+  m_timer.stop();
+
+  // set the button for play
+  if (playButton) {
+    playButton->setText(tr("Play"));
+    playButton->setIcon(QIcon::fromTheme("media-playback-start"));
+  }
+}
+
+void PlayerTool::animate(int advance)
+{
+  if (!m_molecule)
+    return;
+
+  auto count = static_cast<int>(m_molecule->coordinate3dCount());
+  if (count < 1)
+    return;
+
+  // Playback is restricted to the [start, end] range from the tool widget.
+  int firstFrame = m_firstFrameIdx ? m_firstFrameIdx->value() - 1 : 0;
+  int lastFrame = m_lastFrameIdx ? m_lastFrameIdx->value() - 1 : count - 1;
+  firstFrame = std::clamp(firstFrame, 0, count - 1);
+  lastFrame = std::clamp(lastFrame, firstFrame, count - 1);
+
+  // Wrap around the range so playback loops and multi-frame steps (shift +
+  // arrow) land on a real frame instead of snapping back to the start.
+  const int span = lastFrame - firstFrame + 1;
+  int frame = m_currentFrame + advance;
+  if (frame < firstFrame || frame > lastFrame)
+    frame = firstFrame + ((frame - firstFrame) % span + span) % span;
+
+  setFrame(frame);
+}
+
+void PlayerTool::setFrame(int frame)
+{
+  if (!m_molecule)
+    return;
+
+  auto count = static_cast<int>(m_molecule->coordinate3dCount());
+  if (count < 1)
+    return;
+
+  m_currentFrame = std::clamp(frame, 0, count - 1);
+  m_molecule->setCoordinate3d(m_currentFrame);
+
+  const bool bonding = m_dynamicBonding && m_dynamicBonding->isChecked();
+  if (bonding) {
+    m_molecule->clearBonds();
+    m_molecule->perceiveBondsSimple();
+  }
+  syncWidgets();
+  m_molecule->emitChanged(frameChangeFlags(bonding));
+}
+
+void PlayerTool::syncWidgets()
+{
+  // The widgets drive animate(), so mute them while we write the new frame in.
+  m_updatingWidgets = true;
+  if (m_slider)
+    m_slider->setValue(m_currentFrame);
+  if (m_frameIdx)
+    m_frameIdx->setValue(m_currentFrame + 1);
+  m_updatingWidgets = false;
+}
+
+void PlayerTool::recordMovie()
+{
+  auto* glWidget = qobject_cast<QtOpenGL::GLWidget*>(m_glWidget);
+  if (glWidget == nullptr || m_molecule == nullptr)
+    return;
+
+  if (m_timer.isActive())
+    m_timer.stop();
+
+  QString baseFileName;
+  if (m_molecule)
+    baseFileName = m_molecule->data("fileName").toString().c_str();
+
+  // TODO: check path for avconv and disable MP4 if not found
+  // TODO: add PNG as an export (i.e., pile of PNG for later use)
+  QString selfFilter = tr("Movie (*.mp4)");
+  QString baseName = QFileDialog::getSaveFileName(
+    qobject_cast<QWidget*>(parent()), tr("Export Bitmap Graphics"), "",
+    tr("Movie (*.mp4);;Movie (*.avi);;GIF (*.gif)"), &selfFilter);
+
+  if (baseName.isEmpty())
+    return;
+
+  QFileInfo fileInfo(baseName);
+  if (!fileInfo.suffix().isEmpty())
+    baseName = fileInfo.absolutePath() + "/" + fileInfo.baseName();
+
+  // Ask for the frame size. Video encoders need even dimensions.
+  QtOpenGL::ImageSizeDialog sizeDialog(glWidget, "playerTool/movie", false,
+                                       true, qobject_cast<QWidget*>(parent()));
+  sizeDialog.setWindowTitle(tr("Movie Size"));
+  if (sizeDialog.exec() != QDialog::Accepted)
+    return;
+  QtOpenGL::RenderOptions renderOptions = sizeDialog.renderOptions();
+  const int exportWidth = renderOptions.size.width();
+  const int exportHeight = renderOptions.size.height();
+
+  bool bonding = m_dynamicBonding->isChecked();
+  int numberLength = static_cast<int>(
+    ceil(log10(static_cast<float>(m_molecule->coordinate3dCount()) + 1)));
+
+  // Advance to frame i and render it at the chosen size.
+  auto renderFrame = [&](int i, QImage& image) {
+    qApp->processEvents();
+    m_molecule->setCoordinate3d(i);
+    if (bonding) {
+      m_molecule->clearBonds();
+      m_molecule->perceiveBondsSimple();
+    }
+    m_molecule->emitChanged(frameChangeFlags(bonding));
+
+    QString error;
+    image = glWidget->renderImage(renderOptions, &error);
+    if (image.isNull()) {
+      QMessageBox::warning(
+        qobject_cast<QWidget*>(parent()), tr("Avogadro"),
+        tr("Cannot render frame %1: %2").arg(i + 1).arg(error));
+      return false;
+    }
+    return true;
+  };
+
+  if (selfFilter == tr("GIF (*.gif)")) {
+    GifWriter writer;
+    // GIF only supports up to 100 FPS, this minimizes breakage when FPS>100
+
+    if (m_animationFPS->value() > 100) {
+      QMessageBox::warning(
+        qobject_cast<QWidget*>(parent()), tr("GIF FPS support warning"),
+        tr("The GIF file format does not support frame rates over 100 FPS."));
+    }
+    const int delay = 100 / std::min(m_animationFPS->value(), 100);
+    GifBegin(&writer, (baseName + ".gif").toLatin1().data(), exportWidth,
+             exportHeight, delay);
+    for (int i = 0; i < m_molecule->coordinate3dCount(); ++i) {
+      QImage exportImage;
+      if (!renderFrame(i, exportImage))
+        break;
+
+      // GIF-H wants tightly packed RGBA, which is what RGBA8888 scanlines
+      // are (4 bytes per pixel is always 32-bit aligned).
+      exportImage = exportImage.convertToFormat(QImage::Format_RGBA8888);
+      if (exportImage.size() != renderOptions.size)
+        break;
+      GifWriteFrame(&writer, exportImage.constBits(), exportWidth, exportHeight,
+                    delay);
+    }
+    GifEnd(&writer);
+  } else if (selfFilter == tr("Movie (*.avi)")) {
+    gwavi_t* gwavi;
+    gwavi = gwavi_open((baseName + ".avi").toLatin1().data(), exportWidth,
+                       exportHeight, "MJPG", m_animationFPS->value(), nullptr);
+    if (gwavi == nullptr) {
+      QMessageBox::warning(qobject_cast<QWidget*>(parent()), tr("Avogadro"),
+                           tr("Cannot create the video file."));
+      return;
+    }
+    for (int i = 0; i < m_molecule->coordinate3dCount(); ++i) {
+      QImage exportImage;
+      if (!renderFrame(i, exportImage))
+        break;
+
+      QByteArray ba;
+      QBuffer buffer(&ba);
+      buffer.open(QIODevice::WriteOnly);
+      exportImage.save(&buffer, "JPG");
+
+      if (gwavi_add_frame(
+            gwavi, reinterpret_cast<const unsigned char*>(buffer.data().data()),
+            buffer.size()) == -1) {
+        QMessageBox::warning(qobject_cast<QWidget*>(parent()), tr("Avogadro"),
+                             tr("Error: cannot add frame to video."));
+      }
+    }
+    gwavi_close(gwavi);
+  } else if (selfFilter == tr("Movie (*.mp4)")) {
+    for (int i = 0; i < m_molecule->coordinate3dCount(); ++i) {
+      QImage exportImage;
+      if (!renderFrame(i, exportImage))
+        return;
+
+      QString fileName = QString::number(i);
+      while (fileName.length() < numberLength)
+        fileName.prepend('0');
+      fileName.prepend(baseName);
+      fileName.append(".png");
+
+      if (!exportImage.save(fileName)) {
+        QMessageBox::warning(qobject_cast<QWidget*>(parent()), tr("Avogadro"),
+                             tr("Cannot save file %1.").arg(fileName));
+        return;
+      }
+    }
+
+    // Encode once, after all of the frames have been written.
+    QStringList args;
+    args << "-y"
+         << "-r" << QString::number(m_animationFPS->value()) << "-i"
+         << baseName + "%0" + QString::number(numberLength) + "d.png" << "-c:v"
+         << "libx264"
+         << "-r"
+         << "30"
+         << "-pix_fmt"
+         << "yuv420p" << baseName + ".mp4";
+    if (!QtGui::Utilities::runVideoEncoder(args)) {
+      QMessageBox::warning(
+        qobject_cast<QWidget*>(parent()), tr("Avogadro"),
+        tr("Cannot run ffmpeg or avconv to encode the movie. The frames were "
+           "saved as PNG files."));
+    }
+  }
+}
+
+void PlayerTool::sliderPositionChanged(int k)
+{
+  if (m_updatingWidgets)
+    return;
+  animate(k - m_currentFrame);
+}
+
+void PlayerTool::spinnerPositionChanged(int k)
+{
+  if (m_updatingWidgets)
+    return;
+  animate(k - m_currentFrame - 1);
+}
+
+void PlayerTool::firstFramePositionChanged(int k)
+{
+  if (!m_molecule || !m_firstFrameIdx || !m_lastFrameIdx || !m_frameIdx)
+    return;
+
+  if (k < 1 || k > static_cast<int>(m_molecule->coordinate3dCount())) {
+    m_firstFrameIdx->setValue(1);
+    return;
+  }
+  m_frameIdx->setMinimum(k);
+  if (m_frameIdx->value() < k)
+    m_frameIdx->setValue(k);
+
+  m_lastFrameIdx->setMinimum(k);
+  if (m_lastFrameIdx->value() < k)
+    m_lastFrameIdx->setValue(k);
+}
+
+void PlayerTool::lastFramePositionChanged(int k)
+{
+  if (!m_molecule || !m_lastFrameIdx || !m_frameIdx)
+    return;
+
+  if (k < 1 || k > static_cast<int>(m_molecule->coordinate3dCount())) {
+    m_lastFrameIdx->setValue(static_cast<int>(m_molecule->coordinate3dCount()));
+    return;
+  }
+  m_frameIdx->setMaximum(k);
+  if (m_frameIdx->value() > k)
+    m_frameIdx->setValue(k);
+}
+
+void PlayerTool::updateLimits()
+{
+  int coordCount =
+    m_molecule ? static_cast<int>(m_molecule->coordinate3dCount()) : 0;
+  // A molecule with a single geometry still has one frame to sit on.
+  int maxFrame = std::max(coordCount, 1);
+
+  m_currentFrame = std::clamp(m_currentFrame, 0, maxFrame - 1);
+
+  m_updatingWidgets = true;
+  if (m_slider) {
+    m_slider->setMaximum(maxFrame - 1);
+    m_slider->setValue(m_currentFrame);
+  }
+  if (m_frameIdx) {
+    m_frameIdx->setMinimum(1);
+    m_frameIdx->setMaximum(maxFrame);
+    m_frameIdx->setSuffix("/" + QString::number(maxFrame));
+    m_frameIdx->setValue(m_currentFrame + 1);
+  }
+  if (m_firstFrameIdx) {
+    m_firstFrameIdx->setMaximum(maxFrame);
+    m_firstFrameIdx->setValue(1);
+  }
+  if (m_lastFrameIdx) {
+    m_lastFrameIdx->setMaximum(maxFrame);
+    m_lastFrameIdx->setValue(maxFrame);
+  }
+  m_updatingWidgets = false;
+}
+
+QVariantMap PlayerTool::frameResult() const
+{
+  QVariantMap result;
+  result.insert(QStringLiteral("frame"), m_molecule->coordinate3d());
+  result.insert(QStringLiteral("count"),
+                static_cast<int>(m_molecule->coordinate3dCount()));
+  return result;
+}
+
+void PlayerTool::registerCommands()
+{
+  emit registerCommand(
+    "nextFrame",
+    tr("Advance one coordinate set, looping to the first frame after the "
+       "last. Returns {\"frame\": …, \"count\": …}."));
+  emit registerCommand(
+    "previousFrame",
+    tr("Step back one coordinate set, looping to the last frame before the "
+       "first. Returns {\"frame\": …, \"count\": …}."));
+  emit registerCommand(
+    "setCoordinateSet",
+    tr("Jump to a coordinate set, given as a zero-based index: {\"index\": "
+       "n}. Returns {\"frame\": …, \"count\": …}."));
+  emit registerCommand(
+    "coordinateSetCount",
+    tr("Report the current frame and the number of coordinate sets, without "
+       "changing anything. Returns {\"frame\": …, \"count\": …}."));
+}
+
+bool PlayerTool::handleCommand(const QString& command,
+                               const QVariantMap& options)
+{
+  if (command != QLatin1String("nextFrame") &&
+      command != QLatin1String("previousFrame") &&
+      command != QLatin1String("setCoordinateSet") &&
+      command != QLatin1String("coordinateSetCount")) {
+    // Not one of ours.
+    return false;
+  }
+
+  if (!m_molecule) {
+    emit commandFailed(tr("There is no molecule."));
+    return true;
+  }
+  if (m_molecule->coordinate3dCount() == 0) {
+    emit commandFailed(tr("The molecule has no coordinate sets."));
+    return true;
+  }
+
+  if (command == QLatin1String("nextFrame")) {
+    animate(1);
+  } else if (command == QLatin1String("previousFrame")) {
+    animate(-1);
+  } else if (command == QLatin1String("setCoordinateSet")) {
+    if (!options.contains(QStringLiteral("index"))) {
+      emit commandFailed(tr("index is required."));
+      return true;
+    }
+
+    bool ok = false;
+    int index = options.value(QStringLiteral("index")).toInt(&ok);
+    auto count = static_cast<int>(m_molecule->coordinate3dCount());
+    if (!ok || index < 0 || index >= count) {
+      emit commandFailed(
+        tr("index must be a whole number from 0 to %1.").arg(count - 1));
+      return true;
+    }
+
+    setFrame(index);
+  }
+  // coordinateSetCount falls through here: it reports state without
+  // changing it.
+
+  emit commandFinished(QString(), frameResult());
+  return true;
+}
+
+} // namespace Avogadro::QtPlugins

@@ -1,0 +1,94 @@
+if(NOT TARGET gif-h)
+  add_library(gif-h INTERFACE IMPORTED GLOBAL)
+  target_include_directories(gif-h INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/gif-h>)
+endif(NOT TARGET gif-h)
+
+# Only used by Qt plugin
+if (USE_QT)
+  add_subdirectory(libgwavi)
+  if(USE_EXTERNAL_TOMLPLUSPLUS)
+    find_package(tomlplusplus 3.4.0 REQUIRED GLOBAL)
+  else()
+    add_library(tomlplusplus INTERFACE IMPORTED GLOBAL)
+    target_include_directories(tomlplusplus
+      INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
+    add_library(tomlplusplus::tomlplusplus ALIAS tomlplusplus)
+  endif(USE_EXTERNAL_TOMLPLUSPLUS)
+endif()
+
+if(USE_EXTERNAL_NLOHMANN)
+  find_package(nlohmann_json 3.3.0 REQUIRED GLOBAL)
+else()
+  add_library(nlohmann_json INTERFACE IMPORTED GLOBAL)
+  target_include_directories(nlohmann_json
+    INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
+  add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
+endif(USE_EXTERNAL_NLOHMANN)
+
+if(USE_EXTERNAL_FASTFLOAT)
+  # No version in the call: FastFloat's version file only accepts the major
+  # version that was requested, so "7.0.0" would refuse the current 8.x. 7.0.0
+  # is the first release with allow_leading_plus, skip_white_space and
+  # no_infnan together, which parseDouble() needs.
+  find_package(FastFloat REQUIRED GLOBAL)
+  if(FastFloat_VERSION VERSION_LESS 7.0.0)
+    message(FATAL_ERROR
+      "fast_float 7.0.0 or newer is required, found ${FastFloat_VERSION}")
+  endif()
+else()
+  add_library(fast_float INTERFACE IMPORTED GLOBAL)
+  target_include_directories(fast_float
+    INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
+  add_library(FastFloat::fast_float ALIAS fast_float)
+endif(USE_EXTERNAL_FASTFLOAT)
+
+if(USE_EXTERNAL_PUGIXML)
+  find_package(pugixml 1.12 REQUIRED GLOBAL)
+else()
+  set(_PUGIXML_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/pugixml)
+  add_library(pugixml STATIC ${_PUGIXML_ROOT}/pugixml.cpp)
+  set_target_properties(pugixml PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  target_include_directories(pugixml PUBLIC $<BUILD_INTERFACE:${_PUGIXML_ROOT}>)
+  add_library(pugixml::pugixml ALIAS pugixml)
+  # A static Avogadro::IO carries its PRIVATE dependencies into its link
+  # interface as $<LINK_ONLY:...> -- consumers of a static library have to
+  # link them too -- and install(EXPORT) refuses to generate at all if one of
+  # them is in no export set. A shared build absorbs them and needs none of
+  # this, which is why BUILD_SHARED_LIBS=OFF did not configure before.
+  if(NOT BUILD_SHARED_LIBS)
+    install(TARGETS pugixml EXPORT "AvogadroLibsTargets"
+      ARCHIVE DESTINATION "${INSTALL_ARCHIVE_DIR}")
+  endif()
+  unset(_PUGIXML_ROOT)
+endif(USE_EXTERNAL_PUGIXML)
+
+if(USE_EXTERNAL_STRUCT)
+  find_package(struct REQUIRED GLOBAL)
+else()
+  set(_STRUCT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/struct)
+  add_library(struct STATIC
+    ${_STRUCT_ROOT}/struct.c
+    ${_STRUCT_ROOT}/struct_endian.c
+  )
+  set_target_properties(struct PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
+  target_include_directories(struct PUBLIC $<BUILD_INTERFACE:${_STRUCT_ROOT}>)
+  # See the pugixml block above.
+  if(NOT BUILD_SHARED_LIBS)
+    install(TARGETS struct EXPORT "AvogadroLibsTargets"
+      ARCHIVE DESTINATION "${INSTALL_ARCHIVE_DIR}")
+  endif()
+  unset(_STRUCT_ROOT)
+endif(USE_EXTERNAL_STRUCT)
+
+if(NOT TARGET cppoptlib)
+  add_library(cppoptlib INTERFACE IMPORTED GLOBAL)
+  target_include_directories(cppoptlib INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/cppoptlib/include>)
+endif(NOT TARGET cppoptlib)
+
+if(NOT TARGET tinycolormap)
+  add_library(tinycolormap INTERFACE IMPORTED GLOBAL)
+  target_include_directories(tinycolormap INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tinycolormap/include>)
+endif(NOT TARGET tinycolormap)

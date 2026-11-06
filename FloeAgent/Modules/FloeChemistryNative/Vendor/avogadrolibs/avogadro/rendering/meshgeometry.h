@@ -1,0 +1,187 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#ifndef AVOGADRO_RENDERING_MESHGEOMETRY_H
+#define AVOGADRO_RENDERING_MESHGEOMETRY_H
+
+#include "drawable.h"
+#include "packedvertex.h"
+
+#include <avogadro/core/array.h>
+
+namespace Avogadro {
+namespace Rendering {
+
+/**
+ * @class MeshGeometry meshgeometry.h <avogadro/rendering/meshgeometry.h>
+ * @brief The MeshGeometry is used for triangle mesh geometry.
+ * @author Marcus D. Hanwell
+ */
+
+class AVOGADRORENDERING_EXPORT MeshGeometry : public Drawable
+{
+public:
+  static const unsigned int InvalidIndex;
+
+  MeshGeometry();
+  MeshGeometry(const MeshGeometry& other);
+  ~MeshGeometry() override;
+
+  MeshGeometry& operator=(MeshGeometry);
+  friend void swap(MeshGeometry& lhs, MeshGeometry& rhs);
+
+  /**
+   * Accept a visit from our friendly visitor.
+   */
+  void accept(Visitor&) override;
+
+  /**
+   * @brief Render the mesh geometry.
+   * @param camera The current camera to be used for rendering.
+   */
+  void render(const Camera& camera) override;
+
+  /**
+   * Add vertices to the object. Note that this just adds vertices to the
+   * object. Use addTriangles with size_t indices to actually draw them.
+   * @param vertices The 3D vertex points to add to the drawable.
+   * @param normals The normal direction at the vertex.
+   * @param colors Vertex color. If not specified, use the current color() and
+   * opacity(). If the 3 component color is set, the current opacity() is used.
+   * @note All arrays must be the same length, or this function call will fail,
+   * returning InvalidIndex.
+   * @return The index of the first vertex added by this call, used to specify
+   * element arrays for the actual triangles.
+   * @{
+   */
+  unsigned int addVertices(const Core::Array<Vector3f>& vertices,
+                           const Core::Array<Vector3f>& normals,
+                           const Core::Array<Vector4ub>& colors);
+  unsigned int addVertices(const Core::Array<Vector3f>& vertices,
+                           const Core::Array<Vector3f>& normals,
+                           const Core::Array<Vector3ub>& colors);
+  unsigned int addVertices(const Core::Array<Vector3f>& vertices,
+                           const Core::Array<Vector3f>& normals);
+  /** @} */
+
+  /**
+   * Add triangles to the mesh. Triangles are specified as 3-tuples of vertex
+   * indices. Must call addVertices first, and use the return value to obtain
+   * the valid index range.
+   * @{
+   */
+  void addTriangle(size_t index1, size_t index2, size_t index3);
+  void addTriangles(const Core::Array<unsigned int>& indices);
+  /** @} */
+
+  /**
+   * Clear the contents of the node.
+   */
+  void clear() override;
+
+  /**
+   * Get the number of vertices.
+   */
+  size_t vertexCount() const { return m_vertices.size(); }
+
+  /**
+   * Get the number of vertices.
+   */
+  size_t indexCount() const { return m_indices.size(); }
+
+  /**
+   * Get the number of triangles.
+   */
+  size_t triangleCount() const { return m_indices.size() / 3; }
+
+  /**
+   * The default color of the mesh. This is used to set the color of new
+   * vertices when no explicit vertex color is specified.
+   * @{
+   */
+  void setColor(const Vector3ub& c) { m_color = c; }
+  Vector3ub color() const { return m_color; }
+  /** @} */
+
+  /**
+   * The default opacity of the mesh. This is used when either no explicit
+   * vertex color is specified, or a three component color is used.
+   * @{
+   */
+  void setOpacity(unsigned char opacity_) { m_opacity = opacity_; }
+  unsigned char opacity() const { return m_opacity; }
+  /** @} */
+
+  Core::Array<PackedVertex> vertices() { return m_vertices; }
+  Core::Array<unsigned int> triangles() { return m_indices; }
+
+  /** Const access without copying. */
+  const Core::Array<PackedVertex>& vertices() const { return m_vertices; }
+  const Core::Array<unsigned int>& triangles() const { return m_indices; }
+
+  /**
+   * Get the axis-aligned bounding box of the vertices. The box is maintained
+   * incrementally as vertices are added, so this is O(1) even for meshes with
+   * tens of millions of vertices. Non-finite vertices are ignored.
+   * @param minimum Set to the minimum corner of the box.
+   * @param maximum Set to the maximum corner of the box.
+   * @return False (leaving the arguments untouched) if there are no finite
+   * vertices.
+   */
+  bool bounds(Vector3f& minimum, Vector3f& maximum) const;
+
+private:
+  /**
+   * @brief Update the VBOs, IBOs etc ready for rendering.
+   */
+  void update();
+
+  /** Grow the cached bounding box to include @p point. */
+  void expandBounds(const Vector3f& point);
+
+  /** Reset the cached bounding box to empty. */
+  void resetBounds();
+
+  Core::Array<PackedVertex> m_vertices;
+  Core::Array<unsigned int> m_indices;
+  Vector3ub m_color;
+  unsigned char m_opacity;
+
+  // Cached axis-aligned bounding box of m_vertices; valid if m_hasBounds.
+  Vector3f m_boundsMin;
+  Vector3f m_boundsMax;
+  bool m_hasBounds;
+
+  bool m_dirty;
+
+  class Private;
+  Private* d;
+};
+
+inline MeshGeometry& MeshGeometry::operator=(MeshGeometry other)
+{
+  using std::swap;
+  swap(*this, other);
+  return *this;
+}
+
+inline void swap(MeshGeometry& lhs, MeshGeometry& rhs)
+{
+  using std::swap;
+  swap(static_cast<Drawable&>(lhs), static_cast<Drawable&>(rhs));
+  swap(lhs.m_vertices, rhs.m_vertices);
+  swap(lhs.m_indices, rhs.m_indices);
+  swap(lhs.m_color, rhs.m_color);
+  swap(lhs.m_opacity, rhs.m_opacity);
+  swap(lhs.m_boundsMin, rhs.m_boundsMin);
+  swap(lhs.m_boundsMax, rhs.m_boundsMax);
+  swap(lhs.m_hasBounds, rhs.m_hasBounds);
+  lhs.m_dirty = rhs.m_dirty = true;
+}
+
+} // End namespace Rendering
+} // End namespace Avogadro
+
+#endif // AVOGADRO_RENDERING_MESHGEOMETRY_H

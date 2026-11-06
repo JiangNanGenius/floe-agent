@@ -1,0 +1,1041 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "gaussianfchk.h"
+
+#include <avogadro/core/gaussianset.h>
+#include <avogadro/core/molecule.h>
+#include <avogadro/core/utilities.h>
+
+#include <algorithm>
+#include <cstddef>
+#include <iostream>
+#include <limits>
+
+using std::cout;
+using std::endl;
+using std::string;
+using std::vector;
+
+namespace Avogadro::QuantumIO {
+
+using Core::Atom;
+using Core::BasisSet;
+using Core::GaussianSet;
+using Core::Rhf;
+using Core::Rohf;
+using Core::Uhf;
+
+namespace {
+constexpr size_t kMaxFchkArrayEntries = 16ull * 1024 * 1024;   // 16M entries
+constexpr size_t kMaxFchkMatrixElements = 32ull * 1024 * 1024; // 32M elements
+
+bool hasMinimumRemainingBytes(std::istream& in, size_t minBytes)
+{
+  if (minBytes == 0)
+    return true;
+
+  auto pos = in.tellg();
+  if (pos == std::streampos(-1))
+    return true;
+
+  in.clear();
+  in.seekg(0, std::ios::end);
+  auto end = in.tellg();
+  in.seekg(pos);
+  if (end == std::streampos(-1))
+    return true;
+
+  const size_t remaining = static_cast<size_t>(end - pos);
+  return remaining >= minBytes;
+}
+} // namespace
+
+GaussianFchk::GaussianFchk() : m_scftype(Rhf) {}
+
+GaussianFchk::~GaussianFchk() {}
+
+std::vector<std::string> GaussianFchk::fileExtensions() const
+{
+  std::vector<std::string> extensions;
+  extensions.emplace_back("fchk");
+  return extensions;
+}
+
+std::vector<std::string> GaussianFchk::mimeTypes() const
+{
+  return std::vector<std::string>();
+}
+
+bool GaussianFchk::read(std::istream& in, Core::Molecule& molecule)
+{
+  // Read the log file line by line, most sections are terminated by an empty
+  // line, so they should be retained.
+  while (!in.eof())
+    processLine(in);
+
+  if (!error().empty())
+    return false;
+
+  const size_t posCount = m_aPos.size() / 3;
+  const size_t numCount = m_aNums.size();
+  size_t atomCount = std::min(posCount, numCount);
+  if (m_numAtoms > 0) {
+    atomCount = std::min(atomCount, static_cast<size_t>(m_numAtoms));
+  }
+  if (atomCount == 0) {
+    appendError("Could not find any atomic coordinates! Are you sure this is a "
+                "Gaussian formatted checkpoint file?");
+    return false;
+  }
+
+  auto* basis = new GaussianSet;
+  for (size_t i = 0; i < atomCount; ++i) {
+    Atom a = molecule.addAtom(static_cast<unsigned char>(m_aNums[i]));
+    const size_t offset = i * 3;
+    a.setPosition3d(Vector3(m_aPos[offset] * BOHR_TO_ANGSTROM,
+                            m_aPos[offset + 1] * BOHR_TO_ANGSTROM,
+                            m_aPos[offset + 2] * BOHR_TO_ANGSTROM));
+  }
+
+  if (!m_frequencies.empty() &&
+      m_frequencies.size() == m_vibDisplacements.size() &&
+      m_frequencies.size() == m_IRintensities.size()) {
+    molecule.setVibrationFrequencies(m_frequencies);
+    molecule.setVibrationIRIntensities(m_IRintensities);
+    molecule.setVibrationLx(m_vibDisplacements);
+    if (!m_RamanIntensities.empty())
+      molecule.setVibrationRamanIntensities(m_RamanIntensities);
+  }
+
+  // set the total charge
+  molecule.setData("totalCharge", m_charge);
+  // set the spin multiplicity
+  molecule.setData("totalSpinMultiplicity", m_spin);
+  // dipole moment
+  Core::Variant dipole(m_dipoleMoment.x(), m_dipoleMoment.y(),
+                       m_dipoleMoment.z());
+  molecule.setData("dipoleMoment", dipole);
+
+  // Do simple bond perception.
+  molecule.perceiveBondsSimple();
+  molecule.perceiveBondOrders();
+  molecule.setBasisSet(basis);
+  basis->setMolecule(&molecule);
+  load(basis);
+
+  // partial charges
+  if (m_mullikenCharges.size() == m_aNums.size()) {
+    Eigen::MatrixXd charges(m_aNums.size(), 1);
+    charges.setZero();
+
+    for (unsigned int i = 0; i < m_aNums.size(); ++i) {
+      charges(i, 0) = m_mullikenCharges[i];
+    }
+    molecule.setPartialCharges("Mulliken", charges);
+  }
+
+  return true;
+}
+
+void GaussianFchk::processLine(std::istream& in)
+{
+  // First truncate the line, remove trailing white space and check any line of
+  // the required length. We are looking for keyword lines of the form,
+  // Charge                                     I                0
+  // If we are in any other kind of block that is not known skip through until
+  // we find a recognized block.
+  string line;
+  if (!Core::getLine(in, line) || line.size() < 44)
+    return;
+
+  string key = line.substr(0, 42);
+
+  // cout << "Key:\t" << key << endl;
+  key = Core::trimmed(key);
+
+  string tmp = line.substr(43);
+  vector<string> list = Core::split(tmp, ' ');
+  std::vector<double> tmpVec;
+
+  // Big switch statement checking for various things we are interested in
+  if (Core::contains(key, "RHF")) {
+    m_scftype = Rhf;
+  } else if (Core::contains(key, "UHF")) {
+    m_scftype = Uhf;
+  } else if (key == "Number of atoms" && list.size() > 1) {
+    m_numAtoms = Core::lexicalCast<int>(list[1]).value_or(0);
+  } else if (key == "Charge" && list.size() > 1) {
+    m_charge = Core::lexicalCast<int>(list[1]).value_or(0);
+  } else if (key == "Multiplicity" && list.size() > 1) {
+    m_spin = Core::lexicalCast<int>(list[1]).value_or(1);
+  } else if (key == "Dipole Moment" && list.size() > 2) {
+    vector<double> dipole =
+      readArrayD(in, Core::lexicalCast<int>(list[2]).value_or(0));
+    if (dipole.size() >= 3) {
+      m_dipoleMoment = Vector3(dipole[0], dipole[1], dipole[2]);
+      // convert from au
+      m_dipoleMoment *= 2.541746;
+    }
+  } else if (key == "Number of electrons" && list.size() > 1) {
+    m_electrons = Core::lexicalCast<int>(list[1]).value_or(0);
+  } else if (key == "Number of alpha electrons" && list.size() > 1) {
+    m_electronsAlpha = Core::lexicalCast<int>(list[1]).value_or(0);
+  } else if (key == "Number of beta electrons" && list.size() > 1) {
+    m_electronsBeta = Core::lexicalCast<int>(list[1]).value_or(0);
+  } else if (key == "Number of basis functions" && list.size() > 1) {
+    m_numBasisFunctions = Core::lexicalCast<int>(list[1]).value_or(0);
+    // cout << "Number of basis functions = " << m_numBasisFunctions << endl;
+  } else if (key == "Atomic numbers" && list.size() > 2) {
+    m_aNums = readArrayI(in, Core::lexicalCast<int>(list[2]).value_or(0));
+    if (static_cast<int>(m_aNums.size()) != Core::lexicalCast<int>(list[2]))
+      cout << "Reading atomic numbers failed.\n";
+  }
+  // Now we get to the meat of it - coordinates of the atoms
+  else if (key == "Current cartesian coordinates" && list.size() > 2) {
+    m_aPos = readArrayD(in, Core::lexicalCast<int>(list[2]).value_or(0), 16);
+  } else if (key == "Mulliken Charges" && list.size() > 2) {
+    m_mullikenCharges =
+      readArrayD(in, Core::lexicalCast<int>(list[2]).value_or(0), 16);
+  }
+  // The real meat is here - basis sets etc!
+  else if (key == "Shell types" && list.size() > 2) {
+    m_shellTypes = readArrayI(in, Core::lexicalCast<int>(list[2]).value_or(0));
+  } else if (key == "Number of primitives per shell" && list.size() > 2) {
+    m_shellNums = readArrayI(in, Core::lexicalCast<int>(list[2]).value_or(0));
+  } else if (key == "Shell to atom map" && list.size() > 2) {
+    m_shelltoAtom = readArrayI(in, Core::lexicalCast<int>(list[2]).value_or(0));
+  }
+  // Now to get the exponents and coefficients(
+  else if (key == "Primitive exponents" && list.size() > 2) {
+    m_a = readArrayD(in, Core::lexicalCast<int>(list[2]).value_or(0), 16);
+  } else if (key == "Contraction coefficients" && list.size() > 2) {
+    m_c = readArrayD(in, Core::lexicalCast<int>(list[2]).value_or(0), 16);
+  } else if (key == "P(S=P) Contraction coefficients" && list.size() > 2) {
+    m_csp = readArrayD(in, Core::lexicalCast<int>(list[2]).value_or(0), 16);
+  } else if ((key == "Alpha Orbital Energies" || key == "orbital energies") &&
+             list.size() > 2) {
+    if (m_scftype == Rhf) {
+      m_orbitalEnergy = readArrayD(
+        in, Core::lexicalCast<int>(list[2]).value_or(0), 16, HARTREE_TO_EV_D);
+    } else if (m_scftype == Uhf) {
+      m_alphaOrbitalEnergy = readArrayD(
+        in, Core::lexicalCast<int>(list[2]).value_or(0), 16, HARTREE_TO_EV_D);
+    }
+  } else if (key == "Beta Orbital Energies" && list.size() > 2) {
+    if (m_scftype != Uhf) {
+      m_scftype = Uhf;
+      m_alphaOrbitalEnergy = m_orbitalEnergy;
+      m_orbitalEnergy = vector<double>();
+
+      m_alphaMOcoeffs = m_MOcoeffs;
+      m_MOcoeffs = vector<double>();
+    }
+
+    m_betaOrbitalEnergy = readArrayD(
+      in, Core::lexicalCast<int>(list[2]).value_or(0), 16, HARTREE_TO_EV_D);
+  } else if ((key == "Alpha MO coefficients" || key == "MO coefficients (C)") &&
+             list.size() > 2) {
+    if (m_scftype == Rhf) {
+      m_MOcoeffs =
+        readArrayD(in, Core::lexicalCast<int>(list[2]).value_or(0), 16);
+    } else if (m_scftype == Uhf) {
+      m_alphaMOcoeffs =
+        readArrayD(in, Core::lexicalCast<int>(list[2]).value_or(0), 16);
+    } else {
+      cout << "Error, alpha MO coefficients, n = " << m_MOcoeffs.size() << '\n';
+    }
+  } else if (key == "Beta MO coefficients" && list.size() > 2) {
+    m_betaMOcoeffs =
+      readArrayD(in, Core::lexicalCast<int>(list[2]).value_or(0), 16);
+  } else if (key == "Total SCF Density" && list.size() > 2) {
+    if (!readDensityMatrix(in, Core::lexicalCast<int>(list[2]).value_or(0), 16))
+      cout << "Error reading in the SCF density matrix.\n";
+  } else if (key == "Spin SCF Density" && list.size() > 2) {
+    if (!readSpinDensityMatrix(in, Core::lexicalCast<int>(list[2]).value_or(0),
+                               16))
+      cout << "Error reading in the SCF spin density matrix.\n";
+  } else if (key == "Number of Normal Modes" && list.size() > 1) {
+    m_normalModes = Core::lexicalCast<int>(list[1]).value_or(0);
+  } else if (key == "Vib-LE2Fix" && list.size() > 1) {
+    m_vibBlocks = Core::lexicalCast<int>(list[1]).value_or(0);
+  } else if (key == "Vib-E2" && list.size() > 2) {
+    m_frequencies.clear();
+    m_IRintensities.clear();
+    m_RamanIntensities.clear();
+
+    tmpVec = readArrayD(in, Core::lexicalCast<int>(list[2]).value_or(0), 16);
+
+    // Vib-E2 is a series of blocks, each holding one value per normal mode:
+    // frequencies, reduced masses, force constants, IR intensities, Raman
+    // activities, depolarization ratios (P then U), then further blocks that
+    // are not read here. The stride is therefore the number of normal modes,
+    // not 3N -- those coincide only for a non-linear three-atom molecule.
+    // Gaussian zero-fills a property it did not compute rather than omitting
+    // its block, so a block being present does not mean it was calculated.
+    const size_t total = tmpVec.size();
+    size_t modes = m_normalModes > 0 ? static_cast<size_t>(m_normalModes) : 0;
+
+    // Reject a mode count the data cannot support: no offset derived from it
+    // would be trustworthy, and values taken from the wrong block are worse
+    // than none. Vib-LE2Fix, when present, states the block count, so the
+    // layout is checked rather than assumed -- divide rather than multiply so
+    // that a bogus count cannot overflow.
+    if (modes > 0 && (modes > total || total % modes != 0 ||
+                      (m_vibBlocks > 0 &&
+                       total / modes != static_cast<size_t>(m_vibBlocks)))) {
+      modes = 0;
+    }
+
+    // Only read a block that is present in full: a partial block is not a
+    // partial spectrum, it is values from a truncated file that would be
+    // silently paired with the wrong modes.
+    auto readBlock = [&](size_t block, Core::Array<double>& target) {
+      const size_t start = block * modes;
+      if (modes == 0 || start + modes > total)
+        return;
+      target.reserve(modes);
+      for (size_t i = start; i < start + modes; ++i)
+        target.push_back(tmpVec[i]);
+    };
+
+    readBlock(0, m_frequencies);
+    readBlock(3, m_IRintensities);
+
+    // A run without Raman still gets a zero-filled block, so the block has to
+    // be tested for content. Testing only its first element is not enough: the
+    // lowest mode of a centrosymmetric molecule is legitimately zero (benzene
+    // e2u, the CO2 bends), which would discard a whole valid Raman spectrum.
+    Core::Array<double> raman;
+    readBlock(4, raman);
+    if (std::any_of(raman.begin(), raman.end(),
+                    [](double v) { return v != 0.0; }))
+      m_RamanIntensities.swap(raman);
+  } else if (key == "Vib-Modes" && list.size() > 2) {
+    tmpVec = readArrayD(in, Core::lexicalCast<int>(list[2]).value_or(0), 16);
+    m_vibDisplacements.clear();
+    if (tmpVec.size() == static_cast<size_t>(m_numAtoms) * 3 *
+                           static_cast<size_t>(m_normalModes)) {
+      for (unsigned int i = 0; i < static_cast<unsigned int>(m_normalModes);
+           ++i) {
+        Core::Array<Vector3> mode;
+        for (unsigned int j = 0; j < static_cast<unsigned int>(m_numAtoms);
+             ++j) {
+          Vector3 v(tmpVec[i * m_numAtoms * 3 + j * 3],
+                    tmpVec[i * m_numAtoms * 3 + j * 3 + 1],
+                    tmpVec[i * m_numAtoms * 3 + j * 3 + 2]);
+          mode.push_back(v);
+        }
+        m_vibDisplacements.push_back(mode);
+      }
+    }
+  }
+}
+
+namespace {
+// Gaussian orders Cartesian shells one way through f and a different way
+// from g upward, and only the g case disagrees with what GaussianSet
+// evaluates. Through f the two agree:
+//   d: xx, yy, zz, xy, xz, yz
+//   f: xxx, yyy, zzz, xyy, xxy, xxz, xzz, yzz, yyz, xyz
+// but a Cartesian g shell is written in an fchk in reverse-lexicographic
+// order,
+//   zzzz, yzzz, yyzz, yyyz, yyyy, xzzz, xyzz, xyyz, xyyy,
+//   xxzz, xxyz, xxyy, xxxz, xxxy, xxxx
+// whereas GaussianSet::G expects the Molden ordering used by
+// gaussiansettools.cpp's componentsG[15],
+//   xxxx, yyyy, zzzz, xxxy, xxxz, yyyx, yyyz, zzzx, zzzy,
+//   xxyy, xxzz, yyzz, xxyz, yyxz, zzxy
+// Entry j below names the fchk component that belongs in Avogadro's slot j.
+// Spherical g (shell type -4) is ordered 0, +1, -1, ... in both and needs
+// no reordering. Without this the Cartesian g coefficients land in the
+// wrong basis functions, which shows up as a ~1% electron-density error in
+// the bonding region -- big enough to matter, small enough to be mistaken
+// for noise. See tests/quantumio/densitycubetest.cpp.
+const int cartesianGFromFchk[15] = { 14, 4,  0, 13, 12, 8, 3, 5,
+                                     1,  11, 9, 2,  10, 7, 6 };
+
+// Basis functions contributed by one shell, from its fchk shell type:
+// negative is spherical, -1 is the SP special case, positive is Cartesian.
+int shellComponentCount(int shellType)
+{
+  // Shell types come straight from the file; a huge one would overflow the
+  // arithmetic below, and load() rejects anything past i shells anyway.
+  if (shellType > 6 || shellType < -6)
+    return 0;
+  if (shellType == -1)
+    return 4;
+  if (shellType < 0)
+    return -2 * shellType + 1;
+  return (shellType + 1) * (shellType + 2) / 2;
+}
+
+// Permutation taking Avogadro's atomic-orbital index to the fchk's, over
+// the whole basis. Empty when nothing needs reordering, which is the usual
+// case -- only a Cartesian g shell perturbs it.
+std::vector<int> fchkToAvogadroAoOrder(const std::vector<int>& shellTypes)
+{
+  std::vector<int> order;
+  bool reorderNeeded = false;
+  int offset = 0;
+  for (int shellType : shellTypes) {
+    const int count = shellComponentCount(shellType);
+    if (shellType == 4) {
+      reorderNeeded = true;
+      for (int i = 0; i < count; ++i)
+        order.push_back(offset + cartesianGFromFchk[i]);
+    } else {
+      for (int i = 0; i < count; ++i)
+        order.push_back(offset + i);
+    }
+    offset += count;
+  }
+  if (!reorderNeeded)
+    return std::vector<int>();
+  return order;
+}
+
+// Reorder an atomic-orbital-indexed coefficient vector in place. The vector
+// holds one contiguous block of atomic-orbital coefficients per molecular
+// orbital (see GaussianSet::setMolecularOrbitals), so each block is
+// permuted the same way.
+void reorderAoCoefficients(const std::vector<int>& order,
+                           std::vector<double>& coefficients)
+{
+  const size_t aoCount = order.size();
+  if (aoCount == 0 || coefficients.empty() || coefficients.size() % aoCount)
+    return;
+
+  std::vector<double> reordered(coefficients.size());
+  for (size_t block = 0; block < coefficients.size() / aoCount; ++block) {
+    const size_t base = block * aoCount;
+    for (size_t i = 0; i < aoCount; ++i)
+      reordered[base + i] = coefficients[base + order[i]];
+  }
+  coefficients.swap(reordered);
+}
+
+// The density matrices are indexed by atomic orbital on both axes, so they
+// need the same permutation applied symmetrically.
+void reorderDensityMatrix(const std::vector<int>& order, MatrixX& matrix)
+{
+  const auto aoCount = static_cast<Eigen::Index>(order.size());
+  if (aoCount == 0 || matrix.rows() != aoCount || matrix.cols() != aoCount)
+    return;
+
+  MatrixX reordered(aoCount, aoCount);
+  for (Eigen::Index i = 0; i < aoCount; ++i)
+    for (Eigen::Index j = 0; j < aoCount; ++j)
+      reordered(i, j) = matrix(order[i], order[j]);
+  matrix = reordered;
+}
+} // namespace
+
+void GaussianFchk::load(GaussianSet* basis)
+{
+  // Now load up our basis set
+  basis->setScfType(m_scftype);
+  basis->setElectronCount(m_electrons);
+  // basis->setElectronCount(m_electronsAlpha, Core::GaussianSet::alpha);
+  // basis->setElectronCount(m_electronsBeta, Core::GaussianSet::beta);
+
+  if (m_shellTypes.empty()) {
+    cout << "GaussianFchk: no shell types found.\n";
+    return;
+  }
+  if (m_shellNums.size() != m_shellTypes.size() ||
+      m_shelltoAtom.size() != m_shellTypes.size()) {
+    cout << "GaussianFchk: inconsistent shell data sizes.\n";
+    return;
+  }
+  if (m_numAtoms <= 0) {
+    cout << "GaussianFchk: invalid atom count.\n";
+    return;
+  }
+
+  size_t totalPrimitives = 0;
+  size_t totalSpPrimitives = 0;
+  const size_t maxSize = std::numeric_limits<size_t>::max();
+  for (size_t i = 0; i < m_shellTypes.size(); ++i) {
+    const int shellNum = m_shellNums[i];
+    if (shellNum <= 0) {
+      cout << "GaussianFchk: invalid shell primitive count.\n";
+      return;
+    }
+    const int atomIndex = m_shelltoAtom[i];
+    if (atomIndex <= 0 || atomIndex > m_numAtoms) {
+      cout << "GaussianFchk: invalid shell-to-atom map.\n";
+      return;
+    }
+    // Only the types handled by the switch below (s through i, with -1 for
+    // SP) are supported; skipping the rest would misalign the AO offsets.
+    if (m_shellTypes[i] < -6 || m_shellTypes[i] > 6) {
+      cout << "GaussianFchk: unsupported shell type.\n";
+      return;
+    }
+    const size_t shellNumU = static_cast<size_t>(shellNum);
+    if (totalPrimitives > maxSize - shellNumU) {
+      cout << "GaussianFchk: shell primitive count overflow.\n";
+      return;
+    }
+    totalPrimitives += shellNumU;
+    if (m_shellTypes[i] == -1) {
+      if (totalSpPrimitives > maxSize - shellNumU) {
+        cout << "GaussianFchk: SP primitive count overflow.\n";
+        return;
+      }
+      totalSpPrimitives += shellNumU;
+    }
+  }
+
+  if (m_a.size() < totalPrimitives || m_c.size() < totalPrimitives) {
+    cout << "GaussianFchk: insufficient primitive exponent data.\n";
+    return;
+  }
+  if (totalSpPrimitives > 0 && m_csp.size() < totalSpPrimitives) {
+    cout << "GaussianFchk: insufficient SP contraction data.\n";
+    return;
+  }
+
+  // Set up the GTO primitive counter, go through the shells and add them
+  int nGTO = 0;
+  for (unsigned int i = 0; i < m_shellTypes.size(); ++i) {
+    // Handle the SP case separately - this should possibly be a distinct type
+    if (m_shellTypes[i] == -1) {
+      // SP orbital type - actually have to add two shells
+      int s = basis->addBasis(m_shelltoAtom[i] - 1, GaussianSet::S);
+      int tmpGTO = nGTO;
+      for (unsigned int j = 0; j < static_cast<unsigned int>(m_shellNums[i]);
+           ++j) {
+        if (static_cast<size_t>(nGTO) >= m_a.size() ||
+            static_cast<size_t>(nGTO) >= m_c.size()) {
+          cout << "GaussianFchk: primitive index out of range.\n";
+          return;
+        }
+        basis->addGto(s, m_c[nGTO], m_a[nGTO]);
+        ++nGTO;
+      }
+      int p = basis->addBasis(m_shelltoAtom[i] - 1, GaussianSet::P);
+      for (unsigned int j = 0; j < static_cast<unsigned int>(m_shellNums[i]);
+           ++j) {
+        if (static_cast<size_t>(tmpGTO) >= m_a.size() ||
+            static_cast<size_t>(tmpGTO) >= m_csp.size()) {
+          cout << "GaussianFchk: SP primitive index out of range.\n";
+          return;
+        }
+        basis->addGto(p, m_csp[tmpGTO], m_a[tmpGTO]);
+        ++tmpGTO;
+      }
+    } else {
+      GaussianSet::orbital type;
+      switch (m_shellTypes[i]) {
+        case 0:
+          type = GaussianSet::S;
+          break;
+        case 1:
+          type = GaussianSet::P;
+          break;
+        case 2:
+          type = GaussianSet::D;
+          break;
+        case -2:
+          type = GaussianSet::D5;
+          break;
+        case 3:
+          type = GaussianSet::F;
+          break;
+        case -3:
+          type = GaussianSet::F7;
+          break;
+        case 4:
+          type = GaussianSet::G;
+          break;
+        case -4:
+          type = GaussianSet::G9;
+          break;
+        case 5:
+          type = GaussianSet::H;
+          break;
+        case -5:
+          type = GaussianSet::H11;
+          break;
+        case 6:
+          type = GaussianSet::I;
+          break;
+        case -6:
+          type = GaussianSet::I13;
+          break;
+        default:
+          // If we encounter GTOs we do not understand, the basis is likely
+          // invalid
+          type = GaussianSet::UU;
+          /// basis->setValid(false);
+      }
+      if (type != GaussianSet::UU) {
+        int b = basis->addBasis(m_shelltoAtom[i] - 1, type);
+        for (unsigned int j = 0; j < static_cast<unsigned int>(m_shellNums[i]);
+             ++j) {
+          if (static_cast<size_t>(nGTO) >= m_a.size() ||
+              static_cast<size_t>(nGTO) >= m_c.size()) {
+            cout << "GaussianFchk: primitive index out of range.\n";
+            return;
+          }
+          basis->addGto(b, m_c[nGTO], m_a[nGTO]);
+          ++nGTO;
+        }
+      }
+    }
+  }
+  // Gaussian writes Cartesian g shells in a different component order than
+  // GaussianSet evaluates them, so the atomic-orbital axis of everything
+  // read above has to be permuted before it is handed over.
+  const std::vector<int> aoOrder = fchkToAvogadroAoOrder(m_shellTypes);
+  if (!aoOrder.empty()) {
+    reorderAoCoefficients(aoOrder, m_MOcoeffs);
+    reorderAoCoefficients(aoOrder, m_alphaMOcoeffs);
+    reorderAoCoefficients(aoOrder, m_betaMOcoeffs);
+    reorderDensityMatrix(aoOrder, m_density);
+    reorderDensityMatrix(aoOrder, m_spinDensity);
+  }
+
+  // Now to load in the MO coefficients
+  if (basis->isValid()) {
+    if (m_scftype == Rhf) {
+      if (!m_MOcoeffs.empty())
+        basis->setMolecularOrbitals(m_MOcoeffs);
+      else
+        cout << "Error no MO coefficients...\n";
+    } else {
+      if (!m_alphaMOcoeffs.empty())
+        basis->setMolecularOrbitals(m_alphaMOcoeffs, BasisSet::Alpha);
+      else
+        cout << "Error no alpha MO coefficients...\n";
+      if (!m_betaMOcoeffs.empty())
+        basis->setMolecularOrbitals(m_betaMOcoeffs, BasisSet::Beta);
+      else
+        cout << "Error no beta MO coefficients...\n";
+    }
+
+    if (m_density.rows())
+      basis->setDensityMatrix(m_density);
+    if (m_spinDensity.rows())
+      basis->setSpinDensityMatrix(m_spinDensity);
+
+    if (!m_orbitalEnergy.empty()) // restricted calculation
+      basis->setMolecularOrbitalEnergy(m_orbitalEnergy);
+    else {
+      if (!m_alphaOrbitalEnergy.empty())
+        basis->setMolecularOrbitalEnergy(m_alphaOrbitalEnergy, BasisSet::Alpha);
+      if (!m_betaOrbitalEnergy.empty())
+        basis->setMolecularOrbitalEnergy(m_betaOrbitalEnergy, BasisSet::Beta);
+    }
+  } else {
+    cout << "Basis set is not valid!\n";
+  }
+}
+
+vector<int> GaussianFchk::readArrayI(std::istream& in, unsigned int n)
+{
+  vector<int> tmp;
+  if (n == 0)
+    return tmp;
+  if (n > kMaxFchkArrayEntries) {
+    appendError("Array data exceeds supported size.");
+    return tmp;
+  }
+  const size_t nSize = static_cast<size_t>(n);
+  if (!hasMinimumRemainingBytes(in, nSize)) {
+    appendError("Invalid array data.");
+    return tmp;
+  }
+  tmp.reserve(n);
+  bool ok(false);
+  while (tmp.size() < n) {
+    if (in.eof()) {
+      cout << "GaussianFchk::readArrayI could not read all elements " << n
+           << " expected " << tmp.size() << " parsed.\n";
+      return tmp;
+    }
+    string line;
+    if (!Core::getLine(in, line) || line.empty())
+      return tmp;
+
+    vector<string> list = Core::split(line, ' ');
+    for (auto& i : list) {
+      if (tmp.size() >= n) {
+        cout << "Too many variables read in. File may be inconsistent. "
+             << tmp.size() << " of " << n << '\n';
+        return tmp;
+      }
+      tmp.push_back(Core::lexicalCast<int>(i, ok));
+      if (!ok) {
+        cout << "Warning: problem converting string to integer: " << i
+             << " in GaussianFchk::readArrayI.\n";
+        return tmp;
+      }
+    }
+  }
+  return tmp;
+}
+
+vector<double> GaussianFchk::readArrayD(std::istream& in, unsigned int n,
+                                        int width, double factor)
+{
+  vector<double> tmp;
+  if (n == 0)
+    return tmp;
+  if (n > kMaxFchkArrayEntries) {
+    appendError("Array data exceeds supported size.");
+    return tmp;
+  }
+  const size_t nSize = static_cast<size_t>(n);
+  const size_t maxSize = std::numeric_limits<size_t>::max();
+  const size_t minBytesPerEntry = width > 0 ? static_cast<size_t>(width) : 1ull;
+  if (minBytesPerEntry > 0 && nSize > maxSize / minBytesPerEntry) {
+    appendError("Array data exceeds supported size.");
+    return tmp;
+  }
+  if (!hasMinimumRemainingBytes(in, nSize * minBytesPerEntry)) {
+    appendError("Invalid array data.");
+    return tmp;
+  }
+  tmp.reserve(n);
+  bool ok(false);
+  while (tmp.size() < n) {
+    if (in.eof()) {
+      cout << "GaussianFchk::readArrayD could not read all elements " << n
+           << " expected " << tmp.size() << " parsed.\n";
+      return tmp;
+    }
+    string line;
+    if (!Core::getLine(in, line) || line.empty())
+      return tmp;
+
+    if (width == 0) { // we can split by spaces
+      vector<string> list = Core::split(line, ' ');
+      for (auto& i : list) {
+        if (tmp.size() >= n) {
+          cout << "Too many variables read in. File may be inconsistent. "
+               << tmp.size() << " of " << n << '\n';
+          return tmp;
+        }
+        tmp.push_back(Core::lexicalCast<double>(i, ok) * factor);
+        if (!ok) {
+          cout << "Warning: problem converting string to integer: " << i
+               << " in GaussianFchk::readArrayD.\n";
+          return tmp;
+        }
+      }
+    } else { // Q-Chem files use 16 character fields
+      size_t maxColumns = 80 / width;
+      for (size_t i = 0; i < maxColumns; ++i) {
+        string substring = line.substr(i * width, width);
+        if (static_cast<int>(substring.length()) != width)
+          break;
+        if (tmp.size() >= n) {
+          cout << "Too many variables read in. File may be inconsistent. "
+               << tmp.size() << " of " << n << '\n';
+          return tmp;
+        }
+        tmp.push_back(Core::lexicalCast<double>(substring, ok) * factor);
+        if (!ok) {
+          cout << "Warning: problem converting string to double: " << substring
+               << " in GaussianFchk::readArrayD.\n";
+          return tmp;
+        }
+      }
+    }
+  }
+  return tmp;
+}
+
+bool GaussianFchk::readDensityMatrix(std::istream& in, unsigned int n,
+                                     int width)
+{
+  // This function reads in the lower triangular density matrix
+  if (n == 0)
+    return false;
+  if (n > kMaxFchkArrayEntries) {
+    appendError("Density matrix exceeds supported size.");
+    return false;
+  }
+  if (m_numBasisFunctions <= 0) {
+    appendError("Invalid basis function count.");
+    return false;
+  }
+  const size_t basis = static_cast<size_t>(m_numBasisFunctions);
+  const size_t maxSize = std::numeric_limits<size_t>::max();
+  if (basis > 0 && basis > maxSize / basis) {
+    appendError("Density matrix exceeds supported size.");
+    return false;
+  }
+  const size_t fullCount = basis * basis;
+  if (fullCount > kMaxFchkMatrixElements) {
+    appendError("Density matrix exceeds supported size.");
+    return false;
+  }
+  if (basis > 0 && basis > maxSize / (basis + 1)) {
+    appendError("Density matrix exceeds supported size.");
+    return false;
+  }
+  // The matrix allocated below is basis x basis no matter how few elements
+  // the block declares, so the size check has to run in both directions.
+  // Gaussian always writes the complete lower triangle, so anything else is
+  // a malformed file rather than a reason to allocate: "Number of basis
+  // functions = 5792" followed by a one-element density block let a 376 byte
+  // file reserve a 268 MB matrix, and a second one for the spin density.
+  const size_t expectedLower = basis * (basis + 1) / 2;
+  if (static_cast<size_t>(n) != expectedLower) {
+    appendError("Invalid density matrix size.");
+    return false;
+  }
+  const size_t minBytesPerEntry = width > 0 ? static_cast<size_t>(width) : 1ull;
+  if (minBytesPerEntry > 0 &&
+      static_cast<size_t>(n) > maxSize / minBytesPerEntry) {
+    appendError("Density matrix exceeds supported size.");
+    return false;
+  }
+  if (!hasMinimumRemainingBytes(in,
+                                static_cast<size_t>(n) * minBytesPerEntry)) {
+    appendError("Invalid density matrix data.");
+    return false;
+  }
+  m_density = MatrixX::Zero(m_numBasisFunctions, m_numBasisFunctions);
+  unsigned int cnt = 0;
+  unsigned int i = 0, j = 0;
+  unsigned int f = 1;
+  bool ok = false;
+  while (cnt < n) {
+    if (in.eof()) {
+      cout << "GaussianFchk::readDensityMatrix could not read all elements "
+           << n << " expected " << cnt << " parsed.\n";
+      return false;
+    }
+    string line;
+    if (!Core::getLine(in, line) || line.empty())
+      return false;
+
+    if (width == 0) { // we can split by spaces
+      vector<string> list = Core::split(line, ' ');
+      for (auto& k : list) {
+        if (cnt >= n) {
+          cout << "Too many variables read in. File may be inconsistent. "
+               << cnt << " of " << n << '\n';
+          return false;
+        }
+        // Read in lower half matrix
+        m_density(i, j) = Core::lexicalCast<double>(k, ok);
+        if (ok) { // Valid double converted, carry on
+          ++j;
+          ++cnt;
+          if (j == f) {
+            // We need to move down to the next row and increment f - lower tri
+            j = 0;
+            ++f;
+            ++i;
+          }
+        } else { // Invalid conversion of a string to double
+          cout << "Warning: problem converting string to double: " << k
+               << "\nIn GaussianFchk::readDensityMatrix.\n";
+          return false;
+        }
+      }
+    } else { // Q-Chem files use 16-character fields
+      size_t maxColumns = 80 / width;
+      for (size_t c = 0; c < maxColumns; ++c) {
+        string substring = line.substr(c * width, width);
+        if (static_cast<int>(substring.length()) != width) {
+          break;
+        } else if (cnt >= n) {
+          cout << "Too many variables read in. File may be inconsistent. "
+               << cnt << " of " << n << '\n';
+          return false;
+        }
+        // Read in lower half matrix
+        m_density(i, j) = Core::lexicalCast<double>(substring, ok);
+        if (ok) { // Valid double converted, carry on
+          ++j;
+          ++cnt;
+          if (j == f) {
+            // We need to move down to the next row and increment f - lower tri
+            j = 0;
+            ++f;
+            ++i;
+          }
+        } else { // Invalid conversion of a string to double
+          cout << "Warning: problem converting string to double: " << substring
+               << "\nIn GaussianFchk::readDensityMatrix.\n";
+          return false;
+        }
+      }
+    }
+  }
+  // The fchk file stores only the lower triangle; mirror to make it symmetric.
+  m_density.triangularView<Eigen::StrictlyUpper>() = m_density.transpose();
+  return true;
+}
+bool GaussianFchk::readSpinDensityMatrix(std::istream& in, unsigned int n,
+                                         int width)
+{
+  // This function reads in the lower triangular density matrix
+  if (n == 0)
+    return false;
+  if (n > kMaxFchkArrayEntries) {
+    appendError("Spin density matrix exceeds supported size.");
+    return false;
+  }
+  if (m_numBasisFunctions <= 0) {
+    appendError("Invalid basis function count.");
+    return false;
+  }
+  const size_t basis = static_cast<size_t>(m_numBasisFunctions);
+  const size_t maxSize = std::numeric_limits<size_t>::max();
+  if (basis > 0 && basis > maxSize / basis) {
+    appendError("Spin density matrix exceeds supported size.");
+    return false;
+  }
+  const size_t fullCount = basis * basis;
+  if (fullCount > kMaxFchkMatrixElements) {
+    appendError("Spin density matrix exceeds supported size.");
+    return false;
+  }
+  if (basis > 0 && basis > maxSize / (basis + 1)) {
+    appendError("Spin density matrix exceeds supported size.");
+    return false;
+  }
+  // See readDensityMatrix(): the allocation is basis x basis regardless of n,
+  // so a block that cannot fill the lower triangle is a malformed file.
+  const size_t expectedLower = basis * (basis + 1) / 2;
+  if (static_cast<size_t>(n) != expectedLower) {
+    appendError("Invalid spin density matrix size.");
+    return false;
+  }
+  const size_t minBytesPerEntry = width > 0 ? static_cast<size_t>(width) : 1ull;
+  if (minBytesPerEntry > 0 &&
+      static_cast<size_t>(n) > maxSize / minBytesPerEntry) {
+    appendError("Spin density matrix exceeds supported size.");
+    return false;
+  }
+  if (!hasMinimumRemainingBytes(in,
+                                static_cast<size_t>(n) * minBytesPerEntry)) {
+    appendError("Invalid spin density matrix data.");
+    return false;
+  }
+  m_spinDensity = MatrixX::Zero(m_numBasisFunctions, m_numBasisFunctions);
+  unsigned int cnt = 0;
+  unsigned int i = 0, j = 0;
+  unsigned int f = 1;
+  bool ok = false;
+  while (cnt < n) {
+    if (in.eof()) {
+      cout << "GaussianFchk::readSpinDensityMatrix could not read all elements "
+           << n << " expected " << cnt << " parsed.\n";
+      return false;
+    }
+    string line;
+    if (!Core::getLine(in, line) || line.empty())
+      return false;
+
+    if (width == 0) { // we can split by spaces
+      vector<string> list = Core::split(line, ' ');
+      for (auto& k : list) {
+        if (cnt >= n) {
+          cout << "Too many variables read in. File may be inconsistent. "
+               << cnt << " of " << n << '\n';
+          return false;
+        }
+        // Read in lower half matrix
+        m_spinDensity(i, j) = Core::lexicalCast<double>(k, ok);
+        if (ok) { // Valid double converted, carry on
+          ++j;
+          ++cnt;
+          if (j == f) {
+            // We need to move down to the next row and increment f - lower tri
+            j = 0;
+            ++f;
+            ++i;
+          }
+        } else { // Invalid conversion of a string to double
+          cout << "Warning: problem converting string to double: " << k
+               << "\nIn GaussianFchk::readDensityMatrix.\n";
+          return false;
+        }
+      }
+    } else { // Q-Chem files use 16-character fields
+      size_t maxColumns = 80 / width;
+      for (size_t c = 0; c < maxColumns; ++c) {
+        string substring = line.substr(c * width, width);
+        if (static_cast<int>(substring.length()) != width) {
+          break;
+        } else if (cnt >= n) {
+          cout << "Too many variables read in. File may be inconsistent. "
+               << cnt << " of " << n << '\n';
+          return false;
+        }
+        // Read in lower half matrix
+        m_spinDensity(i, j) = Core::lexicalCast<double>(substring, ok);
+        if (ok) { // Valid double converted, carry on
+          ++j;
+          ++cnt;
+          if (j == f) {
+            // We need to move down to the next row and increment f - lower tri
+            j = 0;
+            ++f;
+            ++i;
+          }
+        } else { // Invalid conversion of a string to double
+          cout << "Warning: problem converting string to double: " << substring
+               << "\nIn GaussianFchk::readSpinDensityMatrix.\n";
+          return false;
+        }
+      }
+    }
+  }
+  // The fchk file stores only the lower triangle; mirror to make it symmetric.
+  m_spinDensity.triangularView<Eigen::StrictlyUpper>() =
+    m_spinDensity.transpose();
+  return true;
+}
+
+void GaussianFchk::outputAll()
+{
+  switch (m_scftype) {
+    case Rhf:
+      cout << "SCF type = RHF\n";
+      break;
+    case Uhf:
+      cout << "SCF type = UHF\n";
+      break;
+    case Rohf:
+      cout << "SCF type = ROHF\n";
+      break;
+    default:
+      cout << "SCF type = Unknown\n";
+  }
+  cout << "Shell mappings:\n";
+  for (unsigned int i = 0; i < m_shellTypes.size(); ++i)
+    cout << i << " : type = " << m_shellTypes.at(i)
+         << ", number = " << m_shellNums.at(i)
+         << ", atom = " << m_shelltoAtom.at(i) << '\n';
+  if (!m_MOcoeffs.empty()) {
+    cout << "MO coefficients:\n";
+    for (double m_MOcoeff : m_MOcoeffs)
+      cout << m_MOcoeff << "\t";
+    cout << '\n' << '\n';
+  }
+  if (!m_alphaMOcoeffs.empty()) {
+    cout << "Alpha MO coefficients:\n";
+    for (double m_alphaMOcoeff : m_alphaMOcoeffs)
+      cout << m_alphaMOcoeff << "\t";
+    cout << '\n' << '\n';
+  }
+  if (!m_betaMOcoeffs.empty()) {
+    cout << "Beta MO coefficients:\n";
+    for (double m_betaMOcoeff : m_betaMOcoeffs)
+      cout << m_betaMOcoeff << "\t";
+    cout << '\n' << '\n';
+  }
+}
+} // namespace Avogadro::QuantumIO

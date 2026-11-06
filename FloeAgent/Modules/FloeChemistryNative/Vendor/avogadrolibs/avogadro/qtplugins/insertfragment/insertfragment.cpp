@@ -1,0 +1,142 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "insertfragment.h"
+
+#include <avogadro/qtgui/fileformatdialog.h>
+#include <avogadro/qtgui/insertfragmentdialog.h>
+#include <avogadro/qtgui/molecule.h>
+#include <avogadro/qtgui/rwmolecule.h>
+
+#include <avogadro/io/fileformat.h>
+#include <avogadro/io/fileformatmanager.h>
+
+#include <QtCore/QFileInfo>
+
+#include <QAction>
+#include <QtWidgets/QMessageBox>
+#include <QtWidgets/QProgressDialog>
+
+using Avogadro::Io::FileFormatManager;
+using Avogadro::QtGui::InsertFragmentDialog;
+using Avogadro::QtGui::Molecule;
+
+namespace Avogadro::QtPlugins {
+
+InsertFragment::InsertFragment(QObject* parent_)
+  : Avogadro::QtGui::ExtensionPlugin(parent_), m_moleculeDialog(nullptr),
+    m_crystalDialog(nullptr), m_molecule(nullptr), m_reader(nullptr)
+{
+  auto* action = new QAction(tr("Molecule…"), this);
+  action->setProperty("menu priority", 890);
+  action->setData("molecules"); // will also work for crystals
+  connect(action, SIGNAL(triggered()), SLOT(showDialog()));
+  m_actions.append(action);
+
+  action = new QAction(tr("Crystal…"), this);
+  action->setData("crystals"); // will also work for crystals
+  action->setProperty("menu priority", 170);
+  connect(action, SIGNAL(triggered()), SLOT(showDialog()));
+  m_actions.append(action);
+}
+
+InsertFragment::~InsertFragment()
+{
+  delete m_reader;
+}
+
+QList<QAction*> InsertFragment::actions() const
+{
+  return m_actions;
+}
+
+QStringList InsertFragment::menuPath(QAction* action) const
+{
+  if (action->data() == "crystals")
+    return QStringList() << tr("&File") << tr("&Import");
+  else
+    return QStringList() << tr("&Build") << tr("&Insert");
+}
+
+void InsertFragment::setMolecule(QtGui::Molecule* mol)
+{
+  m_molecule = mol;
+}
+
+void InsertFragment::showDialog()
+{
+  if (!m_molecule)
+    return;
+
+  QWidget* parentAsWidget = qobject_cast<QWidget*>(parent());
+  auto* theSender = qobject_cast<QAction*>(sender());
+
+  // Prompt user for input:
+  bool crystal = theSender->data().toString() == "crystals";
+  if (crystal) {
+    // create the dialog if it doesn't exist
+    if (!m_crystalDialog) {
+      m_crystalDialog = new InsertFragmentDialog(parentAsWidget, "crystals");
+      connect(m_crystalDialog, &InsertFragmentDialog::performInsert, this,
+              &InsertFragment::performInsert);
+    }
+    m_crystalDialog->show();
+    m_crystalDialog->raise();
+    m_crystalDialog->activateWindow();
+  } else {
+    // fragments - create the dialog if it doesn't exist
+    if (!m_moleculeDialog) {
+      m_moleculeDialog = new InsertFragmentDialog(parentAsWidget, "molecules");
+      connect(m_moleculeDialog, &InsertFragmentDialog::performInsert, this,
+              &InsertFragment::performInsert);
+    }
+    m_moleculeDialog->show();
+    m_moleculeDialog->raise();
+    m_moleculeDialog->activateWindow();
+  }
+}
+
+void InsertFragment::performInsert(const QString& fileName, bool crystal)
+{
+  if (m_molecule == nullptr)
+    return;
+
+  // read the file into the new fragment
+  Avogadro::QtGui::Molecule newMol(m_molecule->parent());
+  bool ok =
+    Io::FileFormatManager::instance().readFile(newMol, fileName.toStdString());
+  if (!ok) {
+    QMessageBox::critical(qobject_cast<QWidget*>(parent()), tr("Error"),
+                          tr("Error reading file (%1).").arg(fileName));
+    return;
+  }
+
+  if (crystal) {
+    Molecule::MoleculeChanges changes =
+      (Molecule::Atoms | Molecule::Bonds | Molecule::UnitCell |
+       Molecule::NewCrystal | Molecule::Added | Molecule::Removed);
+
+    // remove any bonds from newMol
+    newMol.clearBonds();
+    m_molecule->undoMolecule()->modifyMolecule(newMol, changes,
+                                               tr("Import Crystal"));
+    // set the name
+    std::string name = newMol.data("name").toString();
+    if (!name.empty())
+      m_molecule->setData("name", name);
+    else {
+      name = QFileInfo(fileName).baseName().toStdString();
+      m_molecule->setData("name", name);
+    }
+
+    emit requestActiveTool("Navigator");
+  } else {
+    // insert mol into m_molecule
+    m_molecule->undoMolecule()->appendMolecule(newMol, tr("Insert Fragment"));
+    emit requestActiveTool("Manipulator");
+  }
+}
+
+} // namespace Avogadro::QtPlugins

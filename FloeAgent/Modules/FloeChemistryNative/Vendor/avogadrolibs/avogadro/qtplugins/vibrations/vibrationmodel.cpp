@@ -1,0 +1,124 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "vibrationmodel.h"
+
+#include <avogadro/qtgui/molecule.h>
+
+#include <QtCore/QLocale>
+
+namespace Avogadro::QtPlugins {
+
+VibrationModel::VibrationModel(QObject* p)
+  : QAbstractItemModel(p), m_molecule(nullptr), m_hasRaman(false)
+{
+}
+
+QModelIndex VibrationModel::parent(const QModelIndex&) const
+{
+  return QModelIndex();
+}
+
+int VibrationModel::rowCount(const QModelIndex& p) const
+{
+  if (p.isValid() || !m_molecule)
+    return 0;
+  else
+    return m_molecule->vibrationFrequencies().size();
+}
+
+int VibrationModel::columnCount(const QModelIndex&) const
+{
+  // do we have raman data?
+  if (m_molecule && m_hasRaman)
+    return 3;
+
+  return 2;
+}
+
+Qt::ItemFlags VibrationModel::flags(const QModelIndex&) const
+{
+  return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
+}
+
+void VibrationModel::setMolecule(QtGui::Molecule* mol)
+{
+  m_molecule = mol;
+  m_hasRaman = mol->vibrationRamanIntensities().size() > 0;
+}
+
+QVariant VibrationModel::headerData(int section, Qt::Orientation orientation,
+                                    int role) const
+{
+  if (role == Qt::DisplayRole) {
+    if (orientation == Qt::Horizontal) {
+      switch (section) {
+        case 0:
+          return QString("Frequency (cm⁻¹)");
+        case 1:
+          return QString("Intensity (km/mol)");
+        case 2:
+          return QString("Raman Intensity (a.u.)");
+      }
+    } else if (orientation == Qt::Vertical) {
+      return QString::number(section + 1);
+    }
+  }
+  return QVariant();
+}
+
+bool VibrationModel::setData(const QModelIndex&, const QVariant&, int)
+{
+  return false;
+}
+
+QVariant VibrationModel::data(const QModelIndex& idx, int role) const
+{
+  if (!idx.isValid() || idx.column() > 2 || !m_molecule ||
+      static_cast<int>(m_molecule->vibrationFrequencies().size()) <=
+        idx.row()) {
+    return QVariant();
+  }
+
+  if (role != Qt::DisplayRole && role != Qt::UserRole)
+    return QVariant();
+
+  Core::Array<double> values;
+  switch (idx.column()) {
+    case 0:
+      values = m_molecule->vibrationFrequencies();
+      break;
+    case 1:
+      values = m_molecule->vibrationIRIntensities();
+      break;
+    case 2:
+      values = m_molecule->vibrationRamanIntensities();
+      break;
+    default:
+      return role == Qt::DisplayRole ? QVariant("Invalid") : QVariant();
+  }
+
+  if (static_cast<int>(values.size()) <= idx.row())
+    return role == Qt::DisplayRole ? QVariant("No value") : QVariant();
+
+  const double value = values[idx.row()];
+  // UserRole carries the raw value for callers that need a number
+  if (role == Qt::UserRole)
+    return value;
+  return QLocale().toString(value, 'f', 2);
+}
+
+QModelIndex VibrationModel::index(int row, int column,
+                                  const QModelIndex& p) const
+{
+  if (!p.isValid())
+    if (row >= 0 && m_molecule &&
+        row < static_cast<int>(m_molecule->vibrationFrequencies().size()))
+      return createIndex(row, column);
+  return QModelIndex();
+}
+
+void VibrationModel::clear() {}
+} // namespace Avogadro::QtPlugins

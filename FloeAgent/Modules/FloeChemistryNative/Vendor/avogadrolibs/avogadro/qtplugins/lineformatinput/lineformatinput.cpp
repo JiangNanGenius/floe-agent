@@ -1,0 +1,161 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "lineformatinput.h"
+
+#include "lineformatinputdialog.h"
+
+#include <avogadro/qtgui/fileformatdialog.h>
+#include <avogadro/qtgui/molecule.h>
+#include <avogadro/qtgui/rwmolecule.h>
+
+#include <avogadro/io/fileformat.h>
+#include <avogadro/io/fileformatmanager.h>
+
+#include <QAction>
+#include <QMessageBox>
+#include <QProgressDialog>
+
+using Avogadro::Io::FileFormat;
+using Avogadro::Io::FileFormatManager;
+using Avogadro::QtGui::FileFormatDialog;
+using namespace std::string_literals;
+
+namespace Avogadro::QtPlugins {
+
+LineFormatInput::LineFormatInput(QObject* parent_)
+  : Avogadro::QtGui::ExtensionPlugin(parent_), m_molecule(nullptr),
+    m_reader(nullptr)
+{
+  auto* action = new QAction(tr("SMILES…"), this);
+  action->setProperty("menu priority", 710);
+  action->setData("SMILES");
+  connect(action, SIGNAL(triggered()), SLOT(showDialog()));
+  m_actions.append(action);
+
+  action = new QAction(tr("InChI…"), this);
+  action->setProperty("menu priority", 700);
+  action->setData("InChI");
+  connect(action, SIGNAL(triggered()), SLOT(showDialog()));
+  m_actions.append(action);
+
+  // These are the line formats that we can load -- key is a user-friendly name,
+  // value is the file extension used to identify the file format.
+  m_formats.insert(tr("InChI"), "inchi"s);
+  m_formats.insert(tr("SMILES"), "smi"s);
+}
+
+LineFormatInput::~LineFormatInput()
+{
+  delete m_reader;
+}
+
+QList<QAction*> LineFormatInput::actions() const
+{
+  return m_actions;
+}
+
+QStringList LineFormatInput::menuPath(QAction*) const
+{
+  return QStringList() << tr("&Build") << tr("&Insert");
+}
+
+void LineFormatInput::setMolecule(QtGui::Molecule* mol)
+{
+  m_molecule = mol;
+}
+
+void LineFormatInput::showDialog()
+{
+  if (!m_molecule)
+    return;
+
+  QWidget* parentAsWidget = qobject_cast<QWidget*>(parent());
+  auto* theSender = qobject_cast<QAction*>(sender());
+
+  // Create a list of file formats that we can read:
+  QStringList availableFormats;
+  FileFormatManager& ffm = FileFormatManager::instance();
+  const FileFormat::Operations ops = FileFormat::Read | FileFormat::String;
+  foreach (const QString& ident, m_formats.keys()) {
+    const std::string& ext = m_formats[ident];
+    if (!ffm.fileFormatsFromFileExtension(ext, ops).empty())
+      availableFormats.push_back(ident);
+  }
+
+  if (availableFormats.empty()) {
+    QMessageBox::warning(parentAsWidget, tr("No descriptors found!"),
+                         tr("No line format readers found!"), QMessageBox::Ok);
+    return;
+  }
+
+  // Prompt user for input:
+  LineFormatInputDialog dlg;
+  dlg.setFormats(availableFormats);
+  if (theSender != nullptr)
+    dlg.setCurrentFormat(theSender->data().toString());
+  dlg.exec();
+
+  // check if the reply is empty
+  if (dlg.result() != LineFormatInputDialog::Accepted ||
+      dlg.descriptor().isEmpty())
+    return; // nothing to do
+
+  // Resolve any format conflicts:
+  const std::string& ext = m_formats[dlg.format()];
+
+  const FileFormat* fmt = FileFormatDialog::findFileFormat(
+    parentAsWidget, tr("Insert Molecule…"),
+    QString("file.%1").arg(QString::fromStdString(ext)), ops);
+
+  if (fmt == nullptr) {
+    QMessageBox::warning(parentAsWidget, tr("No descriptors found!"),
+                         tr("Unable to load requested format reader."),
+                         QMessageBox::Ok);
+    return;
+  }
+
+  m_reader = fmt->newInstance();
+  m_descriptor = dlg.descriptor().toStdString();
+
+  QProgressDialog progDlg(parentAsWidget);
+  progDlg.setModal(true);
+  progDlg.setWindowTitle(tr("Insert Molecule…"));
+  progDlg.setLabelText(tr("Generating 3D molecule…"));
+  progDlg.setRange(0, 0);
+  progDlg.setValue(0);
+  progDlg.show();
+
+  QtGui::Molecule newMol;
+  m_reader->readString(m_descriptor, newMol);
+
+  // check to make sure the coordinates of newMol are non-zero
+  bool allZero = true;
+  for (Index i = 0; i < newMol.atomCount(); i++) {
+    auto vector = newMol.atomPosition3d(i);
+    if (vector.x() != 0.0 || vector.y() != 0.0 || vector.z() != 0.0) {
+      allZero = false;
+      break;
+    }
+  }
+
+  if (allZero) {
+    QMessageBox::warning(parentAsWidget, tr("No coordinates found!"),
+                         tr("Unable to generate 3D coordinates."),
+                         QMessageBox::Ok);
+    delete m_reader;
+    return;
+  }
+
+  m_molecule->undoMolecule()->appendMolecule(newMol, "Insert Molecule");
+  emit requestActiveTool("Manipulator");
+  dlg.hide();
+
+  m_descriptor.clear();
+  delete m_reader;
+  m_reader = nullptr;
+}
+
+} // namespace Avogadro::QtPlugins

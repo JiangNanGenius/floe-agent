@@ -1,0 +1,783 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "label.h"
+
+#include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <locale>
+#include <set>
+#include <sstream>
+
+// for partial charges
+#include <avogadro/calc/chargemanager.h>
+
+#include <avogadro/core/contrastcolor.h>
+#include <avogadro/core/elements.h>
+#include <avogadro/core/residue.h>
+#include <avogadro/core/utilities.h>
+#include <avogadro/qtgui/colorbutton.h>
+#include <avogadro/qtgui/molecule.h>
+#include <avogadro/rendering/geometrynode.h>
+#include <avogadro/rendering/scene.h>
+#include <avogadro/rendering/textlabel3d.h>
+
+#include <QtCore/QPointer>
+#include <QtCore/QSettings>
+#include <QtCore/QTimer>
+#include <QtWidgets/QCheckBox>
+#include <QtWidgets/QComboBox>
+#include <QtWidgets/QDoubleSpinBox>
+#include <QtWidgets/QFormLayout>
+#include <QtWidgets/QVBoxLayout>
+#include <QtWidgets/QWidget>
+
+namespace Avogadro::QtPlugins {
+
+using Avogadro::Rendering::TextLabel3D;
+using Core::Array;
+using Core::Atom;
+using Core::contrastColor;
+using Core::Elements;
+using Core::Molecule;
+using QtGui::PluginLayerManager;
+using Rendering::GeometryNode;
+using Rendering::GroupNode;
+using std::map;
+
+using NeighborListType = Array<Molecule::BondType>;
+
+namespace {
+// Tokens are written with a classic-locale ostringstream (see serialize()
+// below), but old settings saved under a non-"C" LC_NUMERIC (e.g. de_DE, via
+// Qt's setlocale(LC_ALL, "")) may still use ',' as the decimal separator.
+// Tokens are space-separated and never contain thousands separators, so this
+// substitution is safe.
+std::string commaToDot(std::string token)
+{
+  std::replace(token.begin(), token.end(), ',', '.');
+  return token;
+}
+
+TextLabel3D* createLabel(const std::string& text, const Vector3f& pos,
+                         float radius, const Vector3ub& color,
+                         float scale = 1.0f)
+{
+  Rendering::TextProperties tprop;
+  tprop.setAlign(Rendering::TextProperties::HCenter,
+                 Rendering::TextProperties::VCenter);
+  tprop.setFontFamily(Rendering::TextProperties::SansSerif);
+  tprop.setColorRgb(color.data());
+  // Apply label scale to the default pixel height (24)
+  tprop.setPixelHeight(static_cast<size_t>(24.0f * scale));
+
+  auto* label = new TextLabel3D;
+  label->setText(text);
+  label->setRenderPass(Rendering::TranslucentPass);
+  label->setTextProperties(tprop);
+  label->setRadius(radius);
+  label->setAnchor(pos);
+  return label;
+}
+} // namespace
+
+struct LayerLabel : Core::LayerData
+{
+  enum LabelOptions
+  {
+    None = 0,
+    Index = 1,
+    Name = 2,
+    Custom = 4,
+    Ordinal = 8,
+    UniqueID = 16,
+    PartialCharge = 32,
+    Length = 64 // for bonds obviously
+  };
+  unsigned short atomOptions = LabelOptions::Name;
+  unsigned short residueOptions = LabelOptions::None;
+  unsigned short bondOptions = LabelOptions::None;
+
+  // The panel is parented elsewhere (a dock), which may delete it first.
+  QPointer<QWidget> widget;
+  float radiusScalar = 0.5f;
+  float labelScale = 1.0f;
+  Vector3ub color = Vector3ub(255, 255, 255);
+
+  LayerLabel()
+  {
+    widget = nullptr;
+    QSettings settings;
+    // Read the current key, falling back to the pre-2.0 spelling.
+    // (fallback can be dropped after a release or two)
+    atomOptions =
+      settings
+        .value("label/atomOptions",
+               settings.value("label/atomoptions", LabelOptions::Name))
+        .toInt();
+    residueOptions =
+      settings
+        .value("label/residueOptions",
+               settings.value("label/residueoptions", LabelOptions::None))
+        .toInt();
+    bondOptions =
+      settings
+        .value("label/bondOptions",
+               settings.value("label/bondoptions", LabelOptions::None))
+        .toInt();
+    radiusScalar =
+      settings
+        .value("label/radiusScalar", settings.value("label/radiusscalar", 0.5))
+        .toDouble();
+    labelScale =
+      settings
+        .value("label/labelScale", settings.value("label/labelscale", 1.0))
+        .toDouble();
+
+    auto q_color =
+      settings.value("label/color", QColor(Qt::white)).value<QColor>();
+    color[0] = static_cast<unsigned char>(q_color.red());
+    color[1] = static_cast<unsigned char>(q_color.green());
+    color[2] = static_cast<unsigned char>(q_color.blue());
+  }
+
+  LayerLabel(std::string settings)
+  {
+    widget = nullptr;
+    deserialize(settings);
+  }
+
+  LayerData* clone() final { return new LayerLabel(serialize()); }
+
+  ~LayerLabel() override
+  {
+    if (widget)
+      widget->deleteLater();
+  }
+
+  std::string serialize() final
+  {
+    std::stringstream output;
+    output.imbue(std::locale::classic());
+    output << atomOptions << " " << residueOptions << " " << radiusScalar << " "
+           << (int)color[0] << " " << (int)color[1] << " " << (int)color[2]
+           << " " << bondOptions << " " << labelScale;
+    return output.str();
+  }
+
+  // Bitmask fields (atomOptions/residueOptions/bondOptions) reject a negative
+  // parse and keep the previous (default) value; a malformed or missing token
+  // leaves the member untouched rather than throwing.
+  // An options value that does not fit the 16-bit field is rejected rather
+  // than wrapped into an arbitrary bitmask.
+  static bool fitsOptions(int value)
+  {
+    return value >= 0 && value <= std::numeric_limits<unsigned short>::max();
+  }
+
+  void deserialize(std::string text) final
+  {
+    std::stringstream ss(text);
+    std::string aux;
+
+    if (ss >> aux) {
+      if (auto v = Core::lexicalCast<int>(aux); v && fitsOptions(*v))
+        atomOptions = static_cast<unsigned short>(*v);
+    }
+    if (ss >> aux) {
+      if (auto v = Core::lexicalCast<int>(aux); v && fitsOptions(*v))
+        residueOptions = static_cast<unsigned short>(*v);
+    }
+    if (ss >> aux) {
+      if (auto v = Core::lexicalCast<float>(commaToDot(aux));
+          v && std::isfinite(*v) && *v > 0.0f)
+        // the "Distance from center" spin box range
+        radiusScalar = std::min(*v, 1.5f);
+    }
+    if (ss >> aux) {
+      if (auto v = Core::lexicalCast<int>(aux))
+        color[0] = static_cast<unsigned char>(std::clamp(*v, 0, 255));
+    }
+    if (ss >> aux) {
+      if (auto v = Core::lexicalCast<int>(aux))
+        color[1] = static_cast<unsigned char>(std::clamp(*v, 0, 255));
+    }
+    if (ss >> aux) {
+      if (auto v = Core::lexicalCast<int>(aux))
+        color[2] = static_cast<unsigned char>(std::clamp(*v, 0, 255));
+    }
+    if (ss >> aux) { // backwards compatibility
+      if (auto v = Core::lexicalCast<int>(aux); v && fitsOptions(*v))
+        bondOptions = static_cast<unsigned short>(*v);
+    }
+    if (ss >> aux) { // backwards compatibility
+      if (auto v = Core::lexicalCast<float>(commaToDot(aux));
+          v && std::isfinite(*v) && *v > 0.0f)
+        // the "Label scale" spin box range; keeps createLabel's pixel height
+        // well inside size_t
+        labelScale = std::clamp(*v, 0.25f, 3.0f);
+    }
+  }
+
+  void setupWidget(Label* slot)
+  {
+    if (!widget) {
+      widget = new QWidget(qobject_cast<QWidget*>(slot->parent()));
+      auto* v = new QVBoxLayout;
+
+      auto* form = new QFormLayout;
+      // color button
+      auto* colorButton = new QtGui::ColorButton;
+      QObject::connect(colorButton, &QtGui::ColorButton::colorChanged, slot,
+                       &Label::setColor);
+      form->addRow(QObject::tr("Color:"), colorButton);
+
+      // radius scalar
+      auto* spin = new QDoubleSpinBox;
+      spin->setRange(0.0, 1.5);
+      spin->setSingleStep(0.1);
+      spin->setDecimals(1);
+      spin->setValue(radiusScalar);
+      QObject::connect(spin, &QDoubleSpinBox::valueChanged, slot,
+                       &Label::setRadiusScalar);
+      form->addRow(QObject::tr("Distance from center:"), spin);
+
+      // label scale
+      auto* scaleSpin = new QDoubleSpinBox;
+      scaleSpin->setRange(0.25, 3.0);
+      scaleSpin->setSingleStep(0.1);
+      scaleSpin->setDecimals(2);
+      scaleSpin->setValue(labelScale);
+      QObject::connect(scaleSpin, &QDoubleSpinBox::valueChanged, slot,
+                       &Label::setLabelScale);
+      form->addRow(QObject::tr("Label scale:"), scaleSpin);
+
+      auto* atom = new QComboBox;
+      atom->setObjectName("atom");
+
+      // first add the individual options
+      atom->addItem(QObject::tr("None"), int(LabelOptions::None));
+      atom->addItem(QObject::tr("Index"), int(LabelOptions::Index));
+      atom->addItem(QObject::tr("Unique ID"), int(LabelOptions::UniqueID));
+      atom->addItem(QObject::tr("Element"), int(LabelOptions::Name));
+      atom->addItem(QObject::tr("Element & Number"),
+                    int(LabelOptions::Ordinal));
+      atom->addItem(QObject::tr("Element & ID"),
+                    int(LabelOptions::Name | LabelOptions::UniqueID));
+      atom->addItem(QObject::tr("Partial Charge", "atomic partial charge"),
+                    int(LabelOptions::PartialCharge));
+      atom->addItem(QObject::tr("Custom"), int(LabelOptions::Custom));
+
+      // check for current option based on item data
+      for (int i = 0; i < atom->count(); ++i) {
+        if (atom->itemData(i).toInt() == atomOptions) {
+          atom->setCurrentIndex(i);
+          break;
+        }
+      }
+
+      QObject::connect(atom, &QComboBox::currentIndexChanged, slot,
+                       &Label::atomLabelType);
+
+      form->addRow(QObject::tr("Atom Label:"), atom);
+
+      // bond label
+      auto* bond = new QComboBox;
+      bond->setObjectName("bond");
+
+      // set up the various bond options
+      bond->addItem(QObject::tr("None"), int(LabelOptions::None));
+      bond->addItem(QObject::tr("Length"), int(LabelOptions::Length));
+      bond->addItem(QObject::tr("Index"), int(LabelOptions::Index));
+      bond->addItem(QObject::tr("Custom"), int(LabelOptions::Custom));
+
+      QObject::connect(bond, &QComboBox::currentIndexChanged, slot,
+                       &Label::bondLabelType);
+      form->addRow(QObject::tr("Bond Label:"), bond);
+
+      auto* residue = new QComboBox;
+      residue->setObjectName("residue");
+
+      // set up the various residue options
+      residue->addItem(QObject::tr("None"), int(LabelOptions::None));
+      residue->addItem(QObject::tr("ID"), int(LabelOptions::Index));
+      residue->addItem(QObject::tr("Name"), int(LabelOptions::Name));
+      residue->addItem(QObject::tr("Name & ID"),
+                       int(LabelOptions::Index + LabelOptions::Name));
+      residue->addItem(QObject::tr("Custom"), int(LabelOptions::Custom));
+      QObject::connect(residue, &QComboBox::currentIndexChanged, slot,
+                       &Label::residueLabelType);
+
+      // residue->model()->sort(0, Qt::AscendingOrder);
+      form->addRow(QObject::tr("Residue Label:"), residue);
+
+      v->addLayout(form);
+      v->addStretch(1);
+      widget->setLayout(v);
+    }
+  }
+};
+
+Label::Label(QObject* parent_) : QtGui::ScenePlugin(parent_)
+{
+  m_layerManager = PluginLayerManager(m_name);
+
+  // Drags and optimizations change the molecule on every frame, so every
+  // charge calculation waits for the changes to settle.
+  m_chargeTimer.setSingleShot(true);
+  m_chargeTimer.setInterval(300);
+  connect(&m_chargeTimer, &QTimer::timeout, this, &Label::chargeTimerFired);
+}
+
+Label::~Label() {}
+
+void Label::watchMolecule(const QtGui::Molecule& molecule)
+{
+  auto* mol = const_cast<QtGui::Molecule*>(&molecule);
+  if (m_watchedMolecule == mol)
+    return;
+  QObject::disconnect(m_changedConnection);
+  m_chargeTimer.stop();
+  m_movedPending = false;
+  m_chargePending = false;
+  m_chargeMolecule.clear();
+  m_displayedCharges.resize(0, 0);
+  m_watchedMolecule = mol;
+  m_changedConnection =
+    connect(mol, &QtGui::Molecule::changed, this, &Label::moleculeChanged);
+}
+
+bool Label::showsPartialCharges()
+{
+  for (size_t layer = 0; layer < m_layerManager.layerCount(); ++layer) {
+    auto* interface = m_layerManager.getSetting<LayerLabel>(layer);
+    if (interface->atomOptions & LayerLabel::LabelOptions::PartialCharge)
+      return true;
+  }
+  return false;
+}
+
+void Label::moleculeChanged(unsigned int change)
+{
+  // Structural edits already discard the charges (see
+  // QtGui::Molecule::emitChanged()) and process() requests a new calculation.
+  // Only a move keeps them, so only a move leaves ours out of date.
+  if (!(change & QtGui::Molecule::Moved) ||
+      !(change & QtGui::Molecule::Atoms) ||
+      QtGui::Molecule::invalidatesDerivedData(change))
+    return;
+  QtGui::Molecule* molecule = m_watchedMolecule;
+  if (molecule == nullptr || m_ownChargeMolecule != molecule ||
+      m_ownChargeType.empty() ||
+      molecule->partialChargeTypes().count(m_ownChargeType) == 0 ||
+      !showsPartialCharges())
+    return;
+  m_movedPending = true;
+  m_chargeTimer.start();
+}
+
+void Label::chargeTimerFired()
+{
+  if (m_movedPending) {
+    m_movedPending = false;
+    recomputeMovedCharges();
+  }
+  // Does nothing if the recompute above already ran the calculation.
+  if (m_chargePending)
+    calculatePartialCharges();
+}
+
+void Label::recomputeMovedCharges()
+{
+  QtGui::Molecule* molecule = m_ownChargeMolecule;
+  if (molecule == nullptr || m_ownChargeType.empty() ||
+      molecule->partialChargeTypes().count(m_ownChargeType) == 0)
+    return;
+
+  // Keep the old charges on screen until the new ones are stored.
+  m_lastChargeMolecule.clear();
+  molecule->removePartialCharges(m_ownChargeType);
+  m_chargeMolecule = molecule;
+  m_recomputeType = m_ownChargeType;
+  calculatePartialCharges();
+  m_recomputeType.clear();
+}
+
+void Label::process(const QtGui::Molecule& molecule, Rendering::GroupNode& node)
+{
+  watchMolecule(molecule);
+  m_layerManager.load<LayerLabel>();
+  for (size_t layer = 0; layer < m_layerManager.layerCount(); ++layer) {
+    auto* interface = m_layerManager.getSetting<LayerLabel>(layer);
+    if (interface->residueOptions) {
+      processResidue(molecule, node, layer);
+    }
+    if (interface->atomOptions) {
+      processAtom(molecule, node, layer);
+    }
+    if (interface->bondOptions) {
+      processBond(molecule, node, layer);
+    }
+  }
+}
+
+void Label::processResidue(const Core::Molecule& molecule,
+                           Rendering::GroupNode& node, size_t layer)
+{
+  auto* geometry = new GeometryNode;
+  node.addChild(geometry);
+
+  for (const auto& residue : molecule.residues()) {
+    Atom caAtom = residue.atomByName("CA");
+    if (!caAtom.isValid() ||
+        !m_layerManager.atomEnabled(layer, caAtom.index())) {
+      continue;
+    }
+    auto name = residue.residueName();
+    const auto atoms = residue.residueAtoms();
+    const std::string customLabel = molecule.residueLabel(residue.residueId());
+    Vector3f pos = Vector3f::Zero();
+    for (const auto& atom : atoms) {
+      pos += atom.position3d().cast<float>();
+    }
+    pos /= static_cast<float>(atoms.size());
+
+    float radius = 0.0f;
+    for (const auto& atom : atoms) {
+      unsigned char atomicNumber = atom.atomicNumber();
+      auto auxR = static_cast<float>(Elements::radiusVDW(atomicNumber));
+      auxR += (atom.position3d().cast<float>() - pos).norm();
+      if (auxR > radius) {
+        auxR = radius;
+      }
+    }
+
+    auto* interface = m_layerManager.getSetting<LayerLabel>(layer);
+    Vector3ub color = interface->color;
+    std::string text = "";
+    if (interface->residueOptions & LayerLabel::LabelOptions::Name) {
+      text = (text == "" ? "" : " / ") + name;
+    }
+    if (interface->residueOptions & LayerLabel::LabelOptions::Index) {
+      text += std::to_string(residue.residueId());
+    }
+    if (interface->residueOptions & LayerLabel::LabelOptions::Custom) {
+      text += (text == "" ? "" : " / ") + customLabel;
+    }
+    TextLabel3D* residueLabel =
+      createLabel(text, pos, radius, color, interface->labelScale);
+    geometry->addDrawable(residueLabel);
+  }
+}
+
+namespace {
+// Choose a charge type: GFN2 or AM1BCC, then MMFF94, then Gasteiger, else
+// whatever comes first. Returns an empty string for an empty set.
+std::string preferredChargeType(const std::set<std::string>& types)
+{
+  if (types.empty())
+    return std::string();
+  for (const char* preferred : { "GFN2", "am1bcc", "mmff94", "gasteiger" }) {
+    if (types.find(preferred) != types.end())
+      return preferred;
+  }
+  return *types.begin();
+}
+} // namespace
+
+void Label::requestPartialCharges(const QtGui::Molecule& molecule)
+{
+  auto* mol = const_cast<QtGui::Molecule*>(&molecule);
+  if (molecule.atomCount() == 0)
+    return;
+  // Don't retry a calculation that already failed for this molecule
+  if (m_lastChargeMolecule == mol &&
+      m_lastChargeAtomCount == molecule.atomCount())
+    return;
+
+  // Restart the timer on every request: during a drag this runs once per
+  // frame, and the calculation should happen once, after the last one.
+  m_chargeMolecule = mol;
+  m_chargePending = true;
+  m_chargeTimer.start();
+}
+
+void Label::calculatePartialCharges()
+{
+  m_chargePending = false;
+  QtGui::Molecule* molecule = m_chargeMolecule;
+  m_chargeMolecule.clear();
+  // A recompute replaces our own type even if other types are stored too.
+  if (molecule == nullptr ||
+      (m_recomputeType.empty() && !molecule->partialChargeTypes().empty()))
+    return;
+
+  const QPointer<QtGui::Molecule> guard(molecule);
+  const Index atomCount = molecule->atomCount();
+
+  // Remember only failed attempts: charges are cleared by edits, and a
+  // successful calculation must run again after an edit that returns to the
+  // same atom count (remove a bond, undo/redo).
+  const auto recordFailure = [&]() {
+    m_lastChargeMolecule = guard;
+    m_lastChargeAtomCount = atomCount;
+  };
+
+  const std::string type =
+    !m_recomputeType.empty()
+      ? m_recomputeType
+      : preferredChargeType(
+          Calc::ChargeManager::instance().identifiersForMolecule(*molecule));
+  if (type.empty()) {
+    recordFailure();
+    return;
+  }
+
+  // This can run a nested event loop (Open Babel), so check afterwards that
+  // the molecule is still there and still the same size.
+  MatrixX charges =
+    Calc::ChargeManager::instance().partialCharges(type, *molecule);
+  if (!guard.isNull() && static_cast<Index>(charges.rows()) == atomCount &&
+      molecule->atomCount() == atomCount) {
+    molecule->setPartialCharges(type, charges);
+    m_ownChargeMolecule = molecule;
+    m_ownChargeType = type;
+    m_lastChargeMolecule.clear();
+    emit drawablesChanged();
+  } else {
+    recordFailure();
+  }
+}
+
+void Label::processAtom(const QtGui::Molecule& molecule,
+                        Rendering::GroupNode& node, size_t layer)
+{
+  auto* geometry = new GeometryNode;
+  node.addChild(geometry);
+
+  // Use only the charges the molecule already has. Calculating them here can
+  // run an external program and a nested event loop in the middle of a scene
+  // rebuild, so that is deferred instead (see requestPartialCharges()).
+  MatrixX charges;
+  if (m_layerManager.getSetting<LayerLabel>(layer)->atomOptions &
+      LayerLabel::LabelOptions::PartialCharge) {
+    const std::string type = preferredChargeType(molecule.partialChargeTypes());
+    if (type.empty()) {
+      requestPartialCharges(molecule);
+      // Keep showing the last values while the new ones are calculated, so
+      // labels don't blink during an edit. Only if the atoms still line up.
+      if (m_chargePending && m_displayedCharges.cols() > 0 &&
+          static_cast<Index>(m_displayedCharges.rows()) == molecule.atomCount())
+        charges = m_displayedCharges;
+    } else {
+      charges = molecule.partialCharges(type);
+      if (m_watchedMolecule == &molecule)
+        m_displayedCharges = charges;
+    }
+  }
+  std::map<unsigned char, size_t> atomCount;
+  for (Index i = 0; i < molecule.atomCount(); ++i) {
+    Core::Atom atom = molecule.atom(i);
+
+    unsigned char atomicNumber = atom.atomicNumber();
+    if (atomCount.find(atomicNumber) == atomCount.end()) {
+      atomCount[atomicNumber] = 1;
+    } else {
+      ++atomCount[atomicNumber];
+    }
+
+    if (!m_layerManager.atomEnabled(layer, i)) {
+      continue;
+    }
+
+    auto* interface = m_layerManager.getSetting<LayerLabel>(layer);
+    std::string text = atom.label();
+
+    if (interface->atomOptions & LayerLabel::LabelOptions::PartialCharge) {
+      // Stored charges can be shorter than the atom list after an edit
+      if (static_cast<Index>(charges.rows()) > i && charges.cols() > 0) {
+        // e.g. '-0.12' => 5 characters
+        text += QString("%L1").arg(charges(i, 0), 5, 'f', 2).toStdString();
+      }
+    }
+    if (interface->atomOptions & LayerLabel::LabelOptions::Custom) {
+      // already set
+    }
+    if (interface->atomOptions & LayerLabel::LabelOptions::Index) {
+      text += (text == "" ? "" : " / ") + std::to_string(atom.index() + 1);
+    }
+    if (interface->atomOptions & LayerLabel::LabelOptions::Name) {
+      std::string name = std::string(Elements::symbol(atomicNumber));
+      // D or T for hydrogen isotopes
+      if (atomicNumber == 1) {
+        if (atom.isotope() == 2) {
+          name = "D";
+        } else if (atom.isotope() == 3) {
+          name = "T";
+        }
+      }
+      text += (text == "" ? "" : " / ") + name;
+    }
+    if (interface->atomOptions & LayerLabel::LabelOptions::Ordinal) {
+      text += (text == "" ? "" : " / ") +
+              std::string(Elements::symbol(atomicNumber) +
+                          std::to_string(atomCount[atomicNumber]));
+    }
+    if (interface->atomOptions & LayerLabel::LabelOptions::UniqueID) {
+      text += (text == "" ? "" : " / ") + std::to_string(atom.index());
+    }
+    if (text != "") {
+      const Vector3f pos(atom.position3d().cast<float>());
+      Vector3ub color = atom.color();
+      float radius = static_cast<float>(Elements::radiusVDW(atomicNumber)) *
+                     interface->radiusScalar;
+
+      TextLabel3D* atomLabel = createLabel(
+        text, pos, radius, contrastColor(color), interface->labelScale);
+      geometry->addDrawable(atomLabel);
+    }
+  }
+}
+
+void Label::processBond(const Core::Molecule& molecule,
+                        Rendering::GroupNode& node,
+                        [[maybe_unused]] size_t layer)
+{
+  auto* geometry = new GeometryNode;
+  node.addChild(geometry);
+  std::map<unsigned char, size_t> bondCount;
+  for (Index i = 0; i < molecule.bondCount(); ++i) {
+    Core::Bond bond = molecule.bond(i);
+
+    // check if the bond is enabled in this layer
+    if (!m_layerManager.bondEnabled(bond.atom1().index(),
+                                    bond.atom2().index())) {
+      continue;
+    }
+
+    // get the options for this bond
+    Core::Atom atom1 = bond.atom1();
+    Core::Atom atom2 = bond.atom2();
+    auto* interface1 = m_layerManager.getSetting<LayerLabel>(
+      m_layerManager.getLayerID(atom1.index()));
+    auto* interface2 = m_layerManager.getSetting<LayerLabel>(
+      m_layerManager.getLayerID(atom2.index()));
+
+    // get the union of the options
+    char options = interface1->bondOptions | interface2->bondOptions;
+    Vector3ub color = interface1->color;
+    unsigned char atomicNumber1 = atom1.atomicNumber();
+    unsigned char atomicNumber2 = atom2.atomicNumber();
+    float radiusVDW1 = static_cast<float>(Elements::radiusVDW(atomicNumber1));
+    float radiusVDW2 = static_cast<float>(Elements::radiusVDW(atomicNumber2));
+    float radius = (radiusVDW1 + radiusVDW2) * interface1->radiusScalar / 2.0f;
+
+    std::stringstream text;
+    // hopefully not all at once
+    if (options & LayerLabel::LabelOptions::Index) {
+      text << bond.index();
+    }
+    if (options & LayerLabel::LabelOptions::Custom) {
+      text << bond.label();
+    }
+    if (options & LayerLabel::LabelOptions::Length) {
+      text << std::fixed << std::setprecision(2) << bond.length();
+    }
+
+    // position will be between the two atoms
+    Vector3f pos =
+      (atom1.position3d().cast<float>() + atom2.position3d().cast<float>()) /
+      2.0f;
+
+    TextLabel3D* bondLabel =
+      createLabel(text.str(), pos, radius, color, interface1->labelScale);
+    geometry->addDrawable(bondLabel);
+  }
+}
+
+void Label::setColor(const QColor& color)
+{
+  auto* interface = m_layerManager.getSetting<LayerLabel>();
+
+  interface->color[0] = static_cast<unsigned char>(color.red());
+  interface->color[1] = static_cast<unsigned char>(color.green());
+  interface->color[2] = static_cast<unsigned char>(color.blue());
+
+  emit drawablesChanged();
+
+  QSettings settings;
+  settings.setValue("label/color", color);
+}
+
+void Label::atomLabelType(int index)
+{
+  auto* interface = m_layerManager.getSetting<LayerLabel>();
+  interface->atomOptions = char(setupWidget()
+                                  ->findChildren<QComboBox*>("atom")[0]
+                                  ->itemData(index)
+                                  .toInt());
+  emit drawablesChanged();
+
+  QSettings settings;
+  settings.setValue("label/atomOptions", interface->atomOptions);
+}
+
+void Label::bondLabelType(int index)
+{
+  auto* interface = m_layerManager.getSetting<LayerLabel>();
+  interface->bondOptions = char(setupWidget()
+                                  ->findChildren<QComboBox*>("bond")[0]
+                                  ->itemData(index)
+                                  .toInt());
+  emit drawablesChanged();
+
+  QSettings settings;
+  settings.setValue("label/bondOptions", interface->bondOptions);
+}
+
+void Label::residueLabelType(int index)
+{
+  auto* interface = m_layerManager.getSetting<LayerLabel>();
+  interface->residueOptions = char(setupWidget()
+                                     ->findChildren<QComboBox*>("residue")[0]
+                                     ->itemData(index)
+                                     .toInt());
+  emit drawablesChanged();
+
+  QSettings settings;
+  settings.setValue("label/residueOptions", interface->residueOptions);
+}
+
+void Label::setRadiusScalar(double radius)
+{
+  auto* interface = m_layerManager.getSetting<LayerLabel>();
+  interface->radiusScalar = float(radius);
+  emit drawablesChanged();
+
+  QSettings settings;
+  settings.setValue("label/radiusScalar", interface->radiusScalar);
+}
+
+void Label::setLabelScale(double scale)
+{
+  auto* interface = m_layerManager.getSetting<LayerLabel>();
+  interface->labelScale = float(scale);
+  emit drawablesChanged();
+
+  QSettings settings;
+  settings.setValue("label/labelScale", interface->labelScale);
+}
+
+QWidget* Label::setupWidget()
+{
+  auto* interface = m_layerManager.getSetting<LayerLabel>();
+  interface->setupWidget(this);
+  return interface->widget;
+}
+
+} // namespace Avogadro::QtPlugins

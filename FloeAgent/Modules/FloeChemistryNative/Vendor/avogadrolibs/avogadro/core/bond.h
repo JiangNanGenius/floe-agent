@@ -1,0 +1,336 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#ifndef AVOGADRO_CORE_BOND_H
+#define AVOGADRO_CORE_BOND_H
+
+#include "avogadrocore.h"
+#include "matrix.h"
+
+#include "atom.h"
+
+#include <optional>
+#include <string>
+#include <type_traits>
+
+namespace Avogadro::Core {
+
+/**
+ * @class Bond bond.h <avogadro/core/bond.h>
+ * The Bond class represents a bond in a molecule.
+ * To use the appropriate bond implementation for a specific molecule
+ * implementation, use the [MoleculeClass]::BondType typedef.
+ */
+template <class Molecule_T>
+class BondTemplate
+{
+public:
+  using MoleculeType = Molecule_T;
+  using AtomType = typename Molecule_T::AtomType;
+
+  /** Creates a new, invalid bond object. */
+  BondTemplate() = default;
+
+  /**
+   * Creates a bond object representing a bond at index @p i in molecule @p m.
+   */
+  BondTemplate(MoleculeType* m, Index i);
+
+  /**
+   * @return True if @a this and @a other share the same index and molecule.
+   */
+  bool operator==(const BondTemplate<MoleculeType>& other) const;
+
+  /**
+   * @return True if @a this and @a other do not share the same index or
+   * molecule.
+   */
+  bool operator!=(const BondTemplate<MoleculeType>& other) const;
+
+  /**
+   * Prefix increment operator. Increment this Bond's index by 1 and return a
+   * self-reference. Check isValid() before calling any other methods.
+   */
+  BondTemplate<MoleculeType>& operator++();
+
+  /**
+   * Postfix increment operator. Increment this Bond's index by 1 and return a
+   * copy of the current Atom. Check isValid() before calling any other methods.
+   */
+  BondTemplate<MoleculeType> operator++(int);
+
+  /**
+   * Prefix decrement operator. Decrement this Bond's index by 1 and return a
+   * self-reference. Check isValid() before calling any other methods.
+   */
+  BondTemplate<MoleculeType>& operator--();
+
+  /**
+   * Postfix decrement operator. Decrement this Bond's index by 1 and return a
+   * copy of the current Atom. Check isValid() before calling any other methods.
+   */
+  BondTemplate<MoleculeType> operator--(int);
+
+  /**
+   * @return True if the molecule is set and the index is less than the number
+   * of bonds.
+   */
+  bool isValid() const;
+
+  /**
+   * @return The molecule that contains this Bond.
+   */
+  MoleculeType* molecule() const;
+
+  /**
+   * @return The index of this bond in molecule().
+   */
+  Index index() const;
+
+  /**
+   * An atom in the bond, such that atom1().index() < atom2.index().
+   * @{
+   */
+  AtomType atom1() const;
+  AtomType atom2() const;
+  /** @} */
+
+  /**
+   * @return The atom in the bond such that returned.index() != index.
+   */
+  AtomType getOtherAtom(Index index) const;
+
+  /**
+   * @return The atom in the bond such that returned.index() != atom.index().
+   */
+  AtomType getOtherAtom(AtomType atom) const;
+
+  /**
+   * The bond's order (single = 1, double = 2, etc.)
+   * @{
+   */
+  void setOrder(unsigned char o);
+  unsigned char order() const;
+  /** @} */
+
+  /**
+   * The length of the bond or 0.0 if the bond is invalid.
+   */
+  Real length() const;
+
+  /**
+   * A label for the bond (if any)
+   */
+  std::string label() const;
+
+  /**
+   * Custom property access. Setters are overloaded by value type.
+   * The template getter returns std::nullopt if the property is missing
+   * or if the requested type does not match the stored type.
+   * int and double values convert to string automatically.
+   * @{
+   */
+  void setProperty(const std::string& name, double value);
+  void setProperty(const std::string& name, int value);
+  void setProperty(const std::string& name, const std::string& value);
+  void setProperty(const std::string& name, const MatrixX& value);
+
+  template <typename T>
+  std::optional<T> property(const std::string& name) const;
+  /** @} */
+
+private:
+  MoleculeType* m_molecule = nullptr;
+  Index m_index = MaxIndex;
+};
+
+template <class Molecule_T>
+BondTemplate<Molecule_T>::BondTemplate(MoleculeType* m, Index i)
+  : m_molecule(m), m_index(i)
+{
+}
+
+template <class Molecule_T>
+bool BondTemplate<Molecule_T>::operator==(
+  const BondTemplate<MoleculeType>& other) const
+{
+  return m_molecule == other.m_molecule && m_index == other.m_index;
+}
+
+template <class Molecule_T>
+bool BondTemplate<Molecule_T>::operator!=(
+  const BondTemplate<MoleculeType>& other) const
+{
+  return m_molecule != other.m_molecule || m_index != other.m_index;
+}
+
+template <class Molecule_T>
+BondTemplate<Molecule_T>& BondTemplate<Molecule_T>::operator++()
+{
+  ++m_index;
+  return *this;
+}
+
+template <class Molecule_T>
+BondTemplate<Molecule_T> BondTemplate<Molecule_T>::operator++(int)
+{
+  BondTemplate<MoleculeType> result(m_molecule, m_index++);
+  return result;
+}
+
+template <class Molecule_T>
+BondTemplate<Molecule_T>& BondTemplate<Molecule_T>::operator--()
+{
+  --m_index;
+  return *this;
+}
+
+template <class Molecule_T>
+BondTemplate<Molecule_T> BondTemplate<Molecule_T>::operator--(int)
+{
+  BondTemplate<MoleculeType> result(m_molecule, m_index--);
+  return result;
+}
+
+template <class Molecule_T>
+bool BondTemplate<Molecule_T>::isValid() const
+{
+  return m_molecule && m_index < m_molecule->bondCount();
+}
+
+template <class Molecule_T>
+typename BondTemplate<Molecule_T>::MoleculeType*
+BondTemplate<Molecule_T>::molecule() const
+{
+  return m_molecule;
+}
+
+template <class Molecule_T>
+Index BondTemplate<Molecule_T>::index() const
+{
+  return m_index;
+}
+
+template <class Molecule_T>
+typename BondTemplate<Molecule_T>::AtomType BondTemplate<Molecule_T>::atom1()
+  const
+{
+  if (!isValid())
+    return AtomType();
+  return AtomType(m_molecule, m_molecule->bondPairs()[m_index].first);
+}
+
+template <class Molecule_T>
+typename BondTemplate<Molecule_T>::AtomType BondTemplate<Molecule_T>::atom2()
+  const
+{
+  if (!isValid())
+    return AtomType();
+  return AtomType(m_molecule, m_molecule->bondPairs()[m_index].second);
+}
+
+template <class Molecule_T>
+typename BondTemplate<Molecule_T>::AtomType
+BondTemplate<Molecule_T>::getOtherAtom(Index index) const
+{
+  if (atom1().index() == index)
+    return atom2();
+  else
+    return atom1();
+}
+
+template <class Molecule_T>
+typename BondTemplate<Molecule_T>::AtomType
+BondTemplate<Molecule_T>::getOtherAtom(
+  BondTemplate<Molecule_T>::AtomType atom) const
+{
+  return getOtherAtom(atom.index());
+}
+
+template <class Molecule_T>
+void BondTemplate<Molecule_T>::setOrder(unsigned char o)
+{
+  m_molecule->setBondOrder(m_index, o);
+}
+
+template <class Molecule_T>
+unsigned char BondTemplate<Molecule_T>::order() const
+{
+  return m_molecule->bondOrders()[m_index];
+}
+
+template <class Molecule_T>
+Real BondTemplate<Molecule_T>::length() const
+{
+  if (!isValid())
+    return 0.0;
+
+  return (atom1().position3d() - atom2().position3d()).norm();
+}
+
+template <class Molecule_T>
+std::string BondTemplate<Molecule_T>::label() const
+{
+  return m_molecule->bondLabel(m_index);
+}
+
+template <class Molecule_T>
+void BondTemplate<Molecule_T>::setProperty(const std::string& name,
+                                           double value)
+{
+  m_molecule->bondProperties().setDouble(name, m_index, value);
+}
+
+template <class Molecule_T>
+void BondTemplate<Molecule_T>::setProperty(const std::string& name, int value)
+{
+  m_molecule->bondProperties().setInt(name, m_index, value);
+}
+
+template <class Molecule_T>
+void BondTemplate<Molecule_T>::setProperty(const std::string& name,
+                                           const std::string& value)
+{
+  m_molecule->bondProperties().setString(name, m_index, value);
+}
+
+template <class Molecule_T>
+void BondTemplate<Molecule_T>::setProperty(const std::string& name,
+                                           const MatrixX& value)
+{
+  m_molecule->bondProperties().setMatrix(name, m_index, value);
+}
+
+template <class Molecule_T>
+template <typename T>
+std::optional<T> BondTemplate<Molecule_T>::property(
+  const std::string& name) const
+{
+  const auto& props = m_molecule->bondProperties();
+  if constexpr (std::is_same_v<T, double>) {
+    return props.getDouble(name, m_index);
+  } else if constexpr (std::is_same_v<T, int>) {
+    return props.getInt(name, m_index);
+  } else if constexpr (std::is_same_v<T, std::string>) {
+    auto result = props.getString(name, m_index);
+    if (result)
+      return result;
+    auto dval = props.getDouble(name, m_index);
+    if (dval)
+      return std::to_string(*dval);
+    auto ival = props.getInt(name, m_index);
+    if (ival)
+      return std::to_string(*ival);
+    return std::nullopt;
+  } else if constexpr (std::is_same_v<T, MatrixX>) {
+    return props.getMatrix(name, m_index);
+  } else {
+    return std::nullopt;
+  }
+}
+
+} // namespace Avogadro::Core
+
+#endif // AVOGADRO_CORE_BOND_H

@@ -1,0 +1,17 @@
+# Set update schedule for GitHub Actions
+
+version: 2
+updates:
+
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/.github/**/*"
+    schedule:
+      # Check for updates to GitHub Actions every weekday
+      interval: "daily"
+
+  - package-ecosystem: "pre-commit"
+    directories:
+      - "/.pre-commit-config.yaml"
+    schedule:
+      interval: "weekly"

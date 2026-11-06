@@ -1,0 +1,278 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "gromacsformat.h"
+
+#include <avogadro/core/avogadrocore.h>
+
+#include <avogadro/core/atom.h>
+#include <avogadro/core/elements.h>
+#include <avogadro/core/matrix.h>
+#include <avogadro/core/molecule.h>
+#include <avogadro/core/residue.h>
+#include <avogadro/core/unitcell.h>
+#include <avogadro/core/utilities.h>
+
+#include <cctype>
+#include <iostream>
+
+#include <string>
+
+using namespace std::string_literals;
+
+namespace Avogadro::Io {
+
+using Core::Atom;
+using Core::Elements;
+using Core::lexicalCast;
+using Core::Molecule;
+using Core::Residue;
+using Core::split;
+using Core::trimmed;
+using Core::UnitCell;
+
+std::vector<std::string> GromacsFormat::fileExtensions() const
+{
+  return std::vector<std::string>(1, "gro"s);
+}
+
+std::vector<std::string> GromacsFormat::mimeTypes() const
+{
+  return std::vector<std::string>(1, "chemical/x-gro"s);
+}
+
+namespace {
+
+// GRO atom names are not column-justified like PDB, so the element has to be
+// guessed from the name. Returns 0 if no valid element is found.
+int atomicNumberFromGroName(const std::string& atomName,
+                            const std::string& residueName)
+{
+  // strip leading digits (e.g., "1HB")
+  size_t start = 0;
+  while (start < atomName.size() &&
+         std::isdigit(static_cast<unsigned char>(atomName[start])))
+    ++start;
+  std::string letters;
+  for (size_t i = start; i < atomName.size(); ++i) {
+    if (std::isalpha(static_cast<unsigned char>(atomName[i])))
+      letters += atomName[i];
+    else
+      break;
+  }
+  if (letters.empty())
+    return 0;
+
+  // Ion convention: atom name equals residue name (NA/NA, CL/CL, ZN/ZN)
+  if (letters.size() == 2 && letters == residueName) {
+    std::string symbol;
+    symbol +=
+      static_cast<char>(std::toupper(static_cast<unsigned char>(letters[0])));
+    symbol +=
+      static_cast<char>(std::tolower(static_cast<unsigned char>(letters[1])));
+    unsigned char num = Elements::atomicNumberFromSymbol(symbol);
+    if (num != 255 && num != 0)
+      return num;
+  }
+
+  // Otherwise the first letter is the element: CA -> C, HG -> H, SG -> S.
+  // Known ambiguity: a two-letter element in a non-ion residue (e.g., "CL1" in
+  // a ligand) reads as the first-letter element (carbon).
+  std::string symbol(
+    1, static_cast<char>(std::toupper(static_cast<unsigned char>(letters[0]))));
+  unsigned char num = Elements::atomicNumberFromSymbol(symbol);
+  if (num != 255 && num != 0)
+    return num;
+  return 0;
+}
+
+} // namespace
+
+bool GromacsFormat::read(std::istream& in, Molecule& molecule)
+{
+  // Allow ADL ofr string
+  using std::string;
+
+  string buffer;
+  string value;
+  Residue* r = nullptr;
+  size_t currentResidueId = 0;
+  string currentResidueName;
+
+  // Title
+  Core::getLine(in, buffer);
+  if (!buffer.empty())
+    molecule.setData("name", trimmed(buffer));
+
+  // Atom count
+  Core::getLine(in, buffer);
+  buffer = trimmed(buffer);
+  bool ok;
+  auto numAtoms = lexicalCast<size_t>(buffer, ok);
+  if (buffer.empty() || !ok) {
+    appendError("Number of atoms (line 2) invalid.");
+    return false;
+  }
+
+  // read atom info:
+  using AtomTypeMap = std::map<string, unsigned char>;
+  AtomTypeMap atomTypes;
+  unsigned char customElementCounter = CustomElementMin;
+  Vector3 pos;
+  while (numAtoms-- > 0) {
+    Core::getLine(in, buffer);
+    // Figure out the distance between decimal points, implement support for
+    // variable precision as specified:
+    // "any number of decimal places, the format will then be n+5 positions with
+    // n decimal places (n+1 for velocities) in stead of 8 with 3 (with 4 for
+    // velocities)".
+    size_t decimal1 = buffer.find('.', 20);
+    size_t decimal2 = string::npos;
+    int decimalSep = 0;
+    if (decimal1 != string::npos)
+      decimal2 = buffer.find('.', decimal1 + 1);
+    if (decimal2 != string::npos)
+      decimalSep = decimal2 - decimal1;
+    if (decimalSep == 0) {
+      appendError("Decimal separation of 0 found in atom positions: " + buffer);
+      return false;
+    }
+
+    if (buffer.size() < static_cast<size_t>(20 + 3 * decimalSep)) {
+      appendError("Error reading atom specification -- line too short: " +
+                  buffer);
+      return false;
+    }
+
+    // Format of buffer is: (all indices start at 1, variable dp throws this).
+    // Offset:  0 format: %5i   value: Residue number
+    // Offset:  5 format: %-5s  value: Residue name
+    // Offset: 10 format: %5s   value: Atom name
+    // Offset: 15 format: %5i   value: Atom number
+    // Offset: 20 format: %8.3f value: x coordinate (nm)
+    // Offset: 28 format: %8.3f value: y coordinate (nm)
+    // Offset: 36 format: %8.3f value: z coordinate (nm)
+    // Offset: 44 format: %8.4f value: x velocity (nm/ps, a.k.a. km/s)
+    // Offset: 52 format: %8.4f value: y velocity (nm/ps, a.k.a. km/s)
+    // Offset: 60 format: %8.4f value: z velocity (nm/ps, a.k.a. km/s)
+
+    auto residueId = lexicalCast<size_t>(buffer.substr(0, 5), ok);
+    if (!ok) {
+      appendError("Failed to parse residue sequence number: " +
+                  buffer.substr(0, 5));
+      return false;
+    }
+
+    // The residue number wraps at 99999, so a change of name also starts a
+    // new residue.
+    const string residueName = trimmed(buffer.substr(5, 5));
+    if (r == nullptr || residueId != currentResidueId ||
+        residueName != currentResidueName) {
+      currentResidueId = residueId;
+      currentResidueName = residueName;
+
+      // gro files do not have a chain ID. So we use a makeshift dummy ID
+      char dummyChainId = '0';
+      string nameCopy = residueName;
+      r = &molecule.addResidue(nameCopy, currentResidueId, dummyChainId);
+    }
+
+    // Atom name:
+    const string atomName = trimmed(buffer.substr(10, 5));
+    Atom atom;
+    int atomicNum = Residue::atomicNumberFromResidueData(residueName, atomName);
+    if (atomicNum == 0)
+      atomicNum = atomicNumberFromGroName(atomName, residueName);
+    if (atomicNum != 0) {
+      atom = molecule.addAtom(static_cast<unsigned char>(atomicNum));
+    } else {
+      auto it = atomTypes.find(atomName);
+      if (it == atomTypes.end()) {
+        atomTypes.insert(std::make_pair(atomName, customElementCounter++));
+        it = atomTypes.find(atomName);
+        if (customElementCounter > CustomElementMax) {
+          appendError("Custom element type limit exceeded.");
+          return false;
+        }
+      }
+      atom = molecule.addAtom(it->second);
+    }
+
+    // Coords
+    for (int i = 0; i < 3; ++i) {
+      value = trimmed(buffer.substr(20 + i * decimalSep, decimalSep));
+      pos[i] = lexicalCast<Real>(value, ok);
+      if (!ok || value.empty()) {
+        appendError(
+          "Error reading atom specification -- invalid coordinate: '" + buffer +
+          "' (bad coord: '" + value + "')");
+        return false;
+      }
+    }
+    atom.setPosition3d(pos * static_cast<Real>(10.0)); // nm --> Angstrom
+    if (r) {
+      r->addResidueAtom(atomName, atom);
+    }
+  }
+
+  // Set the custom element map if needed:
+  if (!atomTypes.empty()) {
+    Molecule::CustomElementMap elementMap;
+    for (const auto& atomType : atomTypes) {
+      elementMap.insert(std::make_pair(atomType.second, atomType.first));
+    }
+    molecule.setCustomElementMap(elementMap);
+  }
+
+  // Box description:
+  // v1(x) v2(y) v3(z) [v1(y) v1(z) v2(x) v2(z) v3(x) v3(y)]
+  // The last six values may be omitted, set all non-specified values to 0.
+  // v1(y) == v1(z) == v2(z) == 0 always.
+  if (!Core::getLine(in, buffer)) {
+    appendError("Missing box specification.");
+    return false;
+  }
+  std::vector<string> tokens(split(buffer, ' ', true));
+  if (tokens.size() != 3 && tokens.size() != 9) {
+    appendError("Invalid box specification -- need either 3 or 9 values: '" +
+                buffer + "'");
+    return false;
+  }
+
+  // Index arrays for parsing loop:
+  const int rows[] = { 0, 1, 2, 1, 2, 0, 2, 0, 1 };
+  const int cols[] = { 0, 1, 2, 0, 0, 1, 1, 2, 2 };
+
+  Matrix3 cellMatrix = Matrix3::Zero();
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    cellMatrix(rows[i], cols[i]) = lexicalCast<Real>(tokens[i], ok);
+    if (!ok || tokens[i].empty()) {
+      appendError("Invalid box specification -- bad value: '" + tokens[i] +
+                  "'");
+      return false;
+    }
+  }
+
+  auto* cell = new UnitCell;
+  cell->setCellMatrix(cellMatrix * static_cast<Real>(10)); // nm --> Angstrom
+  if (!cell->isRegular()) {
+    appendError("box vectors are not linear independent");
+    delete cell;
+    return false;
+  }
+  molecule.setUnitCell(cell);
+
+  molecule.perceiveBondsSimple();
+  molecule.perceiveBondsFromResidueData();
+
+  return true;
+}
+
+bool GromacsFormat::write(std::ostream&, const Core::Molecule&)
+{
+  return false;
+}
+
+} // namespace Avogadro::Io

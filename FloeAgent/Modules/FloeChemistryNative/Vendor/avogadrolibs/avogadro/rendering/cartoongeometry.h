@@ -1,0 +1,48 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#ifndef AVOGADRO_RENDERING_CARTOON_H
+#define AVOGADRO_RENDERING_CARTOON_H
+
+#include "bsplinegeometry.h"
+
+#include <avogadro/core/residue.h>
+
+namespace Avogadro {
+namespace Rendering {
+
+enum CartoonType
+{
+  Undefined = -1, // constant small radius
+  Body = 0,       // constant big radius
+  Arrow = 3,      // arrow head
+  Head = 2,       // decreasing
+  Tail = 1        // increasing
+};
+
+class AVOGADRORENDERING_EXPORT Cartoon : public BSplineGeometry
+{
+public:
+  Cartoon();
+  Cartoon(float minRadius, float maxRadius);
+  static const float ELIPSE_RATIO;
+  static constexpr size_t kDefaultSides = 20;
+
+  void addPoint(const Vector3f& pos, const Vector3ub& color, size_t group,
+                size_t id, Core::Residue::SecondaryStructure sec);
+
+protected:
+  size_t circleResolution(bool flat) const override;
+  void fillRingTemplate(std::vector<Vector3f>& ring, bool flat) const override;
+
+  float computeScale(size_t index, float t, float scale) const override;
+
+  std::vector<std::pair<CartoonType, size_t>> m_type;
+  float m_minRadius, m_maxRadius;
+};
+} // namespace Rendering
+} // namespace Avogadro
+
+#endif

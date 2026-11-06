@@ -1,0 +1,301 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "iotests.h"
+
+#include <gtest/gtest.h>
+
+#include <avogadro/core/molecule.h>
+#include <avogadro/io/fileformat.h>
+#include <avogadro/io/fileformatmanager.h>
+
+using Avogadro::Core::Atom;
+using Avogadro::Core::Bond;
+using Avogadro::Core::Molecule;
+using Avogadro::Core::Variant;
+using Avogadro::Io::FileFormat;
+using Avogadro::Io::FileFormatManager;
+using namespace std::string_literals;
+
+TEST(FileFormatManagerTest, readFile)
+{
+  FileFormat* format =
+    FileFormatManager::instance().newFormatFromIdentifier("Avogadro: CML");
+  EXPECT_TRUE(format != nullptr);
+  if (!format)
+    return;
+  Molecule molecule;
+  format->readFile(std::string(AVOGADRO_DATA) + "/data/cml/ethane.cml",
+                   molecule);
+  delete format;
+  format = nullptr;
+
+  EXPECT_EQ(molecule.data("name").type(), Variant::String);
+  EXPECT_EQ(molecule.data("name").toString(), "Ethane");
+
+  EXPECT_EQ(molecule.data("inchi").type(), Variant::String);
+  EXPECT_EQ(molecule.data("inchi").toString(), "1/C2H6/c1-2/h1-2H3");
+}
+
+TEST(FileFormatManagerTest, identifiers)
+{
+  std::vector<std::string> ids = FileFormatManager::instance().identifiers();
+  std::cout << "FileFormatManager has loaded " << ids.size() << " formats.\n";
+  for (size_t i = 0; i < ids.size(); ++i)
+    std::cout << i << ": " << ids[i] << std::endl;
+  std::vector<std::string> mimes = FileFormatManager::instance().mimeTypes();
+  std::cout << "\nMIME types supported:\n";
+  for (size_t i = 0; i < mimes.size(); ++i)
+    std::cout << "\t" << mimes[i] << std::endl;
+  std::vector<std::string> extensions =
+    FileFormatManager::instance().fileExtensions();
+  std::cout << "\nFile extensions supported:\n";
+  for (size_t i = 0; i < extensions.size(); ++i)
+    std::cout << "\t" << extensions[i] << std::endl;
+}
+
+TEST(FileFormatManagerTest, emptyFile)
+{
+  std::vector<std::string> ids = FileFormatManager::instance().identifiers();
+  for (size_t i = 0; i < ids.size(); ++i) {
+    FileFormat* format =
+      FileFormatManager::instance().newFormatFromIdentifier(ids[i]);
+    EXPECT_TRUE(format != nullptr);
+    if (!format) {
+      delete format;
+      continue;
+    }
+    std::cout << "Testing " << ids[i] << std::endl;
+
+    Molecule molecule;
+    format->readString("", molecule);
+    EXPECT_EQ(molecule.atomCount(), static_cast<size_t>(0));
+    EXPECT_EQ(molecule.bondCount(), static_cast<size_t>(0));
+    delete format;
+  }
+}
+
+TEST(FileFormatManagerTest, readFileGuessCml)
+{
+  Molecule molecule;
+  FileFormatManager::instance().readFile(molecule, std::string(AVOGADRO_DATA) +
+                                                     "/data/cml/ethane.cml");
+  EXPECT_EQ(molecule.data("name").type(), Variant::String);
+  EXPECT_EQ(molecule.data("name").toString(), "Ethane");
+  EXPECT_EQ(molecule.data("inchi").type(), Variant::String);
+  EXPECT_EQ(molecule.data("inchi").toString(), "1/C2H6/c1-2/h1-2H3");
+}
+
+TEST(FileFormatManagerTest, readFileGuessCjson)
+{
+  Molecule molecule;
+  FileFormatManager::instance().readFile(
+    molecule, std::string(AVOGADRO_DATA) + "/data/cjson/ethane.cjson");
+  EXPECT_EQ(molecule.data("name").type(), Variant::String);
+  EXPECT_EQ(molecule.data("name").toString(), "Ethane");
+  EXPECT_EQ(molecule.data("inchi").type(), Variant::String);
+  EXPECT_EQ(molecule.data("inchi").toString(), "1/C2H6/c1-2/h1-2H3");
+}
+
+TEST(FileFormatManagerTest, writeFileGuessCml)
+{
+  Molecule readMol, writeMol;
+  FileFormatManager::instance().readFile(readMol, std::string(AVOGADRO_DATA) +
+                                                    "/data/cml/ethane.cml");
+  FileFormatManager::instance().writeFile(readMol, "ethanemanagertmp.cml");
+
+  // Now read the file back in and check a few key values are still present.
+  FileFormatManager::instance().readFile(writeMol, "ethanemanagertmp.cml");
+  EXPECT_EQ(writeMol.data("name").toString(), "Ethane");
+  EXPECT_EQ(writeMol.atomCount(), static_cast<size_t>(8));
+  EXPECT_EQ(writeMol.bondCount(), static_cast<size_t>(7));
+  Atom atom = writeMol.atom(7);
+  EXPECT_EQ(atom.atomicNumber(), static_cast<unsigned char>(1));
+  EXPECT_EQ(atom.position3d().x(), -1.18499);
+  EXPECT_EQ(atom.position3d().y(), 0.004424);
+  EXPECT_EQ(atom.position3d().z(), -0.987522);
+  Bond bond = writeMol.bond(0);
+  EXPECT_EQ(bond.atom1().index(), static_cast<size_t>(0));
+  EXPECT_EQ(bond.atom2().index(), static_cast<size_t>(1));
+  EXPECT_EQ(bond.order(), static_cast<unsigned char>(1));
+}
+
+TEST(FileFormatManagerTest, writeStringCjson)
+{
+  Molecule molecule;
+  FileFormatManager::instance().readFile(
+    molecule, std::string(AVOGADRO_DATA) + "/data/cjson/ethane.cjson");
+  std::string cjson;
+  FileFormatManager::instance().writeString(molecule, cjson, "cjson");
+  std::string cml;
+  FileFormatManager::instance().writeString(molecule, cml, "cml");
+
+  std::cout << cjson << std::endl;
+  std::cout << cml << std::endl;
+
+  // See if they still have data in them now they have gone back and forth...
+  Molecule cmlMol, cjsonMol;
+  FileFormatManager::instance().readString(cjsonMol, cjson, "cjson");
+  FileFormatManager::instance().readString(cmlMol, cml, "cml");
+
+  EXPECT_EQ(cjsonMol.data("name").type(), Variant::String);
+  EXPECT_EQ(cjsonMol.data("name").toString(), "Ethane");
+  EXPECT_EQ(cjsonMol.data("inchi").type(), Variant::String);
+  EXPECT_EQ(cjsonMol.data("inchi").toString(), "1/C2H6/c1-2/h1-2H3");
+
+  EXPECT_EQ(cmlMol.data("name").type(), Variant::String);
+  EXPECT_EQ(cmlMol.data("name").toString(), "Ethane");
+  EXPECT_EQ(cmlMol.data("inchi").type(), Variant::String);
+  EXPECT_EQ(cmlMol.data("inchi").toString(), "1/C2H6/c1-2/h1-2H3");
+}
+
+TEST(FileFormatManagerTest, writeStringOverwritesTarget)
+{
+  // Regression test: writeString() used to seed its stream with the existing
+  // contents of the target string, which overwrote from position 0 without
+  // truncating. Reusing one string for two formats then left a tail of the
+  // longer output behind, silently corrupting the shorter one.
+  Molecule molecule;
+  FileFormatManager::instance().readFile(
+    molecule, std::string(AVOGADRO_DATA) + "/data/cjson/ethane.cjson");
+
+  std::string reference;
+  FileFormatManager::instance().writeString(molecule, reference, "cjson");
+  ASSERT_FALSE(reference.empty());
+
+  // Prime the target with a value longer than the output it is about to
+  // receive. Nothing of it may survive the write.
+  std::string reused(reference.size() + 512, 'X');
+  FileFormatManager::instance().writeString(molecule, reused, "cjson");
+  EXPECT_EQ(reused, reference);
+  EXPECT_EQ(reused.size(), reference.size());
+}
+
+TEST(FileFormatManagerTest, writeStringCjsonOptions)
+{
+  Molecule molecule;
+  std::string options = "{ \"properties\": false }";
+  FileFormatManager::instance().readFile(
+    molecule, std::string(AVOGADRO_DATA) + "/data/cjson/ethane.cjson");
+  std::string cjson;
+  FileFormatManager::instance().writeString(molecule, cjson, "cjson", options);
+
+  std::cout << cjson << std::endl;
+
+  // See if they still have data in them now they have gone back and forth...
+  Molecule cjsonMol;
+  FileFormatManager::instance().readString(cjsonMol, cjson, "cjson");
+
+  // If the option was respected these should now be empty.
+  EXPECT_EQ(cjsonMol.data("name").type(), Variant::Null);
+  EXPECT_EQ(cjsonMol.data("name").toString(), "");
+  EXPECT_EQ(cjsonMol.data("inchi").type(), Variant::Null);
+  EXPECT_EQ(cjsonMol.data("inchi").toString(), "");
+}
+
+class Format : public FileFormat
+{
+private:
+  Operations m_ops;
+  std::string m_ident;
+
+public:
+  Format(const std::string& ident, Operations ops)
+    : FileFormat(), m_ops(ops), m_ident(ident)
+  {
+  }
+  Operations supportedOperations() const override { return m_ops; }
+  bool read(std::istream&, Molecule&) override { return false; }
+  bool write(std::ostream&, const Molecule&) override { return false; }
+  FileFormat* newInstance() const override
+  {
+    return new Format(m_ident, m_ops);
+  }
+  std::string identifier() const override { return m_ident; }
+  std::string name() const override { return m_ident; }
+  std::string description() const override { return m_ident; }
+  std::string specificationUrl() const override { return ""; }
+  std::vector<std::string> fileExtensions() const override
+  {
+    std::vector<std::string> result;
+    result.emplace_back("asdfjkl;");
+    return result;
+  }
+  std::vector<std::string> mimeTypes() const override
+  {
+    std::vector<std::string> result;
+    result.emplace_back("chemical/x-doodie");
+    return result;
+  }
+};
+
+TEST(FileFormatManagerTest, filtering)
+{
+  // Add formats with various supported operations
+  Format readOnly("readOnly", Format::All ^ Format::Write);
+  Format writeOnly("writeOnly", Format::All ^ Format::Read);
+  FileFormatManager::registerFormat(readOnly.newInstance());
+  FileFormatManager::registerFormat(writeOnly.newInstance());
+
+  FileFormatManager& manager = FileFormatManager::instance();
+  FileFormat* format = nullptr;
+
+  format = manager.newFormatFromFileExtension("asdfjkl;", Format::Read);
+  ASSERT_NE(format, nullptr);
+  EXPECT_EQ(format->identifier(), "readOnly"s);
+  delete format;
+
+  format = manager.newFormatFromFileExtension("asdfjkl;", Format::Write);
+  ASSERT_NE(format, nullptr);
+  EXPECT_EQ(format->identifier(), "writeOnly"s);
+  delete format;
+
+  format = manager.newFormatFromMimeType("chemical/x-doodie", Format::Write);
+  ASSERT_NE(format, nullptr);
+  EXPECT_EQ(format->identifier(), "writeOnly"s);
+  delete format;
+
+  format = manager.newFormatFromMimeType("chemical/x-doodie", Format::Read);
+  ASSERT_NE(format, nullptr);
+  EXPECT_EQ(format->identifier(), "readOnly"s);
+  delete format;
+}
+
+TEST(FileFormatManagerTest, unregister)
+{
+  Format testFormat("testingFormat", FileFormat::All);
+  FileFormatManager::registerFormat(testFormat.newInstance());
+
+  FileFormatManager& manager = FileFormatManager::instance();
+  FileFormat* format = manager.newFormatFromIdentifier("testingFormat");
+  ASSERT_NE(format, nullptr);
+  EXPECT_EQ(format->identifier(), "testingFormat"s);
+  delete format;
+
+  EXPECT_TRUE(FileFormatManager::unregisterFormat("testingFormat"));
+  format = manager.newFormatFromIdentifier("testingFormat");
+  ASSERT_TRUE(format == nullptr);
+}
+
+// Uninstalling a script file-format plugin unregisters its format, and the
+// next .out/.log file read lists every format through fileFormats(). The
+// removed format's slot must be skipped, not dereferenced.
+TEST(FileFormatManagerTest, fileFormatsSkipsUnregistered)
+{
+  Format testFormat("removedFormat", FileFormat::All);
+  ASSERT_TRUE(FileFormatManager::registerFormat(testFormat.newInstance()));
+  ASSERT_TRUE(FileFormatManager::unregisterFormat("removedFormat"));
+
+  FileFormatManager& manager = FileFormatManager::instance();
+  const std::vector<const FileFormat*> all = manager.fileFormats();
+  EXPECT_FALSE(all.empty());
+  for (const FileFormat* f : all) {
+    ASSERT_NE(f, nullptr);
+    EXPECT_NE(f->identifier(), "removedFormat"s);
+  }
+  for (const FileFormat* f :
+       manager.fileFormats(FileFormat::File | FileFormat::Read))
+    ASSERT_NE(f, nullptr);
+}

@@ -1,0 +1,355 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "cylindergeometry.h"
+
+#include "camera.h"
+#include "scene.h"
+#include "visitor.h"
+
+#include "bufferobject.h"
+#include "vertexarrayobject.h"
+
+#include "shader.h"
+#include "shaderprogram.h"
+
+namespace {
+#include "cylinders_fs.h"
+#include "cylinders_vs.h"
+} // namespace
+
+#include "avogadrogl.h"
+
+#include <avogadro/core/matrix.h>
+
+#include <algorithm>
+#include <cmath>
+#include <iostream>
+
+using std::cout;
+using std::endl;
+
+namespace Avogadro::Rendering {
+
+class CylinderGeometry::Private
+{
+public:
+  Private() {}
+
+  BufferObject vbo;
+  BufferObject ibo;
+  VertexArrayObject vao;
+
+  inline static Shader* vertexShader = nullptr;
+  inline static Shader* fragmentShader = nullptr;
+  inline static ShaderProgram* program = nullptr;
+
+  size_t numberOfVertices;
+  size_t numberOfIndices;
+};
+
+CylinderGeometry::CylinderGeometry() : m_dirty(false), d(new Private)
+{
+  setRenderPass(SolidPass);
+}
+
+CylinderGeometry::CylinderGeometry(const CylinderGeometry& other)
+  : Drawable(other), m_cylinders(other.m_cylinders), m_indices(other.m_indices),
+    m_indexMap(other.m_indexMap), m_dirty(true), d(new Private)
+{
+  setRenderPass(SolidPass);
+}
+
+CylinderGeometry::~CylinderGeometry()
+{
+  delete d;
+}
+
+void CylinderGeometry::accept(Visitor& visitor)
+{
+  visitor.visit(*this);
+}
+
+void CylinderGeometry::tessellate(std::vector<ColorNormalVertex>& vertices,
+                                  std::vector<unsigned int>& indices) const
+{
+  // Set some defaults for our cylinders.
+  constexpr unsigned int resolution = 8; // points per circle
+  constexpr double resolutionRadians =
+    2.0 * M_PI / static_cast<double>(resolution);
+
+  // cos(j * theta) and sin(j * theta), shared by every cylinder.
+  float cosines[resolution];
+  float sines[resolution];
+  for (unsigned int j = 0; j < resolution; ++j) {
+    cosines[j] = static_cast<float>(std::cos(j * resolutionRadians));
+    sines[j] = static_cast<float>(std::sin(j * resolutionRadians));
+  }
+
+  const size_t count = std::min(m_indices.size(), m_cylinders.size());
+  vertices.clear();
+  indices.clear();
+  // 2 vertices per point on the circle; 2 triangles per segment.
+  vertices.reserve(count * 2 * resolution);
+  indices.reserve(count * 6 * resolution);
+
+  for (size_t i = 0; i < count; ++i) {
+    const CylinderColor& cylinder = m_cylinders[i];
+    const Vector3f& position1 = cylinder.end1;
+    const Vector3f& position2 = cylinder.end2;
+    const Vector3f direction = (position2 - position1).normalized();
+    const float radius = cylinder.radius;
+
+    // Rotating u about the unit vector d by j * theta (Rodrigues, with
+    // d . u == 0) gives cos(j theta) u + sin(j theta) (d x u).
+    const Vector3f u = direction.unitOrthogonal() * radius;
+    const Vector3f w = direction.cross(u);
+
+    // Cylinder
+    ColorNormalVertex vert(cylinder.color, -direction, position1);
+    ColorNormalVertex vert2(cylinder.color2, -direction, position1);
+    const auto tubeStart = static_cast<unsigned int>(vertices.size());
+    for (unsigned int j = 0; j < resolution; ++j) {
+      const Vector3f radial = cosines[j] * u + sines[j] * w;
+      vert.normal = radial;
+      vert.vertex = position1 + radial;
+      vertices.push_back(vert);
+      vert2.normal = vert.normal;
+      vert2.vertex = position2 + radial;
+      vertices.push_back(vert2);
+    }
+    // Now to stitch it together.
+    for (unsigned int j = 0; j < resolution; ++j) {
+      unsigned int r1 = j + j;
+      unsigned int r2 = (j != 0 ? r1 : resolution + resolution) - 2;
+      indices.push_back(tubeStart + r1);
+      indices.push_back(tubeStart + r1 + 1);
+      indices.push_back(tubeStart + r2);
+
+      indices.push_back(tubeStart + r2);
+      indices.push_back(tubeStart + r1 + 1);
+      indices.push_back(tubeStart + r2 + 1);
+    }
+  }
+}
+
+void CylinderGeometry::update()
+{
+  if (m_indices.empty() || m_cylinders.empty())
+    return;
+
+  // Build and link the shader if it has not been used yet.
+  // Must be done before VAO setup since we need the program for attribute
+  // setup.
+  if (d->vertexShader == nullptr) {
+    d->vertexShader = new Shader;
+    d->vertexShader->setType(Shader::Vertex);
+    d->vertexShader->setSource(cylinders_vs);
+    d->fragmentShader = new Shader;
+    d->fragmentShader->setType(Shader::Fragment);
+    d->fragmentShader->setSource(cylinders_fs);
+    if (!d->vertexShader->compile())
+      cout << d->vertexShader->error() << '\n';
+    if (!d->fragmentShader->compile())
+      cout << d->fragmentShader->error() << '\n';
+
+    if (d->program == nullptr)
+      d->program = new ShaderProgram;
+
+    d->program->attachShader(*d->vertexShader);
+    d->program->attachShader(*d->fragmentShader);
+    if (!d->program->link())
+      cout << d->program->error() << '\n';
+  }
+
+  // Check if the VBOs are ready, if not get them ready.
+  if (!d->vbo.ready() || m_dirty) {
+    std::vector<ColorNormalVertex> cylinderVertices;
+    std::vector<unsigned int> cylinderIndices;
+    tessellate(cylinderVertices, cylinderIndices);
+
+    d->vbo.upload(cylinderVertices, BufferObject::ArrayBuffer);
+    d->ibo.upload(cylinderIndices, BufferObject::ElementArrayBuffer);
+
+    // Set up VAO with vertex attribute bindings (OpenGL 4.0 core profile)
+    d->vao.bind();
+    d->vbo.bind();
+    d->ibo.bind();
+
+    ShaderProgram* program = d->program;
+    if (!program->enableAttributeArray("vertex"))
+      cout << program->error() << '\n';
+    if (!program->useAttributeArray("vertex", ColorNormalVertex::vertexOffset(),
+                                    sizeof(ColorNormalVertex), FloatType, 3,
+                                    ShaderProgram::NoNormalize)) {
+      cout << program->error() << '\n';
+    }
+    if (!program->enableAttributeArray("color"))
+      cout << program->error() << '\n';
+    if (!program->useAttributeArray("color", ColorNormalVertex::colorOffset(),
+                                    sizeof(ColorNormalVertex), UCharType, 3,
+                                    ShaderProgram::Normalize)) {
+      cout << program->error() << '\n';
+    }
+    if (!program->enableAttributeArray("normal"))
+      cout << program->error() << '\n';
+    if (!program->useAttributeArray("normal", ColorNormalVertex::normalOffset(),
+                                    sizeof(ColorNormalVertex), FloatType, 3,
+                                    ShaderProgram::NoNormalize)) {
+      cout << program->error() << '\n';
+    }
+
+    d->vao.release();
+
+    d->numberOfVertices = cylinderVertices.size();
+    d->numberOfIndices = cylinderIndices.size();
+
+    m_dirty = false;
+  }
+}
+
+void CylinderGeometry::render(const Camera& camera)
+{
+  if (m_indices.empty() || m_cylinders.empty())
+    return;
+
+  // Prepare the VBOs, IBOs, VAO, and shader program if necessary.
+  update();
+
+  if (!d->program->bind())
+    cout << d->program->error() << '\n';
+
+  // Bind the VAO (captures all vertex attribute state)
+  d->vao.bind();
+
+  // Set up our uniforms (model-view and projection matrices right now).
+  if (!d->program->setUniformValue("modelView", camera.modelView().matrix())) {
+    cout << d->program->error() << '\n';
+  }
+  if (!d->program->setUniformValue("projection",
+                                   camera.projection().matrix())) {
+    cout << d->program->error() << '\n';
+  }
+  if (!d->program->setUniformValue("opacity", m_opacity)) {
+    cout << d->program->error() << '\n';
+  }
+  Matrix3f normalMatrix = camera.modelView().linear().inverse().transpose();
+  if (!d->program->setUniformValue("normalMatrix", normalMatrix))
+    std::cout << d->program->error() << '\n';
+
+  // Render the loaded cylinders using the shader and VAO.
+  glDrawRangeElements(GL_TRIANGLES, 0, static_cast<GLuint>(d->numberOfVertices),
+                      static_cast<GLsizei>(d->numberOfIndices), GL_UNSIGNED_INT,
+                      reinterpret_cast<const GLvoid*>(0));
+
+  d->vao.release();
+  d->program->release();
+}
+
+std::multimap<float, Identifier> CylinderGeometry::hits(
+  const Vector3f& rayOrigin, const Vector3f& rayEnd,
+  const Vector3f& rayDirection) const
+{
+  std::multimap<float, Identifier> result;
+
+  for (size_t i = 0; i < m_cylinders.size(); ++i) {
+    const CylinderColor& cylinder = m_cylinders[i];
+
+    // Check for cylinder intersection with the ray.
+    Vector3f ao = rayOrigin - cylinder.end1;
+    Vector3f ab = cylinder.end2 - cylinder.end1;
+    Vector3f aoxab = ao.cross(ab);
+    Vector3f vxab = rayDirection.cross(ab);
+
+    float A = vxab.dot(vxab);
+    float B = 2.0f * vxab.dot(aoxab);
+    float C =
+      aoxab.dot(aoxab) - ab.dot(ab) * (cylinder.radius * cylinder.radius);
+    float D = B * B - 4.0f * A * C;
+
+    // no intersection
+    if (D < 0.0f)
+      continue;
+
+    float t = std::min((-B + std::sqrt(D)) / (2.0f * A),
+                       (-B - std::sqrt(D)) / (2.0f * A));
+
+    Vector3f ip = rayOrigin + (rayDirection * t);
+    Vector3f ip1 = ip - cylinder.end1;
+    Vector3f ip2 = ip - (cylinder.end1 + ab);
+
+    // intersection below base or above top of the cylinder
+    if (ip1.dot(ab) < 0.0f || ip2.dot(ab) > 0.0f)
+      continue;
+
+    // Test for clipping
+    Vector3f distance = ip - rayOrigin;
+    if (distance.dot(rayDirection) < 0.0f ||
+        (ip - rayEnd).dot(rayDirection) > 0.0f)
+      continue;
+
+    Identifier id;
+    id.molecule = m_identifier.molecule;
+    id.type = m_identifier.type;
+    id.index = i;
+    // Cylinders added without an explicit index have no entry (or the
+    // MaxIndex sentinel): they are identified by their position.
+    if (i < m_indexMap.size() && m_indexMap[i] != MaxIndex)
+      id.index = m_indexMap[i];
+    if (id.type != InvalidType) {
+      float depth = distance.norm();
+      result.insert(std::pair<float, Identifier>(depth, id));
+    }
+  }
+
+  return result;
+}
+
+void CylinderGeometry::addCylinder(const Vector3f& pos1, const Vector3f& pos2,
+                                   float radius, const Vector3ub& color)
+{
+  addCylinder(pos1, pos2, radius, color, color);
+}
+
+void CylinderGeometry::addCylinder(const Vector3f& pos1, const Vector3f& pos2,
+                                   float radius, const Vector3ub& colorStart,
+                                   const Vector3ub& colorEnd)
+{
+  m_dirty = true;
+  m_cylinders.emplace_back(pos1, pos2, radius, colorStart, colorEnd);
+  m_indices.push_back(m_indices.size());
+}
+
+void CylinderGeometry::addCylinder(const Vector3f& pos1, const Vector3f& pos2,
+                                   float radius, const Vector3ub& color,
+                                   size_t index)
+{
+  setIndex(m_cylinders.size(), index);
+  addCylinder(pos1, pos2, radius, color, color);
+}
+
+void CylinderGeometry::addCylinder(const Vector3f& pos1, const Vector3f& pos2,
+                                   float radius, const Vector3ub& colorStart,
+                                   const Vector3ub& colorEnd, size_t index)
+{
+  setIndex(m_cylinders.size(), index);
+  addCylinder(pos1, pos2, radius, colorStart, colorEnd);
+}
+
+void CylinderGeometry::setIndex(size_t cylinder, size_t index)
+{
+  if (m_indexMap.size() <= cylinder)
+    m_indexMap.resize(cylinder + 1, MaxIndex);
+  m_indexMap[cylinder] = index;
+}
+
+void CylinderGeometry::clear()
+{
+  m_cylinders.clear();
+  m_indices.clear();
+  m_indexMap.clear();
+}
+
+} // namespace Avogadro::Rendering

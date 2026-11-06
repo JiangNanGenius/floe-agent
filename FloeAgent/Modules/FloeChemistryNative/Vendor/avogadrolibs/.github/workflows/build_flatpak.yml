@@ -1,0 +1,120 @@
+name: Build Flatpak
+
+on:
+  push:
+    # Bot branches get built by their pull_request event; building the push
+    # too just doubles the jobs. The tags line is required: with only a
+    # branch filter, tag pushes (release builds) would stop triggering.
+    branches-ignore:
+      - 'dependabot/**'
+      - 'update-i18n-templates'
+    tags:
+      - '**'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flatpak:
+    name: "Flatpak"
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Install dependencies
+      run: sudo apt update -qq && sudo apt install -y -qq flatpak
+
+    - name: Configure flatpak
+      run: flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+    - name: Install flatpak-builder
+      run: flatpak --user install --or-update --noninteractive flathub org.flatpak.Builder
+
+    - name: Configure git
+      run: git config --global protocol.file.allow always
+      # Have to do this because for a while git's handling of submodules was broken
+      # See https://github.com/flatpak/flatpak-builder/issues/495
+
+    - name: Checkout openchemistry
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: openchemistry/openchemistry
+        submodules: false
+        path: openchemistry
+
+    - name: Checkout avogadroapp
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: openchemistry/avogadroapp
+        path: openchemistry/avogadroapp
+
+    - name: Checkout avogadrolibs
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        path: openchemistry/avogadrolibs
+
+    - name: Checkout i18n
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: openchemistry/avogadro-i18n
+        path: openchemistry/avogadro-i18n
+
+    - name: Checkout avogadrogenerators
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: openchemistry/avogenerators
+        path: openchemistry/avogadrogenerators
+
+    - name: Checkout crystals
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: openchemistry/crystals
+        path: openchemistry/crystals
+
+    - name: Checkout fragments
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: openchemistry/fragments
+        path: openchemistry/fragments
+
+    - name: Checkout molecules
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: openchemistry/molecules
+        path: openchemistry/molecules
+
+    - name: Checkout Flathub shared-modules
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: flathub/shared-modules
+        path: shared-modules
+
+    - name: Set up tmate session
+      if: failure()
+      uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113 # v3.24
+      timeout-minutes: 60
+
+    - name: Move manifest
+      run: mv openchemistry/avogadroapp/flatpak/org.openchemistry.Avogadro2.yaml ./
+
+    - name: Build with flatpak-builder
+      run: dbus-run-session flatpak run org.flatpak.Builder --force-clean --user --install-deps-from=flathub --arch=x86_64 --default-branch=test --repo=repo builddir org.openchemistry.Avogadro2.yaml
+
+    - name: Create bundle
+      run: flatpak build-bundle repo Avogadro2.flatpak org.openchemistry.Avogadro2 test
+
+    - name: Upload bundle
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        path: Avogadro2.flatpak
+
+    - name: Cleanup
+      if: ${{ always() }} # To ensure this step runs even when earlier steps fail
+      shell: bash
+      run: |
+        ls -la ./
+        rm -rf ./* || true
+        rm -rf ./.??* || true
+        ls -la ./

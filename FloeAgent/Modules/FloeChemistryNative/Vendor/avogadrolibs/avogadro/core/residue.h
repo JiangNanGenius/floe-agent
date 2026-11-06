@@ -1,0 +1,154 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#ifndef AVOGADRO_CORE_RESIDUE_H
+#define AVOGADRO_CORE_RESIDUE_H
+
+#include "avogadrocoreexport.h"
+
+#include "avogadrocore.h"
+
+#include <limits>
+#include <map>
+#include <string>
+
+#include "vector.h"
+
+namespace Avogadro::Core {
+
+class Atom;
+class Molecule;
+
+/**
+ * @class Residue residue.h <avogadro/core/residue.h>
+ * @brief The Residue class represents a chemical residue, used commonly in the
+ * PDB format.
+ */
+class AVOGADROCORE_EXPORT Residue
+{
+public:
+  /** Type for atom name map. */
+  using AtomNameMap = std::map<std::string, Atom>;
+
+  // using codes from MMTF specification
+  // https://github.com/rcsb/mmtf/blob/master/spec.md#secstructlist
+  enum SecondaryStructure
+  {
+    piHelix = 0,    // DSSP "I"
+    bend = 1,       // DSSP "S"
+    alphaHelix = 2, // DSSP "H"
+    betaSheet = 3,  // DSSP "E"
+    helix310 = 4,   // DSSP "G"
+    betaBridge = 5, // DSSP "B"
+    turn = 6,       // DSSP "T"
+    coil = 7,       // DSSP "C"
+    maybeBeta = -3, // potential beta strand
+    undefined = -1
+  };
+
+  /** Creates a new, empty residue. */
+  Residue() = default;
+  Residue(std::string& name);
+  Residue(std::string& name, Index& number);
+  Residue(std::string& name, Index& number, char& id);
+
+  Residue(const Residue& other);
+
+  Residue& operator=(Residue other);
+
+  virtual ~Residue() = default;
+
+  std::string residueName() const { return m_residueName; }
+
+  void setResidueName(std::string& name) { m_residueName = name; }
+
+  Index residueId() const { return m_residueId; }
+
+  void setResidueId(Index& number) { m_residueId = number; }
+
+  char chainId() const { return m_chainId; }
+
+  void setChainId(const char& id) { m_chainId = id; }
+
+  SecondaryStructure secondaryStructure() const { return m_secondaryStructure; }
+
+  void setSecondaryStructure(const SecondaryStructure& ss)
+  {
+    m_secondaryStructure = ss;
+  }
+
+  /** Adds an atom to the residue class */
+  void addResidueAtom(const std::string& name, const Atom& atom);
+
+  /** \return a vector containing the atoms added to the residue */
+  std::vector<Atom> residueAtoms() const;
+
+  /** \return the atom map for the residue */
+  AtomNameMap& atomNameMap() { return m_atomNameMap; }
+
+  /** Sets bonds to atoms in the residue based on data from residuedata header
+   */
+  void resolveResidueBonds(Molecule& mol);
+
+  /**
+   * \return the atom with the name specified (e.g., "CA")
+   */
+  Atom atomByName(std::string name) const;
+  /**
+   * \return the atomic number of the atom with the name specified (e.g., "CA" =
+   * "C")
+   */
+  int atomicNumber(std::string name) const;
+
+  /**
+   * Look up an atom name in the residue dictionary, without needing a Residue
+   * instance.
+   * \return the atomic number of atom @p atomName in residue type
+   * @p residueName (e.g., "CYS", "SG" = 16), or 0 if either is unknown.
+   */
+  static int atomicNumberFromResidueData(const std::string& residueName,
+                                         const std::string& atomName);
+
+  /**
+   * \return the name of @p atom or an empty string if not in this residue
+   */
+  std::string atomName(const Atom atom) const;
+
+  /**
+   * \return the name of atom @p index or an empty string if not in this residue
+   */
+  std::string atomName(const Index index) const;
+
+  bool hasAtomByIndex(Index index) const;
+  /** Set whether this residue is a "HET" / "HETATOM" ligand
+   */
+  void setHeterogen(bool heterogen) { m_heterogen = heterogen; }
+
+  /** \return is this residue a heterogen (HET / HETATM)
+   */
+  bool isHeterogen() const { return m_heterogen; }
+
+  /** Set a custom color for this residue
+   */
+  void setColor(const Vector3ub color);
+
+  /** \return the color set for this residue, or a default from the chain id
+   */
+  Vector3ub color() const;
+
+protected:
+  std::string m_residueName;
+  Index m_residueId = std::numeric_limits<Index>::max();
+  char m_chainId = 'A';
+  AtomNameMap m_atomNameMap;
+  bool m_heterogen = false;
+  Vector3ub m_color = Vector3ub(0, 0, 0);
+  bool m_customColorSet = false;
+  SecondaryStructure m_secondaryStructure = undefined;
+};
+
+} // namespace Avogadro::Core
+
+#endif // AVOGADRO_CORE_RESIDUE_H

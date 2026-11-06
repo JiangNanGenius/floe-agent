@@ -1,0 +1,152 @@
+find_package(Eigen3 REQUIRED)
+
+# configure the version header
+configure_file("${PROJECT_SOURCE_DIR}/cmake/version.h.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/version.h")
+
+# Separate out header only components into an interface library.
+add_library(Headers INTERFACE)
+add_library(Avogadro::Headers ALIAS Headers)
+target_include_directories(Headers
+  INTERFACE
+    "$<INSTALL_INTERFACE:${INSTALL_INCLUDE_DIR}>")
+
+target_sources(Headers PUBLIC
+  FILE_SET HEADERS
+  BASE_DIRS ${PROJECT_SOURCE_DIR}
+  FILES
+    angletools.h
+    angleiterator.h
+  aromaticity.h
+    array.h
+    avogadrocore.h
+    color3f.h
+    constraint.h
+    contrastcolor.h
+    coordinateset.h
+    matrix.h
+    types.h
+    utilities.h
+    vector.h
+)
+target_link_libraries(Headers INTERFACE Eigen3::Eigen)
+# utilities.h includes the export header that is generated for Core below.
+target_include_directories(Headers
+  INTERFACE
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>")
+install(TARGETS Headers
+  EXPORT "AvogadroLibsTargets"
+  FILE_SET HEADERS DESTINATION "${INSTALL_INCLUDE_DIR}")
+
+# Now add the main core library for Avogadro.
+add_library(Core)
+
+avogadro_headers(Core
+  atom.h
+  atomtyper.h
+  atomtyper-inline.h
+  atomutilities.h
+  bondorderperception.h
+  basisset.h
+  bond.h
+  conformerquantity.h
+  coordinateblockgenerator.h
+  crystaltools.h
+  cube.h
+  dihedraliterator.h
+  elements.h
+  gaussianset.h
+  gaussiansettools.h
+  graph.h
+  internalcoordinates.h
+  kekulize.h
+  layer.h
+  layermanager.h
+  moleculeinfo.h
+  mesh.h
+  molecule.h
+  mutex.h
+  nameatomtyper.h
+  neighborperceiver.h
+  propertymap.h
+  residue.h
+  ringperceiver.h
+  secondarystructure.h
+  slaterset.h
+  slatersettools.h
+  spacegroups.h
+  stereo.h
+  symbolatomtyper.h
+  unitcell.h
+  variant.h
+  variant-inline.h
+  variantmap.h
+  "${CMAKE_CURRENT_BINARY_DIR}/version.h"
+)
+
+target_sources(Core PRIVATE
+  angleiterator.cpp
+  aromaticity.cpp
+  atomutilities.cpp
+  bondordersolver_p.cpp
+  bondordersolver_p.h
+  conformerquantity.cpp
+  coordinateblockgenerator.cpp
+  crystaltools.cpp
+  cube.cpp
+  elements.cpp
+  dihedraliterator.cpp
+  gaussianset.cpp
+  gaussiansettools.cpp
+  graph.cpp
+  internalcoordinates.cpp
+  kekulize.cpp
+  layer.cpp
+  layermanager.cpp
+  mesh.cpp
+  mdlvalence_p.h
+  molecule.cpp
+  mutex.cpp
+  nameatomtyper.cpp
+  neighborperceiver.cpp
+  propertymap.cpp
+  residue.cpp
+  ringperceiver.cpp
+  secondarystructure.cpp
+  slaterset.cpp
+  slatersettools.cpp
+  spacegroups.cpp
+  stereo.cpp
+  symbolatomtyper.cpp
+  unitcell.cpp
+  utilities.cpp
+  variantmap.cpp
+  version.cpp
+)
+
+# We currently build core without shared_mutex for Python wheels.
+if(NOT PYTHON_WHEEL_BUILD)
+  avogadro_headers(Core sharedmutex.h)
+  target_sources(Core PRIVATE sharedmutex.cpp)
+endif()
+
+if(USE_SPGLIB)
+  find_package(Spglib REQUIRED)
+  avogadro_headers(Core avospglib.h)
+  target_sources(Core PRIVATE avospglib.cpp)
+  target_link_libraries(Core PRIVATE Spglib::symspg)
+endif()
+
+# The std::shared_mutex class needs pthreads on Linux.
+if(UNIX AND NOT APPLE AND NOT PYTHON_WHEEL_BUILD)
+  find_package(Threads)
+  target_link_libraries(Core PRIVATE ${CMAKE_THREAD_LIBS_INIT})
+endif()
+
+avogadro_add_library(Core)
+# fast_float is header-only and used only in utilities.cpp. Keep it out of the
+# exported link interface: a static Avogadro::Core would otherwise list it for
+# its consumers, and it is in no export set.
+target_link_libraries(Core
+  PUBLIC Avogadro::Headers
+  PRIVATE "$<BUILD_INTERFACE:FastFloat::fast_float>")

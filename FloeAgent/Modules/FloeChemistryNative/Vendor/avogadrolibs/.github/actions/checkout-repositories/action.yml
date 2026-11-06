@@ -1,0 +1,68 @@
+name: 'Checkout Avogadro Repositories'
+description: 'Checks out all required Avogadro repositories'
+inputs:
+  checkout-submodules:
+    description: 'Whether to checkout submodules for openchemistry'
+    required: false
+    default: 'recursive'
+  checkout-avogadrolibs-path:
+    description: 'Path for avogadrolibs checkout'
+    required: false
+    default: 'openchemistry/avogadrolibs'
+
+runs:
+  using: "composite"
+  steps:
+  - name: Checkout openchemistry
+    uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    with:
+      repository: openchemistry/openchemistry
+      submodules: ${{ inputs.checkout-submodules }}
+      path: openchemistry
+
+  - name: Checkout avogadroapp
+    uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    with:
+      repository: openchemistry/avogadroapp
+      path: openchemistry/avogadroapp
+
+  - name: Checkout avogadrolibs
+    uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    with:
+      path: openchemistry/avogadrolibs
+
+  - name: Checkout i18n
+    uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    with:
+      repository: openchemistry/avogadro-i18n
+      path: openchemistry/avogadro-i18n
+
+  - name: Checkout avogadrogenerators
+    uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    with:
+      repository: openchemistry/avogenerators
+      path: openchemistry/avogenerators
+
+  - name: Checkout crystals
+    uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    with:
+      repository: openchemistry/crystals
+      path: openchemistry/crystals
+
+  - name: Checkout fragments
+    uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    with:
+      repository: openchemistry/fragments
+      path: openchemistry/fragments
+
+  - name: Checkout molecules
+    uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    with:
+      repository: openchemistry/molecules
+      path: openchemistry/molecules
+
+  - name: Checkout data files
+    uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    with:
+      repository: openchemistry/avogadrodata
+      path: openchemistry/avogadrodata

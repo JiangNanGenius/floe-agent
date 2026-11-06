@@ -1,0 +1,604 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "cartoons.h"
+
+#include "cartoondetail.h"
+
+#include <QtCore/QPointer>
+#include <QtCore/QSettings>
+#include <QtWidgets/QCheckBox>
+#include <QtWidgets/QVBoxLayout>
+#include <QtWidgets/QWidget>
+#include <avogadro/core/molecule.h>
+#include <avogadro/core/residue.h>
+#include <avogadro/qtgui/rwmolecule.h>
+#include <avogadro/rendering/beziergeometry.h>
+#include <avogadro/rendering/bsplinegeometry.h>
+#include <avogadro/rendering/cartoongeometry.h>
+#include <avogadro/rendering/cylindergeometry.h>
+#include <avogadro/rendering/geometrynode.h>
+#include <avogadro/rendering/groupnode.h>
+#include <avogadro/rendering/spheregeometry.h>
+
+#include <functional>
+#include <limits>
+#include <utility>
+#include <vector>
+
+namespace Avogadro::QtPlugins {
+
+using Core::Atom;
+using Core::AtomicNumber;
+using Core::Residue;
+using QtGui::Molecule;
+using QtGui::PluginLayerManager;
+using Rendering::BezierGeometry;
+using Rendering::BSplineGeometry;
+using Rendering::Cartoon;
+using Rendering::CylinderGeometry;
+using Rendering::GeometryNode;
+using Rendering::SphereGeometry;
+using std::list;
+using std::map;
+using std::reference_wrapper;
+using std::vector;
+
+namespace {
+
+constexpr float kMaxProteinBackboneStep = 6.0f;
+constexpr float kMaxNucleicBackboneStep = 8.0f;
+
+struct BackboneSegmentState
+{
+  static constexpr size_t kUninitialized = std::numeric_limits<size_t>::max();
+  size_t renderGroup = kUninitialized;
+  Vector3f position = Vector3f::Zero();
+  size_t residueId = 0;
+  char chainId = '\0';
+};
+
+bool needsBackboneBreak(const BackboneSegmentState& previous,
+                        const Residue& residue, const Vector3f& position,
+                        float maxStep)
+{
+  if (previous.renderGroup == BackboneSegmentState::kUninitialized)
+    return true;
+  if (previous.chainId != residue.chainId())
+    return true;
+  if (residue.residueId() <= previous.residueId)
+    return true;
+
+  return (position - previous.position).norm() > maxStep;
+}
+
+size_t backboneSegmentGroup(
+  std::map<size_t, BackboneSegmentState>& previousSegments, size_t sourceGroup,
+  const Residue& residue, const Vector3f& position, float maxStep,
+  size_t& nextGroup)
+{
+  auto& previous = previousSegments[sourceGroup];
+  if (needsBackboneBreak(previous, residue, position, maxStep)) {
+    previous.renderGroup = nextGroup++;
+  }
+
+  previous.position = position;
+  previous.residueId = residue.residueId();
+  previous.chainId = residue.chainId();
+  return previous.renderGroup;
+}
+
+} // namespace
+
+struct LayerCartoon : Core::LayerData
+{
+  // The panel is parented elsewhere (a dock), which may delete it first.
+  QPointer<QWidget> widget;
+  // The defaults of the QSettings fallbacks in the constructor below, for the
+  // constructor that is handed a saved string.
+  bool showBackbone = false;
+  bool showTrace = false;
+  bool showTube = false;
+  bool showRibbon = false;
+  bool showSimpleCartoon = false;
+  bool showCartoon = true;
+  bool showRope = false;
+
+  // Calls f(style) for every curve style that is shown, in drawing order.
+  template <class F>
+  void forEachCurveStyle(F&& f) const
+  {
+    if (showTrace)
+      f(CartoonStyle::Trace);
+    if (showTube)
+      f(CartoonStyle::Tube);
+    if (showRibbon)
+      f(CartoonStyle::Ribbon);
+    if (showSimpleCartoon)
+      f(CartoonStyle::SimpleCartoon);
+    if (showCartoon)
+      f(CartoonStyle::Cartoon);
+    if (showRope)
+      f(CartoonStyle::Rope);
+  }
+
+  bool anyShown() const
+  {
+    bool any = showBackbone;
+    forEachCurveStyle([&any](CartoonStyle) { any = true; });
+    return any;
+  }
+
+  using JumpTable = void (Cartoons::*)(bool);
+  JumpTable jumpTable[7];
+
+  std::string serialize() final
+  {
+    return boolToString(showBackbone) + " " + boolToString(showTrace) + " " +
+           boolToString(showTube) + " " + boolToString(showRibbon) + " " +
+           boolToString(showSimpleCartoon) + " " + boolToString(showCartoon) +
+           " " + boolToString(showRope);
+  }
+  // A field missing from the text keeps its current value, so an empty or
+  // truncated save leaves the remaining options alone instead of turning
+  // them off (or, once a token was read, repeating the last one).
+  void deserialize(std::string text) final
+  {
+    std::stringstream ss(text);
+    std::string aux;
+    if (ss >> aux)
+      showBackbone = stringToBool(aux);
+    if (ss >> aux)
+      showTrace = stringToBool(aux);
+    if (ss >> aux)
+      showTube = stringToBool(aux);
+    if (ss >> aux)
+      showRibbon = stringToBool(aux);
+    if (ss >> aux)
+      showSimpleCartoon = stringToBool(aux);
+    if (ss >> aux)
+      showCartoon = stringToBool(aux);
+    if (ss >> aux)
+      showRope = stringToBool(aux);
+  }
+
+  void setupWidget(Cartoons* slot)
+  {
+    if (!widget) {
+      widget = new QWidget(qobject_cast<QWidget*>(slot->parent()));
+      auto* v = new QVBoxLayout;
+      QStringList boxesText;
+      boxesText << QObject::tr("Backbone", "protein rendering style")
+                << QObject::tr("Trace", "protein rendering style")
+                << QObject::tr("Tube", "protein rendering style")
+                << QObject::tr("Ribbon", "protein rendering style")
+                << QObject::tr("Simple Cartoon", "protein rendering style")
+                << QObject::tr("Cartoon", "protein rendering style")
+                << QObject::tr("Rope", "protein rendering style");
+      vector<reference_wrapper<bool>> boxesBools = {
+        showBackbone,      showTrace,   showTube, showRibbon,
+        showSimpleCartoon, showCartoon, showRope
+      };
+      jumpTable[0] = &Cartoons::showBackbone;
+      jumpTable[1] = &Cartoons::showTrace;
+      jumpTable[2] = &Cartoons::showTube;
+      jumpTable[3] = &Cartoons::showRibbon;
+      jumpTable[4] = &Cartoons::showSimpleCartoon;
+      jumpTable[5] = &Cartoons::showCartoon;
+      jumpTable[6] = &Cartoons::showRope;
+      for (int i = 0; i < boxesText.size(); ++i) {
+        auto* check = new QCheckBox(boxesText[i]);
+        check->setChecked(boxesBools[i]);
+        QObject::connect(check, &QCheckBox::clicked, slot, jumpTable[i]);
+        v->addWidget(check);
+      }
+      // make sure there's empty space at the bottom,s otherwise the
+      v->addStretch(1);
+      widget->setLayout(v);
+    }
+  }
+
+  LayerCartoon() : widget(nullptr)
+  {
+    QSettings settings;
+    showBackbone = settings.value("cartoon/backbone", false).toBool();
+    showCartoon = settings.value("cartoon/cartoon", true).toBool();
+    showTrace = settings.value("cartoon/trace", false).toBool();
+    showTube = settings.value("cartoon/tube", false).toBool();
+    showRibbon = settings.value("cartoon/ribbon", false).toBool();
+    showRope = settings.value("cartoon/rope", false).toBool();
+    // Read the current key, falling back to the pre-2.0 spelling; the
+    // read/write spellings previously diverged so this setting never
+    // persisted. (fallback can be dropped after a release or two)
+    showSimpleCartoon = settings
+                          .value("cartoon/simpleCartoon",
+                                 settings.value("cartoon/simplecartoon", false))
+                          .toBool();
+  }
+
+  LayerCartoon(std::string settings)
+  {
+    widget = nullptr;
+    deserialize(settings);
+  }
+
+  ~LayerCartoon() override
+  {
+    if (widget)
+      widget->deleteLater();
+  }
+
+  LayerData* clone() final { return new LayerCartoon(serialize()); }
+};
+
+struct BackboneResidue
+{
+  BackboneResidue() = default;
+  BackboneResidue(const Vector3f p, const Vector3ub& c1, const Vector3ub& c2,
+                  const size_t& g, size_t id, bool sel,
+                  Residue::SecondaryStructure sec)
+    : pos(p), color1(c1), color2(c2), group(g), residueID(id), selected(sel),
+      secondaryStructure(sec)
+
+  {
+  }
+  Vector3f pos;
+  Vector3ub color1;
+  Vector3ub color2;
+  size_t group;
+  size_t residueID;
+  bool selected;
+  Residue::SecondaryStructure secondaryStructure;
+};
+
+using AtomsPairList = list<BackboneResidue>;
+
+Cartoons::Cartoons(QObject* parent) : ScenePlugin(parent), m_group(nullptr)
+{
+  m_layerManager = PluginLayerManager(m_name);
+}
+
+void addBackBone(map<size_t, AtomsPairList>& result,
+                 map<size_t, BackboneResidue>& previousCA, const Atom& caAtom,
+                 const Vector3ub& color, Index group,
+                 Residue::SecondaryStructure sec)
+{
+  Vector3ub color1;
+  if (result.find(group) == result.end()) {
+    result[group] = AtomsPairList();
+    color1 = Vector3ub(0, 0, 0);
+  } else {
+    color1 = previousCA[group].color2;
+  }
+
+  Vector3f ca = caAtom.position3d().cast<float>();
+  BackboneResidue backBone = BackboneResidue(
+    ca, color1, color, group, caAtom.index(), caAtom.selected(), sec);
+  // the 1º insertion will always be incompleated, so fix it
+  if (result[group].size() == 1) {
+    result[group].front().color1 = color1;
+  }
+  previousCA[group] = backBone;
+  result[group].push_back(backBone);
+}
+
+map<size_t, AtomsPairList> Cartoons::getBackboneByResidues(
+  const Molecule& molecule, size_t layer)
+{
+  const auto& graph = molecule.graph();
+  map<size_t, AtomsPairList> result;
+  map<size_t, BackboneResidue> previousAtom;
+  map<size_t, BackboneSegmentState> previousSegments;
+  size_t nextGroup = 0;
+  for (const auto& residue : molecule.residues()) {
+    if (!residue.isHeterogen()) {
+      Atom caAtom = residue.atomByName("CA");
+      Atom oAtom = residue.atomByName("O");
+      if (caAtom.isValid() && oAtom.isValid() &&
+          m_layerManager.atomEnabled(layer, caAtom.index()) &&
+          m_layerManager.atomEnabled(layer, oAtom.index())) {
+        const Vector3f ca = caAtom.position3d().cast<float>();
+        size_t group = backboneSegmentGroup(
+          previousSegments, graph.getConnectedID(caAtom.index()), residue, ca,
+          kMaxProteinBackboneStep, nextGroup);
+        addBackBone(result, previousAtom, caAtom, residue.color(), group,
+                    residue.secondaryStructure());
+      } else { // maybe DNA
+        Atom c3Atom = residue.atomByName("C3'");
+        Atom o3Atom = residue.atomByName("O3'");
+        if (c3Atom.isValid() && o3Atom.isValid() &&
+            m_layerManager.atomEnabled(layer, c3Atom.index()) &&
+            m_layerManager.atomEnabled(layer, o3Atom.index())) {
+          const Vector3f c3 = c3Atom.position3d().cast<float>();
+          size_t group = backboneSegmentGroup(
+            previousSegments, graph.getConnectedID(c3Atom.index()), residue, c3,
+            kMaxNucleicBackboneStep, nextGroup);
+          addBackBone(result, previousAtom, c3Atom, residue.color(), group,
+                      residue.secondaryStructure());
+        }
+      }
+    }
+  }
+  return result;
+}
+
+map<size_t, AtomsPairList> Cartoons::getBackboneManually(
+  const Molecule& molecule, size_t layer)
+{
+  // manual filter
+  const auto& graph = molecule.graph();
+  map<size_t, AtomsPairList> result;
+  map<size_t, BackboneResidue> previousCA;
+
+  for (size_t i = 0; i < molecule.atomCount(); ++i) {
+    const auto atom = molecule.atom(i);
+    if (atom.atomicNumber() == AtomicNumber::Carbon &&
+        m_layerManager.atomEnabled(layer, atom.index())) {
+      size_t group = graph.getConnectedID(atom.index());
+      addBackBone(result, previousCA, atom, atom.color(), group,
+                  Residue::SecondaryStructure::undefined);
+    }
+  }
+  return result;
+}
+
+// The colour of the residue itself (plus the selection highlight). The curve
+// geometries colour the stretch of curve nearest a control point with that
+// point's colour. color1 is the previous residue's colour, which would put
+// every colour and selection highlight one residue downstream.
+Vector3ub ownColor(const BackboneResidue& bone)
+{
+  return bone.selected ? bone.color2 + Vector3ub(155, 0, 0) : bone.color2;
+}
+
+// A node in the scene holding one drawable of the molecule's atoms.
+template <class Drawable>
+Drawable* addDrawable(GeometryNode* geometry, const Molecule& molecule,
+                      Drawable* drawable)
+{
+  drawable->identifier().molecule = &molecule;
+  drawable->identifier().type = Rendering::AtomType;
+  geometry->addDrawable(drawable);
+  return drawable;
+}
+
+// A new curve of the given kind in its own node of @p node, with the detail
+// of @p detail.
+template <class Curve, class... Args>
+Curve* addCurve(Rendering::GroupNode& node, const Molecule& molecule,
+                const CartoonDetail& detail, bool tube, Args... args)
+{
+  auto* geometry = new GeometryNode;
+  node.addChild(geometry);
+  auto* curve = addDrawable(geometry, molecule, new Curve(args...));
+  detail.apply(*curve, tube);
+  return curve;
+}
+
+void renderBackbone(const AtomsPairList& backbone, const Molecule& molecule,
+                    Rendering::GroupNode& node, float radius)
+{
+  auto* geometry = new GeometryNode;
+  node.addChild(geometry);
+  auto* spheres = addDrawable(geometry, molecule, new SphereGeometry);
+  auto* cylinders = addDrawable(geometry, molecule, new CylinderGeometry);
+
+  for (auto it = backbone.begin(); it != backbone.end(); ++it) {
+    const auto& bone = *it;
+    auto color1 = bone.color1;
+    auto color2 = bone.color2;
+    if (bone.selected) {
+      color1 += Vector3ub(155, 0, 0);
+      color2 += Vector3ub(155, 0, 0);
+    }
+    const Vector3f& pos = bone.pos;
+    spheres->addSphere(pos, color1, radius, bone.residueID);
+    if (std::next(it) != backbone.end()) {
+      const auto& nextBone = *std::next(it);
+      const Vector3f& pos2 = nextBone.pos;
+      cylinders->addCylinder(pos, pos2, radius, color1, color2, bone.residueID);
+    }
+  }
+}
+
+// A plain tube, line or rope: Curve is BSplineGeometry or BezierGeometry.
+template <class Curve>
+void renderPlainCurve(const AtomsPairList& backbone, const Molecule& molecule,
+                      Rendering::GroupNode& node, float radius,
+                      const CartoonDetail& detail)
+{
+  auto* curve = addCurve<Curve>(node, molecule, detail, true);
+  for (const auto& bone : backbone) {
+    curve->addPoint(bone.pos, ownColor(bone), radius, bone.group,
+                    bone.residueID);
+  }
+}
+
+void renderSimpleCartoon(const AtomsPairList& backbone,
+                         const Molecule& molecule, Rendering::GroupNode& node,
+                         float radius, const CartoonDetail& detail)
+{
+  auto* cartoon = addCurve<Cartoon>(node, molecule, detail, false);
+  for (const auto& bone : backbone) {
+    cartoon->CurveGeometry::addPoint(bone.pos, ownColor(bone), radius,
+                                     bone.group, bone.residueID);
+  }
+}
+
+void renderCartoon(const AtomsPairList& backbone, const Molecule& molecule,
+                   Rendering::GroupNode& node, float radius,
+                   const CartoonDetail& detail)
+{
+  // flat ribbons (negative radius) stay two wide
+  auto* cartoon = addCurve<Cartoon>(node, molecule, detail, false,
+                                    radius * 0.2f, radius * 1.5f);
+  for (const auto& bone : backbone) {
+    cartoon->addPoint(bone.pos, ownColor(bone), bone.group, bone.residueID,
+                      bone.secondaryStructure);
+  }
+}
+
+void renderCurve(CartoonStyle style, const AtomsPairList& backbone,
+                 const Molecule& molecule, Rendering::GroupNode& node,
+                 const CartoonDetail& detail)
+{
+  switch (style) {
+    case CartoonStyle::Trace:
+      renderPlainCurve<BSplineGeometry>(backbone, molecule, node, -0.15f,
+                                        detail);
+      break;
+    case CartoonStyle::Tube:
+      renderPlainCurve<BSplineGeometry>(backbone, molecule, node, 0.15f,
+                                        detail);
+      break;
+    case CartoonStyle::Ribbon:
+      renderCartoon(backbone, molecule, node, -1.0f * Cartoon::ELIPSE_RATIO,
+                    detail);
+      break;
+    case CartoonStyle::SimpleCartoon:
+      renderSimpleCartoon(backbone, molecule, node, 1.0f, detail);
+      break;
+    case CartoonStyle::Cartoon:
+      renderCartoon(backbone, molecule, node, 1.0f, detail);
+      break;
+    case CartoonStyle::Rope:
+      renderPlainCurve<BezierGeometry>(backbone, molecule, node, 1.0f, detail);
+      break;
+  }
+}
+
+void Cartoons::process(const Molecule& molecule, Rendering::GroupNode& node)
+{
+  m_layerManager.load<LayerCartoon>();
+  m_group = &node;
+
+  // Find every backbone that is going to be drawn first: the level of detail
+  // depends on the total number of residues, not on one chain or layer.
+  struct LayerBackbones
+  {
+    const LayerCartoon* interface;
+    map<size_t, AtomsPairList> backbones;
+  };
+  vector<LayerBackbones> layers;
+  CartoonResidueCounts counts;
+  for (size_t layer = 0; layer < m_layerManager.layerCount(); ++layer) {
+    auto* interface = m_layerManager.getSetting<LayerCartoon>(layer);
+    if (interface->anyShown()) {
+      map<size_t, AtomsPairList> backbones;
+      if (!molecule.residues().empty()) {
+        backbones = getBackboneByResidues(molecule, layer);
+      }
+      if (backbones.empty()) {
+        continue; // maybe something in a different layer
+      }
+      for (const auto& group : backbones) {
+        interface->forEachCurveStyle(
+          [&](CartoonStyle style) { counts.add(style, group.second.size()); });
+      }
+      layers.push_back({ interface, std::move(backbones) });
+    }
+  }
+  const CartoonDetail& detail =
+    kCartoonDetailLevels[chooseCartoonDetailLevel(counts)];
+
+  for (const auto& layer : layers) {
+    const auto* interface = layer.interface;
+    for (const auto& group : layer.backbones) {
+      const auto& backbone = group.second;
+      if (interface->showBackbone) {
+        renderBackbone(backbone, molecule, node, 0.1f);
+      }
+      interface->forEachCurveStyle([&](CartoonStyle style) {
+        renderCurve(style, backbone, molecule, node, detail);
+      });
+    }
+  }
+}
+
+QWidget* Cartoons::setupWidget()
+{
+  auto* interface = m_layerManager.getSetting<LayerCartoon>();
+  interface->setupWidget(this);
+  return interface->widget;
+}
+
+void Cartoons::showBackbone(bool show)
+{
+  auto* interface = m_layerManager.getSetting<LayerCartoon>();
+  if (show != interface->showBackbone) {
+    interface->showBackbone = show;
+    emit drawablesChanged();
+  }
+  QSettings settings;
+  settings.setValue("cartoon/backbone", show);
+}
+
+void Cartoons::showTrace(bool show)
+{
+  auto* interface = m_layerManager.getSetting<LayerCartoon>();
+  if (show != interface->showTrace) {
+    interface->showTrace = show;
+    emit drawablesChanged();
+  }
+  QSettings settings;
+  settings.setValue("cartoon/trace", show);
+}
+
+void Cartoons::showTube(bool show)
+{
+  auto* interface = m_layerManager.getSetting<LayerCartoon>();
+  if (show != interface->showTube) {
+    interface->showTube = show;
+    emit drawablesChanged();
+  }
+  QSettings settings;
+  settings.setValue("cartoon/tube", show);
+}
+
+void Cartoons::showRibbon(bool show)
+{
+  auto* interface = m_layerManager.getSetting<LayerCartoon>();
+  if (show != interface->showRibbon) {
+    interface->showRibbon = show;
+    emit drawablesChanged();
+  }
+  QSettings settings;
+  settings.setValue("cartoon/ribbon", show);
+}
+
+void Cartoons::showSimpleCartoon(bool show)
+{
+  auto* interface = m_layerManager.getSetting<LayerCartoon>();
+  if (show != interface->showSimpleCartoon) {
+    interface->showSimpleCartoon = show;
+    emit drawablesChanged();
+  }
+  QSettings settings;
+  settings.setValue("cartoon/simpleCartoon", show);
+}
+
+void Cartoons::showCartoon(bool show)
+{
+  auto* interface = m_layerManager.getSetting<LayerCartoon>();
+  if (show != interface->showCartoon) {
+    interface->showCartoon = show;
+    emit drawablesChanged();
+  }
+  QSettings settings;
+  settings.setValue("cartoon/cartoon", show);
+}
+
+void Cartoons::showRope(bool show)
+{
+  auto* interface = m_layerManager.getSetting<LayerCartoon>();
+  if (show != interface->showRope) {
+    interface->showRope = show;
+    emit drawablesChanged();
+  }
+  QSettings settings;
+  settings.setValue("cartoon/rope", show);
+}
+
+} // namespace Avogadro::QtPlugins

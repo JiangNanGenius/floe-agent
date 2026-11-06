@@ -1,0 +1,330 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "nwchemlog.h"
+
+#include <avogadro/core/elements.h>
+#include <avogadro/core/molecule.h>
+#include <avogadro/core/unitcell.h>
+#include <avogadro/core/utilities.h>
+
+#include <iostream>
+
+using std::string;
+using std::vector;
+
+namespace Avogadro::QuantumIO {
+
+using Core::Atom;
+
+NWChemLog::NWChemLog() {}
+
+NWChemLog::~NWChemLog() {}
+
+std::vector<std::string> NWChemLog::fileExtensions() const
+{
+  std::vector<std::string> extensions;
+  extensions.emplace_back("nwchem");
+  return extensions;
+}
+
+std::vector<std::string> NWChemLog::mimeTypes() const
+{
+  return std::vector<std::string>();
+}
+
+bool NWChemLog::read(std::istream& in, Core::Molecule& molecule)
+{
+  // Read the log file line by line, most sections are terminated by an empty
+  // line, so they should be retained.
+  while (!in.eof())
+    processLine(in, molecule);
+  if (0 == molecule.atomCount()) {
+    appendError("Could not find any atomic coordinates! Are you sure this is "
+                "an NWChem output file?");
+    return false;
+  }
+
+  // Bank the last Hessian, which has no following geometry to trigger it.
+  flushVibrationData();
+
+  // Store the geometries as conformers. readAtoms() replaces the molecule's
+  // atoms on every "Output coordinates" block, so the molecule already holds
+  // the last one; the earlier steps would otherwise be dropped entirely.
+  if (m_coordSets.size() > 1) {
+    for (size_t i = 0; i < m_coordSets.size(); ++i) {
+      if (m_coordSets[i].size() != molecule.atomCount())
+        continue; // a section with a different atom count is not a step
+      molecule.setCoordinate3d(m_coordSets[i], i);
+    }
+    // Open on the final geometry, as the optimized structure is what the
+    // user expects to see first.
+    molecule.setCoordinate3d(static_cast<int>(m_coordSets.size()) - 1);
+  }
+
+  for (const auto& set : m_vibrationSets) {
+    Core::Molecule::VibrationData data;
+    data.frequencies = set.frequencies;
+    data.irIntensities = set.intensities;
+    data.lx = set.Lx;
+    molecule.setVibrationData(data, set.conformerIndex);
+  }
+
+  // GaussianSet *basis = new GaussianSet;
+
+  // Do simple bond perception.
+  molecule.perceiveBondsSimple();
+  molecule.perceiveBondOrders();
+
+  return true;
+}
+
+void NWChemLog::flushVibrationData()
+{
+  // The intensities come from a separate section, so a Hessian whose
+  // intensity block is missing or truncated is kept only if every array
+  // lines up - the same rule read() applied before the data became
+  // per-conformer.
+  if (!m_frequencies.empty() && m_frequencies.size() == m_Lx.size() &&
+      m_frequencies.size() == m_intensities.size() && !m_coordSets.empty()) {
+    VibrationSet set;
+    // The Hessian belongs to the geometry that precedes it, which is the
+    // last one pushed.
+    set.conformerIndex = m_coordSets.size() - 1;
+    // Core::Array has no move constructor, so swap rather than assign: the
+    // accumulators are cleared below either way.
+    set.frequencies.swap(m_frequencies);
+    set.intensities.swap(m_intensities);
+    set.Lx.swap(m_Lx);
+    m_vibrationSets.push_back(std::move(set));
+  }
+
+  m_frequencies.clear();
+  m_intensities.clear();
+  m_Lx.clear();
+}
+
+void NWChemLog::processLine(std::istream& in, Core::Molecule& mol)
+{
+  // First truncate the line, remove trailing white space and check
+  string line;
+  if (!Core::getLine(in, line) || Core::trimmed(line).empty())
+    return;
+
+  string key = Core::trimmed(line);
+
+  // Big switch statement checking for various things we are interested in
+  if (Core::contains(key, "Output coordinates")) {
+    // A new geometry means any Hessian read so far belongs to the previous
+    // one. Bank it before the geometry changes underneath it: NWChem prints
+    // one Hessian as several P.Frequency column blocks, so the accumulators
+    // cannot simply be reset per block, and letting two Hessians run
+    // together produced one list of twice the modes the molecule has.
+    flushVibrationData();
+
+    if (mol.atomCount())
+      mol.clearAtoms();
+
+    // get conversion factor
+    vector<string> list = Core::split(key, ' ');
+    if (list.size() == 11)
+      // conversion to Bohr
+      m_coordinateScale = Core::lexicalCast<double>(list[6]).value_or(1.0);
+
+    readAtoms(in, mol);
+    m_coordSets.push_back(mol.atomPositions3d());
+  } else if (Core::contains(key, "P.Frequency")) {
+    readFrequencies(line, in, mol);
+  } else if (Core::contains(key, "Projected Infra")) {
+    readIntensities(in, mol);
+  } else if (Core::contains(key, "lattice vectors") &&
+             !Core::contains(key, "reciprocal")) {
+    // check the lattic conversion factor
+    Real factor = 1.0;
+    vector<string> list = Core::split(key, ' ');
+    if (list.size() == 11)
+      // conversion to Bohr
+      factor = Core::lexicalCast<double>(list[6]).value_or(1.0);
+
+    readLattice(in, mol, factor);
+  }
+}
+
+void NWChemLog::readAtoms(std::istream& in, Core::Molecule& mol)
+{
+  string line;
+  // Skip the next three lines, headers, blanks...
+  for (int i = 0; i < 3; ++i)
+    if (!Core::getLine(in, line))
+      return;
+
+  // if m_coordinateScale is 1.0 NWChem output Bohr and we need to convert
+  Real scale = 1.0;
+  if (m_coordinateScale == 1.0)
+    scale = BOHR_TO_ANGSTROM;
+
+  while (true) {
+    if (!Core::getLine(in, line))
+      return;
+    vector<string> parts = Core::split(line, ' ');
+    // Keep going until the expected number of components is not seen.
+    if (parts.size() != 6)
+      break;
+
+    std::string symbol = parts[1];
+    // upper-case the first character
+    symbol[0] = toupper(symbol[0]);
+
+    unsigned char element = Core::Elements::atomicNumberFromSymbol(symbol);
+    if (element == Avogadro::InvalidElement) {
+      appendError("Invalid element encountered: " + parts[1]);
+      return;
+    }
+    Vector3 p;
+    for (int i = 0; i < 3; ++i) {
+      bool ok = false;
+      p[i] = Core::lexicalCast<double>(parts[i + 3], ok);
+      if (!ok) {
+        appendError("Couldn't convert coordinate component to double: " +
+                    parts[i + 3]);
+        return;
+      }
+    }
+    Core::Atom a = mol.addAtom(element);
+    a.setPosition3d(p * scale);
+  }
+}
+
+void NWChemLog::readLattice(std::istream& in, Core::Molecule& mol,
+                            double factor)
+{
+  Real scale = 1.0;
+  if (factor == 1.0)
+    scale = BOHR_TO_ANGSTROM;
+
+  string line;
+  if (!Core::getLine(in, line))
+    return;
+
+  // next 3 lines should be a1, a2, a3
+  Core::getLine(in, line);
+  vector<string> parts = Core::split(line, ' ');
+  if (parts.size() != 5)
+    return;
+  Vector3 a1;
+  a1[0] = Core::lexicalCast<double>(parts[1]).value_or(0.0);
+  a1[1] = Core::lexicalCast<double>(parts[2]).value_or(0.0);
+  a1[2] = Core::lexicalCast<double>(parts[3]).value_or(0.0);
+
+  Core::getLine(in, line);
+  parts = Core::split(line, ' ');
+  if (parts.size() != 5)
+    return;
+  Vector3 a2;
+  a2[0] = Core::lexicalCast<double>(parts[1]).value_or(0.0);
+  a2[1] = Core::lexicalCast<double>(parts[2]).value_or(0.0);
+  a2[2] = Core::lexicalCast<double>(parts[3]).value_or(0.0);
+
+  Core::getLine(in, line);
+  parts = Core::split(line, ' ');
+  if (parts.size() != 5)
+    return;
+  Vector3 a3;
+  a3[0] = Core::lexicalCast<double>(parts[1]).value_or(0.0);
+  a3[1] = Core::lexicalCast<double>(parts[2]).value_or(0.0);
+  a3[2] = Core::lexicalCast<double>(parts[3]).value_or(0.0);
+
+  auto* cell = new Core::UnitCell(a1 * scale, a2 * scale, a3 * scale);
+  mol.setUnitCell(cell);
+}
+
+void NWChemLog::readFrequencies(const std::string& firstLine, std::istream& in,
+                                Core::Molecule&)
+{
+  string line = firstLine;
+  bool ok = false;
+  vector<string> parts = Core::split(firstLine, ' ');
+  if (parts.size() < 2)
+    return;
+
+  vector<double> frequencies;
+
+  for (size_t i = 1; i < parts.size(); ++i) {
+    frequencies.push_back(Core::lexicalCast<double>(parts[i], ok));
+    if (!ok) {
+      appendError("Error reading frequencies: " + firstLine);
+      return;
+    }
+  }
+
+  // Skip the blank line after the frequencies.
+  if (!Core::getLine(in, line))
+    return;
+  if (!Core::getLine(in, line))
+    return;
+  parts = Core::split(line, ' ');
+  // Each row is an index followed by one value per frequency.
+  if (parts.size() != frequencies.size() + 1)
+    return;
+
+  vector<vector<double>> cols;
+  cols.resize(frequencies.size());
+
+  // Main block of numbers.
+  while (parts.size() == frequencies.size() + 1) {
+    for (size_t i = 1; i < parts.size(); ++i) {
+      cols[i - 1].push_back(Core::lexicalCast<double>(parts[i], ok));
+      if (!ok) {
+        appendError("Couldn't convert " + parts[i] + " to double.");
+        return;
+      }
+    }
+    if (!Core::getLine(in, line))
+      return;
+    parts = Core::split(line, ' ');
+  }
+
+  // Every mode needs three Cartesian components per atom.
+  size_t rows = cols.empty() ? 0 : cols[0].size();
+  if (rows == 0 || rows % 3 != 0) {
+    appendError("Normal mode block has " + std::to_string(rows) +
+                " rows, not a multiple of 3.");
+    return;
+  }
+
+  for (size_t i = 0; i < frequencies.size(); ++i) {
+    m_frequencies.push_back(frequencies[i]);
+    Core::Array<Vector3> Lx;
+    for (size_t j = 0; j + 2 < rows; j += 3) {
+      Lx.push_back(Vector3(cols[i][j + 0], cols[i][j + 1], cols[i][j + 2]));
+    }
+    m_Lx.push_back(Lx);
+  }
+}
+
+void NWChemLog::readIntensities(std::istream& in, Core::Molecule&)
+{
+  string line;
+  bool ok = false;
+  // Skip the next two lines, headers, blanks...
+  for (int i = 0; i < 2; ++i)
+    if (!Core::getLine(in, line))
+      return;
+
+  while (true) {
+    if (!Core::getLine(in, line))
+      return;
+    vector<string> parts = Core::split(line, ' ');
+    // Keep going until the expected number of components is not seen.
+    if (parts.size() != 7)
+      break;
+    m_intensities.push_back(Core::lexicalCast<double>(parts[5], ok));
+    if (!ok) {
+      appendError("Couldn't convert " + parts[5] + " to double.");
+      return;
+    }
+  }
+}
+} // namespace Avogadro::QuantumIO

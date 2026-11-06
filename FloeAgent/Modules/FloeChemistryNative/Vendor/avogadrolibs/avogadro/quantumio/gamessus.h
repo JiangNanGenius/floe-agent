@@ -1,0 +1,114 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#ifndef AVOGADRO_QUANTUMIO_GAMESSUS_H
+#define AVOGADRO_QUANTUMIO_GAMESSUS_H
+
+#include "avogadroquantumioexport.h"
+#include <avogadro/core/gaussianset.h>
+#include <avogadro/io/fileformat.h>
+
+#include <vector>
+
+namespace Avogadro {
+namespace QuantumIO {
+
+class AVOGADROQUANTUMIO_EXPORT GAMESSUSOutput : public Io::FileFormat
+{
+public:
+  GAMESSUSOutput();
+  ~GAMESSUSOutput() override;
+
+  Operations supportedOperations() const override
+  {
+    return Read | File | Stream | String;
+  }
+
+  FileFormat* newInstance() const override { return new GAMESSUSOutput; }
+  std::string identifier() const override { return "Avogadro: GAMESS"; }
+  std::string name() const override { return "GAMESS"; }
+  std::string description() const override
+  {
+    return "GAMESS US log file output parser.";
+  }
+
+  std::string specificationUrl() const override { return ""; }
+
+  std::vector<std::string> fileExtensions() const override;
+  std::vector<std::string> mimeTypes() const override;
+
+  [[nodiscard]] bool read(std::istream& in, Core::Molecule& molecule) override;
+  [[nodiscard]] bool write(std::ostream&, const Core::Molecule&) override
+  {
+    // Empty, as we do not write out GAMESS log files.
+    return false;
+  }
+
+private:
+  /**
+   * @brief Read the atom block of the log file.
+   * @param in Our input stream.
+   * @param molecule The molecule to add the atoms to.
+   * @param angs Whether the units are Angstroms (true) or Bohr (false).
+   */
+  void readAtomBlock(std::istream& in, Core::Molecule& molecule, bool angs);
+
+  /**
+   * Read in the basis set block.
+   */
+  void readBasisSet(std::istream& in);
+
+  /**
+   * Read in the molecular orbitals.
+   * @return False if a coefficient row is wider than its block.
+   */
+  bool readEigenvectors(std::istream& in);
+
+  /**
+   * Reorder the molecular orbitals.
+   * @return False if there are too few coefficients for the shells read.
+   */
+  bool reorderMOs();
+
+  /**
+   * Outpull all known properties that have been read, useful for debugging.
+   */
+  void outputAll();
+
+  /**
+   * Load the basis with the properties read in from the file.
+   * @param basis The basis set to fill.
+   * @param atomCount The number of atoms in the molecule; every shell must be
+   * on one of them.
+   * @return False if the shells read are inconsistent.
+   */
+  bool load(Core::GaussianSet* basis, Index atomCount);
+
+  double m_coordFactor;
+  int m_electrons = 0;
+  int m_electronsA = 0;
+  int m_electronsB = 0;
+  int m_nMOs = 0;
+  Core::ScfType m_scftype;
+  unsigned int m_numBasisFunctions = 0;
+  std::vector<Core::GaussianSet::orbital> m_shellTypes;
+  std::vector<int> m_shellNums;
+  std::vector<int> m_shelltoAtom;
+  std::vector<double> m_a;
+  std::vector<double> m_c;
+  std::vector<double> m_csp;
+  std::vector<double> m_orbitalEnergy;
+  std::vector<double> m_alphaOrbitalEnergy;
+  std::vector<double> m_betaOrbitalEnergy;
+  std::vector<double> m_MOcoeffs;
+  std::vector<double> m_alphaMOcoeffs;
+  std::vector<double> m_betaMOcoeffs;
+
+  MatrixX m_density; /// Total density matrix
+};
+} // namespace QuantumIO
+} // namespace Avogadro
+
+#endif

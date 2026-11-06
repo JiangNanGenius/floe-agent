@@ -1,0 +1,175 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#ifndef AVOGADRO_QTPLUGINS_AUTOOPT_H
+#define AVOGADRO_QTPLUGINS_AUTOOPT_H
+
+#include <avogadro/qtgui/toolplugin.h>
+
+#include <avogadro/calc/energyoptimizer.h>
+#include <avogadro/qtgui/molecule.h>
+#include <avogadro/rendering/primitive.h>
+
+#include <QtCore/QElapsedTimer>
+#include <QtCore/QList>
+#include <QtCore/QPoint>
+#include <QtCore/QTimer>
+#include <QtWidgets/QAbstractButton>
+
+class QThread;
+
+namespace Avogadro {
+
+namespace QtGui {
+class CalcWorker;
+}
+
+namespace QtPlugins {
+
+class AutoOptWidget;
+class CSVRThermostat;
+
+/**
+ * @class AutoOpt autoopt.h
+ * <avogadro/qtplugins/autoopt/autoopt.h>
+ * @brief Optimize the geometry of a molecule while manipulating it.
+ * @author Geoff Hutchison
+ * Based on the Manipulator class by @author Allison Vacanti
+ */
+class AutoOpt : public QtGui::ToolPlugin
+{
+  Q_OBJECT
+public:
+  explicit AutoOpt(QObject* parent_ = nullptr);
+  ~AutoOpt() override;
+
+  QString name() const override { return tr("Auto Optimize tool"); }
+  QString description() const override
+  {
+    return tr("Interactive optimization of molecular geometry");
+  }
+  unsigned char priority() const override { return 50; }
+  QAction* activateAction() const override { return m_activateAction; }
+  QWidget* toolWidget() const override;
+
+  void setIcon(bool darkTheme = false) override;
+
+  void setMolecule(QtGui::Molecule* mol) override;
+
+  void setEditMolecule(QtGui::RWMolecule* mol) override { m_molecule = mol; }
+
+  void setGLRenderer(Rendering::GLRenderer* renderer) override
+  {
+    m_renderer = renderer;
+  }
+
+  QUndoCommand* mousePressEvent(QMouseEvent* e) override;
+  QUndoCommand* mouseReleaseEvent(QMouseEvent* e) override;
+  QUndoCommand* mouseMoveEvent(QMouseEvent* e) override;
+  QUndoCommand* keyPressEvent(QKeyEvent* e) override;
+
+  void draw(Rendering::GroupNode& node) override;
+
+public slots:
+  void startStop();
+  void start();
+  void stop();
+  void methodChanged(const QString& method);
+  void moleculeChanged(unsigned int changes);
+
+  void optimizeStep();
+  void dynamicsStep();
+
+  void onOptimizeStepDone(Eigen::VectorXd positions, Eigen::VectorXd gradient,
+                          double energy, bool converged);
+  void onGradientDone(Eigen::VectorXd gradient, double energy);
+  void onWorkerReady();
+
+  void taskChanged(int task);
+  void temperatureChanged(double temperature);
+  void timeStepChanged(double timeStep);
+
+private:
+  /**
+   * Update the currently pressed buttons, accounting for modifier keys.
+   * \todo Account for modifier keys.
+   */
+  void updatePressedButtons(QMouseEvent*, bool release);
+
+  void resetObject() { m_object = Rendering::Identifier(); }
+  void translate(Vector3 delta, bool moveSelected = true);
+  void rotate(Vector3 delta, Vector3 centroid, bool moveSelected = true);
+  void axisRotate(Vector3 delta, Vector3 centroid, bool moveSelected = true);
+  void tilt(Vector3 delta, Vector3 centroid);
+
+  QAction* m_activateAction;
+  QtGui::RWMolecule* m_molecule;
+  Rendering::GLRenderer* m_renderer;
+  Rendering::Identifier m_object;
+  QPoint m_lastMousePosition;
+  Vector3f m_lastMouse3D;
+  Qt::MouseButtons m_pressedButtons;
+
+  Real m_energy;
+  Real m_deltaE;
+
+  Real m_temperature = 300.0; // Kelvin
+  Real m_timeStep = 1.0;      // fs
+  int m_task = 0;             // default to optimization
+  Eigen::VectorXd m_velocities;
+  Eigen::VectorXd m_acceleration; // stored for Velocity Verlet
+  bool m_firstStep = true;        // flag for first dynamics step
+  Eigen::ArrayXd m_masses;
+  CSVRThermostat* m_thermostat = nullptr;
+
+  // Pre-relaxation phase before dynamics: if initial gradients would kick
+  // the kinetic temperature far above target, run optimization chunks first.
+  bool m_preRelaxing = false;
+  int m_preRelaxIters = 0;
+  static constexpr int s_maxPreRelaxIters = 5;
+  static constexpr double s_preRelaxTempMargin = 250.0; // K above target
+
+  mutable QWidget* m_toolWidget;
+
+  bool m_running = false;
+  qint64 m_oneStepTime = 0;
+  QTimer m_timer;
+
+  enum ToolAction
+  {
+    Nothing = 0,
+    Rotation,
+    Translation,
+    ZoomTilt,
+    Zoom
+  };
+  ToolAction m_currentAction;
+
+  std::string m_currentMethod;
+
+  // Worker thread state
+  QThread* m_workerThread = nullptr;
+  QtGui::CalcWorker* m_worker = nullptr;
+  bool m_computePending = false;
+  // Bumped for every worker we create. Results carry the generation they were
+  // produced for, so a result queued before an edit retired its worker can be
+  // told apart from a live one - disconnecting the worker does not withdraw
+  // metacalls that are already sitting in our event queue.
+  quint64 m_workerGeneration = 0;
+  // Worker threads that outlived their shutdown timeout. They are still
+  // running, so they can neither be deleted nor left for ~QObject to destroy.
+  QList<QThread*> m_retiredThreads;
+  // Persistent across optimizeStep calls so adaptive chunk sizing carries
+  // over between timer ticks.
+  Calc::OptimizationOptions m_optOptions;
+  QElapsedTimer m_chunkTimer;
+  void startWorker();
+  void cleanupWorker();
+};
+
+} // namespace QtPlugins
+} // namespace Avogadro
+
+#endif // AVOGADRO_QTPLUGINS_AUTOOPT_H

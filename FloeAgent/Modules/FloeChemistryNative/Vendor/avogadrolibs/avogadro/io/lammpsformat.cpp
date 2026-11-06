@@ -1,0 +1,763 @@
+/******************************************************************************
+  This source file is part of the Avogadro project.
+  This source code is released under the 3-Clause BSD License, (see "LICENSE").
+******************************************************************************/
+
+#include "lammpsformat.h"
+
+#include <avogadro/core/crystaltools.h>
+#include <avogadro/core/elements.h>
+#include <avogadro/core/molecule.h>
+#include <avogadro/core/spacegroups.h>
+#include <avogadro/core/unitcell.h>
+#include <avogadro/core/utilities.h>
+#include <avogadro/core/vector.h>
+
+#include <cstdint>
+#include <istream>
+#include <ostream>
+#include <sstream>
+#include <string>
+
+using std::map;
+using std::string;
+using std::to_string;
+
+namespace Avogadro::Io {
+
+using Core::Array;
+using Core::Atom;
+using Core::Bond;
+using Core::CrystalTools;
+using Core::Elements;
+using Core::lexicalCast;
+using Core::Molecule;
+using Core::SpaceGroups;
+using Core::split;
+using Core::trimmed;
+using Core::UnitCell;
+
+bool LammpsTrajectoryFormat::read(std::istream& inStream, Core::Molecule& mol)
+{
+  size_t numAtoms = 0, timestep = 0, x_idx = SIZE_MAX, y_idx = SIZE_MAX,
+         z_idx = SIZE_MAX, type_idx = SIZE_MAX, id_idx = SIZE_MAX;
+  double x_min = 0, x_max = 0, y_min = 0, y_max = 0, z_min = 0, z_max = 0,
+         tilt_xy = 0, tilt_xz = 0, tilt_yz = 0, scale_x = 0., scale_y = 0.,
+         scale_z = 0.;
+
+  // This can likely be removed as it is clearly not used anywhere, suppress for
+  // now.
+  AVO_UNUSED(id_idx);
+
+  string buffer;
+  Core::getLine(inStream, buffer); // Finish the first line
+  buffer = trimmed(buffer);
+  if (buffer != "ITEM: TIMESTEP") {
+    appendError("No timestep item found.");
+    return false;
+  }
+  Core::getLine(inStream, buffer);
+  if (!buffer.empty()) {
+    timestep = lexicalCast<size_t>(buffer).value_or(0);
+    mol.setTimeStep(timestep, 0);
+  }
+
+  Core::getLine(inStream, buffer);
+  buffer = trimmed(buffer);
+  if (buffer != "ITEM: NUMBER OF ATOMS") {
+    appendError("No number of atoms item found.");
+    return false;
+  }
+  if (!Core::getLine(inStream, buffer)) {
+    appendError("Unexpected end of file reading number of atoms.");
+    return false;
+  }
+  if (!buffer.empty()) {
+    if (auto n = lexicalCast<size_t>(buffer)) {
+      numAtoms = *n;
+    } else {
+      appendError("Error to read number of atoms");
+      return false;
+    }
+  }
+
+  // If unit cell is triclinic, tilt factors are needed to define the supercell
+  Core::getLine(inStream, buffer);
+  if (buffer.find("ITEM: BOX BOUNDS xy xz yz") == 0) {
+    // Read x_min, x_max, tiltfactor_xy
+    if (!Core::getLine(inStream, buffer)) {
+      appendError("Unexpected end of file reading box bounds.");
+      return false;
+    }
+    std::vector<string> box_bounds_x(split(buffer, ' '));
+    if (box_bounds_x.size() < 3) {
+      appendError("Invalid box bounds: " + buffer);
+      return false;
+    }
+    x_min = lexicalCast<double>(box_bounds_x[0]).value_or(0.0);
+    x_max = lexicalCast<double>(box_bounds_x[1]).value_or(0.0);
+    tilt_xy = lexicalCast<double>(box_bounds_x[2]).value_or(0.0);
+    // Read y_min, y_max, tiltfactor_xz
+    if (!Core::getLine(inStream, buffer)) {
+      appendError("Unexpected end of file reading box bounds.");
+      return false;
+    }
+    std::vector<string> box_bounds_y(split(buffer, ' '));
+    if (box_bounds_y.size() < 3) {
+      appendError("Invalid box bounds: " + buffer);
+      return false;
+    }
+    y_min = lexicalCast<double>(box_bounds_y[0]).value_or(0.0);
+    y_max = lexicalCast<double>(box_bounds_y[1]).value_or(0.0);
+    tilt_xz = lexicalCast<double>(box_bounds_y[2]).value_or(0.0);
+    if (!Core::getLine(inStream, buffer)) {
+      appendError("Unexpected end of file reading box bounds.");
+      return false;
+    }
+    // Read z_min, z_max, tiltfactor_yz
+    std::vector<string> box_bounds_z(split(buffer, ' '));
+    if (box_bounds_z.size() < 3) {
+      appendError("Invalid box bounds: " + buffer);
+      return false;
+    }
+    z_min = lexicalCast<double>(box_bounds_z[0]).value_or(0.0);
+    z_max = lexicalCast<double>(box_bounds_z[1]).value_or(0.0);
+    tilt_yz = lexicalCast<double>(box_bounds_z[2]).value_or(0.0);
+
+    x_min -= std::min({ tilt_xy, tilt_xz, tilt_xy + tilt_xz, 0.0 });
+    x_max -= std::max({ tilt_xy, tilt_xz, tilt_xy + tilt_xz, 0.0 });
+    y_min -= std::min(tilt_yz, 0.0);
+    y_max -= std::max(tilt_yz, 0.0);
+  }
+
+  // Else if unit cell is orthogonal, tilt factors are zero
+  else if (buffer.find("ITEM: BOX BOUNDS") == 0) {
+    // Read x_min, x_max
+    if (!Core::getLine(inStream, buffer)) {
+      appendError("Unexpected end of file reading box bounds.");
+      return false;
+    }
+    std::vector<string> box_bounds_x(split(buffer, ' '));
+    if (box_bounds_x.size() < 2) {
+      appendError("Invalid box bounds: " + buffer);
+      return false;
+    }
+    x_min = lexicalCast<double>(box_bounds_x[0]).value_or(0.0);
+    x_max = lexicalCast<double>(box_bounds_x[1]).value_or(0.0);
+    // Read y_min, y_max
+    if (!Core::getLine(inStream, buffer)) {
+      appendError("Unexpected end of file reading box bounds.");
+      return false;
+    }
+    std::vector<string> box_bounds_y(split(buffer, ' '));
+    if (box_bounds_y.size() < 2) {
+      appendError("Invalid box bounds: " + buffer);
+      return false;
+    }
+    y_min = lexicalCast<double>(box_bounds_y[0]).value_or(0.0);
+    y_max = lexicalCast<double>(box_bounds_y[1]).value_or(0.0);
+    // Read z_min, z_max
+    if (!Core::getLine(inStream, buffer)) {
+      appendError("Unexpected end of file reading box bounds.");
+      return false;
+    }
+    std::vector<string> box_bounds_z(split(buffer, ' '));
+    if (box_bounds_z.size() < 2) {
+      appendError("Invalid box bounds: " + buffer);
+      return false;
+    }
+    z_min = lexicalCast<double>(box_bounds_z[0]).value_or(0.0);
+    z_max = lexicalCast<double>(box_bounds_z[1]).value_or(0.0);
+  }
+
+  using AtomTypeMap = map<string, unsigned char>;
+  AtomTypeMap atomTypes;
+  unsigned char customElementCounter = CustomElementMin;
+
+  // x,y,z stand for the coordinate axes
+  // s stands for scaled coordinates
+  // u stands for unwrapped coordinates
+  // scale_x = 0. if coordinates are cartesian and 1 if fractional (scaled)
+  Core::getLine(inStream, buffer);
+  std::vector<string> labels(split(buffer, ' '));
+  // The column indices below are positions in this header line, and atom
+  // rows lack its two leading "ITEM:" "ATOMS" words -- hence the "- 2" when
+  // indexing a row. Without that prefix the subtraction would underflow.
+  if (labels.size() < 2 || labels[0] != "ITEM:" || labels[1] != "ATOMS") {
+    appendError("No 'ITEM: ATOMS' header found: " + buffer);
+    return false;
+  }
+  for (size_t i = 0; i < labels.size(); i++) {
+    if (labels[i] == "x" || labels[i] == "xu") {
+      x_idx = i;
+      scale_x = 0.;
+    } else if (labels[i] == "xs" || labels[i] == "xsu") {
+      x_idx = i;
+      scale_x = 1.;
+    } else if (labels[i] == "y" || labels[i] == "yu") {
+      y_idx = i;
+      scale_y = 0.;
+    } else if (labels[i] == "ys" || labels[i] == "ysu") {
+      y_idx = i;
+      scale_y = 1.;
+    } else if (labels[i] == "z" || labels[i] == "zu") {
+      z_idx = i;
+      scale_z = 0.;
+    } else if (labels[i] == "zs" || labels[i] == "zsu") {
+      z_idx = i;
+      scale_z = 1.;
+    } else if (labels[i] == "type") {
+      type_idx = i;
+    } else if (labels[i] == "id") {
+      id_idx = i;
+    }
+  }
+
+  if (x_idx == SIZE_MAX || y_idx == SIZE_MAX || z_idx == SIZE_MAX ||
+      type_idx == SIZE_MAX || x_idx < 2 || y_idx < 2 || z_idx < 2 ||
+      type_idx < 2) {
+    appendError("Failed to parse attributes: " + buffer);
+    return false;
+  }
+
+  // Parse atoms
+  for (size_t i = 0; i < numAtoms; ++i) {
+    // Core::getLine for the reason given in xyzformat.cpp: std::getline
+    // leaves the previous line in the buffer at end of input, so a declared
+    // atom count larger than the file would re-parse it until the count ran
+    // out.
+    if (!Core::getLine(inStream, buffer)) {
+      appendError("Error reading atom at index " + std::to_string(i) + ".");
+      return false;
+    }
+    std::vector<string> tokens(split(buffer, ' '));
+
+    if (tokens.size() < labels.size() - 2) {
+      appendError("Not enough tokens in this line: " + buffer);
+      return false;
+    }
+
+    unsigned char atomicNum =
+      lexicalCast<short int>(tokens[type_idx - 2]).value_or(0);
+
+    // If parsed coordinates are fractional, the corresponding unscaling is
+    // done. Else the positions are assigned as parsed.
+    Vector3 pos(
+      (1 - scale_x) * lexicalCast<double>(tokens[x_idx - 2]).value_or(0.0) +
+        scale_x *
+          (x_min + (x_max - x_min) *
+                     lexicalCast<double>(tokens[x_idx - 2]).value_or(0.0)),
+      (1 - scale_y) * lexicalCast<double>(tokens[y_idx - 2]).value_or(0.0) +
+        scale_y *
+          (y_min + (y_max - y_min) *
+                     lexicalCast<double>(tokens[y_idx - 2]).value_or(0.0)),
+      (1 - scale_z) * lexicalCast<double>(tokens[z_idx - 2]).value_or(0.0) +
+        scale_z *
+          (z_min + (z_max - z_min) *
+                     lexicalCast<double>(tokens[z_idx - 2]).value_or(0.0)));
+
+    auto it = atomTypes.find(to_string(atomicNum));
+    if (it == atomTypes.end()) {
+      atomTypes.insert(
+        std::make_pair(to_string(atomicNum), customElementCounter++));
+      it = atomTypes.find(to_string(atomicNum));
+      if (customElementCounter > CustomElementMax) {
+        appendError("Custom element type limit exceeded.");
+        return false;
+      }
+    }
+    Atom newAtom = mol.addAtom(it->second);
+    newAtom.setPosition3d(pos);
+  }
+
+  // Set the custom element map if needed:
+  if (!atomTypes.empty()) {
+    Molecule::CustomElementMap elementMap;
+    for (const auto& atomType : atomTypes) {
+      elementMap.insert(std::make_pair(atomType.second, atomType.first));
+    }
+    mol.setCustomElementMap(elementMap);
+  }
+
+  // Check that all atoms were handled.
+  if (mol.atomCount() != numAtoms) {
+    std::ostringstream errorStream;
+    errorStream << "Error parsing atom at index " << mol.atomCount()
+                << " (line " << 10 + mol.atomCount() << ").\n"
+                << buffer;
+    appendError(errorStream.str());
+    return false;
+  }
+  mol.setCoordinate3d(mol.atomPositions3d(), 0);
+  auto* uc = new UnitCell(Vector3(x_max - x_min, 0, 0),
+                          Vector3(tilt_xy, y_max - y_min, 0),
+                          Vector3(tilt_xz, tilt_yz, z_max - z_min));
+  if (!uc->isRegular()) {
+    appendError(
+      "'ITEM: BOX BOUNDS' does not give linear-independent lattive vectors");
+    delete uc;
+    return false;
+  }
+  mol.setUnitCell(uc);
+
+  // Do we have an animation?
+  size_t numAtoms2 = 0;
+  int coordSet = 1;
+  while (Core::getLine(inStream, buffer) &&
+         trimmed(buffer) == "ITEM: TIMESTEP") {
+    x_idx = SIZE_MAX;
+    y_idx = SIZE_MAX;
+    z_idx = SIZE_MAX;
+    type_idx = SIZE_MAX;
+    id_idx = SIZE_MAX;
+    x_min = 0;
+    x_max = 0;
+    y_min = 0;
+    y_max = 0;
+    z_min = 0;
+    z_max = 0;
+    tilt_xy = 0;
+    tilt_xz = 0;
+    tilt_yz = 0;
+    scale_x = 0.;
+    scale_y = 0.;
+    scale_z = 0.;
+
+    Core::getLine(inStream, buffer);
+    if (!buffer.empty()) {
+      timestep = lexicalCast<size_t>(buffer).value_or(0);
+      mol.setTimeStep(timestep, coordSet);
+    }
+
+    Core::getLine(inStream, buffer);
+    buffer = trimmed(buffer);
+    if (buffer != "ITEM: NUMBER OF ATOMS") {
+      appendError("No number of atoms item found.");
+      return false;
+    }
+    if (!Core::getLine(inStream, buffer)) {
+      appendError("Unexpected end of file reading number of atoms.");
+      return false;
+    }
+    if (!buffer.empty())
+      numAtoms2 = lexicalCast<size_t>(buffer).value_or(0);
+
+    if (numAtoms2 != numAtoms) {
+      appendError("Number of atoms isn't constant in the trajectory.");
+    }
+
+    // If unit cell is triclinic, tilt factors are needed to define the
+    // supercell
+    Core::getLine(inStream, buffer);
+    if (buffer.find("ITEM: BOX BOUNDS xy xz yz") == 0) {
+      // Read x_min, x_max, tiltfactor_xy
+      if (!Core::getLine(inStream, buffer)) {
+        appendError("Unexpected end of file reading box bounds.");
+        return false;
+      }
+      std::vector<string> box_bounds_x(split(buffer, ' '));
+      if (box_bounds_x.size() < 3) {
+        appendError("Invalid box bounds: " + buffer);
+        return false;
+      }
+      x_min = lexicalCast<double>(box_bounds_x[0]).value_or(0.0);
+      x_max = lexicalCast<double>(box_bounds_x[1]).value_or(0.0);
+      tilt_xy = lexicalCast<double>(box_bounds_x[2]).value_or(0.0);
+      // Read y_min, y_max, tiltfactor_xz
+      if (!Core::getLine(inStream, buffer)) {
+        appendError("Unexpected end of file reading box bounds.");
+        return false;
+      }
+      std::vector<string> box_bounds_y(split(buffer, ' '));
+      if (box_bounds_y.size() < 3) {
+        appendError("Invalid box bounds: " + buffer);
+        return false;
+      }
+      y_min = lexicalCast<double>(box_bounds_y[0]).value_or(0.0);
+      y_max = lexicalCast<double>(box_bounds_y[1]).value_or(0.0);
+      tilt_xz = lexicalCast<double>(box_bounds_y[2]).value_or(0.0);
+      if (!Core::getLine(inStream, buffer)) {
+        appendError("Unexpected end of file reading box bounds.");
+        return false;
+      }
+      // Read z_min, z_max, tiltfactor_yz
+      std::vector<string> box_bounds_z(split(buffer, ' '));
+      if (box_bounds_z.size() < 3) {
+        appendError("Invalid box bounds: " + buffer);
+        return false;
+      }
+      z_min = lexicalCast<double>(box_bounds_z[0]).value_or(0.0);
+      z_max = lexicalCast<double>(box_bounds_z[1]).value_or(0.0);
+      tilt_yz = lexicalCast<double>(box_bounds_z[2]).value_or(0.0);
+
+      x_min -= std::min({ tilt_xy, tilt_xz, tilt_xy + tilt_xz, 0.0 });
+      x_max -= std::max({ tilt_xy, tilt_xz, tilt_xy + tilt_xz, 0.0 });
+      y_min -= std::min(tilt_yz, 0.0);
+      y_max -= std::max(tilt_yz, 0.0);
+    }
+
+    // Else if unit cell is orthogonal, tilt factors are zero
+    else if (buffer.find("ITEM: BOX BOUNDS") == 0) {
+      // Read x_min, x_max
+      if (!Core::getLine(inStream, buffer)) {
+        appendError("Unexpected end of file reading box bounds.");
+        return false;
+      }
+      std::vector<string> box_bounds_x(split(buffer, ' '));
+      if (box_bounds_x.size() < 2) {
+        appendError("Invalid box bounds: " + buffer);
+        return false;
+      }
+      x_min = lexicalCast<double>(box_bounds_x[0]).value_or(0.0);
+      x_max = lexicalCast<double>(box_bounds_x[1]).value_or(0.0);
+      // Read y_min, y_max
+      if (!Core::getLine(inStream, buffer)) {
+        appendError("Unexpected end of file reading box bounds.");
+        return false;
+      }
+      std::vector<string> box_bounds_y(split(buffer, ' '));
+      if (box_bounds_y.size() < 2) {
+        appendError("Invalid box bounds: " + buffer);
+        return false;
+      }
+      y_min = lexicalCast<double>(box_bounds_y[0]).value_or(0.0);
+      y_max = lexicalCast<double>(box_bounds_y[1]).value_or(0.0);
+      // Read z_min, z_max
+      if (!Core::getLine(inStream, buffer)) {
+        appendError("Unexpected end of file reading box bounds.");
+        return false;
+      }
+      std::vector<string> box_bounds_z(split(buffer, ' '));
+      if (box_bounds_z.size() < 2) {
+        appendError("Invalid box bounds: " + buffer);
+        return false;
+      }
+      z_min = lexicalCast<double>(box_bounds_z[0]).value_or(0.0);
+      z_max = lexicalCast<double>(box_bounds_z[1]).value_or(0.0);
+    }
+
+    // x,y,z stand for the coordinate axes
+    // s stands for scaled coordinates
+    // u stands for unwrapped coordinates
+    // scale_x = 0. if coordinates are cartesian and 1 if fractional (scaled)
+    Core::getLine(inStream, buffer);
+    labels = std::vector<string>(split(buffer, ' '));
+    // See the first frame: row indices are header indices minus two.
+    if (labels.size() < 2 || labels[0] != "ITEM:" || labels[1] != "ATOMS") {
+      appendError("No 'ITEM: ATOMS' header found: " + buffer);
+      return false;
+    }
+    for (size_t i = 0; i < labels.size(); ++i) {
+      if (labels[i] == "x" || labels[i] == "xu") {
+        x_idx = i;
+        scale_x = 0.;
+      } else if (labels[i] == "xs" || labels[i] == "xsu") {
+        x_idx = i;
+        scale_x = 1.;
+      } else if (labels[i] == "y" || labels[i] == "yu") {
+        y_idx = i;
+        scale_y = 0.;
+      } else if (labels[i] == "ys" || labels[i] == "ysu") {
+        y_idx = i;
+        scale_y = 1.;
+      } else if (labels[i] == "z" || labels[i] == "zu") {
+        z_idx = i;
+        scale_z = 0.;
+      } else if (labels[i] == "zs" || labels[i] == "zsu") {
+        z_idx = i;
+        scale_z = 1.;
+      } else if (labels[i] == "type") {
+        type_idx = i;
+      } else if (labels[i] == "id") {
+        id_idx = i;
+      }
+    }
+
+    if (x_idx == SIZE_MAX || y_idx == SIZE_MAX || z_idx == SIZE_MAX ||
+        type_idx == SIZE_MAX || x_idx < 2 || y_idx < 2 || z_idx < 2 ||
+        type_idx < 2) {
+      appendError("Failed to parse attributes: " + buffer);
+      return false;
+    }
+
+    Array<Vector3> positions;
+    positions.reserve(numAtoms);
+
+    for (size_t i = 0; i < numAtoms; ++i) {
+      // Same as above: a short file must end the loop, not repeat a line.
+      if (!Core::getLine(inStream, buffer)) {
+        appendError("Error reading atom at index " + std::to_string(i) + ".");
+        return false;
+      }
+      std::vector<string> tokens(split(buffer, ' '));
+      // Every column the header declares, not a fixed five: x_idx etc. can
+      // point past the fifth token.
+      if (tokens.size() < labels.size() - 2) {
+        appendError("Not enough tokens in this line: " + buffer);
+        return false;
+      }
+      // If parsed coordinates are fractional, the corresponding unscaling is
+      // done. Else the positions are assigned as parsed.
+      Vector3 pos(
+        (1 - scale_x) * lexicalCast<double>(tokens[x_idx - 2]).value_or(0.0) +
+          scale_x *
+            (x_min + (x_max - x_min) *
+                       lexicalCast<double>(tokens[x_idx - 2]).value_or(0.0)),
+        (1 - scale_y) * lexicalCast<double>(tokens[y_idx - 2]).value_or(0.0) +
+          scale_y *
+            (y_min + (y_max - y_min) *
+                       lexicalCast<double>(tokens[y_idx - 2]).value_or(0.0)),
+        (1 - scale_z) * lexicalCast<double>(tokens[z_idx - 2]).value_or(0.0) +
+          scale_z *
+            (z_min + (z_max - z_min) *
+                       lexicalCast<double>(tokens[z_idx - 2]).value_or(0.0)));
+      positions.push_back(pos);
+    }
+
+    mol.setCoordinate3d(positions, coordSet++);
+    // The molecule owns the previous cell; setUnitCell() below deletes it.
+    uc = new UnitCell(Vector3(x_max - x_min, 0, 0),
+                      Vector3(tilt_xy, y_max - y_min, 0),
+                      Vector3(tilt_xz, tilt_yz, z_max - z_min));
+    if (!uc->isRegular()) {
+      appendError(
+        "'ITEM: BOX BOUNDS' does not give linear-independent lattive vectors");
+      delete uc;
+      return false;
+    }
+    mol.setUnitCell(uc);
+  }
+
+  return true;
+}
+
+bool LammpsTrajectoryFormat::write(std::ostream&, const Core::Molecule&)
+{
+  return false;
+}
+
+std::vector<std::string> LammpsTrajectoryFormat::fileExtensions() const
+{
+  std::vector<std::string> ext;
+  ext.emplace_back("dump");
+  ext.emplace_back("lammpstrj");
+  return ext;
+}
+
+std::vector<std::string> LammpsTrajectoryFormat::mimeTypes() const
+{
+  std::vector<std::string> mime;
+  mime.emplace_back("text/lammps");
+  return mime;
+}
+
+bool LammpsDataFormat::read(std::istream&, Core::Molecule&)
+{
+  return false;
+}
+
+bool LammpsDataFormat::write(std::ostream& outStream, const Core::Molecule& mol)
+{
+  Core::Molecule mol2(mol);
+  // enforce right-handed cell
+  // https://docs.lammps.org/read_data.html#header-specification-of-the-simulation-box-size-and-shape
+  CrystalTools::rotateToStandardOrientation(mol2, CrystalTools::TransformAtoms |
+                                                    CrystalTools::RightHanded);
+
+  // Title
+  if (!mol2.data("name").toString().empty())
+    outStream << mol2.data("name").toString() << '\n';
+  else
+    outStream << "LAMMPS data file generated by Avogadro" << '\n';
+
+  std::ostringstream massStream, atomStream, bondStream;
+  double xmin, xmax, ymin, ymax, zmin, zmax;
+  xmin = xmax = ymin = ymax = zmin = zmax = 0.0;
+
+  // Filter out translational duplicates if there's a unit cell
+  Array<Index> uniqueIndices = SpaceGroups::translationalUniqueAtoms(mol2);
+  bool useFiltering = !uniqueIndices.empty();
+  if (!useFiltering) {
+    // No unit cell or no filtering needed - use all atoms
+    for (Index i = 0; i < mol2.atomCount(); ++i)
+      uniqueIndices.push_back(i);
+  }
+
+  // Build mapping from old indices to new indices (for bonds)
+  std::map<Index, Index> indexMap;
+  for (Index newIdx = 0; newIdx < uniqueIndices.size(); ++newIdx) {
+    indexMap[uniqueIndices[newIdx]] = newIdx;
+  }
+
+  size_t numAtoms = uniqueIndices.size();
+  outStream << to_string(numAtoms) << " atoms\n";
+
+  // Count bonds where both atoms are in the unique set
+  size_t numBonds = 0;
+  for (Index i = 0; i < mol2.bondCount(); ++i) {
+    Bond b = mol2.bond(i);
+    if (indexMap.count(b.atom1().index()) && indexMap.count(b.atom2().index()))
+      ++numBonds;
+  }
+  outStream << to_string(numBonds) << " bonds\n";
+
+  // A map of atomic symbols to their quantity.
+  size_t idx = 1;
+  std::map<unsigned char, size_t> composition;
+  for (Index atomIdx : uniqueIndices) {
+    unsigned char atomicNumber = mol2.atomicNumber(atomIdx);
+    if (composition.find(atomicNumber) == composition.end()) {
+      composition[atomicNumber] = idx++;
+    }
+  }
+
+  outStream << composition.size() << " atom types\n";
+
+  // Masses
+  massStream << "Masses\n\n";
+  auto iter = composition.begin();
+  while (iter != composition.end()) {
+    massStream << iter->second << "   " << Elements::mass(iter->first) << "\n";
+    ++iter;
+  }
+  massStream << '\n' << '\n' << '\n';
+
+  if (numAtoms) {
+    // Atomic coordinates
+    atomStream << "Atoms\n\n";
+    Index outputIdx = 0;
+    for (Index atomIdx : uniqueIndices) {
+      Atom atom = mol2.atom(atomIdx);
+      if (!atom.isValid()) {
+        appendError("Internal error: Atom invalid.");
+        return false;
+      }
+      Vector3 coords = atom.position3d();
+      if (outputIdx == 0) {
+        xmin = coords[0];
+        xmax = coords[0];
+        ymin = coords[1];
+        ymax = coords[1];
+        zmin = coords[2];
+        zmax = coords[2];
+      } else {
+        xmin = std::min(coords[0], xmin);
+        xmax = std::max(coords[0], xmax);
+        ymin = std::min(coords[1], ymin);
+        ymax = std::max(coords[1], ymax);
+        zmin = std::min(coords[2], zmin);
+        zmax = std::max(coords[2], zmax);
+      }
+
+      const unsigned int lineSize = 256;
+      char atomline[lineSize];
+      snprintf(atomline, lineSize - 1, "%-*d %d %10f %10f %10f\n",
+               static_cast<int>(log(numAtoms)) + 1,
+               static_cast<int>(outputIdx + 1),
+               static_cast<int>(composition[atom.atomicNumber()]), coords.x(),
+               coords.y(), coords.z());
+      atomStream << atomline;
+      ++outputIdx;
+    }
+
+    atomStream << '\n' << '\n';
+  }
+
+  if (numBonds) {
+    // Bonds - only include bonds where both atoms are in the unique set
+    std::map<std::pair<unsigned char, unsigned char>, int> bondIds;
+    int bondItr = 1;
+    bondStream << "Bonds\n\n";
+    const unsigned int lineSize = 256;
+    Index bondOutputIdx = 0;
+    for (Index i = 0; i < mol2.bondCount(); ++i) {
+      Bond b = mol2.bond(i);
+      // Skip bonds where either atom was filtered out
+      auto it1 = indexMap.find(b.atom1().index());
+      auto it2 = indexMap.find(b.atom2().index());
+      if (it1 == indexMap.end() || it2 == indexMap.end())
+        continue;
+
+      // Use remapped indices (1-based for output)
+      Index newIdx1 = it1->second + 1;
+      Index newIdx2 = it2->second + 1;
+
+      char bondline[lineSize];
+      if (bondIds.find(std::make_pair(b.atom1().atomicNumber(),
+                                      b.atom2().atomicNumber())) !=
+          bondIds.end()) {
+        snprintf(bondline, lineSize - 1, "%-*d %7d %7d %7d\n",
+                 static_cast<int>(log(numAtoms) + 1),
+                 static_cast<int>(bondOutputIdx + 1),
+                 bondIds[std::make_pair(b.atom1().atomicNumber(),
+                                        b.atom2().atomicNumber())],
+                 static_cast<int>(newIdx1), static_cast<int>(newIdx2));
+        bondStream << bondline;
+      } else if (bondIds.find(std::make_pair(b.atom2().atomicNumber(),
+                                             b.atom1().atomicNumber())) !=
+                 bondIds.end()) {
+        snprintf(bondline, lineSize - 1, "%-*d %7d %7d %7d\n",
+                 static_cast<int>(log(numAtoms) + 1),
+                 static_cast<int>(bondOutputIdx + 1),
+                 bondIds[std::make_pair(b.atom1().atomicNumber(),
+                                        b.atom2().atomicNumber())],
+                 static_cast<int>(newIdx2), static_cast<int>(newIdx1));
+        bondStream << bondline;
+      } else {
+        bondIds.insert(std::make_pair(
+          std::make_pair(b.atom1().atomicNumber(), b.atom2().atomicNumber()),
+          bondItr++));
+        snprintf(bondline, lineSize - 1, "%-*d %7d %7d %7d\n",
+                 static_cast<int>(log(numAtoms) + 1),
+                 static_cast<int>(bondOutputIdx + 1),
+                 bondIds[std::make_pair(b.atom1().atomicNumber(),
+                                        b.atom2().atomicNumber())],
+                 static_cast<int>(newIdx1), static_cast<int>(newIdx2));
+        bondStream << bondline;
+      }
+      ++bondOutputIdx;
+    }
+  }
+
+  UnitCell* unitcell = mol2.unitCell();
+  const unsigned int lineSize = 256;
+  char simBoxBlock[lineSize];
+  if (unitcell) {
+    const Matrix3& mat = unitcell->cellMatrix().transpose();
+    snprintf(simBoxBlock, lineSize - 1,
+             "%10f %10f xlo xhi\n%10f %10f ylo yhi\n%10f %10f zlo zhi\n%10f "
+             "%10f %10f xy xz yz",
+             0.0, mat(0, 0), 0.0, mat(1, 1), 0.0, mat(2, 2), mat(1, 0),
+             mat(2, 0), mat(2, 1));
+    outStream << simBoxBlock;
+  } else {
+    snprintf(simBoxBlock, lineSize - 1,
+             "%10f %10f xlo xhi\n%10f %10f ylo yhi\n%10f %10f zlo zhi\n%10f "
+             "%10f %10f xy xz yz",
+             xmin - 0.5, xmax - 0.5, ymin - 0.5, ymax - 0.5, zmin - 0.5,
+             zmax - 0.5, 0.0, 0.0, 0.0);
+    outStream << simBoxBlock;
+  }
+  outStream << '\n' << '\n' << '\n';
+  outStream << massStream.str();
+  outStream << atomStream.str();
+  outStream << bondStream.str();
+
+  return true;
+}
+
+std::vector<std::string> LammpsDataFormat::fileExtensions() const
+{
+  std::vector<std::string> ext;
+  ext.emplace_back("lmpdat");
+  return ext;
+}
+
+std::vector<std::string> LammpsDataFormat::mimeTypes() const
+{
+  std::vector<std::string> mime;
+  mime.emplace_back("N/A");
+  return mime;
+}
+
+} // namespace Avogadro::Io
