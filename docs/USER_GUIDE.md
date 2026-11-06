@@ -1,6 +1,6 @@
-<!-- docs-updated: 2026-11-04 -->
+<!-- docs-updated: 2026-11-06 -->
 
-> This guide primarily describes iOS/iPadOS. Android Alpha21/build 23 adds offline PCAP/PCAPNG analysis, saved Wi-Fi coverage points and scheduled Agent tasks. Open **More → Network → Captures & coverage** to import a capture, or choose Wi-Fi coverage to create a session, add an optional floorplan and sample named points. System access is requested when needed; after granting it, start the check again. Open **Task Center → Scheduled tasks** to choose an instruction, model, workspace, approval policy and schedule. Each run starts a separate conversation; scheduling does not grant extra tool access. Exact timing waits for the required system access; flexible timing is an explicit choice. First use of Linux in a new workspace may prepare the environment; later entries reuse it. GitHub updates are in **Settings → Diagnostics & About** and require Android installation confirmation. Android uses your cloud provider and has no local-model inference. See the [Android release notes](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.21) for actual verification and limits.
+> This guide primarily describes iOS/iPadOS. Start with [From installation to your first result](QUICKSTART.md). Public Android Alpha29 adds bounded static SVG preview and improves Linux graphical sessions and file writeback. If the terminal fails after upgrading, update local runtime components separately. Android uses your cloud model configuration and does not provide local-model inference. Check the [selected release notes](https://www.floe-agent.com/en/releases?platform=android) for capabilities and limits.
 
 <!-- doc-anchor: section-1 -->
 # Floe Agent User Manual
@@ -310,7 +310,7 @@ Background audio can work independently of picture in picture. Closing the float
 
 On Apple silicon Macs, the optional **Floe Bridge** companion can provide this Mac’s terminal without downloading the Linux environment. Connect under **Settings → Execution Environment → Mac Connection**. New unbound tasks can use the connected Mac; existing Linux tasks keep their environment. If the bridge disconnects, reconnect to inspect the original job, or choose the backup environment for a new task. Commands are not replayed automatically.
 
-Mac original Skills and Linux-adapted Skills have separate files and versions. Workspaces, task output and managed dependencies live under **Application Support/Floe Bridge**; the companion’s storage page opens or cleans its owned categories. User-selected external folders are retained. Public companion downloads require a signed, notarized release; this source update does not publish one. [Companion details](FLOE_MAC_BRIDGE.md).
+Mac original Skills and Linux-adapted Skills have separate files and versions. Workspaces, task output and managed dependencies live under **Application Support/Floe Bridge**; the companion’s storage page opens or cleans its owned categories. User-selected external folders are retained. Mac Bridge 1.1.3 has an independent public release; follow the selected version’s installation and system requirements. [Companion details](FLOE_MAC_BRIDGE.md).
 
 ### Web services and full-screen terminals
 

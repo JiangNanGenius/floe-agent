@@ -15,6 +15,10 @@
 
 ## Get started
 
+[From installation to your first result](docs/QUICKSTART.md) · [Full manual](docs/USER_GUIDE.md)
+
+[From installation to your first result](docs/QUICKSTART.md) · [Full manual](docs/USER_GUIDE.md)
+
 Choose an installation channel on the [website](https://www.floe-agent.com/en?utm_source=github&utm_medium=referral&utm_campaign=readme_en#download). Explore the [iOS AI Agent workspace for iPad and iPhone](https://www.floe-agent.com/en/ios-ai-agent?utm_source=github&utm_medium=referral&utm_campaign=readme_en). Check [current status](docs/CURRENT_STATUS.md) and the installation page for each channel’s version, region and eligibility.
 
 <p align="center">

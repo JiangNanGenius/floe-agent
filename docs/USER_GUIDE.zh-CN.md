@@ -1,6 +1,6 @@
-<!-- docs-updated: 2026-11-04 -->
+<!-- docs-updated: 2026-11-06 -->
 
-> 本指南主要介绍 iOS/iPadOS。Android Alpha21／构建23 加入离线 PCAP／PCAPNG 分析、Wi-Fi 覆盖点记录和定时 Agent 任务。打开 **更多 → 网络 → 抓包与覆盖** 导入抓包，或选择 Wi-Fi 覆盖创建会话、添加可选平面图并记录命名采样点；需要时才申请系统授权，授权后请再次开始检查。打开 **任务中心 → 定时任务** 设置指令、模型、工作区、审批方式和时间；每次运行建立独立对话，计划本身不扩大工具权限。精确时间在缺少系统授权时等待，弹性时间需主动选择。新工作区首次使用 Linux 可能需要准备环境，稍后进入会复用。GitHub 更新位于 **设置 → 诊断与关于**，安装需要 Android 系统确认。安卓使用自备云端服务商，不提供本地模型推理。实际验证与限制见 [Android 发布说明](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.21)。
+> 本指南主要介绍 iOS/iPadOS。[从安装到第一个成果](QUICKSTART.zh-CN.md)提供任务式教程。Android 当前公开测试版 Alpha29 增加有界静态 SVG 预览，并完善 Linux 图形会话与文件写回；升级后终端无法启动时，请单独更新本地运行组件。Android 使用自备云端模型，不提供本地模型推理。能力及已知限制以[所选发布说明](https://www.floe-agent.com/releases?platform=android)为准。
 
 <!-- doc-anchor: section-1 -->
 # Floe Agent 使用手册
@@ -346,7 +346,7 @@ iPad 上的 Office 会按当前编辑区域宽度显示完整工具栏；分屏�
 
 在 Apple 芯片 Mac 上，可选的 **Floe Bridge** 提供这台 Mac 的终端，无需先下载 Linux 运行环境。入口为**设置 → 执行环境 → Mac 连接**。新的未绑定任务可使用已连接的 Mac；已有 Linux 任务保留原环境。桥接断开后，重新连接查看原作业，或为新任务选择备用运行环境；不会自动重放命令。
 
-Mac 原版技能与 Linux 适配版分别保留文件和版本。工作区、任务输出和受管理依赖集中在 **Application Support/Floe Bridge** 下，可从桥程序的存储页面打开或清理；用户自行选择的外部文件夹会保留。桥程序公开下载须先完成签名和公证，本次源码更新不代表已发布下载。[桥程序详情](FLOE_MAC_BRIDGE.md)。
+Mac 原版技能与 Linux 适配版分别保留文件和版本。工作区、任务输出和受管理依赖集中在 **Application Support/Floe Bridge** 下，可从桥程序的存储页面打开或清理；用户自行选择的外部文件夹会保留。桥程序Mac Bridge 1.1.3 已有独立发布；请按所选版本的安装与系统要求操作。[桥程序详情](FLOE_MAC_BRIDGE.md)。
 
 ### 网页服务与全屏终端
 

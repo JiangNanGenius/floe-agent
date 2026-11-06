@@ -15,6 +15,10 @@
 
 ## 开始使用
 
+[从安装到第一个成果](docs/QUICKSTART.zh-CN.md) · [完整手册](docs/USER_GUIDE.zh-CN.md)
+
+[从安装到第一个成果](docs/QUICKSTART.zh-CN.md) · [完整手册](docs/USER_GUIDE.zh-CN.md)
+
 从[官网](https://www.floe-agent.com/?utm_source=github&utm_medium=referral&utm_campaign=readme_zh#download)选择安装方式；各渠道的版本、地区和资格分别以[当前状态](docs/CURRENT_STATUS.md)及安装页面为准。也可查看 [iOS AI Agent 与 iPad 工作空间介绍](https://www.floe-agent.com/ios-ai-agent?utm_source=github&utm_medium=referral&utm_campaign=readme_zh)。
 
 <p align="center">

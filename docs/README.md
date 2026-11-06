@@ -99,3 +99,11 @@
 - 已过时的结论就地加"历史"横幅，不删除（保留考古上下文）。
 
 - [Port management and linux.port / 端口管理](FLOE_PORT_MANAGEMENT.md) — 1.7.22 contract; installation availability is tracked in CURRENT_STATUS.
+
+## 任务式快速开始 / Guided quickstart
+
+[从安装到第一个成果](QUICKSTART.zh-CN.md) · [From installation to your first result](QUICKSTART.md)
+
+## 任务式快速开始 / Guided quickstart
+
+[从安装到第一个成果](QUICKSTART.zh-CN.md) · [From installation to your first result](QUICKSTART.md)
