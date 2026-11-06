@@ -32,13 +32,22 @@ The exact saved local App was signed and uploaded without another App build.
 Apple reports `VALID`, unexpired, and available to the existing Floe QA group
 as `IN_BETA_TESTING`. English and Simplified Chinese test notes were read back.
 
-The existing `publictest1` flow was attempted once for 320 after saving its
-prepared review notes. Apple refused submission because the daily two-build
-Beta Review limit had been reached. **320 is not reported as submitted,
-waiting for external review, or publicly installable.** The artifact is retained
-for later submission without rebuilding. Build 315's formal App Store review
-and automatic-release choice remain unchanged. No App GitHub/Feather publication
-is included in this TestFlight-only round.
+The first `publictest1` attempt was refused by Apple's Beta Review submission
+limit; that original refusal is retained. A later actual submission on
+2026-11-06 succeeded without rebuilding or changing the saved artifact. Both
+the page and an independent read-only API inspection report 320 attached to
+the existing group, with `WAITING_FOR_BETA_REVIEW` and one `pending_review`
+submission. This is **submitted and awaiting review**, not yet public
+installation. The API inspection is
+[run 42134314418](https://github.com/JiangNanGenius/floe-agent/actions/runs/42134314418);
+an earlier inspection-driver failure caused by an incorrect notes path is
+retained separately and is not counted as successful verification.
+
+Build 315's formal App Store review and automatic-release choice remain
+unchanged. No App GitHub/Feather publication is included in this TestFlight-only
+round. Subsequent Safari-style chrome, narrower sidebar and pane-local title
+changes are on `main` after the frozen 320 source; they are for the next App
+artifact and are not represented as delivered in 320.
 
 ## Runtime and limits
 
