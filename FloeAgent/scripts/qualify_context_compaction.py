@@ -37,7 +37,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-DEFAULT_DEVELOPER_DIR = "/Applications/Xcode-27.1.app/Contents/Developer"
+DEFAULT_DEVELOPER_DIR = "/Applications/Xcode.app/Contents/Developer"
 EXPECTED_TESTS = (
     "64K: complete settled tool result and whole schemas reach the request",
     "128K: complete settled tool result and whole schemas reach the request",
