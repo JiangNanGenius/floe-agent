@@ -6,18 +6,20 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.util.UUID
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -25,7 +27,7 @@ import org.json.JSONObject
 
 internal data class PreviewComponentState(val installing: Boolean = false, val installed: Boolean = false,
     val downloadedBytes: Long = 0, val totalBytes: Long = 0, val installedBytes: Long = 0,
-    val inUse: Boolean = false, val failure: String? = null)
+    val inUse: Boolean = false, val failure: String? = null, val cancelling: Boolean = false)
 
 /** Immutable Git source + APK-pinned per-file hashes, never a mutable remote manifest.
  * Only viewer assets are downloaded; no executable host/Android code is loaded here. */
@@ -42,12 +44,24 @@ internal class PreviewComponentStore private constructor(context: Context) {
     private val manifest = JSONObject(manifestText)
     private val rows = manifest.getJSONArray("files")
     private val id = manifest.getString("id").also { require(it == "cad-v1") }
-    private val directory = File(root, id)
+    private val commit = ComponentDirectoryCommit(root, id)
+    private val directory = commit.directory
     private val manifestHash = digest(manifestText.toByteArray())
     private val mutable = MutableStateFlow(PreviewComponentState(totalBytes = (0 until rows.length()).sumOf { rows.getJSONObject(it).getLong("bytes") }))
     val state = mutable.asStateFlow()
 
-    fun cancelInstall() { installingJob?.cancel(); downloading?.disconnect() }
+    fun cancelInstall() {
+        val connection = synchronized(gate) {
+            val job = installingJob ?: return
+            if (!state.value.installing || state.value.cancelling) return
+            mutable.update { it.copy(cancelling = true) }
+            job.cancel()
+            downloading
+        }
+        // Closing a network response may block. Keep it off the UI thread,
+        // and capture this attempt's connection, never a later download.
+        scope.launch { runCatching { connection?.disconnect() } }
+    }
 
     fun requestInstallCad() {
         if (state.value.installing) return
@@ -55,7 +69,7 @@ internal class PreviewComponentStore private constructor(context: Context) {
     }
     fun requestUninstallCad() { scope.launch {
         runCatching { uninstallCad() }.onSuccess { removed ->
-            if (!removed) mutable.value = state.value.copy(failure = "component_in_use")
+            mutable.update { it.copy(failure = if (removed) null else "component_in_use") }
         }.onFailure { mutable.value = state.value.copy(failure = "component_remove_failed") }
     } }
 
@@ -77,21 +91,36 @@ internal class PreviewComponentStore private constructor(context: Context) {
     }
 
     private fun ready(): Boolean = runCatching {
-        !Files.isSymbolicLink(directory.toPath()) && File(directory, ".ready").readText() == manifestHash
+        ComponentDirectoryCommit.hasCompletionMarker(directory) && File(directory, ".ready").readText() == manifestHash &&
+            (0 until rows.length()).all { index ->
+                val entry = rows.getJSONObject(index)
+                val file = File(directory, entry.getString("name"))
+                Files.isRegularFile(file.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS) && file.length() == entry.getLong("bytes")
+            }
     }.getOrDefault(false)
 
     private suspend fun ensureInstalled() {
-        if (ready()) { refresh(); return }
-        root.mkdirs()
-        check(!Files.isSymbolicLink(root.toPath()))
-        // Serial ownership proves these previous-process partial downloads are unused.
-        root.listFiles().orEmpty().filter { it.name.startsWith("$id.install-") &&
-            !Files.isSymbolicLink(it.toPath()) }.forEach { it.deleteRecursively() }
-        val stage = File(root, "$id.install-${UUID.randomUUID()}")
-        check(stage.mkdir())
-        installingJob = currentCoroutineContext()[Job]
-        mutable.value = state.value.copy(installing = true, failure = null, downloadedBytes = 0)
+        if (synchronized(gate) { leases.isNotEmpty() }) {
+            if (ready()) { refresh(); return }
+            mutable.update { it.copy(failure = "component_in_use") }
+            error("component_in_use")
+        }
+        var stage: File? = null
+        val installJob = checkNotNull(currentCoroutineContext()[Job])
+        synchronized(gate) { installingJob = installJob }
         try {
+            commit.recover()
+            commit.discardStaleStages()
+            if (ready()) { mutable.update { it.copy(failure = null) }; refresh(); return }
+            check(!Files.isSymbolicLink(root.toPath()))
+            check(root.isDirectory || root.mkdirs())
+            val destination = File(root, "$id.install-${UUID.randomUUID()}")
+            check(destination.mkdir())
+            stage = destination
+            synchronized(gate) {
+                installJob.ensureActive()
+                mutable.update { it.copy(installing = true, cancelling = false, failure = null, downloadedBytes = 0) }
+            }
             for (index in 0 until rows.length()) {
                 currentCoroutineContext().ensureActive()
                 val entry = rows.getJSONObject(index)
@@ -103,14 +132,17 @@ internal class PreviewComponentStore private constructor(context: Context) {
                 require(source.matches(Regex("[a-f0-9]{40}")))
                 val connection = URL("https://raw.githubusercontent.com/JiangNanGenius/floe-agent/$source/${manifest.getString("sourceRoot")}/$name")
                     .openConnection() as HttpURLConnection
-                downloading = connection
+                synchronized(gate) {
+                    installJob.ensureActive()
+                    downloading = connection
+                }
                 try {
                     connection.connectTimeout = 20_000; connection.readTimeout = 20_000
                     connection.instanceFollowRedirects = false
                     check(connection.responseCode == 200)
                     val hash = MessageDigest.getInstance("SHA-256")
                     var bytes = 0L
-                    connection.inputStream.use { input -> File(stage, name).outputStream().use { output ->
+                    connection.inputStream.use { input -> File(destination, name).outputStream().use { output ->
                         val buffer = ByteArray(65_536)
                         while (true) {
                             currentCoroutineContext().ensureActive()
@@ -118,37 +150,56 @@ internal class PreviewComponentStore private constructor(context: Context) {
                             if (count < 0) break
                             bytes += count; check(bytes <= expectedBytes)
                             hash.update(buffer, 0, count); output.write(buffer, 0, count)
-                            mutable.value = state.value.copy(downloadedBytes = state.value.downloadedBytes + count)
+                            mutable.update { it.copy(downloadedBytes = it.downloadedBytes + count) }
                         }
                         output.fd.sync()
                     } }
                     check(bytes == expectedBytes && hex(hash.digest()) == entry.getString("sha256"))
-                } finally { connection.disconnect(); downloading = null }
+                } finally {
+                    connection.disconnect()
+                    synchronized(gate) { if (downloading === connection) downloading = null }
+                }
             }
-            File(stage, ".ready").outputStream().use { it.write(manifestHash.toByteArray()); it.fd.sync() }
+            File(destination, ".ready").outputStream().use { it.write(manifestHash.toByteArray()); it.fd.sync() }
+            currentCoroutineContext().ensureActive()
             check(synchronized(gate) { leases.isEmpty() })
-            if (directory.exists()) check(directory.deleteRecursively())
-            Files.move(stage.toPath(), directory.toPath(), StandardCopyOption.ATOMIC_MOVE)
-            mutable.value = state.value.copy(installing = false)
-            refresh()
+            commit.promote(destination)
         } catch (error: Exception) {
-            stage.deleteRecursively()
-            mutable.value = state.value.copy(installing = false, failure = "component_install_failed")
+            val cancelled = error is CancellationException || !currentCoroutineContext().isActive
+            mutable.update { it.copy(failure = when {
+                error is ComponentDirectoryCommit.RestorePending -> "component_restore_pending"
+                error is ComponentDirectoryCommit.CleanupPending -> "component_cleanup_pending"
+                cancelled -> null
+                else -> "component_install_failed"
+            }) }
+            if (error is ComponentDirectoryCommit.CleanupPending && ready()) return
             throw error
-        } finally { installingJob = null }
+        } finally {
+            stage?.let { pending ->
+                runCatching { commit.discardStage(pending) }.onFailure {
+                    mutable.update { it.copy(failure = if (it.failure == "component_restore_pending")
+                        it.failure else "component_cleanup_pending") }
+                }
+            }
+            synchronized(gate) {
+                if (installingJob === installJob) {
+                    installingJob = null
+                    mutable.update { it.copy(installing = false, cancelling = false) }
+                }
+            }
+            refresh()
+        }
     }
 
     suspend fun uninstallCad(): Boolean = withContext(Dispatchers.IO) { serial.withLock {
         if (synchronized(gate) { leases.isNotEmpty() }) return@withLock false
-        check(!Files.isSymbolicLink(root.toPath()) && !Files.isSymbolicLink(directory.toPath()))
-        val result = !directory.exists() || directory.deleteRecursively()
-        refresh(); result
+        try { commit.uninstall(); true } finally { refresh() }
     } }
     fun refresh() {
         val present = ready()
-        mutable.value = state.value.copy(installed = present,
-            installedBytes = if (present) state.value.totalBytes else 0,
-            inUse = synchronized(gate) { leases.isNotEmpty() })
+        val bytes = commit.storedBytes()
+        val inUse = synchronized(gate) { leases.isNotEmpty() }
+        mutable.update { it.copy(installed = present, installedBytes = bytes, inUse = inUse) }
     }
     companion object {
         @Volatile private var shared: PreviewComponentStore? = null
