@@ -247,8 +247,35 @@ internal class ExternalEditController(private val context: Context, private val 
     suspend fun prepareLinux(owner: ExternalEditOwner, path: String): ExternalEditRecord =
         prepare(owner, path, linux = true)
 
-    /** A trusted guest transfer writes a private candidate, never the authorized
-     * original. The same CAS/provider save path handles Android and Linux edits. */
+    /** Called only after the owning guest has really closed and exported.
+     * Unsettled edits remain reachable through recovery; never discard a copy. */
+    suspend fun finishLinuxAfterStop(id: String) = lock.withLock {
+        val row = records[id] ?: return@withLock
+        if (row.linuxWorkingPath == null || row.phase != ExternalEditPhase.SAVED ||
+            row.pendingSHA256 != null || row.errorCode != null) return@withLock
+        try {
+            val binding = bind(row.owner)
+            host.workspaceEditors.withExternalMutation(row.owner.taskID) {
+                val current = snapshot(row, binding)
+                try {
+                    val copy = measured(working(row))
+                    if (!binding.current()) throw Failure("ownerChanged")
+                    if (ExternalEditPolicy.canFinishLinux(row, copy.first, copy.second,
+                            current.sha256, current.bytes)) finishLocked(row)
+                    else save(row.copy(phase = ExternalEditPhase.PAUSED,
+                        errorCode = "copyChanged", updatedAt = System.currentTimeMillis()))
+                } finally { releaseSnapshot(current) }
+            }
+        } catch (failure: Exception) {
+            val code = (failure as? Failure)?.code ?: "operationFailed"
+            logFailure("finish", code)
+            save(row.copy(phase = ExternalEditPhase.PAUSED, errorCode = code,
+                updatedAt = System.currentTimeMillis()))
+        }
+    }
+
+    /** True means a private candidate was retained, not that the original was
+     * committed. Reconciliation and the durable record own that separate status. */
     suspend fun receiveLinuxSnapshot(id: String, transfer: suspend (File) -> Unit): Boolean {
         val row = lock.withLock {
             val value = records[id] ?: throw Failure("sessionMissing")
@@ -375,7 +402,9 @@ internal class ExternalEditController(private val context: Context, private val 
                 val current = snapshot(row, binding)
                 try {
                     // Recover a commit that landed before its journal ACK, without replaying it.
-                    var needsSourceSync = row.phase == ExternalEditPhase.SOURCE_PENDING
+                    var needsSourceSync = row.sourceID != null &&
+                        (row.phase == ExternalEditPhase.SOURCE_PENDING ||
+                            (row.phase == ExternalEditPhase.PAUSED && row.baselineSHA256 != row.initialSHA256))
                     if (row.pendingSHA256 != null && current.sha256 == row.pendingSHA256 && current.bytes == row.pendingBytes) {
                         row = row.copy(baselineSHA256 = current.sha256, baselineBytes = current.bytes,
                             phase = if (row.sourceID != null) ExternalEditPhase.SOURCE_PENDING else ExternalEditPhase.SAVED,
@@ -386,7 +415,8 @@ internal class ExternalEditController(private val context: Context, private val 
                     val (candidate, edited) = preserve(working(row), id, "candidates")
                     when (ExternalEditPolicy.decide(row.baselineSHA256, current.sha256, edited.first)) {
                         ExternalEditPolicy.Decision.UNCHANGED -> {
-                            save(row.copy(errorCode = null,
+                            save(row.copy(phase = if (needsSourceSync) ExternalEditPhase.SOURCE_PENDING
+                                else ExternalEditPhase.SAVED, errorCode = null,
                                 pendingSHA256 = null, pendingBytes = null, updatedAt = System.currentTimeMillis()))
                             if (needsSourceSync) syncProvider(row, binding)
                             return@withExternalMutation
@@ -432,7 +462,9 @@ internal class ExternalEditController(private val context: Context, private val 
             val code = (error as? Failure)?.code ?: (error as? G04WorkspaceBridgeClient.Failure)?.code ?: "operationFailed"
             logFailure("return", code)
             // Retain pending commit identity on unknown outcomes; no success or blind replay.
-            save(latest.copy(phase = ExternalEditPhase.PAUSED, errorCode = code, updatedAt = System.currentTimeMillis()))
+            save(latest.copy(phase = if (latest.phase == ExternalEditPhase.SOURCE_PENDING)
+                ExternalEditPhase.SOURCE_PENDING else ExternalEditPhase.PAUSED,
+                errorCode = code, updatedAt = System.currentTimeMillis()))
         } catch (_: LinkageError) {
             save((records[id] ?: row).copy(phase = ExternalEditPhase.PAUSED, errorCode = "runtimeUnavailable"))
         } finally {

@@ -62,6 +62,15 @@ internal object ExternalEditPolicy {
     const val MAX_ACTIVE = 16
     enum class Decision { UNCHANGED, ALREADY_COMMITTED, REPLACE, CONFLICT }
 
+    /** After the guest closes, its export must not have undone a saved edit.
+     * An unchanged copy can retire even when another writer advanced the original. */
+    fun canFinishLinux(row: ExternalEditRecord, copySHA: String, copyBytes: Long,
+        currentSHA: String, currentBytes: Long): Boolean =
+        row.linuxWorkingPath != null && row.phase == ExternalEditPhase.SAVED &&
+            row.pendingSHA256 == null && row.errorCode == null &&
+            copySHA == row.baselineSHA256 && copyBytes == row.baselineBytes &&
+            ((currentSHA == copySHA && currentBytes == copyBytes) || copySHA == row.initialSHA256)
+
     fun validPath(path: String): Boolean = path.isNotEmpty() && path.length <= 4096 &&
         path.none { it == '\\' || it.code < 32 } &&
         path.split('/').none { it.isEmpty() || it == "." || it == ".." }

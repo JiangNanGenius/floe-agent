@@ -379,6 +379,9 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
         try {
             withTimeout(120_000) {
                 for ((id, reader) in editReaders) {
+                    // On a retry after successful PTY closure, only the durable
+                    // settlement remains; its live file API is already gone.
+                    if (terminalID == null) break
                     if (!host.externalEdits.hasActiveLinuxEdit(id)) continue
                     check(host.externalEdits.receiveLinuxSnapshot(id) { reader(it) })
                 }
@@ -388,7 +391,6 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
             mutable.value = state.value.copy(phase = "save_pending", failure = "file_return_failed")
             return@withContext false
         }
-        editReaders.clear()
         inventoryNonce = null
         softwareNonce = null
         frames?.cancelAndJoin(); frames = null
@@ -422,6 +424,9 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                 check(host.workspaceTerminal?.closeTab(token) is TerminalActionReply.Success)
                 terminalID = null
             }
+            closeStage = "edits"
+            for (id in editReaders.keys) host.externalEdits.finishLinuxAfterStop(id)
+            editReaders.clear()
             true
         } catch (failure: Exception) {
             reportFileFailure("close_$closeStage", failure)
