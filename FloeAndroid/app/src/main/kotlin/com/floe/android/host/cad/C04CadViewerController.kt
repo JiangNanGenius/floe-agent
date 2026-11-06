@@ -180,6 +180,9 @@ internal class C04CadViewerController(
     private var surface: WebView? = null
 
     @Volatile
+    private var surfaceRequestToken: Long? = null
+
+    @Volatile
     private var stoppingForEpoch: Long? = null
 
     private class Session(
@@ -280,6 +283,7 @@ internal class C04CadViewerController(
             val session = active ?: return
             if (session.token != token) return
             val old = markClosedLocked(session)
+            active = null
             mutableState.value = C04CadViewerState.Idle
             old
         }
@@ -291,14 +295,19 @@ internal class C04CadViewerController(
         retired?.let { retire(it) }
     }
 
-    fun attachSurface(view: WebView) {
+    fun attachSurface(view: WebView, requestToken: Long) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post { attachSurface(view) }
+            mainHandler.post {
+                if (active?.token.let { it == null || it == requestToken }) {
+                    attachSurface(view, requestToken)
+                }
+            }
             return
         }
         synchronized(lock) {
             if (surface === view) {
                 val current = active ?: return
+                if (current.closed || current.token != requestToken || surfaceRequestToken != requestToken) return
                 current.boundSurface = view
                 if (current.assets != null && current.surfaceLoadedFor !== view) {
                     loadSurface(current, view)
@@ -309,9 +318,13 @@ internal class C04CadViewerController(
                 if (old !== view) destroySurfaceLocked(old)
             }
             surface = view
-            active?.boundSurface = view
-            configure(view, active?.dark ?: isDark())
-            val session = active
+            surfaceRequestToken = requestToken
+            // Factory can run before the new request's LaunchedEffect.
+            // Never lend its view to the previous/closed session: that
+            // session's delayed cleanup would destroy the fresh WebView.
+            val session = active?.takeIf { !it.closed && it.token == requestToken }
+            session?.boundSurface = view
+            configure(view, session?.dark ?: isDark())
             if (session?.assets != null) loadSurface(session, view)
         }
     }
@@ -324,6 +337,7 @@ internal class C04CadViewerController(
         synchronized(lock) {
             if (surface === view) {
                 surface = null
+                surfaceRequestToken = null
                 active?.let { if (it.boundSurface === view) it.boundSurface = null }
                 destroySurfaceLocked(view)
             }
@@ -690,6 +704,7 @@ internal class C04CadViewerController(
                     session.token, fileName(session.relativePath), session.format,
                     missing.toList(),
                 )
+                scheduleRenderTimeout(session)
             }
             withContext(Dispatchers.Main.immediate) {
                 val view = surface
@@ -836,6 +851,7 @@ internal class C04CadViewerController(
                 session.token, fileName(session.relativePath), session.format,
                 preview.missing.toList(),
             )
+            scheduleRenderTimeout(session)
         }
         withContext(Dispatchers.Main.immediate) {
             val view = surface
@@ -1261,6 +1277,7 @@ internal class C04CadViewerController(
                     synchronized(lock) {
                         if (surface === view) {
                             surface = null
+                            surfaceRequestToken = null
                             view?.let { destroySurfaceLocked(it) }
                         }
                     }
@@ -1272,6 +1289,7 @@ internal class C04CadViewerController(
 
     private fun loadSurface(session: Session, view: WebView) {
         val token = session.coreSessionID ?: return
+        if (!isCurrent(session) || surface !== view || surfaceRequestToken != session.token) return
         view.setBackgroundColor(
             if (session.dark) 0xFF181E28.toInt() else 0xFFF5F6F8.toInt())
         session.boundSurface = view
@@ -1287,18 +1305,23 @@ internal class C04CadViewerController(
         }
         val theme = if (session.dark) "dark" else "light"
         val language = if (Locale.getDefault().language.startsWith("zh")) "zh" else "en"
-        session.renderTimeout?.cancel()
-        session.renderTimeout = scope.launch {
-            kotlinx.coroutines.delay(45_000L)
-            if (isCurrent(session) && mutableState.value is C04CadViewerState.Rendering) {
-                handleRenderFailure(session, "timeout", "renderTimeout")
-            }
-        }
+        if (session.renderTimeout == null) scheduleRenderTimeout(session)
         val packageQuery = if (session.format == C04CadFormat.FLOECAD) "&package=1" else ""
         view.loadUrl(
             "${C04CadWebAssetServer.ORIGIN}${C04CadWebAssetServer.VIEWER_PATH}" +
                 "?session=$token&theme=$theme&language=$language$packageQuery",
         )
+    }
+
+    private fun scheduleRenderTimeout(session: Session) {
+        session.renderTimeout?.cancel()
+        session.renderTimeout = scope.launch {
+            kotlinx.coroutines.delay(45_000L)
+            if (isCurrent(session) && mutableState.value is C04CadViewerState.Rendering) {
+                handleRenderFailure(session, "timeout",
+                    if (session.surfaceLoadedFor == null) "surfaceUnavailable" else "renderTimeout")
+            }
+        }
     }
 
     private fun destroySurfaceFor(session: Session?) {
@@ -1309,7 +1332,10 @@ internal class C04CadViewerController(
         synchronized(lock) {
             val view = if (session == null) surface else session.boundSurface
             if (view == null) return
-            if (surface === view) surface = null
+            if (surface === view) {
+                surface = null
+                surfaceRequestToken = null
+            }
             if (session != null) {
                 if (session.boundSurface === view) session.boundSurface = null
                 if (session.surfaceLoadedFor === view) session.surfaceLoadedFor = null

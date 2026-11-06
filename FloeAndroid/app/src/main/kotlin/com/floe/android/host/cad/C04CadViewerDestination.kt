@@ -32,6 +32,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -127,7 +128,7 @@ internal fun C04CadViewerDestination(
         FloeDivider()
         Box(Modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
             if (current !is C04CadViewerState.Failed) {
-                C04CadViewerSurface(controller)
+                key(request.token) { C04CadViewerSurface(controller, request.token) }
             }
             when (current) {
                 null, C04CadViewerState.Idle, is C04CadViewerState.Opening -> LoadingOverlay(
@@ -170,7 +171,7 @@ internal fun C04CadViewerDestination(
 }
 
 @Composable
-private fun C04CadViewerSurface(controller: C04CadViewerController) {
+private fun C04CadViewerSurface(controller: C04CadViewerController, requestToken: Long) {
     AndroidView(
         modifier = Modifier.fillMaxSize().testTag("workspace.cadViewer"),
         factory = { context ->
@@ -179,9 +180,9 @@ private fun C04CadViewerSurface(controller: C04CadViewerController) {
                 // WRAP_CONTENT mode, which collapses percentage-height HTML.
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-            }.also { controller.attachSurface(it) }
+            }.also { controller.attachSurface(it, requestToken) }
         },
-        update = { view -> controller.attachSurface(view) },
+        update = { view -> controller.attachSurface(view, requestToken) },
         onRelease = { view -> controller.detachSurface(view) },
     )
 }
