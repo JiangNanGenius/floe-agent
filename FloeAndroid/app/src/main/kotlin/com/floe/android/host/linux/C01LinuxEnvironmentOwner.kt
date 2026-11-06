@@ -113,7 +113,7 @@ object C01LinuxEnvironmentOwner {
             .put("installRequired", phase == "installRequired" || phase == "setupRequired" || phase == "componentRequired")
             .put("retryable", phase == "installing" || phase == "pending" || phase == "stopping")
             .put("contractVersion", runtime?.optString("workloadContractVersion")?.take(64) ?: "")
-            .put("detail", detailFor(phase))
+            .put("detail", detailFor(phase, state.failure))
             .also { receipt ->
                 val environmentID = control.optString("environmentID").take(128)
                 if (environmentID.isNotEmpty()) attached.desktopMetadata?.invoke(environmentID)?.let {
@@ -139,7 +139,7 @@ object C01LinuxEnvironmentOwner {
                     "The existing runtime setup/install flow was started or is waiting for its required user permission. Poll environment.linuxStatus; ready is reported only after the host proves installation.")
             }
             LocalRuntimeSetupHost.Phase.COMPONENT_REQUIRED -> installRequired(attached, control, "The Linux runtime component is missing or does not match the App. Use the existing runtime component install flow; this tool did not start it.")
-            LocalRuntimeSetupHost.Phase.FAILED -> failure(attached, control, "The existing runtime install/setup reported a failure. Open Settings > Local Linux runtime for the actionable retry.")
+            LocalRuntimeSetupHost.Phase.FAILED -> failure(attached, control, detailFor("failed", state.failure))
             LocalRuntimeSetupHost.Phase.UNKNOWN -> refusal(attached, control, "The runtime setup state is not readable yet; nothing was started.")
         }
     }
@@ -244,7 +244,10 @@ object C01LinuxEnvironmentOwner {
         null
     }
 
-    private fun detailFor(phase: String): String = when (phase) {
+    private fun detailFor(phase: String, failure: LinuxSetupDiagnostic? = null): String =
+        if (failure != null && (phase == "failed" || phase == "stopping"))
+            "Linux setup stage=${failure.stage}, code=${failure.code}. Open the existing Local Linux runtime settings for recovery and diagnostic details."
+        else when (phase) {
         "componentRequired" -> "The Linux runtime component is missing or does not match; use the existing runtime component install flow."
         "setupRequired" -> "Notification/setup permission is still required; open Settings > Local Linux runtime."
         "installRequired" -> "The Linux rootfs is not installed; open Settings > Local Linux runtime and complete the existing install."

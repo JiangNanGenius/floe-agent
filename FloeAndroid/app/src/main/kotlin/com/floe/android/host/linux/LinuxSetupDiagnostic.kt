@@ -14,8 +14,8 @@ data class LinuxSetupDiagnostic(val code: String, val stage: String, val excepti
         "CONTENT_UNDERFLOW", "ARCHIVE_TOO_LARGE" -> "archive"
         "COMPONENT_CANCELLED" -> "cancelled"
         "COMPONENT_BLOCKED", "SecurityException" -> "permission"
-        "RUNTIME_BUSY" -> "busy"
-        "RUNTIME_CONNECTION_FAILED" -> "runtime"
+        "RUNTIME_BUSY", "environment_transaction_busy", "environment_transaction_requires_idle" -> "busy"
+        "RUNTIME_CONNECTION_FAILED", "runtime_not_ready" -> "runtime"
         "COMPONENT_INCOMPATIBLE" -> "compatibility"
         else -> "unknown"
     }

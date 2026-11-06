@@ -147,7 +147,8 @@ class LocalRuntimeSetupHost(context: Context, private val scope: CoroutineScope)
                     val envelope = client.exchange("install.start", requestID = id)
                     if (!envelope.getBoolean("ok")) {
                         admitted = false // authenticated, explicit admission refusal
-                        throw LinuxSetupException(LinuxSetupDiagnostic.fromFields("RUNTIME_BUSY", stage))
+                        throw LinuxSetupException(LinuxSetupDiagnostic.fromFields(
+                            envelope.optString("code", "OPERATION_NOT_ADMITTED"), stage))
                     }
                     val receipt = result(envelope)
                     check(receipt.getString("requestID") == id)
@@ -263,7 +264,8 @@ class LocalRuntimeSetupHost(context: Context, private val scope: CoroutineScope)
     }
 
     private fun result(response: JSONObject): JSONObject {
-        check(response.getBoolean("ok"))
+        if (!response.getBoolean("ok")) throw LinuxSetupException(LinuxSetupDiagnostic.fromFields(
+            response.optString("code", "OPERATION_FAILED"), "status"))
         return response.getJSONObject("result")
     }
 
