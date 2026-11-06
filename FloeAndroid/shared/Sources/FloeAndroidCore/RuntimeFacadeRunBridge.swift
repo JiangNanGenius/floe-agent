@@ -217,6 +217,8 @@ public enum RunDomainFacade {
                 reply = await domain.skillCancel(envelope: envelope)
             case "run.snapshot":
                 reply = await domain.snapshot(envelope: envelope)
+            case "run.events":
+                reply = await domain.eventHistory(envelope: envelope)
             case "child.list":
                 reply = await domain.childList(envelope: envelope)
             case "child.entries":

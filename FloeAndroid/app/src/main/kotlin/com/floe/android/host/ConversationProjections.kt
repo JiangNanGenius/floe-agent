@@ -851,10 +851,31 @@ class ThreadProjectionBuilder internal constructor(
             }
             else -> Unit
         }
-        // Durable event record (bounded, typed).
+        recordRunEvent(frame)
+    }
+
+    private val historicalEarlier = mutableMapOf<String, Int?>()
+
+    /** Journal replay is display-only: never replay state/CAS/approval or live-tail effects. */
+    internal fun applyRecordedEvents(runID: String, frames: List<HostRunEventFrame>, hasEarlier: Boolean, browsingEarlier: Boolean = false) {
+        frames.forEach { recordRunEvent(it, trim = false) }
+        val list = runEvents[runID] ?: return
+        // Keep the window the user is browsing; older-page requests must progress.
+        list.sortBy { it.sequence }
+        if (list.size > 512) {
+            if (browsingEarlier) list.subList(512, list.size).clear()
+            else list.subList(0, list.size - 512).clear()
+        }
+        historicalEarlier[runID] = if (hasEarlier) frames.minOfOrNull { it.sequence.toInt() } else null
+    }
+
+    private fun recordRunEvent(frame: HostRunEventFrame, trim: Boolean = true) {
+        val kind = frame.kind
+        val payload = frame.payload
         val list = runEvents.getOrPut(frame.runID) { mutableListOf() }
+        if (list.any { it.sequence.toLong() == frame.sequence }) return
         run {
-            if (list.size >= 512) list.removeAt(0)
+            if (trim && list.size >= 512) list.removeAt(0)
             list.add(
                 RunEventUi(
                     id = "${frame.runID}:${frame.sequence}",
@@ -1174,11 +1195,17 @@ class ThreadProjectionBuilder internal constructor(
         fun appendRecordedActivity(runId: String?) {
             if (runId == null || !projectedEventRuns.add(runId)) return
             val events = runEvents[runId].orEmpty().sortedBy { it.sequence }
+            historicalEarlier[runId]?.let { rows.add(TimelineRowUi.EarlierEvents(runId, it)) }
+            // Cold runs may have assistant segments but no final persisted message.
+            if (assistantMessages.values.none { it.runId == runId }) {
+                events.filter { it.kind == RunEventKindUi.ASSISTANT_TEXT && !it.assistantText.isNullOrBlank() }
+                    .forEach { rows.add(TimelineRowUi.AssistantMessage("recorded:${it.id}", it.assistantText!!)) }
+            }
             val tools = events.filter {
-                it.tool != null && it.kind in setOf(
+                it.kind == RunEventKindUi.REASONING || (it.tool != null && it.kind in setOf(
                     RunEventKindUi.TOOL_REQUEST, RunEventKindUi.TOOL_RESULT,
                     RunEventKindUi.APPROVAL, RunEventKindUi.AUTO_APPROVED,
-                )
+                ))
             }
             if (tools.isNotEmpty()) {
                 rows.add(TimelineRowUi.StepGroup("$runId:recorded-tools", tools, runId == selectedRunId))

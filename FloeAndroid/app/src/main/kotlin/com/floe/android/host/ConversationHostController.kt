@@ -585,6 +585,7 @@ class ConversationHostController internal constructor(
     internal fun stop() {
         eventPumps.values.forEach { it.close() }
         eventPumps.clear()
+        recordedHistoryReads.clear()
         // C09: root teardown closes every queue-settle watch and drops the
         // coalescing bookkeeping (the watchers are pure observation — no
         // durable state to settle; late callbacks fence on identity anyway).
@@ -1892,6 +1893,8 @@ class ConversationHostController internal constructor(
             // pump there would poll `notAttached` forever.
             if (ConversationWire.isActiveState(run.state)) {
                 openRunEventStream(session, entry, run.runID)
+            } else {
+                loadRecordedRunEvents(session, entry, run.runID)
             }
         }
     }
@@ -4159,22 +4162,54 @@ class ConversationHostController internal constructor(
         return true
     }
 
-    override fun loadEarlierEvents(session: ConversationSessionToken, cursor: EventCursor): Boolean {
-        // The durable event pump replays the run's append-only thread from
-        // sequence 0 and pages forward automatically; there is no separate
-        // "older events" command in the frozen matrix. Honest: an event page
-        // is already being delivered by the live pump, so only claim the
-        // action when a pump really owns this run.
-        val entry = holders[session.conversationId] ?: return false
-        val runID = currentRunId(session) ?: return false
-        if (eventPumps.containsKey(runID)) return true
-        // No live pump (e.g. a terminal run): open the durable stream so the
-        // stored history is actually re-read instead of pretending.
-        if (!ConversationWire.isActiveState(entry.builder.runStateName(runID) ?: "")) {
-            openRunEventStream(session, entry, runID)
-            return true
+    private val recordedHistoryReads = ConcurrentHashMap<String, Long>()
+
+    private fun loadRecordedRunEvents(
+        session: ConversationSessionToken,
+        entry: ConversationFlowHolderEntry,
+        runID: String,
+        beforeSequence: Long? = null,
+    ) {
+        val generation = currentRunStreamGeneration(session.conversationId, runID)
+        val readKey = "${session.conversationId}/${session.sessionEpoch}/$runID"
+        val request = recordedHistoryReads.merge(readKey, 1L, Long::plus)!!
+        val payload = mutableMapOf<String, JsonElement>("limit" to JsonPrimitive(100))
+        beforeSequence?.let { payload["beforeSequence"] = JsonPrimitive(it) }
+        host.trackOperation(HostCommandRequest(
+            command = "run.events",
+            scope = HostScope.TaskExecution(session.conversationId, runID, null, null),
+            stateful = false,
+            correlationID = client().correlationID("rhistory"),
+            payload = JsonObject(payload),
+        )) { outcome ->
+            if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) ||
+                currentRunStreamGeneration(session.conversationId, runID) != generation ||
+                recordedHistoryReads[readKey] != request) return@trackOperation
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    val page = RecordedRunHistory.decode(outcome.value, session.conversationId, runID, beforeSequence)
+                    if (page == null) entry.builder.actionError("eventProtocolMismatch")
+                    else entry.builder.applyRecordedEvents(runID, page.frames, page.hasEarlier, browsingEarlier = beforeSequence != null)
+                }
+                is HostOperationOutcome.Rejected -> entry.builder.actionError(outcome.code)
+                is HostOperationOutcome.Failed -> entry.builder.actionError(outcome.code)
+                HostOperationOutcome.Cancelled, HostOperationOutcome.Superseded -> return@trackOperation
+            }
+            entry.holder.applyHostSnapshot(entry.builder.build())
         }
-        return false
+    }
+
+    override fun loadEarlierEvents(session: ConversationSessionToken, cursor: EventCursor): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return false
+        // Keep the actual native spelling and the run named by the cursor;
+        // the selected run may have changed since this older row was shown.
+        val runID = entry.builder.runIds().firstOrNull {
+            runCatching { java.util.UUID.fromString(it) }.getOrNull() == cursor.runID
+        } ?: return false
+        if (cursor.sequence <= 0) return false
+        loadRecordedRunEvents(session, entry, runID, cursor.sequence)
+        return true
     }
 
     // ----------------------------------------------------------- attachments

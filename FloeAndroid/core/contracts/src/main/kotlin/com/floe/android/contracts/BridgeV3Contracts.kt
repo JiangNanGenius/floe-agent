@@ -241,6 +241,7 @@ object BridgeV3CommandMatrix {
         rule("run.policy.update", BridgeV3Scope.Kind.TASK_EXECUTION, revision = true),
         rule("run.skillcancel", BridgeV3Scope.Kind.TASK_EXECUTION, revision = true),
         rule("run.snapshot", BridgeV3Scope.Kind.TASK_EXECUTION),
+        rule("run.events", BridgeV3Scope.Kind.TASK_EXECUTION),
         rule("child.list", BridgeV3Scope.Kind.TASK_EXECUTION),
         rule("child.entries", BridgeV3Scope.Kind.TASK_EXECUTION),
         rule("event.poll", BridgeV3Scope.Kind.TASK_EXECUTION, runEventPoll = true),

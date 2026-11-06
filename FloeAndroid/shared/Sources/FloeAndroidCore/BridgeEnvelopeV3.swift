@@ -234,6 +234,7 @@ public enum BridgeV3 {
         CommandRule(command: "run.skillcancel", scope: .taskExecution,
                     revisionRequired: true),
         CommandRule(command: "run.snapshot", scope: .taskExecution, revisionRequired: false),
+        CommandRule(command: "run.events", scope: .taskExecution, revisionRequired: false),
         CommandRule(command: "child.list", scope: .taskExecution, revisionRequired: false),
         CommandRule(command: "child.entries", scope: .taskExecution, revisionRequired: false),
         CommandRule(command: "event.poll", scope: .taskExecution, revisionRequired: false,
