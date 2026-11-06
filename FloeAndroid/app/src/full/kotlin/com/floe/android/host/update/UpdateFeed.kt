@@ -76,17 +76,7 @@ internal class GitHubAndroidReleaseFeed(
     }
 
     private fun readBounded(input: InputStream, limit: Long): String {
-        val builder = StringBuilder()
-        val buffer = ByteArray(16 * 1024)
-        var total = 0L
-        while (true) {
-            val count = input.read(buffer)
-            if (count < 0) break
-            total += count
-            if (total > limit) throw FeedFailure.Transport("feed-oversized")
-            builder.append(String(buffer, 0, count, Charsets.UTF_8))
-        }
-        return builder.toString()
+        return UpdateTextReader.read(input, limit) { throw FeedFailure.Transport("feed-oversized") }
     }
 
     companion object {

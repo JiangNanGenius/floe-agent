@@ -1128,17 +1128,7 @@ internal class UpdateDownloader(
     }
 
     private fun readBounded(input: InputStream, limit: Long): String {
-        val builder = StringBuilder()
-        val buffer = ByteArray(8 * 1024)
-        var total = 0L
-        while (true) {
-            val count = input.read(buffer)
-            if (count < 0) break
-            total += count
-            if (total > limit) throw IOException("checksums-oversized")
-            builder.append(String(buffer, 0, count, Charsets.UTF_8))
-        }
-        return builder.toString()
+        return UpdateTextReader.read(input, limit) { throw IOException("checksums-oversized") }
     }
 
     private fun sha256(file: File): String = sha256(null, file)

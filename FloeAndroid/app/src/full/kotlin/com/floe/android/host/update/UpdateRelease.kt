@@ -151,6 +151,8 @@ internal object ReleaseKnownIssues {
                 continue
             }
             if (depth > 0 && depth <= headingDepth) break
+            val rule = line.filterNot { it.isWhitespace() }
+            if (rule.length >= 3 && rule.first() in "-*_" && rule.all { it == rule.first() }) break
             lines += line.trimStart('-', '*', ' ').replace("**", "").replace("`", "")
             if (lines.sumOf { it.length } > MAX_CHARS) break
         }

@@ -8,6 +8,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -16,6 +17,8 @@ import com.floe.android.design.*
 import com.floe.android.feature.remote.RemoteVncViewerPage
 import com.floe.android.host.RuntimeHost
 import com.floe.android.host.linux.LinuxDesktopCommands
+import com.floe.android.host.linux.LocalRuntimeSettingsCard
+import com.floe.android.host.linux.LocalRuntimeSetupHost
 import com.floe.android.host.remote.C05VncInput
 
 @Composable
@@ -23,6 +26,9 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
     selectedPath: String, onDismiss: () -> Unit) {
     val service = host.linuxDesktop
     val state by service.state.collectAsState()
+    val setup = (LocalContext.current.applicationContext as FloeApplication).linuxSetup
+    val environment by setup.state.collectAsState()
+    LaunchedEffect(setup) { setup.engage() }
     val compact = LocalConfiguration.current.screenWidthDp < 840
     var desktop by remember(workspaceID) { mutableStateOf(!compact) }
     var install by remember(workspaceID) { mutableStateOf(true) }
@@ -97,8 +103,14 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
                     if (viewer != null) FloeCapsuleButton(stringResource(R.string.linux_desktop_return),
                         onClick = { softwareVisible = false })
                     val busy = owned && state.phase in setOf("starting", "installing", "running")
+                    val environmentReady = environment.phase == LocalRuntimeSetupHost.Phase.INSTALLED
+                    if (!environmentReady && viewer == null) {
+                        FloeText(stringResource(R.string.linux_desktop_setup_required), color = Floe.colors.secondaryLabel)
+                        LocalRuntimeSettingsCard()
+                    }
                     FloeCapsuleButton(stringResource(R.string.linux_desktop_start),
-                        onClick = { service.start(taskID, workspaceID, desktop, install) }, enabled = !busy, prominent = true)
+                        onClick = { service.start(taskID, workspaceID, desktop, install) },
+                        enabled = !busy && environmentReady, prominent = true)
                     if (busy) FloeCapsuleButton(stringResource(R.string.linux_desktop_stop), onClick = { stopRequested = true })
                     if (!owned && state.workspaceID != null) FloeText(stringResource(R.string.linux_desktop_switch_notice))
                     FloeText(stringResource(R.string.linux_desktop_software))

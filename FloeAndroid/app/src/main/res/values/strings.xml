@@ -598,6 +598,7 @@
     <string name="linux_desktop_single">Single app</string>
     <string name="linux_desktop_windows">Desktop</string>
     <string name="linux_desktop_install_base">Install missing graphical components</string>
+    <string name="linux_desktop_setup_required">Set up or update the local environment before starting this session.</string>
     <string name="linux_desktop_start">Start session</string>
     <string name="linux_desktop_switch_notice">Starting here stops the current graphical session. Save your work first.</string>
     <string name="linux_desktop_software">Choose an application</string>
