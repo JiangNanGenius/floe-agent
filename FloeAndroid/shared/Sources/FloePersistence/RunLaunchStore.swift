@@ -69,6 +69,9 @@ public struct RunLaunchRequest: Sendable, Hashable {
     /// nonempty, foreign, notes, archived/deleted or contradictory header is
     /// refused exactly like before; nothing is ever auto-healed or moved.
     public var activatesEmptyOrdinaryHeader: Bool = false
+    /// Trusted first-send selection; nil preserves the original row.
+    /// Never applied once messages, runs or committed attachments exist.
+    public var explicitInitialApprovalMode: TaskApprovalMode? = nil
 
     public init(
         conversationID: UUID? = nil,
@@ -388,6 +391,19 @@ public actor SQLiteRunLaunchStore: ExistingConversationRunLaunchStore, AtomicInt
                 }
                 // Existing correct canonical workspace is reused as-is.
                 owningWorkspaceID = existingOwner
+                if request.activatesEmptyOrdinaryHeader,
+                   eligibleEmptyOrdinaryHeader,
+                   let mode = request.explicitInitialApprovalMode,
+                   try Self.isGenuinelyEmptyHeader(
+                    db, conversationID: conversation.id, allowingPolicy: true) {
+                    // Workspace preparation can already have materialized a
+                    // default row. Adopt only the human's explicit mode in
+                    // this SAME launch transaction; preserve every ceiling,
+                    // grant and other policy field. Failed prepare rolls back.
+                    try db.execute(
+                        sql: "UPDATE task_policies SET approval_mode = ?, updated_at = ? WHERE conversation_id = ?",
+                        arguments: [mode.rawValue, PersistenceCodec.encode(now), conversation.id.uuidString])
+                }
                 // Canonical convergence (2026-10-29): ownership can be
                 // pre-bound WITHOUT a task_policies row (terminal-first
                 // ensureWorkspace, keep promotion, workspace move). Without
@@ -695,7 +711,7 @@ public actor SQLiteRunLaunchStore: ExistingConversationRunLaunchStore, AtomicInt
     /// have NO runs, messages, committed attachments or task-policy rows
     /// yet (ownership absence was already established by the caller site).
     private static func isGenuinelyEmptyHeader(
-        _ db: Database, conversationID: UUID
+        _ db: Database, conversationID: UUID, allowingPolicy: Bool = false
     ) throws -> Bool {
         func noRows(_ sql: String) throws -> Bool {
             try Bool.fetchOne(db, sql: sql, arguments: [conversationID.uuidString]) == false
@@ -703,7 +719,7 @@ public actor SQLiteRunLaunchStore: ExistingConversationRunLaunchStore, AtomicInt
         return try noRows("SELECT EXISTS(SELECT 1 FROM runs WHERE conversation_id = ?)")
             && noRows("SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id = ?)")
             && noRows("SELECT EXISTS(SELECT 1 FROM attachments WHERE conversation_id = ?)")
-            && noRows("SELECT EXISTS(SELECT 1 FROM task_policies WHERE conversation_id = ?)")
+            && (allowingPolicy || noRows("SELECT EXISTS(SELECT 1 FROM task_policies WHERE conversation_id = ?)"))
     }
 
     private static func conversation(from row: Row) throws -> ConversationRecord {

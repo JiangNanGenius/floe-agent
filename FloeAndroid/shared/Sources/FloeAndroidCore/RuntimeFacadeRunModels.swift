@@ -521,6 +521,9 @@ public struct RunStartQuery: Sendable, Equatable {
     /// model or user text). nil keeps the persisted task policy ceiling.
     public var hostToolCeiling: [String]?
     public var policy: DraftTaskPolicy
+    /// Presence of the existing wire key, distinct from its default .ask.
+    /// Only an explicit first-send selection may update an empty task row.
+    public var explicitInitialApprovalMode: TaskApprovalMode?
     /// Optional REAL environment/job identities. When present the domain
     /// proves them against the trusted ownership ports; G02 cannot resolve
     /// Linux roles, so a REQUESTED role that cannot be proven real is
@@ -546,7 +549,8 @@ public struct RunStartQuery: Sendable, Equatable {
                 policy: DraftTaskPolicy = DraftTaskPolicy(),
                 requestedEnvironmentID: String? = nil,
                 requestedJobID: String? = nil,
-                goalDefinition: StructuredGoalDefinition? = nil) {
+                goalDefinition: StructuredGoalDefinition? = nil,
+                explicitInitialApprovalMode: TaskApprovalMode? = nil) {
         self.conversationID = conversationID
         self.goal = goal
         self.mode = mode
@@ -558,6 +562,7 @@ public struct RunStartQuery: Sendable, Equatable {
         self.requestedEnvironmentID = requestedEnvironmentID
         self.requestedJobID = requestedJobID
         self.goalDefinition = goalDefinition
+        self.explicitInitialApprovalMode = explicitInitialApprovalMode
     }
 
     public static let allowedKeys: Set<String> = [
@@ -624,7 +629,9 @@ public struct RunStartQuery: Sendable, Equatable {
             policy: policy,
             requestedEnvironmentID: try object.optionalString("environmentID", maxBytes: 64),
             requestedJobID: try object.optionalString("jobID", maxBytes: 64),
-            goalDefinition: goalDefinition)
+            goalDefinition: goalDefinition,
+            explicitInitialApprovalMode: try object.optionalString("approvalMode", maxBytes: 24) == nil
+                ? nil : policy.approvalMode)
     }
 
     static func approvalMode(_ object: RunPayloadReader.Object) throws -> TaskApprovalMode {

@@ -11,6 +11,7 @@ import com.floe.android.feature.conversation.RunningInputRequest
 import androidx.compose.ui.text.input.TextFieldValue
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
@@ -198,6 +199,8 @@ class ConversationOrdinaryPathTest {
         @Volatile var pendingApproval = false
         var approvalEventWatermark = false
         var archiveAccepted = true
+        val questionReads = AtomicInteger()
+        @Volatile var questionReply: (() -> String)? = null
     }
 
     private fun client(exchange: HostBridgeExchange) = RuntimeHostCommandClient(
@@ -224,6 +227,12 @@ class ConversationOrdinaryPathTest {
             raw.contains("\"operation\":\"effect.poll\"") -> {
                 val receiptTag = receiptOf(raw)
                 when (receiptTag) {
+                    "op:v1:questionPending" -> {
+                        script.questionReads.incrementAndGet()
+                        effectPage(correlation, "questionPending", accepted(
+                            script.questionReply?.invoke()
+                                ?: """{"schema":"floe.question.v1","conversationID":"$conversationId","requests":[]}"""))
+                    }
                     "op:v1:providers" -> effectPage(
                         correlation, "providers",
                         accepted("""{"rows":[${providerRow()}]}"""),
@@ -385,6 +394,8 @@ class ConversationOrdinaryPathTest {
                 receipt(correlation, "prefsave")
             raw.contains("\"command\":\"conversation.get\"") ->
                 receipt(correlation, "conversationGet")
+            raw.contains("\"command\":\"question.pending\"") ->
+                receipt(correlation, "questionPending")
             raw.contains("\"command\":\"run.start\"") ->
                 receipt(correlation, "runStart")
             raw.contains("\"command\":\"run.snapshot\"") ->
@@ -551,6 +562,47 @@ class ConversationOrdinaryPathTest {
             val payload = exchange.commandsOf("run.start").single()["payload"]!!.jsonObject
             assertEquals("automatic", payload["approvalMode"]!!.jsonPrimitive.content)
             assertTrue(exchange.commandsOf("run.policy.update").isEmpty())
+        } finally { host.stop() }
+    }
+
+    @Test
+    fun approvedPhoneToolDiscoversHandoverCreatedAfterItsApprovalSnapshot() = runBlocking {
+        val script = LocalScript().apply { runState = "executingTool" }
+        val approved = AtomicBoolean(false)
+        val sent = AtomicBoolean(false)
+        val postApprovalReads = AtomicInteger()
+        script.questionReply = {
+            val ready = approved.get() && postApprovalReads.incrementAndGet() > 1
+            val requests = if (!ready) "" else """{
+                "requestID":"uq_phone","requestDigest":"${"a".repeat(64)}",
+                "conversationID":"$conversationId","runID":"$runId","toolCallID":"$callId",
+                "waitPolicy":"required","state":"awaitingAnswer","isEphemeral":false,
+                "createdAt":"$requestedAt","updatedAt":"$requestedAt","currentQuestionID":"uq_phone.q1",
+                "questions":[{"questionID":"uq_phone.q1","ordinal":0,"localID":"presence",
+                "text":"Allow this task to use the screen?","options":[{"id":"allow","label":"Allow"}],
+                "selectionMode":"single","allowsFreeText":false,"waitPolicy":"required",
+                "status":"pending","revision":1,"answerNonce":"nonce-phone-1",
+                "createdAt":"$requestedAt","updatedAt":"$requestedAt"}]}"""
+            """{"schema":"floe.question.v1","conversationID":"$conversationId","requests":[$requests]}"""
+        }
+        script.eventScript = { correlation ->
+            if (sent.compareAndSet(false, true)) {
+                approved.set(true)
+                eventPage(correlation, "attached", "[" +
+                    event(1, "toolRequest", """{"id":"$callId","tool":"phone.observe","input":"{}","status":"pending"}""") + "," +
+                    event(2, "approval", """{"callID":"$callId","tool":"phone.observe","outcome":"runtime.agent_runtime.approved"}""") + "]", 2)
+            } else eventPage(correlation, "attached", nextSequence = 2)
+        }
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        try {
+            val holder = loadedHolder(host)
+            assertTrue("an executing phone tool must discover its authoritative handover without another run event",
+                awaitCondition(4_000) { holder.currentUserQuestion?.questionId == "uq_phone.q1" })
+            assertTrue(postApprovalReads.get() >= 2)
+            assertEquals("allow", holder.currentUserQuestion!!.options.single().id)
+            assertTrue(exchange.commandsOf("question.answer").isEmpty())
+            assertTrue(exchange.commandsOf("run.start").isEmpty())
         } finally { host.stop() }
     }
 

@@ -298,6 +298,90 @@ final class TaskPolicyConvergenceTests: XCTestCase {
         // snapshot page passes the guard on the first human gesture.
     }
 
+    func testExplicitFirstModeCommitsWithPreboundHeaderWithoutWideningCeilings() async throws {
+        let manager = try await migrated()
+        let id = UUID()
+        try await seedConversation(manager, id: id)
+        try await seedOwnershipWithoutPolicy(manager, conversationID: id)
+        let originalStamp = "2026-10-21T09:00:00.000Z"
+        try await manager.writer { db in
+            try db.execute(sql: """
+                INSERT INTO task_policies
+                (conversation_id, approval_mode, allowed_tool_names_json, network_allowed,
+                 recovery_policy, notification_policy, updated_at)
+                VALUES (?, 'ask', '["phone.observe"]', 0, 'safePoint', 'critical', ?)
+                """, arguments: [id.uuidString, originalStamp])
+        }
+        let launch = SQLiteRunLaunchStore(database: manager)
+        var request = RunLaunchRequest(conversationID: id, goal: "first choice",
+                                      initialPolicy: DraftTaskPolicy(approvalMode: .automatic))
+        request.activatesEmptyOrdinaryHeader = true
+        request.explicitInitialApprovalMode = .automatic
+        _ = try await launch.prepare(request)
+        let firstProbe = try await policyProbe(manager, conversationID: id)
+        let first = try XCTUnwrap(firstProbe)
+        XCTAssertEqual(first.approvalMode, "automatic")
+        XCTAssertEqual(first.allowedToolNamesJSON, "[\"phone.observe\"]")
+        XCTAssertEqual(first.networkAllowed, 0)
+        XCTAssertEqual(first.recoveryPolicy, "safePoint")
+        XCTAssertEqual(first.notificationPolicy, "critical")
+        XCTAssertNotEqual(first.updatedAt, originalStamp)
+
+        // Once used, a later launch must use run.policy.update instead.
+        var later = RunLaunchRequest(conversationID: id, goal: "follow-up")
+        later.activatesEmptyOrdinaryHeader = true
+        later.explicitInitialApprovalMode = .fullAccess
+        _ = try await launch.prepare(later)
+        let afterProbe = try await policyProbe(manager, conversationID: id)
+        let after = try XCTUnwrap(afterProbe)
+        XCTAssertEqual(after.approvalMode, "automatic")
+        XCTAssertEqual(after.updatedAt, first.updatedAt)
+    }
+
+    func testExplicitFirstModeRollsBackWhenTheRunInsertFails() async throws {
+        let manager = try await migrated()
+        let id = UUID()
+        try await seedConversation(manager, id: id)
+        try await seedOwnershipWithoutPolicy(manager, conversationID: id)
+        let stamp = "2026-10-21T09:00:00.000Z"
+        try await manager.writer { db in
+            try db.execute(sql: """
+                INSERT INTO task_policies
+                    (conversation_id, approval_mode, recovery_policy, notification_policy, updated_at)
+                VALUES (?, 'ask', 'safePoint', 'stages', ?)
+                """, arguments: [id.uuidString, stamp])
+            try db.execute(sql: """
+                CREATE TRIGGER reject_policy_probe BEFORE INSERT ON runs
+                BEGIN SELECT RAISE(ABORT, 'injected run insert failure'); END
+                """)
+        }
+        var request = RunLaunchRequest(conversationID: id, goal: "rollback choice")
+        request.activatesEmptyOrdinaryHeader = true
+        request.explicitInitialApprovalMode = .automatic
+        do {
+            _ = try await SQLiteRunLaunchStore(database: manager).prepare(request)
+            XCTFail("injected failure must reject the launch")
+        } catch { }
+        let probe = try await policyProbe(manager, conversationID: id)
+        let row = try XCTUnwrap(probe)
+        XCTAssertEqual(row.approvalMode, "ask")
+        XCTAssertEqual(row.updatedAt, stamp)
+        let runs = try await SQLiteRunStore(database: manager).runs(conversationID: id)
+        XCTAssertTrue(runs.isEmpty)
+    }
+
+    func testOnlyPresentWireModeCarriesAnExplicitFirstChoice() throws {
+        let payload: [String: SettingsDomainV1.JSONValue] = [
+            "goal": .string("first"), "mode": .string("chat"),
+            "providerID": .string(UUID().uuidString), "modelID": .string(UUID().uuidString)]
+        let absent = try RunStartQuery.parse(payload: .object(payload), conversationID: UUID())
+        XCTAssertNil(absent.explicitInitialApprovalMode)
+        var explicit = payload
+        explicit["approvalMode"] = .string("automatic")
+        let present = try RunStartQuery.parse(payload: .object(explicit), conversationID: UUID())
+        XCTAssertEqual(present.explicitInitialApprovalMode, .automatic)
+    }
+
     func testOrphanUsedHeaderRefusalMaterializesNothing() async throws {
         let manager = try await migrated()
         let conversationID = UUID()

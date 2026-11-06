@@ -44,6 +44,7 @@ import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.github.robinpcrd.cupertino.CupertinoAlertDialog
 import io.github.robinpcrd.cupertino.CupertinoButton
@@ -547,14 +548,42 @@ fun io.github.robinpcrd.cupertino.section.SectionScope.FloeSwitchRow(
 
 @Composable
 fun io.github.robinpcrd.cupertino.section.SectionScope.FloeValueRow(title: String, value: String, onClick: (() -> Unit)? = null) {
+    val compact = LocalFloeCompactSettings.current
     SectionItem(
         paddingValues = floeSettingsRowPadding(),
         modifier = if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier,
-        title = { FloeText(title, style = Floe.typography.body) },
-        trailingContent = {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                FloeText(value, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
-                if (onClick != null) IconGlyph(FloeIcons.ChevronForward, Floe.colors.tertiaryLabel, 14.dp)
+        title = {
+            if (compact) {
+                // The native trailing slot measures its value first. A long
+                // model name could leave only a few glyphs for the label.
+                // Share the available row width on phones; full strings
+                // remain in semantics and the chooser, with honest sp scaling.
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .heightIn(min = FloeLayout.MinimumTarget)
+                        .semantics { contentDescription = "$title: $value" },
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FloeText(title, style = Floe.typography.body, modifier = Modifier.weight(1f))
+                    FloeText(
+                        value,
+                        style = Floe.typography.metadata.copy(textAlign = TextAlign.End),
+                        color = Floe.colors.secondaryLabel,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (onClick != null) IconGlyph(FloeIcons.ChevronForward, Floe.colors.tertiaryLabel, 14.dp)
+                }
+            } else FloeText(title, style = Floe.typography.body)
+        },
+        trailingContent = if (compact) null else {
+            {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FloeText(value, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                    if (onClick != null) IconGlyph(FloeIcons.ChevronForward, Floe.colors.tertiaryLabel, 14.dp)
+                }
             }
         },
     )

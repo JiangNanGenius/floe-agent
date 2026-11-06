@@ -92,18 +92,23 @@ private const val MAXIMUM_CONTENT_CHUNKS = 128
 private const val NOTES_PLATFORM_WAIT_MILLIS = 15_000L
 
 /**
- * A `user.ask` question is registered inside tool execution, AFTER the durable
+ * A `user.ask` or phone handover question is registered inside tool execution, AFTER the durable
  * `toolRequest` frame and the provider-complete live hint have already been
  * observed. That single coalesced hint can race the registration, and the
  * ordinary 750 ms question-refresh throttle then suppresses the only later
  * opportunity. This bounded window re-reads the authoritative
  * `question.pending` command while THIS exact run/session still owns the
- * user.ask call. It never fabricates a question and stops on the first real
+ * question-capable call. It never fabricates a question and stops on the first real
  * snapshot, a terminal run, a holder/session/generation change or after the
  * fixed attempts.
  */
 private const val QUESTION_DISCOVERY_ATTEMPTS = 8
 private const val QUESTION_DISCOVERY_INTERVAL_MILLIS = 400L
+// Full's phone handler has a 25s operation budget. Discovery covers that
+// preparation window; it does not extend tool execution or approve takeover.
+private const val PHONE_QUESTION_DISCOVERY_ATTEMPTS = 32
+private const val PHONE_QUESTION_DISCOVERY_INTERVAL_MILLIS = 1_000L
+private val PHONE_QUESTION_TOOLS = setOf("phone.observe", "phone.act", "phone.screenshot")
 
 
 /**
@@ -2385,7 +2390,7 @@ class ConversationHostController internal constructor(
         if (frame.kind == "toolRequest") {
             val tool = frame.payload?.string("tool")
             val callID = frame.payload?.string("id") ?: frame.payload?.string("callID")
-            if (tool == "user.ask" && callID != null) {
+            if ((tool == "user.ask" || tool in PHONE_QUESTION_TOOLS) && callID != null) {
                 // The coordinator registers and parks the durable question
                 // inside this tool execution, i.e. AFTER this frame. Start
                 // the bounded authoritative re-read window now; it is the
@@ -2393,7 +2398,13 @@ class ConversationHostController internal constructor(
                 // emits no further live frames.
                 beginQuestionDiscovery(
                     entry, runID, callID, conversationId, sessionEpoch, streamGeneration,
+                    phonePreparation = tool in PHONE_QUESTION_TOOLS,
                 )
+            }
+        } else if (frame.kind == "toolResult") {
+            val callID = frame.payload?.string("id") ?: frame.payload?.string("callID")
+            if (callID != null) {
+                questionDiscoveryJobs.remove("$conversationId/$sessionEpoch/$runID/$callID")?.cancel()
             }
         }
         if (ConversationWire.isTerminalFrame(frame)) {
@@ -2424,6 +2435,18 @@ class ConversationHostController internal constructor(
             // the fact's reader exists before any of its IO can deliver.
             maybeArmQueueSettleWatch(entry, runID, streamGeneration)
         } else if (frame.kind == "approval") {
+            val tool = frame.payload?.string("tool")
+            val callID = frame.payload?.string("callID") ?: frame.payload?.string("id")
+            if ((tool == "user.ask" || tool in PHONE_QUESTION_TOOLS) && callID != null) {
+                // Approval can take longer than the original discovery
+                // window. The question is created only AFTER approval, so
+                // start a fresh owned window at this durable boundary.
+                beginQuestionDiscovery(
+                    entry, runID, callID, conversationId, sessionEpoch, streamGeneration,
+                    phonePreparation = tool in PHONE_QUESTION_TOOLS,
+                    restart = true,
+                )
+            }
             // A live approval request needs its requestedAt CAS version, which
             // only the authoritative snapshot carries; the card itself is
             // already projected from the durable event.
@@ -2435,8 +2458,8 @@ class ConversationHostController internal constructor(
 
     /**
      * Starts (or reuses) the bounded discovery window for one real
-     * `user.ask` tool call. Attempt 0 runs immediately; the remaining
-     * attempts are spaced by [QUESTION_DISCOVERY_INTERVAL_MILLIS]. Every
+     * question-capable tool call, restarted when its approval settles.
+     * Attempt 0 runs immediately; later reads use the bounded discovery interval. Every
      * attempt re-checks the exact holder/session/stream incarnation and the
      * run's durable state, and the window stops as soon as the authoritative
      * snapshot projects a pending question. This is not a background poll:
@@ -2450,12 +2473,17 @@ class ConversationHostController internal constructor(
         conversationId: String,
         sessionEpoch: Long,
         streamGeneration: Long,
+        phonePreparation: Boolean = false,
+        restart: Boolean = false,
     ) {
         val key = "$conversationId/$sessionEpoch/$runID/$callID"
+        if (restart) questionDiscoveryJobs.remove(key)?.cancel()
         if (questionDiscoveryJobs[key]?.isActive == true) return
         val job = host.scope.launch(host.ioDispatcher) {
-            repeat(QUESTION_DISCOVERY_ATTEMPTS) { attempt ->
-                if (attempt > 0) delay(QUESTION_DISCOVERY_INTERVAL_MILLIS)
+            val attempts = if (phonePreparation) PHONE_QUESTION_DISCOVERY_ATTEMPTS else QUESTION_DISCOVERY_ATTEMPTS
+            val interval = if (phonePreparation) PHONE_QUESTION_DISCOVERY_INTERVAL_MILLIS else QUESTION_DISCOVERY_INTERVAL_MILLIS
+            repeat(attempts) { attempt ->
+                if (attempt > 0) delay(interval)
                 if (!ownCurrentEntry(entry, conversationId, sessionEpoch)) return@launch
                 if (entry.holder.retired) return@launch
                 if (currentRunStreamGeneration(conversationId, runID) != streamGeneration) {

@@ -1614,6 +1614,7 @@ public actor FacadeRunDomain {
             providerProfile: launch.provider,
             modelProfile: launch.model)
         request.activatesEmptyOrdinaryHeader = bundle.identity == .ordinary
+        request.explicitInitialApprovalMode = query.explicitInitialApprovalMode
         let prepared: PreparedRun
         do {
             if bundle.identity == .ordinary || bundle.identity == .notes,
