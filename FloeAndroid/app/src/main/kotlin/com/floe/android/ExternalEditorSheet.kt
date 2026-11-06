@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -26,6 +27,18 @@ internal fun ExternalEditorSheet(host: RuntimeHost, taskID: String, workspaceID:
     val owner = remember(taskID, workspaceID) { ExternalEditOwner(taskID, workspaceID) }
     val rows = state.records.filter { it.owner.taskID.equals(taskID, true) &&
         it.owner.workspaceID.equals(workspaceID, true) }
+    var opened by rememberSaveable(taskID, workspaceID, suggestedPath) { mutableStateOf(false) }
+    LaunchedEffect(activity, taskID, workspaceID, suggestedPath) {
+        if (!opened && activity != null && suggestedPath.isNotBlank()) {
+            opened = true
+            val existing = rows.firstOrNull { it.logicalPath == suggestedPath && it.linuxWorkingPath == null &&
+                it.phase in setOf(ExternalEditPhase.EDITING, ExternalEditPhase.SAVED, ExternalEditPhase.PAUSED) }
+            // This sheet was explicitly opened for external editing. Use the
+            // Android default app directly; retain this surface for return,
+            // conflicts and choosing a different editor. Do not relaunch on resume.
+            service.openAndroid(activity, owner, suggestedPath.trim(), existing?.id, forceChooser = false)
+        }
+    }
     FloeActionSheet(visible = visible, onDismiss = onDismiss, maxCardWidth = 640.dp) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(10.dp)) {

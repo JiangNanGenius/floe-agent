@@ -32,7 +32,7 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
             "svg" -> "inkscape"
             "png", "jpg", "jpeg", "webp", "tif", "tiff", "xcf" -> "gimp"
             "blend", "glb", "gltf", "obj", "stl" -> "blender"
-            else -> "mousepad"
+            else -> "pcmanfm"
         }) }
     var filesFailed by remember { mutableStateOf(false) }
     var softwareVisible by remember { mutableStateOf(false) }
@@ -101,7 +101,7 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
                     if (busy) FloeCapsuleButton(stringResource(R.string.linux_desktop_stop), onClick = { stopRequested = true })
                     if (!owned && state.workspaceID != null) FloeText(stringResource(R.string.linux_desktop_switch_notice))
                     FloeText(stringResource(R.string.linux_desktop_software))
-                    for (app in LinuxDesktopCommands.applications) {
+                    for (app in LinuxDesktopCommands.featuredApplications) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             FloeCapsuleButton(app, onClick = {
                                 selectedApp = app

@@ -635,5 +635,5 @@
     <string name="linux_software_remove_notice">请先保存修改并关闭此软件。卸载软件包会保留项目文件和用户设置。</string>
     <string name="linux_desktop_save_pending">文件回传或会话关闭尚未完成，已保留会话。请重试后再切换环境。</string>
     <string name="linux_desktop_retry_return">重试回传并停止</string>
-    <string name="external_edit_linux">使用 Linux 编辑器</string>
+    <string name="external_edit_linux">使用 Linux 桌面软件</string>
 </resources>

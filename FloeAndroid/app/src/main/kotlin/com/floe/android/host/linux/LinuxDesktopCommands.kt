@@ -4,6 +4,9 @@ package com.floe.android.host.linux
 /** Fixed guest-side launcher. All commands execute in the existing resolved Linux PTY. */
 internal object LinuxDesktopCommands {
     val applications = setOf("mousepad", "pcmanfm", "xterm", "libreoffice", "gimp", "inkscape", "blender")
+    // Lightweight text/code editing stays in Floe. Keep the older protocol
+    // names for installed software and recovery, without promoting them.
+    val featuredApplications = listOf("libreoffice", "gimp", "inkscape", "blender", "pcmanfm")
     private fun quote(value: String) = "'" + value.replace("'", "'\"'\"'") + "'"
 
     fun launch(nonce: String, display: Int, width: Int, height: Int, install: Boolean, desktop: Boolean): String {
@@ -17,7 +20,7 @@ internal object LinuxDesktopCommands {
             if test "${'$'}gui_missing" = 1; then
               command -v apt-get >/dev/null || exit 72
               apt-get update
-              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tigervnc-standalone-server tigervnc-tools dbus-x11 openbox xfce4-panel xterm mousepad pcmanfm
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tigervnc-standalone-server tigervnc-tools dbus-x11 openbox xfce4-panel pcmanfm
             fi
         """.trimIndent() else ""
         val script = """

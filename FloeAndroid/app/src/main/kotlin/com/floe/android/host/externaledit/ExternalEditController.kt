@@ -281,7 +281,8 @@ internal class ExternalEditController(private val context: Context, private val 
     }
 
     /** Android first. No external handler is an actionable result, not a fake Linux launch. */
-    fun openAndroid(activity: Activity, owner: ExternalEditOwner, path: String, existingID: String? = null) {
+    fun openAndroid(activity: Activity, owner: ExternalEditOwner, path: String, existingID: String? = null,
+        forceChooser: Boolean = true) {
         if (!launchClaim.compareAndSet(false, true)) return
         mutableState.value = mutableState.value.copy(preparing = true,
             failure = if (journal == null) mutableState.value.failure else null)
@@ -306,7 +307,7 @@ internal class ExternalEditController(private val context: Context, private val 
                     val target = weakActivity.get()?.takeIf { !it.isFinishing && !it.isDestroyed }
                         ?: throw Failure("activityUnavailable")
                     if (!binding.current()) throw Failure("ownerChanged")
-                    target.startActivity(Intent.createChooser(launch, null))
+                    target.startActivity(if (forceChooser) Intent.createChooser(launch, null) else launch)
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {

@@ -190,7 +190,6 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                         catch (_: Exception) { mutable.value = state.value.copy(phase = "failed", failure = "desktop_disconnected") }
                     }
                     refreshSoftware()
-                    if (!desktop) application("mousepad", false)
                 } finally { password.fill(0) }
             } catch (cancelled: CancellationException) { if (!stopped) cleanup(); throw cancelled }
             catch (failure: Exception) {
