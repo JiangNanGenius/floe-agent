@@ -689,8 +689,8 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
             XCTAssertEqual(binding.handlerKey,
                            BridgeV3.handlerKey(scope: binding.scope, command: binding.command))
         }
-        // goal-core batch (2026-10-21): 15 -> 18 planned keys.
-        XCTAssertEqual(Set(RunDomainHandlerPlan.bindings.map(\.handlerKey)).count, 18)
+        // Preserve the original 18 keys; cold history adds one read-only key.
+        XCTAssertEqual(Set(RunDomainHandlerPlan.bindings.map(\.handlerKey)).count, 19)
         // event.poll stays SEPARATE (run cursor) from effect.poll.
         XCTAssertFalse(RunDomainHandlerPlan.bindings.contains { $0.command == "event.poll" },
                        "RB4 must not re-register the RB1 pump key")
@@ -748,7 +748,7 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
             XCTAssertTrue(result.isValid, "\(command): \(result.errorCode)/\(result.reason)")
         }
         // Reads WITHOUT revision under taskExecution:
-        for command in ["run.snapshot", "child.list"] {
+        for command in ["run.snapshot", "run.events", "child.list"] {
             let envelope: [String: Any] = [
                 "schema": BridgeV3.commandSchema,
                 "scope": BridgeV3.Scope.taskExecution.rawValue,
