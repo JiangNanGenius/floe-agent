@@ -49,6 +49,7 @@ internal class DiagnosticReportService(private val context: Context) {
     private val gate = Any()
     private val uploadLanes = ReportUploadLanes()
     private val transfers = HashMap<String, Pair<Long, Long>>()
+    private val activeUploads = HashMap<String, ReportUploadSession>()
     private val transport = ReportUploadTransport()
     private val mutable = MutableStateFlow(DiagnosticReportingState())
     val state = mutable.asStateFlow()
@@ -184,6 +185,7 @@ internal class DiagnosticReportService(private val context: Context) {
             return@withPermit // A screenshot must not block later text-only reports.
         }
         val attempts = row.optInt("attempts", 0)
+        val session = ReportUploadSession()
         val admitted = synchronized(gate) {
             val current = read(row.getString("id"))
             when {
@@ -193,13 +195,17 @@ internal class DiagnosticReportService(private val context: Context) {
                     save(row.put("state", "failed").put("error", "retry_limit"))
                     false
                 }
-                else -> { row.remove("error"); save(row.put("attempts", attempts + 1)); true }
+                else -> {
+                    row.remove("error"); save(row.put("attempts", attempts + 1))
+                    activeUploads[id] = session
+                    true
+                }
             }
         }
         if (!admitted) return@withPermit
-        refresh() // Clear the previous attempt's error before showing new progress.
         try {
-            val receipt = withContext(Dispatchers.IO) { upload(row) }
+            refresh() // Clear the previous attempt's error before showing new progress.
+            val receipt = withContext(Dispatchers.IO) { upload(row, session) }
             synchronized(gate) {
                 // A concurrent opt-out/removal must not recreate a deleted report.
                 if (file(row.getString("id")).exists()) {
@@ -231,27 +237,38 @@ internal class DiagnosticReportService(private val context: Context) {
                             else -> "network_connection"
                         }))
             }
+        } finally {
+            synchronized(gate) { if (activeUploads[id] === session) activeUploads.remove(id) }
+            refresh()
         }
     }
 
-    private fun upload(row: JSONObject): String {
+    private suspend fun upload(row: JSONObject, session: ReportUploadSession): String {
         val id = row.getString("id")
         try {
+            session.checkActive()
             val names = row.getJSONArray("images")
             val images = (0 until names.length()).map { File(root, names.getString(it)) }
             // Previously queued reports keep their identity and images across
             // upgrades. Reduce old oversized attachments before resuming them.
             val budget = if (images.isEmpty()) ReportScreenshot.OUTPUT_LIMIT else ReportScreenshot.attachmentBudget(images.size)
             for (image in images) if (image.length() > budget) {
+                session.checkActive()
                 val temporary = File(root, "${UUID.randomUUID()}.jpg")
                 try {
                     ReportScreenshot.prepare(image.inputStream(), File(root, "${UUID.randomUUID()}.import"), temporary, budget)
-                    java.nio.file.Files.move(temporary.toPath(), image.toPath(),
-                        java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    synchronized(gate) {
+                        // Removal/opt-out can win during compression. Do not
+                        // recreate an attachment after its report was deleted.
+                        session.checkActive()
+                        java.nio.file.Files.move(temporary.toPath(), image.toPath(),
+                            java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    }
                 } finally { temporary.delete() }
             }
-            val (status, data) = transport.post(ENDPOINT, row.getJSONObject("manifest").toString(), images) { bytes, total ->
+            val (status, data) = transport.post(ENDPOINT, row.getJSONObject("manifest").toString(), images, session) { bytes, total ->
                 synchronized(gate) {
+                    session.checkActive()
                     transfers[id] = bytes to total
                     mutable.value = mutable.value.copy(reports = mutable.value.reports.map {
                         if (it.id == id) it.copy(transferred = bytes, transferTotal = total, uploading = true) else it
@@ -287,6 +304,7 @@ internal class DiagnosticReportService(private val context: Context) {
     }
     fun remove(id: String) { synchronized(gate) { read(id)?.let(::removeRecord) }; refresh() }
     private fun removeRecord(row: JSONObject) {
+        activeUploads.remove(row.getString("id"))?.cancel()
         val images = row.optJSONArray("images") ?: JSONArray()
         for (i in 0 until images.length()) File(root, images.getString(i)).delete()
         AtomicFile(file(row.getString("id"))).delete()
