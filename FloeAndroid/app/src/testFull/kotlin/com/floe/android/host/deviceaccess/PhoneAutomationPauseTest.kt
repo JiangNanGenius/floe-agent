@@ -50,4 +50,15 @@ class PhoneAutomationPauseTest {
         assertFalse(gate.resumeAfterHumanAnswer(owner, paused.id, 200) { false })
         assertTrue(gate.isPaused(owner))
     }
+
+    @Test fun onlyRealOwnerCallBindingsSurviveProcessRestore() {
+        val gate = PhoneAutomationPause()
+        val pause = gate.pause(owner, 100)
+        assertFalse(gate.bindQuestion(owner.copy(runID = UUID.randomUUID()), pause.id, "foreign") { true })
+        assertFalse(gate.bindQuestion(owner, pause.id, "not-saved") { false })
+        assertTrue(gate.bindQuestion(owner, pause.id, "call-1") { true })
+        val restored = checkNotNull(PhoneAutomationPause.Snapshot.decode(checkNotNull(gate.snapshot).encode()))
+        assertEquals(setOf("call-1"), restored.toolCallIDs)
+        assertEquals(pause, PhoneAutomationPause.Snapshot.decode(pause.encode().substringBeforeLast('|')))
+    }
 }
