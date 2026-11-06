@@ -158,6 +158,7 @@ internal fun DiagnosticReportingSettings() {
 
 @Composable
 private fun reportErrorMessage(code: String): String = stringResource(when {
+    code == "client_update_required" -> R.string.reporting_update_required
     code == "waiting_wifi" -> R.string.reporting_waiting_wifi
     code == "image_too_large" -> R.string.reporting_image_too_large
     code == "image_invalid" -> R.string.reporting_image_invalid

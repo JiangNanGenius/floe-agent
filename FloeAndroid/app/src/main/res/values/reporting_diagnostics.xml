@@ -1,4 +1,5 @@
 <resources>
+    <string name="reporting_update_required">This report is from an outdated Floe version. Update Floe and submit feedback again from the newer version. This local report has been kept.</string>
     <string name="reporting_screenshot_feedback">Screenshot feedback (%1$d images)</string>
     <string name="reporting_upload_progress">Uploading: %1$d%%. Waiting for the server receipt when the transfer completes.</string>
     <string name="reporting_image_count">Choose up to four screenshots. No images from this selection were added.</string>

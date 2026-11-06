@@ -47,14 +47,18 @@ internal class ReportUploadTransport(private val client: OkHttpClient = defaultC
         }
         val request = Request.Builder().url(endpoint).post(body).build()
         client.newCall(request).execute().use { response ->
-            if (response.code !in 200..299) return response.code to ""
+            if (response.code !in 200..299 && response.code != 409) return response.code to ""
+            val limit = if (response.code == 409) 8192 else 65536
             val data = response.body?.byteStream()?.use { input ->
                 val output = java.io.ByteArrayOutputStream()
                 val buffer = ByteArray(4096)
                 while (true) {
                     val count = input.read(buffer)
                     if (count < 0) break
-                    if (output.size() + count > 65536) throw IOException("report_response_too_large")
+                    if (output.size() + count > limit) {
+                        if (response.code == 409) return response.code to ""
+                        throw IOException("report_response_too_large")
+                    }
                     output.write(buffer, 0, count)
                 }
                 output.toString("UTF-8")

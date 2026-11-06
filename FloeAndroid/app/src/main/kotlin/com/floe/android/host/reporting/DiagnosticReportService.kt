@@ -191,6 +191,7 @@ internal class DiagnosticReportService(private val context: Context) {
                 }
             }
             if (!admitted) continue
+            refresh() // Clear the previous attempt's error before showing new progress.
             try {
                 val receipt = withContext(Dispatchers.IO) { upload(row) }
                 synchronized(gate) {
@@ -210,7 +211,7 @@ internal class DiagnosticReportService(private val context: Context) {
             }
             catch (failure: ReportRejected) {
                 synchronized(gate) {
-                    if (file(row.getString("id")).exists()) save(row.put("state", "failed").put("error", "http_${failure.status}"))
+                    if (file(row.getString("id")).exists()) save(row.put("state", "failed").put("error", failure.code))
                 }
             } catch (failure: Exception) {
                 synchronized(gate) {
@@ -256,7 +257,7 @@ internal class DiagnosticReportService(private val context: Context) {
                 }
             }
             if (status == 429 || status >= 500) throw ReportTransportFailure("http_$status")
-            if (status !in 200..299) throw ReportRejected(status)
+            if (status !in 200..299) throw ReportRejected(ReportResponsePolicy.rejectionCode(status, data))
             val receipt = try { JSONObject(data) } catch (_: org.json.JSONException) { throw ReportReceiptRejected() }
             val reportID = receipt.optString("report_id")
             val eventID = row.getJSONObject("manifest").getJSONArray("events").getJSONObject(0).getString("client_event_id")
@@ -345,7 +346,7 @@ internal class DiagnosticReportService(private val context: Context) {
     }
     private class ReportTransportFailure(val code: String) : java.io.IOException()
     private class ReportReceiptRejected : Exception()
-    private class ReportRejected(val status: Int) : Exception()
+    private class ReportRejected(val code: String) : Exception()
     companion object {
         private const val ENDPOINT = "https://www.floe-agent.com/api/v1/public/reports"
         private fun boundedText(value: String, maxBytes: Int): String {
