@@ -101,6 +101,7 @@ class ThreadProjectionBuilder internal constructor(
     private val userMessages = LinkedHashMap<String, MessageUi>()
     private val assistantMessages = LinkedHashMap<String, MessageUi>()
     private val runEvents = LinkedHashMap<String, MutableList<RunEventUi>>()
+    private val runEventBytes = mutableMapOf<String, MutableMap<Int, Int>>()
     private val runRows = LinkedHashMap<String, RunRowUi>()
     private val staged = LinkedHashMap<String, StagedAttachmentUi>()
     private val pendingApprovalsByRun = LinkedHashMap<String, MutableList<ApprovalCardUi>>()
@@ -862,11 +863,21 @@ class ThreadProjectionBuilder internal constructor(
         val list = runEvents[runID] ?: return
         // Keep the window the user is browsing; older-page requests must progress.
         list.sortBy { it.sequence }
-        if (list.size > 512) {
-            if (browsingEarlier) list.subList(512, list.size).clear()
-            else list.subList(0, list.size - 512).clear()
+        val evictedEarlier = trimRunEvents(runID, browsingEarlier)
+        historicalEarlier[runID] = if (hasEarlier || evictedEarlier) list.firstOrNull()?.sequence else null
+    }
+
+    private fun trimRunEvents(runID: String, browsingEarlier: Boolean): Boolean {
+        val list = runEvents[runID] ?: return false
+        val sizes = runEventBytes.getOrPut(runID) { mutableMapOf() }
+        var bytes = list.sumOf { (sizes[it.sequence] ?: RecordedRunHistory.maximumPayloadBytes).toLong() }
+        var evictedEarlier = false
+        while (list.size > 1 && (list.size > 512 || bytes > RecordedRunHistory.maximumPayloadBytes)) {
+            val removed = list.removeAt(if (browsingEarlier) list.lastIndex else 0)
+            bytes -= sizes.remove(removed.sequence) ?: RecordedRunHistory.maximumPayloadBytes
+            if (!browsingEarlier) evictedEarlier = true
         }
-        historicalEarlier[runID] = if (hasEarlier) frames.minOfOrNull { it.sequence.toInt() } else null
+        return evictedEarlier
     }
 
     private fun recordRunEvent(frame: HostRunEventFrame, trim: Boolean = true) {
@@ -874,8 +885,8 @@ class ThreadProjectionBuilder internal constructor(
         val payload = frame.payload
         val list = runEvents.getOrPut(frame.runID) { mutableListOf() }
         if (list.any { it.sequence.toLong() == frame.sequence }) return
+        runEventBytes.getOrPut(frame.runID) { mutableMapOf() }[frame.sequence.toInt()] = frame.bytes.coerceAtLeast(1)
         run {
-            if (trim && list.size >= 512) list.removeAt(0)
             list.add(
                 RunEventUi(
                     id = "${frame.runID}:${frame.sequence}",
@@ -911,6 +922,8 @@ class ThreadProjectionBuilder internal constructor(
                 ),
             )
         }
+        if (trim && trimRunEvents(frame.runID, browsingEarlier = false))
+            historicalEarlier[frame.runID] = list.firstOrNull()?.sequence
     }
 
     fun stageAttachment(stagedAttachment: StagedAttachmentUi) {

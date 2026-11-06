@@ -23,7 +23,13 @@ class LinuxDesktopCommandsTest {
         executable("openbox", "printf '%s' \"\$DBUS_SESSION_BUS_ADDRESS\" > \"\$WMTRACE\"; exec sleep 30")
         executable("inkscape", "printf '%s|%s|%s' \"\$DISPLAY\" \"\${1:-}\" \"\$DBUS_SESSION_BUS_ADDRESS\" > \"\$TRACE\"")
         executable("gimp", "exit 7")
-        executable("pcmanfm", "printf '%s|%s|%s|%s' \"\$DISPLAY\" \"\${1:-}\" \"\${2:-}\" \"\$DBUS_SESSION_BUS_ADDRESS\" > \"\$PCMANFMTRACE\"")
+        executable("pcmanfm", """
+            if test "${'$'}{1:-}" = --daemon-mode; then
+              exec python3 -c 'import os,socket,time; os.chdir(os.environ["XDG_RUNTIME_DIR"]); s=socket.socket(socket.AF_UNIX); s.bind("pcmanfm-socket--"+os.environ["DISPLAY"].split(":")[1]); s.listen(); time.sleep(30)'
+            fi
+            printf '%s|%s|%s|%s' "${'$'}DISPLAY" "${'$'}{1:-}" "${'$'}{2:-}" "${'$'}DBUS_SESSION_BUS_ADDRESS" > "${'$'}PCMANFMTRACE"
+            printf '%s\n' window >> "${'$'}PCMANFMCOUNT"
+        """.trimIndent())
         executable("apt-get", "if IFS= read -r leaked; then exit 42; fi; exit 0")
         root.resolve("work file.svg").writeText("<svg/>")
         val executor = Executors.newSingleThreadExecutor()
@@ -35,6 +41,7 @@ class LinuxDesktopCommandsTest {
             environment()["TRACE"] = root.resolve("trace").absolutePath
             environment()["WMTRACE"] = root.resolve("wm-trace").absolutePath
             environment()["PCMANFMTRACE"] = root.resolve("pcmanfm-trace").absolutePath
+            environment()["PCMANFMCOUNT"] = root.resolve("pcmanfm-count").absolutePath
             redirectErrorStream(true)
         }.start()
         try {
@@ -63,10 +70,12 @@ class LinuxDesktopCommandsTest {
             awaitTrace(trace)
             assertEquals(":171||synthetic-project-bus", trace.readText())
             assertEquals("synthetic-project-bus", awaitTrace(root.resolve("wm-trace")))
+            root.resolve("floe-gui-" + "a".repeat(32)).resolve("pcmanfm-socket--171").writeText("stale owned socket")
             process.outputStream.write(LinuxDesktopCommands.application("pcmanfm", false, "1".repeat(32)))
             process.outputStream.flush()
             awaitLine("FLOE_APP_STARTED:" + "1".repeat(32))
             assertEquals(":171|--new-win|${root.canonicalPath}|synthetic-project-bus", awaitTrace(root.resolve("pcmanfm-trace")))
+            assertEquals(listOf("window"), root.resolve("pcmanfm-count").readLines())
             process.outputStream.write(LinuxDesktopCommands.application("gimp", false, "c".repeat(32))
                 .toString(Charsets.UTF_8).replace("\n", "\r\n").toByteArray())
             process.outputStream.flush()

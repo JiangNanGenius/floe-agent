@@ -129,7 +129,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                             controlAcks.forEach { (id, ack) ->
                                 if (received.contains("FLOE_PONG:$id")) ack.complete("pong")
                                 if (received.contains("FLOE_APP_STARTED:$id")) ack.complete("started")
-                                Regex("FLOE_APP_FAILED:$id:(missing|exit|file)[\\r\\n]")
+                                Regex("FLOE_APP_FAILED:$id:(missing|exit|file|startup)[\\r\\n]")
                                     .find(received)?.let { ack.complete(it.groupValues[1]) }
                             }
                             inventoryNonce?.let { query ->

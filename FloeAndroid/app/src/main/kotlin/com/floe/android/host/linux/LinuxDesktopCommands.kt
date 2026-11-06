@@ -35,6 +35,7 @@ internal object LinuxDesktopCommands {
                 printf '\nFLOE_START_FAILED:$nonce:%s:%s\n' "${'$'}gui_start_stage" "${'$'}gui_status"
               fi
               stty echo 2>/dev/null || true
+              test -z "${'$'}{gui_file_manager:-}" || kill "${'$'}gui_file_manager" 2>/dev/null || true
               test -z "${'$'}{gui_wm:-}" || kill "${'$'}gui_wm" 2>/dev/null || true
               test -z "${'$'}{gui_vnc:-}" || kill "${'$'}gui_vnc" 2>/dev/null || true
               if test -n "${'$'}{gui_dir:-}"; then
@@ -89,6 +90,24 @@ internal object LinuxDesktopCommands {
                 case "${'$'}PWD" in /*) ;; *) printf '\nFLOE_APP_FAILED:%s:file\n' "${'$'}gui_ack"; return ;; esac
                 if ! test -d "${'$'}PWD"; then printf '\nFLOE_APP_FAILED:%s:file\n' "${'$'}gui_ack"; return; fi
                 set -- --new-win "${'$'}PWD"
+              fi
+              if test "${'$'}gui_editor" = pcmanfm; then
+                # Initialize the per-display service separately from the ONE
+                # user window request. A live first process is not a window.
+                if test -z "${'$'}{gui_file_manager:-}" || ! kill -0 "${'$'}gui_file_manager" 2>/dev/null; then
+                  if ! rm -f -- "${'$'}XDG_RUNTIME_DIR/pcmanfm-socket--$display"; then
+                    printf '\nFLOE_APP_FAILED:%s:startup\n' "${'$'}gui_ack"; return
+                  fi
+                  pcmanfm --daemon-mode </dev/null >/dev/null 2>&1 &
+                  gui_file_manager=${'$'}!
+                fi
+                gui_wait=0
+                while ! test -S "${'$'}XDG_RUNTIME_DIR/pcmanfm-socket--$display"; do
+                  if ! kill -0 "${'$'}gui_file_manager" 2>/dev/null || test "${'$'}gui_wait" -ge 100; then
+                    printf '\nFLOE_APP_FAILED:%s:startup\n' "${'$'}gui_ack"; return
+                  fi
+                  gui_wait=${'$'}((gui_wait + 1)); sleep 0.1
+                done
               fi
               "${'$'}gui_editor" "${'$'}@" </dev/null >/dev/null 2>&1 &
               gui_child=${'$'}!

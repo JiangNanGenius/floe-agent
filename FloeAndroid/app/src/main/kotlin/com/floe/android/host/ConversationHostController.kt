@@ -4173,6 +4173,11 @@ class ConversationHostController internal constructor(
         val generation = currentRunStreamGeneration(session.conversationId, runID)
         val readKey = "${session.conversationId}/${session.sessionEpoch}/$runID"
         val request = recordedHistoryReads.merge(readKey, 1L, Long::plus)!!
+        val isCurrent = {
+            ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
+                currentRunStreamGeneration(session.conversationId, runID) == generation &&
+                recordedHistoryReads[readKey] == request
+        }
         val payload = mutableMapOf<String, JsonElement>("limit" to JsonPrimitive(100))
         beforeSequence?.let { payload["beforeSequence"] = JsonPrimitive(it) }
         host.trackOperation(HostCommandRequest(
@@ -4182,14 +4187,23 @@ class ConversationHostController internal constructor(
             correlationID = client().correlationID("rhistory"),
             payload = JsonObject(payload),
         )) { outcome ->
-            if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) ||
-                currentRunStreamGeneration(session.conversationId, runID) != generation ||
-                recordedHistoryReads[readKey] != request) return@trackOperation
+            if (!isCurrent()) return@trackOperation
             when (outcome) {
                 is HostOperationOutcome.Completed -> {
                     val page = RecordedRunHistory.decode(outcome.value, session.conversationId, runID, beforeSequence)
                     if (page == null) entry.builder.actionError("eventProtocolMismatch")
-                    else entry.builder.applyRecordedEvents(runID, page.frames, page.hasEarlier, browsingEarlier = beforeSequence != null)
+                    else if (page.payloadReference != null) {
+                        readRecordedPayload(session, runID, page.payloadReference, isCurrent,
+                            onResult = { frame, failure ->
+                                if (isCurrent()) {
+                                    if (frame != null) entry.builder.applyRecordedEvents(runID, listOf(frame),
+                                        page.hasEarlier, browsingEarlier = beforeSequence != null)
+                                    else entry.builder.actionError(failure ?: "eventProtocolMismatch")
+                                    entry.holder.applyHostSnapshot(entry.builder.build())
+                                }
+                            })
+                        return@trackOperation
+                    } else entry.builder.applyRecordedEvents(runID, page.frames, page.hasEarlier, browsingEarlier = beforeSequence != null)
                 }
                 is HostOperationOutcome.Rejected -> entry.builder.actionError(outcome.code)
                 is HostOperationOutcome.Failed -> entry.builder.actionError(outcome.code)
@@ -4197,6 +4211,49 @@ class ConversationHostController internal constructor(
             }
             entry.holder.applyHostSnapshot(entry.builder.build())
         }
+    }
+
+    /** Materialize one oversized stored event before display-only projection.
+     * Every continuation rechecks the original session, stream and read owner. */
+    private fun readRecordedPayload(
+        session: ConversationSessionToken, runID: String,
+        reference: RecordedRunHistory.PayloadReference, isCurrent: () -> Boolean,
+        onResult: (HostRunEventFrame?, String?) -> Unit,
+    ) {
+        val buffer = java.io.ByteArrayOutputStream(minOf(reference.totalBytes, 32_768))
+        fun read(offset: Int) {
+            if (!isCurrent()) return
+            host.trackOperation(HostCommandRequest(
+                command = "run.events",
+                scope = HostScope.TaskExecution(session.conversationId, runID, null, null),
+                stateful = false,
+                correlationID = client().correlationID("rpayload"),
+                payload = JsonObject(mapOf(
+                    "limit" to JsonPrimitive(1), "payloadSequence" to JsonPrimitive(reference.sequence),
+                    "payloadOffset" to JsonPrimitive(offset), "payloadDigest" to JsonPrimitive(reference.sha256),
+                )),
+            )) { outcome ->
+                if (!isCurrent()) return@trackOperation
+                when (outcome) {
+                    is HostOperationOutcome.Completed -> {
+                        val slice = RecordedRunHistory.decodeSlice(outcome.value,
+                            session.conversationId, runID, reference, offset)
+                        if (slice == null || buffer.size() != offset) {
+                            onResult(null, "eventProtocolMismatch")
+                        } else {
+                            buffer.write(slice.bytes)
+                            val next = slice.nextOffset
+                            if (next != null) read(next)
+                            else onResult(RecordedRunHistory.materialize(runID, reference, buffer.toByteArray()), null)
+                        }
+                    }
+                    is HostOperationOutcome.Rejected -> onResult(null, outcome.code)
+                    is HostOperationOutcome.Failed -> onResult(null, outcome.code)
+                    HostOperationOutcome.Cancelled, HostOperationOutcome.Superseded -> Unit
+                }
+            }
+        }
+        read(0)
     }
 
     override fun loadEarlierEvents(session: ConversationSessionToken, cursor: EventCursor): Boolean {

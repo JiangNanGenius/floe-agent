@@ -57,4 +57,79 @@ class RecordedRunHistoryTest {
         assertTrue(b.build().rows.none { it is TimelineRowUi.EarlierEvents })
         assertEquals(listOf("one", "two"), b.build().rows.filterIsInstance<TimelineRowUi.Event>().map { it.event.message })
     }
+
+    private fun referenced(sequence: Int, bytes: ByteArray): JsonElement {
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+            .joinToString("") { "%02x".format(it.toInt() and 255) }
+        return page("""[{"sequence":$sequence,"kind":"assistantText","payload":null,
+            "payloadReference":{"sequence":$sequence,"totalBytes":${bytes.size},"sha256":"$digest"}}]""",
+            earlier = true, first = sequence)
+    }
+
+    private fun slice(ref: RecordedRunHistory.PayloadReference, offset: Int, bytes: ByteArray,
+        taskID: String = task, next: Int? = (offset + bytes.size).takeIf { it < ref.totalBytes }): JsonElement =
+        buildJsonObject {
+            put("taskID", taskID); put("runID", run)
+            put("payloadSlice", buildJsonObject {
+                put("sequence", ref.sequence); put("kind", ref.kind); put("sha256", ref.sha256)
+                put("totalBytes", ref.totalBytes); put("offset", offset)
+                put("base64", java.util.Base64.getUrlEncoder().encodeToString(bytes))
+                put("nextOffset", next?.let(::JsonPrimitive) ?: JsonNull)
+            })
+        }
+
+    @Test fun oversizeJournalReassemblesAcrossUtf8BoundaryBeforeDisplayOnlyReplay() {
+        val text = "x".repeat(32_758) + "🙂" + "存档".repeat(9_000)
+        val raw = buildJsonObject { put("text", text) }.toString().toByteArray(Charsets.UTF_8)
+        val decoded = RecordedRunHistory.decode(referenced(7, raw), task, run, null)!!
+        assertTrue(decoded.frames.isEmpty())
+        val ref = decoded.payloadReference!!
+        val output = java.io.ByteArrayOutputStream()
+        var offset = 0
+        while (offset < raw.size) {
+            val part = raw.copyOfRange(offset, minOf(raw.size, offset + 32_768))
+            val chunk = RecordedRunHistory.decodeSlice(slice(ref, offset, part), task, run, ref, offset)!!
+            output.write(chunk.bytes)
+            offset = chunk.nextOffset ?: raw.size
+        }
+        val frame = RecordedRunHistory.materialize(run, ref, output.toByteArray())!!
+        val b = builder(); b.applyRecordedEvents(run, listOf(frame), decoded.hasEarlier)
+        assertEquals(text, b.build().rows.filterIsInstance<TimelineRowUi.AssistantMessage>().single().text)
+        assertEquals(7, b.build().rows.filterIsInstance<TimelineRowUi.EarlierEvents>().single().firstLoadedSequence)
+        assertEquals("checkpointed", b.runStateName(run))
+        assertTrue(b.build().pendingApprovals.isEmpty())
+    }
+
+    @Test fun payloadSlicesRejectForeignOwnerBadProgressCorruptionAndOversizeReference() {
+        val raw = """{"text":"saved"}""".toByteArray()
+        val ref = RecordedRunHistory.decode(referenced(3, raw), task, run, null)!!.payloadReference!!
+        assertNull(RecordedRunHistory.decodeSlice(slice(ref, 0, raw,
+            taskID = "22222222-2222-4222-8222-222222222222"), task, run, ref, 0))
+        assertNull(RecordedRunHistory.decodeSlice(slice(ref, 0, raw, next = 0), task, run, ref, 0))
+        assertNull(RecordedRunHistory.decodeSlice(slice(ref, 0, raw), task, run, ref, 1))
+        assertNull(RecordedRunHistory.materialize(run, ref, raw.copyOf().apply { this[10] = 120 }))
+        val over = referenced(3, raw).jsonObject
+        val row = over["events"]!!.jsonArray.single().jsonObject
+        val large = JsonObject(over + ("events" to JsonArray(listOf(JsonObject(row +
+            ("payloadReference" to JsonObject(row["payloadReference"]!!.jsonObject +
+                ("totalBytes" to JsonPrimitive(RecordedRunHistory.maximumPayloadBytes + 1)))))))))
+        assertNull(RecordedRunHistory.decode(large, task, run, null))
+    }
+
+    @Test fun severalLargeEventsStayBoundedAndEvictedOlderContentRemainsPageable() {
+        fun frame(sequence: Long, label: String): HostRunEventFrame {
+            val payload = buildJsonObject { put("text", label + "x".repeat(2_200_000)) }
+            return HostRunEventFrame(run, sequence, "assistantText", payload, payload.toString().toByteArray().size)
+        }
+        val first = frame(1, "older"); val second = frame(2, "newer")
+        val b = builder()
+        b.applyRecordedEvents(run, listOf(first), false)
+        b.applyRecordedEvents(run, listOf(second), false)
+        assertTrue(b.build().rows.filterIsInstance<TimelineRowUi.AssistantMessage>().single().text.startsWith("newer"))
+        assertEquals(2, b.build().rows.filterIsInstance<TimelineRowUi.EarlierEvents>().single().firstLoadedSequence)
+        b.applyRecordedEvents(run, listOf(first), false, browsingEarlier = true)
+        assertTrue(b.build().rows.filterIsInstance<TimelineRowUi.AssistantMessage>().single().text.startsWith("older"))
+        assertTrue(b.build().rows.none { it is TimelineRowUi.EarlierEvents })
+        assertEquals("checkpointed", b.runStateName(run))
+    }
 }
