@@ -91,6 +91,22 @@ private func g04Read(_ session: G04WorkspaceDocumentSession, _ header: G04Docume
 
 @Suite("G04 workspace document adapter")
 struct G04WorkspaceDocumentSessionTests {
+    @Test func reopeningCleanTabReadsExternalSaveAndRetiresOldRevision() async throws {
+        let fixture = try G04DocumentFixture(); defer { fixture.cleanup() }
+        try fixture.write("returned.txt", "before")
+        let opened = try await fixture.session.open("returned.txt")
+        let transfer = try await fixture.session.beginContent(opened.documentID, revision: opened.revision)
+        try fixture.write("returned.txt", "after external save🙂")
+        let refreshed = try await fixture.session.open("returned.txt")
+        #expect(refreshed.documentID == opened.documentID && refreshed.revision != opened.revision)
+        #expect(!refreshed.dirty)
+        let body = try await g04Read(fixture.session, refreshed)
+        #expect(body == Data("after external save🙂".utf8))
+        await g04Expect(.invalidTransfer) {
+            _ = try await fixture.session.readContent(transfer.handle, offset: 0, limit: 128)
+        }
+    }
+
     @Test func editingUndoSavePreservesBOMCRLFAndEmoji() async throws {
         let fixture = try G04DocumentFixture(); defer { fixture.cleanup() }
         let original = "\u{FEFF}你好🙂\r\nline\r\n"
@@ -186,6 +202,10 @@ struct G04WorkspaceDocumentSessionTests {
         let edited = try await fixture.session.edit(opened.documentID, revision: opened.revision,
             range: NSRange(location: 0, length: 4), replacement: "my draft")
         try fixture.write("conflict.txt", "external")
+        let retained = try await fixture.session.open("conflict.txt")
+        #expect(retained.dirty && retained.revision == edited.revision)
+        let retainedBody = try await g04Read(fixture.session, retained)
+        #expect(retainedBody == Data("my draft".utf8))
         let outcome = try await fixture.session.save(edited.documentID, revision: edited.revision)
         guard case .conflict(let current, let conflict) = outcome else { Issue.record("CAS conflict was lost"); return }
         #expect(conflict.current == "external" && conflict.draft == "my draft")

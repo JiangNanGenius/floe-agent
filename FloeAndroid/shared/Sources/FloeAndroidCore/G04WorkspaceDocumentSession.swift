@@ -413,7 +413,30 @@ public actor G04WorkspaceDocumentSession {
             // roots. Preserve that virtual path instead of shrinking access
             // to physical descendants of the primary root.
             let relative = (path.trimmingCharacters(in: .whitespaces) as NSString).standardizingPath
-            if let existing = documents.values.first(where: { $0.resolvedPath == resolved.path }) { return header(existing) }
+            if var existing = documents.values.first(where: { $0.resolvedPath == resolved.path }) {
+                try checkBinding(existing, service: service)
+                // An external editor can save while this clean tab is retained
+                // behind a closed view. Reopening must read the current file,
+                // not publish the old buffer as a fresh successful preview.
+                // Genuine drafts stay intact and retain the normal CAS conflict.
+                if existing.text == existing.baseline {
+                    let current = try service.editConflict(path: existing.path, base: nil, draft: "")
+                    if current.currentSHA256 != existing.sha256 || current.currentMtime != existing.mtime {
+                        let changed = existing.text != current.current
+                        existing.text = current.current
+                        existing.baseline = current.current
+                        existing.sha256 = current.currentSHA256
+                        existing.mtime = current.currentMtime
+                        existing.revision = UUID().uuidString
+                        existing.conflict = nil
+                        existing.selection = NSRange(location: 0, length: 0)
+                        if changed { existing.undo.removeAll(); existing.redo.removeAll() }
+                        documents[existing.id] = existing
+                        invalidateTransfers(for: existing.id)
+                    }
+                }
+                return header(existing)
+            }
             let snapshot = try service.editConflict(path: relative, base: nil, draft: "")
             guard documents.count < 32,
                   documents.values.reduce(0, { $0 + $1.text.utf8.count }) + snapshot.current.utf8.count
