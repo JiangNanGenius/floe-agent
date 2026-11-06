@@ -14,6 +14,7 @@ import kotlinx.coroutines.ensureActive
 internal class LinuxDesktopFileBridge(private val terminal: G04TerminalHostController,
     private val taskID: String, private val sessionID: String, private val generation: String,
     private val isCurrent: () -> Boolean) {
+    internal class Failure(val code: String) : Exception(code)
     suspend fun probe(path: String): G04TerminalHostController.LiveFilePage = page(path, 0, 1)
 
     suspend fun copy(path: String, destination: File, expectedSHA256: String? = null): String {
@@ -51,10 +52,22 @@ internal class LinuxDesktopFileBridge(private val terminal: G04TerminalHostContr
         require(ExternalEditPolicy.validPath(path))
         val reply = terminal.readLiveFilePage(taskID, sessionID, path, offset, bytes)
         check(isCurrent())
-        val page = (reply as? G04TerminalHostController.LiveFilesReply.Page)?.page
-            ?: error("guest_snapshot_unavailable")
-        check(page.sessionID == sessionID && page.generation == generation && page.path == path &&
-            page.offset == offset && page.fileRevision.matches(Regex("[a-f0-9]{64}")))
+        val page = when (reply) {
+            is G04TerminalHostController.LiveFilesReply.Page -> reply.page
+            is G04TerminalHostController.LiveFilesReply.Failed -> {
+                // Closed diagnostic vocabulary only: no guest output or file paths.
+                val reason = reply.reason?.takeIf { it in setOf(
+                    "staleLiveSession", "pathOutOfScope", "invalidOffset", "offsetPastEnd",
+                    "readFailed", "liveFilesUnavailable", "replyMalformed", "timedOut",
+                ) } ?: "unavailable"
+                throw Failure("guest_$reason")
+            }
+            else -> throw Failure("guest_unavailable")
+        }
+        if (page.sessionID != sessionID) throw Failure("session_changed")
+        if (page.generation != generation) throw Failure("generation_changed")
+        if (page.path != path || page.offset != offset) throw Failure("page_identity_changed")
+        if (!page.fileRevision.matches(Regex("[a-f0-9]{64}"))) throw Failure("revision_missing")
         return page
     }
     private fun hex(value: ByteArray) = value.joinToString("") { "%02x".format(it) }

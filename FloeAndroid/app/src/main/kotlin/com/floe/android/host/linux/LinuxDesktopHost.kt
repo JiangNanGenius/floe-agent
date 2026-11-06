@@ -333,12 +333,18 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                                 else mutable.value = state.value.copy(failure = "save_conflict")
                             }
                         } catch (cancelled: CancellationException) { throw cancelled }
-                        catch (_: Exception) { mutable.value = state.value.copy(failure = "file_return_failed") }
+                        catch (failure: Exception) {
+                            reportFileFailure("watch", failure)
+                            mutable.value = state.value.copy(failure = "file_return_failed")
+                        }
                         delay(2_000)
                     }
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { mutable.value = state.value.copy(failure = "file_return_failed") }
+            catch (failure: Exception) {
+                reportFileFailure("open", failure)
+                mutable.value = state.value.copy(failure = "file_return_failed")
+            }
             finally { fileOpens.remove(operationID) }
         }
         fileOpens[operationID] = opening
@@ -378,7 +384,8 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                     check(host.externalEdits.receiveLinuxSnapshot(id) { reader(it) })
                 }
             }
-        } catch (_: Exception) {
+        } catch (failure: Exception) {
+            reportFileFailure("stop", failure)
             mutable.value = state.value.copy(phase = "save_pending", failure = "file_return_failed")
             return@withContext false
         }
@@ -415,6 +422,15 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
             mutable.value = state.value.copy(phase = "close_pending", failure = "desktop_stop_pending")
             false
         }
+    }
+
+    private fun reportFileFailure(stage: String, failure: Exception) {
+        val code = when (failure) {
+            is LinuxDesktopFileBridge.Failure -> failure.code
+            is G04WorkspaceBridgeClient.Failure -> failure.code
+            else -> failure.javaClass.simpleName
+        }.takeIf { it.matches(Regex("[A-Za-z0-9_]{1,80}")) } ?: "unknown"
+        android.util.Log.w("FloeLinuxDesktop", "file_return_failed stage=$stage code=$code")
     }
 
     private suspend fun readFrames(sessionID: String, owner: C05RemoteOwner) {
