@@ -1,0 +1,432 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		6033B678A09F53C7126AADD0 /* FloeBiologyEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 5A8D66DD2FA8E7F599FE8C21 /* FloeBiologyEngine */; };
+		67A82F4106CC73B0A9002339 /* UITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7903475E815B74F9E5FC9BB8 /* UITests.swift */; };
+		9EA4A1F52887494820B1DB02 /* Host.swift in Sources */ = {isa = PBXBuildFile; fileRef = 754A829B07C72D042D67DEFA /* Host.swift */; };
+		C6AC430B03CB750FA76C3866 /* FloeBiologyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 657D8A3313B86BDB8D83C13C /* FloeBiologyCore */; };
+		D7816732D3C596D1F3A9C41B /* FloeBiologyUI in Frameworks */ = {isa = PBXBuildFile; productRef = 3E4FDAA7B1B5298B8B0FEE8A /* FloeBiologyUI */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		89D90F5F6F8569ED11C11A92 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B9B4A0B8C63A32DB37E551D1 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FC68F1A550C2F0B22A21D962;
+			remoteInfo = BiologyHost;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		1F2F0E1C3DFDA47712F51BD1 /* BiologyHostUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = BiologyHostUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		754A829B07C72D042D67DEFA /* Host.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Host.swift; sourceTree = "<group>"; };
+		7903475E815B74F9E5FC9BB8 /* UITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITests.swift; sourceTree = "<group>"; };
+		C362E247EE16B62C931775AE /* FloeBiologyKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeBiologyKit; path = ../../Modules/FloeBiologyKit; sourceTree = SOURCE_ROOT; };
+		E1E0E7481E2BEF00E30238B2 /* BiologyHost.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = BiologyHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A81295D69FFC0AA2D2EC0CDA /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D7816732D3C596D1F3A9C41B /* FloeBiologyUI in Frameworks */,
+				C6AC430B03CB750FA76C3866 /* FloeBiologyCore in Frameworks */,
+				6033B678A09F53C7126AADD0 /* FloeBiologyEngine in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		146FE57A4F37878A0875E8D9 = {
+			isa = PBXGroup;
+			children = (
+				754A829B07C72D042D67DEFA /* Host.swift */,
+				7903475E815B74F9E5FC9BB8 /* UITests.swift */,
+				72299403852ADE8805B5BA0D /* Packages */,
+				E523388072F63988D07CA949 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		72299403852ADE8805B5BA0D /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				C362E247EE16B62C931775AE /* FloeBiologyKit */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		E523388072F63988D07CA949 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				E1E0E7481E2BEF00E30238B2 /* BiologyHost.app */,
+				1F2F0E1C3DFDA47712F51BD1 /* BiologyHostUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		9EA9CC3166263911DE5BC869 /* BiologyHostUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DE173EF0B7A6B0483836784D /* Build configuration list for PBXNativeTarget "BiologyHostUITests" */;
+			buildPhases = (
+				D0A6E7635DC4E3B8F97DC8A3 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1E3FD3D4CFDC5A4C05F79848 /* PBXTargetDependency */,
+			);
+			name = BiologyHostUITests;
+			packageProductDependencies = (
+			);
+			productName = BiologyHostUITests;
+			productReference = 1F2F0E1C3DFDA47712F51BD1 /* BiologyHostUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		FC68F1A550C2F0B22A21D962 /* BiologyHost */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1B6B66A8E0EDFCE3C64616AD /* Build configuration list for PBXNativeTarget "BiologyHost" */;
+			buildPhases = (
+				FBE9308307E78AED5657A2DB /* Sources */,
+				A81295D69FFC0AA2D2EC0CDA /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BiologyHost;
+			packageProductDependencies = (
+				3E4FDAA7B1B5298B8B0FEE8A /* FloeBiologyUI */,
+				657D8A3313B86BDB8D83C13C /* FloeBiologyCore */,
+				5A8D66DD2FA8E7F599FE8C21 /* FloeBiologyEngine */,
+			);
+			productName = BiologyHost;
+			productReference = E1E0E7481E2BEF00E30238B2 /* BiologyHost.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		B9B4A0B8C63A32DB37E551D1 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					9EA9CC3166263911DE5BC869 = {
+						TestTargetID = FC68F1A550C2F0B22A21D962;
+					};
+				};
+			};
+			buildConfigurationList = 7A63C40E81B6974BC8B70DBA /* Build configuration list for PBXProject "FloeBiologyQualification" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 146FE57A4F37878A0875E8D9;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				D76AF636D08E22C256D6F0E0 /* XCLocalSwiftPackageReference "../../Modules/FloeBiologyKit" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = E523388072F63988D07CA949 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				FC68F1A550C2F0B22A21D962 /* BiologyHost */,
+				9EA9CC3166263911DE5BC869 /* BiologyHostUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		D0A6E7635DC4E3B8F97DC8A3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				67A82F4106CC73B0A9002339 /* UITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FBE9308307E78AED5657A2DB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9EA4A1F52887494820B1DB02 /* Host.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		1E3FD3D4CFDC5A4C05F79848 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FC68F1A550C2F0B22A21D962 /* BiologyHost */;
+			targetProxy = 89D90F5F6F8569ED11C11A92 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		13A0E4E8BAD0B2472DC086B3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.floe.qualification.biology.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = BiologyHost;
+			};
+			name = Debug;
+		};
+		4450A9F298DCB343CE6D7D20 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_KEY_CFBundleDisplayName = "Floe Biology QA";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.floe.qualification.biology;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		803385B2AF2C65EC3F98797D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		B22138BE4376DDC238AA95F9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		C9589A1A345EF8110BD3CC0C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.floe.qualification.biology.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = BiologyHost;
+			};
+			name = Release;
+		};
+		D5D4F520D6768F28E209C205 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_KEY_CFBundleDisplayName = "Floe Biology QA";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.floe.qualification.biology;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1B6B66A8E0EDFCE3C64616AD /* Build configuration list for PBXNativeTarget "BiologyHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D5D4F520D6768F28E209C205 /* Debug */,
+				4450A9F298DCB343CE6D7D20 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		7A63C40E81B6974BC8B70DBA /* Build configuration list for PBXProject "FloeBiologyQualification" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				803385B2AF2C65EC3F98797D /* Debug */,
+				B22138BE4376DDC238AA95F9 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		DE173EF0B7A6B0483836784D /* Build configuration list for PBXNativeTarget "BiologyHostUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				13A0E4E8BAD0B2472DC086B3 /* Debug */,
+				C9589A1A345EF8110BD3CC0C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		D76AF636D08E22C256D6F0E0 /* XCLocalSwiftPackageReference "../../Modules/FloeBiologyKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../../Modules/FloeBiologyKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		3E4FDAA7B1B5298B8B0FEE8A /* FloeBiologyUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeBiologyUI;
+		};
+		5A8D66DD2FA8E7F599FE8C21 /* FloeBiologyEngine */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeBiologyEngine;
+		};
+		657D8A3313B86BDB8D83C13C /* FloeBiologyCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeBiologyCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = B9B4A0B8C63A32DB37E551D1 /* Project object */;
+}

@@ -1,0 +1,933 @@
+{
+  "schema": "floe.biology.dependencies.v1",
+  "note": "Metadata from the exact qualification environment. Python distributions are not bundled in the native package. Preserve upstream license files when distributing an execution environment.",
+  "packages": [
+    {
+      "package": "anndata",
+      "version": "0.13.4",
+      "license": "BSD-3-Clause",
+      "upstream": [
+        "Documentation, https://anndata.readthedocs.io/",
+        "Source, https://github.com/scverse/anndata",
+        "Home-page, https://github.com/scverse/anndata"
+      ],
+      "licenseFiles": [
+        "anndata-0.13.4.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "annotated-types",
+      "version": "0.8.0",
+      "license": "MIT",
+      "upstream": [
+        "Homepage, https://github.com/annotated-types/annotated-types",
+        "Source, https://github.com/annotated-types/annotated-types",
+        "Changelog, https://github.com/annotated-types/annotated-types/releases"
+      ],
+      "licenseFiles": [
+        "annotated_types-0.8.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "array-api-compat",
+      "version": "1.16.0",
+      "license": "MIT",
+      "upstream": [
+        "homepage, https://data-apis.org/array-api-compat/",
+        "repository, https://github.com/data-apis/array-api-compat/"
+      ],
+      "licenseFiles": []
+    },
+    {
+      "package": "biopython",
+      "version": "1.88",
+      "license": "LicenseRef-Biopython-License-Agreement",
+      "upstream": [
+        "Homepage, https://biopython.org/",
+        "Documentation, https://biopython.org/wiki/Documentation",
+        "Source, https://github.com/biopython/biopython/",
+        "Tracker, https://github.com/biopython/biopython/issues"
+      ],
+      "licenseFiles": [
+        "biopython-1.88.dist-info/licenses/LICENSE.rst"
+      ]
+    },
+    {
+      "package": "certifi",
+      "version": "2026.10.23",
+      "license": "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+      "upstream": [
+        "Source, https://github.com/certifi/python-certifi"
+      ],
+      "licenseFiles": [
+        "certifi-2026.10.23.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "cloudpickle",
+      "version": "3.1.2",
+      "license": "License :: OSI Approved :: BSD License",
+      "upstream": [],
+      "licenseFiles": [
+        "cloudpickle-3.1.2.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "contourpy",
+      "version": "1.4.0",
+      "license": "BSD-3-Clause",
+      "upstream": [
+        "Homepage, https://github.com/contourpy/contourpy",
+        "Changelog, https://contourpy.readthedocs.io/en/latest/changelog.html",
+        "Documentation, https://contourpy.readthedocs.io",
+        "Repository, https://github.com/contourpy/contourpy"
+      ],
+      "licenseFiles": [
+        "contourpy-1.4.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "cycler",
+      "version": "0.12.1",
+      "license": "License :: OSI Approved :: BSD License",
+      "upstream": [
+        "homepage, https://matplotlib.org/cycler/",
+        "repository, https://github.com/matplotlib/cycler"
+      ],
+      "licenseFiles": [
+        "cycler-0.12.1.dist-info/LICENSE"
+      ]
+    },
+    {
+      "package": "donfig",
+      "version": "0.8.1.post1",
+      "license": "License :: OSI Approved :: MIT License",
+      "upstream": [
+        "Homepage, https://github.com/pytroll/donfig"
+      ],
+      "licenseFiles": [
+        "donfig-0.8.1.post1.dist-info/LICENSE.txt"
+      ]
+    },
+    {
+      "package": "fast-array-utils",
+      "version": "1.5.1",
+      "license": "MPL-2.0",
+      "upstream": [
+        "Issue Tracker, https://github.com/scverse/fast-array-utils/issues",
+        "Source Code, https://github.com/scverse/fast-array-utils",
+        "Documentation, https://icb-fast-array-utils.readthedocs-hosted.com/"
+      ],
+      "licenseFiles": [
+        "fast_array_utils-1.5.1.dist-info/licenses/LICENSE.rst"
+      ]
+    },
+    {
+      "package": "fonttools",
+      "version": "4.68.0",
+      "license": "MIT",
+      "upstream": [],
+      "licenseFiles": [
+        "fonttools-4.68.0.dist-info/licenses/LICENSE",
+        "fonttools-4.68.0.dist-info/licenses/LICENSE.external"
+      ]
+    },
+    {
+      "package": "formulaic",
+      "version": "1.2.2",
+      "license": "MIT",
+      "upstream": [
+        "repository, https://github.com/matthewwardrop/formulaic",
+        "documentation, https://matthewwardrop.github.io/formulaic"
+      ],
+      "licenseFiles": [
+        "formulaic-1.2.2.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "gemmi",
+      "version": "0.7.5",
+      "license": "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+      "upstream": [
+        "homepage, https://github.com/project-gemmi/gemmi",
+        "repository, https://github.com/project-gemmi/gemmi"
+      ],
+      "licenseFiles": [
+        "gemmi-0.7.5.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "package": "google-crc32c",
+      "version": "1.9.0",
+      "license": "Apache-2.0",
+      "upstream": [],
+      "licenseFiles": [
+        "google_crc32c-1.9.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "h5py",
+      "version": "3.16.0",
+      "license": "BSD-3-Clause",
+      "upstream": [
+        "Homepage, https://www.h5py.org/",
+        "Source, https://github.com/h5py/h5py",
+        "Documentation, https://docs.h5py.org/en/stable/",
+        "Release notes, https://docs.h5py.org/en/stable/whatsnew/index.html",
+        "Discussion forum, https://forum.hdfgroup.org/c/hdf5/h5py"
+      ],
+      "licenseFiles": [
+        "h5py-3.16.0.dist-info/licenses/LICENSE",
+        "h5py-3.16.0.dist-info/licenses/licenses/hdf5.txt",
+        "h5py-3.16.0.dist-info/licenses/licenses/license.txt",
+        "h5py-3.16.0.dist-info/licenses/licenses/pytables.txt",
+        "h5py-3.16.0.dist-info/licenses/licenses/python.txt",
+        "h5py-3.16.0.dist-info/licenses/licenses/stdint.txt",
+        "h5py-3.16.0.dist-info/licenses/lzf/LICENSE.txt"
+      ]
+    },
+    {
+      "package": "igraph",
+      "version": "1.0.0",
+      "license": "GNU General Public License (GPL)",
+      "upstream": [
+        "Bug Tracker, https://github.com/igraph/python-igraph/issues",
+        "Changelog, https://github.com/igraph/python-igraph/blob/main/CHANGELOG.md",
+        "CI, https://github.com/igraph/python-igraph/actions",
+        "Documentation, https://python.igraph.org",
+        "Source Code, https://github.com/igraph/python-igraph"
+      ],
+      "licenseFiles": [
+        "igraph-1.0.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "ImageIO",
+      "version": "2.38.1",
+      "license": "BSD-2-Clause",
+      "upstream": [
+        "homepage, https://github.com/imageio/imageio",
+        "download, http://pypi.python.org/pypi/imageio",
+        "source, https://github.com/imageio/imageio",
+        "documentation, https://imageio.readthedocs.io"
+      ],
+      "licenseFiles": [
+        "imageio-2.38.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "interface_meta",
+      "version": "2.0.1",
+      "license": "MIT",
+      "upstream": [
+        "Homepage, https://github.com/matthewwardrop/interface_meta",
+        "Repository, https://github.com/matthewwardrop/interface_meta"
+      ],
+      "licenseFiles": [
+        "interface_meta-2.0.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "joblib",
+      "version": "1.6.0",
+      "license": "BSD-3-Clause",
+      "upstream": [
+        "Homepage, https://joblib.readthedocs.io",
+        "Source, https://github.com/joblib/joblib"
+      ],
+      "licenseFiles": [
+        "joblib-1.6.0.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "package": "kiwisolver",
+      "version": "1.5.1",
+      "license": "License :: OSI Approved :: BSD License",
+      "upstream": [
+        "homepage, https://github.com/nucleic/kiwi",
+        "documentation, https://kiwisolver.readthedocs.io/en/latest/",
+        "repository, https://github.com/nucleic/kiwi",
+        "changelog, https://github.com/nucleic/kiwi/blob/main/releasenotes.rst"
+      ],
+      "licenseFiles": [
+        "kiwisolver-1.5.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "lazy-loader",
+      "version": "0.6",
+      "license": "BSD-3-Clause",
+      "upstream": [
+        "Home, https://scientific-python.org/specs/spec-0001/",
+        "Source, https://github.com/scientific-python/lazy-loader"
+      ],
+      "licenseFiles": [
+        "lazy_loader-0.6.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "package": "legacy-api-wrap",
+      "version": "1.5",
+      "license": "MPL-2.0",
+      "upstream": [
+        "Source, https://github.com/flying-sheep/legacy-api-wrap"
+      ],
+      "licenseFiles": [
+        "legacy_api_wrap-1.5.dist-info/licenses/LICENSE.rst"
+      ]
+    },
+    {
+      "package": "leidenalg",
+      "version": "0.12.0",
+      "license": "GPL-3.0-or-later",
+      "upstream": [],
+      "licenseFiles": [
+        "leidenalg-0.12.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "llvmlite",
+      "version": "0.50.0",
+      "license": "BSD-2-Clause AND Apache-2.0 WITH LLVM-exception",
+      "upstream": [
+        "Source, https://github.com/numba/llvmlite"
+      ],
+      "licenseFiles": [
+        "llvmlite-0.50.0.dist-info/licenses/LICENSE",
+        "llvmlite-0.50.0.dist-info/licenses/LICENSE.thirdparty"
+      ]
+    },
+    {
+      "package": "matplotlib",
+      "version": "3.11.2",
+      "license": "License :: OSI Approved :: Python Software Foundation License",
+      "upstream": [
+        "Homepage, https://matplotlib.org",
+        "Download, https://matplotlib.org/stable/install/index.html",
+        "Documentation, https://matplotlib.org",
+        "Source Code, https://github.com/matplotlib/matplotlib",
+        "Bug Tracker, https://github.com/matplotlib/matplotlib/issues",
+        "Forum, https://discourse.matplotlib.org/",
+        "Donate, https://numfocus.org/donate-to-matplotlib"
+      ],
+      "licenseFiles": [
+        "matplotlib-3.11.2.dist-info/LICENSE",
+        "matplotlib/mpl-data/fonts/ttf/LICENSE_DEJAVU",
+        "matplotlib/mpl-data/fonts/ttf/LICENSE_STIX"
+      ]
+    },
+    {
+      "package": "msgspec",
+      "version": "0.22.0",
+      "license": "BSD-3-Clause",
+      "upstream": [
+        "Homepage, https://msgspec.dev",
+        "Issue Tracker, https://github.com/msgspec/msgspec/issues",
+        "Source, https://github.com/msgspec/msgspec"
+      ],
+      "licenseFiles": [
+        "msgspec-0.22.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "narwhals",
+      "version": "2.28.0",
+      "license": "MIT",
+      "upstream": [
+        "Homepage, https://github.com/narwhals-dev/narwhals",
+        "Documentation, https://narwhals-dev.github.io/narwhals/",
+        "Repository, https://github.com/narwhals-dev/narwhals",
+        "Bug Tracker, https://github.com/narwhals-dev/narwhals/issues"
+      ],
+      "licenseFiles": [
+        "narwhals-2.28.0.dist-info/licenses/LICENSE.md"
+      ]
+    },
+    {
+      "package": "natsort",
+      "version": "8.4.0",
+      "license": "License :: OSI Approved :: MIT License",
+      "upstream": [],
+      "licenseFiles": [
+        "natsort-8.4.0.dist-info/LICENSE"
+      ]
+    },
+    {
+      "package": "networkx",
+      "version": "3.7",
+      "license": "BSD-3-Clause",
+      "upstream": [
+        "Homepage, https://networkx.org/",
+        "Bug Tracker, https://github.com/networkx/networkx/issues",
+        "Documentation, https://networkx.org/documentation/stable/",
+        "Source Code, https://github.com/networkx/networkx"
+      ],
+      "licenseFiles": [
+        "networkx-3.7.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "package": "numba",
+      "version": "0.68.1",
+      "license": "License :: OSI Approved :: BSD License",
+      "upstream": [],
+      "licenseFiles": [
+        "numba-0.68.1.dist-info/licenses/LICENSE",
+        "numba-0.68.1.dist-info/licenses/LICENSES.third-party"
+      ]
+    },
+    {
+      "package": "numcodecs",
+      "version": "0.17.1",
+      "license": "MIT",
+      "upstream": [
+        "Bug Tracker, https://github.com/zarr-developers/numcodecs/issues",
+        "Changelog, https://numcodecs.readthedocs.io/en/stable/release.html",
+        "Documentation, https://numcodecs.readthedocs.io/",
+        "Homepage, https://github.com/zarr-developers/numcodecs"
+      ],
+      "licenseFiles": [
+        "numcodecs-0.17.1.dist-info/licenses/LICENSE.txt",
+        "numcodecs-0.17.1.dist-info/licenses/c-blosc/LICENSE.txt",
+        "numcodecs-0.17.1.dist-info/licenses/c-blosc/LICENSES/BITSHUFFLE.txt",
+        "numcodecs-0.17.1.dist-info/licenses/c-blosc/LICENSES/FASTLZ.txt",
+        "numcodecs-0.17.1.dist-info/licenses/c-blosc/LICENSES/LZ4.txt",
+        "numcodecs-0.17.1.dist-info/licenses/c-blosc/LICENSES/SNAPPY.txt",
+        "numcodecs-0.17.1.dist-info/licenses/c-blosc/LICENSES/STDINT.txt",
+        "numcodecs-0.17.1.dist-info/licenses/c-blosc/LICENSES/ZLIB-NG.txt",
+        "numcodecs-0.17.1.dist-info/licenses/c-blosc/LICENSES/ZLIB.txt"
+      ]
+    },
+    {
+      "package": "numpy",
+      "version": "2.5.4",
+      "license": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
+      "upstream": [
+        "homepage, https://numpy.org",
+        "documentation, https://numpy.org/doc/",
+        "source, https://github.com/numpy/numpy",
+        "download, https://pypi.org/project/numpy/#files",
+        "tracker, https://github.com/numpy/numpy/issues",
+        "release notes, https://numpy.org/doc/stable/release"
+      ],
+      "licenseFiles": [
+        "numpy-2.5.4.dist-info/licenses/LICENSE.txt",
+        "numpy-2.5.4.dist-info/licenses/numpy/_core/include/numpy/libdivide/LICENSE.txt",
+        "numpy-2.5.4.dist-info/licenses/numpy/_core/src/common/pythoncapi-compat/COPYING",
+        "numpy-2.5.4.dist-info/licenses/numpy/_core/src/highway/LICENSE",
+        "numpy-2.5.4.dist-info/licenses/numpy/_core/src/multiarray/dragon4_LICENSE.txt",
+        "numpy-2.5.4.dist-info/licenses/numpy/_core/src/npysort/x86-simd-sort/LICENSE.md",
+        "numpy-2.5.4.dist-info/licenses/numpy/_core/src/umath/svml/LICENSE",
+        "numpy-2.5.4.dist-info/licenses/numpy/fft/pocketfft/LICENSE.md",
+        "numpy-2.5.4.dist-info/licenses/numpy/linalg/lapack_lite/LICENSE.txt",
+        "numpy-2.5.4.dist-info/licenses/numpy/ma/LICENSE",
+        "numpy-2.5.4.dist-info/licenses/numpy/random/LICENSE.md",
+        "numpy-2.5.4.dist-info/licenses/numpy/random/src/distributions/LICENSE.md",
+        "numpy-2.5.4.dist-info/licenses/numpy/random/src/mt19937/LICENSE.md",
+        "numpy-2.5.4.dist-info/licenses/numpy/random/src/pcg64/LICENSE.md",
+        "numpy-2.5.4.dist-info/licenses/numpy/random/src/philox/LICENSE.md",
+        "numpy-2.5.4.dist-info/licenses/numpy/random/src/sfc64/LICENSE.md",
+        "numpy-2.5.4.dist-info/licenses/numpy/random/src/splitmix64/LICENSE.md",
+        "numpy/_core/include/numpy/random/LICENSE.txt",
+        "numpy/ma/LICENSE",
+        "numpy/random/LICENSE.md"
+      ]
+    },
+    {
+      "package": "packaging",
+      "version": "26.3",
+      "license": "Apache-2.0 OR BSD-2-Clause",
+      "upstream": [
+        "Documentation, https://packaging.pypa.io/",
+        "Source, https://github.com/pypa/packaging"
+      ],
+      "licenseFiles": [
+        "packaging-26.3.dist-info/licenses/LICENSE",
+        "packaging-26.3.dist-info/licenses/LICENSE.APACHE",
+        "packaging-26.3.dist-info/licenses/LICENSE.BSD",
+        "packaging/licenses/__init__.py",
+        "packaging/licenses/__pycache__/__init__.cpython-312.pyc",
+        "packaging/licenses/__pycache__/_spdx.cpython-312.pyc",
+        "packaging/licenses/_spdx.py"
+      ]
+    },
+    {
+      "package": "pandas",
+      "version": "3.1.1",
+      "license": "BSD-3-Clause",
+      "upstream": [
+        "homepage, https://pandas.pydata.org",
+        "source, https://github.com/pandas-dev/pandas",
+        "documentation, https://pandas.pydata.org/docs/",
+        "changelog, https://pandas.pydata.org/docs/whatsnew/index.html",
+        "issues, https://github.com/pandas-dev/pandas/issues",
+        "funding, https://opencollective.com/pandas"
+      ],
+      "licenseFiles": [
+        "pandas-3.1.1.dist-info/licenses/LICENSE",
+        "pandas-3.1.1.dist-info/licenses/LICENSES/BOTTLENECK_LICENCE",
+        "pandas-3.1.1.dist-info/licenses/LICENSES/DATEUTIL_LICENSE",
+        "pandas-3.1.1.dist-info/licenses/LICENSES/HAVEN_LICENSE",
+        "pandas-3.1.1.dist-info/licenses/LICENSES/HAVEN_MIT",
+        "pandas-3.1.1.dist-info/licenses/LICENSES/KLIB_LICENSE",
+        "pandas-3.1.1.dist-info/licenses/LICENSES/MUSL_LICENSE",
+        "pandas-3.1.1.dist-info/licenses/LICENSES/NUMPY_LICENSE",
+        "pandas-3.1.1.dist-info/licenses/LICENSES/PACKAGING_LICENSE",
+        "pandas-3.1.1.dist-info/licenses/LICENSES/PSF_LICENSE",
+        "pandas-3.1.1.dist-info/licenses/LICENSES/PYPERCLIP_LICENSE",
+        "pandas-3.1.1.dist-info/licenses/LICENSES/PYUPGRADE_LICENSE",
+        "pandas-3.1.1.dist-info/licenses/LICENSES/SAS7BDAT_LICENSE",
+        "pandas-3.1.1.dist-info/licenses/LICENSES/STATSBASE_JL_LICENSE",
+        "pandas-3.1.1.dist-info/licenses/LICENSES/ULTRAJSON_LICENSE",
+        "pandas-3.1.1.dist-info/licenses/LICENSES/XSIMD_LICENSE",
+        "pandas-3.1.1.dist-info/licenses/subprojects/fast_float-8.2.10/LICENSE-APACHE",
+        "pandas-3.1.1.dist-info/licenses/subprojects/fast_float-8.2.10/LICENSE-BOOST",
+        "pandas-3.1.1.dist-info/licenses/subprojects/fast_float-8.2.10/LICENSE-MIT"
+      ]
+    },
+    {
+      "package": "patsy",
+      "version": "1.0.3",
+      "license": "License :: OSI Approved :: BSD License",
+      "upstream": [],
+      "licenseFiles": [
+        "patsy-1.0.3.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "package": "pillow",
+      "version": "13.0.0",
+      "license": "MIT-CMU",
+      "upstream": [
+        "Release notes, https://pillow.readthedocs.io/en/stable/releasenotes/index.html",
+        "Changelog, https://github.com/python-pillow/Pillow/releases",
+        "Documentation, https://pillow.readthedocs.io",
+        "Funding, https://tidelift.com/lifter/search/pypi/pillow",
+        "Homepage, https://python-pillow.org",
+        "Mastodon, https://fosstodon.org/@pillow",
+        "Security, https://pillow.readthedocs.io/en/stable/handbook/security.html",
+        "Source, https://github.com/python-pillow/Pillow"
+      ],
+      "licenseFiles": [
+        "pillow-13.0.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "pydantic",
+      "version": "2.14.3",
+      "license": "MIT",
+      "upstream": [
+        "Homepage, https://github.com/pydantic/pydantic",
+        "Documentation, https://pydantic.dev/docs/validation/latest/get-started/",
+        "Funding, https://github.com/sponsors/samuelcolvin",
+        "Source, https://github.com/pydantic/pydantic",
+        "Changelog, https://pydantic.dev/docs/validation/latest/get-started/changelog/"
+      ],
+      "licenseFiles": [
+        "pydantic-2.14.3.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "pydantic-settings",
+      "version": "2.16.2",
+      "license": "MIT",
+      "upstream": [
+        "Homepage, https://github.com/pydantic/pydantic-settings",
+        "Funding, https://github.com/sponsors/samuelcolvin",
+        "Source, https://github.com/pydantic/pydantic-settings",
+        "Changelog, https://github.com/pydantic/pydantic-settings/releases",
+        "Documentation, https://docs.pydantic.dev/dev-v2/concepts/pydantic_settings/"
+      ],
+      "licenseFiles": [
+        "pydantic_settings-2.16.2.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "pydantic_core",
+      "version": "2.50.4",
+      "license": "MIT",
+      "upstream": [
+        "Funding, https://github.com/sponsors/samuelcolvin",
+        "Homepage, https://github.com/pydantic",
+        "Source, https://github.com/pydantic/pydantic/tree/main/pydantic-core"
+      ],
+      "licenseFiles": [
+        "pydantic_core-2.50.4.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "pynndescent",
+      "version": "0.7.0",
+      "license": "BSD-2-Clause",
+      "upstream": [
+        "Homepage, http://github.com/lmcinnes/pynndescent"
+      ],
+      "licenseFiles": [
+        "pynndescent-0.7.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "pyparsing",
+      "version": "3.3.3",
+      "license": "MIT",
+      "upstream": [
+        "Documentation, https://pyparsing-docs.readthedocs.io/en/latest/",
+        "Homepage, https://github.com/pyparsing/pyparsing/",
+        "Source, https://github.com/pyparsing/pyparsing.git"
+      ],
+      "licenseFiles": [
+        "pyparsing-3.3.3.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "python-dateutil",
+      "version": "4.0.0",
+      "license": "BSD-3-Clause",
+      "upstream": [
+        "Homepage, https://github.com/dateutil/dateutil",
+        "Documentation, https://dateutil.readthedocs.io/en/stable/",
+        "Source, https://github.com/dateutil/dateutil"
+      ],
+      "licenseFiles": [
+        "python_dateutil-4.0.0.dist-info/licenses/AUTHORS.md",
+        "python_dateutil-4.0.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "python-dotenv",
+      "version": "1.2.4",
+      "license": "BSD-3-Clause",
+      "upstream": [
+        "Source, https://github.com/theskumar/python-dotenv"
+      ],
+      "licenseFiles": [
+        "python_dotenv-1.2.4.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "python-libsbml",
+      "version": "5.21.2",
+      "license": "LGPL",
+      "upstream": [],
+      "licenseFiles": [
+        "python_libsbml-5.21.2.dist-info/licenses/LICENSE.html",
+        "python_libsbml-5.21.2.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "package": "PyYAML",
+      "version": "6.0.3",
+      "license": "License :: OSI Approved :: MIT License",
+      "upstream": [
+        "Bug Tracker, https://github.com/yaml/pyyaml/issues",
+        "CI, https://github.com/yaml/pyyaml/actions",
+        "Documentation, https://pyyaml.org/wiki/PyYAMLDocumentation",
+        "Mailing lists, http://lists.sourceforge.net/lists/listinfo/yaml-core",
+        "Source Code, https://github.com/yaml/pyyaml"
+      ],
+      "licenseFiles": [
+        "pyyaml-6.0.3.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "scanpy",
+      "version": "1.12.5",
+      "license": "BSD-3-Clause",
+      "upstream": [
+        "Bluesky, https://bsky.app/profile/scverse.bsky.social",
+        "Discourse, https://discourse.scverse.org/c/help/scanpy/37",
+        "Documentation, https://scanpy.scverse.org/",
+        "Homepage, https://scanpy.org",
+        "Source, https://github.com/scverse/scanpy",
+        "Twitter, https://x.com/scverse_team"
+      ],
+      "licenseFiles": [
+        "scanpy-1.12.5.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "scikit-image",
+      "version": "0.26.0",
+      "license": "License :: OSI Approved :: BSD License",
+      "upstream": [
+        "homepage, https://scikit-image.org",
+        "documentation, https://scikit-image.org/docs/stable",
+        "source, https://github.com/scikit-image/scikit-image",
+        "download, https://pypi.org/project/scikit-image/#files",
+        "tracker, https://github.com/scikit-image/scikit-image/issues"
+      ],
+      "licenseFiles": [
+        "scikit_image-0.26.0.dist-info/LICENSE.txt"
+      ]
+    },
+    {
+      "package": "scikit-learn",
+      "version": "1.9.1",
+      "license": "BSD-3-Clause",
+      "upstream": [
+        "homepage, https://scikit-learn.org",
+        "source, https://github.com/scikit-learn/scikit-learn",
+        "download, https://pypi.org/project/scikit-learn/#files",
+        "tracker, https://github.com/scikit-learn/scikit-learn/issues",
+        "release notes, https://scikit-learn.org/stable/whats_new"
+      ],
+      "licenseFiles": [
+        "scikit_learn-1.9.1.dist-info/licenses/COPYING",
+        "sklearn/externals/array_api_compat/LICENSE",
+        "sklearn/externals/array_api_extra/LICENSE"
+      ]
+    },
+    {
+      "package": "scipy",
+      "version": "1.18.1",
+      "license": "License :: OSI Approved :: BSD License",
+      "upstream": [
+        "homepage, https://scipy.org/",
+        "documentation, https://docs.scipy.org/doc/scipy/",
+        "source, https://github.com/scipy/scipy",
+        "download, https://github.com/scipy/scipy/releases",
+        "tracker, https://github.com/scipy/scipy/issues"
+      ],
+      "licenseFiles": [
+        "scipy-1.18.1.dist-info/LICENSE.txt",
+        "scipy/_lib/_uarray/LICENSE",
+        "scipy/fft/_duccfft/LICENSE.md",
+        "scipy/integrate/LICENSE_DOP",
+        "scipy/spatial/qhull_src/COPYING_QHULL.txt"
+      ]
+    },
+    {
+      "package": "scverse-misc",
+      "version": "0.1.8",
+      "license": "BSD 3-Clause License\n\nCopyright (c) 2026, Ilia Kats\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions are met:\n\n1. Redistributions of source code must retain the above copyright notice, this\n   list of conditions and the following disclaimer.\n\n2. Redistributions in binary form must reproduce the above copyright notice,\n   this list of conditions and the following disclaimer in the documentation\n   and/or other materials provided with the distribution.\n\n3. Neither the name of the copyright holder nor the names of its\n   contributors may be used to endorse or promote products derived from\n   this software without specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\"\nAND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE\nIMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE\nFOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL\nDAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR\nSERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER\nCAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,\nOR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE\nOF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
+      "upstream": [
+        "Documentation, https://scverse-misc.readthedocs.io/",
+        "Homepage, https://github.com/scverse/scverse-misc",
+        "Source, https://github.com/scverse/scverse-misc"
+      ],
+      "licenseFiles": [
+        "scverse_misc-0.1.8.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "seaborn",
+      "version": "0.13.2",
+      "license": "License :: OSI Approved :: BSD License",
+      "upstream": [
+        "Docs, http://seaborn.pydata.org",
+        "Source, https://github.com/mwaskom/seaborn"
+      ],
+      "licenseFiles": [
+        "seaborn-0.13.2.dist-info/LICENSE.md"
+      ]
+    },
+    {
+      "package": "session-info2",
+      "version": "0.4.2",
+      "license": "MPL-2.0",
+      "upstream": [
+        "Documentation, https://session-info2.readthedocs.io/",
+        "Issues, https://github.com/flying-sheep/session-info2/issues",
+        "Source, https://github.com/flying-sheep/session-info2"
+      ],
+      "licenseFiles": [
+        "session_info2-0.4.2.dist-info/licenses/LICENSE.rst"
+      ]
+    },
+    {
+      "package": "setuptools",
+      "version": "84.2.1",
+      "license": "MIT",
+      "upstream": [
+        "Source, https://github.com/pypa/setuptools",
+        "Documentation, https://setuptools.pypa.io/",
+        "Changelog, https://setuptools.pypa.io/en/stable/history.html"
+      ],
+      "licenseFiles": [
+        "setuptools-84.2.1.dist-info/licenses/LICENSE",
+        "setuptools/_vendor/autocommand-2.2.2.dist-info/LICENSE",
+        "setuptools/_vendor/backports.tarfile-1.2.0.dist-info/LICENSE",
+        "setuptools/_vendor/importlib_metadata-8.7.1.dist-info/licenses/LICENSE",
+        "setuptools/_vendor/jaraco.text-4.0.0.dist-info/LICENSE",
+        "setuptools/_vendor/jaraco_context-6.1.0.dist-info/licenses/LICENSE",
+        "setuptools/_vendor/jaraco_functools-4.4.0.dist-info/licenses/LICENSE",
+        "setuptools/_vendor/more_itertools-10.8.0.dist-info/licenses/LICENSE",
+        "setuptools/_vendor/packaging-26.3.dist-info/licenses/LICENSE",
+        "setuptools/_vendor/packaging-26.3.dist-info/licenses/LICENSE.APACHE",
+        "setuptools/_vendor/packaging-26.3.dist-info/licenses/LICENSE.BSD",
+        "setuptools/_vendor/packaging/licenses/__init__.py",
+        "setuptools/_vendor/packaging/licenses/__pycache__/__init__.cpython-312.pyc",
+        "setuptools/_vendor/packaging/licenses/__pycache__/_spdx.cpython-312.pyc",
+        "setuptools/_vendor/packaging/licenses/_spdx.py",
+        "setuptools/_vendor/platformdirs-4.4.0.dist-info/licenses/LICENSE",
+        "setuptools/_vendor/tomli-2.4.0.dist-info/licenses/LICENSE",
+        "setuptools/_vendor/wheel-0.46.3.dist-info/licenses/LICENSE.txt",
+        "setuptools/_vendor/zipp-3.23.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "statsmodels",
+      "version": "0.15.0",
+      "license": "BSD-3-Clause",
+      "upstream": [
+        "homepage, https://www.statsmodels.org",
+        "documentation, https://www.statsmodels.org/stable/index.html",
+        "repository, https://github.com/statsmodels/statsmodels",
+        "changelog, https://bashtage.github.io/arch/changes.html",
+        "bugtracker, https://github.com/statsmodels/statsmodels/issues"
+      ],
+      "licenseFiles": [
+        "statsmodels-0.15.0.dist-info/licenses/LICENSE.txt",
+        "statsmodels/multivariate/factor_rotation/LICENSE.txt",
+        "statsmodels/stats/libqsturng/LICENSE.txt",
+        "statsmodels/tsa/statespace/tests/results/frbny_nowcast/Nowcasting/LICENSE"
+      ]
+    },
+    {
+      "package": "texttable",
+      "version": "1.7.2",
+      "license": "License :: OSI Approved :: MIT License",
+      "upstream": [],
+      "licenseFiles": [
+        "texttable-1.7.2.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "threadpoolctl",
+      "version": "3.8.0",
+      "license": "BSD-3-Clause",
+      "upstream": [
+        "homepage, https://github.com/joblib/threadpoolctl"
+      ],
+      "licenseFiles": [
+        "threadpoolctl-3.8.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "tifffile",
+      "version": "2026.10.15",
+      "license": "BSD-3-Clause",
+      "upstream": [
+        "Bug Tracker, https://github.com/cgohlke/tifffile/issues",
+        "Source Code, https://github.com/cgohlke/tifffile",
+        "Documentation, https://www.cgohlke.com/docs/tifffile/"
+      ],
+      "licenseFiles": [
+        "tifffile-2026.10.15.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "tqdm",
+      "version": "4.70.1",
+      "license": "MPL-2.0 AND MIT",
+      "upstream": [
+        "homepage, https://tqdm.github.io",
+        "repository, https://github.com/tqdm/tqdm",
+        "changelog, https://tqdm.github.io/releases",
+        "wiki, https://github.com/tqdm/tqdm/wiki"
+      ],
+      "licenseFiles": [
+        "tqdm-4.70.1.dist-info/licenses/LICENCE"
+      ]
+    },
+    {
+      "package": "typing-inspection",
+      "version": "0.4.5",
+      "license": "MIT",
+      "upstream": [
+        "Homepage, https://github.com/pydantic/typing-inspection",
+        "Documentation, https://pydantic.github.io/typing-inspection/dev/",
+        "Source, https://github.com/pydantic/typing-inspection",
+        "Changelog, https://github.com/pydantic/typing-inspection/blob/main/HISTORY.md"
+      ],
+      "licenseFiles": [
+        "typing_inspection-0.4.5.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "typing_extensions",
+      "version": "4.16.0",
+      "license": "PSF-2.0",
+      "upstream": [
+        "Bug Tracker, https://github.com/python/typing_extensions/issues",
+        "Changes, https://github.com/python/typing_extensions/blob/main/CHANGELOG.md",
+        "Documentation, https://typing-extensions.readthedocs.io/",
+        "Home, https://github.com/python/typing_extensions",
+        "Q & A, https://github.com/python/typing/discussions",
+        "Repository, https://github.com/python/typing_extensions"
+      ],
+      "licenseFiles": [
+        "typing_extensions-4.16.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "tzdata",
+      "version": "2026.6",
+      "license": "Apache-2.0",
+      "upstream": [
+        "Bug Reports, https://github.com/python/tzdata/issues",
+        "Source, https://github.com/python/tzdata",
+        "Documentation, https://tzdata.python.org"
+      ],
+      "licenseFiles": [
+        "tzdata-2026.6.dist-info/licenses/LICENSE",
+        "tzdata-2026.6.dist-info/licenses/licenses/LICENSE_APACHE"
+      ]
+    },
+    {
+      "package": "umap-learn",
+      "version": "0.5.12",
+      "license": "License :: OSI Approved",
+      "upstream": [
+        "Homepage, http://github.com/lmcinnes/umap",
+        "Repository, http://github.com/lmcinnes/umap"
+      ],
+      "licenseFiles": [
+        "umap_learn-0.5.12.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "package": "wheel",
+      "version": "0.48.0",
+      "license": "MIT",
+      "upstream": [
+        "Changelog, https://wheel.readthedocs.io/en/stable/news.html",
+        "Documentation, https://wheel.readthedocs.io/",
+        "Issue Tracker, https://github.com/pypa/wheel/issues",
+        "Source, https://github.com/pypa/wheel"
+      ],
+      "licenseFiles": [
+        "wheel-0.48.0.dist-info/licenses/LICENSE.txt"
+      ]
+    },
+    {
+      "package": "wrapt",
+      "version": "2.5.2",
+      "license": "BSD-2-Clause",
+      "upstream": [
+        "Homepage, https://github.com/GrahamDumpleton/wrapt",
+        "Bug Tracker, https://github.com/GrahamDumpleton/wrapt/issues/",
+        "Changelog, https://wrapt.readthedocs.io/en/latest/changes.html",
+        "Documentation, https://wrapt.readthedocs.io/"
+      ],
+      "licenseFiles": [
+        "wrapt-2.5.2.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "package": "zarr",
+      "version": "3.4.2",
+      "license": "MIT",
+      "upstream": [
+        "issues, https://github.com/zarr-developers/zarr-python/issues",
+        "changelog, https://zarr.readthedocs.io/en/stable/release-notes.html",
+        "Discussions, https://github.com/zarr-developers/zarr-python/discussions",
+        "documentation, https://zarr.readthedocs.io/",
+        "homepage, https://github.com/zarr-developers/zarr-python"
+      ],
+      "licenseFiles": [
+        "zarr-3.4.2.dist-info/licenses/LICENSE.txt"
+      ]
+    }
+  ]
+}

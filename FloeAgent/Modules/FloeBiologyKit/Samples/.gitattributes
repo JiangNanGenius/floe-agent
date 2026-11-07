@@ -1,0 +1,4 @@
+# Preserve exact upstream bytes, including PDB fixed-column padding. The
+# resource manifest verifies these originals; source-code whitespace checks stay on.
+1ubq.pdb -text whitespace=-blank-at-eol
+1ubq.cif -text whitespace=-blank-at-eol

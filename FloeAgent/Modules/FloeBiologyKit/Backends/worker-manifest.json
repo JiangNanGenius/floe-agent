@@ -1,0 +1,45 @@
+{
+  "schema": "floe.biology.worker.resources.v1",
+  "files": [
+    {
+      "file": "biology_worker.py",
+      "bytes": 7944,
+      "sha256": "f3f37d957641881b253af1e86e8d22f7b9416072a530f7044330d63761baa6e5"
+    },
+    {
+      "file": "bio_common.py",
+      "bytes": 6307,
+      "sha256": "f9476c0e1bec69a5c7b33f3f00e6146f407deafd2accebdeef20f3eb5969deda"
+    },
+    {
+      "file": "bio_sequence_structure.py",
+      "bytes": 12124,
+      "sha256": "d4ec818364e0d822a821b8ec47efa4db902b3e60f198527cbc1538788c2f22d8"
+    },
+    {
+      "file": "bio_image_omics.py",
+      "bytes": 14811,
+      "sha256": "ac33b258bcec45b12fae2f83a76306f1433d540556f8803be7e0f81bb67e3978"
+    },
+    {
+      "file": "bio_network.py",
+      "bytes": 7724,
+      "sha256": "71d2d946e6f3be1ee473d429925f684636e67789500fe8a8afa016edea14dbab"
+    },
+    {
+      "file": "requirements.lock",
+      "bytes": 1280,
+      "sha256": "d33d340baf1213552d188c0e5fe65b49de60edf7cb645b69ee313b523778d6e8"
+    },
+    {
+      "file": "dependency-licenses.json",
+      "bytes": 34723,
+      "sha256": "b1479ed015473f33e4751f037b86454186f790c52fbbc65ca853024e24369cae"
+    },
+    {
+      "file": "verify_backend.py",
+      "bytes": 1968,
+      "sha256": "45bebd7fb30b909b215efca62a4e25c67bd044310505c2c2d7d9ca363e52f4d0"
+    }
+  ]
+}

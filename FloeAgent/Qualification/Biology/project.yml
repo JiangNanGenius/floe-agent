@@ -1,0 +1,53 @@
+name: FloeBiologyQualification
+options:
+  deploymentTarget:
+    iOS: '26.0'
+packages:
+  FloeBiologyKit:
+    path: ../../Modules/FloeBiologyKit
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+targets:
+  BiologyHost:
+    type: application
+    platform: iOS
+    sources: [Host.swift]
+    dependencies:
+      - package: FloeBiologyKit
+        product: FloeBiologyUI
+      - package: FloeBiologyKit
+        product: FloeBiologyCore
+      - package: FloeBiologyKit
+        product: FloeBiologyEngine
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.biology
+        TARGETED_DEVICE_FAMILY: '1,2'
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Floe Biology QA
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+  BiologyHostUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests.swift]
+    dependencies:
+      - target: BiologyHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.biology.uitests
+        TEST_TARGET_NAME: BiologyHost
+schemes:
+  BiologyQualificationUI:
+    build:
+      targets:
+        BiologyHost: all
+        BiologyHostUITests: [test]
+    test:
+      targets:
+        - name: BiologyHostUITests
+          parallelizable: false

@@ -1,0 +1,62 @@
+{
+  "schema": "floe.biology.samples.v1",
+  "retrievedAt": "2026-11-07",
+  "entries": [
+    {
+      "file": "1ubq.pdb",
+      "title": "Ubiquitin \u00b7 PDB 1UBQ",
+      "sha256": "d4a6812d8951cf6594e6a0763f089e35f5a80b62acb3c117b2c5565228a7b161",
+      "bytes": 78570,
+      "origin": "https://files.rcsb.org/download/1UBQ.pdb",
+      "license": "CC0-1.0; cite PDB 1UBQ and Vijay-Kumar et al., J Mol Biol 1987, doi:10.1016/0022-2836(87)90679-6"
+    },
+    {
+      "file": "1ubq.cif",
+      "title": "Ubiquitin \u00b7 PDB 1UBQ",
+      "sha256": "056f98710cb2b36f633c45e41902a02eb446e82871da21ff2dd44f74a56ca0f6",
+      "bytes": 103220,
+      "origin": "https://files.rcsb.org/download/1UBQ.cif",
+      "license": "CC0-1.0; cite PDB 1UBQ and Vijay-Kumar et al., J Mol Biol 1987, doi:10.1016/0022-2836(87)90679-6"
+    },
+    {
+      "file": "synthetic-dna.fasta",
+      "title": "Synthetic DNA comparison",
+      "sha256": "6a533a7cf2c7e9d6bc113a2314b65cfb5faa737e489aef5a3097dcd8ae8d2404",
+      "bytes": 204,
+      "origin": "Floe deterministic teaching fixture",
+      "license": "MPL-2.0"
+    },
+    {
+      "file": "synthetic-counts.csv",
+      "title": "Synthetic expression matrix \u00b7 6 genes \u00d7 8 cells",
+      "sha256": "58b49ad917657207428633742296c0ed2a0565e9302efa45d74258f9f9bd0542",
+      "bytes": 213,
+      "origin": "Floe deterministic teaching fixture; two labelled groups; not biological observations",
+      "license": "MPL-2.0"
+    },
+    {
+      "file": "synthetic-microscopy.json",
+      "title": "Synthetic microscopy \u00b7 two objects",
+      "sha256": "824a8bc68991d9f1c09cbbe8505c391893faee4f5b018f77019d0b31e18aa950",
+      "bytes": 8826,
+      "origin": "Floe deterministic quantitative segmentation fixture; not a microscope acquisition",
+      "license": "MPL-2.0"
+    },
+    {
+      "file": "synthetic-microscopy.pgm",
+      "title": "Synthetic 16-bit microscopy image",
+      "sha256": "7ae5c2f149b21c1e7a57edeb1a82e63649c66ae0c640d4504df8ff20dc8a1f6f",
+      "bytes": 8253,
+      "origin": "Floe deterministic quantitative segmentation fixture; not a microscope acquisition",
+      "license": "MPL-2.0"
+    },
+    {
+      "file": "synthetic-network.json",
+      "title": "Synthetic biochemical time course",
+      "sha256": "04d16194befc03f4c267500ebc704f05ef67ad0cad2e1e1778c594da2380ddcd",
+      "bytes": 399,
+      "origin": "Floe analytical teaching model; explicit mass-action kinetics",
+      "license": "MPL-2.0"
+    }
+  ]
+}

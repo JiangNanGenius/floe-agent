@@ -1,0 +1,26 @@
+[
+  {
+    "file": "microscopy-result.png",
+    "bytes": 165945,
+    "originPhase": "ipad-05",
+    "originAttachment": "20C190C4-0CDB-418A-97A9-A0378F7F011A.png",
+    "test": "BiologyHostUITests/testAllDomainsCalculateAndReopen()",
+    "note": "Unmodified native screenshot; synthetic qualification project names only."
+  },
+  {
+    "file": "protein-native-landscape.png",
+    "bytes": 259965,
+    "originPhase": "ipad-06",
+    "originAttachment": "231B07B1-0BCD-418F-96EE-BC71C6837EF9.png",
+    "test": "BiologyHostUITests/testNativeEditingUndoAndLandscape()",
+    "note": "Unmodified native screenshot; synthetic qualification project names only."
+  },
+  {
+    "file": "notes-reopened.png",
+    "bytes": 206643,
+    "originPhase": "ipad-06",
+    "originAttachment": "EAD3EA6D-474D-4132-9FB5-ECB44E17F0DF.png",
+    "test": "BiologyHostUITests/testNotesSaveAcknowledgedBeforeReopen()",
+    "note": "Unmodified native screenshot; synthetic qualification project names only."
+  }
+]
