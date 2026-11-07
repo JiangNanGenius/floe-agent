@@ -16,7 +16,7 @@ class OfficeCloseFileVerificationTest {
     @get:Rule val temporary = TemporaryFolder()
     private val bytes = "original staged file".toByteArray()
     private fun stage(root: File): File = File(File(root, UUID.randomUUID().toString()).apply { mkdirs() }, "document.docx")
-        .apply { writeBytes(bytes) }
+        .apply { writeBytes(bytes) }.canonicalFile
     private fun receipt() = OfficeCloseProof.Receipt(
         OfficeCloseAckPolicy.AckRequest("mount", 5, 9, "user-back"), false, false,
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }, bytes.size.toLong(),
