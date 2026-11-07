@@ -17,6 +17,10 @@ import com.floe.android.R
 /** Scoped data-sync lifetime, never an idle/background keep-alive. */
 class OfficeComponentDownloadService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        try { (application as? FloeApplication)?.officeComponent?.cancel() }
+        finally { stopSelf() }
+    }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(CHANNEL, getString(R.string.office_module_title), NotificationManager.IMPORTANCE_LOW))

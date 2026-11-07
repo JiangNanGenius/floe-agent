@@ -59,6 +59,11 @@ class CadComponentInstallReceiver : BroadcastReceiver() {
 class CadComponentDownloadService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        try { (application as? FloeApplication)?.cadComponent?.cancel() }
+        finally { stopSelf() }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(

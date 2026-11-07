@@ -17,8 +17,8 @@ internal typealias CadComponentState = OptionalComponentState
 internal typealias CadComponentBackend =
     com.floe.android.host.optionalsplit.OptionalComponentBackend
 
-/** App-owned CAD preview component state. PackageManager read-back, not a
- * download callback, is the only source of the installed flag. Both channels
+/** App-owned CAD preview component state. The channel's installed-module
+ * inventory, not a download callback, is the source of the installed flag. Both channels
  * use one module identity; the heavy pinned viewer bytes live exclusively in
  * the signed `cadpreview` split and are served only after the system has
  * validated signer and base version at install. */

@@ -5,8 +5,9 @@ import android.content.Context
 import android.content.Intent
 
 /** App-owned install state for one optional signed split. The installed flag
- * is derived ONLY from a PackageManager read-back (split name present in the
- * package), never from a download or session callback. One shape serves every
+ * is derived from the channel's installed-module inventory (PackageManager
+ * for Full, SplitInstallManager for Play), never just a download callback.
+ * One shape serves every
  * optional preview component (Office today, CAD here). */
 internal data class OptionalComponentState(
     val phase: String = "missing",

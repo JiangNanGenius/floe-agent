@@ -79,7 +79,7 @@ internal class FullOptionalSplitBackend(
                     pending = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                         android.net.Uri.parse("package:${context.packageName}"))
                     emit(OptionalComponentState("permission", pendingIntent = pending))
-                    return@launch
+                    return@launchOwned
                 }
                 installStaged(target)
             } catch (cancelled: CancellationException) {
