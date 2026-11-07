@@ -1077,7 +1077,7 @@ fun ScheduledTasksSummaryCard(
     onOpen: () -> Unit,
     modifier: Modifier = Modifier,
     environmentProvider: TaskScheduleEnvironmentProvider? = null,
-    /** Home hides the card while nothing is scheduled (the Task Center keeps
+    /** Home hides the card while no schedule is enabled (the Task Center keeps
      * a permanent entry). */
     showWhenEmpty: Boolean = true,
 ) {
@@ -1089,10 +1089,10 @@ fun ScheduledTasksSummaryCard(
     DisposableEffect(controller) { onDispose { controller.close() } }
     val state by controller.state.collectAsState()
     LaunchedEffect(controller) { controller.refreshNow() }
-    if (!showWhenEmpty && state.schedules.isEmpty()) return
     val next = state.schedules
         .filter { it.enabled }
         .minByOrNull { it.nextFireAtMillis ?: Long.MAX_VALUE }
+    if (!showWhenEmpty && next == null) return
     Column(
         modifier = modifier
             .fillMaxWidth()

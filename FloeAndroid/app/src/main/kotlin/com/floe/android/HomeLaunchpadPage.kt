@@ -361,15 +361,13 @@ fun HomeLaunchpadPage(
         // never read by the schedule editor.
         if (onOpenSchedules != null && runtimeHost != null) {
             Box(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 4.dp),
+                Modifier.fillMaxWidth(),
                 contentAlignment = Alignment.Center,
             ) {
                 com.floe.android.schedule.ScheduledTasksSummaryCard(
                     host = runtimeHost,
                     onOpen = onOpenSchedules,
-                    modifier = Modifier.widthIn(max = 720.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp).widthIn(max = 720.dp),
                     showWhenEmpty = false,
                 )
             }
