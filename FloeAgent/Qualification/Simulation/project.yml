@@ -1,0 +1,76 @@
+name: FloeSimulationQualification
+options:
+  deploymentTarget:
+    iOS: '26.0'
+packages:
+  FloeSimulationKit:
+    path: ../../Modules/FloeSimulationKit
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+targets:
+  SimulationNativeCodeHost:
+    type: application
+    platform: iOS
+    sources: [NativeCodeHost.swift]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.simulation.native-host
+        TARGETED_DEVICE_FAMILY: '2'
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+  SimulationNativeCodeChecks:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [NativeCodeChecks.swift, Fixtures]
+    dependencies:
+      - target: SimulationNativeCodeHost
+      - package: FloeSimulationKit
+        product: FloeSimulationCore
+      - package: FloeSimulationKit
+        product: FloeSimulationRuntime
+      - package: FloeSimulationKit
+        product: FloeSimulationGeometry
+      - package: FloeSimulationKit
+        product: FloeSimulationFields
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.simulation.native-tests
+        SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/Fixtures/SimulationFixtures.h
+        HEADER_SEARCH_PATHS: $(inherited) "$(SRCROOT)/../../ThirdParty/FloeCADKit/Vendor/OCCT.xcframework/ios-arm64/Headers"
+        CLANG_CXX_LANGUAGE_STANDARD: c++17
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/SimulationNativeCodeHost.app/SimulationNativeCodeHost
+        BUNDLE_LOADER: $(TEST_HOST)
+  SimulationHost:
+    type: application
+    platform: iOS
+    sources: [Host.swift]
+    dependencies:
+      - package: FloeSimulationKit
+        product: FloeSimulationUI
+      - package: FloeSimulationKit
+        product: FloeSimulationCore
+      - package: FloeSimulationKit
+        product: FloeSimulationSamples
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.simulation
+        TARGETED_DEVICE_FAMILY: '1,2'
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Floe Simulation QA
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+schemes:
+  SimulationNativeCodeChecks:
+    build:
+      targets:
+        SimulationNativeCodeChecks: [test]
+    test:
+      targets: [SimulationNativeCodeChecks]
+      parallelizable: false
+  SimulationQualification:
+    build:
+      targets:
+        SimulationHost: all

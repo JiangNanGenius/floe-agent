@@ -1,0 +1,421 @@
+{
+  "bridgeVersion": "0.1.0",
+  "rapierVersion": "0.36.1",
+  "sourceFiles": {
+    "Cargo.toml": "76ea606f150d51b2cc3bbca01bfbdf6e347f5cdc63a3f9b9de2189b3d557aaae",
+    "Cargo.lock": "d2ec2dedd2dc16bcea0a606b60629f8f02bb20d52ea40d057e49fcc53b0f23c6",
+    "src/lib.rs": "342a8035182b1b02f6728c7c18c9d0b95bfab4ae4da145b6f98e831e6ac3a51b",
+    "include/FloeRapierNative.h": "c564743762a3822b55a3e28b735767cc6cff407a12c1a55612365febc460a913",
+    "include/module.modulemap": "c4e3e8bc6fed8a5df30acc09b74a889bdbc21f77376737b5854f692087db9a12"
+  },
+  "cargoLockSHA256": "d2ec2dedd2dc16bcea0a606b60629f8f02bb20d52ea40d057e49fcc53b0f23c6",
+  "slices": [
+    "macos-arm64",
+    "ios-arm64",
+    "ios-arm64-simulator"
+  ],
+  "dependencies": [
+    {
+      "name": "allocator-api2",
+      "version": "0.2.21",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/zakarumych/allocator-api2"
+    },
+    {
+      "name": "approx",
+      "version": "0.5.1",
+      "license": "Apache-2.0",
+      "repository": "https://github.com/brendanzab/approx"
+    },
+    {
+      "name": "arrayvec",
+      "version": "0.7.8",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/bluss/arrayvec"
+    },
+    {
+      "name": "autocfg",
+      "version": "1.5.1",
+      "license": "Apache-2.0 OR MIT",
+      "repository": "https://github.com/cuviper/autocfg"
+    },
+    {
+      "name": "bitflags",
+      "version": "2.13.2",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/bitflags/bitflags"
+    },
+    {
+      "name": "bytemuck",
+      "version": "1.25.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "repository": "https://github.com/Lokathor/bytemuck"
+    },
+    {
+      "name": "byteorder",
+      "version": "1.5.0",
+      "license": "Unlicense OR MIT",
+      "repository": "https://github.com/BurntSushi/byteorder"
+    },
+    {
+      "name": "downcast-rs",
+      "version": "2.0.2",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/marcianx/downcast-rs"
+    },
+    {
+      "name": "either",
+      "version": "1.19.0",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/rayon-rs/either"
+    },
+    {
+      "name": "ena",
+      "version": "0.14.4",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/rust-lang/ena"
+    },
+    {
+      "name": "equivalent",
+      "version": "1.0.3",
+      "license": "Apache-2.0 OR MIT",
+      "repository": "https://github.com/indexmap-rs/equivalent"
+    },
+    {
+      "name": "floe-rapier-native",
+      "version": "0.1.0",
+      "license": "MPL-2.0",
+      "repository": null
+    },
+    {
+      "name": "foldhash",
+      "version": "0.2.0",
+      "license": "Zlib",
+      "repository": "https://github.com/orlp/foldhash"
+    },
+    {
+      "name": "glam",
+      "version": "0.30.10",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/bitshifter/glam-rs"
+    },
+    {
+      "name": "glam",
+      "version": "0.31.1",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/bitshifter/glam-rs"
+    },
+    {
+      "name": "glam",
+      "version": "0.32.1",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/bitshifter/glam-rs"
+    },
+    {
+      "name": "glam",
+      "version": "0.33.12",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/bitshifter/glam-rs"
+    },
+    {
+      "name": "glamx",
+      "version": "0.3.1",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/dimforge/glamx"
+    },
+    {
+      "name": "hash32",
+      "version": "0.3.1",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/japaric/hash32"
+    },
+    {
+      "name": "hashbrown",
+      "version": "0.16.1",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/rust-lang/hashbrown"
+    },
+    {
+      "name": "hashbrown",
+      "version": "0.17.1",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/rust-lang/hashbrown"
+    },
+    {
+      "name": "heapless",
+      "version": "0.8.0",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/rust-embedded/heapless"
+    },
+    {
+      "name": "indexmap",
+      "version": "2.14.2",
+      "license": "Apache-2.0 OR MIT",
+      "repository": "https://github.com/indexmap-rs/indexmap"
+    },
+    {
+      "name": "itoa",
+      "version": "1.0.18",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/dtolnay/itoa"
+    },
+    {
+      "name": "libm",
+      "version": "0.2.16",
+      "license": "MIT",
+      "repository": "https://github.com/rust-lang/compiler-builtins"
+    },
+    {
+      "name": "log",
+      "version": "0.4.35",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/rust-lang/log"
+    },
+    {
+      "name": "matrixmultiply",
+      "version": "0.3.11",
+      "license": "MIT/Apache-2.0",
+      "repository": "https://github.com/bluss/matrixmultiply/"
+    },
+    {
+      "name": "memchr",
+      "version": "2.8.3",
+      "license": "Unlicense OR MIT",
+      "repository": "https://github.com/BurntSushi/memchr"
+    },
+    {
+      "name": "nalgebra",
+      "version": "0.35.0",
+      "license": "Apache-2.0",
+      "repository": "https://github.com/dimforge/nalgebra"
+    },
+    {
+      "name": "nalgebra-macros",
+      "version": "0.3.0",
+      "license": "Apache-2.0",
+      "repository": "https://github.com/dimforge/nalgebra"
+    },
+    {
+      "name": "num-bigint",
+      "version": "0.4.8",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/rust-num/num-bigint"
+    },
+    {
+      "name": "num-complex",
+      "version": "0.4.6",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/rust-num/num-complex"
+    },
+    {
+      "name": "num-derive",
+      "version": "0.5.1",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/rust-num/num-derive"
+    },
+    {
+      "name": "num-integer",
+      "version": "0.1.47",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/rust-num/num-integer"
+    },
+    {
+      "name": "num-rational",
+      "version": "0.4.2",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/rust-num/num-rational"
+    },
+    {
+      "name": "num-traits",
+      "version": "0.2.19",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/rust-num/num-traits"
+    },
+    {
+      "name": "ordered-float",
+      "version": "5.5.1",
+      "license": "MIT",
+      "repository": "https://github.com/reem/rust-ordered-float"
+    },
+    {
+      "name": "parry3d-f64",
+      "version": "0.31.1",
+      "license": "Apache-2.0",
+      "repository": "https://github.com/dimforge/parry"
+    },
+    {
+      "name": "proc-macro2",
+      "version": "1.0.107",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/dtolnay/proc-macro2"
+    },
+    {
+      "name": "profiling",
+      "version": "1.0.18",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/aclysma/profiling"
+    },
+    {
+      "name": "profiling-procmacros",
+      "version": "1.0.18",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/aclysma/profiling"
+    },
+    {
+      "name": "quote",
+      "version": "1.0.47",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/dtolnay/quote"
+    },
+    {
+      "name": "rapier3d-f64",
+      "version": "0.36.1",
+      "license": "Apache-2.0",
+      "repository": "https://github.com/dimforge/rapier"
+    },
+    {
+      "name": "rawpointer",
+      "version": "0.2.1",
+      "license": "MIT/Apache-2.0",
+      "repository": "https://github.com/bluss/rawpointer/"
+    },
+    {
+      "name": "robust",
+      "version": "1.2.0",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/georust/robust"
+    },
+    {
+      "name": "rstar",
+      "version": "0.13.1",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/georust/rstar"
+    },
+    {
+      "name": "safe_arch",
+      "version": "1.2.0",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "repository": "https://github.com/Lokathor/safe_arch"
+    },
+    {
+      "name": "serde",
+      "version": "1.0.229",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/serde-rs/serde"
+    },
+    {
+      "name": "serde_core",
+      "version": "1.0.229",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/serde-rs/serde"
+    },
+    {
+      "name": "serde_derive",
+      "version": "1.0.229",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/serde-rs/serde"
+    },
+    {
+      "name": "serde_json",
+      "version": "1.0.154",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/serde-rs/json"
+    },
+    {
+      "name": "simba",
+      "version": "0.10.2",
+      "license": "Apache-2.0",
+      "repository": "https://github.com/dimforge/simba"
+    },
+    {
+      "name": "slab",
+      "version": "0.4.12",
+      "license": "MIT",
+      "repository": "https://github.com/tokio-rs/slab"
+    },
+    {
+      "name": "smallvec",
+      "version": "1.16.5",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/servo/rust-smallvec"
+    },
+    {
+      "name": "spade",
+      "version": "2.15.1",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/Stoeoef/spade"
+    },
+    {
+      "name": "stable_deref_trait",
+      "version": "1.2.1",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/storyyeller/stable_deref_trait"
+    },
+    {
+      "name": "static_assertions",
+      "version": "1.1.0",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/nvzqz/static-assertions-rs"
+    },
+    {
+      "name": "syn",
+      "version": "2.0.119",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/dtolnay/syn"
+    },
+    {
+      "name": "syn",
+      "version": "3.0.9",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/dtolnay/syn"
+    },
+    {
+      "name": "thiserror",
+      "version": "2.0.21",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/dtolnay/thiserror"
+    },
+    {
+      "name": "thiserror-impl",
+      "version": "2.0.21",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/dtolnay/thiserror"
+    },
+    {
+      "name": "typenum",
+      "version": "1.20.1",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/paholg/typenum"
+    },
+    {
+      "name": "unicode-ident",
+      "version": "1.0.27",
+      "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
+      "repository": "https://github.com/dtolnay/unicode-ident"
+    },
+    {
+      "name": "wide",
+      "version": "1.7.1",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "repository": "https://github.com/Lokathor/wide"
+    },
+    {
+      "name": "zmij",
+      "version": "1.0.23",
+      "license": "MIT",
+      "repository": "https://github.com/dtolnay/zmij"
+    }
+  ],
+  "files": {
+    "Info.plist": "6e37f4468775b2184979785a78ba419fed2c7ed1492aaf880c83f8e928b01e8f",
+    "ios-arm64/Headers/FloeRapierNative.h": "c564743762a3822b55a3e28b735767cc6cff407a12c1a55612365febc460a913",
+    "ios-arm64/Headers/module.modulemap": "c4e3e8bc6fed8a5df30acc09b74a889bdbc21f77376737b5854f692087db9a12",
+    "ios-arm64/libfloe_rapier_native.a": "03d61e38d8b803aae1e98619d41a7ec23274b5e790c60b00e57512fd2fc652e9",
+    "ios-arm64-simulator/Headers/FloeRapierNative.h": "c564743762a3822b55a3e28b735767cc6cff407a12c1a55612365febc460a913",
+    "ios-arm64-simulator/Headers/module.modulemap": "c4e3e8bc6fed8a5df30acc09b74a889bdbc21f77376737b5854f692087db9a12",
+    "ios-arm64-simulator/libfloe_rapier_native.a": "f996b62916b7cd8b70846c36c031509d81b8a7f98bc93dd725047931e8a06be9",
+    "macos-arm64/Headers/FloeRapierNative.h": "c564743762a3822b55a3e28b735767cc6cff407a12c1a55612365febc460a913",
+    "macos-arm64/Headers/module.modulemap": "c4e3e8bc6fed8a5df30acc09b74a889bdbc21f77376737b5854f692087db9a12",
+    "macos-arm64/libfloe_rapier_native.a": "e49dab4c8a6182ce8a10ac52ce8e03c61825c466ab52ccfb9b0a57a908331b7f"
+  }
+}

@@ -1,0 +1,4 @@
+module FloeRapierNative {
+    header "FloeRapierNative.h"
+    export *
+}

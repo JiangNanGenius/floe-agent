@@ -1,0 +1,4 @@
+module FloeFieldsNative {
+    header "FloeFieldsMFEM.h"
+    export *
+}

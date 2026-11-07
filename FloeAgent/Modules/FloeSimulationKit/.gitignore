@@ -1,0 +1,4 @@
+.swiftpm/
+Vendor/FloeRapierNative.xcframework/
+Vendor/FloeFieldsNative.xcframework/
+Vendor/FloeMeshingNative.xcframework/

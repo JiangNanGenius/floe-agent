@@ -1,0 +1,49 @@
+{
+  "upstream": "Netgen 6.2.2507",
+  "archiveSHA256": "daf6e4fe83f768cc5b6d594bb23b8a8cca47bdadc81ecb0902e0ffd598592055",
+  "sourceURL": "https://github.com/NGSolve/netgen/archive/refs/tags/v6.2.2507.tar.gz",
+  "builds": {
+    "macos": {
+      "upstream": "Netgen 6.2.2507",
+      "archiveSHA256": "daf6e4fe83f768cc5b6d594bb23b8a8cca47bdadc81ecb0902e0ffd598592055",
+      "platform": "macos",
+      "triple": "arm64-apple-macos15.0",
+      "brep": false,
+      "bridgeSHA256": "bdcd8f63a07874ef5eadf0a849524f0b4051a922d186121d778c49bf2e62460a",
+      "headerSHA256": "bdcf0b3e2f816a256d64c5bc456a5850696c3e5bb906a0ebe732b31bb1aea37b"
+    },
+    "ios": {
+      "upstream": "Netgen 6.2.2507",
+      "archiveSHA256": "daf6e4fe83f768cc5b6d594bb23b8a8cca47bdadc81ecb0902e0ffd598592055",
+      "platform": "ios",
+      "triple": "arm64-apple-ios26.0",
+      "brep": true,
+      "bridgeSHA256": "bdcd8f63a07874ef5eadf0a849524f0b4051a922d186121d778c49bf2e62460a",
+      "headerSHA256": "bdcf0b3e2f816a256d64c5bc456a5850696c3e5bb906a0ebe732b31bb1aea37b"
+    },
+    "simulator": {
+      "upstream": "Netgen 6.2.2507",
+      "archiveSHA256": "daf6e4fe83f768cc5b6d594bb23b8a8cca47bdadc81ecb0902e0ffd598592055",
+      "platform": "simulator",
+      "triple": "arm64-apple-ios26.0-simulator",
+      "brep": true,
+      "bridgeSHA256": "bdcd8f63a07874ef5eadf0a849524f0b4051a922d186121d778c49bf2e62460a",
+      "headerSHA256": "bdcf0b3e2f816a256d64c5bc456a5850696c3e5bb906a0ebe732b31bb1aea37b"
+    }
+  },
+  "files": {
+    "Info.plist": "2ca8c073de7ad33b7bd8ffe5de83893a6769739b01d9026f955ab6ba56f3ecf5",
+    "ios-arm64-simulator/FloeMeshingNative.framework/FloeMeshingNative": "7de7134c54ccf7157acea457ac46ea5df9f9740b54d59e89574f2e645f64032a",
+    "ios-arm64-simulator/FloeMeshingNative.framework/Info.plist": "e8f14af497969186169d9e55d2a9bf594112ea362780aa48f81716374391b264",
+    "ios-arm64-simulator/FloeMeshingNative.framework/Headers/FloeMeshingNative.h": "bdcf0b3e2f816a256d64c5bc456a5850696c3e5bb906a0ebe732b31bb1aea37b",
+    "ios-arm64-simulator/FloeMeshingNative.framework/Modules/module.modulemap": "81f93909820cb3e3a4047082665cf55f2c50b60dc18294e1e3043c60c2277356",
+    "macos-arm64/FloeMeshingNative.framework/FloeMeshingNative": "385442248e977ecb8e86226fbb728d8efb28994ca5300b9af45e8ae37f2f0e84",
+    "macos-arm64/FloeMeshingNative.framework/Info.plist": "5eef65130c5f1a31e429275a62cadc85c938c5c68e90b5696bf670a34a257610",
+    "macos-arm64/FloeMeshingNative.framework/Headers/FloeMeshingNative.h": "bdcf0b3e2f816a256d64c5bc456a5850696c3e5bb906a0ebe732b31bb1aea37b",
+    "macos-arm64/FloeMeshingNative.framework/Modules/module.modulemap": "81f93909820cb3e3a4047082665cf55f2c50b60dc18294e1e3043c60c2277356",
+    "ios-arm64/FloeMeshingNative.framework/FloeMeshingNative": "ed2c1a5e02d11c802bac0fec158d1432f85e3d608ac94b57b75cd53707f42845",
+    "ios-arm64/FloeMeshingNative.framework/Info.plist": "e8f14af497969186169d9e55d2a9bf594112ea362780aa48f81716374391b264",
+    "ios-arm64/FloeMeshingNative.framework/Headers/FloeMeshingNative.h": "bdcf0b3e2f816a256d64c5bc456a5850696c3e5bb906a0ebe732b31bb1aea37b",
+    "ios-arm64/FloeMeshingNative.framework/Modules/module.modulemap": "81f93909820cb3e3a4047082665cf55f2c50b60dc18294e1e3043c60c2277356"
+  }
+}
