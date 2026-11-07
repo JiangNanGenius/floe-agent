@@ -1,0 +1,51 @@
+[
+  {
+    "image": "protein-ribbon.png",
+    "phase": "ipad-02",
+    "sourceAttachment": "95073317-4ADE-471B-A46E-E08D7D37D63D.png",
+    "sha256": "41334c70aa2d8c9c7e145b16220d76bf558416e50b37f5c6d1f54c2a2f46a8a7",
+    "scope": "Unmodified independent iPad Simulator screenshot; synthetic teaching data or public RCSB structure."
+  },
+  {
+    "image": "newick-tree.png",
+    "phase": "ipad-02",
+    "sourceAttachment": "0444BC99-A1B1-45D1-9058-0483AD6FB4AB.png",
+    "sha256": "c01ee4974d8a810fa766d96aa16fe51e2dccdf535b4fc3f7c05b466deac801df",
+    "scope": "Unmodified independent iPad Simulator screenshot; synthetic teaching data or public RCSB structure."
+  },
+  {
+    "image": "density-slice.png",
+    "phase": "ipad-02",
+    "sourceAttachment": "17EEE857-32EE-47FB-BC89-002177637269.png",
+    "sha256": "6e139df9464fe7d0ec5870211fff1e31b657e7a86e2f70e580dbfb2816ecf65f",
+    "scope": "Unmodified independent iPad Simulator screenshot; synthetic teaching data or public RCSB structure."
+  },
+  {
+    "image": "density-surface.png",
+    "phase": "ipad-02",
+    "sourceAttachment": "1EC917FB-6D75-4B01-A54E-1CC6668E2884.png",
+    "sha256": "61fe19808620fcb8894d5890d864ac998ef58b54ef55530857c081161cc05659",
+    "scope": "Unmodified independent iPad Simulator screenshot; synthetic teaching data or public RCSB structure."
+  },
+  {
+    "image": "notes-reopened.png",
+    "phase": "ipad-03",
+    "sourceAttachment": "DD007B42-4AE7-4806-8BF3-A90154D36F6B.png",
+    "sha256": "9486d96c29f29db35623d7ba4795598060052e585b5ba033c0a5600cf7726b08",
+    "scope": "Unmodified independent iPad Simulator screenshot; synthetic teaching data or public RCSB structure."
+  },
+  {
+    "image": "tool-edit-live-view.png",
+    "phase": "ipad-10",
+    "sourceAttachment": "5A838319-FFFC-40ED-8907-C6652F41D569.png",
+    "sha256": "a0078734feae0d637982560265bc2af0c461eabf8a767cf1fce46847b013a86c",
+    "scope": "Unmodified independent iPad Simulator screenshot; actual scoped tool mutation on synthetic data."
+  },
+  {
+    "image": "tool-actual-response.png",
+    "phase": "ipad-10",
+    "sourceAttachment": "9585CF51-6C6B-4DDF-B3EA-D4304BF3BA28.png",
+    "sha256": "5be22061eac258a6aae492032e857f8632918efe4d65c42d9a87acf2b63e5a2f",
+    "scope": "Unmodified independent iPad Simulator screenshot; actual scoped tool mutation on synthetic data."
+  }
+]
