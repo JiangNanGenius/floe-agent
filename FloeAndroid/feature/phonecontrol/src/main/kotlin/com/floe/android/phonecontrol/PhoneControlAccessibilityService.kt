@@ -13,7 +13,9 @@ import android.view.accessibility.AccessibilityEvent
  * The only exported component in this module, protected by
  * `android.permission.BIND_ACCESSIBILITY_SERVICE` so only the system may bind.
  * It performs no background collection: events update only generation/settle
- * counters; a node tree is read only inside an explicit host operation.
+ * counters (window events are attributed first, and clearly unrelated
+ * windows never touch the observation); a node tree is read only inside an
+ * explicit host operation.
  *
  * Event text is deliberately never read here. Only the event type/timing is
  * used, so notification/IM/password content cannot enter a log or retained
@@ -40,6 +42,9 @@ class PhoneControlAccessibilityService : AccessibilityService() {
                 } else {
                     0
                 },
+                // Package attribution lets the session ignore window events
+                // from unrelated packages; event text is never read here.
+                packageName = event.packageName?.toString(),
             )
 
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> session.onContentChanged()

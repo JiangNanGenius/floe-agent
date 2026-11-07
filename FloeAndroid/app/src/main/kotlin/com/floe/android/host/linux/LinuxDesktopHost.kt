@@ -25,7 +25,8 @@ internal data class LinuxDesktopState(val phase: String = "idle", val taskID: St
     val workspaceID: String? = null, val environmentID: String? = null,
     val desktop: Boolean = false, val vnc: RemoteVncUi? = null, val failure: String? = null,
     val software: List<LinuxSoftwarePackage> = emptyList(), val softwareOperation: String? = null,
-    val runtimeGeneration: String? = null, val failureStage: String? = null, val failureCode: String? = null)
+    val runtimeGeneration: String? = null, val failureStage: String? = null, val failureCode: String? = null,
+    val lastStartedApplication: String? = null)
 
 /** A graphical session is an owned native PTY plus a real authenticated loopback VNC client.
  * No host interpreter, guessed temporary environment, or view-owned process is used. */
@@ -289,7 +290,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                         LinuxDesktopCommands.application(name, false, nonce))
                     requireStarted(answer)
                     if (live() && epoch == admittedEpoch && terminalID == token)
-                        mutable.value = state.value.copy(softwareOperation = null)
+                        mutable.value = state.value.copy(softwareOperation = null, lastStartedApplication = name)
                 }
             } catch (timeout: TimeoutCancellationException) {
                 if (epoch == admittedEpoch && terminalID == token)
@@ -399,6 +400,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                 val launchNonce = UUID.randomUUID().toString().replace("-", "")
                 requireStarted(commandReply(token, launchNonce,
                     "open:$application:${encoded(path)}:$launchNonce\n".toByteArray()))
+                mutable.value = state.value.copy(lastStartedApplication = application)
                 editWatchers.remove(row.id)?.cancelAndJoin()
                 editWatchers[row.id] = scope.launch(Dispatchers.IO) {
                     while (isActive && live() && epoch == admittedEpoch && terminalID == token) {

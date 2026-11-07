@@ -1,6 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- GitHub distribution only; never merged into the Play application. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Explicit user-requested background automation setup. This only allows
+         opening the system consent dialog; it never grants an exemption. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Scoped download lifecycle: a real dataSync foreground service keeps an
          in-progress APK download alive across screen lock/backgrounding. Both
          are normal (install-time) permissions, Full channel only. -->

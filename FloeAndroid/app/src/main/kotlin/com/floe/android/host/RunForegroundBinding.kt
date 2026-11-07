@@ -22,6 +22,33 @@ fun interface RunForegroundNativeSnapshotSource {
 }
 
 /**
+ * Typed result of ONE provisional launch acquisition. Scheduler callers need
+ * the concrete refusal kind to route an actionable notice (a REAL OS
+ * background start restriction is user-actionable through battery/background
+ * settings; a generic unavailability or owner conflict is not). The legacy
+ * Boolean view of the same attempt stays for the existing positional and
+ * trailing-lambda callers.
+ */
+sealed interface AgentLaunchProvisionalResult {
+    /** The provisional lease is held for this launch operation. */
+    data object Admitted : AgentLaunchProvisionalResult
+
+    /** The acquisition failed with its typed reason; nothing was acquired. */
+    data class Refused(val failure: RunForegroundFailure) : AgentLaunchProvisionalResult
+}
+
+/**
+ * Boolean compatibility view for the original callers: an admission is
+ * success, every refusal (typed or not) is false. The typed
+ * [AgentLaunchProvisionalResult] remains the scheduler-facing truth so the
+ * refusal kind is never read back out of a global trace.
+ */
+internal fun AgentLaunchProvisionalResult.admitted(): Boolean = when (this) {
+    is AgentLaunchProvisionalResult.Admitted -> true
+    is AgentLaunchProvisionalResult.Refused -> false
+}
+
+/**
  * The Core App host binding between ACTUAL runtime lifecycle and the
  * foreground controller. It contains no business logic and invents nothing:
  *
@@ -133,8 +160,21 @@ class RunForegroundBinding(
     suspend fun agentLaunchProvisional(
         launchOperationID: String,
         onStopRequested: com.floe.android.runlifecycle.RunStopHandler? = null,
-    ): Boolean {
-        if (provisionalLaunchLeases[launchOperationID]?.let { it.isActiveNow() } == true) return true
+    ): Boolean = agentLaunchProvisionalResult(launchOperationID, onStopRequested).admitted()
+
+    /**
+     * Typed variant of [agentLaunchProvisional] for callers that must keep
+     * the concrete refusal kind (the scheduler's actionable notice routing).
+     * Identical acquisition semantics: same lease map, same rollback and the
+     * same [onUnavailable] reporting; only the outcome carries its type.
+     */
+    suspend fun agentLaunchProvisionalResult(
+        launchOperationID: String,
+        onStopRequested: com.floe.android.runlifecycle.RunStopHandler? = null,
+    ): AgentLaunchProvisionalResult {
+        if (provisionalLaunchLeases[launchOperationID]?.let { it.isActiveNow() } == true) {
+            return AgentLaunchProvisionalResult.Admitted
+        }
         val lease = try {
             controller.acquireOperation(
                 operationID = launchOperationID,
@@ -146,10 +186,10 @@ class RunForegroundBinding(
             throw cancellation // controller rolled back this contribution already.
         } catch (failure: RunForegroundFailure) {
             onUnavailable("agent-launch", failure)
-            return false
+            return AgentLaunchProvisionalResult.Refused(failure)
         }
         retainSingleLease(provisionalLaunchLeases, launchOperationID, lease)
-        return true
+        return AgentLaunchProvisionalResult.Admitted
     }
 
     /**

@@ -65,8 +65,46 @@ class TaskScheduleDispatchWorker(
                 builder.build(),
             )
         }
+
+        /**
+         * Prompt return-recovery attempt for the SAME durable pending
+         * occurrence. The ordinary dispatch key may still be backing off
+         * from its bounded retries; this DISTINCT, deduped key starts one
+         * prompt attempt WITHOUT cancelling or replacing the in-flight
+         * admission (KEEP never touches a running worker). The native
+         * occurrence CAS remains the final duplicate authority, so an
+         * overlap with any live admission collapses honestly.
+         */
+        fun enqueueReturnRecovery(context: Context, scheduleID: String) {
+            val builder = OneTimeWorkRequestBuilder<TaskScheduleDispatchWorker>()
+                .setInputData(
+                    Data.Builder()
+                        .putString(KEY_SCHEDULE_ID, scheduleID)
+                        .putString(KEY_TRIGGER, TRIGGER_PENDING)
+                        .build(),
+                )
+                .addTag("floe.schedule.dispatch.return")
+            if (scheduleDispatchUsesExpedited(Build.VERSION.SDK_INT)) {
+                builder.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+            }
+            WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+                returnRecoveryWorkName(scheduleID),
+                ExistingWorkPolicy.KEEP,
+                builder.build(),
+            )
+        }
     }
 }
+
+/**
+ * The distinct, stable, deduped work name for one schedule's return-recovery
+ * attempt: same id → same name (KEEP dedupes repeat resumes), different ids
+ * → different names, and NEVER the ordinary dispatch key (so a prompt
+ * recovery attempt never cancels or replaces a backing-off in-flight
+ * admission). Top-level and pure so the boundary is JVM-testable.
+ */
+internal fun returnRecoveryWorkName(scheduleID: String): String =
+    "floe.schedule.dispatch.$scheduleID.${TaskScheduleDispatchWorker.TRIGGER_PENDING}.return"
 
 /**
  * Bounded re-arm pass used after boot, package replacement, clock/timezone
@@ -115,6 +153,28 @@ internal fun ListenableWorker.retryOrFail(
 }
 
 internal const val MAX_ATTEMPTS = 5
+
+/** Durable notice for a REAL OS background start restriction. */
+internal const val NOTICE_BACKGROUND_START_RESTRICTED = "background_start_restricted"
+
+/** Durable notice for every other foreground acquisition refusal. */
+internal const val NOTICE_FOREGROUND_UNAVAILABLE = "foreground_unavailable"
+
+/**
+ * Maps the typed provisional-acquisition refusal to the durable notice code.
+ * A REAL OS background start restriction (StartDenied) is actionable through
+ * the battery/background settings route; notification blocks, generic
+ * unavailability, owner conflicts and unknown refusals keep the ordinary
+ * foreground-unavailable notice. A null refusal (an unexpected transport
+ * failure) is never upgraded to a restriction claim.
+ */
+internal fun foregroundStartNotice(
+    failure: com.floe.android.runlifecycle.RunForegroundFailure?,
+): String = when (failure) {
+    is com.floe.android.runlifecycle.RunForegroundFailure.StartDenied ->
+        NOTICE_BACKGROUND_START_RESTRICTED
+    else -> NOTICE_FOREGROUND_UNAVAILABLE
+}
 
 /**
  * WorkManager expo here means an expedited JobScheduler job (no foreground

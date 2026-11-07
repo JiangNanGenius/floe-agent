@@ -212,6 +212,19 @@ fun TaskScheduleDestination(
                 onAllowExact = { TaskSchedulePlatform.openExactAlarmSettings(context) },
             )
         }
+        // Enabled system-condition schedules (charging / network) wake in the
+        // background, where Android may restrict starts. The same public
+        // battery/background settings route stays reachable here, with the
+        // REAL power state; it is distinct from the exact-alarm grant above.
+        val hasConditionSchedule = state.schedules.any {
+            it.enabled && (it.cadence == TaskScheduleCadence.CHARGING ||
+                it.cadence == TaskScheduleCadence.NETWORK_CONNECTED)
+        }
+        if (hasConditionSchedule) {
+            ScheduleBackgroundPowerBanner(
+                status = com.floe.android.host.rememberBackgroundPowerStatus(),
+            )
+        }
         when {
             state.loading && state.schedules.isEmpty() -> CenteredCaption(
                 stringResource(R.string.schedule_loading),
@@ -415,6 +428,75 @@ private fun SchedulePermissionBanner(onAllowExact: () -> Unit) {
                 style = Floe.typography.bodyEmphasized,
                 color = Floe.colors.accent,
             )
+        }
+    }
+}
+
+@Composable
+private fun ScheduleBackgroundPowerBanner(
+    status: com.floe.android.host.BackgroundExecutionSettings.PowerStatus,
+) {
+    val context = LocalContext.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Floe.colors.fillTertiary)
+            .padding(14.dp),
+    ) {
+        FloeText(
+            stringResource(R.string.schedule_background_power_title),
+            style = Floe.typography.bodyEmphasized,
+            color = Floe.colors.label,
+        )
+        Spacer(Modifier.height(4.dp))
+        FloeText(
+            stringResource(R.string.schedule_background_power_body),
+            style = Floe.typography.metadata,
+            color = Floe.colors.secondaryLabel,
+        )
+        Spacer(Modifier.height(4.dp))
+        FloeText(
+            stringResource(when (status.ignoresBatteryOptimizations) {
+                true -> R.string.background_task_power_exempt
+                false -> R.string.background_task_power_not_exempt
+                null -> R.string.background_task_power_unknown
+            }),
+            style = Floe.typography.metadata,
+            color = Floe.colors.tertiaryLabel,
+        )
+        Spacer(Modifier.height(8.dp))
+        if (status.ignoresBatteryOptimizations != true) {
+            TextButton(onClick = {
+                com.floe.android.host.BackgroundExecutionSettings.requestExemptionOrSettings(context)
+            }) {
+                FloeText(
+                    stringResource(R.string.background_task_request_exemption),
+                    style = Floe.typography.bodyEmphasized,
+                    color = Floe.colors.accent,
+                )
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            TextButton(onClick = {
+                com.floe.android.host.BackgroundExecutionSettings.openAppBatterySettings(context)
+            }) {
+                FloeText(
+                    stringResource(R.string.background_task_open_app_battery),
+                    style = Floe.typography.bodyEmphasized,
+                    color = Floe.colors.accent,
+                )
+            }
+            TextButton(onClick = {
+                com.floe.android.host.BackgroundExecutionSettings.openOptimizationList(context)
+            }) {
+                FloeText(
+                    stringResource(R.string.background_task_open_optimization_list),
+                    style = Floe.typography.bodyEmphasized,
+                    color = Floe.colors.accent,
+                )
+            }
         }
     }
 }
@@ -1192,6 +1274,7 @@ private fun scheduleErrorMessage(code: String?): String = when (code) {
     "payloadTooLarge" -> stringResource(R.string.schedule_error_payload_too_large)
     "exactAlarmPermission" -> stringResource(R.string.schedule_error_exact)
     "notifications_blocked" -> stringResource(R.string.schedule_error_notifications)
+    "background_start_restricted" -> stringResource(R.string.schedule_error_background_start)
     "condition_clock_changed" -> stringResource(R.string.schedule_condition_clock_changed)
     "timeout", "runtime_unavailable", "runtimeUnavailable", "superseded" ->
         stringResource(R.string.schedule_error_runtime)

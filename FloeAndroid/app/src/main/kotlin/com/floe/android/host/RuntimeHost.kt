@@ -827,7 +827,18 @@ class RuntimeHost internal constructor(
     @Volatile
     internal var uiModalSurfaceOwned = false
 
-    internal enum class BackgroundAvailability { NOTIFICATIONS_BLOCKED, SYSTEM_UNAVAILABLE }
+    internal enum class BackgroundAvailability {
+        NOTIFICATIONS_BLOCKED,
+
+        /** A REAL OS background start restriction (typed StartDenied): the
+         *  foreground service itself was refused a start, which on Android
+         *  12+ is user-actionable through the battery/background settings.
+         *  Kept distinct from generic unavailability and owner conflicts so
+         *  the UI can offer that route honestly. */
+        BACKGROUND_START_RESTRICTED,
+        SYSTEM_UNAVAILABLE,
+    }
+
     internal val backgroundAvailabilityNotice = MutableStateFlow<BackgroundAvailability?>(null)
     private val backgroundNoticeReported = java.util.concurrent.atomic.AtomicBoolean()
     @Volatile private var backgroundNoticeDiagnostic: com.floe.android.runlifecycle.RunForegroundTrace.Attribution? = null
@@ -836,8 +847,7 @@ class RuntimeHost internal constructor(
         val diagnostic = com.floe.android.runlifecycle.RunForegroundTrace.notice(failure, posted)
         if (posted) {
             backgroundNoticeDiagnostic = diagnostic
-            backgroundAvailabilityNotice.value = if (failure is com.floe.android.runlifecycle.RunForegroundFailure.NotificationsBlocked)
-                BackgroundAvailability.NOTIFICATIONS_BLOCKED else BackgroundAvailability.SYSTEM_UNAVAILABLE
+            backgroundAvailabilityNotice.value = backgroundAvailabilityOf(failure)
         }
     }
 
@@ -1572,6 +1582,23 @@ class RuntimeHost internal constructor(
                     context.applicationContext ?: context)
         }
     }
+}
+
+/**
+ * Pure notice-bucket classifier for one typed acquisition failure. A REAL OS
+ * background start restriction (StartDenied) is actionable through the
+ * battery/background settings; a generic unavailability or an owner conflict
+ * keeps the ordinary "keep Floe open" copy. Notifications blocked stays its
+ * own distinct bucket. JVM-testable without a host instance.
+ */
+internal fun backgroundAvailabilityOf(
+    failure: com.floe.android.runlifecycle.RunForegroundFailure,
+): RuntimeHost.BackgroundAvailability = when (failure) {
+    is com.floe.android.runlifecycle.RunForegroundFailure.NotificationsBlocked ->
+        RuntimeHost.BackgroundAvailability.NOTIFICATIONS_BLOCKED
+    is com.floe.android.runlifecycle.RunForegroundFailure.StartDenied ->
+        RuntimeHost.BackgroundAvailability.BACKGROUND_START_RESTRICTED
+    else -> RuntimeHost.BackgroundAvailability.SYSTEM_UNAVAILABLE
 }
 
 sealed interface HostOperationOutcome {

@@ -397,6 +397,17 @@
     <string name="background_task_system_notice">Background protection is unavailable. Keep Floe open for this task.</string>
     <string name="background_task_notifications_enable">Enable notifications</string>
     <string name="background_task_keep_open">Continue</string>
+    <string name="background_task_start_restricted_title">Background start restricted</string>
+    <string name="background_task_start_restricted_body">Android can stop tasks from starting while Floe is in the background. Battery settings decide whether a scheduled task may start on its own.</string>
+    <string name="background_task_power_exempt">Current status: Floe may ignore battery optimization.</string>
+    <string name="background_task_power_not_exempt">Current status: battery optimization still applies to Floe.</string>
+    <string name="background_task_power_unknown">Current status: power state unavailable.</string>
+    <string name="background_task_open_app_battery">App battery settings</string>
+    <string name="background_task_open_optimization_list">Battery optimization list</string>
+    <string name="background_task_request_exemption">Allow in background</string>
+    <string name="schedule_background_power_title">Background start for condition tasks</string>
+    <string name="schedule_background_power_body">Charging and network tasks may start while Floe is in the background. Battery settings decide whether Android lets them start on their own.</string>
+    <string name="schedule_error_background_start">Android blocked this task from starting in the background. Open battery settings, or keep Floe open and retry.</string>
     <!-- Local task execution read-only proof details (Diagnostics & About) -->
     <string name="yes">Yes</string>
     <string name="no">No</string>

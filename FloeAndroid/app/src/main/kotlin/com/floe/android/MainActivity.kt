@@ -44,6 +44,12 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         (application as FloeApplication).linuxSetup.onResume()
         (application as FloeApplication).reconcileForegroundOnResume()
+        // Scheduled tasks: recover the SAME durable pending occurrences
+        // promptly after an explicit App/settings return. This only enqueues
+        // a distinct, deduped prompt attempt; it manufactures no occurrence
+        // and claims no permission (the native claim CAS stays the dedupe
+        // authority).
+        com.floe.android.schedule.TaskSchedulePlatform.recoverPendingOnReturn()
         // Cooldown-gated automatic update check + install/permission resume.
         com.floe.android.host.update.AppUpdateFeature.onApplicationForeground()
         (application as FloeApplication).setActivityForeground(true)

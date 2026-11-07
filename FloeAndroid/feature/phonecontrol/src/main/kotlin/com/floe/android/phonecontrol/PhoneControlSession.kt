@@ -14,6 +14,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.view.Display
+import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.app.KeyguardManager
 import java.util.UUID
@@ -1003,8 +1004,34 @@ internal class PhoneControlSession(
         }
     }
 
-    fun onWindowChanged(eventType: Int = 0, sourceWindowId: Int = -1, windowChanges: Int = 0) {
+    fun onWindowChanged(
+        eventType: Int = 0,
+        sourceWindowId: Int = -1,
+        windowChanges: Int = 0,
+        packageName: String? = null,
+    ) {
         if (closed) return
+        // Attribute the event before destroying a live observation: transient
+        // windows from other packages (toasts, heads-up, system dialogs,
+        // Floe's own overlay) leave the observed page untouched, while real
+        // navigation and same-app page changes still clear it. Unattributable
+        // events stay conservative and always invalidate.
+        latest?.observation?.let { observation ->
+            val keepsObservation = !windowEventInvalidates(
+                observedWindowId = observation.windowId,
+                observedPackageName = observation.packageName,
+                eventWindowId = sourceWindowId,
+                eventPackageName = packageName,
+                isWindowStateChanged = eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+                activeWindowChanged =
+                    eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED &&
+                    (windowChanges and AccessibilityEvent.WINDOWS_CHANGE_ACTIVE) != 0,
+            )
+            if (keepsObservation) {
+                traceObservationKept(eventType, sourceWindowId, windowChanges)
+                return
+            }
+        }
         traceObservationClear("window_event", eventType, sourceWindowId, windowChanges)
         fence.onPageChanged()
         latest = null
@@ -1426,6 +1453,20 @@ internal class PhoneControlSession(
         android.util.Log.i(
             "FloePhoneControl",
             "observation_cleared reason=$reason event=$eventType" +
+                " source_window=$sourceWindowId observed_window=${observation.windowId}" +
+                " changes=$windowChanges fence=${observation.fenceGeneration}" +
+                " page=${observation.pageGeneration}" +
+                " remaining_ms=${observation.expiresAtElapsedRealtimeMillis - SystemClock.elapsedRealtime()}",
+        )
+    }
+
+    /** Numeric-only evidence that an attributed, unrelated window event kept
+     * the observation; no text, packages or task/session identifiers. */
+    private fun traceObservationKept(eventType: Int, sourceWindowId: Int, windowChanges: Int) {
+        val observation = latest?.observation ?: return
+        android.util.Log.i(
+            "FloePhoneControl",
+            "observation_kept event=$eventType" +
                 " source_window=$sourceWindowId observed_window=${observation.windowId}" +
                 " changes=$windowChanges fence=${observation.fenceGeneration}" +
                 " page=${observation.pageGeneration}" +

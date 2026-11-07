@@ -34,7 +34,10 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
     var desktop by remember(workspaceID) { mutableStateOf(!compact) }
     var install by remember(workspaceID) { mutableStateOf(true) }
     var selectedApp by remember(workspaceID, selectedPath) { mutableStateOf(
-        when (selectedPath.substringAfterLast('.', "").lowercase()) {
+        if (selectedPath.isBlank() && state.workspaceID.equals(workspaceID, true) &&
+            state.phase == "running" && state.lastStartedApplication != null) {
+            state.lastStartedApplication!!
+        } else when (selectedPath.substringAfterLast('.', "").lowercase()) {
             "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "rtf", "pdf" -> "libreoffice"
             "svg" -> "inkscape"
             "png", "jpg", "jpeg", "webp", "tif", "tiff", "xcf" -> "gimp"

@@ -89,6 +89,20 @@ internal object TaskSchedulePlatform {
         coordinator?.requestRearm()
     }
 
+    /**
+     * Explicit App/settings return (MainActivity `onResume`): recover the
+     *  SAME durable pending occurrences promptly. The ordinary dispatch
+     *  worker may still be backing off from its bounded retries; this pass
+     *  enqueues ONE distinct, deduped prompt attempt per currently-pending
+     *  id without cancelling or replacing an in-flight admission. The native
+     *  occurrence CAS remains the final duplicate authority; a resume is NOT
+     *  permission — an attempt may still fail honestly. No new occurrence is
+     *  manufactured and no manual run is invoked.
+     */
+    fun recoverPendingOnReturn() {
+        coordinator?.recoverPendingOnReturn()
+    }
+
     fun exactAlarmAllowed(context: Context): Boolean =
         TaskScheduleAlarmScheduler.exactAlarmAllowed(context)
 
@@ -189,6 +203,50 @@ internal class TaskScheduleCoordinator(
         scope.launch { refreshWakeupsOnce(allowPendingDispatch = false) }
     }
 
+    /**
+     * ONE return-recovery pass at a time: rapid resumes (rotation, dialog
+     *  layering, settings return) collapse into a single in-flight pass
+     *  instead of stacking waiters. The pass itself is bounded and exits on
+     *  the first honest answer.
+     */
+    private val returnRecoveryInFlight = java.util.concurrent.atomic.AtomicBoolean()
+
+    fun recoverPendingOnReturn() {
+        if (!returnRecoveryInFlight.compareAndSet(false, true)) return
+        scope.launch {
+            try {
+                recoverPendingOccurrencesOnce()
+            } finally {
+                returnRecoveryInFlight.set(false)
+            }
+        }
+    }
+
+    /**
+     * Fresh durable truth decides which occurrences get a prompt attempt:
+     *  only ids the CURRENT generation's rearm still lists as pending.
+     *  Disabled/deleted plans, cancelled/retired requests and superseded
+     *  generations never appear in that native list; the enqueued worker
+     *  re-fences the exact generation before any launch.
+     */
+    private suspend fun recoverPendingOccurrencesOnce() {
+        val current = waitForHost(HOST_WAIT_MILLIS) ?: return
+        val epochAtResume = current.nativeRootEpoch() ?: return
+        if (host !== current || boundEpoch != epochAtResume) return
+        val commands = TaskScheduleCommands(current)
+        val rearm = when (val result = commands.rearm()) {
+            is TaskScheduleResult.Ok -> result.value
+            is TaskScheduleResult.Failure -> return
+        }
+        // Generation fence: the pending list belongs to the epoch that
+        // produced it. A newer accepted epoch re-arms through its own bind.
+        if (host !== current || boundEpoch != epochAtResume ||
+            current.nativeRootEpoch() != epochAtResume) return
+        for (scheduleID in rearm.pendingScheduleIDs.distinct()) {
+            TaskScheduleDispatchWorker.enqueueReturnRecovery(application, scheduleID)
+        }
+    }
+
     fun release() {
         retireGeneration()
         host = null
@@ -247,7 +305,7 @@ internal class TaskScheduleCoordinator(
         val stopsPendingOccurrence =
             trigger == TaskScheduleDispatchWorker.TRIGGER_PENDING
         val provisional = try {
-            foreground.agentLaunchProvisional(operationID) {
+            foreground.agentLaunchProvisionalResult(operationID) {
                 guard.onStopRequested()
                 // Durable Stop for a PENDING dispatch: cancel the intended
                 // occurrence so no observer can resurrect it. An exact/
@@ -260,19 +318,23 @@ internal class TaskScheduleCoordinator(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Throwable) {
-            false
+            null
         }
-        if (!provisional) {
+        if (provisional !is com.floe.android.host.AgentLaunchProvisionalResult.Admitted) {
             // The EXISTING foreground authority refused to promote this
-            // worker (typically a background FGS start restriction, a blocked
-            // notification channel or an owner conflict). No native dispatch
-            // is sent, so no occurrence is claimed: the durable row stays
-            // pending, the in-app row shows the actionable notice, and this
-            // bounded retry/failure path never fabricates a start.
-            choices.setNotice(scheduleID, "foreground_unavailable")
+            // worker. The typed refusal routes the notice: a REAL OS
+            // background start restriction is actionable through the
+            // battery/background settings; anything else keeps the generic
+            // notice. No native dispatch is sent, so no occurrence is
+            // claimed: the durable row stays pending, the in-app row shows
+            // the actionable notice, and this bounded retry/failure path
+            // never fabricates a start.
+            val notice = foregroundStartNotice(
+                (provisional as? com.floe.android.host.AgentLaunchProvisionalResult.Refused)
+                    ?.failure)
+            choices.setNotice(scheduleID, notice)
             TaskScheduleNotifications.postTransportPending(application, scheduleID, "")
-            return worker.retryOrFail(
-                application, scheduleID, "", "foreground_unavailable")
+            return worker.retryOrFail(application, scheduleID, "", notice)
         }
 
         // PRE-SUBMIT: nothing has been handed to the host queue yet, so a

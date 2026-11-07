@@ -397,6 +397,17 @@
     <string name="background_task_system_notice">后台任务保护暂不可用，这次任务请保持 Floe 打开。</string>
     <string name="background_task_notifications_enable">开启通知</string>
     <string name="background_task_keep_open">继续</string>
+    <string name="background_task_start_restricted_title">后台启动受限</string>
+    <string name="background_task_start_restricted_body">当 Floe 位于后台时，Android 可能阻止任务自行启动。电池设置决定定时任务能否在后台启动。</string>
+    <string name="background_task_power_exempt">当前状态：Floe 已被允许忽略电池优化。</string>
+    <string name="background_task_power_not_exempt">当前状态：Floe 仍受电池优化限制。</string>
+    <string name="background_task_power_unknown">当前状态：电源状态不可用。</string>
+    <string name="background_task_open_app_battery">应用电池设置</string>
+    <string name="background_task_open_optimization_list">电池优化列表</string>
+    <string name="background_task_request_exemption">允许后台运行</string>
+    <string name="schedule_background_power_title">条件任务的后台启动</string>
+    <string name="schedule_background_power_body">充电和网络任务可能在 Floe 位于后台时启动。电池设置决定 Android 是否允许它们自行启动。</string>
+    <string name="schedule_error_background_start">Android 阻止了此任务在后台启动。可打开电池设置，或保持 Floe 打开后重试。</string>
     <!-- 本地任务执行只读凭据详情（诊断与关于） -->
     <string name="yes">是</string>
     <string name="no">否</string>
