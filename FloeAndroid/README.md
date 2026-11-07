@@ -1,12 +1,12 @@
 # Floe for Android
 
-## Current delivery — Android Alpha44 (2026-11-07)
+## Current delivery — Android Alpha45 (2026-11-07)
 
-[Android 0.1.0-alpha.44](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.44), code63, is published from immutable source `0c7bf50e1844572117633af8f41e676525e9e9ce`. Full packaging, Play Kotlin compilation, 7 focused Swift host and 13 conversation JVM regressions, ARM64 object/link, signing/16KiB and packaged-native checks passed. All six anonymous public downloads, the annotated source tag and public update metadata were read back; iOS Latest remains unchanged.
+[Android 0.1.0-alpha.45](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.45), code64, is published from immutable source `cec45cdea1c6bbc536270374ee9883f74fc129f5`. Full packaging, Play Kotlin,54 relevant JVM results (38 reused after matching unchanged source), native binding, signing and 16KiB checks passed. All six public asset bytes and the annotated source tag were verified; iOS Latest remains unchanged.
 
-This version repairs the first-task approval projection and adds bounded, redacted settled-tool context to approval review. Samsung confirmed exact installed bytes, existing task/project navigation, startup and settings return. No new paid task was started: post-run approval display and a complete multi-step cross-App result remain unverified on this APK. Alpha43's interrupted calculation remains recorded. Global phone UI density, conditional schedules, project isolation and new CAD-toolbar flows continue. Unchanged tablet UI remains an Alpha42 reference only; the private ADB installation is not new online-upgrade evidence.
+Compact settings now have separate voice pages and model routing with accessible save/discard actions. Charging observation, phone timing and a speech/foreground lock inversion are repaired. Samsung and the reused API37 tablet received the same exact final APK; focused settings and foreground-return checks passed, with original failures retained. The Alpha44 phone run launched and observed Calculator, then its first click expired; no additional real model call followed. A complete post-fix calculation, conditional/project scenarios and the remaining N01–N08 work remain open. Private ADB installation and metadata discovery are not new device online-upgrade evidence.
 
-当前已发布Alpha44/code63，包含首次审批显示和前序工具上下文修复；三星启动、既有数据导航及设置返回通过，未再次发起付费任务，两项完整手机任务结果仍待新包实测。整轮N01–N08继续，菜单字号与留白仍需精修。范围与限制见[交付记录](../docs/releases/ANDROID_ALPHA44_DELIVERY.md)和[当前推进计划](../docs/FLOE_ANDROID_NEXT_ITERATION_QA_20261106.zh-CN.md)。
+当前已发布Alpha45/code64，包含紧凑设置、语音二级页面、模型路由入口、充电状态监听、手机观察时限和语音锁等待修复。三星与平板同包的设置／前后台场景已检查；完整多步手机结果仍待验收，原故障保留，整轮N01–N08继续。范围见[交付记录](../docs/releases/ANDROID_ALPHA45_DELIVERY.md)和[推进计划](../docs/FLOE_ANDROID_NEXT_ITERATION_QA_20261106.zh-CN.md)。
 
 ## Historical source checkpoint — G09-R2 (2026-11-01)
 

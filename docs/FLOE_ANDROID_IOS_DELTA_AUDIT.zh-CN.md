@@ -1,5 +1,12 @@
 # 安卓与 iOS 主线的增量差异记录
 
+## Alpha45 本批增量（2026-11-07）
+
+Android固定交付源`cec45cdea1c6bbc536270374ee9883f74fc129f5`，Alpha45/code64；紧凑设置与运行断点修复及其明确证据见[交付记录](releases/ANDROID_ALPHA45_DELIVERY.md)。原G/C/N与IOS-D编号及历史验收不重置，全局视觉和其余既定能力继续。
+
+iOS本批实际核对`c828775b63dab33779a2b9bb25ec5e584e4135b0`→`e4d334904ae59c17d3cf86a8e40ee0f60bf9dcc0`：FloeAgent内为project.yml、生成entitlements／Xcode工程及上传元数据验证／测试共5条路径；核心变化是Wi-Fi信息entitlement与1.8.4/324版本元数据。没有Swift功能或产品UI代码增量。保留`36f63bf4`固定视觉参照，不将iOS签名修正改记为Android功能缺口，也不重做183项全量盘点。iOS正式审核／Latest与本Android预发布分别处理。
+
+
 ## G09-R2 增量复核（2026-11-01；代码与组件检查点）
 
 实际公开 main 仍为 R1 检查点 `10fc0083c0f8e341ec97ec517c20cfa4e45d7d09`。从前次 `b192df7e6ea36dd3bd5a0ca50446cb91df017fdb` 到该提交，`FloeAgent/` 的 iOS 源码路径变化为零；保留 IOS-D01..D36 原编号。未合并的其他 iOS 工作区不作为公开主线进度，也未重新宣称 iOS 编译或设备验收。
