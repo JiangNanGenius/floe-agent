@@ -1,0 +1,197 @@
+{
+  "scope": "Independent biology iPad Simulator host; latest layout round",
+  "screenshots": [
+    {
+      "file": "density.png",
+      "sha256": "3e6e9d3fdc36a6348514114443859f8d995cc52c54d644de566f441e9ca4b044",
+      "phase": "ipad-layout-04",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "DF5D8C59-03B8-442A-8647-197FE7DEAF49.png",
+      "unaltered": true
+    },
+    {
+      "file": "tree.png",
+      "sha256": "2a952672daf49852933033790c650e5edbde61ee82912fd34c2a1228f3e8ebf3",
+      "phase": "ipad-layout-04",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "FAA7A6BB-9B1B-4D7B-A9CB-FE7AE46156A5.png",
+      "unaltered": true
+    },
+    {
+      "file": "result.png",
+      "sha256": "e89c1e9672e6d914fd1d05308f4b5351a15c8399e266ec27b6b95ac785d146e8",
+      "phase": "ipad-layout-04",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "73756D71-96B3-4386-8413-5131DF57897F.png",
+      "unaltered": true
+    },
+    {
+      "file": "network.png",
+      "sha256": "31f12a321ff075acdddcbc413517fb90ea72af9e0deb1b78018c51b645f28953",
+      "phase": "ipad-layout-04",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "ED687313-5A7E-4591-9E5A-6E98046EB5D9.png",
+      "unaltered": true
+    },
+    {
+      "file": "matrix.png",
+      "sha256": "fd107c61cdbd8c2a3ec2bb20e76fcfe58edeb14aaf864575cd11c70d0d93fd61",
+      "phase": "ipad-layout-04",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "1A88F4B8-0A9E-4E75-9D9F-90285EC5D200.png",
+      "unaltered": true
+    },
+    {
+      "file": "microscopy.png",
+      "sha256": "28836ed6e4fc18427ade7e12d160df0c588d448a1cb8195f6f80f90075b8a334",
+      "phase": "ipad-layout-04",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "096A8918-9DA9-4567-8C8A-6D8C704C75E0.png",
+      "unaltered": true
+    },
+    {
+      "file": "landscape-inspector.png",
+      "sha256": "92e8d680a0905cf8697f60583fc77c5370ed45b9bac7f59578e060dcfd59c40a",
+      "phase": "ipad-layout-04",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "BA4A5672-15A5-4125-B977-1F367E485B69.png",
+      "unaltered": true
+    },
+    {
+      "file": "ribbon-landscape.png",
+      "sha256": "0d42cc6bf8fcc67d3a9f563401b64dcfc0c75b812504bc63be00fb72b8946ac3",
+      "phase": "ipad-layout-04",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "DA6A522A-E448-43AC-B30E-D66D0E8D6B65.png",
+      "unaltered": true
+    },
+    {
+      "file": "ribbon.png",
+      "sha256": "1af26c1804fc57088563945e27997c58d55ecbaafffee56b4c16ac8edb153adb",
+      "phase": "ipad-layout-04",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "D8F33EB2-6529-4FF9-B79E-743E5D67758E.png",
+      "unaltered": true
+    },
+    {
+      "file": "atoms.png",
+      "sha256": "513b20656f0b079f13d3899451e6ea19531bdcf6d8eed391c1149cd015cd3401",
+      "phase": "ipad-layout-04",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "DE92A4EE-8157-42AC-8920-2AD128286924.png",
+      "unaltered": true
+    },
+    {
+      "file": "backbone.png",
+      "sha256": "dc5b1a860c68c5425a1c8ad2c962cdef03248e7fb787dab9418038cdfda4d739",
+      "phase": "ipad-layout-04",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "85F58414-A7F5-43F7-93E7-0EB7616FCAA2.png",
+      "unaltered": true
+    },
+    {
+      "file": "sequence.png",
+      "sha256": "edba56e6fc8218202ccd0f43c6842202699fe0723181e7ae3769d04d675a9434",
+      "phase": "ipad-layout-04",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "5B33B4A9-0256-42AB-95B7-9AFD98D3B5BA.png",
+      "unaltered": true
+    },
+    {
+      "file": "library.png",
+      "sha256": "db1389be4fd2a6d6b6c08c0728c017aad4761bfec8d1504e4439dd1b903efeab",
+      "phase": "ipad-layout-04",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "4B6FDFC0-A332-449A-BEFC-44B0C20EB521.png",
+      "unaltered": true
+    },
+    {
+      "file": "network-editor.png",
+      "sha256": "3087d7ec84a8e26511b1a156d345df8224dd532cc6808bf053d6cd347eb3b3b1",
+      "phase": "ipad-layout-04-aux",
+      "test": "BiologyHostUITests/testAuxiliaryPanelsRemainUsable()",
+      "originalAttachment": "87A1E422-B459-4C67-B5AF-62ECCCDEAFD4.png",
+      "unaltered": true
+    },
+    {
+      "file": "tools.png",
+      "sha256": "eef4a8ecfca4f3b54b53f116a0b4ef6e4a1e686f0236768dbce00dd4b63baa18",
+      "phase": "ipad-layout-04-aux",
+      "test": "BiologyHostUITests/testAuxiliaryPanelsRemainUsable()",
+      "originalAttachment": "AB82E114-E032-4662-B2E1-A29777329075.png",
+      "unaltered": true
+    },
+    {
+      "file": "assistant-unconfigured.png",
+      "sha256": "bac3e48476cb24032827cab32023a103ebe96876421ea4bbdd70f7c4fee47271",
+      "phase": "ipad-layout-04-aux",
+      "test": "BiologyHostUITests/testAuxiliaryPanelsRemainUsable()",
+      "originalAttachment": "63D04BA9-B0B8-4136-9989-6BEFAB52C1E0.png",
+      "unaltered": true
+    },
+    {
+      "file": "rename.png",
+      "sha256": "192991796e5b789eb94f6a209e1f5bdfd2cf59839856737951c1d074b94adc82",
+      "phase": "ipad-layout-04-aux",
+      "test": "BiologyHostUITests/testAuxiliaryPanelsRemainUsable()",
+      "originalAttachment": "EB28890D-095B-4457-B532-C7B317FD8668.png",
+      "unaltered": true
+    },
+    {
+      "file": "history.png",
+      "sha256": "62aba64bba9593bf6689319cb8be47c3a7fbdd177b51fb6b01418e98dd949192",
+      "phase": "ipad-layout-04-aux",
+      "test": "BiologyHostUITests/testAuxiliaryPanelsRemainUsable()",
+      "originalAttachment": "71C51996-76A1-49AF-9E54-E8A99E7DF6C3.png",
+      "unaltered": true
+    },
+    {
+      "file": "notes.png",
+      "sha256": "0c0e3b0e2b662ea569daf540f522a7992429ca34adbd5f31c413c5fdc5889ec9",
+      "phase": "ipad-layout-04-aux",
+      "test": "BiologyHostUITests/testAuxiliaryPanelsRemainUsable()",
+      "originalAttachment": "7AA7EA65-4E32-463E-8B86-EE31B15627A7.png",
+      "unaltered": true
+    },
+    {
+      "file": "annotation-editor.png",
+      "sha256": "9add2de5bbfe710e6b9ae1f9ce9f540107062973fa98871e113e9be110f3a7bd",
+      "phase": "ipad-layout-04-aux",
+      "test": "BiologyHostUITests/testAuxiliaryPanelsRemainUsable()",
+      "originalAttachment": "02B794FB-254C-42D2-9871-013D298A9031.png",
+      "unaltered": true
+    },
+    {
+      "file": "sequence-editor.png",
+      "sha256": "a0d99a6338063716c07329c37f2857ebe70af75b6cc587fdaaf79402e9242ea0",
+      "phase": "ipad-layout-04-aux",
+      "test": "BiologyHostUITests/testAuxiliaryPanelsRemainUsable()",
+      "originalAttachment": "7B375C05-9538-4A0C-A062-3F10D9246672.png",
+      "unaltered": true
+    },
+    {
+      "file": "matrix-dark.png",
+      "sha256": "aa1590e441ae3ce72dbb78a255efd4597e8ee863964746d88525e7be47331b6b",
+      "phase": "ipad-layout-02",
+      "test": "BiologyHostUITests/testChineseDarkAndExportSurface()",
+      "originalAttachment": "BB34F2D0-2A43-43A9-814C-EA90A37498F9.png",
+      "unaltered": true
+    },
+    {
+      "file": "microscopy-dark.png",
+      "sha256": "605dc9ff9405e3bb96d2ab40e78ea58c65024521e68b1b694a7904d4a3074478",
+      "phase": "ipad-layout-02",
+      "test": "BiologyHostUITests/testChineseDarkAndExportSurface()",
+      "originalAttachment": "3BE42F9E-E188-405C-A491-41DDDD679322.png",
+      "unaltered": true
+    },
+    {
+      "file": "tool-edit.png",
+      "sha256": "d2f5f381740a1cdd12ea0d903f2a296a2cb2ac91649bc9821a7335b30ba4ec28",
+      "phase": "ipad-layout-02",
+      "test": "BiologyHostUITests/testToolEditsUpdateLiveView()",
+      "originalAttachment": "E17F4900-3042-43A6-8F40-6B9C4C8D77B2.png",
+      "unaltered": true
+    }
+  ]
+}
