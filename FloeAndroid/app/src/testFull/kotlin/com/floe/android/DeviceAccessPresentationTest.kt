@@ -67,7 +67,8 @@ class DeviceAccessPresentationTest {
                 DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS,
             ),
             DeviceAccessPresentation.adbActions(DeviceAccessAdbUi.PairRequired(pairingSessionOpen = true)))
-        assertEquals(setOf(DeviceAccessAdbActionUi.START, DeviceAccessAdbActionUi.FORGET),
+        assertEquals(setOf(DeviceAccessAdbActionUi.START, DeviceAccessAdbActionUi.FORGET,
+            DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS),
             DeviceAccessPresentation.adbActions(DeviceAccessAdbUi.Paired()))
         assertEquals(setOf(DeviceAccessAdbActionUi.STOP, DeviceAccessAdbActionUi.FORGET),
             DeviceAccessPresentation.adbActions(DeviceAccessAdbUi.ServiceAlive(2000)))

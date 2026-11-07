@@ -23,11 +23,13 @@ import com.floe.android.DeviceAccessActiveTaskUi
 import com.floe.android.DeviceAccessAdbUi
 import com.floe.android.DeviceAccessBusyUi
 import com.floe.android.DeviceAccessCallbacks
+import com.floe.android.DeviceAccessErrorSectionUi
 import com.floe.android.DeviceAccessFileRootUi
 import com.floe.android.DeviceAccessFileRootKindUi
 import com.floe.android.DeviceAccessPackageUi
 import com.floe.android.DeviceAccessPairingDiscoveryUi
 import com.floe.android.DeviceAccessPresentationState
+import com.floe.android.DeviceAccessPresentation
 import com.floe.android.DeviceAccessRootUi
 import com.floe.android.DeviceAccessScreenScopeUi
 import com.floe.android.DeviceAccessTargetsUi
@@ -2225,12 +2227,22 @@ internal class DeviceAccessHost(
         // It uses the same API 37 local-network lane as MCP/provider connects.
         val started = withLocalPairingPermission(
             owner = "adb-service-start",
-            onDenied = ::onLocalNetworkDenied,
+            onDenied = { code ->
+                busy = DeviceAccessBusyUi.NONE
+                error = DeviceAccessUiError(context.getString(R.string.device_access_error_local_network),
+                    code, DeviceAccessErrorSectionUi.ADB)
+                publish()
+            },
         ) {
             scope.launch(io) {
                 try {
                     val result = rootController?.startAdbService()
-                    if (result != null) applyAccessResult(result)
+                        ?: AccessActionResult.Unavailable("controller_unbound")
+                    applyAccessResult(result, DeviceAccessErrorSectionUi.ADB)
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    applyAccessResult(AccessActionResult.Failed("adb_start"), DeviceAccessErrorSectionUi.ADB)
                 } finally {
                     refreshControllerStatus()
                     busy = DeviceAccessBusyUi.NONE
@@ -2323,7 +2335,21 @@ internal class DeviceAccessHost(
         }
     }
 
-    private fun applyAccessResult(result: AccessActionResult) {
+    private fun applyAccessResult(
+        result: AccessActionResult,
+        section: DeviceAccessErrorSectionUi = DeviceAccessErrorSectionUi.GENERAL,
+    ) {
+        if (section == DeviceAccessErrorSectionUi.ADB && result !is AccessActionResult.Ok) {
+            val code = when (result) {
+                is AccessActionResult.Denied -> result.code
+                is AccessActionResult.Unavailable -> result.code
+                is AccessActionResult.Failed -> result.code
+                AccessActionResult.Ok -> return
+            }
+            error = DeviceAccessUiError(
+                context.getString(DeviceAccessPresentation.adbStartFailureRes(code)), code, section)
+            return
+        }
         when (result) {
             AccessActionResult.Ok -> error = null
             is AccessActionResult.Denied -> error = DeviceAccessUiError(

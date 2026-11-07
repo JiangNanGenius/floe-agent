@@ -338,8 +338,13 @@ internal class RootSystemControllerImpl(
             return AccessActionResult.Denied("pair_required")
         }
 
-        val port = requestedPort ?: config.connectPort ?: connectPort
+        // Android assigns a new TLS port after Wireless debugging is enabled
+        // again. A remembered successful endpoint must not hide the current
+        // locally discovered one. Explicit caller/configuration ports still
+        // take precedence; this does not replay a launch or discard trust.
+        val port = requestedPort ?: config.connectPort
             ?: withContext(Dispatchers.IO) { discovery.findConnectPort() }
+            ?: connectPort
             ?: return AccessActionResult.Failed("no_connect_port")
         connectPort = port
 

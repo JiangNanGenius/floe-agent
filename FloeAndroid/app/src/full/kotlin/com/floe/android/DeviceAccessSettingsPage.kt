@@ -193,10 +193,13 @@ data class DeviceAccessActiveTaskUi(
     val phase: DeviceAccessTaskPhaseUi,
 )
 
+enum class DeviceAccessErrorSectionUi { GENERAL, ADB }
+
 data class DeviceAccessUiError(
     val message: String,
     /** Typed diagnostic token; shown only inside the opened details fold. */
     val code: String? = null,
+    val section: DeviceAccessErrorSectionUi = DeviceAccessErrorSectionUi.GENERAL,
 )
 
 data class DeviceAccessPresentationState(
@@ -344,17 +347,20 @@ object DeviceAccessPresentation {
                 }
             DeviceAccessAdbUi.Pairing -> setOf(DeviceAccessAdbActionUi.CANCEL_PAIRING)
             is DeviceAccessAdbUi.Paired ->
-                setOf(DeviceAccessAdbActionUi.START, DeviceAccessAdbActionUi.FORGET)
+                setOf(DeviceAccessAdbActionUi.START, DeviceAccessAdbActionUi.FORGET,
+                    DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS)
             is DeviceAccessAdbUi.ServiceAlive ->
                 setOf(DeviceAccessAdbActionUi.STOP, DeviceAccessAdbActionUi.FORGET)
             is DeviceAccessAdbUi.ServiceDied ->
-                setOf(DeviceAccessAdbActionUi.START, DeviceAccessAdbActionUi.FORGET)
+                setOf(DeviceAccessAdbActionUi.START, DeviceAccessAdbActionUi.FORGET,
+                    DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS)
             DeviceAccessAdbUi.RestartRequired ->
                 setOf(DeviceAccessAdbActionUi.START, DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS)
             DeviceAccessAdbUi.Revoked ->
                 setOf(DeviceAccessAdbActionUi.PAIR, DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS)
             is DeviceAccessAdbUi.Error ->
-                setOf(DeviceAccessAdbActionUi.ENABLE, DeviceAccessAdbActionUi.PAIR)
+                setOf(DeviceAccessAdbActionUi.ENABLE, DeviceAccessAdbActionUi.PAIR,
+                    DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS)
         }
         return when (busy) {
             DeviceAccessBusyUi.NONE -> base
@@ -488,6 +494,16 @@ object DeviceAccessPresentation {
         ?.take(96)
         ?.filter { it.isLetterOrDigit() || it in "_.-:" }
         ?.ifEmpty { null }
+
+    fun adbStartFailureRes(code: String): Int = when (code) {
+        "no_connect_port" -> R.string.device_access_adb_no_connection
+        "pair_required", "identity_unpaired" -> R.string.device_access_adb_pair_first
+        "usb_bootstrap_required" -> R.string.device_access_pairing_unsupported
+        "adb_connect", "adb_connect_tls", "adb_connect_refused", "adb_connect_host",
+        "adb_connect_io", "adb_connect_timeout", "adb_connect_protocol", "adb_connect_output" ->
+            R.string.device_access_adb_connection_failed
+        else -> R.string.device_access_adb_start_failed
+    }
 }
 
 @Composable
@@ -1010,6 +1026,11 @@ fun DeviceAccessSettingsPage(
         // --------------------------------------------------- embedded ADB layer
         FloeSettingsSectionCard(title = stringResource(R.string.device_access_adb_section)) {
             FloeValueRow(stringResource(R.string.device_access_status_label), adbStatus)
+            state.error?.takeIf { it.section == DeviceAccessErrorSectionUi.ADB }?.let { error ->
+                DeviceAccessErrorRows(error, showErrorDetails,
+                    onToggleDetails = { showErrorDetails = !showErrorDetails },
+                    onRefresh = callbacks.onRefresh)
+            }
             FloeSectionRow(title = {
                 FloeText(
                     stringResource(R.string.device_access_adb_intro),
@@ -1252,39 +1273,11 @@ fun DeviceAccessSettingsPage(
         }
 
         // --------------------------------------------------------- typed error
-        state.error?.let { error ->
+        state.error?.takeIf { it.section != DeviceAccessErrorSectionUi.ADB }?.let { error ->
             FloeSettingsSectionCard(title = null) {
-                FloeSectionRow(title = {
-                    FloeStatusLine(
-                        icon = FloeIcons.WarningTriangle,
-                        text = error.message,
-                        color = colors.destructive,
-                    )
-                })
-                val code = DeviceAccessPresentation.errorCode(error)
-                if (code != null) {
-                    val detailsLabel = stringResource(
-                        if (showErrorDetails) R.string.device_access_error_hide_details
-                        else R.string.device_access_error_details)
-                    FloeActionRow(
-                        label = detailsLabel,
-                        onClick = { showErrorDetails = !showErrorDetails },
-                    )
-                    if (showErrorDetails) {
-                        FloeSectionRow(title = {
-                            // Machine token only: bounded and never translated.
-                            FloeText(
-                                code,
-                                style = Floe.typography.evidence,
-                                color = colors.secondaryLabel,
-                            )
-                        })
-                    }
-                }
-                FloeActionRow(
-                    label = stringResource(R.string.device_access_retry),
-                    onClick = callbacks.onRefresh,
-                )
+                DeviceAccessErrorRows(error, showErrorDetails,
+                    onToggleDetails = { showErrorDetails = !showErrorDetails },
+                    onRefresh = callbacks.onRefresh)
             }
         }
     }
@@ -1324,6 +1317,30 @@ fun DeviceAccessSettingsPage(
             onDismiss = { confirmRootCheck = false },
         )
     }
+}
+
+@Composable
+private fun SectionScope.DeviceAccessErrorRows(
+    error: DeviceAccessUiError,
+    showDetails: Boolean,
+    onToggleDetails: () -> Unit,
+    onRefresh: () -> Unit,
+) {
+    FloeSectionRow(title = {
+        FloeStatusLine(icon = FloeIcons.WarningTriangle, text = error.message,
+            color = Floe.colors.destructive)
+    })
+    DeviceAccessPresentation.errorCode(error)?.let { code ->
+        FloeActionRow(label = stringResource(
+            if (showDetails) R.string.device_access_error_hide_details
+            else R.string.device_access_error_details), onClick = onToggleDetails)
+        if (showDetails) {
+            FloeSectionRow(title = {
+                FloeText(code, style = Floe.typography.evidence, color = Floe.colors.secondaryLabel)
+            })
+        }
+    }
+    FloeActionRow(label = stringResource(R.string.device_access_retry), onClick = onRefresh)
 }
 
 @Composable

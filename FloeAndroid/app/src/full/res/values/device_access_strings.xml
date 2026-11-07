@@ -176,6 +176,10 @@
     <string name="device_access_error_app_data_limit">You can add up to 8 app data folders.</string>
     <string name="device_access_error_local_network">Local network access is required to find and reach this device\'s pairing port. Allow it in Settings, then try again.</string>
     <string name="device_access_error_backend_failed">The system service refused the operation.</string>
+    <string name="device_access_adb_no_connection">Wireless debugging was not found. Open Developer options, turn on Wireless debugging, then start the service again. Your pairing is saved.</string>
+    <string name="device_access_adb_connection_failed">Could not connect to Wireless debugging. Check that it is on, then start the service again. Your pairing is saved.</string>
+    <string name="device_access_adb_pair_first">Pair with Android before starting the service.</string>
+    <string name="device_access_adb_start_failed">Could not start the service. Open details for the reason, then try starting it again.</string>
     <string name="device_access_usb_bootstrap">Copy USB setup command</string>
     <string name="device_access_usb_bootstrap_copied">USB setup command copied. Run it once from a computer with ADB.</string>
     <string name="device_access_accessibility_restricted_hint">If Android blocks this app, open App info and allow restricted settings, then enable the service again.</string>
