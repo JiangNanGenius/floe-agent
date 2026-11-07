@@ -1484,6 +1484,7 @@ class G04TerminalHostControllerTest {
         assertTrue(status("gui-control"))
         assertEquals("gui-control", controller.snapshotFor("gui-control")?.sessionToken)
         assertTrue(controller.tabs("c1").isEmpty())
+        assertEquals(1, controller.tabCount("c1"))
         assertNull(controller.currentSnapshot("c1"))
         assertFalse(controller.hasTabHistory("c1"))
         assertTrue(observed.isEmpty())
@@ -1497,6 +1498,7 @@ class G04TerminalHostControllerTest {
         assertEquals("human", controller.currentSnapshot("c1")?.sessionToken)
         assertEquals(listOf("human"), observed)
         assertEquals(listOf("human"), controller.tabs("c1").map { it.sessionID })
+        assertEquals(2, controller.tabCount("c1"))
         detach()
     }
 

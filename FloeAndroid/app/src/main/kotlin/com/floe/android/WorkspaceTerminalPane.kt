@@ -96,6 +96,7 @@ internal fun WorkspaceTerminalPane(
     // G07.3A tab strip: the pane renders the Application-owned tab registry;
     // every chip is a REAL native session, dismissal is never a close.
     var tabs by remember(conversationID) { mutableStateOf<List<TerminalTabView>>(emptyList()) }
+    var tabCount by remember(controller, conversationID) { mutableStateOf(0) }
     var renameVisible by remember(controller, conversationID) { mutableStateOf(false) }
     var renameText by remember(controller, conversationID) { mutableStateOf("") }
     var renameTargetSession by remember(controller, conversationID) { mutableStateOf<String?>(null) }
@@ -105,8 +106,8 @@ internal fun WorkspaceTerminalPane(
     var tabOpenFailure by remember(controller, conversationID) {
         mutableStateOf<TerminalActionReply?>(null)
     }
-    LaunchedEffect(tabs.size) {
-        if (tabs.size < TerminalTabLimits.MAX_TABS) tabLimitNotice = false
+    LaunchedEffect(tabCount) {
+        if (tabCount < TerminalTabLimits.MAX_TABS) tabLimitNotice = false
     }
     var keyboardVisible by remember { mutableStateOf(true) }
     var terminalCopyText by remember(controller, conversationID) { mutableStateOf<String?>(null) }
@@ -166,7 +167,10 @@ internal fun WorkspaceTerminalPane(
             // pending tab must never borrow the previous PTY's status.
             if (host.tabs(conversationID).isEmpty()) snapshot = legacy
         }
-        val unregisterTabs = host.watchTabs(conversationID) { tabs = host.tabs(conversationID) }
+        val unregisterTabs = host.watchTabs(conversationID) {
+            tabs = host.tabs(conversationID)
+            tabCount = host.tabCount(conversationID)
+        }
         // Live server transitions keep the settings list honest while open;
         // detaching removes ONLY the listener.
         val unregisterLanguage = host.addLanguageStatusListener { status ->
@@ -420,7 +424,7 @@ internal fun WorkspaceTerminalPane(
                     // A real start is still in flight: the pending chip is
                     // the bounded truth.
                     pendingOpening -> Unit
-                    after.size >= TerminalTabLimits.MAX_TABS -> tabLimitNotice = true
+                    host.tabCount(conversationID) >= TerminalTabLimits.MAX_TABS -> tabLimitNotice = true
                     else -> tabOpenFailure = refusal ?: TerminalActionReply.TimedOut
                 }
                 startDispatched = pendingOpening

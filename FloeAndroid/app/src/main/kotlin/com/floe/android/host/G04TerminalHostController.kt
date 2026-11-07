@@ -872,6 +872,8 @@ internal class G04TerminalHostController(
 
     fun tabs(conversationID: String): List<TerminalTabView> = tabRegistry.paneTabsFor(conversationID)
 
+    fun tabCount(conversationID: String): Int = tabRegistry.tabsFor(conversationID).size
+
     fun currentTab(conversationID: String): TerminalTabView? = tabRegistry.current(conversationID)
 
     /** True once this conversation has owned a REAL native tab. The pane uses
