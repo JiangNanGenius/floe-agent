@@ -17,7 +17,46 @@ struct MediaV2ToolInput: Codable {
     var property: String?
     var flag: Bool?
     var points: [ImageFreehandStroke.Point]?
+    var captionStyle: CaptionStyle?
     init() {}
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case objectID, objectIDs, expectedRevision, number, secondary, start, duration, text, color, property, flag, points, captionStyle
+    }
+    private struct Field: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
+    }
+    init(from decoder: Decoder) throws {
+        let all = try decoder.container(keyedBy: Field.self)
+        let allowed = Set(CodingKeys.allCases.map(\.rawValue))
+        if let unknown = all.allKeys.first(where: { !allowed.contains($0.stringValue) }) {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath + [unknown], debugDescription: "Unknown media tool field"))
+        }
+        let value = try decoder.container(keyedBy: CodingKeys.self)
+        objectID = try value.decodeIfPresent(UUID.self, forKey: .objectID)
+        objectIDs = try value.decodeIfPresent([UUID].self, forKey: .objectIDs)
+        expectedRevision = try value.decodeIfPresent(Int64.self, forKey: .expectedRevision)
+        number = try value.decodeIfPresent(Double.self, forKey: .number)
+        secondary = try value.decodeIfPresent(Double.self, forKey: .secondary)
+        start = try value.decodeIfPresent(Double.self, forKey: .start)
+        duration = try value.decodeIfPresent(Double.self, forKey: .duration)
+        text = try value.decodeIfPresent(String.self, forKey: .text)
+        color = try value.decodeIfPresent(String.self, forKey: .color)
+        property = try value.decodeIfPresent(String.self, forKey: .property)
+        flag = try value.decodeIfPresent(Bool.self, forKey: .flag)
+        points = try value.decodeIfPresent([ImageFreehandStroke.Point].self, forKey: .points)
+        if value.contains(.captionStyle), try value.decodeNil(forKey: .captionStyle) == false {
+            let fields = try value.nestedContainer(keyedBy: Field.self, forKey: .captionStyle)
+            let accepted: Set<String> = ["fontSize","colorHex","backgroundHex","positionY","alignment","respectsSafeArea"]
+            if let unknown = fields.allKeys.first(where: { !accepted.contains($0.stringValue) }) {
+                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath + [CodingKeys.captionStyle, unknown], debugDescription: "Unknown caption style field"))
+            }
+        }
+        captionStyle = try value.decodeIfPresent(CaptionStyle.self, forKey: .captionStyle)
+    }
 }
 struct MediaV2ToolReceipt: Codable {
     let documentID: UUID
@@ -27,12 +66,15 @@ struct MediaV2ToolReceipt: Codable {
     let selectionOnly: Bool
 }
 enum MediaV2CommandError: Error, LocalizedError {
-    case unavailable, missingSelection, invalidInput
+    case unavailable, missingSelection, invalidInput, invalidCaptionStyle, exportInProgress, missingExport
     var errorDescription: String? {
         switch self {
         case .unavailable: return WorkbenchText.t("此工具的执行服务尚未接入。", "This tool's execution service is not connected yet.")
         case .missingSelection: return WorkbenchText.t("请先选择要编辑的对象。", "Select an object to edit first.")
         case .invalidInput: return WorkbenchText.t("参数无效，请检查后重试。", "Check the parameters and retry.")
+        case .invalidCaptionStyle: return WorkbenchText.t("请检查字幕样式。纵向位置应在 0–1，字号应在 0–512；也可使用完整字幕样式设置。", "Check the caption style. Vertical position must be 0–1 and font size 0–512; use the complete caption style settings for other changes.")
+        case .exportInProgress: return WorkbenchText.t("正在导出，请等待完成或先取消。", "An export is running. Wait for it or cancel it first.")
+        case .missingExport: return WorkbenchText.t("未生成导出文件，请打开详细信息后重试。", "No export file was produced. Open the details and retry.")
         }
     }
 }
@@ -205,9 +247,30 @@ extension MediaV2Session {
             guard let text = input.text else { throw MediaV2CommandError.invalidInput }
             actions.append(contentsOf: try captionImportActions(text, offset: input.start ?? 0))
         case "video.caption":
+            guard project.kind == .video, input.objectIDs == nil, input.secondary == nil, input.flag == nil, input.points == nil else {
+                throw MediaV2CommandError.invalidCaptionStyle
+            }
+            let hasLegacyStyle = input.color != nil || input.property != nil || input.number != nil
+            guard input.captionStyle == nil || !hasLegacyStyle else { throw MediaV2CommandError.invalidCaptionStyle }
+            if input.captionStyle != nil || hasLegacyStyle {
+                var style = input.captionStyle ?? document.trackGraph.captionStyle ?? CaptionStyle()
+                if let color = input.color { style.colorHex = color }
+                if let property = input.property {
+                    guard let number = input.number else { throw MediaV2CommandError.invalidCaptionStyle }
+                    switch property {
+                    case "positionY": style.positionY = number
+                    case "fontSize": style.fontSize = number
+                    default: throw MediaV2CommandError.invalidCaptionStyle
+                    }
+                } else if input.number != nil { throw MediaV2CommandError.invalidCaptionStyle }
+                try MediaPreparedIntegrity.validateCaptionStyle(style)
+                actions.append(.setCaptionStyle(expectedRevision: document.trackGraph.captionStyleRevision ?? 0, style: style))
+            }
             if let text = input.text, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw MediaV2CommandError.invalidInput }
+            let editsCaption = input.text != nil || input.start != nil || input.duration != nil
+            if !editsCaption && (input.captionStyle != nil || hasLegacyStyle) { break }
             if var clip = selected?.clip, selected?.track.kind == .caption {
-                clip.captionText = input.text ?? ""
+                if let text = input.text { clip.captionText = text }
                 if input.start != nil || input.duration != nil {
                     let duration = input.duration ?? clip.timelineRange.durationSeconds
                     clip.timelineRange = try Self.range(start: input.start ?? clip.timelineRange.startSeconds, duration: duration)
@@ -216,6 +279,7 @@ extension MediaV2Session {
                 try replace(clip)
             }
             else {
+                guard input.start == nil && input.duration == nil || input.text != nil else { throw MediaV2CommandError.missingSelection }
                 let track = document.trackGraph.tracks.first { $0.kind == .caption } ?? .init(kind: .caption, name: WorkbenchText.t("字幕", "Captions"))
                 if !document.trackGraph.tracks.contains(where: { $0.id == track.id }) { actions.append(.insertTrack(track: track, index: nil)) }
                 let clip = MediaPreparedClip(timelineRange: try Self.range(start: input.start ?? playhead, duration: input.duration ?? 3), sourceRange: try Self.range(start: 0, duration: input.duration ?? 3), captionText: input.text ?? WorkbenchText.t("字幕", "Caption"))

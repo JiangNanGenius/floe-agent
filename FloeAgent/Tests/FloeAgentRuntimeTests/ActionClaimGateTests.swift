@@ -42,20 +42,20 @@ struct ActionClaimGateTests {
     func receiptAllowsClaim() {
         let directive = gate.evaluate(
             claim: "已创建 test.txt 文件并保存。",
-            receipts: [.init(toolName: "workspace.createFile", status: .ok)],
+            receipts: [.init(toolName: "workspace.createFile", status: .ok, supportsMutationClaim: true)],
             correctiveRetries: 0
         )
         #expect(directive == .allow)
     }
 
-    @Test("Any successful receipt disarms the gate so real tool runs are never second-guessed")
-    func anySuccessfulReceiptAllows() {
+    @Test("A read-only success is not evidence of a new write")
+    func readOnlySuccessRequiresCorrection() {
         let directive = gate.evaluate(
             claim: "文件已写入。",
             receipts: [.init(toolName: "test.echo", status: .ok)],
             correctiveRetries: 0
         )
-        #expect(directive == .allow)
+        #expect(directive == .requestCorrection)
     }
 
     @Test("Failed receipts do not legitimize a success claim")
@@ -66,6 +66,54 @@ struct ActionClaimGateTests {
             correctiveRetries: 0
         )
         #expect(directive == .requestCorrection)
+    }
+
+    @Test("Recovered evidence needs actual matching arguments without changing replay records")
+    func recoveredMixedActionEvidenceDoesNotGuessAMutation() throws {
+        let inspect = try TestFixtures.toolCall(id:"inspect",toolName:"studio.run",
+            arguments:#"{"projectID":"D971821A-96BE-46A8-A5D7-C0A80913979A","action":"inspectAudio"}"#)
+        let edit = try TestFixtures.toolCall(id:"edit",toolName:"studio.edit",
+            arguments:#"{"projectID":"D971821A-96BE-46A8-A5D7-C0A80913979A","expectedRevision":"1","operationsJSON":"{\"action\":\"append\",\"text\":\"Saved fixture\"}"}"#)
+        var ledger = HarnessExecutionLedger()
+        ledger.record(call:inspect,result:.init(callID:inspect.id,status:.ok,outputSummary:"waveform",outputDigest:"waveform"),isSideEffecting:true)
+        ledger.record(call:edit,result:.init(callID:edit.id,status:.ok,outputSummary:"saved",outputDigest:"saved"),isSideEffecting:true)
+        let records = ledger.checkpointRecords()
+        let recovered = HarnessExecutionLedger(records:records)
+        let readEntry = try #require(recovered.entries.first { $0.toolName == inspect.toolName })
+        let writeEntry = try #require(recovered.entries.first { $0.toolName == edit.toolName })
+        #expect(readEntry.isSideEffecting && writeEntry.isSideEffecting)
+        #expect(!recovered.supportsMutationClaim(for:readEntry,replayedCalls:[inspect,edit]))
+        #expect(!recovered.supportsMutationClaim(for:writeEntry,replayedCalls:[]))
+        #expect(recovered.supportsMutationClaim(for:writeEntry,replayedCalls:[inspect,edit]))
+        let differentAction = try TestFixtures.toolCall(id:"different",toolName:inspect.toolName,
+            arguments:#"{"projectID":"D971821A-96BE-46A8-A5D7-C0A80913979A","action":"renderWAV"}"#)
+        #expect(!recovered.supportsMutationClaim(for:readEntry,replayedCalls:[differentAction]))
+        #expect(recovered.checkpointRecords() == records)
+        #expect(recovered.recoveredResult(for:edit,isSideEffecting:true)?.status == .ok)
+
+        // A successful looking result with unknown outcome remains replay-
+        // protected and cannot substantiate a completed original mutation.
+        var unknown = HarnessExecutionLedger()
+        unknown.record(call:edit,result:.init(callID:edit.id,status:.ok,outputSummary:"unknown",outputDigest:"unknown"),
+            isSideEffecting:true,outcomeUnknown:true)
+        let unknownEntry = try #require(unknown.entries.first)
+        #expect(unknownEntry.isSideEffecting && unknownEntry.outcomeUnknown)
+        #expect(!unknown.supportsMutationClaim(for:unknownEntry,replayedCalls:[edit]))
+        #expect(unknown.suppressedUnknownOutcomeResult(for:edit,isSideEffecting:true) != nil)
+    }
+
+    @Test("Closure accounting separates successful mutation evidence from conservative effects")
+    func closureFactsKeepFailedInspectionsVisible() {
+        var facts = TaskClosureGate.Facts(steps:[],receipts:[.init(toolName:"studio.run",callFingerprint:"inspect",
+            status:"ok",isSideEffecting:true,outcomeUnknown:false,supportsMutationClaim:false)],availableToolNames:[])
+        #expect(!facts.hasSuccessfulWork)
+        #expect(!facts.hasNonSuccessfulWork)
+        facts.receipts[0].status = "failed"
+        #expect(facts.hasNonSuccessfulWork)
+        facts.receipts[0].status = "ok"
+        facts.receipts[0].outcomeUnknown = true
+        #expect(facts.hasNonSuccessfulWork)
+        #expect(!facts.hasSuccessfulWork)
     }
 
     @Test("Negated and ordinary messages are never treated as success claims")

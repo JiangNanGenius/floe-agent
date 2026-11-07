@@ -36,12 +36,102 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
     }
 }
 
+/// A token belongs to one visible editor or one awaited AI operation. Releasing
+/// an older token cannot release another editor's ownership of the original.
+@MainActor final class PersonalLibraryUsageLease {
+    nonisolated let projectID: UUID
+    nonisolated let token: UUID
+    private var released = false
+    fileprivate init(projectID: UUID, token: UUID) { self.projectID = projectID; self.token = token }
+    func release() {
+        guard !released else { return }; released = true
+        PersonalLibraryFileActions.releaseUse(id: projectID, token: token)
+    }
+    deinit {
+        let id = projectID, token = token
+        Task { @MainActor in PersonalLibraryFileActions.releaseUse(id: id, token: token) }
+    }
+}
+
 /// Narrow native menu operations. A process-local barrier prevents a new
 /// document/CAD owner from reopening an old path during a supported move.
 /// Other feature types retain their existing roots and running services.
 @MainActor enum PersonalLibraryFileActions {
     private static var active: Set<UUID> = []
     private static let files = PersonalLibraryFileIO()
+    private static var uses: [UUID: [UUID: URL]] = [:]
+    private static var folderBarriers: [UUID: URL] = [:]
+
+    static func acquireUse(id: UUID, directory: URL, libraryRoot: URL? = nil) throws -> PersonalLibraryUsageLease {
+        try requireAvailable(id)
+        let location = directory.standardizedFileURL.resolvingSymlinksInPath()
+        guard !folderBarriers.values.contains(where: { location.path == $0.path || location.path.hasPrefix($0.path + "/") }) else { throw PersonalFileActionError.busy }
+        try PersonalLibraryTrashStore.requireActive(root: try libraryRoot ?? PersonalContentLibrary.applicationRoot(), directory: location, id: id)
+        let token = UUID(); uses[id, default: [:]][token] = location
+        return PersonalLibraryUsageLease(projectID: id, token: token)
+    }
+    fileprivate static func releaseUse(id: UUID, token: UUID) {
+        uses[id]?.removeValue(forKey: token)
+        if uses[id]?.isEmpty == true { uses.removeValue(forKey: id) }
+    }
+
+    static func delete(_ selection: PersonalContentRecord, environment: AppEnvironment?,
+                       library suppliedLibrary: PersonalContentLibrary? = nil) async throws {
+        try begin(selection.id); defer { active.remove(selection.id) }
+        guard uses[selection.id]?.isEmpty != false else { throw PersonalFileActionError.closeFirst }
+        let library: PersonalContentLibrary
+        if let suppliedLibrary { library = suppliedLibrary } else { library = try await PersonalContentService.shared.library() }
+        let value = try await library.resolve(selection.id)
+        guard value.record.relativePath == selection.relativePath, value.record.kind == selection.kind,
+              value.record.modifiedAt == selection.modifiedAt else { throw PersonalFileActionError.changed }
+        try await prepareForDeletion(value.record, directory: value.url, environment: environment)
+        try Task.checkCancellation()
+        try await library.softDelete(selection)
+        changed(selection.id)
+    }
+
+    static func deleteFolder(_ selection: PersonalLibraryFolder, environment: AppEnvironment?,
+                             library suppliedLibrary: PersonalContentLibrary? = nil) async throws {
+        let library: PersonalContentLibrary
+        if let suppliedLibrary { library = suppliedLibrary } else { library = try await PersonalContentService.shared.library() }
+        let root = await library.root
+        let folder = try PersonalLibraryTrashStore.folder(root: root, components: selection.components)
+        guard folder.identity == selection.resourceIdentity else { throw PersonalFileActionError.changed }
+        guard !folderBarriers.values.contains(where: { folder.url.path == $0.path || folder.url.path.hasPrefix($0.path + "/") || $0.path.hasPrefix(folder.url.path + "/") }),
+              !uses.values.flatMap({ $0.values }).contains(where: { $0.path.hasPrefix(folder.url.path + "/") }) else { throw PersonalFileActionError.closeFirst }
+        let barrier = UUID(); folderBarriers[barrier] = folder.url
+        defer { folderBarriers.removeValue(forKey: barrier) }
+        let members = try await library.records(includingDeleted: true).filter { $0.folders.starts(with: selection.components) }
+        let ids = Set(members.map(\.id))
+        guard active.isDisjoint(with: ids) else { throw PersonalFileActionError.busy }
+        active.formUnion(ids); defer { active.subtract(ids) }
+        for record in members where record.deletedAt == nil {
+            try Task.checkCancellation()
+            try await prepareForDeletion(record, directory: root.appendingPathComponent(record.relativePath), environment: environment)
+        }
+        try Task.checkCancellation()
+        try await library.softDeleteFolder(selection, expectedProjectIDs: ids)
+        changed(UUID())
+    }
+
+    private static func prepareForDeletion(_ record: PersonalContentRecord, directory: URL, environment: AppEnvironment?) async throws {
+        switch record.kind {
+        case .document:
+            try PersonalTextDocument.requireClosedForFileAction(projectID: record.id)
+            try PersonalOfficeDocument.requireClosedForFileAction(projectID: record.id)
+        case .cad2D, .cad3D: try PersonalCADSessions.prepareForLibraryMove(id: record.id, directory: directory)
+        case .printing: try PrintProjectSession.requireIdleForDeletion(id: record.id)
+        case .manufacturing: try ManufacturingSessions.requireIdleForDeletion(id: record.id)
+        case .music: try MusicProjectSession.requireIdleForDeletion(id: record.id)
+        case .image, .drawing, .video: try MediaV2Session.requireIdleForDeletion(id: record.id)
+        case .meeting: await MeetingProjectSession.prepareForDeletion(id: record.id)
+        case .chemistry:
+            guard let environment else { throw PersonalContentError.storageUnavailable }
+            try await ChemistryProjectSession.prepareForLibraryDeletion(id: record.id, directory: directory, environment: environment)
+        case .canvas: try await CanvasHostSessions.shared.requireIdleForDeletion(canvasID: record.id, directory: directory)
+        case .diagram: break // The editor/AI usage lease owns all diagram writes.
+        }
+    }
     static func requireAvailable(_ id: UUID) throws {
         guard !active.contains(id) else { throw PersonalFileActionError.busy }
     }

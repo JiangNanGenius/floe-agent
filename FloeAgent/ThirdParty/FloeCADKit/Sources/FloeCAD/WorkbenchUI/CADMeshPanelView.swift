@@ -73,7 +73,7 @@ struct CADMeshPanelView: View {
                                                    selectedIDs.count),
                        tint: selectedIDs.count >= 1 ? .green : .secondary)
 
-            CADSculptPanel(document:document,viewModel:viewModel,selectedBodyIDs:selectedIDs)
+            CADSculptPanel(document:document,viewModel:viewModel,selectedBodyIDs:selectedIDs,allowMeshConversion:$allowMeshDowngrade)
 
             CADHybridModelingPanel(document:document,viewModel:viewModel,selectedBodyIDs:selectedIDs)
 

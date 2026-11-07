@@ -854,7 +854,19 @@ struct NotesDocumentEditor: View {
             .fixedSize(horizontal: true, vertical: false)
     }
 
-    @ViewBuilder private var headerActionItems: some View {
+    // Keep menu sections behind bounded type-erasure boundaries. The Release
+    // build's embedded meeting editor exhausted the main-thread stack while
+    // resolving this entire toolbar's nested generic metadata (Build 322).
+    // Group preserves native Menu entries without introducing a layout row.
+    private var headerActionItems: some View {
+        Group {
+            AnyView(headerRecoveryAndHistoryActions)
+            AnyView(headerExportActions)
+            AnyView(headerDocumentActions)
+        }
+    }
+
+    @ViewBuilder private var headerRecoveryAndHistoryActions: some View {
             if session.recoverableInkDocumentIDs.contains(document.id), !session.unsavedDocumentIDs.contains(document.id), session.pendingWrites == 0 {
                 Button("notes.notes_document_editor.restore_strokes", systemImage: "arrow.uturn.backward.circle") { session.recoverInk(documentID: document.id) }
                     .help("notes.notes_document_editor.restores_strokes_whose_save_did_not")
@@ -871,6 +883,9 @@ struct NotesDocumentEditor: View {
             Button("composer.editor.redo", systemImage: "arrow.uturn.forward") { session.undo(redo: true) }
                 .frame(minWidth: 44, minHeight: 44)
                 .disabled(!session.canRedo || session.pendingWrites > 0)
+    }
+
+    private var headerExportActions: some View {
             Group {
                 if exportTask != nil {
                     Button("notes.notes_document_editor.cancel_export", systemImage: "xmark.circle") { exportTask?.cancel() }
@@ -886,6 +901,9 @@ struct NotesDocumentEditor: View {
                         .disabled(session.pendingWrites > 0 || session.unsavedDocumentIDs.contains(document.id))
                 }
             }
+    }
+
+    @ViewBuilder private var headerDocumentActions: some View {
             if document.kind != .mindMap {
                 Button("notes.notes_linked_mind_maps.document_mind_map", systemImage: "point.3.connected.trianglepath.dotted") { showLinkedMaps = true }
                     .frame(minWidth: 44, minHeight: 44)

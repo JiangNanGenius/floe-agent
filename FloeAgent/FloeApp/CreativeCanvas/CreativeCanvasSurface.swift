@@ -11,38 +11,35 @@ import FloeCanvasIntegration
 import FloeCanvasTemplates
 import FloeCanvasTemplatesUI
 
-/// Feature-local chrome inside PersonalContentEditor's existing navigation.
-/// The board, selection, history and drafts belong to the one injected store.
-struct CreativeCanvasSurface: View {
+/// New components add tools to the original canvas; they never own a second
+/// board, selection, gesture system or top-level editor.
+struct CanvasModuleTools: ViewModifier {
     let record: PersonalContentRecord
     @ObservedObject var store: CanvasEditorStore
+    let providedSession: CanvasHostSession?
     @EnvironmentObject private var environment: AppEnvironment
     @State private var sheet: Sheet?
     @State private var importing = false
     @State private var diagnostic: String?
     @State private var busy = false
     private enum Sheet: String, Identifiable {
-        case templates, sources, goal, saveTemplate
+        case templates, sources, goal, saveTemplate, flow, flowDefinition
         var id: String { rawValue }
     }
     private var chinese: Bool { FloeL10n.currentLanguageCode.hasPrefix("zh") }
 
-    var body: some View {
-        CanvasEditorView(store: store)
-            .overlay {
-                if store.isLoaded && store.page.nodes.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "rectangle.and.pencil.and.ellipsis").font(.largeTitle).foregroundStyle(.secondary)
-                        Text(IDELanguageRunText.t("把想法放到画布上", "Put your ideas on the canvas")).font(.title3.bold())
-                        Text(IDELanguageRunText.t("加入资料、选一个场景，或从目标开始。", "Add sources, choose a scenario, or start with a goal."))
-                            .foregroundStyle(.secondary)
-                        HStack {
-                            Button(IDELanguageRunText.t("浏览场景", "Browse scenarios")) { sheet = .templates }
-                                .buttonStyle(.borderedProminent)
-                            Button(IDELanguageRunText.t("添加资料", "Add sources")) { sheet = .sources }
-                                .buttonStyle(.bordered)
-                        }
-                    }.padding(24).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+    func body(content: Content) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: .floeStudioDocumentDidChange)) { _ in
+                Task { await store.refreshFromHost() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .floeCanvasFrameworkExportRequested)) { message in
+                guard message.userInfo?["canvasID"] as? UUID == record.id,
+                      let format = message.userInfo?["format"] as? String else { return }
+                Task {
+                    await store.refreshFromHost()
+                    if format == "json" { await exportSnapshot() }
+                    else { await export(format == "pdf" ? .pdf : format == "png" ? .png : .floecanvaslab) }
                 }
             }
             .toolbar {
@@ -54,6 +51,27 @@ struct CreativeCanvasSurface: View {
                         Button(IDELanguageRunText.t("加入场景与流程", "Add a scenario or workflow"), systemImage: "square.grid.2x2") { sheet = .templates }
                         Button(IDELanguageRunText.t("从目标生成初稿", "Draft from a goal"), systemImage: "sparkles.rectangle.stack") { sheet = .goal }
                         Button(IDELanguageRunText.t("存为我的流程", "Save as my workflow"), systemImage: "square.and.arrow.up.on.square") { sheet = .saveTemplate }
+                        Menu(IDELanguageRunText.t("添加流程步骤", "Add workflow step"), systemImage: "point.3.connected.trianglepath.dotted") {
+                            ForEach(FlowNodeKind.allCases, id: \.self) { kind in
+                                Button(flowTitle(kind)) { Task { await insertStep(kind) } }
+                            }
+                        }
+                        if !store.page.flowGraphs.isEmpty {
+                            Divider()
+                            Menu(IDELanguageRunText.t("流程", "Workflow"), systemImage: "point.3.connected.trianglepath.dotted") {
+                                ForEach(Array(store.page.flowGraphs.enumerated()), id: \.element.id) { index, graph in
+                                    Button(IDELanguageRunText.t("流程 ", "Workflow ") + String(index + 1)) {
+                                        store.selectFlowGraph(graph.id)
+                                        NotificationCenter.default.post(name: .floeCanvasFrameworkFlowRequested, object: nil,
+                                            userInfo: ["canvasID": record.id, "pageID": store.selectedPageID, "graphID": graph.id])
+                                    }
+                                }
+                                Button(IDELanguageRunText.t("编辑流程定义", "Edit workflow definition")) { sheet = .flowDefinition }
+                                Button(IDELanguageRunText.t("运行流程", "Run workflow")) {
+                                    Task { _ = await store.startFlowRun(); sheet = .flow }
+                                }
+                            }
+                        }
                         Divider()
                         Menu(IDELanguageRunText.t("导出", "Export"), systemImage: "square.and.arrow.up") {
                             ForEach(CanvasExchangeFormat.allCases, id: \.self) { format in
@@ -101,6 +119,24 @@ struct CreativeCanvasSurface: View {
                         action: IDELanguageRunText.t("保存", "Save")) { value in
                             sheet = nil; Task { await saveTemplate(value) }
                         }
+                case .flow:
+                    NavigationStack {
+                        CanvasFlowDebuggerView(store: store)
+                            .navigationTitle(IDELanguageRunText.t("流程", "Workflow"))
+                            .toolbar { ToolbarItem(placement: .confirmationAction) {
+                                Button(IDELanguageRunText.t("完成", "Done")) { sheet = nil }
+                            } }
+                    }
+                case .flowDefinition:
+                    if let graph = store.activeFlowGraph { CanvasFlowDefinitionEditor(store: store, graphID: graph.id) }
+                    else {
+                        NavigationStack {
+                            ContentUnavailableView(IDELanguageRunText.t("流程已更改", "Workflow changed"), systemImage: "point.3.connected.trianglepath.dotted")
+                                .toolbar { ToolbarItem(placement: .confirmationAction) {
+                                    Button(IDELanguageRunText.t("完成", "Done")) { sheet = nil }
+                                } }
+                        }
+                    }
                 }
             }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.data, .image, .movie, .audio, .pdf, .plainText], allowsMultipleSelection: true) { result in
@@ -116,6 +152,7 @@ struct CreativeCanvasSurface: View {
     }
 
     @MainActor private func session() async throws -> CanvasHostSession {
+        if let providedSession { return providedSession }
         let location = try await PersonalContentService.shared.library().resolve(record.id)
         return try await CanvasHostSessions.shared.session(record: location.record, directory: location.url, environment: environment)
     }
@@ -124,11 +161,11 @@ struct CreativeCanvasSurface: View {
         do {
             let session = try await session()
             let workspace = CanvasTemplateWorkspace(documents: session.repository, library: try CanvasHostServices.templateLibrary(),
-                ownershipResolver: CanvasHostOwnershipResolver())
+                ownershipResolver: CanvasHostOwnershipResolver(legacyCanvasID: providedSession == nil ? nil : record.id))
             let activated = try await workspace.activate(canvasID: record.id, pageID: store.selectedPageID)
             let receipt = try await workspace.append(template, to: activated)
             await store.refreshFromHost(); await store.selectPage(receipt.pageID); store.fitToContent()
-            try await PersonalContentService.shared.library().markChanged(record.id)
+            if providedSession == nil { try await PersonalContentService.shared.library().markChanged(record.id) }
         } catch { diagnostic = error.localizedDescription }
     }
     @MainActor private func importFiles(_ files: [URL]) async {
@@ -148,7 +185,7 @@ struct CreativeCanvasSurface: View {
             _ = try await session.repository.commit(.init(pageID: pageID, scope: .wholeDocument, operations: operations),
                 canvasID: record.id, expectedRevision: base, requestID: UUID())
             await store.refreshFromHost(); store.fitToContent()
-            try await PersonalContentService.shared.library().markChanged(record.id)
+            if providedSession == nil { try await PersonalContentService.shared.library().markChanged(record.id) }
         } catch { diagnostic = error.localizedDescription }
     }
     @MainActor private func attach(_ option: CanvasHostSourceOption) async {
@@ -199,6 +236,35 @@ struct CreativeCanvasSurface: View {
             _ = try await CanvasHostServices.templateLibrary().save(template, expectedRevision: nil)
         } catch { diagnostic = error.localizedDescription }
     }
+    @MainActor private func insertStep(_ kind: FlowNodeKind) async {
+        busy = true; defer { busy = false }
+        do {
+            let session = try await session()
+            let snapshot = try await session.repository.load(canvasID: record.id)
+            let pageID = store.selectedPageID
+            guard let page = snapshot.pages.first(where: { $0.id == pageID }) else { throw PersonalContentError.changedDocument }
+            let right = page.nodes.map { $0.frame.center.x + $0.frame.size.width / 2 }.max() ?? 0
+            let batch = try CanvasFlowGraphEditing.insertStepBatch(snapshot: snapshot, pageID: pageID,
+                kind: kind, name: flowTitle(kind), at: .init(x: right + 180, y: 0), cardSize: .init(width: 260, height: 180))
+            _ = try await session.repository.commitDocument(batch, canvasID: record.id,
+                expectedRevision: snapshot.revision, requestID: UUID())
+            await store.refreshFromHost()
+            if providedSession == nil { try await PersonalContentService.shared.library().markChanged(record.id) }
+        } catch { diagnostic = error.localizedDescription }
+    }
+    private func flowTitle(_ kind: FlowNodeKind) -> String {
+        switch kind {
+        case .source: IDELanguageRunText.t("输入", "Input")
+        case .transform: IDELanguageRunText.t("处理", "Transform")
+        case .condition: IDELanguageRunText.t("条件", "Condition")
+        case .loop: IDELanguageRunText.t("循环", "Loop")
+        case .batch: IDELanguageRunText.t("批量", "Batch")
+        case .subgraph: IDELanguageRunText.t("子流程", "Subworkflow")
+        case .customScript: IDELanguageRunText.t("脚本", "Script")
+        case .customAPI: IDELanguageRunText.t("网络请求", "Network request")
+        case .output: IDELanguageRunText.t("输出", "Output")
+        }
+    }
     @MainActor private func export(_ format: CanvasExchangeFormat) async {
         busy = true; defer { busy = false }
         do {
@@ -215,6 +281,18 @@ struct CreativeCanvasSurface: View {
                 diagnostic = output.issues.prefix(8).map(\.detail).joined(separator: "\n")
             }
             CanvasHostShare.present(urls)
+        } catch { diagnostic = error.localizedDescription }
+    }
+    @MainActor private func exportSnapshot() async {
+        busy = true; defer { busy = false }
+        do {
+            let session = try await session()
+            let snapshot = try await session.repository.load(canvasID: record.id)
+            let directory = session.root.appendingPathComponent("Exports/" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let file = directory.appendingPathComponent("Canvas.json")
+            try JSONEncoder().encode(snapshot).write(to: file, options: .atomic)
+            CanvasHostShare.present([file])
         } catch { diagnostic = error.localizedDescription }
     }
     private func frame(_ index: Int) -> CanvasGeometry.Frame {
@@ -240,7 +318,11 @@ private struct CanvasHostExchangeAssets: CanvasAssetResolver {
 }
 
 struct CanvasHostOwnershipResolver: TemplateOwnershipResolving {
+    var legacyCanvasID: UUID? = nil
     func ownership(for projectID: UUID) async throws -> TemplateOwnership {
+        if projectID == legacyCanvasID, WorkspaceCanvasRegistry.exists(canvasID: projectID) {
+            return .init(kind: .canvas, ownerID: projectID, directoryID: projectID)
+        }
         let value = try await PersonalContentService.shared.library().resolve(projectID)
         return .init(kind: .personal, ownerID: value.record.id, directoryID: value.record.id)
     }

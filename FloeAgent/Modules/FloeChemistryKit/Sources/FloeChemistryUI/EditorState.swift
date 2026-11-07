@@ -148,6 +148,14 @@ public final class ChemistryEditorState {
             else { _ = try await service.start(projectID, objectID: selectedID, method: method, options: options) }
         }
     }
+    public func generate3D(environmentID: String) async {
+        guard let selectedID, availableEnvironments[environmentID]?.contains("rdkit.embed") == true else { return }
+        await perform {
+            _ = try await service.setEnvironment(projectID, environmentID: environmentID)
+            if let calculationHandler { _ = try await calculationHandler(selectedID, "rdkit.embed", .object([:])) }
+            else { _ = try await service.start(projectID, objectID: selectedID, method: "rdkit.embed", environmentID: environmentID) }
+        }
+    }
     public func cancel(runID: UUID) async {
         await perform {
             if let cancellationHandler { try await cancellationHandler(runID) }

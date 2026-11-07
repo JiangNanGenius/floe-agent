@@ -226,6 +226,31 @@ final class FileRepositoryTests: XCTestCase {
         XCTAssertEqual(loaded.revision, 1)
     }
 
+    func testSynchronousNativeAndAsyncToolShareCASAndUndo() async throws {
+        let fixture = makeFixture()
+        let repo = repository!
+        try await repo.create(canvasID: fixture.snapshot.id, snapshot: fixture.snapshot, requestID: UUID())
+        let synchronous = Task.detached {
+            do {
+                _ = try repo.commitDocumentSynchronously(.init(operations: [.editPage(fixture.batch)]),
+                    canvasID: fixture.snapshot.id, expectedRevision: 0, requestID: UUID())
+                return FileRepositoryCommitOutcome.succeeded
+            } catch let error as CanvasKitError { return .failed(error) }
+            catch { return .failed(.io(String(describing: error))) }
+        }
+        async let asynchronous = FileRepositoryCommitOutcome.capture(repository: repo,
+            batch: fixture.batch, canvasID: fixture.snapshot.id)
+        let outcomes = await [synchronous.value, asynchronous]
+        XCTAssertEqual(outcomes.filter(\.wasSuccess).count, 1)
+        XCTAssertEqual(outcomes.filter(\.wasRevisionConflict).count, 1)
+        XCTAssertEqual(try repo.loadSynchronously(canvasID: fixture.snapshot.id).revision, 1)
+        let undo = try repo.undoSynchronously(canvasID: fixture.snapshot.id, expectedRevision: 1, requestID: UUID())
+        let reopened = try FileCanvasRepository(root: root)
+        XCTAssertEqual(try reopened.loadSynchronously(canvasID: fixture.snapshot.id).selectedPage?.nodes.first?.textContent, "v1")
+        _ = try await reopened.redo(canvasID: fixture.snapshot.id, expectedRevision: undo.revision, requestID: UUID())
+        XCTAssertEqual(try repo.loadSynchronously(canvasID: fixture.snapshot.id).selectedPage?.nodes.first?.textContent, "v2")
+    }
+
     func testCrashBeforeManifestWriteLeavesCommittedStateIntact() async throws {
         let fixture = try await seed()
         await repository.setFailBeforeManifestWrite(true)

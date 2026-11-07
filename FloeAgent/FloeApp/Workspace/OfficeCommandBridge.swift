@@ -441,6 +441,9 @@ final class OfficeLiveSessionRegistry {
 
     private struct Entry { weak var session: OfficeFileSession? }
     private var entries: [String: Entry] = [:]
+    /// Deletion observes every owner; command resolution keeps its historical
+    /// single current session and does not inherit this registry's authority.
+    private var deletionOwners: [String: [ObjectIdentifier: Entry]] = [:]
 
     static func key(root: URL?, relativePath: String) -> String {
         let path = root?.standardizedFileURL.resolvingSymlinksInPath().path ?? ""
@@ -448,16 +451,35 @@ final class OfficeLiveSessionRegistry {
     }
 
     func register(session: OfficeFileSession, root: URL?, relativePath: String) {
-        entries[Self.key(root: root, relativePath: relativePath)] = Entry(session: session)
+        let key = Self.key(root: root, relativePath: relativePath)
+        entries[key] = Entry(session: session)
+        var owners = (deletionOwners[key] ?? [:]).filter { $0.value.session != nil }
+        owners[ObjectIdentifier(session)] = Entry(session: session)
+        deletionOwners[key] = owners
     }
 
     func unregister(session: OfficeFileSession, root: URL?, relativePath: String) {
         let key = Self.key(root: root, relativePath: relativePath)
         if entries[key]?.session === session { entries[key] = nil }
+        deletionOwners[key]?.removeValue(forKey: ObjectIdentifier(session))
+        if deletionOwners[key]?.isEmpty == true { deletionOwners[key] = nil }
     }
 
     func session(root: URL?, relativePath: String) -> OfficeFileSession? {
         entries[Self.key(root: root, relativePath: relativePath)]?.session
+    }
+
+    func requireClosedForFileAction(root: URL, relativePath: String) throws {
+        let target = Self.key(root: root, relativePath: relativePath)
+        for key in Array(deletionOwners.keys) {
+            deletionOwners[key] = deletionOwners[key]?.filter { $0.value.session != nil }
+            if deletionOwners[key]?.isEmpty == true { deletionOwners[key] = nil }
+        }
+        guard !deletionOwners.contains(where: {
+            ($0.key == target || $0.key.hasPrefix(target + "/")) && $0.value.values.contains(where: { $0.session != nil })
+        }) else {
+            throw WorkspaceFileDeletionError.closeFirst
+        }
     }
 
     /// Whether ANY live engine session is registered right now. Live

@@ -4,6 +4,7 @@ import Foundation
 import Testing
 import FloePersistence
 import FloeTools
+import FloeDiagramCore
 @testable import FloeApp
 
 /// Calls the actual registered runners and the App's ONE existing service
@@ -11,7 +12,7 @@ import FloeTools
 @Suite("Registered native work editing", .serialized)
 @MainActor struct StudioRegisteredWorkflowTests {
     private func object(_ output: ToolExecutionOutput) throws -> [String: Any] {
-        try #require(JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any])
+        try #require(JSONSerialization.jsonObject(with: Data((output.capturedOutput ?? output.summary).utf8)) as? [String: Any])
     }
     private func invoke(_ name: String, _ args: [String: Any], _ context: ToolContext) async throws -> ToolExecutionOutput {
         let runner = try #require(ToolRunnerRegistry.shared.runner(named: name))
@@ -55,6 +56,25 @@ import FloeTools
             let original = try #require(JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any])
             #expect(original["title"] as? String == editedTitle)
             #expect(reopened["revision"] as? String != revision)
+            let format = try #require(reopened["editFormat"] as? String)
+            let example = try #require(format.components(separatedBy: "\nExample JSON:\n").last)
+            let edits = try JSONDecoder().decode([DiagramEdit].self, from: Data(example.utf8))
+            #expect(edits.count == 3)
+            context.toolCallID = "example-two-boxes-and-line"
+            _ = try await invoke("studio.edit", ["projectID": projectID,
+                "expectedRevision": try #require(reopened["revision"] as? String), "operationsJSON": example], context)
+            let reread = try object(try await invoke("studio.read", ["projectID": projectID], context))
+            let persisted = try JSONDecoder().decode(DiagramDocument.self,
+                from: Data(try #require(reread["contentJSON"] as? String).utf8))
+            for edit in edits {
+                switch edit {
+                case .upsertElement(let page, let element):
+                    #expect(persisted.pages.first(where: { $0.id == page })?.elements.contains(element) == true)
+                case .upsertConnection(let page, let connection):
+                    #expect(persisted.pages.first(where: { $0.id == page })?.connections.contains(connection) == true)
+                default: Issue.record("Unexpected edit in the published diagram example")
+                }
+            }
             context.toolCallID = "create-original"
             let retried = try object(try await invoke("studio.create", ["kind": "diagram", "title": title], context))
             #expect((retried["record"] as? [String: Any])?["id"] as? String == projectID)

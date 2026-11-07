@@ -152,6 +152,21 @@ public enum DeterministicLocalApprovalPolicy {
     /// existing policy.
     public static func isOrdinaryDocumentReadOrDraft(_ action: ProposedAction) -> Bool {
         guard case .local = action.toolCall.scope else { return false }
+        if action.toolCall.toolName == "audio.inspect" {
+            guard action.riskLabels == ["readsFiles"], let context = action.trustedContext, !context.hasUnresolvedExtent,
+                  [.localNative,.localLinuxVM].contains(context.environmentClass),
+                  let root = context.workspaceRootPath, (root as NSString).isAbsolutePath, root != "/", !root.contains("\0"),
+                  let path = action.argumentObject?["path"] as? String else { return false }
+            let base = URL(fileURLWithPath:root,isDirectory:true).standardizedFileURL.resolvingSymlinksInPath()
+            let input = ((path as NSString).isAbsolutePath ? URL(fileURLWithPath:path):base.appendingPathComponent(path))
+                .standardizedFileURL.resolvingSymlinksInPath()
+            guard input.path.hasPrefix(base.path + "/") else { return false }
+        }
+        if action.toolCall.toolName.hasPrefix("studio.") {
+            guard nativeStudioReadTools.contains(action.toolCall.toolName),
+                  nativeStudioContext(action) != nil,
+                  action.riskLabels == (action.toolCall.toolName == "studio.list" ? []:["persistsPersonalData"]) else { return false }
+        }
         guard let role = OrdinaryDocumentActionProfile.role(
             forToolName: action.toolCall.toolName,
             argumentsJSON: action.toolCall.argumentsJSON
@@ -198,11 +213,33 @@ public enum DeterministicLocalApprovalPolicy {
         guard case .local = action.toolCall.scope,
               let context = action.trustedContext else { return false }
         guard context.typedContractCovered else { return false }
+        if action.toolCall.toolName.hasPrefix("studio.") {
+            guard nativeStudioWriteTools.contains(action.toolCall.toolName),
+                  action.riskLabels == ["persistsPersonalData"],
+                  let container = nativeStudioContext(action),
+                  context.mutableTargetPaths.count == 1,
+                  URL(fileURLWithPath:context.mutableTargetPaths[0]).standardizedFileURL.resolvingSymlinksInPath().path == container else { return false }
+        }
         guard !context.hasUnresolvedExtent,
               context.targetsAllOutsideRepository else { return false }
         guard !requiresPDFConsentReview(action) else { return false }
         guard !requiresDestructiveOverwriteReview(action) else { return false }
         return true
+    }
+
+    private static let nativeStudioWriteTools:Set<String> = ["studio.create","studio.edit","studio.run","studio.media","studio.chemistry","studio.machining"]
+    private static let nativeStudioReadTools:Set<String> = ["studio.list","studio.run","studio.chemistry","studio.machining"]
+
+    /// A real service path is required; the typed resolver/action table still
+    /// decides coverage. This does not grant access to an unbound record.
+    private static func nativeStudioContext(_ action:ProposedAction) -> String? {
+        guard let context = action.trustedContext, !context.hasUnresolvedExtent,
+              [.localNative,.localLinuxVM].contains(context.environmentClass),
+              let path = context.nativeStudioContainerPath, (path as NSString).isAbsolutePath,
+              !path.contains("\0") else { return nil }
+        let canonical = URL(fileURLWithPath:path,isDirectory:true).standardizedFileURL.resolvingSymlinksInPath().path
+        guard canonical != "/", RepositoryBoundaryDetector.classify(path:canonical) == .outsideWorktree else { return nil }
+        return canonical
     }
 
     /// PDF rasterization/flattening/searchable-OCR and any use of the user's

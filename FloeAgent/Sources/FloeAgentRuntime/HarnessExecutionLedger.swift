@@ -1,6 +1,7 @@
 import Foundation
 import Crypto
 import FloeModels
+import FloeSecurity
 
 import FloeCore
 /// A bounded, activation-local account of work already performed. Provider
@@ -23,6 +24,12 @@ struct HarnessExecutionLedger: Sendable {
         var excerpt: String
         var occurrenceCount: Int
         var isSideEffecting: Bool
+
+        /// Terminal-answer evidence only. The descriptor effect bit above
+        /// remains authoritative for dispatch, recovery and replay safety.
+        /// This native classification is intentionally not checkpointed;
+        /// restored entries need matching retained call arguments below.
+        var mutationClaimCandidate: Bool? = nil
 
         /// True when this dispatch was marked by the runtime as having an
         /// unknown real-world outcome. The flag travels inside the persisted
@@ -98,6 +105,19 @@ struct HarnessExecutionLedger: Sendable {
                 isSideEffecting: entry.isSideEffecting
             )
         }
+    }
+
+    /// Projects only final-answer evidence; it never changes a ledger entry,
+    /// dispatch authority, checkpoint schema, or replay decision. A mixed
+    /// tool's successful inspection/draft cannot prove a write. Legacy
+    /// recovery without actual matching arguments cannot prove one either.
+    func supportsMutationClaim(for entry: Entry, replayedCalls: [ToolCall]) -> Bool {
+        guard entry.isSideEffecting, entry.status == .ok, !entry.outcomeUnknown else { return false }
+        if let candidate = entry.mutationClaimCandidate { return candidate }
+        guard let call = replayedCalls.last(where: {
+            $0.toolName == entry.toolName && Self.fingerprint($0.argumentsJSON) == entry.callFingerprint
+        }) else { return false }
+        return OrdinaryDocumentActionProfile.role(forToolName: call.toolName, argumentsJSON: call.argumentsJSON) == nil
     }
 
     /// Tool schemas for stateful workflows are exposed progressively. This is
@@ -336,6 +356,9 @@ struct HarnessExecutionLedger: Sendable {
             }
         }
         let excerpt = Self.boundedExcerpt(result, toolName: call.toolName)
+        let isAuditedNonMutation = OrdinaryDocumentActionProfile.role(
+            forToolName: call.toolName, argumentsJSON: call.argumentsJSON
+        ) != nil
 
         if let index = entries.firstIndex(where: {
             $0.toolName == call.toolName
@@ -347,6 +370,7 @@ struct HarnessExecutionLedger: Sendable {
             entry.occurrenceCount += 1
             entry.excerpt = excerpt
             entry.isSideEffecting = entry.isSideEffecting || isSideEffecting
+            entry.mutationClaimCandidate = entry.isSideEffecting && !isAuditedNonMutation
             entries.append(entry)
         } else {
             entries.append(Entry(
@@ -356,7 +380,8 @@ struct HarnessExecutionLedger: Sendable {
                 resultFingerprint: resultFingerprint,
                 excerpt: excerpt,
                 occurrenceCount: 1,
-                isSideEffecting: isSideEffecting
+                isSideEffecting: isSideEffecting,
+                mutationClaimCandidate: isSideEffecting && !isAuditedNonMutation
             ))
         }
         if entries.count > maximumEntries {

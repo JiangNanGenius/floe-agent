@@ -1,5 +1,14 @@
 # FloeManufacturingKit — independent native manufacturing research
 
+The App integration repair adds native path-prefix stock replay through
+`fm_core_preview`: tool position, progressive remaining stock and sampled
+collision feedback now share one source cursor. Scrubbing is coalesced and
+cancellable off the main actor; completed-path checkpoints accelerate forward
+playback without reusing partial cuts. Rapid/retract moves never remove stock.
+Real insert outlines retain flat caps/sharp polygon edges and rounded sides.
+See [the replay contract](NativeRust/BOUNDARY_CONTRACT.md). The historical
+retained-stage-only playback descriptions below apply to those frozen versions.
+
 The canonical App module now contains the R11 native correction: cylindrical mixed-stock meshes intersect the declared radial domain before tetrahedral extraction, retaining bores/slots without folded cap edges. The 137 Rust library checks pass; iOS arm64, iOS Simulator arm64 and macOS arm64 frameworks compile, and a macOS C client links the packaged framework and reads back the original three regression requests plus cancellation. The static framework keeps cargo's original archive symbols; build candidates can use `FLOE_NATIVE_XCF_OUTPUT` before coordinated promotion. See [the native contract](NativeRust/BOUNDARY_CONTRACT.md). These are component/C-ABI results, not R11 full-App, iPad, machine or full-E38 acceptance. Historical R10 source-only/prebuilt-library warnings below describe that frozen delivery and are superseded for the canonical module.
 
 R10 is a **source-only, uncompiled and untested** boundary correction. Pristine box stock retains its declared planes/corners; reconstructed stock is constrained to its physical domain and must retain closed, consistently oriented edges. Cylinder end planes no longer follow ceil-rounded grid height. New stock checkpoints carry optional `declaredMaxMM`; ambiguous legacy checkpoints remain archive-readable but must be regenerated before new continuation. The C ABI is unchanged. Cut surfaces/volumes remain voxel approximations; this is not an exact B-rep reconstruction.

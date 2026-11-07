@@ -7,38 +7,67 @@ import UIKit
 import AppKit
 #endif
 
+/// JSON and text conversions have one current input/result pair. Editing the
+/// next input or attempting a failed conversion cannot retain old output.
+@MainActor public final class ToolboxTextUtilityModel: ObservableObject {
+    public enum Action: Sendable { case formatJSON, compactJSON, sortJSON, base64Encode, base64Decode, urlEncode, urlDecode }
+    @Published public var input = "" {
+        didSet { if input != oldValue { output = ""; errorDetail = nil; lastAction = nil } }
+    }
+    @Published public private(set) var output = ""
+    @Published public private(set) var errorDetail: String?
+    @Published public private(set) var lastAction: Action?
+    public var failed: Bool { errorDetail != nil }
+    public init() {}
+    public func perform(_ action: Action) {
+        let frozen = input
+        output = ""; errorDetail = nil; lastAction = action
+        do {
+            switch action {
+            case .formatJSON: output = try ToolboxJSON.format(frozen)
+            case .compactJSON: output = try ToolboxJSON.format(frozen,style:.compact)
+            case .sortJSON: output = try ToolboxJSON.format(frozen,style:.sorted)
+            case .base64Encode: output = try ToolboxTextEncoding.base64Encode(frozen)
+            case .base64Decode: output = try ToolboxTextEncoding.base64Decode(frozen)
+            case .urlEncode: output = try ToolboxTextEncoding.urlEncode(frozen)
+            case .urlDecode: output = try ToolboxTextEncoding.urlDecode(frozen)
+            }
+        } catch { output = ""; errorDetail = String(reflecting:error) }
+    }
+}
+
 public struct ToolboxTextUtilityView: View {
     public enum Mode: Sendable { case json, encoding }
     private let mode: Mode
     @Environment(\.locale) private var locale
-    @State private var input = ""
-    @State private var output = ""
-    @State private var failed = false
+    @StateObject private var model = ToolboxTextUtilityModel()
     public init(mode: Mode) { self.mode = mode }
     public var body: some View {
         VStack(alignment:.leading,spacing:16) {
             Text(workbenchText("输入","Input",locale)).font(.headline)
-            TextEditor(text:$input).font(.system(.body,design:.monospaced)).frame(minHeight:120)
+            TextEditor(text:$model.input).font(.system(.body,design:.monospaced)).frame(minHeight:120)
             ScrollView(.horizontal) {
                 HStack {
                     if mode == .json {
-                        Button(workbenchText("格式化","Format",locale)) { convert { try ToolboxJSON.format(input) } }
-                        Button(workbenchText("压缩","Compact",locale)) { convert { try ToolboxJSON.format(input,style:.compact) } }
-                        Button(workbenchText("排序键","Sort keys",locale)) { convert { try ToolboxJSON.format(input,style:.sorted) } }
+                        Button(workbenchText("格式化","Format",locale)) { model.perform(.formatJSON) }
+                        Button(workbenchText("压缩","Compact",locale)) { model.perform(.compactJSON) }
+                        Button(workbenchText("排序键","Sort keys",locale)) { model.perform(.sortJSON) }
                     } else {
-                        Button("Base64 +") { convert { try ToolboxTextEncoding.base64Encode(input) } }
-                        Button("Base64 −") { convert { try ToolboxTextEncoding.base64Decode(input) } }
-                        Button("URL +") { convert { try ToolboxTextEncoding.urlEncode(input) } }
-                        Button("URL −") { convert { try ToolboxTextEncoding.urlDecode(input) } }
+                        Button("Base64 +") { model.perform(.base64Encode) }
+                        Button("Base64 −") { model.perform(.base64Decode) }
+                        Button("URL +") { model.perform(.urlEncode) }
+                        Button("URL −") { model.perform(.urlDecode) }
                     }
                 }.buttonStyle(.bordered)
             }
-            if failed { Text(workbenchText("请检查内容格式和大小。","Check the input format and size.",locale)).foregroundStyle(.secondary) }
+            if let detail = model.errorDetail {
+                Text(workbenchText("请检查内容格式和大小。","Check the input format and size.",locale)).foregroundStyle(.secondary)
+                DisclosureGroup(workbenchText("详情","Details",locale)) { Text(detail).font(.caption).textSelection(.enabled) }
+            }
             Text(workbenchText("结果","Result",locale)).font(.headline)
-            ScrollView { Text(output).font(.system(.body,design:.monospaced)).textSelection(.enabled).frame(maxWidth:.infinity,alignment:.leading) }
+            ScrollView { Text(model.output).font(.system(.body,design:.monospaced)).textSelection(.enabled).frame(maxWidth:.infinity,alignment:.leading) }
         }.padding().navigationTitle(mode == .json ? workbenchText("JSON 格式化","JSON formatter",locale) : workbenchText("文本编码","Text encoding",locale))
     }
-    private func convert(_ action: () throws -> String) { do { output = try action(); failed = false } catch { failed = true } }
 }
 public struct ToolboxQRView: View {
     @Environment(\.locale) private var locale

@@ -251,10 +251,29 @@ struct VirtualMachineViewport:UIViewRepresentable {
             let color:UIColor = rapid ? .systemOrange : selected ? .systemBlue : done ? .systemGreen : .systemTeal
             node.addChildNode(line(path.pointsMM,color:color,opacity:selected || done ? 1 : 0.4))
             if let tool,path.pointsMM.indices.contains(tool.pointIndex) {
-                let partial = Array(path.pointsMM.prefix(tool.pointIndex+1))+[path.frame.inverse.applied(to:tool.tipMM)]
+                let localTip = path.frame.inverse.applied(to:tool.tipMM)
+                let partial = Array(path.pointsMM.prefix(tool.pointIndex+1))+[localTip]
                 node.addChildNode(line(partial,color:rapid ? .systemOrange : .systemGreen,opacity:1))
+                let i = min(tool.pointIndex,max(0,path.pointsMM.count-2))
+                if path.pointsMM.indices.contains(i+1) {
+                    node.addChildNode(directionArrow(at:localTip,from:path.pointsMM[i],to:path.pointsMM[i+1],color:rapid ? .systemOrange : .systemGreen))
+                }
             }
         }
+    }
+    private func directionArrow(at tip:[Double],from a:[Double],to b:[Double],color:UIColor)->SCNNode {
+        let first = coordinate(a),last = coordinate(b)
+        let delta = SIMD3<Float>(last.x-first.x,last.y-first.y,last.z-first.z)
+        guard simd_length_squared(delta)>1e-12 else { return SCNNode() }
+        let direction = simd_normalize(delta),length = max(1.2,min(4,cellSize*3))
+        let cone = SCNCone(topRadius:0,bottomRadius:length*0.22,height:length)
+        cone.radialSegmentCount = 20
+        let material = SCNMaterial();material.diffuse.contents = color;material.lightingModel = .constant
+        material.readsFromDepthBuffer = false;material.writesToDepthBuffer = false;cone.materials = [material]
+        let node = SCNNode(geometry:cone),point = coordinate(tip)
+        node.simdPosition = SIMD3(point.x,point.y,point.z)+direction*Float(length*0.5)
+        node.simdOrientation = simd_quatf(from:SIMD3<Float>(0,1,0),to:direction)
+        node.renderingOrder = 25;return node
     }
     private func line(_ points:[[Double]],color:UIColor,opacity:Double)->SCNNode {
         guard points.count>1 else { return SCNNode() }
@@ -278,7 +297,11 @@ struct VirtualMachineViewport:UIViewRepresentable {
                 node.addChildNode(visual);node.name = key;c.headNodes[tool.id] = node;c.headRoot.addChildNode(node)
             }
             node.isHidden = !settings.showTools
-            CAMSceneDisplay.apply(node,default:.cutting,settings:settings)
+            let risks = frame.collisions.filter { ["intersecting","clearance","uncertain","incomplete"].contains($0.state) }
+            var warningParts = Set<CAMSceneDisplay.Component>()
+            if risks.contains(where:{ $0.toolPart == "cutter" }) { warningParts.insert(.cutting) }
+            if risks.contains(where:{ ["holder","shank"].contains($0.toolPart ?? "") }) { warningParts.insert(.holder) }
+            CAMSceneDisplay.apply(node,default:.cutting,settings:settings,warningParts:warningParts)
             let actual:CellRigidTransform?
             if let machine = frame.machine,let tip = machine.machineToolTipMM,let axis = machine.machineToolAxis {
                 actual = try? VirtualMachineSceneBuilder.alignedFrame(tip:tip,axis:axis)

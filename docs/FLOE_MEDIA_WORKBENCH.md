@@ -253,3 +253,59 @@ Not yet verified (honest gaps):
   speed and dissolve overlaps exact while bounding the clip count.
 - Image layers store bottom-first; the UI presents them top-first.
 - Locked layers refuse geometry/content edits but still allow opacity.
+
+## 7. 模型音频波形观察 / Model audio waveform observation (2026-11-07)
+
+`audio.inspect` 读取当前任务已授权的真实音频文件，原生解码为 PCM，
+返回结构化波形。示例：
+
+```json
+{"path":"Attachments/take.wav","startSeconds":0,"endSeconds":10,"bins":64}
+```
+
+结果包含来源 SHA256、时长、采样率、声道数、实际采样帧范围，以及每声道
+各连续时间桶的 `binMin` / `binMax` / `binRMS`；同时提供峰值、RMS、dBFS、
+静音及满幅样本统计。所有选中样本参与计算，桶内样本顺序不保留。
+完整 JSON 进入现有工具结果捕获与模型读取链，短界面摘要不替代完整结果。
+
+Native PCM decoding returns structured waveform data for an authorized task
+file: source SHA256 and format, exact frame/time coverage, per-channel
+contiguous min/max/RMS bins, peak/RMS/dBFS, silence and full-scale statistics.
+Every selected sample contributes; within-bin sample order is not retained.
+The complete JSON uses the existing tool-result capture/model delivery path.
+
+音乐工程使用 `studio.run` 的 `inspectAudio`，`inputJSON` 指定 `studio.read`
+返回的真实 `assetID` 和可选时间范围、桶数。它复用同一解码器，验证当前任务、
+工程和素材哈希，且不改工程。`renderWAV` / `renderMP3` 的结果附带实际渲染
+文件的 `audioObservation` 和 `sourceRevision`。超出观察预算时保留已验证的导出
+回执，并返回 `audioObservationUnavailableReason`。MIDI 先渲染为真实音频再观察。
+
+For a native music work, `studio.run` → `inspectAudio` takes an actual
+`assetID` from `studio.read` and optional window/bins. It reuses the decoder
+with task/project/hash checks and does not modify the work. Successful music
+renders include their actual file's `audioObservation` and `sourceRevision`.
+An observation budget limit preserves the verified export receipt and reports
+`audioObservationUnavailableReason`. MIDI must be rendered before PCM observation.
+
+默认读取前 30 秒、每声道 64 桶；长音频分段调用。单次最多 120 秒、256 桶/声道、
+合计 512 声道桶、8 声道、3200 万样本，源文件不超过 256 MiB，JSON 不超过
+64 KiB。该过程不播放、录音或调用云端模型。静音是幅值阈值统计；满幅计数仅为
+削波候选，RMS 不是标准 LUFS，波形不代表已听懂内容或判断听感。
+
+Defaults are the first 30 seconds and 64 bins/channel. Request successive
+windows for longer audio. Limits are 120 seconds, 256 bins/channel, 512
+channel-bins total, eight channels, 32 million samples, a 256 MiB source and
+64 KiB JSON. No playback, recording or cloud model is used. Silence is an
+amplitude threshold; full-scale counts are clipping candidates. Unweighted
+RMS is not standard LUFS or a conclusion about audio content/listening quality.
+
+验证：Xcode 27.2、iOS 27 模拟器真实 PCM 的 9 项解码/注册/边界测试、原生
+音乐素材只读观察与实际 WAV 渲染回执测试通过。另一个端到端测试使用真实
+`audio.inspect`、Runtime 和脚本化模型传输，确认超过 4K 界面摘要的完整 JSON
+及末桶数据到达下一轮模型请求。尚未验证云端模型推理、新候选物理设备或发布包。
+Verification: nine real-PCM decoder/registration/boundary tests and the native
+music asset/read-only/WAV-render observation test passed on the iOS 27
+Simulator with Xcode 27.2. A further test uses the actual tool and Runtime with
+scripted provider transport to verify complete JSON and final-bin data beyond
+the 4K UI preview in the next model request. Cloud-model inference, physical
+devices and the new release package remain unverified.

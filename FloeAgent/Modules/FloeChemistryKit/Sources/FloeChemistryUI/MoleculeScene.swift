@@ -14,7 +14,7 @@ public struct ChemistryScene: Sendable {
         let connections = json["bonds"]?["connections"]?["index"]?.array ?? []
         let orders = json["bonds"]?["order"]?.array ?? []
         var scene = Self(); scene.isThreeDimensional = coordinates.count == elements.count * 3 && !elements.isEmpty
-        guard scene.isThreeDimensional else { return scene }
+        if !coordinates.isEmpty && !scene.isThreeDimensional { throw ChemistryError.invalid("Invalid scene coordinates.") }
         // This is a display budget; the project retains the complete source.
         for (i, element) in elements.prefix(10000).enumerated() {
             guard let z = element.number, z >= 1, z <= 118, z.rounded() == z else { throw ChemistryError.invalid("Invalid scene element.") }
@@ -22,6 +22,11 @@ public struct ChemistryScene: Sendable {
                 guard let x = coordinates[i*3].number, let y = coordinates[i*3+1].number, let v = coordinates[i*3+2].number,
                       x.isFinite, y.isFinite, v.isFinite else { throw ChemistryError.invalid("Invalid scene coordinates.") }
                 scene.atoms.append(Atom(z: Int(z), x: x, y: y, zc: v))
+            } else {
+                // Preserve the graph for counts/selection without inventing
+                // coordinates. isThreeDimensional remains false, so these
+                // placeholders are never rendered as a spatial structure.
+                scene.atoms.append(Atom(z: Int(z), x: 0, y: 0, zc: 0))
             }
         }
         for i in stride(from: 0, to: max(0, connections.count - 1), by: 2) {

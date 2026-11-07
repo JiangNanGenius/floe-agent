@@ -137,7 +137,7 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Floe scans your local network only when you ask the agent to discover nearby services and devices.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Floe uses your location for weather and nearby places you request, including while those tasks continue in the background. Background assistance uses approximate location while tasks are running.</string>
+	<string>Floe uses your location for requested weather and nearby places. Wi-Fi diagnostics needs precise-location permission to show the connected network and access point. Running tasks may continue using approximate location in the background.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Floe uses the microphone when you dictate, record music, or record a meeting.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

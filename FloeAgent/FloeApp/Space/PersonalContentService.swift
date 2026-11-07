@@ -212,6 +212,8 @@ extension PersonalContentKind {
         case .document: "doc"
         }
     }
-    static var creationKinds: [Self] { [.canvas, .diagram, .music, .meeting, .chemistry, .printing, .manufacturing, .document, .drawing, .image, .video, .cad2D, .cad3D] }
+    // Printing and machining are created from CAD's Manufacturing workspace.
+    // Keep their record kinds readable for existing projects and results.
+    static var creationKinds: [Self] { [.canvas, .diagram, .music, .meeting, .chemistry, .document, .drawing, .image, .video, .cad2D, .cad3D] }
 }
 #endif

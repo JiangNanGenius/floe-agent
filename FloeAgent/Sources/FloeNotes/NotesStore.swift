@@ -4,6 +4,13 @@ import GRDB
 import Crypto
 
 import FloeCore
+
+/// A visit references the original document without changing its edit metadata.
+public struct NoteDocumentVisit: Sendable {
+    public let document: NoteDocument
+    public let openedAt: Date
+}
+
 /// A long-lived database independent from conversations and task workspaces.
 /// All mutations, revisions, history and resource references commit in one SQLite transaction.
 public actor NotesStore {
@@ -125,6 +132,24 @@ public actor NotesStore {
                 SELECT d.body FROM documents d LEFT JOIN document_visits v ON v.document_id=d.id
                 WHERE d.deleted IS NULL ORDER BY COALESCE(v.opened,d.updated) DESC,d.id LIMIT ?
                 """, arguments: [limit]).map { try decoder.decode(NoteDocument.self, from: $0) }
+        }
+    }
+
+    /// Cross-library recents need the actual visit time, rather than the
+    /// document's modification time or a newly created, never opened note.
+    public func recentVisits(limit: Int = 50) throws -> [NoteDocumentVisit] {
+        guard (1...200).contains(limit) else { throw NoteError.invalidOperation(FloeL10n.l("notes.notes_store.invalid_recent_list_count")) }
+        return try database.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT d.body, v.opened FROM documents d
+                INNER JOIN document_visits v ON v.document_id=d.id
+                WHERE d.deleted IS NULL ORDER BY v.opened DESC,d.id LIMIT ?
+                """, arguments: [limit]).map { row in
+                    let body: Data = row["body"]
+                    let opened: Double = row["opened"]
+                    return NoteDocumentVisit(document: try decoder.decode(NoteDocument.self, from: body),
+                                             openedAt: Date(timeIntervalSince1970: opened))
+                }
         }
     }
 

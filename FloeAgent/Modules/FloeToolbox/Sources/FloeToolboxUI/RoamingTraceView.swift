@@ -12,17 +12,24 @@ public struct RoamingTraceView: View {
     private let onStart: (String, Double) -> Void
     private let onStop: () -> Void
     private let onExport: () -> Void
+    private let defaultGateway: String?
     @State private var target: String
     @State private var interval: Double
     public init(snapshot: RoamingSnapshot, isRecording: Bool, onStart: @escaping (String,Double) -> Void,
-                onStop: @escaping () -> Void, onExport: @escaping () -> Void) {
+                onStop: @escaping () -> Void, onExport: @escaping () -> Void, defaultGateway: String? = nil) {
         self.snapshot = snapshot; self.isRecording = isRecording; self.onStart = onStart; self.onStop = onStop; self.onExport = onExport
         _target = State(initialValue:snapshot.configuration.target); _interval = State(initialValue:snapshot.configuration.probeInterval)
+        self.defaultGateway = defaultGateway
     }
     public var body: some View {
         VStack(alignment:.leading,spacing:12) {
             Text(roamingText("漫游追踪","Roaming trace")).font(.title2)
             TextField(roamingText("探测目标","Probe target"),text:$target).textFieldStyle(.roundedBorder).disabled(isRecording)
+                .accessibilityIdentifier("toolbox.roaming.target")
+            if let defaultGateway {
+                Button(roamingText("使用当前网关", "Use current gateway")) { target = defaultGateway }
+                    .disabled(isRecording)
+            }
             Picker(roamingText("Ping 间隔","Ping interval"),selection:$interval) {
                 Text(roamingText("1 秒","1 second")).tag(1.0)
                 Text(roamingText("2 秒","2 seconds")).tag(2.0)
@@ -32,9 +39,10 @@ public struct RoamingTraceView: View {
                 }
             }.disabled(isRecording)
             HStack {
-                if isRecording { Button(roamingText("停止追踪","Stop trace"),action:onStop) }
-                else { Button(roamingText("开始追踪","Start trace")) { onStart(target,interval) }.disabled(target.isEmpty) }
+                if isRecording { Button(roamingText("停止追踪","Stop trace"),action:onStop).accessibilityIdentifier("toolbox.roaming.stop") }
+                else { Button(roamingText("开始追踪","Start trace")) { onStart(target.trimmingCharacters(in: .whitespacesAndNewlines),interval) }.disabled(target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).accessibilityIdentifier("toolbox.roaming.start") }
                 Button(roamingText("导出记录","Export trace"),action:onExport).disabled(snapshot.samples.isEmpty)
+                    .accessibilityIdentifier("toolbox.roaming.export")
             }
             LabeledContent(roamingText("接入点变化","AP changes"),value:String(snapshot.totalAccessPointChanges))
             LabeledContent(roamingText("平均延迟（当前窗口）","Mean latency (current window)"),

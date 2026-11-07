@@ -14,7 +14,7 @@ struct TurningSetupEditor:View {
     @State private var problem = ""
     init(study:ManufacturingStudy,apply:@escaping(ManufacturingStudy)->Void) {
         self.study = study; self.apply = apply
-        _setup = State(initialValue:study.configuredTurningSetup); _enabled = State(initialValue:study.turningSetup != nil)
+        _setup = State(initialValue:study.configuredTurningSetup); _enabled = State(initialValue:study.turning.enabled)
         _approach = State(initialValue:study.turningApproach ?? .positiveZ)
     }
     var body:some View {
@@ -25,8 +25,8 @@ struct TurningSetupEditor:View {
                         Text(L("从工件 +Z 端","From part +Z end")).tag(TurningApproach.positiveZ)
                         Text(L("从工件 −Z 端","From part −Z end")).tag(TurningApproach.negativeZ)
                     }
-                    Toggle(L("分别设置车削工序","Configure turning operations separately"),isOn:$enabled).accessibilityIdentifier("turning.setup.enabled")
-                    Text(L("关闭时沿用三个工序及原进给。当前输入仍随工艺单保存。","When disabled, the original three operations and feed are used. These entries remain in the process sheet.")).font(.caption).foregroundStyle(.secondary)
+                    Toggle(L("启用车削工序","Enable turning operations"),isOn:$enabled).accessibilityIdentifier("turning.setup.enabled")
+                    Text(L("刀片形状、旋转和工序选择会保存并用于生成刀路。","Insert shape, rotation and operation selection are saved and used when generating toolpaths.")).font(.caption).foregroundStyle(.secondary)
                 }
                 Section(L("执行工序","Operations")) {
                     Toggle(L("端面","Face"),isOn:$setup.faceEnabled).accessibilityIdentifier("turning.setup.face")
@@ -52,10 +52,15 @@ struct TurningSetupEditor:View {
                 }
                 if !problem.isEmpty { Section { Text(problem).font(.caption).foregroundStyle(.orange).accessibilityIdentifier("turning.setup.error") } }
             }.navigationTitle(L("车削工序与刀片","Turning operations and insert"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement:.cancellationAction) { Button(L("取消","Cancel")) { dismiss() } }
                 ToolbarItem(placement:.confirmationAction) { Button(L("应用","Apply")) {
-                    do { var value = try study.applyingTurningSetup(setup,enabled:enabled); value.turningApproach = approach;try value.validate(requireOperations:false);apply(value); dismiss() } catch { problem = error.localizedDescription }
+                    do {
+                        var value = study; value.turning.enabled = enabled
+                        value = try value.applyingTurningSetup(setup,enabled:true)
+                        value.turningApproach = approach; try value.validate(requireOperations:false); apply(value); dismiss()
+                    } catch { problem = error.localizedDescription }
                 }.accessibilityIdentifier("turning.setup.apply") }
             }
         }.presentationDetents([.large])
@@ -91,7 +96,20 @@ struct ManufacturingStockEditor:View {
                     }
                     ManufacturingNumber(L("采样单元边长","Sampling cell size"),value:$draft.stock.resolutionMM)
                 }
-                Section(L("资源预算","Resource budgets")) {
+                Section(L("夹具边界 · mm","Fixture bounds · mm")) {
+                    ForEach(draft.fixtures.indices, id: \.self) { index in
+                        DisclosureGroup(draft.fixtures[index].id) {
+                            CoordinateFields(label:L("XYZ 下界","XYZ minimum"),values:$draft.fixtures[index].minMM,labels:["X","Y","Z"])
+                            CoordinateFields(label:L("XYZ 上界","XYZ maximum"),values:$draft.fixtures[index].maxMM,labels:["X","Y","Z"])
+                            Button(L("移除夹具","Remove fixture"),role:.destructive) { draft.fixtures.remove(at:index) }
+                        }
+                    }
+                    Button(L("添加夹具","Add fixture"),systemImage:"plus") {
+                        let b = draft.stock.bounds
+                        draft.fixtures.append(.init(id:"fixture-\(UUID().uuidString.prefix(6))",minMM:[b.min[0],b.min[1],b.min[2]-10],maxMM:[b.max[0],b.max[1],b.min[2]-1]))
+                    }.disabled(draft.fixtures.count >= 16).accessibilityIdentifier("stock.addFixture")
+                }
+                DisclosureGroup(L("计算精度与资源","Calculation quality and resources")) {
                     intField(L("体素上限","Maximum cells"),value:$draft.budget.maxCells)
                     intField(L("姿态上限","Maximum poses"),value:$draft.budget.maxPoses)
                     intField(L("网格面上限","Maximum triangles"),value:$draft.budget.maxTriangles)
@@ -99,7 +117,8 @@ struct ManufacturingStockEditor:View {
                     intField(L("帧网格字节预算","Frame mesh byte budget"),value:Binding(get:{ draft.budget.retainedMeshByteLimit },set:{ draft.budget.maxRetainedMeshBytes = $0 }))
                 }
                 if !problem.isEmpty { Section { Text(problem).font(.caption).foregroundStyle(.orange) } }
-            }.navigationTitle(L("毛坯与预算","Stock and budgets"))
+            }.navigationTitle(L("毛坯与装夹","Stock and fixtures"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement:.cancellationAction) { Button(L("取消","Cancel")) { dismiss() } }
                 ToolbarItem(placement:.confirmationAction) { Button(L("应用","Apply"),action:save).accessibilityIdentifier("stock.apply") }

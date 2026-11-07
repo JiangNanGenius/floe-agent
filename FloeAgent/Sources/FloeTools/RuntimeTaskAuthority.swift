@@ -281,12 +281,14 @@ public enum RuntimeAuthorityDigest {
         for call: ToolCall,
         descriptor: ToolCatalog.Descriptor?,
         workspaceRootURL: URL?,
-        stagedDocument: CanvasStagedDocumentAccess? = nil
+        stagedDocument: CanvasStagedDocumentAccess? = nil,
+        serviceStorePaths: [String:String] = [:]
     ) -> String {
         if let key = MutationTargetResolver.resolve(
             for: call,
             descriptor: descriptor,
             workspaceRootURL: workspaceRootURL,
+            serviceStorePaths: serviceStorePaths,
             stagedDocument: stagedDocument
         ).keys.first {
             switch key.family {

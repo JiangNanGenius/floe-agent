@@ -12,23 +12,23 @@ struct SketchConstraintRail: View {
         var prerequisite: String
         var id: String { kind.rawValue }
     }
-    private let common: [Action] = [
-        .init(title: "Coincident", kind: .coincident, prerequisite: "Select two points, a point and line, or meeting lines"),
-        .init(title: "Horizontal", kind: .horizontal, prerequisite: "Select lines or two points"),
-        .init(title: "Vertical", kind: .vertical, prerequisite: "Select lines or two points"),
-        .init(title: "Parallel", kind: .parallel, prerequisite: "Select two or more lines"),
-        .init(title: "Perpendicular", kind: .perpendicular, prerequisite: "Select two lines"),
-        .init(title: "Tangent", kind: .tangent, prerequisite: "Select a line and circle/arc, or two circles"),
-        .init(title: "Lock", kind: .fixed, prerequisite: "Select geometry or a point")
-    ]
-    private let more: [Action] = [
-        .init(title: "Equal Length", kind: .equalLength, prerequisite: "Select two lines"),
-        .init(title: "Equal Radius", kind: .equalRadius, prerequisite: "Select two circular entities"),
-        .init(title: "Concentric", kind: .concentric, prerequisite: "Select two circular entities"),
-        .init(title: "Midpoint", kind: .midpoint, prerequisite: "Select one point and one line"),
-        .init(title: "Symmetric", kind: .symmetric, prerequisite: "Select two lines or circles, or two points and an axis line"),
-        .init(title: "Collinear", kind: .colinear, prerequisite: "Select two lines")
-    ]
+    private var common: [Action] { [
+        .init(title: FloeCADStrings.text("cad.ui.constraint.coincident", "Coincident"), kind: .coincident, prerequisite: FloeCADStrings.text("cad.ui.constraint.hint.pointsOrMeetingLines", "Select two points, a point and line, or meeting lines")),
+        .init(title: FloeCADStrings.text("cad.ui.constraint.horizontal", "Horizontal"), kind: .horizontal, prerequisite: FloeCADStrings.text("cad.ui.constraint.hint.linesOrPoints", "Select lines or two points")),
+        .init(title: FloeCADStrings.text("cad.ui.constraint.vertical", "Vertical"), kind: .vertical, prerequisite: FloeCADStrings.text("cad.ui.constraint.hint.linesOrPoints", "Select lines or two points")),
+        .init(title: FloeCADStrings.text("cad.ui.constraint.parallel", "Parallel"), kind: .parallel, prerequisite: FloeCADStrings.text("cad.ui.constraint.hint.twoOrMoreLines", "Select two or more lines")),
+        .init(title: FloeCADStrings.text("cad.ui.constraint.perpendicular", "Perpendicular"), kind: .perpendicular, prerequisite: FloeCADStrings.text("cad.ui.constraint.hint.twoLines", "Select two lines")),
+        .init(title: FloeCADStrings.text("cad.ui.constraint.tangent", "Tangent"), kind: .tangent, prerequisite: FloeCADStrings.text("cad.ui.constraint.hint.lineAndCircleOrTwoCircles", "Select a line and circle/arc, or two circles")),
+        .init(title: FloeCADStrings.text("cad.ui.constraint.lock", "Lock"), kind: .fixed, prerequisite: FloeCADStrings.text("cad.ui.constraint.hint.geometryOrPoint", "Select geometry or a point"))
+    ] }
+    private var more: [Action] { [
+        .init(title: FloeCADStrings.text("cad.ui.constraint.equalLength", "Equal Length"), kind: .equalLength, prerequisite: FloeCADStrings.text("cad.ui.constraint.hint.twoLines", "Select two lines")),
+        .init(title: FloeCADStrings.text("cad.ui.constraint.equalRadius", "Equal Radius"), kind: .equalRadius, prerequisite: FloeCADStrings.text("cad.ui.constraint.hint.twoCircularEntities", "Select two circular entities")),
+        .init(title: FloeCADStrings.text("cad.ui.constraint.concentric", "Concentric"), kind: .concentric, prerequisite: FloeCADStrings.text("cad.ui.constraint.hint.twoCircularEntities", "Select two circular entities")),
+        .init(title: FloeCADStrings.text("cad.ui.constraint.midpoint", "Midpoint"), kind: .midpoint, prerequisite: FloeCADStrings.text("cad.ui.constraint.hint.pointAndLine", "Select one point and one line")),
+        .init(title: FloeCADStrings.text("cad.ui.constraint.symmetric", "Symmetric"), kind: .symmetric, prerequisite: FloeCADStrings.text("cad.ui.constraint.hint.symmetric", "Select two lines or circles, or two points and an axis line")),
+        .init(title: FloeCADStrings.text("cad.ui.constraint.colinear", "Collinear"), kind: .colinear, prerequisite: FloeCADStrings.text("cad.ui.constraint.hint.twoLines", "Select two lines"))
+    ] }
 
     var body: some View {
         if sizeClass == .compact {
@@ -44,12 +44,12 @@ struct SketchConstraintRail: View {
     private var expandedRail: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
-                Text("Constraints").font(.caption.weight(.semibold))
+                Text(FloeCADStrings.text("cad.ui.items.constraints", "Constraints")).font(.caption.weight(.semibold))
                 Spacer()
                 Button { viewModel.showConstraintSettings = true } label: {
                     Image(systemName: "gearshape").frame(width: 44, height: 44)
                 }
-                .accessibilityLabel("Constraint Settings")
+                .accessibilityLabel(FloeCADStrings.text("cad.ui.constraint.settings", "Constraint Settings"))
                 .accessibilityIdentifier("ConstraintRailSettings")
             }
             ForEach(common) { action in
@@ -71,7 +71,7 @@ struct SketchConstraintRail: View {
                 .accessibilityHint(action.prerequisite)
                 .help(action.prerequisite)
             }
-            Button("Disconnect") { viewModel.disconnectSketchSelection() }
+            Button(FloeCADStrings.text("cad.ui.constraint.disconnect", "Disconnect")) { viewModel.disconnectSketchSelection() }
                 .font(.caption.weight(.semibold))
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 .disabled(!viewModel.canDisconnectSketchSelection)
@@ -80,7 +80,7 @@ struct SketchConstraintRail: View {
             Menu {
                 ForEach(more) { menuAction($0) }
             } label: {
-                Label("More", systemImage: "ellipsis").frame(maxWidth: .infinity, alignment: .leading)
+                Label(FloeCADStrings.text("cad.ui.common.more", "More"), systemImage: "ellipsis").frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 8)
             }
             .accessibilityIdentifier("ConstraintRailMore")
@@ -93,13 +93,13 @@ struct SketchConstraintRail: View {
     private var compactMenu: some View {
         Menu {
             ForEach(common + more) { menuAction($0) }
-            Button("Disconnect") { viewModel.disconnectSketchSelection() }
+            Button(FloeCADStrings.text("cad.ui.constraint.disconnect", "Disconnect")) { viewModel.disconnectSketchSelection() }
                 .disabled(!viewModel.canDisconnectSketchSelection)
                 .accessibilityIdentifier("ConstraintRailDisconnect")
             Divider()
-            Button("Constraint Settings") { viewModel.showConstraintSettings = true }
+            Button(FloeCADStrings.text("cad.ui.constraint.settings", "Constraint Settings")) { viewModel.showConstraintSettings = true }
         } label: {
-            Label("Constraints", systemImage: "link")
+            Label(FloeCADStrings.text("cad.ui.items.constraints", "Constraints"), systemImage: "link")
                 .labelStyle(.iconOnly).frame(width: 44, height: 44)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         }
@@ -107,7 +107,7 @@ struct SketchConstraintRail: View {
     }
 
     private func title(_ action: Action) -> String {
-        action.kind == .fixed && viewModel.canUnlockSketchSelection ? "Unlock" : action.title
+        action.kind == .fixed && viewModel.canUnlockSketchSelection ? FloeCADStrings.text("cad.input.unlock", "Unlock") : action.title
     }
 
     private func perform(_ action: Action) {

@@ -126,7 +126,9 @@ private struct ManagedWorkspaceFilesView: View {
             if let error { ContentUnavailableView("settings.all_workspaces_files_view.could_not_open_the_workspace", systemImage: "folder.badge.questionmark", description: Text(error)) }
             else if opened {
                 if let selectedPath {
-                    FilePreviewView(relativePath: selectedPath, center: center)
+                    FilePreviewView(relativePath: selectedPath, center: center, onDeleted: {
+                        if self.selectedPath == selectedPath { self.selectedPath = nil; Task { await tree.loadRoot() } }
+                    })
                         .toolbar { ToolbarItem(placement: .topBarLeading) {
                             Button("settings.all_workspaces_files_view.back_to_files", systemImage: "chevron.left") { self.selectedPath = nil }
                                 .accessibilityIdentifier("workspace.preview.backToFiles")

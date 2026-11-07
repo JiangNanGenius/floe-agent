@@ -314,6 +314,10 @@ public enum MediaPreparedIntegrity {
 
     private static func validateTrackGraph(_ graph: MediaPreparedTrackGraph,
                                            assetIDs: Set<UUID>) throws {
+        guard (graph.captionStyleRevision ?? 0) < UInt64.max else {
+            throw MediaPreparedCoreError.invalidDocument("caption style generation")
+        }
+        if let style = graph.captionStyle { try validateCaptionStyle(style) }
         guard graph.tracks.count <= MediaPreparedSchema.maximumTracks else {
             throw MediaPreparedCoreError.limitsExceeded("track count")
         }
@@ -346,6 +350,21 @@ public enum MediaPreparedIntegrity {
             for clip in track.clips {
                 try validate(clip, kind: track.kind, assetIDs: assetIDs)
             }
+        }
+    }
+
+    public static func validateCaptionStyle(_ style: CaptionStyle) throws {
+        guard style.fontSize.isFinite, style.fontSize > 0, style.fontSize <= 512,
+              style.positionY.isFinite, (0...1).contains(style.positionY) else {
+            throw MediaPreparedCoreError.invalidOperation("caption font size must be 0...512 and positionY 0...1")
+        }
+        func validColor(_ color: String) -> Bool {
+            var value = color.trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.hasPrefix("#") { value.removeFirst() }
+            return [6,8].contains(value.count) && value.allSatisfy(\.isHexDigit)
+        }
+        guard validColor(style.colorHex), style.backgroundHex.map(validColor) ?? true else {
+            throw MediaPreparedCoreError.invalidOperation("caption colors must be #RRGGBB or #RRGGBBAA")
         }
     }
 
@@ -509,6 +528,15 @@ public enum MediaPreparedIntegrity {
                     throw MediaPreparedCoreError.invalidDocument("journal change is empty")
                 }
                 switch change.ref.kind {
+                case .captionStyle:
+                    guard change.ref.id == project.id,
+                          case .captionStyle(let before)? = change.before,
+                          case .captionStyle(let after)? = change.after,
+                          before.revision < after.revision, after.revision < UInt64.max else {
+                        throw MediaPreparedCoreError.invalidDocument("caption style journal state")
+                    }
+                    if let style = before.style { try validateCaptionStyle(style) }
+                    if let style = after.style { try validateCaptionStyle(style) }
                 case .asset, .layer, .track:
                     break
                 case .clip:

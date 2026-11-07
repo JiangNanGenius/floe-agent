@@ -22,7 +22,9 @@ import FloeToolboxWorkbenches
         continuation?.resume(with: result)
     }
     func checksumFile() async throws -> ToolboxSelectedChecksumFile? {
-        guard let url = try await choose() else { return nil }
+        // A checksum accepts every regular file, including formats without
+        // public.content conformance such as G-code and DXF.
+        guard let url = try await choose([.data]) else { return nil }
         let reader = try ToolboxSelectedFileReader(url: url)
         return ToolboxSelectedChecksumFile(title: url.lastPathComponent, byteCount: reader.byteCount,
             read: { offset, maximum in try await reader.read(offset: offset, maximum: maximum) })

@@ -72,10 +72,10 @@ public protocol CanvasPersistenceSink: Sendable {
     ) throws
 }
 
-/// Actor-serialized repository core shared by the in-memory and the
-/// file-backed qualification repositories. All invariants (expected
+/// Value-owned repository core shared by the actor-isolated in-memory store
+/// and the file store's document-lock transaction. All invariants (expected
 /// revision, idempotent request IDs, one batch = one undo unit) live here.
-actor CanvasRepositoryEngine {
+public struct CanvasRepositoryEngine: Sendable {
     private var snapshot: CanvasSnapshot
     private var receiptsByRequestID: [UUID: CanvasCommitReceipt]
     /// Request IDs already consumed by OTHER canvases in the same store.
@@ -87,7 +87,7 @@ actor CanvasRepositoryEngine {
     private var appliedUndoEntries: [CanvasUndoEntry] = []
     private let sink: CanvasPersistenceSink?
 
-    init(
+    public init(
         snapshot: CanvasSnapshot,
         existingReceipts: [UUID: CanvasCommitReceipt] = [:],
         foreignRequestIDs: Set<UUID> = [],
@@ -111,14 +111,15 @@ actor CanvasRepositoryEngine {
         )
     }
 
-    func load() -> CanvasSnapshot { snapshot }
+    public func load() -> CanvasSnapshot { snapshot }
 
     /// Post-mutation state for persistence pipelines.
-    func snapshotForPersistence() -> CanvasSnapshot { snapshot }
+    public func snapshotForPersistence() -> CanvasSnapshot { snapshot }
 
-    func historyForPersistence() -> CanvasHistoryState { historyState }
+    public func historyForPersistence() -> CanvasHistoryState { historyState }
+    public func receiptsForPersistence() -> [UUID: CanvasCommitReceipt] { receiptsByRequestID }
 
-    func commit(
+    public mutating func commit(
         _ batch: CanvasEditBatch,
         canvasID: UUID,
         expectedRevision: Int64,
@@ -139,7 +140,7 @@ actor CanvasRepositoryEngine {
     /// P0.1 document transactions ride the SAME pipeline: one CAS check,
     /// one idempotency domain, one undo unit per batch, one persistence
     /// rollback boundary. No second store.
-    func commitDocument(
+    public mutating func commitDocument(
         _ batch: CanvasDocumentBatch,
         canvasID: UUID,
         expectedRevision: Int64,
@@ -158,7 +159,7 @@ actor CanvasRepositoryEngine {
     }
 
     /// Shared mutation core for `commit` and `commitDocument`.
-    private func commitMutation(
+    private mutating func commitMutation(
         batchHash: String,
         canvasID: UUID,
         expectedRevision: Int64,
@@ -222,7 +223,7 @@ actor CanvasRepositoryEngine {
         return receipt
     }
 
-    func undo(
+    public mutating func undo(
         canvasID: UUID,
         expectedRevision: Int64,
         requestID: UUID
@@ -232,7 +233,7 @@ actor CanvasRepositoryEngine {
             expectedRevision: expectedRevision, requestID: requestID)
     }
 
-    func redo(
+    public mutating func redo(
         canvasID: UUID,
         expectedRevision: Int64,
         requestID: UUID
@@ -251,7 +252,7 @@ actor CanvasRepositoryEngine {
     /// twice), revision always increases, redo cleared by any new commit,
     /// and a persistence failure rolls everything back so the previous
     /// records remain intact.
-    private func applyHistoryStep(
+    private mutating func applyHistoryStep(
         _ step: HistoryStep,
         canvasID: UUID,
         expectedRevision: Int64,
@@ -339,10 +340,10 @@ actor CanvasRepositoryEngine {
         return receipt
     }
 
-    func undoHistory(canvasID: UUID) -> [CanvasUndoEntry] {
+    public func undoHistory(canvasID: UUID) -> [CanvasUndoEntry] {
         appliedUndoEntries.filter { $0.canvasID == canvasID }
     }
-    func historyAvailability(canvasID: UUID) throws -> CanvasHistoryAvailability {
+    public func historyAvailability(canvasID: UUID) throws -> CanvasHistoryAvailability {
         guard snapshot.id == canvasID else { throw CanvasKitError.missingEntity("canvas \(canvasID)") }
         return .init(undoCount: undoStack.count, redoCount: redoStack.count)
     }
@@ -368,6 +369,9 @@ actor CanvasRepositoryEngine {
         guard let first = batch.operations.first else { return "empty document batch" }
         switch first {
         case .updateCanvasMetadata: return "update canvas metadata"
+        case .renameCanvas: return "rename canvas"
+        case .setPageBackground: return "page background"
+        case .setViewport: return "viewport"
         case .createPage: return "create page"
         case .renamePage: return "rename page"
         case .reorderPages: return "reorder pages"
@@ -402,8 +406,8 @@ actor CanvasRepositoryEngine {
 
 /// Working in-memory store. CAS is implicit: replaying an identical request
 /// returns the same receipt without mutation.
-public struct InMemoryCanvasRepository: CanvasDocumentStore {
-    private let engine: CanvasRepositoryEngine
+public actor InMemoryCanvasRepository: CanvasDocumentStore {
+    private var engine: CanvasRepositoryEngine
 
     public init(snapshot: CanvasSnapshot) {
         self.engine = CanvasRepositoryEngine(snapshot: snapshot)
@@ -415,7 +419,7 @@ public struct InMemoryCanvasRepository: CanvasDocumentStore {
     }
 
     public func load(canvasID: UUID) async throws -> CanvasSnapshot {
-        let snapshot = await engine.load()
+        let snapshot = engine.load()
         guard snapshot.id == canvasID else {
             throw CanvasKitError.missingEntity("canvas \(canvasID)")
         }
@@ -428,7 +432,7 @@ public struct InMemoryCanvasRepository: CanvasDocumentStore {
         expectedRevision: Int64,
         requestID: UUID
     ) async throws -> CanvasCommitReceipt {
-        try await engine.commit(
+        try engine.commit(
             batch, canvasID: canvasID,
             expectedRevision: expectedRevision, requestID: requestID)
     }
@@ -439,7 +443,7 @@ public struct InMemoryCanvasRepository: CanvasDocumentStore {
         expectedRevision: Int64,
         requestID: UUID
     ) async throws -> CanvasCommitReceipt {
-        try await engine.commitDocument(
+        try engine.commitDocument(
             batch, canvasID: canvasID,
             expectedRevision: expectedRevision, requestID: requestID)
     }
@@ -449,7 +453,7 @@ public struct InMemoryCanvasRepository: CanvasDocumentStore {
         expectedRevision: Int64,
         requestID: UUID
     ) async throws -> CanvasCommitReceipt {
-        try await engine.undo(
+        try engine.undo(
             canvasID: canvasID,
             expectedRevision: expectedRevision, requestID: requestID)
     }
@@ -459,16 +463,16 @@ public struct InMemoryCanvasRepository: CanvasDocumentStore {
         expectedRevision: Int64,
         requestID: UUID
     ) async throws -> CanvasCommitReceipt {
-        try await engine.redo(
+        try engine.redo(
             canvasID: canvasID,
             expectedRevision: expectedRevision, requestID: requestID)
     }
 
     public func undoHistory(canvasID: UUID) async throws -> [CanvasUndoEntry] {
-        await engine.undoHistory(canvasID: canvasID)
+        engine.undoHistory(canvasID: canvasID)
     }
 
     public func historyAvailability(canvasID: UUID) async throws -> CanvasHistoryAvailability {
-        try await engine.historyAvailability(canvasID: canvasID)
+        try engine.historyAvailability(canvasID: canvasID)
     }
 }

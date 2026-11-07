@@ -388,7 +388,7 @@ pub fn run_cam(
 }
 
 // Uniform angular sampling; opposite axes need an explicit intermediate pose.
-fn interpolate_axis(a:&Unit<Vector3<f64>>,b:&Unit<Vector3<f64>>,t:f64) -> Result<Unit<Vector3<f64>>,String> {
+pub(crate) fn interpolate_axis(a:&Unit<Vector3<f64>>,b:&Unit<Vector3<f64>>,t:f64) -> Result<Unit<Vector3<f64>>,String> {
     let dot = a.dot(b).clamp(-1.0,1.0);
     if dot <= -1.0+1e-8 { return Err("opposite tool axes require an explicit intermediate pose".into()); }
     if t <= 0.0 { return Ok(*a); }

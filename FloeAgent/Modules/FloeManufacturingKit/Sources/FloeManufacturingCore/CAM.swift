@@ -210,7 +210,11 @@ public struct ManufacturingCAM: Codable, Equatable, Sendable {
     }
     public func validate() throws {
         try CAMCheck.require(formatVersion == 1,"unsupported CAM version")
-        try CAMCheck.require((1...8).contains(tools.count) && (0...12).contains(operations.count),"tool/operation budget")
+        // A newly prepared CAD job owns its reference mesh before the user
+        // selects a cutter or adds an operation. Only that empty draft may
+        // omit tools; each enabled operation still requires its actual tool.
+        let emptyDraft = tools.isEmpty && operations.isEmpty
+        try CAMCheck.require((emptyDraft || (1...8).contains(tools.count)) && (0...12).contains(operations.count),"tool/operation budget")
         try CAMCheck.require(Set(tools.map(\.id)).count == tools.count && Set(operations.map(\.id)).count == operations.count,"duplicate tool/operation identity")
         try partMesh?.validate()
         for tool in tools {

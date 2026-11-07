@@ -9,6 +9,18 @@ import UniformTypeIdentifiers
 import CoreTransferable
 import PhotosUI
 
+// Full tool titles are localized here in the presentation layer. The
+// RectangleType geometry and construction behavior remain unchanged.
+private extension RectangleType {
+    var localizedRectangleTitle: String {
+        switch self {
+        case .diagonal: FloeCADStrings.text("cad.ui.rectangle.diagonal", "Diagonal Rectangle")
+        case .center: FloeCADStrings.text("cad.ui.rectangle.center", "Center Rectangle")
+        case .threePoint: FloeCADStrings.text("cad.ui.rectangle.threePoint", "Three-Point Rectangle")
+        }
+    }
+}
+
 // MARK: - Transient presentation ownership
 
 /// Set by a host whose workbench is covered by a TRANSIENT presentation (the
@@ -1195,7 +1207,7 @@ struct FloeCADEditorView: View {
                 .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
             if horizontalSizeClass != .compact { Divider().frame(height: 20) }
             HStack(spacing: 6) {
-                Text("Length").font(.caption).foregroundStyle(.barLabel).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+                Text(FloeCADStrings.text("cad.ui.measure.length", "Length")).font(.caption).foregroundStyle(.barLabel).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
                 TextField(settings.unit.symbol, value: value,
                           format: .number.precision(.fractionLength(0...3)))
                     .textFieldStyle(.roundedBorder)
@@ -1872,7 +1884,7 @@ struct FloeCADEditorView: View {
                     Button {
                         viewModel.copyOnDrag.toggle()
                     } label: {
-                        Label("Copy", systemImage: "plus.square.on.square")
+                        Label(FloeCADStrings.text("cad.ui.scale.copy", "Copy"), systemImage: "plus.square.on.square")
                             .font(.subheadline.weight(.semibold))
                     }
                     .tint(viewModel.copyOnDrag ? Color.accentColor : nil)
@@ -1893,7 +1905,7 @@ struct FloeCADEditorView: View {
                     // mixed selection used to have only the drag gizmo.
                     if !viewModel.selectedSketchEntityIDs.isEmpty || viewModel.sketchTransformActive {
                         Button { viewModel.sketchTransformActive.toggle() } label: {
-                            Label(viewModel.sketchTransformActive ? "Done" : "Move/Rotate",
+                            Label(viewModel.sketchTransformActive ? FloeCADStrings.text("cad.ui.common.done", "Done") : FloeCADStrings.text("cad.ui.transform.moveRotate", "Move/Rotate"),
                                   systemImage: "arrow.up.left.and.arrow.down.right")
                         }
                         .accessibilityIdentifier("SketchTransformMode")
@@ -1902,7 +1914,7 @@ struct FloeCADEditorView: View {
                         if viewModel.usesExplicitSketchTransform { viewModel.sketchTransformActive = true }
                         viewModel.sketchCopyOnDrag.toggle()
                     } label: {
-                        Label("Copy", systemImage: "plus.square.on.square")
+                        Label(FloeCADStrings.text("cad.ui.scale.copy", "Copy"), systemImage: "plus.square.on.square")
                             .font(.subheadline.weight(.semibold))
                     }
                     .tint(viewModel.sketchCopyOnDrag ? Color.accentColor : nil)
@@ -1976,16 +1988,16 @@ struct FloeCADEditorView: View {
                             HStack(spacing: 12) {
                                 Menu {
                                     ForEach(RectangleType.allCases, id: \.self) { type in
-                                        Button(type.title + " Rectangle") { viewModel.setRectangleType(type) }
+                                        Button(type.localizedRectangleTitle) { viewModel.setRectangleType(type) }
                                             .accessibilityIdentifier("RectangleType-" + type.rawValue)
                                     }
                                 } label: {
-                                    Label(viewModel.rectangleType.title + " Rectangle", systemImage: "chevron.down")
+                                    Label(viewModel.rectangleType.localizedRectangleTitle, systemImage: "chevron.down")
                                 }
                                 .accessibilityIdentifier("RectangleTypeMenu")
                                 Text(viewModel.rectangleInstruction).font(.caption)
                                 if viewModel.hasPendingRectangle {
-                                    Button("Cancel Rectangle") { viewModel.clearRectanglePlacement() }
+                                    Button(FloeCADStrings.text("cad.ui.rectangle.cancel", "Cancel Rectangle")) { viewModel.clearRectanglePlacement() }
                                         .accessibilityIdentifier("CancelRectangle")
                                 }
                             }
@@ -2464,8 +2476,8 @@ struct FloeCADEditorView: View {
             .sheet(isPresented: $showWorkbenchTools) {
                 CADWorkbenchToolsPanel(document: document, viewModel: viewModel,
                                        canvasActions: canvasActions)
-                    .presentationDetents([.medium, .large])
-                    .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+                    .presentationDetents([.large])
+                    .presentationBackgroundInteraction(.disabled)
             }
             .sheet(isPresented: $showVersions) {
                 CADVersionsPanelView(document: document)

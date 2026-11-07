@@ -6,13 +6,14 @@ public enum CAMPathVisibility:String,Codable,CaseIterable,Sendable { case all,se
 public enum CAMObjectVisibility:String,Codable,CaseIterable,Sendable { case solid,translucent,hidden }
 public enum CAMDisplayScope:String,Codable,CaseIterable,Sendable { case machining,machine }
 
-/// Display preferences only. Hiding/transparency never changes query geometry,
+/// Display/playback preferences. Hiding/transparency never changes query geometry,
 /// toolpaths, stock occupancy or the underlying source/result identity.
 public struct CAMPreviewSettings:Codable,Equatable,Sendable {
     public var position = 0.0
     public var speed = 1.0
     public var selectedChapterID:String?
     public var selectedOnly = false
+    public var stopOnCollision = true
     public var paths = CAMPathVisibility.selected
     public var showStock = true
     public var showTools = true
@@ -41,7 +42,7 @@ public struct CAMPreviewSettings:Codable,Equatable,Sendable {
     }
     private enum CodingKeys:String,CodingKey {
         case position,speed,selectedChapterID,selectedOnly,paths,showStock,showTools,showSpindles,showFixtures,showHead,translucentStock,smooth,camera
-        case displayScope,spindleDisplay,holderDisplay,workholdingDisplay,structureDisplay,transparency
+        case displayScope,spindleDisplay,holderDisplay,workholdingDisplay,structureDisplay,transparency,stopOnCollision
     }
     public init(from decoder:Decoder) throws {
         self.init();let c = try decoder.container(keyedBy:CodingKeys.self)
@@ -49,6 +50,7 @@ public struct CAMPreviewSettings:Codable,Equatable,Sendable {
         speed = try c.decodeIfPresent(Double.self,forKey:.speed) ?? speed
         selectedChapterID = try c.decodeIfPresent(String.self,forKey:.selectedChapterID)
         selectedOnly = try c.decodeIfPresent(Bool.self,forKey:.selectedOnly) ?? selectedOnly
+        stopOnCollision = try c.decodeIfPresent(Bool.self,forKey:.stopOnCollision) ?? stopOnCollision
         paths = try c.decodeIfPresent(CAMPathVisibility.self,forKey:.paths) ?? paths
         showStock = try c.decodeIfPresent(Bool.self,forKey:.showStock) ?? showStock
         showTools = try c.decodeIfPresent(Bool.self,forKey:.showTools) ?? showTools

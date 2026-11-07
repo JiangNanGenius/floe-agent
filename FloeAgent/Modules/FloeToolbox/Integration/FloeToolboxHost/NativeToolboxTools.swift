@@ -30,6 +30,7 @@ public struct ToolboxAIHostContext: Sendable {
     public var availableToolNames: Set<String> {
         var names: Set<String> = [ToolboxCaptureAction.name]
         if let serial,[SerialProtocol.raw,.webSocketMessage].contains(serial.endpoint.wireProtocol) { names.insert(ToolboxSerialSendAction.name) }
+        if serial?.endpoint.transport == .webSocket { names.formUnion([ToolboxWebSocketSendAction.name, ToolboxWebSocketReceiveAction.name]) }
         if modbus != nil { names.formUnion([ToolboxModbusReadAction.name,ToolboxModbusWriteAction.name]) }
         if mqtt != nil { names.formUnion([ToolboxMQTTPublishAction.name,ToolboxMQTTSubscriptionAction.name]) }
         if http != nil { names.formUnion([ToolboxHTTPReadAction.name,ToolboxHTTPWriteAction.name]) }
@@ -76,7 +77,7 @@ public struct ToolboxNativeTool<Action: ToolboxNativeAction>: AgentTool {
         guard host.availableToolNames.contains(Self.name) else { throw ClientError.unsupported }
         do {
             let result = try await Action.perform(args,host:host); try await host.check(context)
-            return ToolExecutionOutput(summary:result,fullOutputSHA256:SHA256.hash(data:Data(result.utf8)).map { String(format:"%02x",$0) }.joined(),maximumSummaryCharacters:65536)
+            return ToolExecutionOutput(summary:result,fullOutputSHA256:SHA256.hash(data:Data(result.utf8)).map { String(format:"%02x",$0) }.joined(),maximumSummaryCharacters:65536,capturedOutput:result)
         } catch {
             if Action.readOnly { throw error }
             if let value = error as? ToolboxError { switch value { case .denied,.invalid: throw error; default: break } }
@@ -231,5 +232,37 @@ public enum NativeToolboxTools {
         }
         add(ToolboxCaptureAction.self); add(ToolboxSerialSendAction.self); add(ToolboxModbusReadAction.self); add(ToolboxModbusWriteAction.self)
         add(ToolboxMQTTPublishAction.self); add(ToolboxMQTTSubscriptionAction.self); add(ToolboxHTTPReadAction.self); add(ToolboxHTTPWriteAction.self)
+        add(ToolboxWebSocketSendAction.self); add(ToolboxWebSocketReceiveAction.self)
+    }
+}
+
+public enum ToolboxWebSocketSendAction: ToolboxNativeAction {
+    public typealias Arguments = ToolboxPayloadArguments
+    public static let name = "toolbox.websocket.send"
+    public static let description = "Send one nonempty UTF-8 text or HEX binary WebSocket message on this run's already opened ws/wss session, with existing write approval. Open it with toolbox.session first; never changes targets. Sending is not proof of peer/device state."
+    public static var schema: String { ToolboxSerialSendAction.schema }
+    public static let readOnly = false
+    public static func validate(_ args: Arguments) throws { _ = try args.bytes() }
+    public static func perform(_ args: Arguments, host: ToolboxAIHostContext) async throws -> String {
+        guard host.serial?.endpoint.transport == .webSocket else { throw ClientError.unsupported }
+        return try await ToolboxSerialSendAction.perform(args, host: host)
+    }
+}
+public enum ToolboxWebSocketReceiveAction: ToolboxNativeAction {
+    public struct Arguments: Decodable, Sendable {}
+    public static let name = "toolbox.websocket.receive"
+    public static let description = "Receive one actual message from this run's opened WebSocket session (read timeout chosen at toolbox.session open). Returns at most 4096 redacted payload bytes, base64 plus text for text frames, actual byteCount and explicit truncation. Also records the real message in toolbox.capture.read."
+    public static let schema = #"{"type":"object","properties":{},"additionalProperties":false}"#
+    public static let readOnly = true
+    public static func validate(_ args: Arguments) throws {}
+    public static func perform(_ args: Arguments, host: ToolboxAIHostContext) async throws -> String {
+        guard let serial = host.serial, serial.endpoint.transport == .webSocket else { throw ClientError.unsupported }
+        let payload = try await serial.receiveMessage(expected: host.lease)
+        let safe = host.redactor.sanitize(payload.bytes, wireProtocol: .raw)
+        let returned = Data(safe.bytes.prefix(4096))
+        struct Receipt: Encodable { let messageType: String; let dataBase64: String; let text: String?; let byteCount: Int; let returnedByteCount: Int; let truncated: Bool; let redacted: Bool }
+        return try toolboxJSON(Receipt(messageType: payload.isText ? "text" : "binary", dataBase64: returned.base64EncodedString(),
+            text: payload.isText ? String(decoding: returned, as: UTF8.self) : nil, byteCount: payload.bytes.count,
+            returnedByteCount: returned.count, truncated: payload.bytes.count > 4096, redacted: safe.redacted))
     }
 }

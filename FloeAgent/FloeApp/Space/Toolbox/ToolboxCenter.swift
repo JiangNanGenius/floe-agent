@@ -15,11 +15,13 @@ import FloeToolboxWorkbenches
     static let toolNames: Set<String> = [ToolboxCaptureAction.name, ToolboxSerialSendAction.name,
         ToolboxModbusReadAction.name, ToolboxModbusWriteAction.name,
         ToolboxMQTTPublishAction.name, ToolboxMQTTSubscriptionAction.name,
-        ToolboxHTTPReadAction.name, ToolboxHTTPWriteAction.name]
+        ToolboxHTTPReadAction.name, ToolboxHTTPWriteAction.name,
+        ToolboxWebSocketSendAction.name, ToolboxWebSocketReceiveAction.name, ToolboxSessionTool.name]
     @Published private(set) var connections: [ToolboxTool: ToolboxConnection] = [:]
     @Published private(set) var connecting: Set<ToolboxTool> = []
     @Published private(set) var failures: [ToolboxTool: String] = [:]
     private weak var environment: AppEnvironment?
+    let taskSessions: ToolboxTaskSessions
     let files = ToolboxFileAccess()
     lazy var checksum = ChecksumWorkbenchModel(selectFile: { [weak self] in try await self?.files.checksumFile() })
     private var operations: [ToolboxTool: Task<Void, Never>] = [:]
@@ -30,7 +32,7 @@ import FloeToolboxWorkbenches
     private var conversationOwners: [UUID: UUID] = [:]
     private var frozen: [UUID: (conversation: UUID, host: ToolboxAIHostContext)] = [:]
 
-    init(environment: AppEnvironment) { self.environment = environment }
+    init(environment: AppEnvironment) { self.environment = environment; taskSessions = ToolboxTaskSessions(environment: environment) }
     func connect(_ tool: ToolboxTool, setup: ToolboxConnectionSetup) {
         guard let environment else { return }
         operations.removeValue(forKey: tool)?.cancel()
@@ -172,7 +174,10 @@ import FloeToolboxWorkbenches
             return host.availableToolNames
         }
         guard let ownerID = conversationOwners[conversationID],
-              let connection = connections.values.first(where: { $0.id == ownerID }), connection.active else { return [] }
+              let connection = connections.values.first(where: { $0.id == ownerID }), connection.active else {
+            guard let environment, try await environment.conversationStore.conversation(id: conversationID)?.purpose == .ordinary else { return [] }
+            return ToolboxTaskSessions.toolNames
+        }
         if let binding = frozen[runID] {
             guard binding.conversation == conversationID, binding.host.lease == connection.lease else { throw ToolboxError.staleSession }
             return binding.host.availableToolNames
@@ -189,6 +194,7 @@ import FloeToolboxWorkbenches
         return host.availableToolNames
     }
     func resolve(_ context: ToolContext) async throws -> ToolboxAIHostContext {
+        if frozen[context.runID] == nil { return try await taskSessions.resolve(context) }
         guard let environment, let binding = frozen[context.runID],
               let conversationID = context.conversationID, binding.conversation == conversationID,
               !context.temporaryReadOnly, !context.publicWebOnly, context.childExecution == nil,
@@ -200,11 +206,15 @@ import FloeToolboxWorkbenches
         return binding.host
     }
     func register() {
+        FloeTools.ToolCatalog.register(ToolboxSessionTool.self)
+        ToolRunnerRegistry.shared.register(ToolboxSessionTool(service: taskSessions))
         NativeToolboxTools.register(in: .shared, enabledNames: Self.toolNames, resolve: { [weak self] context in
             guard let self else { throw ToolboxError.staleSession }
             return try await self.resolve(context)
         })
     }
+    func closeOrdinarySessions(conversationIDs: Set<UUID>) async { await taskSessions.close(conversationIDs: conversationIDs) }
+    func allowOrdinarySessions(conversationIDs: Set<UUID>) { taskSessions.allow(conversationIDs: conversationIDs) }
 }
 
 extension AppEnvironment {

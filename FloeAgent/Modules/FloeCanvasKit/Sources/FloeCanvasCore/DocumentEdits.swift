@@ -13,6 +13,7 @@ import Foundation
 /// in Integration enforces that boundary).
 public enum CanvasDocumentOperation: Codable, Hashable, Sendable {
     case updateCanvasMetadata(values: [String: String], removingKeys: [String])
+    case renameCanvas(name: String)
     // MARK: Pages
     /// Creates a page. When `select` is true the new page becomes the
     /// selected page. The page is fully validated (duplicate IDs, internal
@@ -27,6 +28,8 @@ public enum CanvasDocumentOperation: Codable, Hashable, Sendable {
     /// declared order.
     case deletePage(pageID: UUID)
     case selectPage(pageID: UUID)
+    case setPageBackground(pageID: UUID, background: CanvasBackgroundStyle)
+    case setViewport(pageID: UUID, viewport: CanvasViewport)
 
     // MARK: Groups
     case createGroup(pageID: UUID, group: CanvasGroupRecord)
@@ -157,6 +160,23 @@ public enum CanvasDocumentEditEngine {
                 for key in removingKeys { next.metadata.removeValue(forKey: key) }
                 next.metadata.merge(values) { _, new in new }
                 changedPages.formUnion(next.pages.map(\.id))
+            case .renameCanvas(let name):
+                next.name = name
+            case .setPageBackground(let pageID, let background):
+                guard let pageIndex = pageIndex(of: pageID, in: next) else {
+                    violations.append(.init(operationIndex: index, reason: .pageMissing)); continue
+                }
+                next.pages[pageIndex].background = background
+                changedPages.insert(pageID)
+            case .setViewport(let pageID, let viewport):
+                guard next.pages.contains(where: { $0.id == pageID }) else {
+                    violations.append(.init(operationIndex: index, reason: .pageMissing)); continue
+                }
+                guard viewport.center.x.isFinite, viewport.center.y.isFinite,
+                      viewport.scale.isFinite, viewport.scale > 0 else {
+                    violations.append(.init(operationIndex: index, reason: .invalidGeometry)); continue
+                }
+                next.viewports[pageID] = viewport
             case .createPage(let page, let select):
                 guard !next.pages.contains(where: { $0.id == page.id }) else {
                     violations.append(.init(

@@ -2,11 +2,16 @@ import Foundation
 
 public enum ChemistryError: Error, LocalizedError, Equatable, Sendable {
     case invalid(String), conflict(expected: UInt64, actual: UInt64), unavailable(String), corrupt(String), cancelled
+    case requiresPrepared3DStructure
     public var errorDescription: String? {
         switch self {
         case .invalid(let s), .unavailable(let s), .corrupt(let s): s
         case .conflict(let expected, let actual): "Project changed: expected revision \(expected), found \(actual)."
         case .cancelled: "Cancelled."
+        case .requiresPrepared3DStructure:
+            Locale.current.language.languageCode?.identifier == "zh"
+                ? "此结构尚未准备可用于计算的三维坐标。请先生成含显式氢的三维结构并应用结果，再运行力场计算。"
+                : "This structure has no prepared 3D coordinates. Generate a 3D structure with explicit hydrogens and apply the result before running a force-field calculation."
         }
     }
 }
@@ -56,6 +61,12 @@ public struct ChemicalObject: Codable, Identifiable, Sendable, Equatable {
     /// Lossless drawing data, including stereochemistry, reaction arrows and annotations.
     public var sketchDocument: String?
     public var sketchSMILES: String?
+    /// Connectivity can be valid without spatial coordinates (for example a
+    /// freshly parsed SMILES). Viewing that graph does not prepare a force field.
+    public var requires3DPreparation: Bool {
+        sketchDocument != nil || facts?["geometryDimension"]?.number == 2
+            || facts?["coordinateSetCount"]?.number == 0
+    }
     public init(id: UUID = UUID(), title: String, kind: ChemicalKind = .molecule,
                 format: String, source: String, revision: UInt64 = 0, facts: JSONValue? = nil) {
         self.id = id; self.title = title; self.kind = kind; self.format = format

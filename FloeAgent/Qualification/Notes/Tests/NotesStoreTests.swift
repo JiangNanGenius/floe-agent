@@ -10,6 +10,33 @@ struct NotesStoreTests {
         return url
     }
 
+    @Test func actualVisitsKeepOpenTimeAcrossEditsRestartAndTrash() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let first = try await store.create(NoteDocument(title: "Opened first"))
+        let second = try await store.create(NoteDocument(title: "Opened second"))
+        let neverOpened = try await store.create(NoteDocument(title: "Never opened"))
+        let firstVisit = Date(timeIntervalSince1970: 1_700_000_000)
+        let secondVisit = firstVisit.addingTimeInterval(60)
+        try await store.markOpened(first.id, at: firstVisit)
+        try await store.markOpened(second.id, at: secondVisit)
+        let edited = try await store.apply(.init(documentID: first.id, expectedRevision: first.revision,
+            title: "Edit without a visit", edits: [.rename("Edited after opening")]))
+
+        let restarted = try NotesStore(root: root)
+        let visits = try await restarted.recentVisits()
+        #expect(visits.map { $0.document.id } == [second.id, first.id])
+        #expect(visits.map(\.openedAt) == [secondVisit, firstVisit])
+        #expect(visits.last?.document.title == "Edited after opening")
+        #expect(!visits.contains { $0.document.id == neverOpened.id })
+        #expect(try await restarted.recentVisits(limit: 1).map { $0.document.id } == [second.id])
+
+        _ = try await restarted.setTrashed(second.id, expectedRevision: second.revision, trashed: true)
+        let remaining = try await restarted.recentVisits()
+        #expect(remaining.map { $0.document.id } == [edited.id])
+        #expect(remaining.first?.openedAt == firstVisit)
+    }
+
     @Test func inkRecoveryEnvelopeRetainsOriginalBaselineAndBytes() throws {
         let base = NoteDocument(title: "Opened page")
         let bytes = Data([0, 1, 2, 255])

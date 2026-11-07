@@ -64,8 +64,8 @@ struct DevicePingReport: Sendable, Equatable {
     }
 }
 
-/// Pure ICMP echo packet helpers. Received datagram-socket messages start
-/// at the ICMP header: the kernel strips the IPv4 header for SOCK_DGRAM.
+/// Pure ICMP helpers. Darwin can deliver an IPv4 header even for SOCK_DGRAM;
+/// Apple SimplePing also removes this header before validating ICMP.
 enum DeviceICMPPacket {
     static let echoRequestType: UInt8 = 8
     static let echoReplyType: UInt8 = 0
@@ -111,8 +111,20 @@ enum DeviceICMPPacket {
         return packet
     }
 
-    /// Returns nil unless `data` is an echo reply with a valid checksum.
-    static func parseEchoReply(_ data: Data) -> EchoReply? {
+    /// Darwin may deliver either a complete IPv4 datagram or only its ICMP
+    /// payload. This is the same framing accepted by the toolbox diagnostics.
+    static func icmpPayload(_ raw: Data) -> Data? {
+        guard let first = raw.first else { return nil }
+        if first >> 4 != 4 { return Data(raw) }
+        let headerLength = Int(first & 0x0f) * 4
+        guard headerLength >= 20, raw.count >= headerLength + 8,
+              raw[raw.startIndex + 9] == UInt8(IPPROTO_ICMP) else { return nil }
+        return Data(raw.dropFirst(headerLength))
+    }
+
+    /// Returns nil unless the ICMP payload is an echo reply with a valid checksum.
+    static func parseEchoReply(_ raw: Data) -> EchoReply? {
+        guard let data = icmpPayload(raw) else { return nil }
         guard data.count >= 8,
               data[0] == echoReplyType,
               data[1] == 0,
@@ -125,26 +137,60 @@ enum DeviceICMPPacket {
     static let timeExceededType: UInt8 = 11
     static let destinationUnreachableType: UInt8 = 3
 
-    /// Extracts the embedded original ICMP echo sequence from an ICMP error
-    /// message (time exceeded / destination unreachable). The datagram socket
-    /// strips the outer IPv4 header, so the payload starts at the outer ICMP
-    /// header: 8 bytes, then the embedded IPv4 header + first 8 bytes of the
-    /// original datagram.
-    static func parseErrorEmbeddedSequence(_ data: Data) -> UInt16? {
+    struct EmbeddedError: Sendable, Equatable {
+        var type: UInt8
+        var code: UInt8
+        var identifier: UInt16
+        var sequence: UInt16
+        var destination: Data
+        var quotedPayload: Data
+        func matches(identifier: UInt16, sequence: UInt16, destination: UInt32, token: Data) -> Bool {
+            var address = destination
+            let target = withUnsafeBytes(of: &address) { Data($0) }
+            return self.identifier == identifier && self.sequence == sequence && self.destination == target &&
+                quotedPayload.count <= token.count && Data(token.prefix(quotedPayload.count)) == quotedPayload
+        }
+    }
+
+    /// RFC 792 errors quote the original IPv4 header and at least eight bytes
+    /// of its ICMP request. A sequence alone cannot identify a probe from this
+    /// unconnected socket: parallel runs start at the same sequence number.
+    static func parseEmbeddedError(_ raw: Data) -> EmbeddedError? {
+        guard let data = icmpPayload(raw) else { return nil }
         guard data.count >= 8 + 20 + 8,
-              data[0] == timeExceededType || data[0] == destinationUnreachableType else { return nil }
+              data[0] == timeExceededType || data[0] == destinationUnreachableType,
+              checksum(data) == 0 else { return nil }
         let ipStart = 8
         guard data[ipStart] >> 4 == 4 else { return nil }
         let headerLength = Int(data[ipStart] & 0x0F) * 4
-        guard headerLength >= 20, data.count >= ipStart + headerLength + 8 else { return nil }
+        guard headerLength >= 20, data.count >= ipStart + headerLength + 8,
+              data[ipStart + 9] == UInt8(IPPROTO_ICMP),
+              data[ipStart + 6] & 0x1f == 0, data[ipStart + 7] == 0 else { return nil }
         let icmpStart = ipStart + headerLength
-        guard data[icmpStart] == echoRequestType || data[icmpStart] == echoReplyType else { return nil }
-        return UInt16(data[icmpStart + 6]) << 8 | UInt16(data[icmpStart + 7])
+        let originalLength = Int(data[ipStart + 2]) << 8 | Int(data[ipStart + 3])
+        guard originalLength >= headerLength + 8,
+              data[icmpStart] == echoRequestType, data[icmpStart + 1] == 0 else { return nil }
+        let payloadStart = icmpStart + 8
+        let payloadEnd = min(data.count, ipStart + originalLength)
+        return .init(type:data[0],code:data[1],identifier:UInt16(data[icmpStart + 4]) << 8 | UInt16(data[icmpStart + 5]),
+            sequence:UInt16(data[icmpStart + 6]) << 8 | UInt16(data[icmpStart + 7]),
+            destination:data.subdata(in:(ipStart + 16)..<(ipStart + 20)),quotedPayload:data.subdata(in:payloadStart..<payloadEnd))
+    }
+    static func parseErrorEmbeddedSequence(_ raw: Data) -> UInt16? {
+        parseEmbeddedError(raw)?.sequence
+    }
+    static func setReceiveTimeout(fd:Int32,remaining:TimeInterval) throws {
+        // A zero timeval disables SO_RCVTIMEO; round a sub-microsecond
+        // remainder up so the last receive can never become unbounded.
+        var timeout = timeval(tv_sec:0,tv_usec:suseconds_t(max(1,ceil(min(remaining,0.2)*1_000_000))))
+        guard setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,socklen_t(MemoryLayout<timeval>.size)) == 0 else {
+            throw FloeError.internalError("ICMP receive timeout setup failed (errno \(errno))")
+        }
     }
 }
 
 /// Runs genuine ICMP echo requests from this device. The blocking socket
-/// work runs on a detached task so the cooperative pool is never parked;
+/// work runs on a Dispatch worker so the cooperative pool is never parked;
 /// cancellation is polled in ≤200 ms receive slices and between probes.
 enum DeviceICMPPing {
     static func run(
@@ -153,6 +199,7 @@ enum DeviceICMPPing {
         timeoutSeconds: Int,
         cancellation: CancellationToken
     ) async throws -> DevicePingReport {
+        try cancellation.throwIfCancelled()
         // Resolution can also block inside getaddrinfo; bound it like
         // dnsLookup. Only s_addr words cross the task boundary (Sendable).
         let addresses = try await NetworkDiagnosticTiming.withDeadline(
@@ -165,15 +212,12 @@ enum DeviceICMPPing {
             throw FloeError.validationFailed("device ping supports IPv4 targets only and \(target) has no A record")
         }
         try cancellation.throwIfCancelled()
-        return try await Task.detached(priority: .utility) {
-            try blockingSession(
-                target: target,
-                sAddr: sAddr,
-                count: count,
-                timeoutSeconds: timeoutSeconds,
-                cancellation: cancellation
-            )
-        }.value
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos:.utility).async {
+                continuation.resume(with:Result { try blockingSession(target:target,sAddr:sAddr,count:count,
+                    timeoutSeconds:timeoutSeconds,cancellation:cancellation) })
+            }
+        }
     }
 
     private static func monotonicSeconds() -> TimeInterval {
@@ -231,7 +275,7 @@ enum DeviceICMPPing {
                 continue
             }
             let reply = try receiveReply(
-                fd: fd, sequence: UInt16(sequence), token: token,
+                fd: fd, identifier:identifier,destination:sAddr,sequence: UInt16(sequence), token: token,
                 sentAt: sentAt, timeoutSeconds: timeoutSeconds, cancellation: cancellation
             )
             replies.append(reply)
@@ -245,6 +289,8 @@ enum DeviceICMPPing {
     /// 200 ms so cancellation remains responsive.
     private static func receiveReply(
         fd: Int32,
+        identifier: UInt16,
+        destination: UInt32,
         sequence: UInt16,
         token: Data,
         sentAt: TimeInterval,
@@ -254,13 +300,10 @@ enum DeviceICMPPing {
         let deadline = sentAt + TimeInterval(timeoutSeconds)
         var buffer = [UInt8](repeating: 0, count: 1500)
         while true {
+            try cancellation.throwIfCancelled()
             let remaining = deadline - monotonicSeconds()
             if remaining <= 0 { return DevicePingReport.Reply(sequence: Int(sequence), status: .timeout) }
-            var slice = timeval(
-                tv_sec: Int(min(remaining, 0.2)),
-                tv_usec: suseconds_t((min(remaining, 0.2) - TimeInterval(Int(min(remaining, 0.2)))) * 1_000_000)
-            )
-            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &slice, socklen_t(MemoryLayout<timeval>.size))
+            try DeviceICMPPacket.setReceiveTimeout(fd:fd,remaining:remaining)
             let received = recvfrom(fd, &buffer, buffer.count, 0, nil, nil)
             if received > 0 {
                 let message = Data(buffer.prefix(received))
@@ -268,6 +311,11 @@ enum DeviceICMPPing {
                    reply.sequence == sequence, reply.payload == token {
                     let rttMs = (monotonicSeconds() - sentAt) * 1000
                     return DevicePingReport.Reply(sequence: Int(sequence), status: .received(rttMs: rttMs))
+                }
+                if let error = DeviceICMPPacket.parseEmbeddedError(message),
+                   error.type == DeviceICMPPacket.destinationUnreachableType,
+                   error.matches(identifier:identifier,sequence:sequence,destination:destination,token:token) {
+                    return DevicePingReport.Reply(sequence:Int(sequence),status:.unreachable)
                 }
                 continue  // stale or foreign ICMP traffic: keep waiting
             }
@@ -278,7 +326,7 @@ enum DeviceICMPPing {
             case EHOSTUNREACH, ENETUNREACH, EHOSTDOWN:
                 return DevicePingReport.Reply(sequence: Int(sequence), status: .unreachable)
             default:
-                return DevicePingReport.Reply(sequence: Int(sequence), status: .timeout)
+                throw FloeError.internalError("ICMP receive failed (errno \(errno))")
             }
         }
     }

@@ -22,13 +22,17 @@ func L(_ zh: String, _ en: String) -> String { Locale.preferredLanguages.first?.
     public var showAssembly = true
     public var showReference = true
     public let directory: URL
+    /// The host supplies its existing file-owner lease. The manufacturing
+    /// component has no workspace filesystem or environment-selection policy.
+    public var storageLeaseProvider: (@MainActor () throws -> AnyObject)?
     private let service: ManufacturingService
     private var generation = UUID()
     private var calculation: Task<Void,Never>?
 
-    public init(directory: URL, service: ManufacturingService = .init()) {
+    public init(directory: URL, service: ManufacturingService = .init(), initialStudy: ManufacturingStudy? = nil) {
         self.directory = directory; self.service = service
-        study = .shaft(); study.name = L("阶梯轴","Stepped shaft")
+        study = initialStudy ?? .shaft()
+        if initialStudy == nil { study.name = L("阶梯轴","Stepped shaft") }
         do {
             let draft = directory.appendingPathComponent("draft.json")
             let hasDraft = FileManager.default.fileExists(atPath: draft.path)
@@ -53,11 +57,13 @@ func L(_ zh: String, _ en: String) -> String { Locale.preferredLanguages.first?.
         }
     }
     public func saveDraft() throws {
+        let lease = try storageLeaseProvider?(); defer { withExtendedLifetime(lease) {} }
         try study.validate(requireOperations: false)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try study.encoded().write(to: directory.appendingPathComponent("draft.json"), options: .atomic)
     }
     public func replaceStudy(_ proposed: ManufacturingStudy, expectedFingerprint: String) throws {
+        let lease = try storageLeaseProvider?(); defer { withExtendedLifetime(lease) {} }
         guard !isBusy else { throw ManufacturingError.invalid("calculation is running") }
         guard try study.fingerprint() == expectedFingerprint else { throw ManufacturingError.stale }
         try proposed.validate(requireOperations: false)
@@ -78,6 +84,7 @@ func L(_ zh: String, _ en: String) -> String { Locale.preferredLanguages.first?.
         }
         // A completed calculation is delivered only after its native archive
         // has been committed and read back, rather than a success string.
+        let lease = try storageLeaseProvider?(); defer { withExtendedLifetime(lease) {} }
         try ManufacturingArchive.save(study: study, artifact: artifact, to: archiveURL)
         _ = try ManufacturingArchive.open(archiveURL)
         return artifact
@@ -113,10 +120,14 @@ func L(_ zh: String, _ en: String) -> String { Locale.preferredLanguages.first?.
     }
     public func calculate() {
         guard !isBusy else { return }
+        let storageLease: AnyObject?
+        do { storageLease = try storageLeaseProvider?() }
+        catch { state = .failed; diagnostic = error.localizedDescription; notice = L("无法开始计算，请重新打开工件","Reopen the workpiece before calculating"); return }
         generation = UUID(); let token = generation, frozen = study
         artifact = nil; state = .running; progress = 0; notice = ""; diagnostic = ""; replay = 1
         let service = self.service
         calculation = Task { [weak self] in
+            defer { withExtendedLifetime(storageLease) {} }
             do {
                 let result = try await service.calculate(frozen) { [weak self] fraction,phase in
                     Task { @MainActor [weak self] in
@@ -140,6 +151,7 @@ func L(_ zh: String, _ en: String) -> String { Locale.preferredLanguages.first?.
     public func cancel() { guard isBusy else { return }; state = .cancelling; calculation?.cancel() }
     public func save() {
         do {
+            let lease = try storageLeaseProvider?(); defer { withExtendedLifetime(lease) {} }
             guard let artifact, !isBusy else { return }
             try ManufacturingArchive.save(study:study,artifact:artifact,to:archiveURL)
             notice = L("已保存","Saved")
@@ -163,6 +175,7 @@ func L(_ zh: String, _ en: String) -> String { Locale.preferredLanguages.first?.
         invalidate(); self.study = study; self.artifact = artifact; state = .completed; progress = 1
     }
     public func export(stl: Bool) throws -> URL {
+        let lease = try storageLeaseProvider?(); defer { withExtendedLifetime(lease) {} }
         guard let artifact, artifact.inputSHA256 == (try study.fingerprint()) else { throw ManufacturingError.stale }
         let data = try (stl ? ManufacturingArchive.stl(artifact.result) : ManufacturingArchive.toolpath(artifact.result))
         let url = directory.appendingPathComponent(stl ? "remaining-stock.stl" : "toolpath.json")
@@ -172,6 +185,7 @@ func L(_ zh: String, _ en: String) -> String { Locale.preferredLanguages.first?.
         return url
     }
     public func exportStudy() throws -> URL {
+        let lease = try storageLeaseProvider?(); defer { withExtendedLifetime(lease) {} }
         try study.validate(requireOperations:false)
         let url = directory.appendingPathComponent("manufacturing-study.json")
         try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)

@@ -85,6 +85,7 @@ public struct ToolboxSpaceNavigation: View {
 
 public struct ToolboxHomeView: View {
     @Environment(\.locale) private var toolboxLocale
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private func text(_ zh: String,_ en: String) -> String { toolboxLocale.language.languageCode?.identifier == "zh" ? zh : en }
     private let availability: [ToolboxTool: ToolboxAvailability]
     private let onOpen: (ToolboxTool) -> Void
@@ -92,27 +93,130 @@ public struct ToolboxHomeView: View {
         self.availability = availability; self.onOpen = onOpen
     }
     public var body: some View {
-        List {
-            ForEach(ToolboxGroup.allCases,id:\.self) { group in
-                Section(group.title(in:toolboxLocale)) {
-                    ForEach(ToolboxTool.allCases.filter { $0.group == group && availability[$0] != nil }) { tool in
-                        Button { onOpen(tool) } label: {
-                            HStack(spacing:12) {
-                                Image(systemName:tool.symbol).foregroundStyle(.tint).frame(width:26)
-                                VStack(alignment:.leading,spacing:3) {
-                                    Text(tool.title(in:toolboxLocale)).foregroundStyle(.primary)
-                                    if case let .needsConfiguration(reason) = availability[tool] { Text(reason).font(.caption).foregroundStyle(.secondary) }
-                                    if case let .unsupported(reason) = availability[tool] { Text(reason).font(.caption).foregroundStyle(.secondary) }
+        GeometryReader { geometry in
+            let wide = geometry.size.width >= 700 && !dynamicTypeSize.isAccessibilitySize
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 24) {
+                    featuredShelf(wide: wide, width: geometry.size.width)
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text(text("全部工具", "All tools")).font(.title2.bold())
+                        ForEach(ToolboxGroup.allCases, id: \.self) { group in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(group.title(in: toolboxLocale))
+                                    .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 24), count: wide ? 2 : 1),
+                                          alignment: .leading, spacing: 0) {
+                                    ForEach(ToolboxTool.allCases.filter { $0.group == group && availability[$0] != nil }) { tool in
+                                        directoryRow(tool)
+                                    }
                                 }
-                                Spacer()
-                                if tool.hasAssistant { Image(systemName:"sparkles").foregroundStyle(.secondary).accessibilityLabel(text("支持 AI 助手","AI assistant available")) }
-                                Image(systemName:"chevron.right").font(.caption).foregroundStyle(.secondary)
-                            }.frame(minHeight:44)
-                        }.disabled(isUnsupported(tool))
+                            }
+                        }
+                    }.accessibilityIdentifier("toolbox.directory")
+                }
+                .padding(16)
+                .frame(maxWidth: 1100)
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+        }.navigationTitle(text("工具箱", "Toolbox"))
+    }
+
+    private var featured: [ToolboxTool] {
+        [.roaming, .http, .serialAssistant, .lan].filter { availability[$0] != nil && !isUnsupported($0) }
+    }
+
+    private func featuredShelf(wide: Bool, width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(text("快捷工具", "Quick tools")).font(.title2.bold())
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: 14) {
+                    ForEach(featured) { tool in
+                        Button { onOpen(tool) } label: {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Image(systemName: tool.symbol)
+                                    .font(.title).foregroundStyle(.tint)
+                                    .accessibilityHidden(true)
+                                Text(tool.title(in: toolboxLocale))
+                                    .font(.title3.weight(.semibold)).foregroundStyle(.primary)
+                                Text(summary(tool)).font(.subheadline).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Label(text("打开", "Open"), systemImage: "arrow.right")
+                                    .font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
+                            .padding(16)
+                            .background(.background, in: RoundedRectangle(cornerRadius: 16))
+                            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.quaternary, lineWidth: 0.5))
+                        }
+                        .buttonStyle(.plain)
+                        .frame(width: wide ? 300 : max(220, width - 68))
+                        .accessibilityIdentifier("toolbox.featured.\(tool.rawValue)")
                     }
                 }
+                .scrollTargetLayout()
+                .padding(.vertical, 2)
             }
-        }.navigationTitle(text("工具箱","Toolbox"))
+            .scrollIndicators(.hidden)
+            .scrollTargetBehavior(.viewAligned)
+        }.accessibilityIdentifier("toolbox.featured")
+    }
+
+    private func directoryRow(_ tool: ToolboxTool) -> some View {
+        VStack(spacing: 0) {
+            Button { onOpen(tool) } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: tool.symbol).foregroundStyle(.tint).frame(width: 28)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(tool.title(in: toolboxLocale)).font(.body).foregroundStyle(.primary)
+                        Text(statusOrSummary(tool)).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    if tool.hasAssistant {
+                        Image(systemName: "sparkles").foregroundStyle(.secondary)
+                            .accessibilityLabel(text("支持 AI 助手", "AI assistant available"))
+                    }
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }.frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                    .padding(.vertical, 6).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(isUnsupported(tool))
+            .accessibilityIdentifier("toolbox.tool.\(tool.rawValue)")
+            Divider()
+        }
+    }
+
+    private func statusOrSummary(_ tool: ToolboxTool) -> String {
+        switch availability[tool] {
+        case .needsConfiguration(let reason), .unsupported(let reason): reason
+        default: summary(tool)
+        }
+    }
+
+    private func summary(_ tool: ToolboxTool) -> String {
+        switch tool {
+        case .terminal: text("运行命令，查看输出", "Run commands and inspect output")
+        case .vnc: text("连接并操作远程桌面", "Connect to a remote desktop")
+        case .browser: text("浏览网页与本地服务", "Browse websites and local services")
+        case .ping: text("检查连接延迟与丢包", "Check latency and packet loss")
+        case .traceroute: text("查看到目标的网络路径", "Inspect the route to a target")
+        case .dns: text("查询域名解析记录", "Look up domain records")
+        case .port: text("检查主机的开放端口", "Check a host's open ports")
+        case .lan: text("发现当前网络的设备", "Discover devices on your network")
+        case .wifi: text("查看当前无线网络", "Inspect the current wireless network")
+        case .roaming: text("记录移动时的连接变化", "Record connection changes as you move")
+        case .serialAssistant: text("连接设备并收发数据", "Connect to devices and exchange data")
+        case .http: text("发送请求并检查响应", "Send requests and inspect responses")
+        case .webSocket: text("持续收发双向消息", "Exchange messages over a live connection")
+        case .mqtt: text("订阅主题与发布消息", "Subscribe to topics and publish messages")
+        case .hash: text("验证文件摘要与完整性", "Verify file checksums and integrity")
+        case .json: text("格式化与检查 JSON", "Format and validate JSON")
+        case .encoding: text("转换文本编码", "Convert text encodings")
+        case .qr: text("识别与生成二维码", "Read and generate QR codes")
+        }
     }
     private func isUnsupported(_ tool: ToolboxTool) -> Bool { if case .unsupported = availability[tool] { true } else { false } }
 }

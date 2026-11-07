@@ -116,6 +116,7 @@ final class WorkbenchCenter: ObservableObject {
         let record: PersonalContentRecord
         let session: MusicProjectSession
         let owner: Owner
+        let fileUse: PersonalLibraryUsageLease
     }
     @Published private(set) var musicContext: MusicContext?
     struct PreparedContext {
@@ -433,6 +434,7 @@ final class WorkbenchCenter: ObservableObject {
             let title = sourceURL?.deletingPathExtension().lastPathComponent ?? WorkbenchText.t("未命名音乐", "Untitled music")
             let record = try await PersonalContentService.shared.create(kind: .music, title: title)
             let location = try await PersonalContentService.shared.library().resolve(record.id)
+            let fileUse = try PersonalLibraryFileActions.acquireUse(id: record.id, directory: location.url)
             let session = try await MusicProjectSession.open(id: record.id, directory: location.url.appendingPathComponent("Music"), environment: environment)
             if let sourceURL {
                 await session.importFile(sourceURL)
@@ -442,7 +444,7 @@ final class WorkbenchCenter: ObservableObject {
                 if let first = session.document.tracks.first { session.selectTrack(first.id) }
             }
             guard sessionToken == token else { return false }
-            musicContext = MusicContext(record: record, session: session, owner: owner)
+            musicContext = MusicContext(record: record, session: session, owner: owner, fileUse: fileUse)
             return true
         } catch { if sessionToken == token { present(error) }; return false }
     }
@@ -453,10 +455,11 @@ final class WorkbenchCenter: ObservableObject {
         let token = UUID(); sessionToken = token
         do {
             let location = try await PersonalContentService.shared.library().resolve(record.id)
+            let fileUse = try PersonalLibraryFileActions.acquireUse(id: record.id, directory: location.url)
             let session = try await MusicProjectSession.open(id: record.id, directory: location.url.appendingPathComponent("Music"), environment: environment)
             try await session.reload()
             guard sessionToken == token else { return false }
-            musicContext = MusicContext(record: record, session: session, owner: owner)
+            musicContext = MusicContext(record: record, session: session, owner: owner, fileUse: fileUse)
             return true
         } catch { if sessionToken == token { present(error) }; return false }
     }

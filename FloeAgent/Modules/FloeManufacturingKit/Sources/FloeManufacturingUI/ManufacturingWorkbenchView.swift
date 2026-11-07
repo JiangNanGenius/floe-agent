@@ -16,11 +16,17 @@ public struct ManufacturingWorkbenchView: View {
     @State private var camPreview:CAMPreviewRequest?
     @State private var ncRequest:NCWorkbenchRequest?
     @State private var pendingNC:URL?
+    @State private var checkingSource = false
+    @State private var sourceCheck: Task<Void,Never>?
     private var onClose: (() -> Void)?
     private var onAssistant: (() -> Void)?
+    private var hostedInCAD = false
+    private var beforeCalculate: (@MainActor () async throws -> Void)?
     public init(directory: URL) { _model = State(initialValue:ManufacturingModel(directory:directory)) }
-    public init(model: ManufacturingModel, onClose: (() -> Void)? = nil, onAssistant: (() -> Void)? = nil) {
+    public init(model: ManufacturingModel, hostedInCAD: Bool = false, beforeCalculate: (@MainActor () async throws -> Void)? = nil, onClose: (() -> Void)? = nil, onAssistant: (() -> Void)? = nil) {
         _model = State(initialValue: model)
+        self.hostedInCAD = hostedInCAD
+        self.beforeCalculate = beforeCalculate
         self.onClose = onClose
         self.onAssistant = onAssistant
     }
@@ -28,11 +34,21 @@ public struct ManufacturingWorkbenchView: View {
         @Bindable var model = model
         NavigationSplitView {
             Form {
-                Section(L("当前工程","Current project")) {
+                Section(L("加工设置","Machining setup")) {
                     Text(model.study.name).font(.headline)
-                    Button(L("打开工艺单或结果","Open study or result"),systemImage:"folder") { importFile = true }.accessibilityIdentifier("study.import")
-                    Button(L("毛坯与装夹边界","Stock and setup bounds"),systemImage:"cube") { editor = .stock }.accessibilityIdentifier("study.stock")
-                    Button(L("刀具与工序设置","Tools and operations"),systemImage:"wrench.and.screwdriver") { editor = .cam }.accessibilityIdentifier("study.cam.sidebar")
+                    Button {
+                        editor = .machine
+                    } label: {
+                        LabeledContent(L("机床与坐标系","Machine and coordinates"),value:model.study.machineSetup.map { machineName($0.kind) } ?? L("选择机床","Select machine"))
+                    }.accessibilityIdentifier("study.machine")
+                    Button(L("毛坯与装夹","Stock and fixtures"),systemImage:"cube") { editor = .stock }.accessibilityIdentifier("study.stock")
+                    if model.study.turning.enabled || model.study.machineSetup?.kind == .lathe || model.study.machineSetup?.kind == .turnMill {
+                        Button(L("车削型线","Turning profile"),systemImage:"point.topleft.down.to.point.bottomright.curvepath") { editor = .profile }.accessibilityIdentifier("study.profile")
+                        Button(L("车削工序与刀片","Turning operations and insert"),systemImage:"wrench.and.screwdriver") { editor = .turningSetup }.accessibilityIdentifier("study.turningSetup")
+                    }
+                    if model.study.machineSetup?.kind != .lathe {
+                        Button(L("铣削刀具与工序","Milling tools and operations"),systemImage:"wrench.and.screwdriver") { editor = .cam }.accessibilityIdentifier("study.cam.sidebar")
+                    }
                     if model.study.turning.enabled { Button(L("车削转速与进给","Turning speeds and feeds"),systemImage:"speedometer") { editor = .cutting }.accessibilityIdentifier("study.cutting.common") }
                 }
                 Section(L("工序","Operations")) {
@@ -54,9 +70,11 @@ public struct ManufacturingWorkbenchView: View {
                     Button(L("加工仿真","Simulate machining"),systemImage:"play.rectangle") { openSimulation() }
                         .disabled(model.artifact == nil).accessibilityIdentifier("study.simulate.sidebar")
                     if model.artifact == nil { Text(L("设置工序后生成刀路，再进入仿真。","Set up operations, generate toolpaths, then simulate.")).font(.caption).foregroundStyle(.secondary) }
+                    Button(L("后处理与 G-code","Post process and G-code"),systemImage:"curlybraces") { editor = .ncPost }
+                        .disabled(model.artifact == nil).accessibilityIdentifier("study.postProcess")
                 }
                 DisclosureGroup(L("详细工艺参数","Detailed process parameters")) { parameterSections }
-                DisclosureGroup(L("示例与专业研究","Examples and professional research")) {
+                if !hostedInCAD { DisclosureGroup(L("示例与专业研究","Examples and professional research")) {
                     Button(L("阶梯轴","Stepped shaft")) { model.select(0) }.accessibilityIdentifier("sample.shaft")
                     Button(L("车铣件","Turn-mill part")) { model.select(1) }.accessibilityIdentifier("sample.turnmill")
                     Button(L("A/C 五轴轨迹","A/C five-axis motion")) { model.select(2) }.accessibilityIdentifier("sample.fiveaxis")
@@ -68,12 +86,16 @@ public struct ManufacturingWorkbenchView: View {
                     Button(L("可选车削工序","Selected turning operations")) { model.select(7) }.accessibilityIdentifier("sample.turningSetup")
                     Button(L("多主轴与多刀塔工程","Multi-spindle and multi-turret project"),systemImage:"gearshape.2") { researchFile = nil;editor = .cell }.accessibilityIdentifier("research.cell")
                     Button(L("材料与工程分析","Materials and engineering analysis"),systemImage:"function") { researchFile = nil;editor = .engineering }.accessibilityIdentifier("research.engineering")
-                }
-                Section {
-                    Text(L("本地计算 · 单主轴研究原型","Local calculation · single-spindle research prototype")).font(.caption).foregroundStyle(.secondary)
-                }
+                    Button(L("打开工艺单或结果","Open study or result"),systemImage:"folder") { importFile = true }.accessibilityIdentifier("study.import")
+                } }
+                if hostedInCAD { DisclosureGroup(L("机床与工程工具","Machine and engineering tools")) {
+                    Button(L("多主轴与多刀塔配置","Multi-spindle and multi-turret setup"),systemImage:"gearshape.2") { researchFile = nil; editor = .cell }.accessibilityIdentifier("research.cell")
+                    Button(L("虚拟机床配置","Virtual machine setup"),systemImage:"cube.transparent") { researchFile = nil; editor = .virtual }.accessibilityIdentifier("research.virtual")
+                    Button(L("材料与工程分析","Materials and engineering analysis"),systemImage:"function") { researchFile = nil; editor = .engineering }.accessibilityIdentifier("research.engineering")
+                    Text(L("这些工具各自保存机床或分析设置，不会替换当前 CAD 模型。","These tools save their own machine or analysis setup and do not replace the current CAD model.")).font(.footnote).foregroundStyle(.secondary)
+                } }
             }
-            .navigationTitle(L("制造","Manufacturing"))
+            .navigationTitle(L("切削加工","Machining"))
             .disabled(model.isBusy)
         } detail: {
             VStack(spacing:0) {
@@ -108,7 +130,7 @@ public struct ManufacturingWorkbenchView: View {
                     }
                 }
                 ToolbarItem(placement:.topBarLeading) {
-                    Menu {
+                    if !hostedInCAD { Menu {
                         Button(L("阶梯轴","Stepped shaft")) { model.select(0) }.accessibilityIdentifier("sample.shaft.menu")
                         Button(L("车铣件","Turn-mill part")) { model.select(1) }.accessibilityIdentifier("sample.turnmill.menu")
                         Button(L("A/C 五轴轨迹","A/C five-axis motion")) { model.select(2) }.accessibilityIdentifier("sample.fiveaxis.menu")
@@ -118,20 +140,22 @@ public struct ManufacturingWorkbenchView: View {
                         Button(L("多工序方料","Multi-operation block")) { model.select(5) }.accessibilityIdentifier("sample.featurecam.menu")
                         Button(L("曲面栅格","Surface raster")) { model.select(6) }.accessibilityIdentifier("sample.surfacecam.menu")
                         Button(L("可选车削工序","Selected turning operations")) { model.select(7) }.accessibilityIdentifier("sample.turningSetup.menu")
-                    } label: { Label(L("工件","Workpiece"),systemImage:"cube").frame(minHeight:44) }.disabled(model.isBusy).accessibilityIdentifier("study.samples")
+                    } label: { Label(L("工件","Workpiece"),systemImage:"cube").frame(minHeight:44) }.disabled(model.isBusy).accessibilityIdentifier("study.samples") }
                 }
                 ToolbarItemGroup(placement:.primaryAction) {
                     Button(L("参数","Parameters"),systemImage:"slider.horizontal.3") { editor = .parameters }.disabled(model.isBusy).accessibilityIdentifier("study.parameters")
                     if model.isBusy {
                         Button(L("取消","Cancel"),systemImage:"stop.circle") { model.cancel() }.accessibilityIdentifier("study.cancel")
                     } else {
-                        Button(L("生成刀路","Generate toolpaths"),systemImage:"point.topleft.down.to.point.bottomright.curvepath") { model.calculate() }.buttonStyle(.borderedProminent).accessibilityIdentifier("study.calculate")
+                        Button(checkingSource ? L("正在检查模型","Checking model") : L("生成刀路","Generate toolpaths"),systemImage:"point.topleft.down.to.point.bottomright.curvepath",action:calculate)
+                            .disabled(checkingSource).buttonStyle(.borderedProminent).accessibilityIdentifier("study.calculate")
                     }
                     Menu {
                         Button(L("刀具与工序","Tools and operations"),systemImage:"list.bullet.rectangle") { editor = .cam }.disabled(model.isBusy).accessibilityIdentifier("study.cam")
                         Button(L("生成 G-code","Generate G-code"),systemImage:"curlybraces") { editor = .ncPost }.disabled(model.artifact == nil || model.isBusy).accessibilityIdentifier("study.gcode")
                         Button(L("打开 G-code 轨迹","Open G-code trajectory"),systemImage:"point.topleft.down.to.point.bottomright.curvepath") { ncRequest = .init(file:nil) }.accessibilityIdentifier("study.nc")
-                        Button(L("毛坯与预算","Stock and budgets")) { editor = .stock }.disabled(model.isBusy)
+                        Button(L("机床与坐标系","Machine and coordinates")) { editor = .machine }.disabled(model.isBusy)
+                        Button(L("毛坯与装夹","Stock and fixtures")) { editor = .stock }.disabled(model.isBusy)
                         Button(L("刀具总成","Tool assembly"),systemImage:"wrench.and.screwdriver") { editor = .assembly }.disabled(model.isBusy).accessibilityIdentifier("study.assembly")
                         Button(L("保存结果","Save result"),systemImage:"square.and.arrow.down") { model.save() }.disabled(model.artifact == nil || model.isBusy).accessibilityIdentifier("study.save")
                         Button(L("重新打开","Reopen"),systemImage:"arrow.clockwise") { model.reopen() }.disabled(model.isBusy).accessibilityIdentifier("study.reopen")
@@ -150,11 +174,13 @@ public struct ManufacturingWorkbenchView: View {
             do { try model.saveDraft() } catch { model.report(error) }
         }
         .onOpenURL { loadDocument($0) }
+        .onDisappear { sourceCheck?.cancel(); sourceCheck = nil; checkingSource = false }
         .fileImporter(isPresented:$importFile,allowedContentTypes:[.json,.data]) { outcome in
             switch outcome { case .success(let url): loadDocument(url); case .failure(let error): model.report(error) }
         }
         .sheet(item:$editor,onDismiss:{ if let pendingNC { ncRequest = .init(file:pendingNC);self.pendingNC=nil } }) { item in
             switch item {
+            case .machine: MachineSetupEditor(study:model.study) { edited in model.invalidate(); model.study = edited }
             case .ncPost:
                 if let artifact=model.artifact {
                     CAMNCPostView(study:model.study,artifact:artifact,directory:model.directory.appendingPathComponent("nc")) { url in pendingNC=url;editor=nil }
@@ -194,6 +220,20 @@ public struct ManufacturingWorkbenchView: View {
                 } else { model.replay = min(1,model.replay+0.008) }
             }
             if !Task.isCancelled { playing = false }
+        }
+    }
+    private func calculate() {
+        guard !model.isBusy, !checkingSource else { return }
+        guard let beforeCalculate else { model.calculate(); return }
+        checkingSource = true
+        sourceCheck = Task { @MainActor in
+            defer { checkingSource = false; sourceCheck = nil }
+            do {
+                let fingerprint = try model.study.fingerprint()
+                try await beforeCalculate(); try Task.checkCancellation()
+                guard try model.study.fingerprint() == fingerprint else { throw ManufacturingError.stale }
+                model.calculate()
+            } catch { if !Task.isCancelled { model.report(error) } }
         }
     }
     private func openSimulation(operationID:String? = nil) {
@@ -454,7 +494,7 @@ public struct ManufacturingWorkbenchView: View {
 }
 
 private struct NCWorkbenchRequest:Identifiable { let id=UUID();let file:URL? }
-private enum EditorSheet: String, Identifiable { case profile,motion,parameters,assembly,cutting,cam,stock,turningSetup,assessment,cell,engineering,virtual,ncPost; var id: String { rawValue } }
+private enum EditorSheet: String, Identifiable { case profile,motion,parameters,assembly,cutting,cam,stock,machine,turningSetup,assessment,cell,engineering,virtual,ncPost; var id: String { rawValue } }
 struct ExportItem: Identifiable { var id = UUID(); var url: URL }
 struct ShareFile: UIViewControllerRepresentable {
     var url: URL
@@ -465,26 +505,73 @@ private struct ProfileEditor: View {
     let study: ManufacturingStudy
     let apply: (ManufacturingStudy)->Void
     @Environment(\.dismiss) private var dismiss
-    @State private var text: String
+    @State private var points: [ProfilePoint]
     @State private var error = ""
     init(study:ManufacturingStudy,apply:@escaping(ManufacturingStudy)->Void) {
         self.study = study; self.apply = apply
-        _text = State(initialValue:String(decoding:(try? ManufacturingStudy.encoder.encode(study.profile)) ?? Data(),as:UTF8.self))
+        _points = State(initialValue: study.profile)
     }
     var body: some View {
         NavigationStack {
-            VStack(alignment:.leading,spacing:12) {
-                Text(L("每个点为 [半径, Z]，单位为毫米；同一 Z 可表达台阶。","Each point is [radius, Z] in millimetres. Equal Z values describe a shoulder.")).font(.callout).foregroundStyle(.secondary)
-                TextEditor(text:$text).font(.body.monospaced()).accessibilityIdentifier("profile.text")
-                if !error.isEmpty { Text(error).font(.caption).foregroundStyle(.orange) }
-            }.padding().navigationTitle(L("型线","Profile")).toolbar {
+            Form {
+                Section {
+                    Canvas { context, size in
+                        guard let first = points.first, let last = points.last else { return }
+                        let extent = max(0.001, last.zMM-first.zMM)
+                        let radius = max(0.001, points.map(\.radiusMM).max() ?? 1)
+                        func screen(_ p: ProfilePoint, side: Double) -> CGPoint {
+                            CGPoint(x: 12 + (p.zMM-first.zMM)/extent * (size.width-24), y: size.height/2 - side*p.radiusMM/radius*(size.height/2-12))
+                        }
+                        var axis = Path(); axis.move(to: CGPoint(x: 0,y: size.height/2)); axis.addLine(to: CGPoint(x: size.width,y: size.height/2))
+                        context.stroke(axis, with: .color(.secondary.opacity(0.4)), style: .init(lineWidth: 1,dash: [4,4]))
+                        for side in [-1.0,1.0] {
+                            var path = Path(); path.move(to: screen(first,side:side))
+                            for point in points.dropFirst() { path.addLine(to: screen(point,side:side)) }
+                            context.stroke(path, with: .color(.accentColor), lineWidth: 2)
+                        }
+                    }.frame(height: 160).accessibilityLabel(L("车削型线，沿模型 Z 轴","Turning profile along the model Z axis"))
+                    Text(study.source.documentID.hasPrefix("cad:")
+                         ? L("初始型线为模型绕 Z 轴的径向外包络，请确认它适用于当前车削工件。", "The initial profile is the model's radial envelope about Z. Check that it describes the intended turned part.")
+                         : L("按 Z 顺序设置半径；同一 Z 的点可表达台阶。", "Set radii in Z order. Equal Z values can define a shoulder."))
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Section(L("型线点 · mm","Profile points · mm")) {
+                    HStack { Text("#").frame(width: 24); Spacer(); Text(L("半径","Radius")).frame(maxWidth: 120); Text("Z").frame(maxWidth: 120) }.font(.caption).foregroundStyle(.secondary)
+                    ForEach(points.indices,id:\.self) { index in
+                        HStack {
+                            Text("\(index+1)").font(.caption).foregroundStyle(.secondary).frame(width: 24)
+                            Spacer()
+                            TextField(L("半径","Radius"),value:coordinate(index,\.radiusMM),format:.number)
+                                .accessibilityIdentifier("profile.radius.\(index)")
+                            TextField("Z",value:coordinate(index,\.zMM),format:.number)
+                                .accessibilityIdentifier("profile.z.\(index)")
+                        }.keyboardType(.numbersAndPunctuation).multilineTextAlignment(.trailing).frame(minHeight:44)
+                    }.onDelete { offsets in points.remove(atOffsets: offsets) }
+                    Button(L("添加型线点","Add profile point"),systemImage:"plus") {
+                        let last = points.last ?? .init(1,0)
+                        points.append(.init(last.radiusMM,last.zMM+1))
+                    }.disabled(points.count >= 256).accessibilityIdentifier("profile.add")
+                }
+                if !error.isEmpty { Section {
+                    Text(L("无法应用型线，请检查点顺序、半径和毛坯范围。","Check the point order, radii and stock bounds before applying the profile.")).foregroundStyle(.orange)
+                    DisclosureGroup(L("详情","Details")) { Text(error).font(.caption).textSelection(.enabled) }
+                } }
+            }.navigationTitle(L("车削型线","Turning profile")).navigationBarTitleDisplayMode(.inline).toolbar {
                 ToolbarItem(placement:.cancellationAction) { Button(L("取消","Cancel")) { dismiss() } }
+                ToolbarItem(placement:.primaryAction) { EditButton() }
                 ToolbarItem(placement:.confirmationAction) { Button(L("应用","Apply")) {
-                    do { var draft = study; draft.profile = try JSONDecoder().decode([ProfilePoint].self,from:Data(text.utf8)); draft.source.revision += 1; draft.source.contentSHA256 = ManufacturingStudy.digest(Data(text.utf8)); try draft.validate(); apply(draft); dismiss() }
+                    do {
+                        var draft = study; draft.profile = points
+                        if !draft.source.documentID.hasPrefix("cad:") { draft.source.revision += 1; draft.source.contentSHA256 = ManufacturingStudy.digest(try ManufacturingStudy.encoder.encode(points)) }
+                        try draft.validate(requireOperations:false); apply(draft); dismiss()
+                    }
                     catch { self.error = error.localizedDescription }
                 }.accessibilityIdentifier("profile.apply") }
             }
         }
+    }
+    private func coordinate(_ index: Int,_ key: WritableKeyPath<ProfilePoint,Double>) -> Binding<Double> {
+        Binding(get: { points.indices.contains(index) ? points[index][keyPath:key] : 0 }, set: { if points.indices.contains(index) { points[index][keyPath:key] = $0 } })
     }
 }
 

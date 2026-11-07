@@ -39,6 +39,7 @@ struct StudioToolResultView: View {
         case "studio.read": IDELanguageRunText.t("读取作品", "Inspect work")
         case "studio.edit": IDELanguageRunText.t("编辑作品", "Edit work")
         case "studio.run": IDELanguageRunText.t("制作与导出", "Produce and export")
+        case "studio.machining": IDELanguageRunText.t("CAD 加工", "CAD manufacturing")
         default: name
         }
     }

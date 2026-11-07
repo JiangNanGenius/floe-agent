@@ -87,13 +87,20 @@ import FloeAgentRuntime
             descriptor.availability = text == nil ? .needsTextExtraction : .available
             return .init(source: descriptor, text: String((text ?? record.title).prefix(1_000_000)), truncated: (text?.count ?? 0) > 1_000_000)
         case .conversationMessage:
-            return try await environment.database.reader { db in
-                guard let row = try Row.fetchOne(db, sql: "SELECT m.content,m.conversation_id FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.id=? AND c.purpose='ordinary' AND c.is_searchable=1", arguments: [source.locator]) else { throw GlobalSourceJobError.unavailable }
-                let body: String = row["content"], owner: String = row["conversation_id"]
-                guard owner == source.ownerID, MemoryContentDigest.make(body) == source.revision else { throw GlobalSourceJobError.sourceChanged }
-                return .init(source: source, text: String(body.prefix(1_000_000)), truncated: body.count > 1_000_000)
-            }
+            return try await Self.conversationSnapshot(source, database:environment.database)
         case .workspaceFile: throw GlobalSourceJobError.unavailable
+        }
+    }
+    /// Shared by recalled chat sources and focused in-memory DB qualification.
+    /// The source's id/owner/revision is verified against the live eligible row;
+    /// an indexed descriptor is never permission to read a hidden source.
+    nonisolated static func conversationSnapshot(_ source:GlobalSourceDescriptor,database:DatabaseManager) async throws -> GlobalSourceSnapshot {
+        guard source.kind == .conversationMessage else { throw GlobalSourceJobError.unavailable }
+        return try await database.reader { db in
+            guard let row = try Row.fetchOne(db, sql: "SELECT m.content,m.conversation_id FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.id=? AND c.purpose='ordinary' AND c.is_searchable=1", arguments: [source.locator]) else { throw GlobalSourceJobError.unavailable }
+            let body: String = row["content"], owner: String = row["conversation_id"]
+            guard owner == source.ownerID, MemoryContentDigest.make(body) == source.revision else { throw GlobalSourceJobError.sourceChanged }
+            return .init(source:source,text:String(body.prefix(1_000_000)),truncated:body.count > 1_000_000)
         }
     }
     /// Native identity and actual saved-file metadata, never frontmost editor

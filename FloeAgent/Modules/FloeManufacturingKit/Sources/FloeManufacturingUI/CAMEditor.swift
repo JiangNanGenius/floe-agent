@@ -94,7 +94,7 @@ struct CAMEditor: View {
                 ToolbarItem(placement:.confirmationAction) { Button(L("应用","Apply")) {
                     do {
                         var edited = draft
-                        if edited.cam?.tools.isEmpty == true && edited.cam?.operations.isEmpty == true { edited.cam = nil }
+                        if edited.cam?.tools.isEmpty == true && edited.cam?.operations.isEmpty == true && edited.cam?.partMesh == nil { edited.cam = nil }
                         try edited.validate(requireOperations:false); apply(edited); dismiss()
                     } catch { problem = error.localizedDescription }
                 }.accessibilityIdentifier("cam.apply") }
@@ -128,7 +128,13 @@ struct CAMEditor: View {
         guard let tools = draft.cam?.tools, let first = tools.first else { return }
         let tool = tools.first { strategy == "drill" ? $0.kind == "drill" : $0.kind != "drill" } ?? first
         var op = ManufacturingCAM.Operation(name:strategyName(strategy),strategy:strategy,toolID:tool.id)
-        op.frame.originMM = [0,0,draft.stock.zMaxMM]
+        op.frame = draft.machineSetup?.coordinateFrame ?? .init(originMM: [0,0,draft.stock.zMaxMM])
+        if draft.machineSetup?.kind == .milling5AxisAC {
+            op.acSeed = [0,0,50,0,0]
+            if let index = draft.cam?.tools.firstIndex(where: { $0.id == tool.id }), draft.cam?.tools[index].gaugeLengthMM == nil {
+                draft.cam?.tools[index].gaugeLengthMM = 50
+            }
+        }
         if strategy == "drill" { op.holesUVMM = [[0,0]] }
         draft.cam?.operations.append(op)
     }

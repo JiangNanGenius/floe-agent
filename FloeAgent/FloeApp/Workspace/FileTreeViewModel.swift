@@ -42,6 +42,12 @@ struct VisibleFileTreeNode: Identifiable, Sendable {
     var id: String { node.id }
 }
 
+struct FileTreeDeletionBatch: Identifiable, Sendable {
+    let id = UUID()
+    let scope: WorkspaceFileActionScope
+    let requests: [WorkspaceFileDeletionRequest]
+}
+
 /// Drives the inspector's directory tree: lazy page loading plus a
 /// debounced search that switches the tree into a flat hit list.
 @MainActor
@@ -49,6 +55,8 @@ final class FileTreeViewModel: ObservableObject {
 
     /// Root-level nodes (loaded on appear / refresh).
     @Published private(set) var rootNodes: [FileTreeNode] = []
+    @Published private(set) var loadedScope: WorkspaceFileActionScope?
+    @Published private(set) var searchScope: WorkspaceFileActionScope?
     /// Search hits while `query` is non-empty (flat list, not a tree).
     @Published private(set) var searchHits: [SearchHit] = []
     @Published private(set) var searchInProgress = false
@@ -61,6 +69,7 @@ final class FileTreeViewModel: ObservableObject {
     @Published private(set) var expandedDirectoryPaths: Set<String> = []
 
     private let center: WorkspaceCenter
+    var deletionCenter: WorkspaceCenter { center }
     private var searchTask: Task<Void, Never>?
     deinit { searchTask?.cancel() }
 
@@ -92,13 +101,17 @@ final class FileTreeViewModel: ObservableObject {
     /// Loads (or reloads) the first page of the root directory.
     func loadRoot() async {
         guard center.fileService != nil else {
+            loadedScope = nil
             rootNodes = []
             return
         }
         isLoading = true
         defer { isLoading = false }
         do {
+            let scope = try WorkspaceFileActionScope(center: center)
             let page = try await center.listDirectory(relativePath: ".")
+            try scope.validate(center)
+            loadedScope = scope
             rootNodes = page.entries.map(Self.node(from:))
             expandedDirectoryPaths = []
             errorMessage = nil
@@ -213,9 +226,18 @@ final class FileTreeViewModel: ObservableObject {
     }
 
     /// Deletes a node and reloads the tree.
-    func delete(_ node: FileTreeNode, recursive: Bool = false) async throws {
-        try center.delete(relativePath: node.relativePath, recursive: recursive)
+    func deletionRequest(_ node: FileTreeNode, scope: WorkspaceFileActionScope?) async throws -> WorkspaceFileDeletionRequest {
+        guard let scope else { throw WorkspaceFileDeletionError.changed }
+        return try await WorkspaceFileDeletion.prepare(path: node.relativePath, scope: scope, center: center)
+    }
+    func delete(_ request: WorkspaceFileDeletionRequest) async throws {
+        try WorkspaceFileDeletion.commit(request, center: center)
         await loadRoot()
+        if isSearching { scheduleSearch() }
+    }
+    func delete(_ node: FileTreeNode, recursive: Bool = false) async throws {
+        let request = try await deletionRequest(node, scope: loadedScope)
+        try await delete(request)
     }
 
     /// Renames a node (a move within its parent directory).
@@ -331,20 +353,32 @@ final class FileTreeViewModel: ObservableObject {
         }
     }
 
-    func deleteBatch(_ paths: Set<String>) async -> [String: String] {
-        // Selecting a folder already includes its descendants. Avoid reporting
-        // their successful recursive removal as separate missing-file errors.
+    func prepareDeletionBatch(_ paths: Set<String>, scope: WorkspaceFileActionScope?) async throws -> FileTreeDeletionBatch {
+        guard let scope, !paths.isEmpty else { throw WorkspaceFileDeletionError.changed }
+        try scope.validate(center)
         let roots = paths.filter { path in !paths.contains { other in path.hasPrefix(other + "/") } }.sorted()
-        var failures: [String: String] = [:]
+        var requests: [WorkspaceFileDeletionRequest] = []
         for path in roots {
+            try Task.checkCancellation()
+            requests.append(try await WorkspaceFileDeletion.prepare(path: path, scope: scope, center: center))
+        }
+        try Task.checkCancellation(); try scope.validate(center)
+        return FileTreeDeletionBatch(scope: scope, requests: requests)
+    }
+
+    /// Execution accepts only versions frozen BEFORE the confirmation opened.
+    /// Neither a new selection nor loadedScope can retarget an approved batch.
+    func deleteBatch(_ batch: FileTreeDeletionBatch) async -> [String: String] {
+        var failures: [String: String] = [:]
+        for request in batch.requests {
             do {
-                guard !center.isCloudWorkspacePath(path), !center.isNetworkWorkspacePath(path) else {
-                    throw CocoaError(.featureUnsupported)
-                }
-                try center.delete(relativePath: path, recursive: true)
-            } catch { failures[path] = error.localizedDescription }
+                try batch.scope.validate(center)
+                guard request.scope == batch.scope else { throw WorkspaceFileDeletionError.changed }
+                try WorkspaceFileDeletion.commit(request, center: center)
+            } catch { failures[request.relativePath] = error.localizedDescription }
         }
         await loadRoot()
+        if isSearching { scheduleSearch() }
         return failures
     }
 
@@ -355,7 +389,7 @@ final class FileTreeViewModel: ObservableObject {
         searchTask?.cancel()
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            searchHits = []
+            searchHits = []; searchScope = nil
             searchInProgress = false
             errorMessage = nil
             return
@@ -368,6 +402,7 @@ final class FileTreeViewModel: ObservableObject {
             defer { if !Task.isCancelled { self.searchInProgress = false } }
             guard let service = self.center.fileService else { return }
             let workspaceID = self.center.currentWorkspace?.id
+            let actionScope = try? WorkspaceFileActionScope(center: self.center)
             let cancellation = CancellationToken()
             do {
                 let hits = try await withTaskCancellationHandler {
@@ -382,7 +417,9 @@ final class FileTreeViewModel: ObservableObject {
                     }.value
                 } onCancel: { cancellation.cancel() }
                 guard !Task.isCancelled, self.center.currentWorkspace?.id == workspaceID else { return }
-                self.searchHits = hits
+                guard let actionScope else { throw WorkspaceFileDeletionError.changed }
+                try actionScope.validate(self.center)
+                self.searchScope = actionScope; self.searchHits = hits
                 self.errorMessage = nil
             } catch {
                 guard !Task.isCancelled, self.center.currentWorkspace?.id == workspaceID else { return }

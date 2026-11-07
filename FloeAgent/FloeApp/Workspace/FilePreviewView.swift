@@ -28,6 +28,7 @@ struct FilePreviewView: View {
     @EnvironmentObject private var router: AppRouter
     /// Called when the user adds this file to the conversation context.
     var onAddToContext: (() -> Void)? = nil
+    var onDeleted: (() -> Void)? = nil
     /// Disabled when the preview is already hosted inside WorkspaceIDEView.
     var allowsIDEExpansion = true
     /// Disabled when the preview is already hosted INSIDE the design
@@ -52,6 +53,10 @@ struct FilePreviewView: View {
     @State private var editorSession: OfficeFileSession?
     @State private var quickLookURL: URL?
     @State private var previewError: String?
+    @State private var deletionRequest: WorkspaceFileDeletionRequest?
+    @State private var deletingFile = false
+    @State private var deletionGeneration = UUID()
+    @State private var deletionPreparationTask: Task<Void, Never>?
     @State private var mediaEditorSource: URL?
     /// Reading mode: a read-only alternate view of this same original file
     /// (never an editor, and never a conversion of the original bytes).
@@ -153,12 +158,12 @@ struct FilePreviewView: View {
                                                 workspaceRoot:center.fileService?.guardResolver.rootURL,
                                                 workspaceID:center.currentWorkspace?.id,
                                                 conversationID:engineeringConversationID,
-                                                externalCoverPresented:isBuildingPresented || printPreparation != nil))
+                                                externalCoverPresented:isBuildingPresented || printPreparation != nil,
+                                                manufacturingAvailable:canPreparePrint,onPreparePrint:prepareWorkspacePrint))
                     .modifier(CADSelectionAssistantEntry(document: floecadDocument, selection: basicMachiningSelection,
                         relativePath: displayedPath, root: center.fileService?.guardResolver.rootURL,
                         workspaceID: center.currentWorkspace?.id, conversationID: conversationID))
-                    .modifier(CADBasicMachiningEntry(document:floecadDocument,selection:basicMachiningSelection,
-                        workspace:center,root:center.fileService?.guardResolver.rootURL,workspaceID:center.currentWorkspace?.id,conversationID:engineeringConversationID))
+                    .modifier(CADManufacturingEntry(document: floecadDocument, available: canPreparePrint, onPreparePrint: prepareWorkspacePrint))
                     .safeAreaInset(edge: .top) {
                         VStack(spacing: 0) {
                             recoveredCopyBanner
@@ -264,6 +269,7 @@ struct FilePreviewView: View {
         }
         .task(id: "\(relativePath)-\(usesExpandedReadOnly)-\(reloadGeneration)") { await load() }
         .onChange(of: relativePath) { _, _ in
+            cancelDeletionPreparation()
             printPreparation = nil
             invalidateDrawingTransferRoute()
             isBuildingPresented=false;incomingBuildingPlan=nil
@@ -279,8 +285,8 @@ struct FilePreviewView: View {
             recoverySheet = nil
             recoveredCopyNotice = nil
         }
-        .onChange(of: center.currentWorkspace?.id) { _, _ in printPreparation = nil; invalidateDrawingTransferRoute() }
-        .onChange(of: center.fileService?.guardResolver.rootURL) { _, _ in printPreparation = nil; invalidateDrawingTransferRoute() }
+        .onChange(of: center.currentWorkspace?.id) { _, _ in cancelDeletionPreparation(); printPreparation = nil; invalidateDrawingTransferRoute() }
+        .onChange(of: center.fileService?.guardResolver.rootURL) { _, _ in cancelDeletionPreparation(); printPreparation = nil; invalidateDrawingTransferRoute() }
         .onChange(of: engineeringConversationID) { _, _ in printPreparation = nil; invalidateDrawingTransferRoute() }
         .fullScreenCover(isPresented: $isDrawingTransferPresented, onDismiss: finishDrawingTransferPresentation) {
             if let destination = drawingTransferDestination {
@@ -432,6 +438,7 @@ struct FilePreviewView: View {
                 .ignoresSafeArea()
         }
         .onDisappear {
+            cancelDeletionPreparation()
             // This also runs for modal transitions. Only the source callback
             // epoch changes: an already accepted route keeps its operation.
             drawingTransferSourceEpoch = UUID()
@@ -479,6 +486,16 @@ struct FilePreviewView: View {
                     onClose: { recoverySheet = nil })
             }
         }
+        .confirmationDialog(IDELanguageRunText.t("删除文件？", "Delete file?"),
+            isPresented: Binding(get: { deletionRequest != nil }, set: { if !$0 { deletionRequest = nil } }),
+            titleVisibility: .visible, presenting: deletionRequest) { request in
+                Button(IDELanguageRunText.t("删除", "Delete"), role: .destructive) {
+                    deletionRequest = nil; Task { await deletePreviewFile(request) }
+                }.accessibilityIdentifier("file.preview.delete.confirm")
+                Button(IDELanguageRunText.t("取消", "Cancel"), role: .cancel) { deletionRequest = nil }
+            } message: { request in
+                Text(IDELanguageRunText.t("“\(request.name)”将从当前工作区删除，此操作不能撤销。", "“\(request.name)” will be deleted from this workspace. This cannot be undone."))
+            }
         .alert("inspector.preview.error", isPresented: Binding(
             get: { previewError != nil },
             set: { if !$0 { previewError = nil } }
@@ -1166,24 +1183,6 @@ struct FilePreviewView: View {
             // Low-frequency actions live behind More instead of occupying a
             // permanent toolbar badge.
             Menu {
-                if canPreparePrint {
-                    Button {
-                        do {
-                            let sourceConversation = engineeringConversationID, sourceEnvironment = environment
-                            printPreparation = try PrintProjectHandoff.workspaceRequest(center: center,
-                                path: displayedPath, conversationID: sourceConversation, document: floecadDocument,
-                                validateAccess: { [weak sourceEnvironment] in
-                                    guard let sourceEnvironment else { throw FloeError.unauthorized }
-                                    if let id = sourceConversation, sourceEnvironment.conversationCenter.isTemporaryConversation(id) {
-                                        throw FloeError.unauthorized
-                                    }
-                                })
-                        } catch { previewError = error.localizedDescription }
-                    } label: {
-                        Label(IDELanguageRunText.t("准备打印", "Prepare Print"), systemImage: "printer")
-                    }
-                    .accessibilityIdentifier("file.preview.preparePrint")
-                }
                 // The parent's callback is bound to the file this preview was
                 // opened for. After a restore it would add the damaged
                 // package, so it stays available only for the original file.
@@ -1203,22 +1202,93 @@ struct FilePreviewView: View {
                     }
                     .accessibilityIdentifier("file.preview.quicklook")
                 }
+                if onDeleted != nil {
+                    Divider()
+                    Button(role: .destructive) {
+                        deletionPreparationTask?.cancel()
+                        deletionPreparationTask = Task { await requestPreviewFileDeletion() }
+                    } label: {
+                        Label(IDELanguageRunText.t("删除", "Delete"), systemImage: "trash")
+                    }.disabled(deletingFile).accessibilityIdentifier("file.preview.delete")
+                }
             } label: {
                 Label("file.preview.more", systemImage: "ellipsis.circle")
             }
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel("file.preview.more")
             .accessibilityIdentifier("file.preview.more")
-            .disabled(!canPreparePrint && (onAddToContext == nil || isPresentingRecoveredCopy)
-                      && (isTextual || nativeOfficeURL != nil || !quickLookAvailable))
+            .disabled(deletingFile || (onDeleted == nil && !canPreparePrint && (onAddToContext == nil || isPresentingRecoveredCopy)
+                      && (isTextual || nativeOfficeURL != nil || !quickLookAvailable)))
         }
+    }
+
+    @MainActor private func cancelDeletionPreparation() {
+        deletionGeneration = UUID(); deletionRequest = nil
+        deletionPreparationTask?.cancel(); deletionPreparationTask = nil
+    }
+    @MainActor private func requestPreviewFileDeletion() async {
+        guard onDeleted != nil, !deletingFile else { return }
+        let generation = UUID(); deletionGeneration = generation
+        let path = displayedPath
+        do {
+            let scope = try WorkspaceFileActionScope(center: center)
+            let request = try await WorkspaceFileDeletion.prepare(path: path, scope: scope, center: center)
+            guard generation == deletionGeneration, displayedPath == path else { throw WorkspaceFileDeletionError.changed }
+            deletionRequest = request
+        } catch { if generation == deletionGeneration { previewError = error.localizedDescription } }
+    }
+    @MainActor private func deletePreviewFile(_ request: WorkspaceFileDeletionRequest) async {
+        guard !deletingFile, onDeleted != nil else { return }
+        deletingFile = true; defer { deletingFile = false }
+        let generation = deletionGeneration
+        do {
+            guard displayedPath == request.relativePath, !isIDEPresented, !isOfficeEditorPresented,
+                  !isEngineeringFullScreen, !isDrawingTransferPresented, !transferringDrawing,
+                  mediaEditorSource == nil, imageEditRequest == nil, printPreparation == nil,
+                  !isBuildingPresented, floecadDocument == nil else { throw WorkspaceFileDeletionError.closeFirst }
+            try request.scope.validate(center)
+            if officeSession.phase != .idle {
+                guard officeSession.canAct else { throw WorkspaceFileDeletionError.closeFirst }
+                // Editing is explicitly saved through the existing conflict-safe
+                // Office lifecycle. It is never discarded to make delete pass.
+                if officeSession.hasUncommittedChanges {
+                    guard await officeSession.saveInPlace() else { throw WorkspaceFileDeletionError.closeFirst }
+                    // A save changes the selected disk version. Keep the file
+                    // and require a fresh visible confirmation for that version.
+                    throw WorkspaceFileDeletionError.changed
+                }
+                await officeSession.release()
+                guard officeSession.phase == .idle else { throw WorkspaceFileDeletionError.closeFirst }
+            }
+            guard generation == deletionGeneration, displayedPath == request.relativePath else { throw WorkspaceFileDeletionError.changed }
+            try WorkspaceFileDeletion.commit(request, center: center)
+            nativeOfficeURL = nil; content = nil; pdfURL = nil; binaryPreviewURL = nil
+            onDeleted?()
+        } catch {
+            if generation == deletionGeneration { previewError = error.localizedDescription }
+        }
+    }
+
+    private func prepareWorkspacePrint() {
+        do {
+            guard canPreparePrint else { throw FloeError.unauthorized }
+            let sourceConversation = engineeringConversationID, sourceEnvironment = environment
+            printPreparation = try PrintProjectHandoff.workspaceRequest(center: center,
+                path: displayedPath, conversationID: sourceConversation, document: floecadDocument,
+                validateAccess: { [weak sourceEnvironment] in
+                    guard let sourceEnvironment else { throw FloeError.unauthorized }
+                    if let id = sourceConversation, sourceEnvironment.conversationCenter.isTemporaryConversation(id) {
+                        throw FloeError.unauthorized
+                    }
+                })
+        } catch { previewError = error.localizedDescription }
     }
 
     private var canPreparePrint: Bool {
         if let id = engineeringConversationID, environment.conversationCenter.isTemporaryConversation(id) { return false }
         guard loadError == nil, center.currentWorkspace != nil, center.currentRootURL != nil else { return false }
-        if let floecadDocument { return !floecadDocument.isClosed }
-        return PrintProjectHandoff.fileExtensions.contains((displayedPath as NSString).pathExtension.lowercased())
+        guard let floecadDocument else { return false }
+        return !floecadDocument.isClosed
     }
 
     private var quickLookAvailable: Bool {

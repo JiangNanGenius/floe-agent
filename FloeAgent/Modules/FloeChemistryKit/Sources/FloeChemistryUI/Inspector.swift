@@ -17,6 +17,8 @@ struct ChemistryTextDocument: FileDocument {
 @MainActor struct ChemistryInspector: View {
     let state: ChemistryEditorState
     let selectedAtoms: [Int]
+    var onPrepareStructure: (@MainActor (UUID) -> Void)? = nil
+    @State private var preparationEnvironment: String?
     @State private var iterations = 200
     @State private var tolerance = 0.0001
     @State private var method = "uff.optimize"
@@ -55,6 +57,34 @@ struct ChemistryTextDocument: FileDocument {
                         })) { ForEach(environments.keys.sorted(), id: \.self) { Text(state.environmentTitle($0)).tag($0) } }
                         Picker(chemistryText("Method", "方法"), selection: $method) {
                             ForEach((environments[state.project?.defaultEnvironmentID ?? "native.local"] ?? []).filter { !["parse","export","edit","reaction.balance","spectrum.analyze"].contains($0) }, id: \.self) { Text(chemistryMethodTitle($0)).tag($0) }
+                        }
+                        if needsPrepared3D {
+                            Text(ChemistryError.requiresPrepared3DStructure.localizedDescription)
+                                .font(.callout).foregroundStyle(.secondary)
+                                .accessibilityIdentifier("chemistry.preparation.required")
+                            if preparationEnvironments.isEmpty {
+                                Text(chemistryText("Choose an environment with 3D structure generation, or import a prepared 3D structure. Your drawing is kept.", "选择支持三维结构生成的运行环境，或导入已准备好的三维结构。原绘图会保留。"))
+                                    .font(.footnote).foregroundStyle(.secondary)
+                                if let onPrepareStructure {
+                                    Button(chemistryText("Set up 3D generation", "设置三维结构生成"), systemImage: "cube") {
+                                        onPrepareStructure(object.id)
+                                    }.accessibilityIdentifier("chemistry.preparation.configure")
+                                }
+                            } else {
+                                Picker(chemistryText("3D generation environment", "三维生成环境"), selection: $preparationEnvironment) {
+                                    Text(chemistryText("Choose environment", "选择运行环境")).tag(nil as String?)
+                                    ForEach(preparationEnvironments, id: \.self) { id in
+                                        Text(state.environmentTitle(id)).tag(Optional(id))
+                                    }
+                                }
+                                Button(chemistryText("Generate 3D with hydrogens", "生成含氢三维结构"), systemImage: "cube") {
+                                    guard let id = preparationEnvironment else { return }
+                                    Task { await state.generate3D(environmentID: id) }
+                                }.disabled(state.busy || preparationEnvironment == nil)
+                                    .accessibilityIdentifier("chemistry.preparation.generate")
+                                Text(chemistryText("When generation finishes, choose Apply structure in Calculations, then run the force-field calculation.", "生成完成后，在“计算任务”中点“应用结构”，再运行力场计算。"))
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
                         }
                         LabeledContent(chemistryText("Iterations", "迭代次数")) { TextField("", value: $iterations, format: .number).multilineTextAlignment(.trailing).accessibilityLabel(chemistryText("Iterations", "迭代次数")) }
                         LabeledContent(chemistryText("Gradient tolerance", "梯度阈值")) { TextField("", value: $tolerance, format: .number).multilineTextAlignment(.trailing).accessibilityLabel(chemistryText("Gradient tolerance", "梯度阈值")) }
@@ -140,6 +170,12 @@ struct ChemistryTextDocument: FileDocument {
             .filter { !["parse", "edit", "export", "reaction.balance", "spectrum.analyze"].contains($0) }
         if !methods.contains(method) { method = methods.first ?? "analyze" }
     }
+    private var needsPrepared3D: Bool {
+        state.selected?.requires3DPreparation == true && ["uff.energy", "uff.optimize"].contains(method)
+    }
+    private var preparationEnvironments: [String] {
+        environments.keys.filter { environments[$0]?.contains("rdkit.embed") == true }.sorted()
+    }
     private var runButton: some View {
         Button(chemistryText("Run calculation", "开始计算"), systemImage: "play.fill") {
             Task {
@@ -151,7 +187,7 @@ struct ChemistryTextDocument: FileDocument {
                     await state.run(method: method, options: .object(options))
                 } catch { state.error = error.localizedDescription }
             }
-        }.disabled(state.busy)
+        }.disabled(state.busy || needsPrepared3D)
     }
     private func edit(_ value: JSONValue) {
         guard let object = state.selected else { return }
@@ -162,10 +198,11 @@ struct ChemistryTextDocument: FileDocument {
 @MainActor struct ChemistryInspectorSheet: View {
     let state: ChemistryEditorState
     let selectedAtoms: [Int]
+    var onPrepareStructure: (@MainActor (UUID) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
-            ChemistryInspector(state: state, selectedAtoms: selectedAtoms)
+            ChemistryInspector(state: state, selectedAtoms: selectedAtoms, onPrepareStructure: onPrepareStructure)
                 .navigationTitle(chemistryText("Properties and methods", "属性与方法"))
                 .toolbar { Button(chemistryText("Done", "完成")) { dismiss() } }
         }

@@ -11,6 +11,7 @@ import FloeManufacturingCore
     private(set) var frame:CAMPreviewFrame?
     private(set) var preparing = false
     private(set) var playing = false
+    private(set) var rendering = false
     private(set) var diagnostic = ""
     private(set) var notice = ""
     private(set) var savedURL:URL?
@@ -21,6 +22,11 @@ import FloeManufacturingCore
     private var work:Task<Void,Never>?
     private var playback:Task<Void,Never>?
     private var fileWork:Task<Void,Never>?
+    private var renderWork:Task<Void,Never>?
+    private var renderControl:ComputationControl?
+    private var pendingFrame:(id:UUID,position:Double)?
+    private var requestedFrame = UUID()
+    private var collisionPaused = false
     init(source:CAMPreviewSource,directory:URL) { self.source = source;self.directory = directory }
     var range:ClosedRange<Double> {
         if settings.selectedOnly,let chapter = selectedChapter,let a = chapter.start,let b = chapter.end,b>a { return a...b }
@@ -55,23 +61,54 @@ import FloeManufacturingCore
         }
     }
     func seek(_ value:Double) {
-        guard let program,value.isFinite else { return }
+        guard program != nil,value.isFinite else { return }
         let position = max(range.lowerBound,min(range.upperBound,value))
-        do {
-            var value = try program.frame(at:position)
-            if settings.selectedOnly,let chapter = selectedChapter,chapter.kind != "machine",position == range.upperBound,range.upperBound>range.lowerBound {
-                // Keep the completed material stage, while the selected cut's
-                // endpoint stays on screen instead of the next operation's TCP.
-                let before = try program.frame(at:max(range.lowerBound,position.nextDown)),group = "tool:"+chapter.jobID
-                value.scene.bodies.removeAll { $0.groupID == group }
-                value.scene.bodies += before.scene.bodies.filter { $0.groupID == group }
-                value.tools.removeAll { $0.id == chapter.jobID };value.tools += before.tools.filter { $0.id == chapter.jobID }
-                value.activeChapterIDs.removeAll { id in program.chapters.contains { $0.id == id && $0.jobID == chapter.jobID } }
-                value.activeChapterIDs.append(chapter.id)
+        requestedFrame = UUID();pendingFrame = (requestedFrame,position)
+        renderControl?.cancel()
+        // One native render runs at a time. Rapid scrubbing coalesces to the
+        // latest cursor instead of queuing detached native jobs without a cap.
+        guard renderWork == nil else { return }
+        rendering = true;let token = generation
+        renderWork = Task { [weak self] in
+            guard let self else { return }
+            while let request = self.pendingFrame,self.generation == token,!Task.isCancelled {
+                self.pendingFrame = nil
+                guard let program = self.program else { break }
+                let control = ComputationControl(),chapter = self.selectedChapter,selectedOnly = self.settings.selectedOnly,range = self.range
+                self.renderControl = control
+                do {
+                    let value = try await withTaskCancellationHandler {
+                        try await Task.detached(priority:.userInitiated) {
+                            var value = try program.frame(at:request.position,control:control)
+                            if selectedOnly,let chapter,chapter.kind != "machine",request.position == range.upperBound,range.upperBound>range.lowerBound {
+                                let before = try program.frame(at:max(range.lowerBound,request.position.nextDown),control:control),group = "tool:"+chapter.jobID
+                                value.scene.bodies.removeAll { $0.groupID == group }
+                                value.scene.bodies += before.scene.bodies.filter { $0.groupID == group }
+                                value.tools.removeAll { $0.id == chapter.jobID };value.tools += before.tools.filter { $0.id == chapter.jobID }
+                                value.activeChapterIDs.removeAll { id in program.chapters.contains { $0.id == id && $0.jobID == chapter.jobID } }
+                                value.activeChapterIDs.append(chapter.id)
+                            }
+                            return value
+                        }.value
+                    } onCancel:{ control.cancel() }
+                    guard self.generation == token,!Task.isCancelled else { break }
+                    if request.id == self.requestedFrame {
+                        let previous = Set((self.frame?.collisions ?? []).filter { ["intersecting","clearance"].contains($0.state) }.map(Self.collisionKey))
+                        let newContact = value.collisions.contains { ["intersecting","clearance"].contains($0.state) && !previous.contains(Self.collisionKey($0)) }
+                        self.frame = value;self.settings.position = request.position
+                        if self.playing,self.settings.stopOnCollision,newContact {
+                            self.stop();self.collisionPaused = true
+                            self.notice = L("检测到干涉或间隙不足，已暂停。请查看检查详情。","Paused for interference or insufficient clearance. Review the check details.")
+                        }
+                    }
+                } catch {
+                    guard self.generation == token,!Task.isCancelled else { break }
+                    if !control.isCancelled && request.id == self.requestedFrame { self.stop();self.report(error) }
+                }
             }
-            frame = value;settings.position = position
+            guard self.generation == token else { return }
+            self.renderWork = nil;self.renderControl = nil;self.rendering = false
         }
-        catch { stop();report(error) }
     }
     func scrub(_ value:Double) { stop();seek(value) }
     func select(_ id:String?) {
@@ -88,13 +125,19 @@ import FloeManufacturingCore
     }
     func play() {
         guard let program,!playing,range.upperBound>range.lowerBound else { return }
-        if settings.position >= range.upperBound { seek(range.lowerBound) }
+        if collisionPaused { collisionPaused = false;notice = "" }
         playing = true
         playback = Task { [weak self] in
+            guard let self else { return }
+            // Preparing/rewinding stock is asynchronous. Do not advance an
+            // old end cursor while its replacement frame is still in flight.
+            if self.settings.position >= self.range.upperBound { self.seek(self.range.lowerBound) }
+            await self.renderWork?.value
+            guard self.playing,!Task.isCancelled else { return }
             let clock = ContinuousClock();var last = clock.now
             while !Task.isCancelled {
                 do { try await clock.sleep(for:.milliseconds(40)) } catch { return }
-                guard let self,self.playing else { return }
+                guard self.playing else { return }
                 let now = clock.now,delta = last.duration(to:now).components
                 last = now
                 let elapsed = Double(delta.seconds)+Double(delta.attoseconds)*1e-18
@@ -102,12 +145,15 @@ import FloeManufacturingCore
                 // It is never labelled as machining seconds or feed simulation.
                 let rate = program.metric == .seconds ? 1 : max(program.extent/30,0.001)
                 self.seek(self.settings.position+elapsed*self.settings.speed*rate)
+                await self.renderWork?.value
+                guard self.playing,!Task.isCancelled else { return }
                 if self.settings.position>=self.range.upperBound { self.stop();return }
             }
         }
     }
     func stop() { playing = false;playback?.cancel();playback = nil }
-    func close() { stop();persist();generation = UUID();work?.cancel();work = nil;fileWork?.cancel();fileWork = nil;fileBusy = false;preparing = false }
+    private static func collisionKey(_ value:ManufacturingResult.Collision)->String { [value.component,value.toolPart ?? "",value.targetKind ?? "",value.operation ?? "",value.state].joined(separator:"|") }
+    func close() { stop();persist();generation = UUID();work?.cancel();work = nil;fileWork?.cancel();fileWork = nil;renderControl?.cancel();renderWork?.cancel();renderWork = nil;pendingFrame = nil;rendering = false;fileBusy = false;preparing = false }
     func persist() {
         guard let program else { return }
         do {

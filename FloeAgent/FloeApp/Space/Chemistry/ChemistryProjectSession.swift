@@ -57,6 +57,16 @@ enum ChemistryHostFactory {
     static func open(id: UUID, directory: URL, environment: AppEnvironment,
                      additionalBackends: [any ChemistryBackend] = []) async throws -> ChemistryProjectSession {
         try PersonalLibraryFileActions.requireAvailable(id)
+        return try await openVerified(id: id, directory: directory, environment: environment, additionalBackends: additionalBackends)
+    }
+    /// Called only after the file-action barrier has excluded editors/tools.
+    /// The existing job reconciler examines persisted workers before tombstoning.
+    static func prepareForLibraryDeletion(id: UUID, directory: URL, environment: AppEnvironment) async throws {
+        _ = try await openVerified(id: id, directory: directory, environment: environment, additionalBackends: [])
+        try await prepareForDeletion(id: id)
+    }
+    private static func openVerified(id: UUID, directory: URL, environment: AppEnvironment,
+                                     additionalBackends: [any ChemistryBackend]) async throws -> ChemistryProjectSession {
         if let value = sessions[id] {
             guard value.root.standardizedFileURL == directory.standardizedFileURL,
                   value.environment === environment, !value.closing else { throw PersonalContentError.changedDocument }

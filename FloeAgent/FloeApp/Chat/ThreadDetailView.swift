@@ -374,7 +374,8 @@ struct ThreadDetailView: View {
                     FilePreviewView(
                         relativePath: file.path,
                         center: environment.workspaceCenter,
-                        conversationID: viewModel.conversationID
+                        conversationID: viewModel.conversationID,
+                        onDeleted: { if selectedImportantFile?.path == file.path { selectedImportantFile = nil } }
                     )
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {

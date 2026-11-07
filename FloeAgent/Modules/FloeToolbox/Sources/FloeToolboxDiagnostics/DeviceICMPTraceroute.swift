@@ -13,8 +13,6 @@
 import Foundation
 import Darwin
 
-
-
 /// Backend signature for device traceroutes. Tests inject a fake.
 typealias DeviceTracerouteHandler = @Sendable (String, Int, Int, CancellationToken) async throws -> DeviceTracerouteReport
 
@@ -71,6 +69,7 @@ enum DeviceICMPTraceroute {
         waitSeconds: Int,
         cancellation: CancellationToken
     ) async throws -> DeviceTracerouteReport {
+        try cancellation.throwIfCancelled()
         let addresses = try await NetworkDiagnosticTiming.withDeadline(
             seconds: 10,
             timeoutMessage: "device traceroute DNS resolution timed out after 10s"
@@ -81,15 +80,12 @@ enum DeviceICMPTraceroute {
             throw DiagnosticError.invalid("device traceroute supports IPv4 targets only and \(target) has no A record")
         }
         try cancellation.throwIfCancelled()
-        return try await Task.detached(priority: .utility) {
-            try blockingSession(
-                target: target,
-                sAddr: sAddr,
-                maxHops: max(1, min(30, maxHops)),
-                waitSeconds: max(1, min(5, waitSeconds)),
-                cancellation: cancellation
-            )
-        }.value
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos:.utility).async {
+                continuation.resume(with:Result { try blockingSession(target:target,sAddr:sAddr,
+                    maxHops:max(1,min(30,maxHops)),waitSeconds:max(1,min(5,waitSeconds)),cancellation:cancellation) })
+            }
+        }
     }
 
     private static func monotonicSeconds() -> TimeInterval {
@@ -126,7 +122,9 @@ enum DeviceICMPTraceroute {
         for ttl in 1...maxHops {
             try cancellation.throwIfCancelled()
             var ttlValue = Int32(ttl)
-            setsockopt(fd, IPPROTO_IP, IP_TTL, &ttlValue, socklen_t(MemoryLayout<Int32>.size))
+            guard setsockopt(fd,IPPROTO_IP,IP_TTL,&ttlValue,socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+                throw DiagnosticError.system("ICMP traceroute TTL setup failed (errno \(errno))")
+            }
 
             var rtts: [Double] = []
             var hopStatus: DeviceTracerouteReport.HopStatus?
@@ -155,6 +153,8 @@ enum DeviceICMPTraceroute {
                 }
                 let outcome = try receiveProbe(
                     fd: fd,
+                    identifier:identifier,
+                    destination:sAddr,
                     sequence: sequence,
                     token: token,
                     sentAt: sentAt,
@@ -172,11 +172,15 @@ enum DeviceICMPTraceroute {
                     }
                 case .timeout:
                     if hopStatus == nil { hopStatus = .timeout }
+                case .unreachable(let reason):
+                    hopStatus = .unreachable(reason)
                 }
                 if case .reached = hopStatus { break }
+                if case .unreachable = hopStatus { break }
             }
             hops.append(.init(ttl: ttl, status: hopStatus ?? .timeout))
             if case .reached = hopStatus { break }
+            if case .unreachable = hopStatus { break }
         }
         return DeviceTracerouteReport(
             target: target,
@@ -189,6 +193,7 @@ enum DeviceICMPTraceroute {
     private enum ProbeOutcome {
         case echoReply(rttMs: Double)
         case timeExceeded(address: String, rttMs: Double)
+        case unreachable(reason: String)
         case timeout
     }
 
@@ -197,6 +202,8 @@ enum DeviceICMPTraceroute {
     /// cancellation remains responsive.
     private static func receiveProbe(
         fd: Int32,
+        identifier: UInt16,
+        destination: UInt32,
         sequence: UInt16,
         token: Data,
         sentAt: TimeInterval,
@@ -206,14 +213,10 @@ enum DeviceICMPTraceroute {
         let deadline = sentAt + TimeInterval(timeoutSeconds)
         var buffer = [UInt8](repeating: 0, count: 1500)
         while true {
+            try cancellation.throwIfCancelled()
             let remaining = deadline - monotonicSeconds()
             if remaining <= 0 { return .timeout }
-            let slice = min(remaining, 0.2)
-            var timeout = timeval(
-                tv_sec: Int(slice),
-                tv_usec: suseconds_t((slice - TimeInterval(Int(slice))) * 1_000_000)
-            )
-            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            try DeviceICMPPacket.setReceiveTimeout(fd:fd,remaining:remaining)
             var source = sockaddr_in()
             var sourceLength = socklen_t(MemoryLayout<sockaddr_in>.size)
             let received = withUnsafeMutablePointer(to: &source) { pointer in
@@ -227,16 +230,13 @@ enum DeviceICMPTraceroute {
                    reply.sequence == sequence, reply.payload == token {
                     return .echoReply(rttMs: (monotonicSeconds() - sentAt) * 1000)
                 }
-                if let embedded = DeviceICMPPacket.parseErrorEmbeddedSequence(message),
-                   embedded == sequence {
-                    let address = source.sin_addr
-                    var addressValue = in_addr(s_addr: address.s_addr)
-                    var text = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-                    inet_ntop(AF_INET, &addressValue, &text, socklen_t(INET_ADDRSTRLEN))
-                    return .timeExceeded(
-                        address: String(cString: text),
-                        rttMs: (monotonicSeconds() - sentAt) * 1000
-                    )
+                if let embedded = DeviceICMPPacket.parseEmbeddedError(message),
+                   embedded.matches(identifier:identifier,sequence:sequence,destination:destination,token:token) {
+                    let address = HostResolver.presentation(source.sin_addr.s_addr)
+                    if embedded.type == DeviceICMPPacket.timeExceededType && embedded.code == 0 {
+                        return .timeExceeded(address:address,rttMs:(monotonicSeconds()-sentAt)*1000)
+                    }
+                    return .unreachable(reason:"address=\(address) icmpType=\(embedded.type) code=\(embedded.code)")
                 }
                 continue
             }
@@ -245,9 +245,9 @@ enum DeviceICMPTraceroute {
                 try cancellation.throwIfCancelled()
                 continue
             case EHOSTUNREACH, ENETUNREACH, EHOSTDOWN:
-                return .timeout
+                return .unreachable(reason:"receiveErrno=\(errno)")
             default:
-                return .timeout
+                throw DiagnosticError.system("ICMP traceroute receive failed (errno \(errno))")
             }
         }
     }

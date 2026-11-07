@@ -9,6 +9,11 @@ import Foundation
 import Crypto
 import FloeCore
 import FloeTools
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// One entry in a directory listing.
 public struct FileNode: Sendable, Equatable {
@@ -667,6 +672,8 @@ public struct WorkspaceFileService: Sendable {
             throw WorkspaceToolError.alreadyExists(to)
         }
         try assertNotFrozen(destination)
+        if try CADMachiningCompanion.transferIfPresent(source:source,destination:destination,copy:false,
+            guard:guardResolver,mutationGuard:mutationGuard,cancellation:cancellation) { return }
         let parent = destination.deletingLastPathComponent()
         try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
         try fileManager.moveItem(at: source, to: destination)
@@ -693,6 +700,8 @@ public struct WorkspaceFileService: Sendable {
             throw WorkspaceToolError.alreadyExists(to)
         }
         try assertNotFrozen(destination)
+        if try CADMachiningCompanion.transferIfPresent(source:source,destination:destination,copy:true,
+            guard:guardResolver,mutationGuard:mutationGuard,cancellation:cancellation) { return }
         let parent = destination.deletingLastPathComponent()
         try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
         try fileManager.copyItem(at: source, to: destination)
@@ -783,6 +792,8 @@ public struct WorkspaceFileService: Sendable {
     public func delete(
         _ path: String,
         recursive: Bool = false,
+        expectedMetadata: WorkspaceFileMetadata? = nil,
+        expectedResolvedURL: URL? = nil,
         cancellation: CancellationToken? = nil
     ) throws {
         let mutationLock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
@@ -790,11 +801,20 @@ public struct WorkspaceFileService: Sendable {
 
         try cancellation?.throwIfCancelled()
         let url = try guardResolver.resolve(path)
+        if let expectedResolvedURL, url.standardizedFileURL.resolvingSymlinksInPath() != expectedResolvedURL.standardizedFileURL {
+            throw WorkspaceToolError.conflict(expected: "selected file location", actual: "file moved")
+        }
         try rejectWorkspaceRootMutation(url, operation: "delete")
         try assertNotFrozen(url)
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             throw WorkspaceToolError.notFound(path)
+        }
+        if let expectedMetadata {
+            let actual = try deletionMetadata(path, cancellation: cancellation)
+            guard actual == expectedMetadata else {
+                throw WorkspaceToolError.conflict(expected: "selected file version", actual: "file changed")
+            }
         }
         if isDirectory.boolValue && !recursive {
             let children = try fileManager.contentsOfDirectory(atPath: url.path)
@@ -830,6 +850,41 @@ public struct WorkspaceFileService: Sendable {
                 "A directory cannot be the destination of its own \(operation)"
             )
         }
+    }
+
+    /// UI deletion CAS returns no file bytes and hashes with bounded memory.
+    /// It does not relax the ordinary metadata/read tool's read budget.
+    public func deletionMetadata(_ path: String, cancellation: CancellationToken? = nil) throws -> WorkspaceFileMetadata {
+        // This is the same recursive mutation lock used by delete(). No lock
+        // crosses await, and commit's verification stays inside its transaction.
+        let mutationLock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
+        mutationLock.lock(); defer { mutationLock.unlock() }
+        try Task.checkCancellation()
+        try cancellation?.throwIfCancelled()
+        let url = try guardResolver.resolve(path)
+        let before = try fileManager.attributesOfItem(atPath: url.path)
+        let directory = before[.type] as? FileAttributeType == .typeDirectory
+        let digest: String
+        if directory {
+            #if canImport(Darwin) || canImport(Glibc)
+            digest = try WorkspaceDirectoryDeletionFingerprint.capture(url, cancellation: cancellation)
+            #else
+            throw WorkspaceDeletionScanError.unsupported
+            #endif
+        } else {
+            digest = try FloeDigest.sha256Hex(ofFileAt: url, isCancelled: { cancellation?.isCancelled == true || Task.isCancelled })
+        }
+        let after = try fileManager.attributesOfItem(atPath: url.path)
+        guard (before[.modificationDate] as? Date) == (after[.modificationDate] as? Date),
+              (before[.size] as? NSNumber) == (after[.size] as? NSNumber),
+              (before[.systemFileNumber] as? NSNumber) == (after[.systemFileNumber] as? NSNumber) else {
+            throw WorkspaceToolError.conflict(expected: "stable selected file", actual: "file changed")
+        }
+        return WorkspaceFileMetadata(relativePath: Self.normalizedRelativePath(path),
+            size: (after[.size] as? NSNumber)?.int64Value ?? 0,
+            mtime: (after[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0,
+            uti: (try? url.resourceValues(forKeys: [.typeIdentifierKey]).typeIdentifier) ?? Self.fallbackUTI(for: url),
+            sha256: digest, isSymlink: after[.type] as? FileAttributeType == .typeSymbolicLink, isDirectory: directory)
     }
 
     // MARK: - Metadata
@@ -1255,3 +1310,172 @@ public struct WorkspaceFileService: Sendable {
         }
     }
 }
+
+
+/// Only deletion preparation uses these bounds; ordinary reads keep their own
+/// budgets. The UI displays an actionable reason before it offers confirmation.
+enum WorkspaceDeletionScanError: Error, LocalizedError {
+    case limit, symbolicLink, unsupported
+    var errorDescription: String? {
+        let chinese = (Bundle.main.preferredLocalizations.first ?? Locale.preferredLanguages.first ?? "en").hasPrefix("zh")
+        switch self {
+        case .limit:
+            return chinese
+                ? "文件夹太大或层级太深，暂时无法安全删除。请分批删除较小的子文件夹或单个文件。"
+                : "This folder is too large or too deeply nested to delete safely. Delete smaller subfolders or individual files."
+        case .symbolicLink:
+            return chinese
+                ? "文件夹包含链接。请先在系统“文件”中单独管理链接，再删除文件夹。"
+                : "This folder contains links. Manage those links individually in Files before deleting the folder."
+        case .unsupported:
+            return chinese
+                ? "文件夹包含暂不支持的项目。请先单独处理这些项目，再删除文件夹。"
+                : "This folder contains unsupported items. Manage those items individually before deleting the folder."
+        }
+    }
+}
+
+#if canImport(Darwin) || canImport(Glibc)
+/// Descriptor-relative traversal never follows a child link. Both complete
+/// passes share ONE deadline; delete() invokes this under its existing lock.
+private enum WorkspaceDirectoryDeletionFingerprint {
+    static let maximumItems = 10_000
+    static let maximumDepth = 64
+    static let maximumBytes: Int64 = 256 * 1_024 * 1_024
+    static let maximumPathBytes = 4 * 1_024 * 1_024
+    static let maximumSeconds = 15.0
+
+    struct Pass {
+        var hash = SHA256()
+        var items = 0
+        var contentBytes: Int64 = 0
+        var pathBytes = 0
+        var discoveredItems = 1
+        var discoveredNameBytes = 0
+        let deadline: TimeInterval
+        let cancellation: CancellationToken?
+        func check() throws {
+            if cancellation?.isCancelled == true || Task.isCancelled { throw CancellationError() }
+            guard ProcessInfo.processInfo.systemUptime <= deadline else { throw WorkspaceDeletionScanError.limit }
+        }
+        mutating func record(_ text: String) {
+            let bytes = Data(text.utf8)
+            var length = UInt64(bytes.count).bigEndian
+            withUnsafeBytes(of: &length) { hash.update(bufferPointer: $0) }
+            hash.update(data: bytes)
+        }
+        mutating func begin(path: String, info: stat, depth: Int) throws {
+            try check(); items += 1; pathBytes += path.utf8.count
+            guard items <= WorkspaceDirectoryDeletionFingerprint.maximumItems,
+                  depth <= WorkspaceDirectoryDeletionFingerprint.maximumDepth,
+                  pathBytes <= WorkspaceDirectoryDeletionFingerprint.maximumPathBytes else { throw WorkspaceDeletionScanError.limit }
+            record(path); record(WorkspaceDirectoryDeletionFingerprint.signature(info))
+        }
+    }
+
+    static func capture(_ url: URL, cancellation: CancellationToken?) throws -> String {
+        let deadline = ProcessInfo.processInfo.systemUptime + maximumSeconds
+        let descriptor = open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw WorkspaceDeletionScanError.unsupported }
+        defer { _ = close(descriptor) }
+        var initial = stat()
+        guard fstat(descriptor, &initial) == 0 else { throw WorkspaceDeletionScanError.unsupported }
+        func scan() throws -> String {
+            var pass = Pass(deadline: deadline, cancellation: cancellation)
+            pass.record("floe.directory-delete.v1")
+            try walk(descriptor, relativePath: "", depth: 0, pass: &pass)
+            try pass.check()
+            return pass.hash.finalize().map { String(format: "%02x", $0) }.joined()
+        }
+        let first = try scan(), second = try scan()
+        var final = stat()
+        guard fstat(descriptor, &final) == 0, signature(initial) == signature(final), first == second else { throw changed() }
+        return first
+    }
+
+    static func walk(_ descriptor: Int32, relativePath: String, depth: Int, pass: inout Pass) throws {
+        var before = stat()
+        guard fstat(descriptor, &before) == 0 else { throw changed() }
+        try pass.begin(path: relativePath, info: before, depth: depth)
+        let kind = before.st_mode & mode_t(S_IFMT)
+        if kind == mode_t(S_IFREG) {
+            guard before.st_size >= 0, Int64(before.st_size) <= maximumBytes - pass.contentBytes else { throw WorkspaceDeletionScanError.limit }
+            pass.contentBytes += Int64(before.st_size)
+            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+            var digest = SHA256(), readBytes: Int64 = 0
+            while true {
+                try pass.check()
+                let bytes = try handle.read(upToCount: 1 << 20) ?? Data()
+                if bytes.isEmpty { break }
+                readBytes += Int64(bytes.count)
+                guard readBytes <= Int64(before.st_size) else { throw changed() }
+                digest.update(data: bytes)
+            }
+            guard readBytes == Int64(before.st_size) else { throw changed() }
+            pass.record("file"); pass.record(digest.finalize().map { String(format: "%02x", $0) }.joined())
+        } else if kind == mode_t(S_IFDIR) {
+            pass.record("directory")
+            let names = try children(descriptor, pass: &pass)
+            pass.record(String(names.count))
+            for name in names {
+                try pass.check()
+                var selected = stat()
+                guard fstatat(descriptor, name, &selected, AT_SYMLINK_NOFOLLOW) == 0 else { throw changed() }
+                let selectedKind = selected.st_mode & mode_t(S_IFMT)
+                if selectedKind == mode_t(S_IFLNK) { throw WorkspaceDeletionScanError.symbolicLink }
+                guard selectedKind == mode_t(S_IFREG) || selectedKind == mode_t(S_IFDIR) else { throw WorkspaceDeletionScanError.unsupported }
+                let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK | (selectedKind == mode_t(S_IFDIR) ? O_DIRECTORY : 0)
+                let child = openat(descriptor, name, flags)
+                guard child >= 0 else { throw changed() }
+                defer { _ = close(child) }
+                var opened = stat()
+                guard fstat(child, &opened) == 0, signature(selected) == signature(opened) else { throw changed() }
+                try walk(child, relativePath: relativePath.isEmpty ? name : relativePath + "/" + name, depth: depth + 1, pass: &pass)
+                var bound = stat()
+                guard fstatat(descriptor, name, &bound, AT_SYMLINK_NOFOLLOW) == 0, signature(selected) == signature(bound) else { throw changed() }
+            }
+        } else if kind == mode_t(S_IFLNK) {
+            throw WorkspaceDeletionScanError.symbolicLink
+        } else { throw WorkspaceDeletionScanError.unsupported }
+        var after = stat()
+        guard fstat(descriptor, &after) == 0, signature(before) == signature(after) else { throw changed() }
+    }
+
+    static func children(_ descriptor: Int32, pass: inout Pass) throws -> [String] {
+        // A fresh open description avoids inheriting a consumed directory
+        // offset when the second pass visits the same descriptor.
+        let listing = openat(descriptor, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard listing >= 0 else { throw changed() }
+        guard let directory = fdopendir(listing) else { _ = close(listing); throw changed() }
+        defer { _ = closedir(directory) }
+        var names: [String] = [], nameBytes = 0
+        while true {
+            try pass.check(); errno = 0
+            guard let entry = readdir(directory) else {
+                guard errno == 0 else { throw changed() }; break
+            }
+            let capacity = MemoryLayout.size(ofValue: entry.pointee.d_name)
+            let name = withUnsafePointer(to: &entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: capacity) { String(validatingCString: $0) }
+            }
+            guard let name else { throw WorkspaceDeletionScanError.unsupported }
+            if name == "." || name == ".." { continue }
+            names.append(name); nameBytes += name.utf8.count
+            pass.discoveredItems += 1; pass.discoveredNameBytes += name.utf8.count
+            guard pass.discoveredItems <= maximumItems, pass.discoveredNameBytes <= maximumPathBytes,
+                  names.count <= maximumItems - pass.items, nameBytes <= maximumPathBytes else { throw WorkspaceDeletionScanError.limit }
+        }
+        return names.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
+    }
+
+    static func signature(_ info: stat) -> String {
+        #if canImport(Darwin)
+        let time = "\(info.st_mtimespec.tv_sec):\(info.st_mtimespec.tv_nsec):\(info.st_ctimespec.tv_sec):\(info.st_ctimespec.tv_nsec):\(info.st_birthtimespec.tv_sec):\(info.st_birthtimespec.tv_nsec)"
+        #else
+        let time = "\(info.st_mtim.tv_sec):\(info.st_mtim.tv_nsec):\(info.st_ctim.tv_sec):\(info.st_ctim.tv_nsec)"
+        #endif
+        return "\(info.st_dev):\(info.st_ino):\(info.st_mode):\(info.st_nlink):\(info.st_uid):\(info.st_gid):\(info.st_size):" + time
+    }
+    static func changed() -> WorkspaceToolError { .conflict(expected: "stable selected folder", actual: "folder changed") }
+}
+#endif

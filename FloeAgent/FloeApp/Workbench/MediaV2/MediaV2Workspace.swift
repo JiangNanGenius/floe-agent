@@ -23,6 +23,7 @@ struct MediaV2Workspace: View {
     @State private var number = 12.0
     @State private var property = "scale"
     @State private var paintColor: Color = .teal
+    @State private var showingDiagnostic = false
     var body: some View {
         GeometryReader { geometry in
             let wide = geometry.size.width >= 1050
@@ -70,6 +71,19 @@ struct MediaV2Workspace: View {
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button(WorkbenchText.t("完成", "Done")) { compactPanel = nil } } }
             }.presentationDetents([.medium, .large])
         }
+        .sheet(isPresented: $showingDiagnostic) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        Text(session.diagnostic ?? "").textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                        if session.exportError as? PreparedVideoError == .emptyTimeline {
+                            Button(WorkbenchText.t("导入视频或图片", "Import video or images")) { showingDiagnostic = false; beginImport() }.frame(minHeight: 44)
+                        }
+                    }.padding()
+                }.navigationTitle(WorkbenchText.t("操作详情", "Action details"))
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button(WorkbenchText.t("完成", "Done")) { showingDiagnostic = false } } }
+            }.presentationDetents([.medium, .large])
+        }
         .onDisappear { session.stopPlayback() }
         .onChange(of: session.tool) { _, tool in
             number = tool == "image.text" ? 72 : tool.contains("exposure") ? 0 : tool.contains("speed") ? 1 : tool.contains("white-balance") ? 6500 : tool.contains("opacity") || tool.contains("hsl") ? 1 : tool.contains("pip") ? 0.4 : 12
@@ -86,7 +100,7 @@ struct MediaV2Workspace: View {
             Menu {
                 if session.project.kind == .image {
                     Button(WorkbenchText.t("绘画图层", "Drawing layer"), systemImage: "paintbrush") { session.addLayer(.strokes(.init()), name: WorkbenchText.t("绘图", "Drawing")) }
-                    Button(WorkbenchText.t("文字", "Text"), systemImage: "textformat") { run("image.text") }
+                    Button(WorkbenchText.t("文字", "Text"), systemImage: "character.cursor.ibeam") { run("image.text") }
                     Button(WorkbenchText.t("形状", "Shape"), systemImage: "square.on.circle") { run("image.shape") }
                     Button(WorkbenchText.t("编组", "Group"), systemImage: "folder") { run("image.group-layer") }
                 } else {
@@ -155,7 +169,7 @@ struct MediaV2Workspace: View {
     }
     private var railTools: [(String, String, String)] {
         session.project.kind == .image
-            ? [("move", "cursorarrow", WorkbenchText.t("移动", "Move")), ("image.rectangle", "rectangle.dashed", WorkbenchText.t("选区", "Selection")), ("image.brush", "paintbrush.pointed", WorkbenchText.t("画笔", "Brush")), ("image.eraser", "eraser", WorkbenchText.t("橡皮", "Eraser")), ("image.crop", "crop", WorkbenchText.t("裁剪", "Crop")), ("image.pen", "point.topleft.down.to.point.bottomright.curvepath", WorkbenchText.t("钢笔", "Pen")), ("image.text", "textformat", WorkbenchText.t("文字", "Text")), ("image.eyedropper", "eyedropper", WorkbenchText.t("吸管", "Eyedropper"))]
+            ? [("move", "cursorarrow", WorkbenchText.t("移动", "Move")), ("image.rectangle", "rectangle.dashed", WorkbenchText.t("选区", "Selection")), ("image.brush", "paintbrush.pointed", WorkbenchText.t("画笔", "Brush")), ("image.eraser", "eraser", WorkbenchText.t("橡皮", "Eraser")), ("image.crop", "crop", WorkbenchText.t("裁剪", "Crop")), ("image.pen", "point.topleft.down.to.point.bottomright.curvepath", WorkbenchText.t("钢笔", "Pen")), ("image.text", "character.cursor.ibeam", WorkbenchText.t("文字", "Text")), ("image.eyedropper", "eyedropper", WorkbenchText.t("吸管", "Eyedropper"))]
             : [("video.trim", "cursorarrow", WorkbenchText.t("剪辑", "Edit")), ("video.split", "scissors", WorkbenchText.t("分割", "Split")), ("video.video-transform", "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left", WorkbenchText.t("变换", "Transform")), ("video.keyframes", "diamond", WorkbenchText.t("关键帧", "Keyframes")), ("video.caption", "captions.bubble", WorkbenchText.t("字幕", "Captions")), ("video.mix", "speaker.wave.2", WorkbenchText.t("混音", "Mix"))]
     }
     private var objectPanel: some View {
@@ -217,7 +231,7 @@ struct MediaV2Workspace: View {
             Button { session.select(layer) } label: {
                 HStack(spacing: 8) {
                     if session.multipleLayerSelection { Image(systemName: session.selectedLayerIDs.contains(layer.id) ? "checkmark.circle.fill" : "circle").frame(width: 18) }
-                    Image(systemName: layer.contentKind == .text ? "textformat" : layer.contentKind == .group ? "folder" : layer.contentKind == .strokes ? "paintbrush" : layer.contentKind == .vectorPaths ? "square.on.circle" : "photo").frame(width: 28, height: 34).background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 4))
+                    Image(systemName: layer.contentKind == .text ? "character.cursor.ibeam" : layer.contentKind == .group ? "folder" : layer.contentKind == .strokes ? "paintbrush" : layer.contentKind == .vectorPaths ? "square.on.circle" : "photo").frame(width: 28, height: 34).background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 4))
                     VStack(alignment: .leading, spacing: 3) { Text(layer.name).lineLimit(1); if layer.isLocked { Image(systemName: "lock.fill").font(.caption2) } }.font(.caption)
                     Spacer(minLength: 0)
                 }.frame(minHeight: 50)
@@ -285,6 +299,8 @@ struct MediaV2Workspace: View {
             else { Text(WorkbenchText.t("请选择视频或图片片段。", "Select a video or image clip.")).font(.caption).foregroundStyle(.secondary) }
         } else if session.project.kind == .video, ["video.caption", "video.caption-time", "video.srt"].contains(session.tool) || session.selectedClip?.track.kind == .caption {
             MediaV2CaptionInspector(session: session, onImport: { beginImport(captions: true) })
+            Divider()
+            MediaV2CaptionStyleInspector(session: session)
         } else if session.project.kind == .video, ["video.mix", "video.fades", "video.audio-sync"].contains(session.tool) || session.selectedClip?.track.kind == .audio {
             MediaV2AudioInspector(session: session)
         } else if session.project.kind == .video, ["video.trim", "video.ripple", "video.roll"].contains(session.tool) {
@@ -346,17 +362,24 @@ struct MediaV2Workspace: View {
     private var status: some View {
         HStack(spacing: 6) {
             if let error = session.diagnostic {
-                Menu { Text(error); Button(WorkbenchText.t("关闭提示", "Dismiss")) { session.diagnostic = nil } } label: { Label(WorkbenchText.t("操作未完成", "Action unfinished"), systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
+                Button { showingDiagnostic = true } label: {
+                    Label(error, systemImage: "exclamationmark.triangle").lineLimit(2).multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading).foregroundStyle(.orange)
+                }.buttonStyle(.plain).accessibilityHint(WorkbenchText.t("打开操作详情", "Open action details"))
+                Button(WorkbenchText.t("详情", "Details")) { showingDiagnostic = true }
             } else { Text(session.project.kind == .image ? WorkbenchText.t("分层原件", "Layered original") : WorkbenchText.t("多轨工程", "Multi-track project")) }
             Spacer()
             if session.rendering { ProgressView(value: session.exportProgress).frame(width: 70); Button(WorkbenchText.t("取消", "Cancel")) { session.cancelExport() } }
             Text("\(session.document.canvas?.width ?? 0) × \(session.document.canvas?.height ?? 0)")
-        }.font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 10).frame(height: 28)
+        }.font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 10).frame(minHeight: session.diagnostic == nil ? 28 : 44)
     }
     private func run(_ tool: String) {
         var input = MediaV2ToolInput(); input.text = ["image.text", "video.caption"].contains(tool) && !text.isEmpty ? text : nil
-        input.number = tool == "image.text" && session.tool != tool ? 72 : number
-        input.color = session.colorHex; input.property = property; input.expectedRevision = session.document.revision
+        if tool != "video.caption" {
+            input.number = tool == "image.text" && session.tool != tool ? 72 : number
+            input.color = session.colorHex; input.property = property
+        }
+        input.expectedRevision = session.document.revision
         if session.project.kind == .image { input.objectIDs = Array(session.selectedLayerSet) }
         Task { do { _ = try await session.performTool(tool, input: input) } catch { session.diagnostic = error.localizedDescription } }
     }
@@ -372,6 +395,45 @@ struct MediaV2Workspace: View {
     }
     private func exchange(_ format: MediaV2ExchangeFormat) {
         Task { do { _ = try await session.exportInterchange(format) } catch { session.diagnostic = error.localizedDescription } }
+    }
+}
+
+private struct MediaV2CaptionStyleInspector: View {
+    @Bindable var session: MediaV2Session
+    @State private var style = CaptionStyle()
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(WorkbenchText.t("字幕样式", "Caption style")).font(.headline)
+            Text(WorkbenchText.t("应用到全部字幕", "Applies to all captions")).font(.caption).foregroundStyle(.secondary)
+            MediaV2NumberField(title: WorkbenchText.t("字号", "Font size"), value: $style.fontSize, suffix: "px")
+            ColorPicker(WorkbenchText.t("文字颜色", "Text color"), selection: Binding(get: { displayColor(style.colorHex) }, set: { style.colorHex = hex($0) }), supportsOpacity: true).frame(minHeight: 44)
+            Toggle(WorkbenchText.t("字幕背景", "Caption background"), isOn: Binding(get: { style.backgroundHex != nil }, set: { style.backgroundHex = $0 ? "#000000" : nil })).frame(minHeight: 44)
+            if style.backgroundHex != nil {
+                ColorPicker(WorkbenchText.t("背景颜色", "Background color"), selection: Binding(get: { displayColor(style.backgroundHex ?? "#000000") }, set: { style.backgroundHex = hex($0) }), supportsOpacity: true).frame(minHeight: 44)
+            }
+            MediaV2NumberField(title: WorkbenchText.t("纵向位置（0–1）", "Vertical position (0–1)"), value: $style.positionY)
+            Picker(WorkbenchText.t("对齐", "Alignment"), selection: Binding(get: { style.alignment ?? .center }, set: { style.alignment = $0 })) {
+                Text(WorkbenchText.t("左对齐", "Leading")).tag(CaptionAlignment.leading)
+                Text(WorkbenchText.t("居中", "Center")).tag(CaptionAlignment.center)
+                Text(WorkbenchText.t("右对齐", "Trailing")).tag(CaptionAlignment.trailing)
+            }
+            Toggle(WorkbenchText.t("保持在安全区域", "Keep in safe area"), isOn: Binding(get: { style.respectsSafeArea ?? true }, set: { style.respectsSafeArea = $0 })).frame(minHeight: 44)
+            Button(WorkbenchText.t("应用字幕样式", "Apply caption style")) {
+                var input = MediaV2ToolInput(); input.captionStyle = style; input.expectedRevision = session.document.revision
+                Task { do { _ = try await session.performTool("video.caption", input: input) } catch { session.diagnostic = error.localizedDescription } }
+            }.frame(minHeight: 44)
+        }.disabled(session.saving)
+            .onAppear { style = session.document.trackGraph.captionStyle ?? CaptionStyle() }
+            .onChange(of: session.document.trackGraph.captionStyleRevision) { _, _ in style = session.document.trackGraph.captionStyle ?? CaptionStyle() }
+    }
+    private func displayColor(_ value: String) -> Color {
+        guard let rgba = try? PreparedVideoColor(hex: value) else { return .white }
+        return Color(.sRGB, red: rgba.red, green: rgba.green, blue: rgba.blue, opacity: rgba.alpha)
+    }
+    private func hex(_ color: Color) -> String {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a)
+        return String(format: "#%02X%02X%02X%02X", Int((r * 255).rounded()), Int((g * 255).rounded()), Int((b * 255).rounded()), Int((a * 255).rounded()))
     }
 }
 #endif

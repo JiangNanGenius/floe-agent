@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 import FloeCore
 import FloeTools
@@ -116,6 +117,22 @@ struct NetworkDiagnosticToolsTests {
         #expect(DeviceICMPPacket.parseEchoReply(Data([0, 0, 0])) == nil)  // truncated
     }
 
+    @Test("Darwin complete IPv4 replies and stripped ICMP replies preserve the same identity")
+    func ipv4FramingPreservesEchoReply() {
+        let payload = Data("per-run authentication token".utf8)
+        var reply = DeviceICMPPacket.buildEchoRequest(identifier: 83, sequence: 42, payload: payload)
+        reply[0] = DeviceICMPPacket.echoReplyType; reply[2] = 0; reply[3] = 0
+        let sum = DeviceICMPPacket.checksum(reply)
+        reply[2] = UInt8(sum >> 8); reply[3] = UInt8(sum & 255)
+        var ip = Data(count: 24) // Include IPv4 options, not a fixed 20-byte assumption.
+        ip[0] = 0x46; ip[9] = 1
+        #expect(DeviceICMPPacket.parseEchoReply(ip + reply) == DeviceICMPPacket.parseEchoReply(reply))
+        #expect(DeviceICMPPacket.parseEchoReply(ip + reply)?.payload == payload)
+        ip[9] = 17
+        #expect(DeviceICMPPacket.parseEchoReply(ip + reply) == nil)
+        #expect(DeviceICMPPacket.parseEchoReply(Data([0x45, 0, 0])) == nil)
+    }
+
     @Test("time-exceeded parsing extracts the embedded echo sequence")
     func timeExceededEmbeddedSequence() {
         // Outer ICMP header (8 bytes) + embedded IPv4 header (20 bytes) +
@@ -125,19 +142,62 @@ struct NetworkDiagnosticToolsTests {
         packet[1] = 0
         let ipStart = 8
         packet[ipStart] = 0x45  // IPv4, 5-word header
+        packet[ipStart + 3] = 28
+        packet[ipStart + 9] = 1
         let icmpStart = ipStart + 20
         packet[icmpStart] = DeviceICMPPacket.echoRequestType
         packet[icmpStart + 6] = 0x00
         packet[icmpStart + 7] = 0x2A
+        let sum = DeviceICMPPacket.checksum(packet)
+        packet[2] = UInt8(sum >> 8);packet[3] = UInt8(sum & 255)
         #expect(DeviceICMPPacket.parseErrorEmbeddedSequence(packet) == 42)
+        var outerIP = Data(count: 20); outerIP[0] = 0x45; outerIP[9] = 1
+        #expect(DeviceICMPPacket.parseErrorEmbeddedSequence(outerIP + packet) == 42)
         // Destination unreachable is accepted too.
         packet[0] = DeviceICMPPacket.destinationUnreachableType
+        packet[2] = 0;packet[3] = 0
+        let unreachableSum = DeviceICMPPacket.checksum(packet)
+        packet[2] = UInt8(unreachableSum >> 8);packet[3] = UInt8(unreachableSum & 255)
         #expect(DeviceICMPPacket.parseErrorEmbeddedSequence(packet) == 42)
+        #expect(DeviceICMPPacket.parseEmbeddedError(packet)?.type == DeviceICMPPacket.destinationUnreachableType)
         // An echo reply is not an error envelope.
         packet[0] = DeviceICMPPacket.echoReplyType
         #expect(DeviceICMPPacket.parseErrorEmbeddedSequence(packet) == nil)
         // Truncated payloads are rejected.
         #expect(DeviceICMPPacket.parseErrorEmbeddedSequence(Data([11, 0, 0, 0])) == nil)
+    }
+
+    @Test("ICMP errors authenticate the quoted probe and accept inner IPv4 options")
+    func embeddedErrorsRetainProbeIdentity() throws {
+        let token = Data([1,2,3,4,5,6]),identifier:UInt16 = 0x3847,sequence:UInt16 = 42
+        let original = DeviceICMPPacket.buildEchoRequest(identifier:identifier,sequence:sequence,payload:token)
+        var packet = Data(count:8+24)
+        packet[0] = DeviceICMPPacket.timeExceededType
+        packet[8] = 0x46;packet[8+3] = UInt8(24+original.count);packet[8+9] = 1
+        packet.replaceSubrange((8+16)..<(8+20),with:[127,0,0,1])
+        packet += original.prefix(10) // Header plus a partial quoted payload.
+        func seal(_ input:Data)->Data {
+            var bytes = input;bytes[2] = 0;bytes[3] = 0
+            let sum = DeviceICMPPacket.checksum(bytes)
+            bytes[2] = UInt8(sum >> 8);bytes[3] = UInt8(sum & 255);return bytes
+        }
+        packet = seal(packet)
+        let parsed = try #require(DeviceICMPPacket.parseEmbeddedError(packet))
+        var address:UInt32 = 0
+        #expect(inet_pton(AF_INET,"127.0.0.1",&address) == 1)
+        #expect(parsed.matches(identifier:identifier,sequence:sequence,destination:address,token:token))
+        #expect(!parsed.matches(identifier:identifier+1,sequence:sequence,destination:address,token:token))
+        #expect(!parsed.matches(identifier:identifier,sequence:sequence+1,destination:address,token:token))
+        #expect(!parsed.matches(identifier:identifier,sequence:sequence,destination:0,token:token))
+        #expect(!parsed.matches(identifier:identifier,sequence:sequence,destination:address,token:Data([9,2,3,4,5,6])))
+        var damaged = packet;damaged[damaged.count-1] ^= 1
+        #expect(DeviceICMPPacket.parseEmbeddedError(damaged) == nil)
+        var wrongProtocol = packet;wrongProtocol[8+9] = 17
+        #expect(DeviceICMPPacket.parseEmbeddedError(seal(wrongProtocol)) == nil)
+        var fragment = packet;fragment[8+7] = 1
+        #expect(DeviceICMPPacket.parseEmbeddedError(seal(fragment)) == nil)
+        var notRequest = packet;notRequest[8+24] = 0
+        #expect(DeviceICMPPacket.parseEmbeddedError(seal(notRequest)) == nil)
     }
 
     // MARK: - Device ping report formatting

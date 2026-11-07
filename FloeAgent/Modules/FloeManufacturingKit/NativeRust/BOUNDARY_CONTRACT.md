@@ -1,6 +1,42 @@
-# Native stock boundary reconstruction — R11
+# Native stock reconstruction and path replay
 
-The C ABI and JSON version remain unchanged. Successful fresh results include
+## Path-prefix material replay (2026-11-07)
+
+The additive `fm_core_preview` C entry point replays supplied path prefixes on
+the execution kernel's stock and cutter profiles, then calls the same bounded
+mesher. It does not plan a path, interpolate toward target CAD, or substitute
+the final result at the end. Cursor fields are `pathIndex`, `pointIndex` and
+`fraction` along that source segment. Every response includes remaining
+occupancy and a completed-path checkpoint; only that checkpoint can accelerate
+forward replay. Rewinding restores the original source checkpoint. Rapid and
+retract paths never remove material and report sampled remaining-stock contact.
+
+The request supplies `formatVersion: 1`, `stock`, `budget`, `paths` (kind,
+points, optional toolAxes and real tool definition), the cursor, optional
+`initialStockState`/`fromPathIndex`, turning approach/nose radius and fixtures.
+Output has `ok`, vertices/triangles, stockState, checkpointState,
+checkpointCollisions, collisions, warnings and sampledPoses. Failure and
+cancellation use the existing failure envelope and never return partial success.
+There is no new dependency or license choice.
+
+Cutting samples use the execution tool-profile and axis interpolation. Legacy
+slot/AC samples retain their original supplied-pose removal semantics. Turning
+prefixes use the native radial-envelope/face approximation; the preview is not
+an exact insert-nose compensated B-rep. Holder/shank checks use configured
+geometry at each material step, before later cuts can hide contact. Turning
+nose/fixture checks sample intermediate positions; missing turning holders and
+generic machine housings are explicitly uncovered. No whole-machine or
+continuous swept collision certificate is claimed. Ball/drill outer-envelope
+fixture intersections stay uncertain. Budget exhaustion is an error.
+
+Swift runs replay off the main actor, coalesces scrub requests, supports native
+cancellation and fences stale frames. TCP, progressive stock and collision
+readout are committed together. End occupancy is compared with the source
+execution, rather than jumping to its saved mesh to hide a mismatch.
+
+## Native stock boundary reconstruction — R11
+
+R11 kept the then-existing C ABI and JSON version unchanged. Successful fresh results include
 `declared-stock-boundary-v1` and `cylinder-domain-field-v1` in `capabilities`.
 The latter identifies the R11 radial-domain implementation in a linked binary.
 The library remains entirely native; qualification Python/C hosts are developer

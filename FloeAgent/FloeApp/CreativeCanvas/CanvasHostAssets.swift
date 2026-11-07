@@ -7,6 +7,7 @@ import UIKit
 import UniformTypeIdentifiers
 import FloeCanvasCore
 import FloeCanvasIntegration
+import FloeCore
 
 /// Canvas originals own their imported bytes. A locator from an imported
 /// document cannot select another directory or fetch an arbitrary URL.
@@ -14,8 +15,10 @@ actor CanvasHostAssets: CanvasAssetStore, CanvasPreviewProviding, CanvasResource
     let root: URL
     private var leases: [UUID: CanvasFileLease] = [:]
     private let maximumBytes = 64 * 1_024 * 1_024
+    private let legacyAssets: [UUID: CanvasAssetReference]
 
-    init(root: URL) throws {
+    init(root: URL, legacyAssets: [UUID: CanvasAssetReference] = [:]) throws {
+        self.legacyAssets = legacyAssets
         self.root = root.standardizedFileURL.resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
     }
@@ -65,6 +68,19 @@ actor CanvasHostAssets: CanvasAssetStore, CanvasPreviewProviding, CanvasResource
     }
 
     func resolve(_ locator: CanvasAssetLocator) throws -> (url: URL, bytes: Int) {
+        let receipt = root.appendingPathComponent(locator.id.uuidString.lowercased() + ".locator.json")
+        if !FileManager.default.fileExists(atPath: receipt.path), let original = legacyAssets[locator.id],
+           let relative = original.localRelativePath {
+            guard relative.hasPrefix("Materials/"), !relative.hasPrefix("/"), !relative.split(separator: "/").contains(".."), !relative.contains("\\"),
+                  locator.contentHash == nil || locator.contentHash == original.contentHash else { throw PersonalContentError.outsideLibrary }
+            let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false)
+                .appendingPathComponent("FloeAgent", isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
+            let url = support.appendingPathComponent(relative).standardizedFileURL.resolvingSymlinksInPath()
+            guard url.path.hasPrefix(support.path + "/") else { throw PersonalContentError.outsideLibrary }
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true, let bytes = values.fileSize else { throw PersonalContentError.missingDocument }
+            return (url, bytes)
+        }
         let locator = try registered(locator)
         guard let path = locator.relativePath, !path.isEmpty, !path.hasPrefix("/"),
               !path.split(separator: "/").contains(".."), !path.contains("\\"), !path.contains("\0") else {

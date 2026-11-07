@@ -27,6 +27,7 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
     var mqttVersion = MQTTVersion.v5
     var username = ""
     var password = ""
+    var networkTimeoutSeconds: TimeInterval = 30
 }
 
 /// Models, the sole receive pump and cancellation belong to this service
@@ -53,7 +54,8 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
     private init(tool: ToolboxTool, lease: SessionLease, journal: CaptureJournal, redactor: CaptureRedactor) {
         id = lease.ownerID; self.tool = tool; self.lease = lease; self.journal = journal; self.redactor = redactor
     }
-    static func open(tool: ToolboxTool, setup: ToolboxConnectionSetup, environment: AppEnvironment) async throws -> ToolboxConnection {
+    static func open(tool: ToolboxTool, setup: ToolboxConnectionSetup, environment: AppEnvironment,
+                     workbenchModels: Bool = true) async throws -> ToolboxConnection {
         let lease = SessionLease(ownerID: UUID())
         let root = try PersonalContentLibrary.applicationRoot().deletingLastPathComponent().appendingPathComponent("Toolbox", isDirectory: true)
         let repository = ToolboxCaptureStore(database: environment.database, exportRoot: root.appendingPathComponent("Exports"))
@@ -84,16 +86,16 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
                 owner.httpModel = HTTPWorkbenchModel(session: session, targetURL: url, journal: journal, provider: provider)
             case .webSocket:
                 guard let url = URL(string: setup.address) else { throw ClientError.invalidConfiguration }
-                let connection = try await WebSocketClientConnection.connect(url: url)
+                let connection = try await WebSocketClientConnection.connect(url: url, timeout: setup.networkTimeoutSeconds)
                 owner.transport = connection
                 let endpoint = try SerialEndpoint(title: "WebSocket", transport: .webSocket, wireProtocol: .webSocketMessage, host: setup.address)
                 let session = try SerialSession(lease: lease, endpoint: endpoint, journal: journal, connection: connection, redactor: redactor, authorize: authorize)
                 owner.serial = session
-                owner.webSocketModel = try WebSocketWorkbenchModel(session: session, journal: journal, provider: provider)
+                if workbenchModels { owner.webSocketModel = try WebSocketWorkbenchModel(session: session, journal: journal, provider: provider) }
             case .mqtt:
                 guard let port = UInt16(setup.port), port > 0 else { throw ClientError.invalidConfiguration }
                 let stream = try await NetworkSerialConnection.connect(host: setup.address, port: port,
-                    tls: setup.useTLS ? ClientTLSConfiguration() : nil)
+                    tls: setup.useTLS ? ClientTLSConfiguration() : nil, timeout: setup.networkTimeoutSeconds)
                 owner.transport = stream
                 let framed = try MQTTFramedConnection(stream: stream)
                 let endpoint = try SerialEndpoint(title: "MQTT", transport: .tcp,
@@ -104,8 +106,8 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
                     clientID: "floe-" + lease.sessionID.uuidString), session: session)
                 owner.mqtt = client
                 try await client.connect(username: setup.username.isEmpty ? nil : setup.username,
-                    password: setup.password.isEmpty ? nil : Data(setup.password.utf8))
-                owner.mqttModel = MQTTWorkbenchModel(client: client, journal: journal, provider: provider)
+                    password: setup.password.isEmpty ? nil : Data(setup.password.utf8), timeout: min(setup.networkTimeoutSeconds, 15))
+                if workbenchModels { owner.mqttModel = MQTTWorkbenchModel(client: client, journal: journal, provider: provider) }
             case .serialAssistant:
                 if setup.serial.connection == .usb { throw ToolboxHostConnectionError.usbHostUnavailable }
                 let wire = try setup.serial.wireProtocol()
@@ -146,11 +148,18 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
             return owner
         } catch { await owner.close(); throw error }
     }
-    func invalidate() { active = false }
-    func close() async {
+    func invalidate() {
         active = false
+        httpModel?.capture.cancelAnalysis()
+        webSocketModel?.capture.cancelAnalysis()
+        mqttModel?.capture.cancelAnalysis()
+        modbusModel?.capture.cancelAnalysis()
+    }
+    func close() async {
+        invalidate()
         await receiver?.close(); receiver = nil
         await mqttModel?.close()
+        if mqttModel == nil { await mqtt?.disconnect() }
         await http?.close()
         await serial?.close()
         await transport?.close(); transport = nil

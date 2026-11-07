@@ -166,6 +166,12 @@ struct FilesView: View {
                                 Label(WorkbenchText.t("媒体工作台", "Media workbench"), systemImage: "film.stack")
                             }
                         }
+                        Button(role: .destructive) {
+                            viewModel.removeRecent(attachment)
+                        } label: {
+                            Label(WorkbenchText.t("从最近文件移除", "Remove from Recents"), systemImage: "trash")
+                        }
+                        .accessibilityIdentifier("files.row.removeRecent")
                     } label: {
                         Image(systemName: "ellipsis.circle")
                             .foregroundStyle(.secondary)

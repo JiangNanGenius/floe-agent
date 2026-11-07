@@ -85,6 +85,10 @@ public struct CAMPreviewFrame:Sendable {
     public var latheStockRadiusMM:Double?
     public var latheDatumZMM:Double?
     public var machine:CAMMachinePresentation? = nil
+    public var remainingMM3:Double? = nil
+    public var materialResolutionMM:Double? = nil
+    public var collisions:[ManufacturingResult.Collision] = []
+    public var progressiveMaterial = false
 }
 
 /// Source-bound viewing data. A timeable source uses its actual CuttingTimeline;
@@ -114,6 +118,7 @@ public struct CAMPreviewProgram:Sendable {
         var distanceSegments:[DistanceSegment]
         var phaseAtSegment:[Double]
         var insertSetup:TurningSetup
+        var material:CAMMaterialReplay? = nil
     }
     private struct DistanceSegment:Sendable {
         var pathIndex:Int;var pointIndex:Int;var start:Double;var length:Double
@@ -165,6 +170,19 @@ public struct CAMPreviewProgram:Sendable {
             }
         }
         guard extent.isFinite,extent >= 0 else { throw ManufacturingError.invalid("CAM preview extent") }
+        var previous = [String:ManufacturingStockState]()
+        for i in jobs.indices {
+            let job = jobs[i],owner = job.workpieceID ?? job.id
+            let incoming = previous[owner]
+            let continuing = job.artifact.startingStockSHA256 != nil
+            let hasIncoming = try incoming?.fingerprint() == job.artifact.startingStockSHA256
+            if !continuing || hasIncoming {
+                jobs[i].material = CAMMaterialReplay(study:job.study,artifact:job.artifact,paths:job.displayPaths,initialStock:continuing ? incoming : nil)
+            } else {
+                warnings.append("This legacy continued-stock source has no retained initial occupancy. Regenerate its source job for progressive removal; retained operation stages remain available.")
+            }
+            previous[owner] = job.artifact.result.stockState
+        }
         var pointCount = 0
         for job in jobs {
             try control.check()
@@ -202,7 +220,7 @@ public struct CAMPreviewProgram:Sendable {
         self.chapters = chapters.sorted { ($0.start ?? .infinity,$0.jobID,$0.id) < ($1.start ?? .infinity,$1.jobID,$1.id) }
         self.boundaries = Array(Set(boundaries+[extent])).filter { $0 >= 0 && $0 <= extent }.sorted()
         resolutionMM = jobs.map { $0.study.stock.resolutionMM }.min() ?? 1
-        self.warnings = warnings+["Material changes at retained operation stages; the viewer does not recompute continuous removal.",
+        self.warnings = warnings+["Material is replayed from the supplied path prefix using the execution stock/profile kernels. Resolution and sampled collision coverage remain explicit.",
             "Paths show supplied TCP geometry. Missing traverses, tool-change movements and general machine IK are not synthesized.",
             "Additional tool-head silhouettes in the viewer are schematic and do not enter collision queries."]
     }
@@ -211,10 +229,12 @@ public struct CAMPreviewProgram:Sendable {
         if forward { return boundaries.first { $0 > position+1e-8 && r.contains($0) } ?? r.upperBound }
         return boundaries.last { $0 < position-1e-8 && r.contains($0) } ?? r.lowerBound
     }
-    public func frame(at position:Double) throws -> CAMPreviewFrame {
+    public func frame(at position:Double,control:ComputationControl = .init()) throws -> CAMPreviewFrame {
+        try control.check()
         guard position.isFinite else { throw ManufacturingError.invalid("CAM preview position") }
         let t = max(0,min(extent,position))
         var paths = paths,tools = [CAMPreviewTool](),coverage = warnings,scene:VirtualScene
+        var remainingMM3:Double?,collisions = [ManufacturingResult.Collision](),progressive = false
         let cellSnapshot = try replay?.snapshot(at:t)
         if case .cell(let project,let artifact) = source,let cellSnapshot {
             scene = try VirtualMachineSceneBuilder.build(configuration:project.scene,project:project.cell,artifact:artifact,snapshot:cellSnapshot)
@@ -273,7 +293,7 @@ public struct CAMPreviewProgram:Sendable {
                 pathID:pathID,pointIndex:pointIndex,feedMMPerMinute:sample.feedMMPerMinute > 0 ? sample.feedMMPerMinute : nil,
                 rpm:rpm,phaseDegrees:phase,turning:turning))
             if turning {
-                tools[tools.count-1].insertSetup = job.insertSetup
+                tools[tools.count-1].insertSetup = result.turningSetupReceipt?.applied ?? TurningSetup()
                 tools[tools.count-1].turningApproach = job.study.turningApproach
                 tools[tools.count-1].insertOutline = result.turningSetupReceipt?.toolProfile.map { [$0[0],$0[1]*(job.study.turningApproach == .negativeZ ? -1 : 1)] }
             } else {
@@ -293,7 +313,26 @@ public struct CAMPreviewProgram:Sendable {
                 }
                 tools[tools.count-1].joints = value
             }
-            if replay == nil { scene = try Self.studyScene(job:job,position:t,path:path,sample:sample,tool:tools.last!) }
+            var material:CAMMaterialReplay.Reply?
+            if let backend = job.material {
+                var index = pointIndex,fraction = 0.0
+                if path.points.indices.contains(index+1) {
+                    let a = path.points[index],delta = zip(a,path.points[index+1]).map { $1-$0 }
+                    let squared = delta.reduce(0.0) { $0+$1*$1 }
+                    if squared>1e-16 { fraction = max(0,min(1,zip(zip(a,sample.pointMM).map { $1-$0 },delta).reduce(0.0) { $0+$1.0*$1.1 }/squared)) }
+                    if fraction>=1-1e-12 { index += 1;fraction = 0 }
+                }
+                material = try backend.snapshot(.init(pathIndex:sample.pathIndex,pointIndex:index,fraction:fraction),control:control)
+                remainingMM3 = material?.stockState.remainingMM3
+                collisions += material?.collisions ?? [];coverage += material?.warnings ?? [];progressive = true
+            }
+            if replay == nil { scene = try Self.studyScene(job:job,position:t,path:path,sample:sample,tool:tools.last!,material:material) }
+            else if let material,let workpieceID = job.workpieceID,
+                    let index = scene.bodies.firstIndex(where:{ $0.id == "workpiece:"+workpieceID }) {
+                scene.bodies[index].shape = .init(type:.mesh,vertices:material.vertices,triangles:material.triangles)
+                scene.bodies[index].geometryKey = job.id+":material:\(t)"
+                scene.bodies[index].geometryClass = .triangleSurface
+            }
             if sample.pathIndex > 0,pointIndex == 0 {
                 let before = job.displayPaths[sample.pathIndex-1].points.last
                 if let before,let first = path.points.first,Self.distance(before,first)>1e-7 { coverage.append("The preceding path has no supplied connecting traverse. The cursor changes to the next known path; that transition is not a simulated safe move.") }
@@ -306,6 +345,8 @@ public struct CAMPreviewProgram:Sendable {
             latheStockRadiusMM:replay == nil ? jobs.first?.study.stock.radiusMM : nil,
             latheDatumZMM:replay == nil ? jobs.first?.study.stock.zMinMM : nil)
         if replay == nil,let study = jobs.first?.study { frame.machine = try CAMMachinePresentation.study(study,tools:tools) }
+        frame.remainingMM3 = remainingMM3;frame.materialResolutionMM = progressive ? resolutionMM : nil
+        frame.collisions = collisions;frame.progressiveMaterial = progressive
         return frame
     }
     private static func distances(_ paths:[ManufacturingResult.Path])->[DistanceSegment] {
@@ -351,17 +392,17 @@ public struct CAMPreviewProgram:Sendable {
     private static func actionName(_ action:CellAction)->String {
         switch action { case .spindle:return "spindle";case .chuck:return "chuck";case .synchronize:return "synchronize";case .transfer:return "transfer";case .operate(let op):return op.study.name;case .wait:return "wait";case .barrier:return "barrier";default:return "machine-event" }
     }
-    private static func studyScene(job:Job,position:Double,path:ManufacturingResult.Path,sample:CuttingTimeline.Sample,tool:CAMPreviewTool) throws -> VirtualScene {
+    private static func studyScene(job:Job,position:Double,path:ManufacturingResult.Path,sample:CuttingTimeline.Sample,tool:CAMPreviewTool,material:CAMMaterialReplay.Reply?) throws -> VirtualScene {
         let study = job.study,result = job.artifact.result,frames = result.frames ?? []
         let stageName = path.operationID.map { "cam-"+$0 } ?? (path.kind == "milling-slot" ? "milling" : path.kind)
         let current = result.stages.firstIndex(where:{ $0.name == stageName })
         let finished = current.map { Set(["initial","continued"]+result.stages.prefix($0).map(\.name)) } ?? Set(["initial","continued"])
         let frame = position>=job.end ? nil : frames.last(where:{ finished.contains($0.name) }) ?? frames.first
-        let vertices = frame?.vertices ?? result.vertices,triangles = frame?.triangles ?? result.triangles
+        let vertices = material?.vertices ?? frame?.vertices ?? result.vertices,triangles = material?.triangles ?? frame?.triangles ?? result.triangles
         let phase = tool.turning ? (tool.phaseDegrees ?? 0)*Double.pi/180 : 0,c = cos(phase),s = sin(phase)
         let stockFrame = CellRigidTransform(rotation:[c,-s,0,s,c,0,0,0,1],translationMM:[0,0,0])
         var bodies = [VirtualSceneBody](),warnings = [String]()
-        if !triangles.isEmpty { bodies.append(.init(id:"stock",role:"stock",groupID:"stock",geometryKey:"study:\(frame?.name ?? "final")",frame:stockFrame,
+        if !triangles.isEmpty { bodies.append(.init(id:"stock",role:"stock",groupID:"stock",geometryKey:material == nil ? "study:\(frame?.name ?? "final")" : "study:material:\(position)",frame:stockFrame,
             shape:.init(type:.mesh,vertices:vertices,triangles:triangles),geometryClass:.triangleSurface)) }
         for fixture in study.fixtures {
             let half = zip(fixture.minMM,fixture.maxMM).map { ($1-$0)/2 },center = zip(fixture.minMM,fixture.maxMM).map { ($0+$1)/2 }

@@ -213,7 +213,16 @@ public enum CanvasEditEngine {
                     nodeID: nodeID, operationIndex: index,
                     nodeByID: nodeByID, scope: batch.scope,
                     violations: &violations) else { continue }
-                node.content = content
+                if case .unknown(let kind, .object(var payload)) = node.content,
+                   kind == "floe.framework.node", case .text(let text) = content {
+                    // The established editor's full node is a lossless
+                    // envelope. A body edit changes only its text, keeping
+                    // kind, media, child projects and scene data intact.
+                    // Normalize during the transaction, not before hashing:
+                    // exact request-ID replay keeps the original batch hash.
+                    payload["text"] = .string(text)
+                    node.content = .unknown(kind: kind, payload: .object(payload))
+                } else { node.content = content }
                 nodeByID[nodeID] = node
                 changedNodeIDs.insert(nodeID)
 

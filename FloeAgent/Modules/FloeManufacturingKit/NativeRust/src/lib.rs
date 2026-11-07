@@ -28,6 +28,7 @@ mod kinematics;
 pub use kinematics::types::PostConfig;
 mod machine;
 mod model;
+mod preview;
 mod sdf;
 mod stock;
 mod tetra;
@@ -141,6 +142,27 @@ pub extern "C" fn fm_core_ac(
         }
     });
     out.into_raw()
+}
+
+/// Replay only supplied, source-bound path prefixes; never plans a new path.
+#[no_mangle]
+pub extern "C" fn fm_core_preview(
+    request_json: *const c_char,
+    callback: Option<ProgressFn>,
+    context: *mut c_void,
+) -> *mut c_char {
+    run_guarded(|| {
+        let request = match unsafe { read_request(request_json) } {
+            Ok(r) => r,
+            Err(e) => return failure_json(&e),
+        };
+        match preview::run(&request, &Progress::new(callback, context)) {
+            Ok(result) => serde_json::to_string(&result)
+                .unwrap_or_else(|e| failure_json(&format!("preview serialization failed: {e}"))),
+            Err(Fail::Cancelled) => failure_json("cancelled"),
+            Err(Fail::Message(m)) => failure_json(&m),
+        }
+    }).into_raw()
 }
 
 /*

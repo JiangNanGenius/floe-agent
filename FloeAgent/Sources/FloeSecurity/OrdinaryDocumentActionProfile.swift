@@ -99,6 +99,24 @@ public enum OrdinaryDocumentActionProfile {
         arguments: [String: Any]
     ) -> OrdinaryDocumentActionRole? {
         switch toolName {
+        case "audio.inspect":
+            guard let path = arguments["path"] as? String, !path.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,
+                  Set(arguments.keys).isSubset(of:["path","startSeconds","endSeconds","bins"]) else { return nil }
+            return .readOnly
+        case "studio.list":
+            return arguments.isEmpty ? .readOnly:nil
+        case "studio.run":
+            guard let id = arguments["projectID"] as? String, UUID(uuidString:id) != nil,
+                  Set(arguments.keys).isSubset(of:["projectID","action","inputJSON"]) else { return nil }
+            return arguments["action"] as? String == "inspectAudio" ? .readOnly:nil
+        case "studio.machining":
+            guard let id = arguments["projectID"] as? String, UUID(uuidString:id) != nil,
+                  Set(arguments.keys).isSubset(of:["projectID","action","expectedRevision","studyJSON","title","offset","limit"]) else { return nil }
+            return arguments["action"] as? String == "inspect" ? .readOnly:nil
+        case "studio.chemistry":
+            guard let id = arguments["projectID"] as? String, UUID(uuidString:id) != nil,
+                  Set(arguments.keys).isSubset(of:["projectID","action","inputJSON"]) else { return nil }
+            return ["capabilities","history","status"].contains(arguments["action"] as? String ?? "") ? .readOnly:nil
         case "document.office.edit":
             return officeActions[actionValue("action", in: arguments) ?? ""]
         case "media.project":
@@ -131,7 +149,7 @@ public enum OrdinaryDocumentActionProfile {
                     return ["list", "query", "evaluate", "capture"].contains(operation)
                         ? .readOnly : nil
                 }
-                if action == "parameters" { return operation == "list" ? .readOnly : nil }
+                if action == "parameters" { return ["list", "building.catalog", "building.inspect"].contains(operation) ? .readOnly : nil }
                 if ["list", "read", "unresolved", "libraryList", "environment.read"].contains(operation) { return .readOnly }
                 // Export to the personal library actually writes shared state.
                 if operation == "libraryExport", payload["global"] as? Bool != true { return .readOnly }

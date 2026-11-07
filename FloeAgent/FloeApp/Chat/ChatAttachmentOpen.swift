@@ -151,7 +151,7 @@ struct ChatAttachmentOpenSheet: View {
                     Group {
                         if let path {
                             FilePreviewView(relativePath: path, center: workspace,
-                                            conversationID: request.conversationID, allowsDesignPage: false)
+                                            conversationID: request.conversationID, onDeleted: { dismiss() }, allowsDesignPage: false)
                         } else if failed {
                             ContentUnavailableView {
                                 Label("chat.attachment.open_failed", systemImage: "doc.badge.ellipsis")

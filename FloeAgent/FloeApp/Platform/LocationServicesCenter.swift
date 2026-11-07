@@ -480,6 +480,29 @@ final class LocationServicesCenter: ObservableObject {
         driver.requestWhenInUseAuthorization()
     }
 
+    /// Wi-Fi identity is location-sensitive. This reuses the one app-wide
+    /// permission owner and never requests a location fix or starts GPS.
+    var canReadWiFiIdentity: Bool {
+        guard allowsSystemLocation, driver.locationServicesEnabled,
+              driver.accuracyAuthorization == .fullAccuracy else { return false }
+        return driver.authorizationStatus == .authorizedWhenInUse || driver.authorizationStatus == .authorizedAlways
+    }
+
+    var hasPreciseLocationAuthorization: Bool { driver.accuracyAuthorization == .fullAccuracy }
+
+    func requestWiFiIdentityAuthorization() async -> Bool {
+        guard allowsSystemLocation, driver.locationServicesEnabled else { return false }
+        refreshAuthorizationStatus()
+        if authorizationStatus == .notDetermined {
+            guard canPresentAuthorizationRequest else { return false }
+            requestInitialAuthorizationIfNeeded()
+            _ = await awaitAuthorizationAnswer()
+        }
+        guard !Task.isCancelled else { return false }
+        refreshAuthorizationStatus()
+        return canReadWiFiIdentity
+    }
+
     // MARK: - One-shot fixes
 
     /// One current fix for an explicit location/weather/nearby step in a real

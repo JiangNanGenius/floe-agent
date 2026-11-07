@@ -26,6 +26,9 @@ nonisolated struct PrintSourceSnapshot: Codable, Sendable {
     var sourceContentSHA256: String?
     var geometrySHA256 = ""
     var geometryAsset = ""
+    /// The fields above retain the captured source geometry. The independent
+    /// printable layout is reproducible and never replaces that source asset.
+    var initialPlacement: PrintInitialPlacement?
     var capturedAt = Date()
     var sourceUnitScaleToMM: Double?
     var outputUnit = "mm"
@@ -52,6 +55,11 @@ nonisolated struct PrintSourceSnapshot: Codable, Sendable {
         }
         if let sourceUnitScaleToMM {
             guard sourceUnitScaleToMM.isFinite, sourceUnitScaleToMM > 0, sourceUnitScaleToMM <= 1_000_000 else { throw PrintError.invalidMesh }
+        }
+        if let initialPlacement {
+            try initialPlacement.validate()
+            guard initialPlacement.sourceFrame == (kind == .cad ? .cadWorldYUp : .fileCoordinatesZUp),
+                  initialPlacement.sourceGeometrySHA256 == geometrySHA256 else { throw PrintError.invalidMesh }
         }
     }
 }
@@ -151,7 +159,7 @@ private nonisolated enum PrintHandoffGeometry: Sendable {
         }
     }
 
-    static func personalRequest(record: PersonalContentRecord, document: FloeCADDocument?) async throws -> PrintPreparationRequest {
+    static func personalRequest(record: PersonalContentRecord, document: FloeCADDocument?, projectID: UUID? = nil) async throws -> PrintPreparationRequest {
         let library = try await PersonalContentService.shared.library(), location = try await library.resolve(record.id)
         let expectedPath = location.record.relativePath
         let file = document == nil ? try await PersonalContentService.shared.originalFile(record.id) : nil
@@ -172,7 +180,7 @@ private nonisolated enum PrintHandoffGeometry: Sendable {
                 let snapshot = try await captureCAD(document, sourceID: "personal:" + record.id.uuidString,
                     ownerID: record.id.uuidString, locator: expectedPath, sourceName: record.title,
                     workspaceID: nil, conversationID: nil, accepted: accepted)
-                return try await create(title: title, folders: record.folders, geometry: .mesh(snapshot.mesh), source: snapshot.source, validateSource: {
+                return try await create(title: title, folders: record.folders, projectID: projectID, geometry: .mesh(snapshot.mesh), source: snapshot.source, validateSource: {
                     try await validateOwner(); try checkCAD(document, coverage: snapshot.coverage)
                 })
             }
@@ -229,17 +237,24 @@ private nonisolated enum PrintHandoffGeometry: Sendable {
               document.exchangeChangeCount == coverage.changeCount, document.contentSHA256 == coverage.contentSHA256 else { throw PrintHandoffError.sourceChanged }
     }
 
-    private static func create(title: String, folders: [String] = [], geometry: PrintHandoffGeometry, source: PrintSourceSnapshot,
+    private static func create(title: String, folders: [String] = [], projectID: UUID? = nil, geometry: PrintHandoffGeometry, source: PrintSourceSnapshot,
                                validateSource: @escaping @MainActor @Sendable () async throws -> Void) async throws -> PersonalContentRecord {
         let library = try await PersonalContentService.shared.library()
         let plateName = IDELanguageRunText.t("盘 1", "Plate 1")
-        let record = try await library.create(kind: .printing, title: title, in: folders) { directory, id in
+        let record = try await library.create(kind: .printing, title: title, in: folders, id: projectID ?? UUID()) { directory, id in
             let mesh = try await convertedMesh(geometry, staging: directory)
+            let prepared = try await PrintInitialPlacement.prepare(mesh,
+                sourceFrame: source.kind == .cad ? .cadWorldYUp : .fileCoordinatesZUp)
+            // A rigid placement may still exceed the selected bed. Keep the
+            // real bounds check; never scale down, clip or drop geometry to fit.
+            _ = try PrintInput(mesh: prepared.mesh, preset: .genericMarlinPLA)
             try Task.checkCancellation()
             try await validateSource()
             let disk = PrintProjectDisk(root: directory.appendingPathComponent("Printing"))
-            let asset = try await disk.storeMesh(mesh)
-            var metadata = source; metadata.geometrySHA256 = mesh.sha256; metadata.geometryAsset = asset
+            let sourceAsset = try await disk.storeMesh(mesh)
+            let asset = try await disk.storeMesh(prepared.mesh)
+            var metadata = source; metadata.geometrySHA256 = mesh.sha256; metadata.geometryAsset = sourceAsset
+            metadata.initialPlacement = prepared.placement
             try metadata.validate()
             var document = PrintProjectDocument(projectID: id)
             document.sourceSnapshot = metadata
@@ -249,7 +264,9 @@ private nonisolated enum PrintHandoffGeometry: Sendable {
             try await disk.create(document)
             let saved = try await disk.load()
             guard saved.sourceSnapshot?.geometrySHA256 == mesh.sha256,
-                  try await disk.mesh(saved).sha256 == mesh.sha256 else { throw PrintError.invalidMesh }
+                  saved.sourceSnapshot?.initialPlacement == prepared.placement,
+                  try await disk.meshAsset(sourceAsset).sha256 == mesh.sha256,
+                  try await disk.mesh(saved).sha256 == prepared.placement.geometrySHA256 else { throw PrintError.invalidMesh }
             try await validateSource()
             try Task.checkCancellation()
         }

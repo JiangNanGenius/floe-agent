@@ -49,7 +49,7 @@ nonisolated struct CanvasHostProvider: Sendable {
 
 struct CanvasHostProposalGateway: CanvasAssistantProposalGateway {
     let canvasID: UUID
-    let repository: FileCanvasRepository
+    let repository: any CanvasDocumentStore
     let provider: CanvasHostProvider
     func propose(request: CanvasAssistantRequest) async throws -> CanvasAssistantProposal {
         let snapshot = try await repository.load(canvasID: canvasID)

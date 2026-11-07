@@ -13,10 +13,13 @@ import FloeManufacturingCore
     static func visibility(_ component:Component,_ settings:CAMPreviewSettings)->CAMObjectVisibility {
         switch component { case .cutting:.solid;case .holder:settings.holderDisplay;case .spindle:settings.spindleDisplay;case .workholding:settings.workholdingDisplay;case .structure:settings.structureDisplay }
     }
-    static func apply(_ root:SCNNode,default component:Component,settings:CAMPreviewSettings) {
+    static func apply(_ root:SCNNode,default component:Component,settings:CAMPreviewSettings,warningParts:Set<Component> = []) {
         func visit(_ node:SCNNode,_ inherited:Component) {
             let selected = components.object(forKey:node).flatMap { Component(rawValue:$0 as String) } ?? inherited
-            if node.geometry != nil { let display = visibility(selected,settings);node.isHidden = display == .hidden;node.opacity = settings.opacity(display) }
+            if let geometry = node.geometry {
+                let display = visibility(selected,settings);node.isHidden = display == .hidden;node.opacity = settings.opacity(display)
+                for material in geometry.materials { material.emission.contents = warningParts.contains(selected) ? UIColor.systemOrange.withAlphaComponent(0.6):UIColor.black }
+            }
             for child in node.childNodes { visit(child,selected) }
         }
         visit(root,component)

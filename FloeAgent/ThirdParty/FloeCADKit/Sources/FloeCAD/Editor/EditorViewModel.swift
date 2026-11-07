@@ -11663,9 +11663,9 @@ final class EditorViewModel {
     var hasPendingRectangle: Bool { rectangleAnchor != nil || rectangleBaseline != nil }
     var rectangleInstruction: String {
         if rectangleType == .threePoint {
-            return rectangleBaseline == nil ? "Draw the baseline" : "Draw the perpendicular height"
+            return rectangleBaseline == nil ? FloeCADStrings.text("cad.ui.rectangle.instruction.baseline", "Draw the baseline") : FloeCADStrings.text("cad.ui.rectangle.instruction.height", "Draw the perpendicular height")
         }
-        return rectangleType == .center ? "Draw from center to corner" : "Draw between opposite corners"
+        return rectangleType == .center ? FloeCADStrings.text("cad.ui.rectangle.instruction.center", "Draw from center to corner") : FloeCADStrings.text("cad.ui.rectangle.instruction.diagonal", "Draw between opposite corners")
     }
 
     func setRectangleType(_ type: RectangleType) {
@@ -18792,7 +18792,7 @@ final class EditorViewModel {
             }
             return [
                 MeasurementRow(label: "Edges", value: "\(edges)"),
-                MeasurementRow(label: entities.count == 1 ? "Length" : "Total Length",
+                MeasurementRow(label: entities.count == 1 ? FloeCADStrings.text("cad.ui.measure.length", "Length") : FloeCADStrings.text("cad.ui.measure.totalLength", "Total Length"),
                     value: Self.formattedLength(entities.reduce(0.0) { $0 + MeasureKit.length(of: $1) })),
             ]
         case .faceSelected(let id):
@@ -18855,7 +18855,7 @@ final class EditorViewModel {
             guard !entities.isEmpty else { return [] }
             let total = entities.reduce(0.0) { $0 + MeasureKit.length(of: $1) }
             var rows = [MeasurementRow(
-                label: entities.count == 1 ? "Length" : "Total Length",
+                label: entities.count == 1 ? FloeCADStrings.text("cad.ui.measure.length", "Length") : FloeCADStrings.text("cad.ui.measure.totalLength", "Total Length"),
                 value: Self.formattedLength(total)
             )]
             if entities.count == 1, let radius = MeasureKit.radius(of: entities[0]) {
@@ -18878,7 +18878,7 @@ final class EditorViewModel {
             return [
                 MeasurementRow(label: "Edges", value: "\(blendSelectedEdges.count)"),
                 MeasurementRow(
-                    label: blendSelectedEdges.count == 1 ? "Length" : "Total Length",
+                    label: blendSelectedEdges.count == 1 ? FloeCADStrings.text("cad.ui.measure.length", "Length") : FloeCADStrings.text("cad.ui.measure.totalLength", "Total Length"),
                     value: Self.formattedLength(total)
                 ),
             ]

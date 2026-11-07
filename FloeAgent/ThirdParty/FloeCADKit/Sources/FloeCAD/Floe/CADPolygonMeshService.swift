@@ -38,6 +38,26 @@ final class CADPolygonMeshService {
               let evaluated = try? CADPolygonMeshKernel.evaluate(definition), evaluated.render == body.render else { return nil }
         return (node,definition,body)
     }
+    /// Shared, inexpensive eligibility reasons for source capture and the
+    /// visible Sculpt entry. Imported render meshes need capture; an absent
+    /// polygon feature alone is not a reason to hide an actual source body.
+    enum CaptureIssue: String {
+        case openSurface, triangleLimit, faceAttributes
+        var message: String {
+            switch self {
+            case .openSurface: return "Exact open surfaces cannot be captured for sculpting. The source was kept."
+            case .triangleLimit: return "Capture supports at most 4096 triangles. Simplify the mesh before capture. The source was kept."
+            case .faceAttributes: return "Capture cannot yet retain face materials or UV editing. The source was kept."
+            }
+        }
+    }
+    static func captureIssue(for body: Body) -> CaptureIssue? {
+        if body.surfaceBRep != nil { return .openSurface }
+        if body.render.triangleCount > 4096 { return .triangleLimit }
+        if body.uvData != nil || !body.materialFaceBindings.isEmpty || body.render.texcoords != nil { return .faceAttributes }
+        return nil
+    }
+
     private let document: FloeCADDocument
     init(document: FloeCADDocument) { self.document = document }
     private nonisolated enum Edit: Sendable {
@@ -107,10 +127,9 @@ final class CADPolygonMeshService {
             node = FeatureNode(name: FloeCADStrings.text("cad.mesh.cage","Polygon cage"),kind: .polygonCage(definition: definition,placement: placement),outputBodyIDs: [bodyID])
         } else if action == "topology.capture" {
             bodyID = BodyID(raw: try Self.uuid(args,"bodyID")); creating = true
-            guard let body = session.document.body(with: bodyID), body.surfaceBRep == nil,
-                  body.render.triangleCount <= 4096 else { throw CADPolygonFailure.unsupported("Capture needs one bounded mesh body; exact open surfaces are unavailable.") }
+            guard let body = session.document.body(with: bodyID) else { throw CADPolygonFailure.invalid("Select a current source body before capture.") }
+            if let issue = Self.captureIssue(for: body) { throw CADPolygonFailure.unsupported(issue.message) }
             guard body.brep == nil || args["forceMesh"] as? Bool == true else { throw CADPolygonFailure.unsupported("Enable mesh conversion before capturing an exact solid.") }
-            guard body.uvData == nil, body.materialFaceBindings.isEmpty, body.render.texcoords == nil else { throw CADPolygonFailure.unsupported("Capture cannot yet retain face materials or UV editing. The source was kept.") }
             placement = body.transform
             definition = .init(cage: try .capture(body.euclidMesh()))
             node = FeatureNode(name: FloeCADStrings.text("cad.mesh.cage","Polygon cage"),kind: .polygonCage(definition: definition,placement: placement),outputBodyIDs: [bodyID])
@@ -215,7 +234,8 @@ final class CADPolygonMeshService {
         } else { session.editFeature(plan.node.id,to: kind,title: FloeCADStrings.text("cad.mesh.topology.editUndo","Edit Polygon Cage")) }
         let introduced = session.lastEvalErrors.contains { id,error in beforeErrors[id] != error }
         guard !introduced, session.lastRebuildRejection.isEmpty,
-              let body = session.document.body(with: plan.body), body.brep == nil else {
+              let committed = Self.currentCage(in: session, bodyID: plan.body),
+              committed.node.id == plan.node.id, committed.definition == definition else {
             document.restoreEditCheckpoint(checkpoint); throw CADPolygonFailure.invalid("The polygon edit could not rebuild. The previous model and redo were kept.")
         }
         session.save()

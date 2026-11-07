@@ -27,10 +27,22 @@ enum AmbientAudioSynthesizer {
         }
     }
 
+    /// Real zero-valued PCM for muted playback. A captured audio route cannot
+    /// recover the meditation track by bypassing a downstream volume control.
+    static func silentLoopWavData() -> Data {
+        renderCache.withLock { state in
+            if let hit = state.silence { return hit }
+            let data = wav(samples: Array(repeating: 0, count: Int(sampleRate)))
+            state.silence = data
+            return data
+        }
+    }
+
     // MARK: - Cache (lock-owning Sendable state, no static mutables)
 
     private struct RenderState {
         var cue: Data?
+        var silence: Data?
     }
 
     private static let renderCache = OSAllocatedUnfairLock(initialState: RenderState())

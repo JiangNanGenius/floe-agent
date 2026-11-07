@@ -119,6 +119,9 @@ public struct ManufacturingStudy: Codable, Equatable, Sendable, Identifiable {
     public var turningToolID: String?
     public var millingToolID: String?
     public var cam: ManufacturingCAM?
+    /// Optional for older archives. The selected setup is saved with the CAD
+    /// machining job; operation frames remain the executable coordinates.
+    public var machineSetup: ManufacturingMachineSetup?
     public var processRequirements: TurningProcessRequirements?
     public var processAssessmentEnabled: Bool?
     public var isProcessAssessmentEnabled: Bool { processRequirements != nil && processAssessmentEnabled != false }
@@ -170,6 +173,7 @@ public struct ManufacturingStudy: Codable, Equatable, Sendable, Identifiable {
         if let turningCutting { try turningCutting.validate() }
         if let turningSetup { try turningSetup.validate(requireOperations:turning.enabled) }
         try cam?.validate()
+        try machineSetup?.coordinateFrame.validate()
         for toolID in [turningToolID,millingToolID].compactMap({ $0 }) {
             try require(!toolID.isEmpty && toolID.utf8.count <= 256,"legacy tool identity")
         }

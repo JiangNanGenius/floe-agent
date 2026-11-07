@@ -2,9 +2,23 @@
 import Foundation
 import CryptoKit
 
-public enum PrintError: Error, Sendable, Equatable {
+public enum PrintError: Error, LocalizedError, Sendable, Equatable {
     case invalidMesh, sizeLimit, unsupportedFormat, invalidSetting(String), outsideBed
     case busy, cancelled, staleResult, invalidArtifact
+    public var errorDescription: String? {
+        let chinese = Locale.current.language.languageCode?.identifier == "zh"
+        switch self {
+        case .invalidMesh: return chinese ? "没有可切片的模型，或模型几何无效。请检查 CAD 模型后重新准备打印。" : "There is no sliceable model, or its geometry is invalid. Check the CAD model and prepare the print again."
+        case .sizeLimit: return chinese ? "模型过大，请减少面数或分盘处理。" : "The model is too large. Reduce its triangle count or use separate plates."
+        case .unsupportedFormat: return chinese ? "不支持此文件格式，请选择 STL、OBJ 或当前打印机支持的结果格式。" : "This format is not supported. Choose STL, OBJ, or an output format supported by the selected printer."
+        case .invalidSetting(let detail): return chinese ? "打印设置有误：\(detail)" : "Invalid print settings: \(detail)"
+        case .outsideBed: return chinese ? "模型超出打印区域，请调整位置、尺寸或打印机设置。" : "The model is outside the build area. Adjust its position, size, or printer settings."
+        case .busy: return chinese ? "正在处理打印工程，请完成或取消当前操作后重试。" : "The print project is busy. Finish or cancel the current operation before trying again."
+        case .cancelled: return chinese ? "切片已取消。" : "Slicing was cancelled."
+        case .staleResult: return chinese ? "模型或设置已改变，请重新切片。" : "The model or settings changed. Slice again."
+        case .invalidArtifact: return chinese ? "切片没有生成有效结果，请查看计算详情后重试。" : "Slicing did not produce a valid result. Check the calculation details and try again."
+        }
+    }
 }
 
 public enum PrintPreset: String, Codable, Sendable, CaseIterable {
@@ -86,16 +100,30 @@ public struct PrintMesh: Sendable, Equatable {
 
 public struct PrintInput: Sendable {
     public static let enginePin = "ff7692241c48c3495da0bb8eb7455f906f3abb2d"
-    public static let adapterVersion = "floe-print-app-4"
+    public static let adapterVersion = "floe-print-app-5"
     public let mesh: PrintMesh
     public let preset: PrintPreset
     public let overrides: [String: Double]
     public let machine: PrintMachineConfiguration
     public let fingerprint: String
 
-    public init(mesh: PrintMesh, preset: PrintPreset, overrides: [String: Double] = [:], machine: PrintMachineConfiguration? = nil) throws {
-        let machine = machine ?? .generic(for: preset)
-        try machine.validate()
+    /// Normalize the three previously persisted human-facing FDM names and
+    /// validate before committing settings, rather than discovering them only
+    /// after an otherwise valid model has been sent to slicing.
+    public static func validatedOverrides(_ proposed: [String: Double], preset: PrintPreset) throws -> [String: Double] {
+        var overrides = proposed
+        if preset == .genericMarlinPLA {
+            for (alias, canonical, divisor) in [("infillPercent", "sliceFillSparse", 100.0),
+                ("topLayers", "sliceTopLayers", 1.0), ("bottomLayers", "sliceBottomLayers", 1.0)] {
+                if let value = overrides.removeValue(forKey: alias) {
+                    let normalized = value / divisor
+                    if let explicit = overrides[canonical], explicit != normalized {
+                        throw PrintError.invalidSetting("Conflicting \(alias) and \(canonical)")
+                    }
+                    overrides[canonical] = normalized
+                }
+            }
+        }
         let limits: [String: ClosedRange<Double>] = preset == .genericMarlinPLA
             ? ["sliceHeight": 0.02...1, "outputTemp": 100...450, "outputBedTemp": 0...150, "outputFeedrate": 1...500,
                "sliceFillSparse": 0...1, "sliceShells": 0...20, "sliceTopLayers": 0...30, "sliceBottomLayers": 0...30,
@@ -109,6 +137,13 @@ public struct PrintInput: Sendable {
                 throw PrintError.invalidSetting(key)
             }
         }
+        return overrides
+    }
+
+    public init(mesh: PrintMesh, preset: PrintPreset, overrides: [String: Double] = [:], machine: PrintMachineConfiguration? = nil) throws {
+        let machine = machine ?? .generic(for: preset)
+        try machine.validate()
+        let overrides = try Self.validatedOverrides(overrides, preset: preset)
         let bed = (width: machine.bedWidth, depth: machine.bedDepth, height: machine.buildHeight)
         for i in stride(from: 0, to: mesh.positions.count, by: 3) {
             guard abs(Double(mesh.positions[i])) <= bed.width/2,

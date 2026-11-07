@@ -9,12 +9,15 @@ struct ChemistryEditorSurface: View {
     let session: ChemistryProjectSession
     var onInsertIntoNotes: ChemistryNotesInsertion?
     @State private var showingEnvironment = false
+    @State private var preparationObjectID: UUID?
     var body: some View {
-        ChemistryWorkbench(state: session.editor)
+        ChemistryWorkbench(state: session.editor, onPrepareStructure: { id in
+            preparationObjectID = id; showingEnvironment = true
+        })
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(IDELanguageRunText.t("环境计算", "Environment calculations"), systemImage: "network") {
-                        showingEnvironment = true
+                        preparationObjectID = nil; showingEnvironment = true
                     }.accessibilityIdentifier("chemistry.environment.open")
                 }
                 if let onInsertIntoNotes {
@@ -31,8 +34,9 @@ struct ChemistryEditorSurface: View {
                 }
             }
             .sheet(isPresented: $showingEnvironment, onDismiss: {
+                preparationObjectID = nil
                 Task { await session.editor.refreshCapabilities(); await session.refreshFromHost() }
-            }) { ChemistryEnvironmentPanel(session: session) }
+            }) { ChemistryEnvironmentPanel(session: session, preparingObjectID: preparationObjectID) }
             .safeAreaInset(edge: .bottom) {
                 if let error = session.diagnostic {
                     DisclosureGroup(IDELanguageRunText.t("操作未完成，查看详情", "Unable to finish. View details")) {

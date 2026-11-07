@@ -255,8 +255,8 @@ public actor ChemistryService {
         guard backend.executionMode == .immediate else { throw ChemistryError.unavailable("Prepare this calculation through its task's configured background jobs.") }
         try await access(id, .compute, env)
         guard let input = p.objects.first(where: { $0.id == objectID }) else { throw ChemistryError.invalid("Object not found.") }
-        if ["uff.energy", "uff.optimize"].contains(method), input.sketchDocument != nil {
-            throw ChemistryError.unavailable("Generate a 3D structure with explicit hydrogens before running this force-field calculation.")
+        if ["uff.energy", "uff.optimize"].contains(method), input.requires3DPreparation {
+            throw ChemistryError.requiresPrepared3DStructure
         }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let digest = ChemistryProjectStore.digest(try encoder.encode(input))

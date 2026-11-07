@@ -1192,7 +1192,8 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
                     contentVersion: kind == .file ? 1 : 0,
                     metadataVersion: 1,
                     byteCount: bytes,
-                    sha256: sha
+                    sha256: sha,
+                    changeTime: now
                 )
                 try db.execute(sql: """
                     INSERT INTO shared_documents_items(
@@ -1272,7 +1273,8 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
                     contentVersion: version,
                     metadataVersion: row["metadata_version"] as Int? ?? 1,
                     byteCount: stage.byteCount,
-                    sha256: stage.sha256
+                    sha256: stage.sha256,
+                    changeTime: now
                 )
                 try db.execute(sql: """
                     UPDATE shared_documents_items
@@ -1338,7 +1340,8 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
                 contentVersion: row["content_version"] as Int? ?? 0,
                 metadataVersion: version,
                 byteCount: row["byte_count"] as Int64? ?? 0,
-                sha256: row["sha256"] as String?
+                sha256: row["sha256"] as String?,
+                changeTime: now
             )
             try db.execute(sql: """
                 UPDATE shared_documents_items
@@ -1457,7 +1460,8 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
                     contentVersion: probe.nextContentVersion,
                     metadataVersion: probe.nextMetadataVersion,
                     byteCount: stage.byteCount,
-                    sha256: stage.sha256
+                    sha256: stage.sha256,
+                    changeTime: now
                 )
                 try db.execute(sql: """
                     UPDATE shared_documents_items
@@ -1529,7 +1533,8 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
                     contentVersion: victim["content_version"] ?? 0,
                     metadataVersion: victim["metadata_version"] ?? 1,
                     byteCount: victimBytes,
-                    sha256: victim["sha256"] as String?
+                    sha256: victim["sha256"] as String?,
+                    changeTime: now
                 )
                 try db.execute(sql: """
                     UPDATE shared_documents_items
@@ -1629,7 +1634,8 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
                     contentVersion: version,
                     metadataVersion: row["metadata_version"] as Int? ?? 1,
                     byteCount: history.byteCount,
-                    sha256: history.sha256
+                    sha256: history.sha256,
+                    changeTime: now
                 )
                 try db.execute(sql: """
                     UPDATE shared_documents_items
@@ -1732,8 +1738,13 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
             let high = try Self.anchorHighSeq(db)
             let rows = try Row.fetchAll(
                 db, sql: """
-                    SELECT * FROM shared_documents_changes
-                    WHERE seq > ? ORDER BY seq LIMIT ?
+                    SELECT c.*,
+                        COALESCE(i.creation_date, c.change_time) AS creation_date,
+                        CASE WHEN i.content_version = c.content_version AND i.metadata_version = c.metadata_version
+                            THEN i.modification_date ELSE c.change_time END AS modification_date
+                    FROM shared_documents_changes c
+                    LEFT JOIN shared_documents_items i ON i.id = c.item_id
+                    WHERE c.seq > ? ORDER BY c.seq LIMIT ?
                     """,
                 arguments: [fromSeq, batch]
             )
@@ -2150,7 +2161,8 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
         contentVersion: Int,
         metadataVersion: Int,
         byteCount: Int64,
-        sha256: String?
+        sha256: String?,
+        changeTime: String
     ) throws -> Int {
         try db.execute(sql: """
             INSERT INTO shared_documents_changes(
@@ -2160,7 +2172,7 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
             """, arguments: [
                 itemID, changeType.rawValue, name, parentID, kind.rawValue,
                 contentVersion, metadataVersion, byteCount, sha256,
-                PersistenceCodec.encode(Date())
+                changeTime
             ])
         let seq = Int(db.lastInsertedRowID)
         // Persist the monotonic high-water BEFORE any other write touches
@@ -2173,10 +2185,9 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
         return seq
     }
 
-    /// Decodes one journal row. Creation/modification dates are not part of
-    /// the journal schema; change consumers get the committed identity,
-    /// name, parent, kind and versions (the working set re-reads live items
-    /// when it needs dates).
+    /// Dates are materialized in the same read snapshot. Creation time is
+    /// immutable; an older change uses the committed version time stored in its journal rather than a newer
+    /// version's modification time. No epoch placeholder reaches Files.
     static func decodeChange(_ row: Row) throws -> SharedDocumentsChange {
         let kindRaw: String = row["change_type"]
         let itemID: String = row["item_id"]
@@ -2197,8 +2208,8 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
             metadataVersion: metadataVersion,
             byteCount: byteCount,
             sha256: sha,
-            creationDate: Date(timeIntervalSince1970: 0),
-            modificationDate: Date(timeIntervalSince1970: 0)
+            creationDate: try PersistenceCodec.decodeDate(row["creation_date"] as String? ?? row["change_time"]),
+            modificationDate: try PersistenceCodec.decodeDate(row["modification_date"] as String? ?? row["change_time"])
         )
         return SharedDocumentsChange(
             sequence: seq,

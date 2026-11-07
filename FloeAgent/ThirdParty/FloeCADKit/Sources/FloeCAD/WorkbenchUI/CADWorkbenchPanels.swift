@@ -366,6 +366,15 @@ struct CADWorkbenchToolsPanel: View {
                             .navigationTitle(FloeCADStrings.text("cad.rig.title","Rig and shape keys"))
                     } label: { Label(FloeCADStrings.text("cad.rig.title","Rig and shape keys"),systemImage:"figure.stand").frame(maxWidth:.infinity,minHeight:44,alignment:.leading) }
                     .accessibilityIdentifier("CADRigOpen")
+                    NavigationLink {
+                        FloeBuildingWorkbenchView(document: document)
+                            .navigationTitle(FloeCADStrings.text("cad.building.defaultName", "Building"))
+                            .navigationBarTitleDisplayMode(.inline)
+                    } label: {
+                        Label(FloeCADStrings.text("cad.building.defaultName", "Building"), systemImage: "building.2")
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    }
+                    .accessibilityIdentifier("CADBuildingOpen")
                     Picker("", selection: $mode) {
                         Text(FloeCADStrings.label("cad.workbench.panel.assembly", "Assembly")).tag(0)
                         Text(FloeCADStrings.label("cad.workbench.panel.drawing", "Drawings")).tag(1)

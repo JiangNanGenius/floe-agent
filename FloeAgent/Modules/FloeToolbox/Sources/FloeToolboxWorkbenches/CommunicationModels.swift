@@ -9,18 +9,69 @@ import FloeToolboxClients
     @Published public private(set) var analysis: SerialAnalysisResult?
     @Published public var question = ""
     @Published public private(set) var analyzing = false
+    @Published public private(set) var analysisCancelled = false
+    @Published public private(set) var analysisTimedOut = false
     @Published public private(set) var failed = false
     @Published public private(set) var saveFailed = false
     private let journal: CaptureJournal
     private let analyzeHost: (@Sendable (String) async throws -> SerialAnalysisResult)?
-    public init(journal: CaptureJournal,analyze: (@Sendable (String) async throws -> SerialAnalysisResult)? = nil) { self.journal = journal; analyzeHost = analyze }
+    private let analysisTimeout: Duration
+    private var analysisID: UUID?
+    // Contract tests retain the owned task to await an actually late callback.
+    internal private(set) var analysisOperation: Task<Void,Never>?
+    private var analysisDeadline: Task<Void,Never>?
+    private var analysisCompletion: CheckedContinuation<Void,Never>?
+    public init(journal: CaptureJournal,analysisTimeout: Duration = .seconds(60),analyze: (@Sendable (String) async throws -> SerialAnalysisResult)? = nil) {
+        self.journal = journal; self.analysisTimeout = analysisTimeout; analyzeHost = analyze
+    }
     public func refresh() async {
         let state = await journal.snapshot(), count = state.droppedRecords+UInt64(max(0,state.records.count-200))
         if records.last?.sequence != state.records.last?.sequence || dropped != count { records = Array(state.records.suffix(200)); dropped = count }
     }
-    public func analyze() async {
-        guard !analyzing, let analyzeHost else { failed = true; return }; analyzing = true; defer { analyzing = false }
-        do { analysis = try await analyzeHost(question); failed = false } catch { failed = true }
+    public func analyze(defaultQuestion: String = "Analyze the current communication capture.") async {
+        guard !analyzing, !Task.isCancelled else { return }
+        guard let analyzeHost else { analysis = nil; failed = true; return }
+        let id = UUID(), typed = question.trimmingCharacters(in:.whitespacesAndNewlines)
+        let frozen = typed.isEmpty ? defaultQuestion:typed
+        analysisID = id; analyzing = true; analysis = nil
+        analysisCancelled = false; analysisTimedOut = false; failed = false
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { completion in
+                analysisCompletion = completion
+                analysisOperation = Task { [weak self] in
+                    do {
+                        let result = try await analyzeHost(frozen)
+                        guard let self, self.analysisID == id, !Task.isCancelled else { return }
+                        self.analysis = result; self.finishAnalysis(id)
+                    } catch {
+                        guard let self, self.analysisID == id else { return }
+                        self.analysisCancelled = error is CancellationError || Task.isCancelled
+                        self.failed = !self.analysisCancelled; self.finishAnalysis(id)
+                    }
+                }
+                let timeout = analysisTimeout
+                analysisDeadline = Task { [weak self] in
+                    do { try await Task.sleep(for:timeout) } catch { return }
+                    guard let self, self.analysisID == id else { return }
+                    self.analysisTimedOut = true; self.failed = true
+                    self.analysisOperation?.cancel(); self.finishAnalysis(id)
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.cancelAnalysis(id: id) }
+        }
+    }
+    public func cancelAnalysis() { if let id = analysisID { cancelAnalysis(id:id) } }
+    private func cancelAnalysis(id:UUID) {
+        guard analysisID == id else { return }
+        analysisOperation?.cancel(); analysis = nil; failed = false
+        analysisCancelled = true; analysisTimedOut = false; finishAnalysis(id)
+    }
+    private func finishAnalysis(_ id:UUID) {
+        guard analysisID == id else { return }
+        analysisID = nil; analyzing = false; analysisOperation = nil
+        analysisDeadline?.cancel(); analysisDeadline = nil
+        let completion = analysisCompletion; analysisCompletion = nil; completion?.resume()
     }
     public func save() async -> URL? {
         do { let value = try await journal.saveSnapshot(); saveFailed = false; return value } catch { saveFailed = true; return nil }
@@ -59,7 +110,7 @@ import FloeToolboxClients
         } catch HTTPClientFailure.responseLimit(let partial) { reply = partial; failed = true; await capture.refresh() }
         catch { failed = true; await capture.refresh() }
     }
-    public func close() async { await session.close() }
+    public func close() async { capture.cancelAnalysis(); await session.close() }
 }
 @MainActor public final class WebSocketWorkbenchModel: ObservableObject {
     @Published public var input = ""
@@ -84,7 +135,7 @@ import FloeToolboxClients
         do { _ = try await session.receiveMessage(expected:session.lease); failed = false; await capture.refresh() }
         catch { failed = true }
     }
-    public func close() async { await session.close() }
+    public func close() async { capture.cancelAnalysis(); await session.close() }
 }
 @MainActor public final class MQTTWorkbenchModel: ObservableObject {
     @Published public var topic = ""
@@ -129,6 +180,6 @@ import FloeToolboxClients
         let batch = await client.drainMessages(); if !batch.messages.isEmpty { messages += batch.messages }; let excess = max(0,messages.count-200)
         if excess > 0 { messages.removeFirst(excess); localDropped += UInt64(excess) }; let totalDropped = batch.dropped+localDropped; if dropped != totalDropped { dropped = totalDropped }; await capture.refresh()
     }
-    public func close() async { updates?.cancel(); updates = nil; await client.disconnect() }
+    public func close() async { capture.cancelAnalysis(); updates?.cancel(); updates = nil; await client.disconnect() }
     deinit { updates?.cancel() }
 }

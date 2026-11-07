@@ -298,12 +298,22 @@ public enum MutationTargetResolver {
         stagedDocument: CanvasStagedDocumentAccess? = nil,
         fileManager: FileManager = .default
     ) -> MutationTargetResolution {
-        guard let descriptor, descriptor.effect == .mutating else {
+        guard let descriptor else {
             return MutationTargetResolution(keys: [], mutableTargets: [], hasUnresolvedExtent: false)
         }
-        let rootKey = workspaceWildcardKey(root: workspaceRootURL)
-        let arguments = (try? JSONSerialization.jsonObject(with: call.argumentsJSON)) as? [String: Any]
+        let arguments = (try? JSONSerialization.jsonObject(with:call.argumentsJSON)) as? [String:Any]
         let name = call.toolName
+        // Studio persists document bytes under its existing internalState
+        // lifecycle. Only its closed typed contract can classify that extent;
+        // other internal-state tools keep their existing empty-key semantics.
+        let nativeStudio = descriptor.effect == .internalState
+            && TypedMutationContract.specs(for:name,arguments:arguments ?? [:]).contains {
+                $0.storeKey == TypedMutationContract.nativeStudioLibraryStoreKey
+            }
+        guard descriptor.effect == .mutating || nativeStudio else {
+            return MutationTargetResolution(keys:[],mutableTargets:[],hasUnresolvedExtent:false)
+        }
+        let rootKey = workspaceWildcardKey(root:workspaceRootURL)
 
         // J Canvas-staged contract: an authorized staged document addressed
         // by its exact relative path or canonical absolute form pins to the

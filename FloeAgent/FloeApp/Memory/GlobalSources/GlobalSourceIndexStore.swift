@@ -98,17 +98,22 @@ nonisolated final class GlobalSourceIndexStore: Sendable {
     func lexical(_ query: String, limit: Int = 80) async throws -> [(GlobalSourceDescriptor, GlobalSourceChunk)] {
         let words = query.split { !$0.isLetter && !$0.isNumber }.map(String.init).prefix(12)
         let match = words.map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }.joined(separator: " OR ")
-        guard !match.isEmpty else { return [] }
         let literal = "%" + query.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_") + "%"
+        let fts = match.isEmpty ? "" : "c.id IN (SELECT chunk_id FROM global_memory_fts WHERE global_memory_fts MATCH ? LIMIT 200) OR "
+        var arguments: StatementArguments = []
+        if !match.isEmpty { arguments += [match] }
+        arguments += [literal, literal, min(200, max(1, limit))]
+        let boundArguments = arguments
         return try await database.reader { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT s.descriptor,c.* FROM global_memory_chunks c JOIN global_memory_sources s ON s.id=c.source_id
                 WHERE s.available=1 AND s.excluded=0 AND c.revision=s.revision AND
-                (c.id IN (SELECT chunk_id FROM global_memory_fts WHERE global_memory_fts MATCH ? LIMIT 200) OR c.text LIKE ? ESCAPE '\' OR CAST(s.descriptor AS TEXT) LIKE ? ESCAPE '\') LIMIT ?
-                """, arguments: [match, literal, literal, min(200, max(1, limit))])
+                (\(fts)c.text LIKE ? ESCAPE '\\' OR CAST(s.descriptor AS TEXT) LIKE ? ESCAPE '\\') LIMIT ?
+                """, arguments: boundArguments)
             return try rows.map(Self.decodeChunk)
         }
     }
+
     func semanticCandidates(model: String, revision: String) async throws -> [(GlobalSourceDescriptor, GlobalSourceChunk)] {
         try await database.reader { db in
             try Row.fetchAll(db, sql: "SELECT s.descriptor,c.* FROM global_memory_chunks c JOIN global_memory_sources s ON s.id=c.source_id WHERE s.available=1 AND s.excluded=0 AND c.revision=s.revision AND c.model=? AND c.model_revision=? ORDER BY s.indexed_at DESC LIMIT 4000", arguments: [model, revision]).map(Self.decodeChunk)

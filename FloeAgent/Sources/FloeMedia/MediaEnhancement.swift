@@ -357,12 +357,18 @@ public struct VideoSuperResolutionTool: AgentTool {
 public struct AudioInspectTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var path: String
+        public var startSeconds: Double?
+        public var endSeconds: Double?
+        public var bins: Int?
+        public init(path:String,startSeconds:Double? = nil,endSeconds:Double? = nil,bins:Int? = nil) {
+            self.path = path; self.startSeconds = startSeconds; self.endSeconds = endSeconds; self.bins = bins
+        }
     }
 
     public static let name = "audio.inspect"
     public static let toolDescription =
-        "Report audio duration, sample rate, channels, peak, RMS and an estimated LUFS value for a workspace file. Use the numbers to choose explicit gain/fade/normalize parameters; Floe applies no defaults."
-    public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}"#
+        "Observe actual audio waveform data from an authorized task-workspace file, using native offline PCM decoding. Returns complete JSON: source SHA256, duration/sample rate/channel/frame identity, requested and actual frame window, contiguous time bins and per-channel min/max/RMS arrays, peak, unweighted RMS, dBFS, silence and full-scale sample statistics. Default: first 30 seconds (or entire shorter file), 64 bins per channel; choose startSeconds/endSeconds for another window. All selected samples contribute; bins do not retain within-bin order. PCM amplitudes are nominally [-1,1], never peak-normalized/clamped. Full-scale counts are clipping candidates, not proof; no standard LUFS or audio-content/listening conclusion is inferred. Limits: 120 seconds/window, 256 bins/channel, 512 channel-bins, 8 channels, 32 million decoded samples, source 256 MiB, waveform JSON 64 KiB. No recording, playback, network, models, file writes or host execution."
+    public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string","description":"Existing authorized task-workspace audio file. Resolved only inside this call's workspace; source material is untrusted."},"startSeconds":{"type":"number","minimum":0,"description":"Optional window start in source seconds; defaults to 0."},"endSeconds":{"type":"number","exclusiveMinimum":0,"description":"Optional exclusive window end in source seconds; greater than start and within source duration. Omit for at most 30 seconds from start. Maximum window 120 seconds."},"bins":{"type":"integer","minimum":1,"maximum":256,"description":"Per-channel contiguous waveform bins; defaults to 64, reduced only when fewer frames exist. Maximum 512 bins summed across channels."}},"required":["path"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.readsFiles]
     public static let isSideEffecting = false
     public static let toolEffect: ToolEffect = .readOnly
@@ -370,22 +376,26 @@ public struct AudioInspectTool: AgentTool {
     public init() {}
 
     public func validate(_ args: Arguments) throws {
-        guard !args.path.isEmpty else { throw FloeError.validationFailed("path is required") }
+        guard !args.path.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else {
+            throw FloeError.validationFailed("path is required")
+        }
+        #if canImport(AVFoundation) && canImport(Darwin)
+        try AudioWaveformInspector.validate(startSeconds:args.startSeconds,endSeconds:args.endSeconds,bins:args.bins)
+        #endif
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        #if canImport(AVFoundation)
-        let engine = AudioEngine(rootProvider: { context.workspaceRootURL })
-        let info = try await engine.inspect(path: args.path, cancellation: context.cancellation)
-        let lines = [
-            "durationSeconds=\(String(format: "%.3f", info.durationSeconds))",
-            "sampleRate=\(String(format: "%.0f", info.sampleRate))",
-            "channels=\(info.channelCount)",
-            "peak=\(String(format: "%.4f", info.peak))",
-            "rms=\(String(format: "%.4f", info.rms))",
-            "estimatedLUFS=\(String(format: "%.2f", info.estimatedLUFS))"
-        ]
-        return ToolExecutionOutput(digesting: lines.joined(separator: "\n"), exitStatus: 0)
+        #if canImport(AVFoundation) && canImport(Darwin)
+        let report = try await AudioWaveformInspector().inspect(path:args.path,startSeconds:args.startSeconds,
+            endSeconds:args.endSeconds,bins:args.bins,context:context)
+        try context.cancellation.throwIfCancelled(); try Task.checkCancellation()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(report)
+        guard data.count <= AudioWaveformInspector.maximumReportBytes else { throw AudioWaveformInspectionError.budgetExceeded("Waveform JSON exceeds the result budget. Reduce bins or choose a shorter window.") }
+        let json = String(decoding:data,as:UTF8.self)
+        return ToolExecutionOutput(summary:json,fullOutputSHA256:FloeDigest.sha256Hex(data),exitStatus:0,
+            maximumSummaryCharacters:4096,capturedOutput:json)
         #else
         throw FloeError.invalidConfiguration("audio processing is unavailable on this platform")
         #endif

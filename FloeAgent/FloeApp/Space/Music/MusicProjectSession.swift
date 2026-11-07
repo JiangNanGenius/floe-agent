@@ -17,6 +17,11 @@ import FloeMusicKeyboard
 /// transport. Editor windows do not own renders or recorded original files.
 @MainActor @Observable final class MusicProjectSession {
     private static var sessions: [UUID: MusicProjectSession] = [:]
+    static func requireIdleForDeletion(id: UUID) throws {
+        guard let value = sessions[id] else { return }
+        guard !value.saving, !value.isRendering, !value.isLive, value.player?.isPlaying != true, !value.isRecording, !value.isMIDIRecording else { throw PersonalFileActionError.busy }
+    }
+
     let id: UUID
     let root: URL
     let repository: NativeMusicRepository

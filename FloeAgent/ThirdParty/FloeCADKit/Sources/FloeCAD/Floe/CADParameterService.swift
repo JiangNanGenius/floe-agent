@@ -39,7 +39,7 @@ public final class CADParameterService {
         "variable.create", "variable.update", "variable.delete",
         "feature.setExpression",
         "undo", "redo",
-    ] + CADDatumService.actions + CADSketchCurveService.actions + CADThreadService.actions + CADLoftSurfaceService.actions + CADMechanicalService.actions
+    ] + CADDatumService.actions + CADSketchCurveService.actions + CADThreadService.actions + CADLoftSurfaceService.actions + CADMechanicalService.actions + CADBuildingToolService.actions
 
     /// Sketch-entity kinds with a real typed geometry edit. Polygon remains
     /// query-only until its side/rotation semantics are promoted with the same
@@ -72,6 +72,9 @@ public final class CADParameterService {
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
         if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "parameter", action: action) { return refusal }
         if let failure = revisionPinFailure(args) { return failure }
+        if CADBuildingToolService.actions.contains(action) {
+            return CADBuildingToolService(document: document).handle(action: action, args: args)
+        }
         if CADSketchCurveService.actions.contains(action) {
             return CADSketchCurveService(document: document).handle(action: action, args: args)
         }

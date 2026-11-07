@@ -430,7 +430,8 @@ struct WorkspaceIDEView: View {
                         ArchiveBrowserView(relativePath: tab.relativePath, center: center, showsClose: false)
                             .id(tab.id)
                     } else {
-                        FilePreviewView(relativePath: tab.relativePath, center: center, allowsIDEExpansion: false)
+                        FilePreviewView(relativePath: tab.relativePath, center: center,
+                            onDeleted: { Task { await tabs.close(tab.id) } }, allowsIDEExpansion: false)
                             .id(tab.id)
                     }
                 }

@@ -25,6 +25,30 @@ private final class PathResult: @unchecked Sendable {
         return try await gate.wait(seconds:2)
     }
 }
+
+/// Read the Wi-Fi path's actual router addresses. A subnet-derived .1 address
+/// is not evidence of a gateway; cellular or unavailable Wi-Fi stays absent.
+public enum WiFiGatewayService {
+    public static func current() async throws -> String? {
+        let monitor = NWPathMonitor(requiredInterfaceType: .wifi)
+        let gate = WiFiCompletion<String?>()
+        monitor.pathUpdateHandler = { path in
+            guard path.status == .satisfied else { gate.finish(.success(nil)); return }
+            let addresses = path.gateways.compactMap { endpoint -> (String, Bool)? in
+                guard case .hostPort(let host, _) = endpoint else { return nil }
+                switch host {
+                case .ipv4(let address): return (String(describing: address), true)
+                case .ipv6(let address): return (String(describing: address), false)
+                default: return nil
+                }
+            }
+            gate.finish(.success(addresses.first(where: { $0.1 })?.0 ?? addresses.first?.0))
+        }
+        monitor.start(queue: DispatchQueue(label: "floe.toolbox.wifi-gateway"))
+        defer { monitor.cancel() }
+        return try await gate.wait(seconds: 3)
+    }
+}
 private final class WiFiCompletion<T:Sendable>: @unchecked Sendable {
     private let lock = NSLock(); private var value: Result<T,any Error>?
     private var waiter: CheckedContinuation<T,any Error>?

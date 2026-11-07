@@ -61,7 +61,10 @@
 //                      inserted document image — sets the material texture.
 //   * text             always refused with `text_mesh_unavailable`.
 //  Destructive actions accept `forceMesh:true` to acknowledge dropping an
-//  analytic B-rep; without it they return `brep_body_refused`.
+//  analytic B-rep; without it they return `brep_body_refused`. This flag is
+//  explicit consent for a supported mesh rebuild, not a standalone conversion
+//  command. Non-converting actions and the misspelled `force_mesh` flag refuse
+//  rather than ignore an apparent conversion request.
 //
 
 import Foundation
@@ -404,6 +407,7 @@ public final class CADMeshService {
     /// the caller's actor. A caller cancellation is still observed at every
     /// service boundary and before the one commit.
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
+        if let refusal = Self.conversionFlagRefusal(action: action, args: args) { return refusal }
         if CADHybridFeatureService.actions.contains(action) {
             if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "mesh", action: action) { return refusal }
             return CADHybridFeatureService(document:document).handle(action:action,args:args)
@@ -431,6 +435,7 @@ public final class CADMeshService {
     /// The caller's task cancellation flips the thread-safe token immediately
     /// and cancels the joined worker; a late result is discarded before commit.
     public func handleAsync(action: String, args: [String: Any]) async -> [String: Any] {
+        if let refusal = Self.conversionFlagRefusal(action: action, args: args) { return refusal }
         if CADHybridFeatureService.actions.contains(action) {
             if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "mesh", action: action) { return refusal }
             return await CADHybridFeatureService(document:document).handleAsync(action:action,args:args)
@@ -452,6 +457,7 @@ public final class CADMeshService {
 
     func handleAsync(action: String, args: [String: Any],
                      cancellation: CADMeshCancellation) async -> [String: Any] {
+        if let refusal = Self.conversionFlagRefusal(action: action, args: args) { return refusal }
         if Task.isCancelled { cancellation.cancel() }
         guard !document.isClosed else { return Self.closedReply() }
         if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "mesh", action: action) { return refusal }
@@ -473,6 +479,7 @@ public final class CADMeshService {
 
     func handle(action: String, args: [String: Any],
                 cancellation: CADMeshCancellation) -> [String: Any] {
+        if let refusal = Self.conversionFlagRefusal(action: action, args: args) { return refusal }
         if cancellation.isCancelled || Task.isCancelled { return Self.cancelledReply() }
         guard !document.isClosed else { return Self.closedReply() }
         if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "mesh", action: action) { return refusal }
@@ -1176,6 +1183,24 @@ public final class CADMeshService {
     private func resolutionFailure(ids: [String]) -> [String: Any] {
         if case let .failed(response) = resolveBodies(ids: ids) { return response }
         return Self.fail("bad_request", "Bodies could not be resolved.")
+    }
+
+    /// Validate only the mesh-conversion acknowledgement, before every
+    /// service route. Other operation arguments retain their existing parser.
+    /// In particular transform/material/normals do not become conversions just
+    /// because a model added a flag to an otherwise valid edit.
+    private static func conversionFlagRefusal(action: String, args: [String: Any]) -> [String: Any]? {
+        if args["force_mesh"] != nil {
+            return fail("unknown_argument", "Unknown argument 'force_mesh'. The typed flag is 'forceMesh'; it only acknowledges an explicitly supported mesh rebuild, not a standalone conversion.")
+        }
+        guard let raw = args["forceMesh"] else { return nil }
+        guard let value = raw as? NSNumber, CFGetTypeID(value) == CFBooleanGetTypeID() else {
+            return fail("bad_request", "forceMesh must be a JSON boolean; strings, numbers and null do not acknowledge conversion.")
+        }
+        guard ["combine", "boolean", "repair", "simplify", "topology.capture"].contains(action) else {
+            return fail("unsupported_argument", "'\(action)' does not accept forceMesh and does not convert an exact body to a mesh. forceMesh only acknowledges an explicit combine/boolean/repair/simplify/topology.capture rebuild. Nothing was changed.")
+        }
+        return nil
     }
 
     /// Refuses destructive mesh ops on exact B-rep bodies unless the caller
@@ -2177,7 +2202,7 @@ public final class CADMeshService {
 
     private static func boolean(_ raw: Any?) -> Bool {
         guard let raw, let nsNumber = raw as? NSNumber else { return false }
-        return CFGetTypeID(nsNumber) == CFBooleanGetTypeID()
+        return CFGetTypeID(nsNumber) == CFBooleanGetTypeID() && nsNumber.boolValue
     }
 
     private static func doubles(_ raw: Any?) -> [Double]? {

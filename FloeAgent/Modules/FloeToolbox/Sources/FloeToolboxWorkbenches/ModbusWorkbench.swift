@@ -39,7 +39,7 @@ import FloeToolboxClients
             result = try await client.exchange(unit:unit,address:address,operation:operation); resultAddress = address; failed = false; await capture.refresh()
         } catch { failed = true; await capture.refresh() }
     }
-    public func close() async { await client.session.close() }
+    public func close() async { capture.cancelAnalysis(); await client.session.close() }
 }
 public struct ModbusWorkbenchView: View {
     @ObservedObject private var model: ModbusWorkbenchModel

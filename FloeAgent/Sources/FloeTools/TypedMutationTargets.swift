@@ -162,6 +162,19 @@ public enum TypedMutationContract {
     /// `serviceStorePaths` key for the app-owned media project store
     /// (`MediaProjectStore`, `media-project-<uuid>.json` records).
     public static let mediaProjectStoreKey = "mediaProject"
+    /// Real PersonalContentLibrary instance root, frozen by the native host.
+    /// This bounds DOCUMENT contents, creation staging/recovery and exports;
+    /// it is a service container extent, never a fabricated record path.
+    /// Existing internal authorization/index bookkeeping remains internalState.
+    public static let nativeStudioLibraryStoreKey = "nativeStudioLibrary"
+
+    public static func nativeStudioContainerPath(serviceStorePaths:[String:String]) -> String? {
+        guard let path = serviceStorePaths[nativeStudioLibraryStoreKey], (path as NSString).isAbsolutePath,
+              !path.contains("\0"), !path.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else { return nil }
+        let canonical = URL(fileURLWithPath:path,isDirectory:true).standardizedFileURL.resolvingSymlinksInPath().path
+        return canonical == "/" ? nil:canonical
+    }
+
     /// Trusted root of the personal CAD material library. Its fixed record is
     /// library.json; model arguments never select a file under this root.
     public static let cadMaterialLibraryStoreKey = "cadMaterialLibrary"
@@ -203,6 +216,8 @@ public enum TypedMutationContract {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         switch toolName {
+        case "studio.create", "studio.edit", "studio.run", "studio.media", "studio.chemistry", "studio.machining":
+            return nativeStudioSpecs(toolName:toolName,arguments:arguments)
         case "document.pdf.edit":
             // inputPath is read-only; the verified new copy is outputPath.
             return [.init(argument: "outputPath", role: .outputWrite, whenAbsent: .required)]
@@ -440,6 +455,78 @@ public enum TypedMutationContract {
         }
     }
 
+
+    /// Closed audit table. These tools accept IDs and typed data, not mutable
+    /// host paths. Actual task/project binding, source reads, CAS and native
+    /// locks remain mandatory in the service after this classification.
+    public static let nativeStudioMediaToolIDs: Set<String> = [
+            "image.rectangle", "image.ellipse", "image.lasso", "image.polygon", "image.feather", "image.inverse", "image.deselect",
+            "image.brush", "image.eraser", "image.fill", "image.eyedropper", "image.layer-mask", "image.vector-mask", "image.clip-mask",
+            "image.adjustment-layer", "image.group-layer", "image.duplicate-layer", "image.merge-layer", "image.crop", "image.rotate", "image.flip",
+            "image.text", "image.shape", "image.pen", "image.anchor", "image.stroke-fill", "image.exposure", "image.levels",
+            "image.hsl", "image.white-balance", "image.bw", "video.trim", "video.split", "video.slip", "video.speed",
+            "video.transition", "video.pip", "video.video-mask", "video.video-feather", "video.video-transform", "video.keyframes", "video.easing",
+            "video.caption", "video.caption-time", "video.mix", "video.fades", "video.audio-sync", "video.ripple", "video.roll",
+            "video.srt", "image.align", "image.blend-mode", "media.import"
+    ]
+
+    private static func nativeStudioSpecs(toolName:String,arguments:[String:Any]) -> [TypedOutputSpec] {
+        func keys(_ allowed:Set<String>) -> Bool { Set(arguments.keys).isSubset(of:allowed) }
+        func text(_ key:String,_ maximum:Int) -> String? {
+            guard let value = arguments[key] as? String, !value.isEmpty, value.utf8.count <= maximum else { return nil }
+            return value
+        }
+        func inputIsNative() -> Bool {
+            if arguments["inputJSON"] == nil || arguments["inputJSON"] is NSNull { return true }
+            guard let json = arguments["inputJSON"] as? String else { return false }
+            guard json.utf8.count <= 262_144, let object = try? JSONSerialization.jsonObject(with:Data(json.utf8)) as? [String:Any] else { return false }
+            return object["environmentID"] == nil || object["environmentID"] as? String == "native.local"
+        }
+        let role: TypedMutableRole
+        if toolName == "studio.create" {
+            guard keys(["kind","title","format"]), let kind = arguments["kind"] as? String,
+                  ["canvas","diagram","image","drawing","video","music","meeting","chemistry","document","cad2D","cad3D"].contains(kind),
+                  let title = arguments["title"] as? String, (1...160).contains(title.count) else { return [] }
+            if let format = arguments["format"], !(format is NSNull) {
+                guard kind == "document", let name = format as? String, ["docx","xlsx","pptx","md"].contains(name) else { return [] }
+            }
+            role = .outputWrite
+        } else {
+            guard let raw = arguments["projectID"] as? String, UUID(uuidString:raw) != nil else { return [] }
+            switch toolName {
+            case "studio.edit":
+                guard keys(["projectID","expectedRevision","operationsJSON"]), text("expectedRevision",4096) != nil,
+                      let json = text("operationsJSON",2_097_152),
+                      let operations = try? JSONSerialization.jsonObject(with:Data(json.utf8)),
+                      operations is [Any] || operations is [String:Any] else { return [] }
+                // Meeting session open/state may create an independent Notes
+                // original, even before todo/decision/summary. Its root is not
+                // bound here, so keep those payloads on the existing policy.
+                if let object = operations as? [String:Any], let action = object["action"] as? String,
+                   ["note","todo","decision","summary"].contains(action) { return [] }
+            case "studio.run":
+                guard keys(["projectID","action","inputJSON"]), let action = arguments["action"] as? String,
+                      ["calculate","exportSTL","exportToolpath","slice","renderWAV","renderMP3","exportMedia","exportOriginal","exportORA","exportPSD","exportOTIO"].contains(action), inputIsNative() else { return [] }
+            case "studio.media":
+                guard keys(["projectID","toolID","inputJSON"]), let tool = arguments["toolID"] as? String,
+                      nativeStudioMediaToolIDs.contains(tool), let json = text("inputJSON",262_144),
+                      (try? JSONSerialization.jsonObject(with:Data(json.utf8))) is [String:Any] else { return [] }
+            case "studio.chemistry":
+                guard keys(["projectID","action","inputJSON"]), let action = arguments["action"] as? String,
+                      ["calculate","cancel","apply","export"].contains(action), inputIsNative() else { return [] }
+            case "studio.machining":
+                guard keys(["projectID","action","expectedRevision","studyJSON","title","offset","limit"]),
+                      let action = arguments["action"] as? String,
+                      ["prepare","configure","calculate","exportSTL","exportToolpath","preparePrint"].contains(action),
+                      text("expectedRevision",4096) != nil else { return [] }
+            default: return []
+            }
+            role = .sourceWrite
+        }
+        return [.init(argument:toolName == "studio.create" ? "kind":"projectID",role:role,
+            whenAbsent:.required,storeKey:nativeStudioLibraryStoreKey)]
+    }
+
     // MARK: - Resolution
 
     /// Resolves the mutable targets for one call through the contract.
@@ -497,6 +584,10 @@ public enum TypedMutationContract {
         fileManager: FileManager
     ) -> TypedMutableTarget?? {
         if let storeKey = spec.storeKey {
+            if storeKey == nativeStudioLibraryStoreKey {
+                guard let container = nativeStudioContainerPath(serviceStorePaths:serviceStorePaths) else { return nil }
+                return .some(TypedMutableTarget(path:container,role:spec.role))
+            }
             guard let storeRoot = serviceStorePaths[storeKey],
                   !storeRoot.isEmpty else { return nil }
             if storeKey == cadMaterialLibraryStoreKey {

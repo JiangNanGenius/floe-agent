@@ -781,11 +781,11 @@ final class WorkspaceCenter: ObservableObject {
     }
 
     /// Deletes a file or directory (recursive when requested).
-    func delete(relativePath: String, recursive: Bool = false) throws {
+    func delete(relativePath: String, recursive: Bool = false, expectedMetadata: WorkspaceFileMetadata? = nil, expectedResolvedURL: URL? = nil) throws {
         guard let service = fileService else {
             throw FloeError.validationFailed("No workspace is open")
         }
-        try service.delete(relativePath, recursive: recursive)
+        try service.delete(relativePath, recursive: recursive, expectedMetadata: expectedMetadata, expectedResolvedURL: expectedResolvedURL)
     }
 
     /// Moves (or renames) a file or directory.

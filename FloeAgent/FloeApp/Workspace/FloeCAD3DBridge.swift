@@ -70,6 +70,7 @@ final class FloeCAD3DBridge {
     private var importSpecs: [UUID: ImportSpec] = [:]
 
     private var documents: [String: FloeCADDocument] = [:]
+    private var filePresentations: [String: Set<UUID>] = [:]
     /// Public editor presentations can re-adopt the SAME cached instance.
     /// Headless queries deliberately do not renew this presentation lease.
     private var documentAdoptions: [String: UUID] = [:]
@@ -97,6 +98,25 @@ final class FloeCAD3DBridge {
 
     private func key(_ url: URL) -> String {
         url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    func retainFilePresentation(at url: URL, token: UUID) { filePresentations[key(url), default: []].insert(token) }
+    func releaseFilePresentation(at url: URL, token: UUID) {
+        let path = key(url); filePresentations[path]?.remove(token)
+        if filePresentations[path]?.isEmpty == true { filePresentations.removeValue(forKey: path) }
+    }
+    func requireClosedForFileAction(at url: URL) throws {
+        let target = key(url)
+        let matches: (String) -> Bool = { $0 == target || $0.hasPrefix(target + "/") }
+        guard !opening.keys.contains(where: matches),
+              !filePresentations.contains(where: { matches($0.key) && !$0.value.isEmpty }) else { throw WorkspaceFileDeletionError.closeFirst }
+        let cached = documents.filter { matches($0.key) && !$0.value.isClosed }
+        guard cached.values.allSatisfy({ !$0.hasUnsavedChanges }) else { throw WorkspaceFileDeletionError.closeFirst }
+        for (path, document) in cached {
+            // A clean, unpresented cache is not a live editor. close() waits
+            // out its commit fence and revokes late thumbnail/autosave writes.
+            document.close(); documents[path] = nil; services[path] = nil; documentAdoptions[path] = nil
+        }
     }
 
     private func nativeServices(for url: URL, document: FloeCADDocument) -> NativeServices {
@@ -838,6 +858,7 @@ final class FloeCAD3DBridge {
             "unavailable_operations": FloeCADDocument.unavailableNativeOperations,
             "material_actions": CADMaterialService.actions,
             "parameter_actions": CADParameterService.actions,
+            "building": CADBuildingToolService.catalogObject(),
             "scene_snapshot_schema": FloeCADDocument.sceneSnapshotSchemaVersion,
             "export": [
                 "scopes": ["part", "assembly"],
@@ -1824,4 +1845,24 @@ final class FloeCAD3DBridge {
     }
 }
 
+/// A temporary cover keeps the same token; another window has its own token.
+@MainActor final class CADFilePresentationLease {
+    private let token = UUID()
+    private var url: URL?
+    func attach(_ document: FloeCADDocument) {
+        let next = document.url.standardizedFileURL.resolvingSymlinksInPath()
+        if url == next { return }; release(); url = next
+        FloeCAD3DBridge.shared.retainFilePresentation(at: next, token: token)
+    }
+    func release() {
+        guard let url else { return }; self.url = nil
+        FloeCAD3DBridge.shared.releaseFilePresentation(at: url, token: token)
+    }
+    deinit {
+        let location = url, token = token
+        Task { @MainActor in
+            if let location { FloeCAD3DBridge.shared.releaseFilePresentation(at: location, token: token) }
+        }
+    }
+}
 #endif

@@ -90,11 +90,12 @@ public struct CAMSimulationWorkbenchView:View {
         VStack(spacing:0) {
             if let program = model.program,let frame = model.frame {
                 ZStack(alignment:.topLeading) {
-                    VirtualMachineViewport(scene:frame.scene,revision:model.cameraRevision,smooth:model.settings.smooth,cellSize:program.resolutionMM,warningBodies:[],preview:frame,settings:model.settings,onSelectChapter:{ model.select($0) },chapterNames:Dictionary(uniqueKeysWithValues:program.chapters.map { ($0.id,camChapterName($0)) }),onSelectionBudget:{ model.reportSelectionBudget() })
+                    VirtualMachineViewport(scene:frame.scene,revision:model.cameraRevision,smooth:model.settings.smooth,cellSize:program.resolutionMM,warningBodies:collisionBodies(frame),preview:frame,settings:model.settings,onSelectChapter:{ model.select($0) },chapterNames:Dictionary(uniqueKeysWithValues:program.chapters.map { ($0.id,camChapterName($0)) }),onSelectionBudget:{ model.reportSelectionBudget() })
                     VStack(alignment:.leading,spacing:4) {
                         Text(currentOperation).font(.subheadline.weight(.semibold)).accessibilityIdentifier("cam.preview.active-operation")
                         if !model.timed { Text(L("几何回放 · 未提供加工时间","Geometric playback · no machining time")).font(.caption).foregroundStyle(.secondary) }
                         Text(model.settings.displayScope == .machining ? L("加工区域","Machining area") : L("整机检查","Machine inspection")).font(.caption).foregroundStyle(.secondary)
+                        if model.rendering { ProgressView(L("更新剩余材料…","Updating remaining stock…")).font(.caption) }
                     }.padding(10).background(.regularMaterial,in:RoundedRectangle(cornerRadius:10)).padding(12).allowsHitTesting(false)
                     VStack { Spacer();legend }.padding(12).frame(maxWidth:.infinity,alignment:.leading).allowsHitTesting(false)
                 }.frame(minHeight:240).layoutPriority(1)
@@ -102,7 +103,8 @@ public struct CAMSimulationWorkbenchView:View {
                 transport
                 Divider()
                 readout(frame).padding(.horizontal,14).padding(.vertical,8)
-            } else if model.preparing {
+                collisionStatus(frame)
+            } else if model.preparing || model.rendering {
                 VStack(spacing:12) { ProgressView();Text(L("正在准备当前刀路…","Preparing current toolpaths…")) }.frame(maxWidth:.infinity,maxHeight:.infinity)
             } else {
                 ContentUnavailableView { Label(L("尚不能播放","Preview unavailable"),systemImage:"point.topleft.down.to.point.bottomright.curvepath") } description: { Text(model.notice) } actions: { Button(L("重试","Retry")) { model.prepare() } }
@@ -159,6 +161,8 @@ public struct CAMSimulationWorkbenchView:View {
     private func readout(_ frame:CAMPreviewFrame)->some View {
         ScrollView(.horizontal,showsIndicators:false) {
             HStack(spacing:20) {
+                if let volume = frame.remainingMM3 { Text(String(format:L("余料 %.1f mm³","Remaining %.1f mm³"),volume)).monospacedDigit().accessibilityIdentifier("cam.preview.remaining-material") }
+                if let resolution = frame.materialResolutionMM { Text(String(format:L("仿真精度 %.3f mm","Stock resolution %.3f mm"),resolution)).monospacedDigit() }
                 if frame.tools.isEmpty { Text(L("当前为辅助动作，未提供刀具移动轨迹","Auxiliary action; no tool trajectory supplied")).foregroundStyle(.secondary) }
                 ForEach(frame.tools) { tool in
                     HStack(spacing:12) {
@@ -175,10 +179,31 @@ public struct CAMSimulationWorkbenchView:View {
             }.font(.caption).frame(minHeight:24)
         }
     }
+    private func collisionBodies(_ frame:CAMPreviewFrame)->Set<String> {
+        let rows = frame.collisions.filter { ["intersecting","clearance","uncertain","incomplete"].contains($0.state) }
+        return Set(frame.scene.bodies.filter { body in
+            rows.contains { row in
+                row.component == body.id || row.component == body.id.replacingOccurrences(of:"fixture:",with:"") ||
+                (row.targetKind == "stock" && body.role == "stock") ||
+                (row.toolPart == body.role && ["holder","shank","cutter"].contains(body.role))
+            }
+        }.map(\.id))
+    }
+    private func collisionStatus(_ frame:CAMPreviewFrame)->some View {
+        let hits = frame.collisions.filter { ["intersecting","clearance","uncertain","incomplete"].contains($0.state) }
+        return Button { model.stop();inspector = true } label: {
+            HStack(spacing:8) {
+                Image(systemName:hits.isEmpty ? "viewfinder" : "exclamationmark.triangle")
+                Text(hits.isEmpty ? L("查看碰撞检查范围","View collision coverage") : String(format:L("%d 项碰撞或间隙风险 · 查看详情","%d collision or clearance risks · Details"),hits.count))
+                Spacer();Image(systemName:"chevron.right")
+            }.font(.caption).frame(minHeight:36).padding(.horizontal,14)
+        }.buttonStyle(.plain).foregroundStyle(hits.isEmpty ? Color.secondary : Color.orange)
+            .accessibilityIdentifier("cam.preview.collision-status")
+    }
     private var displayMenu:some View {
         Button { displayOptions = true } label: { Image(systemName:"eye").frame(width:44,height:44) }
             .accessibilityLabel(L("显示选项","Display options")).accessibilityIdentifier("cam.preview.display")
-            .popover(isPresented:$displayOptions) { displayPanel.frame(width:360,height:610).presentationCompactAdaptation(.sheet) }
+            .popover(isPresented:$displayOptions) { displayPanel.frame(width:360,height:650).presentationCompactAdaptation(.sheet) }
     }
     private var displayPanel:some View {
         NavigationStack {
@@ -200,6 +225,7 @@ public struct CAMSimulationWorkbenchView:View {
                 }
             }
             Section(L("刀路与材料","Toolpaths and material")) {
+            Toggle(L("遇到干涉时暂停","Pause on interference"),isOn:setting(\.stopOnCollision)).accessibilityIdentifier("cam.preview.stop-on-collision")
             Picker(L("刀路","Toolpaths"),selection:Binding(get:{ model.settings.paths },set:{ model.settings.paths = $0 })) {
                 Text(L("全部刀路","All toolpaths")).tag(CAMPathVisibility.all)
                 Text(L("所选工序","Selected operation")).tag(CAMPathVisibility.selected)
@@ -228,13 +254,37 @@ public struct CAMSimulationWorkbenchView:View {
         NavigationStack {
             List {
                 Section(L("预览范围","Preview coverage")) {
-                    Text(L("刀片、刀具按当前参数显示；未提供的主轴箱、刀柄采用通用外形。去料在已保存的工序阶段更新。","Insert and cutter dimensions follow the current setup; missing housings and holders use generic bodies. Material updates at retained operation stages."))
+                    if model.frame?.progressiveMaterial == true {
+                        Text(L("剩余材料跟随当前刀具位置逐步更新。刀片、刀具使用计算时的尺寸；通用机壳外形不参与碰撞检查。","Remaining stock follows the current tool position. Insert and cutter dimensions come from the calculation; generic machine housings do not enter collision checks."))
+                    } else {
+                        Text(L("这份历史续加工结果只保留了工序阶段；缺少初始余料记录，当前不能逐步去料。请从原加工项目重新生成仿真。","This legacy continuation retains operation stages without its initial material checkpoint. Generate simulation again from the original machining project for progressive removal."))
+                    }
+                    Text(L("正常切削接触会去料；快移或退刀碰到余料会报告风险。检查使用离散采样，未配置的车刀刀杆、夹持与机床部件仍需补齐。","Cutting contact removes stock; rapid or retract contact reports a risk. Checks are sampled; unconfigured turning holders, workholding and machine bodies remain uncovered."))
                     ForEach(model.frame?.coverage ?? model.program?.warnings ?? [],id:\.self) { Text($0).font(.caption) }
+                }
+                if let rows = model.frame?.collisions,!rows.isEmpty {
+                    Section(L("当前进度的碰撞与间隙检查","Collision and clearance checks through this position")) {
+                        ForEach(Array(rows.enumerated()),id:\.offset) { _,row in
+                            VStack(alignment:.leading,spacing:4) {
+                                Text(row.component+" · "+collisionName(row.state)).font(.subheadline)
+                                if let part = row.toolPart { Text(part == "holder" ? L("刀柄","Holder") : part == "shank" ? L("刀杆","Shank") : L("刀具","Cutter")).font(.caption).foregroundStyle(.secondary) }
+                                Text(row.message).font(.caption).textSelection(.enabled)
+                            }
+                        }
+                    }
                 }
                 if !model.diagnostic.isEmpty { Section(L("问题详情","Problem details")) { Text(model.diagnostic).textSelection(.enabled) } }
                 Section(L("源结果","Source result")) { Text(model.program?.sourceKey ?? "").font(.caption.monospaced()).textSelection(.enabled) }
             }.navigationTitle(L("预览详情","Preview details")).navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement:.confirmationAction) { Button(L("完成","Done")) { inspector = false } } }
+        }
+    }
+    private func collisionName(_ state:String)->String {
+        switch state {
+        case "intersecting":L("干涉","Interference")
+        case "clearance":L("间隙不足","Insufficient clearance")
+        case "clear":L("采样范围内未发现干涉","No interference in checked samples")
+        default:L("检查不完整","Incomplete check")
         }
     }
 }

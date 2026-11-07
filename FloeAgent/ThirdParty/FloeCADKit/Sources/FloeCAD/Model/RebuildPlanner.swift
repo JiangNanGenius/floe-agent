@@ -104,6 +104,15 @@ enum RebuildPlanner {
         var resultByID: [BodyID: Body] = [:]
         for body in result.bodies { resultByID[body.id] = body }
 
+        // The equal-revision optimization belongs only to outputs that the
+        // PREVIOUS active graph actually owned. A raw import being captured
+        // can coincidentally carry the evaluator's first revision, but its
+        // vertex layout is not the new feature's authoritative render.
+        let previousActiveCount = max(0, min(previousGraph.rollbackIndex ?? previousGraph.nodes.count,
+                                             previousGraph.nodes.count))
+        let previouslyActiveOwnedIDs = Set(previousGraph.nodes.prefix(previousActiveCount)
+            .filter { !$0.suppressed }.flatMap(\.outputBodyIDs))
+
         var currentOwned: [BodyID: Body] = [:]
         for body in document.bodies where ownedIDs.contains(body.id) {
             currentOwned[body.id] = body
@@ -186,7 +195,8 @@ enum RebuildPlanner {
                 // the document's own revision (adopted after apply), so there is
                 // no replace — no re-mint, no GPU rebuild, no undo noise. A node
                 // that actually ran minted a fresh revision and still replaces.
-                if existing.meshRevision == body.meshRevision { continue }
+                if previouslyActiveOwnedIDs.contains(body.id),
+                   existing.meshRevision == body.meshRevision { continue }
                 var after = body
                 after.name = existing.name
                 after.isHidden = existing.isHidden

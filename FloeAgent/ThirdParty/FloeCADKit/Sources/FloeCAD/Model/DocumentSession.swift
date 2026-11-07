@@ -317,11 +317,17 @@ final class DocumentSession {
     /// Perform one host-owned command and mint its rollback receipt. Returns
     /// nil when the session refuses the write; the command is then not applied.
     @discardableResult
-    func performOwned(_ command: DocumentCommand, tag: String) -> OwnedCommandReceipt? {
+    func performOwned(_ command: DocumentCommand, tag: String, useStandardCommandPath: Bool = false) -> OwnedCommandReceipt? {
         guard requireWritable() else { return nil }
         let checkpoint = captureEditCheckpoint()
-        undoStack.perform(command, on: &document)
-        didChange()
+        if useStandardCommandPath {
+            let before = changeCount
+            perform(command)
+            guard changeCount != before else { return nil }
+        } else {
+            undoStack.perform(command, on: &document)
+            didChange()
+        }
         lastCommittedOwnedToken = nil
         let receipt = OwnedCommandReceipt(
             token: UUID(),

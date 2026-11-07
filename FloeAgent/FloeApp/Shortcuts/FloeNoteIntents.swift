@@ -5,6 +5,7 @@ import Foundation
 import GRDB
 import FloeCore
 import FloeNotes
+import FloePersistence
 
 /// Explicit references are rehydrated without enumerating private content.
 /// Titles and dates are read only by the authenticated search action.
@@ -149,16 +150,16 @@ struct FindFloeRunsIntent: AppIntent {
     @Parameter(title: "shortcuts.note.limit", default: 20) var limit: Int
     @AppDependency private var environment: AppEnvironment
 
-    @MainActor
-    func perform() async throws -> some IntentResult & ReturnsValue<[FloeShortcutRunEntity]> {
-        try await FloeNoteIntentService.ready(environment)
+    /// The authenticated intent and tests share exactly this title query.
+    /// It never enumerates Notes, hidden authoring sessions or archived tasks.
+    @MainActor static func matchingConversationIDs(name:String,limit:Int,database:DatabaseManager) async throws -> [String] {
         let text = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return .result(value: [FloeShortcutRunEntity]()) }
+        guard !text.isEmpty else { return [] }
         let count = min(50, max(1, limit))
         let escaped = text.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_")
         let pattern = "%" + escaped + "%"
-        let identifiers = try await environment.database.reader { db in
+        return try await database.reader { db in
             try String.fetchAll(db, sql: """
                 SELECT id FROM conversations
                 WHERE purpose='ordinary' AND visibility='normal' AND archived_at IS NULL
@@ -166,6 +167,13 @@ struct FindFloeRunsIntent: AppIntent {
                 ORDER BY updated_at DESC,id LIMIT ?
                 """, arguments: [pattern, count])
         }
+    }
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ReturnsValue<[FloeShortcutRunEntity]> {
+        try await FloeNoteIntentService.ready(environment)
+        let count = min(50, max(1, limit))
+        let identifiers = try await Self.matchingConversationIDs(name:name,limit:count,database:environment.database)
         var values: [FloeShortcutRunEntity] = []
         for rawID in identifiers {
             try Task.checkCancellation()

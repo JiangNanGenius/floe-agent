@@ -50,9 +50,27 @@ struct AssistantContent: View {
                     }
                 }.frame(maxWidth:.infinity,alignment:.leading)
             }
-            if model.failed { Text(workbenchText("分析未完成，请检查模型设置或重试。","Analysis did not finish. Check model settings or retry.",locale)).font(.callout).foregroundStyle(.secondary) }
+            if model.analysisTimedOut {
+                Text(workbenchText("分析超时，可以重试。","Analysis timed out. Try again.",locale)).font(.callout).foregroundStyle(.secondary)
+            } else if model.analysisCancelled {
+                Text(workbenchText("已停止分析。","Analysis stopped.",locale)).font(.callout).foregroundStyle(.secondary)
+            } else if model.failed {
+                Text(workbenchText("分析未完成，请检查模型设置或重试。","Analysis did not finish. Check model settings or retry.",locale)).font(.callout).foregroundStyle(.secondary)
+            }
             TextField(workbenchText("分析当前记录","Analyze this capture",locale),text:$model.question,axis:.vertical).textFieldStyle(.roundedBorder)
-            Button(workbenchText("分析","Analyze",locale)) { Task { await model.analyze() } }.buttonStyle(.borderedProminent).disabled(model.analyzing)
+            if model.analyzing {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text(workbenchText("正在分析当前记录…","Analyzing this capture…",locale)).font(.callout)
+                    Spacer()
+                    Button(workbenchText("停止","Stop",locale)) { model.cancelAnalysis() }
+                        .accessibilityIdentifier("toolbox.analysis.cancel")
+                }.accessibilityIdentifier("toolbox.analysis.progress")
+            } else {
+                Button(workbenchText("分析","Analyze",locale)) {
+                    Task { await model.analyze(defaultQuestion:workbenchText("请分析当前通信记录，区分事实与可能原因。","Analyze this communication capture, separating facts from possible causes.",locale)) }
+                }.buttonStyle(.borderedProminent).accessibilityIdentifier("toolbox.analysis.start")
+            }
         }.padding()
     }
 }

@@ -17,7 +17,8 @@ import FloeChemistryEngine
     #expect(updated.source == source && updated.format == "mol")
     #expect(updated.facts?["atomCount"]?.number == 3)
     #expect(updated.facts?["compositionOnly"] == .bool(false))
-    await #expect(throws: (any Error).self) { try await service.start(project.id, objectID: object.id, method: "uff.energy") }
+    await #expect(throws: ChemistryError.requiresPrepared3DStructure) { try await service.start(project.id, objectID: object.id, method: "uff.energy") }
+    #expect(try await service.project(project.id).runs.isEmpty)
     #expect(try await service.export(project.id, objectID: object.id, format: "ket") == ket)
     #expect(try await service.export(project.id, objectID: object.id, format: "mol") == source)
     await #expect(throws: (any Error).self) {

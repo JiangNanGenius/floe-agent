@@ -9,8 +9,8 @@ import FloeChemistryEngine
 
 typealias ChemistryHostJSON = FloeChemistryCore.JSONValue
 
-struct ChemistryHostEdit: Decodable {
-    enum Action: String, Decodable { case importObject, replaceObject, editObject, addText, updateText, saveDocument, setEnvironment, restore }
+struct ChemistryHostEdit: Codable {
+    enum Action: String, Codable { case importObject, replaceObject, editObject, addText, updateText, saveDocument, setEnvironment, restore }
     let action: Action
     var title: String?
     var kind: ChemicalKind?
@@ -28,7 +28,7 @@ struct ChemistryHostEdit: Decodable {
     var historyRevision: UInt64?
     var historyDigest: String?
 }
-struct ChemistryNativeInput: Decodable {
+struct ChemistryNativeInput: Codable {
     var objectID: UUID?
     var runID: UUID?
     var expectedObjectRevision: UInt64?
@@ -57,7 +57,7 @@ struct ChemistryRunReceipt: Encodable {
         inputDigest = run.inputDigest; method = run.method; environmentID = run.environmentID
         engineVersion = run.engineVersion; status = run.status; error = run.error
         var fields: [String: ChemistryHostJSON] = [:]
-        for key in ["energy", "units", "formula", "mass", "stopReason", "converged", "iterations"] {
+        for key in ["energy", "units", "formula", "mass", "atomCount", "bondCount", "coordinateSetCount", "stopReason", "converged", "iterations"] {
             if let value = run.result?[key] { fields[key] = value }
         }
         result = fields; openURL = "floe://work/" + projectID.uuidString.lowercased()

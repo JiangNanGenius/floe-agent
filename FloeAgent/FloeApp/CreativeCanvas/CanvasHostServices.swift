@@ -11,9 +11,27 @@ import FloeCanvasIntegration
 import FloeCanvasTemplates
 
 @MainActor enum CanvasHostServices {
+    /// UI and AI resolve the same original and commit domain. This is also
+    /// the host boundary for future compatible storage adapters.
+    static func repository(record: PersonalContentRecord, directory: URL) throws -> FileCanvasRepository {
+        guard record.kind == .canvas else { throw PersonalContentError.invalidProject }
+        return try FileCanvasRepository(root: directory.appendingPathComponent("Canvas"))
+    }
+    static func snapshot(record: PersonalContentRecord, directory: URL) async throws -> CanvasSnapshot {
+        try await repository(record: record, directory: directory).load(canvasID: record.id)
+    }
+    static func edit(record: PersonalContentRecord, directory: URL, batch: CanvasEditBatch,
+                     expectedRevision: Int64, requestID: UUID) async throws -> CanvasCommitReceipt {
+        // Framework body adaptation happens inside the shared edit engine;
+        // forwarding the original batch preserves its idempotent request hash.
+        return try await repository(record: record, directory: directory).commit(batch, canvasID: record.id,
+            expectedRevision: expectedRevision, requestID: requestID)
+    }
     static func make(record: PersonalContentRecord, directory: URL, environment: AppEnvironment,
-                     navigation: CanvasHostNavigation) async throws -> CanvasEditorServices {
-        let session = try await CanvasHostSessions.shared.session(record: record, directory: directory, environment: environment)
+                     navigation: CanvasHostNavigation, repository: (any CanvasFrameworkRepository)? = nil,
+                     legacyAssets: [UUID: CanvasAssetReference] = [:]) async throws -> CanvasEditorServices {
+        let session = try await CanvasHostSessions.shared.session(record: record, directory: directory, environment: environment,
+            repository: repository, legacyAssets: legacyAssets)
         let gateway = CanvasHostEditorGateway(canvasID: record.id, repository: session.repository, navigation: navigation)
         return CanvasEditorServices(documentStore: session.repository, assetStore: session.assets,
             sourceService: CanvasHostSources(), sourceOpening: CanvasHostSourceOpening(navigation: navigation),
@@ -38,7 +56,7 @@ import FloeCanvasTemplates
 
 struct CanvasHostBindingResolver: FlowCanvasBindingResolver {
     let canvasID: UUID
-    let repository: FileCanvasRepository
+    let repository: any CanvasDocumentStore
     func resolve(canvasBinding name: String, context: CanvasRuntimeContext) async throws -> FlowValue {
         guard name.hasPrefix(CanvasTemplateEngine.sourcePrefix),
               let id = UUID(uuidString: String(name.dropFirst(CanvasTemplateEngine.sourcePrefix.count))) else {
@@ -77,7 +95,38 @@ struct CanvasHostRunReceipt: Codable, Sendable {
     private struct Key: Hashable { var environment: ObjectIdentifier; var projectID: UUID }
     private var values: [Key: CanvasHostSession] = [:]
 
-    func session(record: PersonalContentRecord, directory: URL, environment: AppEnvironment) async throws -> CanvasHostSession {
+    func requireIdleForDeletion(canvasID: UUID, directory: URL) async throws {
+        let canonical = directory.standardizedFileURL.resolvingSymlinksInPath()
+        for (key, session) in values where key.projectID == canvasID {
+            guard session.root == canonical else { throw PersonalFileActionError.changed }
+            try await session.requireIdleForDeletion()
+        }
+        let last = canonical.appendingPathComponent("last-flow-run.json")
+        guard FileManager.default.fileExists(atPath: last.path) else { return }
+        let runID = try JSONDecoder().decode(UUID.self, from: Self.deletionReceiptBytes(last, limit: 128))
+        let file = canonical.appendingPathComponent("FlowResults/" + runID.uuidString.lowercased() + ".json")
+        guard FileManager.default.fileExists(atPath: file.path) else { throw PersonalFileActionError.busy }
+        let receipt = try JSONDecoder().decode(CanvasHostRunReceipt.self, from: Self.deletionReceiptBytes(file, limit: 8 * 1_024 * 1_024))
+        guard receipt.canvasID == canvasID, receipt.runID == runID, receipt.pendingJobs.isEmpty,
+              ["completed", "failed", "cancelled"].contains(receipt.phase) else { throw PersonalFileActionError.busy }
+    }
+    private static func deletionReceiptBytes(_ file: URL, limit: Int) throws -> Data {
+        let info = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard info.isRegularFile == true, info.isSymbolicLink != true, (info.fileSize ?? Int.max) <= limit else { throw PersonalFileActionError.busy }
+        return try Data(contentsOf: file)
+    }
+
+    func prepareIdentityMove(canvasID: UUID) async {
+        for key in Array(values.keys) where key.projectID == canvasID {
+            guard let session = values[key] else { continue }
+            if let runID = session.lastRunID { await session.runtime.cancel(runID: runID) }
+            values.removeValue(forKey: key)
+        }
+    }
+
+    func session(record: PersonalContentRecord, directory: URL, environment: AppEnvironment,
+                 repository: (any CanvasFrameworkRepository)? = nil,
+                 legacyAssets: [UUID: CanvasAssetReference] = [:]) async throws -> CanvasHostSession {
         guard record.kind == .canvas else { throw PersonalContentError.invalidProject }
         let key = Key(environment: ObjectIdentifier(environment), projectID: record.id)
         let canonical = directory.standardizedFileURL.resolvingSymlinksInPath()
@@ -85,7 +134,8 @@ struct CanvasHostRunReceipt: Codable, Sendable {
             guard existing.root == canonical else { throw PersonalContentError.changedDocument }
             return existing
         }
-        let created = try CanvasHostSession(record: record, root: canonical, environment: environment)
+        let created = try CanvasHostSession(record: record, root: canonical, environment: environment,
+            repository: repository, legacyAssets: legacyAssets)
         _ = try await created.repository.load(canvasID: record.id)
         values[key] = created
         return created
@@ -134,7 +184,7 @@ struct CanvasHostRunReceipt: Codable, Sendable {
 @MainActor final class CanvasHostSession {
     let record: PersonalContentRecord
     let root: URL
-    let repository: FileCanvasRepository
+    let repository: any CanvasFrameworkRepository
     let assets: CanvasHostAssets
     let executor: CanvasJobsStepExecutor
     let runtime: FlowRuntimeService
@@ -143,19 +193,28 @@ struct CanvasHostRunReceipt: Codable, Sendable {
     private var taskRoots: [UUID: WorkspaceCenter.TaskRootLease] = [:]
     private(set) var lastRunID: UUID?
 
-    init(record: PersonalContentRecord, root: URL, environment: AppEnvironment) throws {
+    init(record: PersonalContentRecord, root: URL, environment: AppEnvironment,
+         repository: (any CanvasFrameworkRepository)? = nil,
+         legacyAssets: [UUID: CanvasAssetReference] = [:]) throws {
         self.record = record; self.root = root; self.environment = environment
-        repository = try FileCanvasRepository(root: root.appendingPathComponent("Canvas"))
-        assets = try CanvasHostAssets(root: root.appendingPathComponent("Assets"))
+        self.repository = try repository ?? FileCanvasRepository(root: root.appendingPathComponent("Canvas"))
+        assets = try CanvasHostAssets(root: root.appendingPathComponent("Assets"), legacyAssets: legacyAssets)
         executor = try CanvasJobsStepExecutor(environment: environment, root: root.appendingPathComponent("FlowAttempts"))
         runtime = FlowRuntimeService(executor: executor,
             journal: try FlowRunJournal(root: root.appendingPathComponent("FlowRuns")),
-            bindingResolver: CanvasHostBindingResolver(canvasID: record.id, repository: repository))
+            bindingResolver: CanvasHostBindingResolver(canvasID: record.id, repository: self.repository))
         executor.didFinish = { [weak runtime] runID, attemptID in
             await runtime?.externalStepDidFinish(runID: runID, attemptID: attemptID)
         }
         if let data = try? Data(contentsOf: root.appendingPathComponent("last-flow-run.json")),
            let id = try? JSONDecoder().decode(UUID.self, from: data) { lastRunID = id }
+    }
+
+    func requireIdleForDeletion() async throws {
+        guard watchers.isEmpty else { throw PersonalFileActionError.busy }
+        if let lastRunID, let status = await runtime.status(runID: lastRunID) {
+            guard [.completed, .failed, .cancelled].contains(status.phase) else { throw PersonalFileActionError.busy }
+        }
     }
 
     func configuration(snapshot: CanvasSnapshot, pageID: UUID, graph: FlowGraph,

@@ -9,6 +9,7 @@ import FloeChemistryEngine
 /// sheet stops only its status refresh; processors remain service-owned.
 struct ChemistryEnvironmentPanel: View {
     let session: ChemistryProjectSession
+    var preparingObjectID: UUID? = nil
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.dismiss) private var dismiss
     @State private var record: PersonalContentRecord?
@@ -38,6 +39,11 @@ struct ChemistryEnvironmentPanel: View {
                         .accessibilityIdentifier("chemistry.environment.probe")
                 }
                 Section(copy("计算", "Calculation")) {
+                    if preparingObjectID != nil {
+                        Text(copy("先选择运行环境并检查可用方法，使用“三维结构生成”。完成后返回计算任务，点“应用结构”，再运行力场计算。", "Choose an environment, check its methods, and run 3D structure generation. Then apply the result in Calculations before running a force-field calculation."))
+                            .font(.callout).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("chemistry.environment.preparation")
+                    }
                     Picker(copy("结构", "Structure"), selection: $selectedObjectID) {
                         Text(copy("选择结构", "Choose structure")).tag(nil as UUID?)
                         ForEach(session.editor.project?.objects ?? []) { object in
@@ -126,7 +132,7 @@ struct ChemistryEnvironmentPanel: View {
             }
             record = value.record
             taskID = try await environment.chemistryEnvironmentJobs.uiTask(for: value.record)
-            selectedObjectID = session.editor.selectedID
+            selectedObjectID = preparingObjectID ?? session.editor.selectedID
             await refresh()
         } catch { diagnostic = error.localizedDescription }
     }
@@ -140,7 +146,9 @@ struct ChemistryEnvironmentPanel: View {
         await session.refreshFromHost()
         let capabilities = await session.service.capabilities()
         methods = environmentID.flatMap { capabilities[$0] } ?? []
-        if !methods.contains(selectedMethod) { selectedMethod = methods.first ?? "" }
+        if !methods.contains(selectedMethod) {
+            selectedMethod = preparingObjectID != nil && methods.contains("rdkit.embed") ? "rdkit.embed" : ""
+        }
         do { results = try environment.chemistryEnvironmentJobs.recent(projectID: session.projectID, root: session.root) }
         catch { diagnostic = error.localizedDescription }
     }

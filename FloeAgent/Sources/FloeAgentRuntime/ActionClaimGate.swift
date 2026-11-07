@@ -8,8 +8,9 @@ import FloeModels
 /// This is deliberately conservative in both directions:
 ///  - only strong past-tense/completion claims fire it, negated claims
 ///    ("未创建", "failed to save") are ignored, and
-///  - one successful receipt of any kind disarms it, so a run that really
-///    executed a tool is never second-guessed by a keyword matcher.
+///  - read/search/discovery receipts never substantiate a new write.
+///    One successful mutation candidate is only evidence that some work executed;
+///    the terminal checklist/failure gate accounts for unfinished work.
 ///
 /// The observed failure mode was a run with no tool call stating a file was
 /// created, or a failed write followed by a success claim. When the gate
@@ -19,6 +20,9 @@ struct ActionClaimGate: Sendable {
     struct Receipt: Sendable, Equatable {
         var toolName: String
         var status: ToolResult.Status
+        /// Native call/receipt projection, never a model-authored flag.
+        /// The descriptor's side-effect bit alone is insufficient evidence.
+        var supportsMutationClaim: Bool = false
     }
 
     enum Directive: Equatable {
@@ -33,10 +37,11 @@ struct ActionClaimGate: Sendable {
         correctiveRetries: Int
     ) -> Directive {
         guard Self.hasUnnegatedCompletionClaim(claimText) else { return .allow }
-        let hasSuccessfulReceipt = receipts.contains { $0.status == .ok }
-        guard !hasSuccessfulReceipt else { return .allow }
-        // Nothing ran, or only failures ran: the claim has no evidence.
-        guard receipts.isEmpty || receipts.contains(where: { $0.status == .failed }) else { return .allow }
+        let hasSuccessfulWorkReceipt = receipts.contains { $0.status == .ok && $0.supportsMutationClaim }
+        guard !hasSuccessfulWorkReceipt else { return .allow }
+        // Read-only success, denial, cancellation and failure are not evidence
+        // that a newly claimed write ran. Never introduce a write merely to
+        // justify prose; the correction may instead report verified state.
         if correctiveRetries == 0 { return .requestCorrection }
         return .failRun
     }

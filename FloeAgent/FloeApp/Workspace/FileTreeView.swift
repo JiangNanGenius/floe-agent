@@ -16,6 +16,7 @@ import FloeCore
 /// The workspace directory tree (lazy) with an inline search field.
 struct FileTreeView: View {
     @ObservedObject var viewModel: FileTreeViewModel
+    @ObservedObject private var workspaceContext: WorkspaceCenter
     /// The IDE sidebar owns its own header/refresh chrome; embedding keeps the
     /// tree's toolbar out of the host navigation bar.
     var showsToolbar = true
@@ -35,11 +36,13 @@ struct FileTreeView: View {
     @State private var showingRename = false
     @State private var renameTarget: FileTreeNode?
     @State private var renameName = ""
-    @State private var pendingDelete: FileTreeNode?
+    @State private var pendingDelete: WorkspaceFileDeletionRequest?
+    @State private var deletionPreparationTask: Task<Void, Never>?
     @State private var operationError: String?
     @State private var selecting = false
     @State private var selection: Set<String> = []
-    @State private var deletingBatch = false
+    @State private var pendingDeleteBatch: FileTreeDeletionBatch?
+    @State private var deletionPreparationGeneration = UUID()
     @State private var busy = false
     @State private var movingNode: FileTreeNode?
     @State private var destinationPath = ""
@@ -54,6 +57,13 @@ struct FileTreeView: View {
     @State private var compressing = false
     @State private var compressCancellation: CancellationToken?
     @State private var compressBanner: String?
+
+    init(viewModel: FileTreeViewModel, showsToolbar: Bool = true, dense: Bool = false,
+         onSelectFile: @escaping (String) -> Void) {
+        self.viewModel = viewModel; self.showsToolbar = showsToolbar; self.dense = dense
+        self.onSelectFile = onSelectFile
+        _workspaceContext = ObservedObject(wrappedValue: viewModel.deletionCenter)
+    }
 
     var body: some View {
         fileTreeWithDestructiveAlerts
@@ -109,7 +119,7 @@ struct FileTreeView: View {
                         Button("composer.editor.select_all") { selection = Set(viewModel.visibleNodes.map { $0.node.relativePath }) }
                         Button("files.compress.action", systemImage: "doc.zipper") { beginCompress() }
                             .disabled(selection.isEmpty || compressing)
-                        Button(FloeL10n.plural("workspace.file_tree_view.delete_items", count: selection.count), systemImage: "trash", role: .destructive) { deletingBatch = true }
+                        Button(FloeL10n.plural("workspace.file_tree_view.delete_items", count: selection.count), systemImage: "trash", role: .destructive) { prepareBatchDeletion() }
                             .disabled(selection.isEmpty)
                     }
                     Button("envmgr.refresh", systemImage: "arrow.clockwise") { Task { await viewModel.loadRoot() } }
@@ -118,7 +128,13 @@ struct FileTreeView: View {
         }
         .disabled(busy)
         .overlay { if busy { ProgressView() } }
-        .onChange(of: viewModel.query) { _, _ in selection.removeAll(); selecting = false }
+        .onChange(of: viewModel.query) { _, _ in cancelPendingDeletion(); selection.removeAll(); selecting = false }
+        .onChange(of: workspaceContext.currentWorkspace?.id) { _, _ in cancelPendingDeletion() }
+        .onChange(of: workspaceContext.currentRootURL) { _, _ in cancelPendingDeletion() }
+        .onChange(of: workspaceContext.activeMountNames) { _, _ in cancelPendingDeletion() }
+        .onChange(of: workspaceContext.cloudWorkspaceLinks) { _, _ in cancelPendingDeletion() }
+        .onChange(of: workspaceContext.networkWorkspaceMounts) { _, _ in cancelPendingDeletion() }
+        .onDisappear { cancelPendingDeletion() }
         .onChange(of: compressFormatID) { oldValue, newValue in
             updateCompressNameExtension(from: oldValue, to: newValue)
         }
@@ -128,17 +144,23 @@ struct FileTreeView: View {
         fileTreeBase
             .sheet(item: $exportedURL) { url in FileTreeShareSheet(url: url) }
             .sheet(isPresented: $showingCompress) { compressSheet }
-            .confirmationDialog("workspace.file_tree_view.delete_the_selected_files", isPresented: $deletingBatch, titleVisibility: .visible) {
-                Button("workspace.workspace_canvas_view.delete", role: .destructive) {
-                    Task {
-                        busy = true
-                        let failures = await viewModel.deleteBatch(selection)
-                        selection = Set(failures.keys)
-                        operationError = failures.isEmpty ? nil : failures.sorted(by: { $0.key < $1.key }).map { "\($0.key): \($0.value)" }.joined(separator: "\n")
-                        busy = false
+            .confirmationDialog("workspace.file_tree_view.delete_the_selected_files",
+                isPresented: Binding(get: { pendingDeleteBatch != nil }, set: { if !$0 { pendingDeleteBatch = nil } }),
+                titleVisibility: .visible, presenting: pendingDeleteBatch) { batch in
+                    Button("workspace.workspace_canvas_view.delete", role: .destructive) {
+                        pendingDeleteBatch = nil
+                        Task {
+                            busy = true
+                            let failures = await viewModel.deleteBatch(batch)
+                            if (try? WorkspaceFileActionScope(center: workspaceContext)) == batch.scope {
+                                selection = Set(failures.keys)
+                                operationError = failures.isEmpty ? nil : failures.sorted(by: { $0.key < $1.key }).map { "\($0.key): \($0.value)" }.joined(separator: "\n")
+                            }
+                            busy = false
+                        }
                     }
-                }
-            } message: { Text("workspace.file_tree_view.the_folder_includes_all_of_its") }
+                    Button("action.cancel", role: .cancel) { pendingDeleteBatch = nil }
+                } message: { _ in Text("workspace.file_tree_view.the_folder_includes_all_of_its") }
     }
 
     private var fileTreeWithEntryAlerts: some View {
@@ -243,6 +265,7 @@ struct FileTreeView: View {
         List {
             ForEach(viewModel.visibleNodes) { visible in
                 let node = visible.node
+                let scope = viewModel.loadedScope
                 HStack(spacing: 8) {
                     if selecting {
                         Image(systemName: selection.contains(node.relativePath) ? "checkmark.circle.fill" : "circle")
@@ -259,8 +282,12 @@ struct FileTreeView: View {
                             Task { await viewModel.toggleDirectory(node) }
                         } else { onSelectFile(node.relativePath) }
                     }
+                    Menu { rowMenu(for: node, scope: scope) } label: {
+                        Image(systemName: "ellipsis").frame(width: 44, height: 44).contentShape(.rect)
+                    }.buttonStyle(.borderless).accessibilityLabel("workspace.workspace_canvas_view.more")
+                        .accessibilityIdentifier("fileTree.row.menu." + node.relativePath)
                 }
-                .contextMenu { rowMenu(for: node) }
+                .contextMenu { rowMenu(for: node, scope: scope) }
                 .listRowInsets(dense
                     ? EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8)
                     : EdgeInsets())
@@ -271,7 +298,8 @@ struct FileTreeView: View {
     }
 
     @ViewBuilder
-    private func rowMenu(for node: FileTreeNode) -> some View {
+    private func rowMenu(for node: FileTreeNode, scope: WorkspaceFileActionScope?, deletionOnly: Bool = false) -> some View {
+        if !deletionOnly {
         if node.isBrowsableDirectory {
             Button {
                 newFolderParent = node.relativePath
@@ -306,10 +334,41 @@ struct FileTreeView: View {
                 do { exportedURL = try viewModel.exportURL(node) } catch { operationError = error.localizedDescription }
             }
         }
+        }
         Button(role: .destructive) {
-            pendingDelete = node
+            cancelPendingDeletion()
+            let generation = deletionPreparationGeneration
+            deletionPreparationTask = Task {
+                do {
+                    let request = try await viewModel.deletionRequest(node, scope: scope)
+                    guard generation == deletionPreparationGeneration, !Task.isCancelled else { return }
+                    pendingDelete = request
+                } catch is CancellationError { }
+                catch { if generation == deletionPreparationGeneration { operationError = error.localizedDescription } }
+            }
         } label: {
             Label("workspace.workspace_canvas_view.delete", systemImage: "trash")
+        }.disabled(scope == nil).accessibilityIdentifier("fileTree.row.delete")
+    }
+
+    private func cancelPendingDeletion() {
+        deletionPreparationGeneration = UUID()
+        deletionPreparationTask?.cancel(); deletionPreparationTask = nil
+        pendingDelete = nil; pendingDeleteBatch = nil; busy = false
+    }
+    private func prepareBatchDeletion() {
+        let paths = selection, scope = viewModel.loadedScope
+        cancelPendingDeletion()
+        let generation = deletionPreparationGeneration
+        deletionPreparationTask = Task {
+            busy = true
+            defer { if generation == deletionPreparationGeneration { busy = false } }
+            do {
+                let batch = try await viewModel.prepareDeletionBatch(paths, scope: scope)
+                guard generation == deletionPreparationGeneration, !Task.isCancelled else { return }
+                pendingDeleteBatch = batch
+            } catch is CancellationError { }
+            catch { if generation == deletionPreparationGeneration { operationError = error.localizedDescription } }
         }
     }
 
@@ -349,9 +408,9 @@ struct FileTreeView: View {
         }
     }
 
-    private func deleteNode(_ node: FileTreeNode) async {
+    private func deleteNode(_ node: WorkspaceFileDeletionRequest) async {
         do {
-            try await viewModel.delete(node, recursive: true)
+            try await viewModel.delete(node)
         } catch {
             operationError = error.localizedDescription
         }
@@ -562,6 +621,10 @@ struct FileTreeView: View {
                 }
             } else {
                 List(Array(viewModel.searchHits.enumerated()), id: \.offset) { _, hit in
+                    let scope = viewModel.searchScope
+                    let node = FileTreeNode(relativePath: hit.relativePath, name: (hit.relativePath as NSString).lastPathComponent,
+                        isDirectory: false, size: 0)
+                    HStack {
                     Button {
                         onSelectFile(hit.relativePath)
                     } label: {
@@ -578,6 +641,13 @@ struct FileTreeView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    Menu { rowMenu(for: node, scope: scope, deletionOnly: true) } label: {
+                        Image(systemName: "ellipsis").frame(width: 44, height: 44).contentShape(.rect)
+                    }.buttonStyle(.borderless).accessibilityLabel("workspace.workspace_canvas_view.more")
+                        .accessibilityIdentifier("fileTree.search.menu." + hit.relativePath)
+                    }
+                    .id(hit.relativePath + "\u{0}" + String(hit.lineNumber) + "\u{0}" + hit.context + "\u{0}" + (scope?.root.path ?? "") + (scope?.workspaceID.uuidString ?? ""))
+                    .contextMenu { rowMenu(for: node, scope: scope, deletionOnly: true) }
                 }
                 .listStyle(.plain)
             }

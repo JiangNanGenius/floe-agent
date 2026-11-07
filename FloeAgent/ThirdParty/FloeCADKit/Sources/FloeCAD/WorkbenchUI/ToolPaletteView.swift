@@ -289,7 +289,7 @@ struct ToolPaletteView: View {
          sketchTool("cad.ui.tool.arc", "Arc", "point.topleft.down.to.point.bottomright.curvepath", .arc),
          sketchTool("cad.ui.tool.ellipse", "Ellipse", "oval", .ellipse),
          sketchTool("cad.ui.tool.polygon", "Polygon", "hexagon", .polygon),
-         sketchTool("cad.ui.tool.text", "Text", "textformat", .text)]
+         sketchTool("cad.ui.tool.text", "Text", "character.cursor.ibeam", .text)]
     }
 
     /// Add Axis (spec §6.2). Construction geometry, so it sits with the

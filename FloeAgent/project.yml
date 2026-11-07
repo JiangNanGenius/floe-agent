@@ -256,7 +256,7 @@ targets:
         NSSpeechRecognitionUsageDescription: Floe converts your speech into text for the message composer.
         NSCalendarsFullAccessUsageDescription: Floe accesses calendars only when you ask the agent to read or edit events.
         NSRemindersFullAccessUsageDescription: Floe accesses reminders only when you ask the agent to read or edit them.
-        NSLocationWhenInUseUsageDescription: Floe uses your location for weather and nearby places you request, including while those tasks continue in the background. Background assistance uses approximate location while tasks are running.
+        NSLocationWhenInUseUsageDescription: Floe uses your location for requested weather and nearby places. Wi-Fi diagnostics needs precise-location permission to show the connected network and access point. Running tasks may continue using approximate location in the background.
         NSCameraUsageDescription: Floe opens the camera only when you choose to capture an image for a task.
         NSFaceIDUsageDescription: Floe uses Face ID only to confirm when you enable unrestricted task access or unlock protected settings.
         NSPhotoLibraryUsageDescription: Floe opens your photo library only when you choose an image for a task.
@@ -520,8 +520,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.8.2"
-        CURRENT_PROJECT_VERSION: "322"
+        MARKETING_VERSION: "1.8.3"
+        CURRENT_PROJECT_VERSION: "323"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -604,8 +604,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.2"
-        CURRENT_PROJECT_VERSION: "322"
+        MARKETING_VERSION: "1.8.3"
+        CURRENT_PROJECT_VERSION: "323"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -655,8 +655,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.2"
-        CURRENT_PROJECT_VERSION: "322"
+        MARKETING_VERSION: "1.8.3"
+        CURRENT_PROJECT_VERSION: "323"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -699,8 +699,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.2"
-        CURRENT_PROJECT_VERSION: "322"
+        MARKETING_VERSION: "1.8.3"
+        CURRENT_PROJECT_VERSION: "323"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -752,8 +752,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.2"
-        CURRENT_PROJECT_VERSION: "322"
+        MARKETING_VERSION: "1.8.3"
+        CURRENT_PROJECT_VERSION: "323"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -1642,11 +1642,52 @@ targets:
     sources:
       - path: Tests/FloeAppTests/FloeNoteIntentsIntegrationTests.swift
       - path: Tests/FloeAppTests/NativePrintingIntegrationTests.swift
+      - path: Tests/FloeAppTests/PredevelopmentClosureTests.swift
+      - path: Tests/FloeAppTests/CADManufacturingIntegrationTests.swift
+      - path: Tests/FloeAppTests/CanvasFrameworkProjectionAppTests.swift
+      - path: Tests/FloeAppTests/CanvasFrameworkClosureAppTests.swift
+      - path: Tests/FloeAppTests/PiPAudioServiceTests.swift
+      - path: Tests/FloeAppTests/PiPAudioPreferencesTests.swift
+      - path: Tests/FloeAppTests/PiPAudioBackendAppTests.swift
+      - path: FloeFileProvider/SharedDocumentsFileProviderItem.swift
+      - path: FloeFileProvider/SharedDocumentsFileProviderBridge.swift
       - path: Tests/FloeAppTests/NativeStudioRuntimeTests.swift
       - path: Tests/FloeAppTests/NativeMeetingIntegrationTests.swift
       - path: Tests/FloeAppTests/StudioDocumentAccessTests.swift
       - path: Tests/FloeAppTests/StudioRegisteredWorkflowTests.swift
+      - path: Tests/FloeAppTests/StudioMusicChemistryContractTests.swift
+      - path: Tests/FloeAppTests/StudioMachiningContractTests.swift
+      - path: Tests/FloeAppTests/StudioMediaContractTests.swift
+      - path: Tests/FloeAppTests/StudioMediaImportAudioContractTests.swift
+      - path: Tests/FloeAppTests/StudioCADRenameSaveContractTests.swift
+      - path: Tests/FloeAppTests/CADBuildingToolContractTests.swift
+      - path: Tests/FloeAppTests/CADForceMeshContractTests.swift
+      - path: Tests/FloeAppTests/CADSculptPreparationTests.swift
+      - path: Tests/FloeAppTests/PersonalCADDrawingImportTests.swift
+      - path: Tests/FloeAppTests/PersonalLibraryTrashTests.swift
+      - path: Tests/FloeMediaTests/AudioWaveformInspectionTests.swift
+      - path: Tests/FloeAppTests/AudioWaveformModelVisibilityTests.swift
+      - path: Tests/FloeAppTests/PrintHandoffPlacementAppTests.swift
+      - path: Tests/FloeAppTests/PrintingGeometryContractTests.swift
+      - path: Tests/FloeAppTests/SQLLiteralSearchIntegrationTests.swift
+      - path: Tests/FloeAppTests/ToolboxDiagnosticRequestTests.swift
+      - path: Tests/FloeAppTests/ToolboxAnalysisLifecycleTests.swift
+      - path: Tests/FloeAppTests/NativeStudioApprovalIntegrationTests.swift
+      - path: Tests/FloeWorkbenchTests/MediaPreparedCaptionStyleTests.swift
+      - path: Tests/FloeAppTests/MediaV2ExportFailureTests.swift
+      - path: Modules/FloeCanvasKit/Tests/FloeCanvasCoreTests/FrameworkTextEnvelopeTests.swift
+      - path: Qualification/Notes/Tests/NotesStoreTests.swift
+      - path: Tests/FloeAgentRuntimeTests/AgentRuntimeTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ActionClaimGateTests.swift
+      - path: Tests/FloeAgentRuntimeTests/TaskClosureFlowTests.swift
+      - path: Tests/FloeAgentRuntimeTests/RuntimeTestDoubles.swift
+      - path: Tests/FloeAgentRuntimeTests/DependencyWaitTests.swift
       - path: Tests/FloeAppTests/NativeToolboxIntegrationTests.swift
+      - path: Tests/FloeAppTests/OrdinaryToolboxSessionTests.swift
+      - path: Tests/FloeAppTests/SpaceEditorPresentationTests.swift
+      - path: Tests/FloeAppTests/WorkspaceDeletionOwnerTests.swift
+      - path: Tests/FloeWorkspaceTests/WorkspaceDeletionCASTests.swift
+      - path: Modules/FloeCanvasKit/Tests/FloeCanvasIntegrationTests/FileRepositoryGarbageCollectionTests.swift
       - path: Tests/FloeAppTests/InteractiveStateIntegrationTests.swift
       - path: Tests/FloeAppTests/CADLocalRenderContractTests.swift
       - path: Tests/FloeAppTests/NativeCADHostRuntimeTests.swift
@@ -1668,6 +1709,20 @@ targets:
         product: FloeCore
       - package: FloeAgentPackages
         product: FloeNotes
+      - package: FloeAgentPackages
+        product: FloeAgentRuntime
+      - package: FloeAgentPackages
+        product: FloeTestSupport
+      - package: FloeAgentPackages
+        product: FloeMedia
+      - package: FloeAgentPackages
+        product: FloeTools
+      - package: FloeToolbox
+        product: FloeToolboxCore
+      - package: FloeToolbox
+        product: FloeToolboxDiagnostics
+      - package: FloeToolbox
+        product: FloeToolboxWorkbenches
       - package: FloeInteractiveContent
         product: FloeInteractiveContentCore
       - package: GRDB

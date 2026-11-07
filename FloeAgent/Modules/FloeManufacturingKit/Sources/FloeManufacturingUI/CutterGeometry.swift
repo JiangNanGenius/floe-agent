@@ -3,6 +3,7 @@
 import SceneKit
 import UIKit
 import simd
+import FloeManufacturingCore
 
 @MainActor enum CutterGeometry {
     /// Rotational profile in the same tip-origin/+Y convention as the native
@@ -30,19 +31,20 @@ import simd
                 points.append(SIMD3(Float(p.x*cos(a)),Float(p.y),Float(p.x*sin(a))))
             }
         }
-        var indices = [Int32](), normals = [SIMD3<Float>](repeating:.zero,count:points.count)
+        var faces = [[Int]]()
         for row in 1..<profile.count {
             for i in 0..<slices {
                 let a = (row-1)*slices+i, b = (row-1)*slices+(i+1)%slices, c = row*slices+i, d = row*slices+(i+1)%slices
                 for t in [[a,c,b],[b,c,d]] {
                     let n = simd_cross(points[t[1]]-points[t[0]],points[t[2]]-points[t[0]])
-                    if simd_length_squared(n) > 1e-15 { for v in t { normals[v] += n }; indices += t.map(Int32.init) }
+                    if simd_length_squared(n) > 1e-15 { faces.append(t) }
                 }
             }
         }
-        let positions = SCNGeometrySource(vertices:points.map { SCNVector3($0.x,$0.y,$0.z) })
-        let ns = SCNGeometrySource(normals:normals.map { n in let v = simd_length_squared(n) > 1e-15 ? simd_normalize(n):SIMD3<Float>(0,1,0); return SCNVector3(v.x,v.y,v.z) })
-        let geometry = SCNGeometry(sources:[positions,ns],elements:[SCNGeometryElement(indices:indices,primitiveType:.triangles)])
+        guard let shaded = ManufacturingDisplaySurface.shadedMesh(points.map { [Double($0.x),Double($0.y),Double($0.z)] },triangles:faces,smoothing:true) else { return }
+        let positions = SCNGeometrySource(vertices:shaded.vertices.map { SCNVector3($0[0],$0[1],$0[2]) })
+        let ns = SCNGeometrySource(normals:shaded.normals.map { SCNVector3($0[0],$0[1],$0[2]) })
+        let geometry = SCNGeometry(sources:[positions,ns],elements:[SCNGeometryElement(indices:shaded.triangles.flatMap { $0.map(Int32.init) },primitiveType:.triangles)])
         geometry.firstMaterial?.diffuse.contents = UIColor.systemTeal.withAlphaComponent(0.7)
         geometry.firstMaterial?.isDoubleSided = true
         root.geometry = geometry

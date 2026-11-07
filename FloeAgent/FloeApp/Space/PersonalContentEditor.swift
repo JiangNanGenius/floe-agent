@@ -15,7 +15,9 @@ import FloeChemistryUI
 struct PersonalContentEditor: View {
     let record: PersonalContentRecord
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.isPresented) private var isPresented
     @EnvironmentObject private var environment: AppEnvironment
+    @State private var fileUsage: PersonalLibraryUsageLease?
     @State private var content: LoadedContent?
     @State private var error: String?
     @State private var showingAssistant = false
@@ -24,6 +26,8 @@ struct PersonalContentEditor: View {
     @State private var sourceNotes = NotesSession()
     @State private var printPreparation: PrintPreparationRequest?
     @State private var printPreparationError: String?
+    @State private var cadImportRequest: PersonalCADImportRequest?
+    @State private var importedCADRecord: PersonalContentRecord?
     @State private var chemistryNotesRequest: ChemistryNotesRequest?
     @State private var chemistryEpoch = UUID()
 
@@ -54,15 +58,18 @@ struct PersonalContentEditor: View {
             if let content, case .diagram(let model) = content {
                 // This editor owns its split navigation. Wrapping that split in
                 // another NavigationStack can discard its detail column.
-                DiagramEditorView(model: model, onClose: { Task { await model.close(); dismiss() } },
+                DiagramEditorView(model: model, onClose: { Task { await model.close(); dismissAfterClosing() } },
                     onAssistant: { showingAssistant = true })
+            } else if let content, case .canvas(let store) = content {
+                // The original canvas owns its split navigation and close path.
+                CreativeCanvasSurface(record: record, store: store)
             } else if let content, case .manufacturing(let model) = content {
                 ManufacturingWorkbenchView(model: model, onClose: {
-                    do { try model.saveDraft(); dismiss() } catch { model.report(error) }
+                    do { try model.saveDraft(); dismissAfterClosing() } catch { model.report(error) }
                 }, onAssistant: { showingAssistant = true })
             } else if let content, case .office(let document) = content {
                 NavigationStack {
-                    PersonalOfficeDocumentView(document: document, onClose: { dismiss() },
+                    PersonalOfficeDocumentView(document: document, onClose: { dismissAfterClosing() },
                         onAssistant: { showingAssistant = true })
                 }
             } else {
@@ -71,6 +78,14 @@ struct PersonalContentEditor: View {
         }
         .task { await load() }
         .interactiveDismissDisabled()
+        .onChange(of: isPresented) { _, presented in
+            if !presented { fileUsage?.release(); fileUsage = nil }
+        }
+        .onDisappear {
+            // An internal full-screen preview still covers a presented editor.
+            // Only dismissal releases its ownership; state deinit is a fallback.
+            if !isPresented { fileUsage?.release(); fileUsage = nil }
+        }
         .environment(\.cadWorkbenchTransientlyCovered, showingAssistant || childWork != nil || sourceNote != nil || printPreparation != nil)
         .sheet(item: $printPreparation, onDismiss: { refreshEditor() }) { request in
             PrintPreparationSheet(request: request)
@@ -81,6 +96,7 @@ struct PersonalContentEditor: View {
         } message: { Text(printPreparationError ?? "") }
         .onChange(of: record.id) { _, _ in
             printPreparation = nil; chemistryNotesRequest = nil; chemistryEpoch = UUID()
+            cadImportRequest = nil; importedCADRecord = nil
         }
         .sheet(item: $chemistryNotesRequest, onDismiss: { refreshEditor() }) { request in
             NotesChemistryReturnSheet(recordID: request.recordID, projectID: request.projectID, objectID: request.objectID)
@@ -90,6 +106,13 @@ struct PersonalContentEditor: View {
         }
         .sheet(item: $childWork, onDismiss: { refreshEditor() }) { value in
             PersonalContentEditor(record: value)
+        }
+        .sheet(item: $cadImportRequest, onDismiss: {
+            if let value = importedCADRecord { importedCADRecord = nil; childWork = value }
+        }) { request in
+            PersonalCADImportSheet(request: request) { value in
+                importedCADRecord = value; cadImportRequest = nil
+            }
         }
         .sheet(item: $sourceNote, onDismiss: { refreshEditor() }) { value in
             NavigationStack {
@@ -135,8 +158,15 @@ struct PersonalContentEditor: View {
                     case .media(let directory):
                         PersonalMediaEditorView(record: record, directory: directory, onAssistant: { showingAssistant = true })
                     case .cad(let document):
-                        if record.kind == .cad2D { FloeCAD2DWorkbenchView(document: document) }
-                        else { FloeCADWorkbenchView(document: document) }
+                        Group {
+                            if record.kind == .cad2D { FloeCAD2DWorkbenchView(document: document) }
+                            else { FloeCADWorkbenchView(document: document) }
+                        }
+                        .modifier(CADManufacturingEntry(document: document,
+                            directory: document.url.deletingLastPathComponent().appendingPathComponent("Manufacturing", isDirectory: true),
+                            ownerID: record.id,
+                            onPreparePrint: { Task { await preparePrint() } },
+                            onAssistant: { showingAssistant = true }))
                     }
                 } else if let error {
                     ContentUnavailableView {
@@ -155,11 +185,11 @@ struct PersonalContentEditor: View {
                     Button(IDELanguageRunText.t("完成", "Done")) { Task { await finish() } }
                         .accessibilityIdentifier("space.editor.done")
                 }
-                if canPreparePrint {
+                if canOpenFileInCAD {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button(IDELanguageRunText.t("准备打印", "Prepare Print"), systemImage: "printer") {
-                            Task { await preparePrint() }
-                        }.accessibilityIdentifier("space.editor.preparePrint")
+                        Button(IDELanguageRunText.t("在 CAD 打开", "Open in CAD"), systemImage: "cube") {
+                            if case .file(let file) = content { cadImportRequest = .init(record: record, file: file) }
+                        }.accessibilityIdentifier("space.editor.openInCAD")
                     }
                 }
                 if content != nil {
@@ -181,10 +211,9 @@ struct PersonalContentEditor: View {
         })
     }
 
-    private var canPreparePrint: Bool {
+    private var canOpenFileInCAD: Bool {
         switch content {
-        case .cad(let document): return !document.isClosed
-        case .file(let url): return PrintProjectHandoff.fileExtensions.contains(url.pathExtension.lowercased())
+        case .file(let url): return CADUnifiedModelImport.extensions.contains(url.pathExtension.lowercased())
         default: return false
         }
     }
@@ -201,6 +230,10 @@ struct PersonalContentEditor: View {
         do {
             let library = try await PersonalContentService.shared.library()
             let value = try await library.resolve(record.id)
+            let loadingUse = try PersonalLibraryFileActions.acquireUse(id: record.id, directory: value.url)
+            defer { loadingUse.release() }
+            if fileUsage == nil { fileUsage = try PersonalLibraryFileActions.acquireUse(id: record.id, directory: value.url) }
+            try Task.checkCancellation()
             switch record.kind {
             case .canvas:
                 let repository = try FileCanvasRepository(root: value.url.appendingPathComponent("Canvas"))
@@ -258,7 +291,10 @@ struct PersonalContentEditor: View {
                 throw PersonalContentError.invalidProject
             }
             try await library.markOpened(record.id)
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            if case nil = content { fileUsage?.release(); fileUsage = nil }
+            self.error = error.localizedDescription
+        }
     }
 
     @MainActor private func refreshEditor() {
@@ -272,6 +308,10 @@ struct PersonalContentEditor: View {
         default: break // These process-owned sessions are already observed.
         }
     }
+    @MainActor private func dismissAfterClosing() {
+        fileUsage?.release(); fileUsage = nil
+        dismiss()
+    }
     @MainActor private func finish() async {
         switch content {
         case .text(let document): guard await document.close() else { return }
@@ -282,7 +322,7 @@ struct PersonalContentEditor: View {
             document.close()
         default: break
         }
-        dismiss()
+        dismissAfterClosing()
     }
 }
 

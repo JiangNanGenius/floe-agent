@@ -569,6 +569,9 @@ public struct MediaPreparedTrackGraph: Sendable, Codable, Hashable {
     public var tracks: [MediaPreparedTrack]
     public var frameRate: MediaRationalTime?
     public var captionStyle: CaptionStyle?
+    /// Independent generation for global subtitle style; absent in older
+    /// documents means zero. Clip edits do not invalidate style-only undo.
+    public var captionStyleRevision: UInt64?
     /// Master mix of clip audio (v1 `VideoTimeline.primaryVolume/Muted`).
     public var masterVolume: Double
     public var masterMuted: Bool
@@ -578,12 +581,14 @@ public struct MediaPreparedTrackGraph: Sendable, Codable, Hashable {
     public init(tracks: [MediaPreparedTrack] = [],
                 frameRate: MediaRationalTime? = nil,
                 captionStyle: CaptionStyle? = nil,
+                captionStyleRevision: UInt64? = nil,
                 masterVolume: Double = 1,
                 masterMuted: Bool = false,
                 coverTime: MediaRationalTime? = nil) {
         self.tracks = tracks
         self.frameRate = frameRate
         self.captionStyle = captionStyle
+        self.captionStyleRevision = captionStyleRevision
         self.masterVolume = masterVolume
         self.masterMuted = masterMuted
         self.coverTime = coverTime
@@ -798,6 +803,8 @@ public extension MediaPreparedDocument {
 // MARK: - Object identity
 
 public enum MediaPreparedObjectKind: String, Sendable, Codable, Hashable, CaseIterable {
+    /// One global object per video document, identified by the document ID.
+    case captionStyle
     case asset
     case layer
     case track
@@ -833,6 +840,7 @@ public struct MediaPreparedOperation: Sendable, Codable, Hashable, Identifiable 
 }
 
 public enum MediaPreparedAction: Sendable, Codable, Hashable {
+    case setCaptionStyle(expectedRevision: UInt64, style: CaptionStyle?)
     case insertAsset(MediaAssetReference)
     case replaceAsset(expected: MediaAssetReference, expectedRevision: UInt64, replacement: MediaAssetReference)
     // Layers

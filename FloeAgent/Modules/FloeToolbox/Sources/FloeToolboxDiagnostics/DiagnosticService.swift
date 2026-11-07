@@ -5,7 +5,20 @@ import dnssd
 import FloeToolboxCore
 import FloeToolboxClients
 
-public enum DiagnosticError: Error, Equatable, Sendable { case invalid(String), system(String), timedOut, busy, denied, stopped }
+public enum DiagnosticError: Error, Equatable, Sendable {
+    case invalid(String), system(String), timedOut, busy, denied, stopped
+    case dnsNameNotFound(String), dnsNoRecords(String, DNSRecordType), dnsService(Int32)
+
+    /// DNS-SD error callbacks do not define their other parameters on failure.
+    /// Use the request's frozen name/type, and retain unknown service codes.
+    public static func dnsServiceFailure(code: Int32, name: String, type: DNSRecordType) -> Self {
+        switch code {
+        case Int32(kDNSServiceErr_NoSuchName): .dnsNameNotFound(name)
+        case Int32(kDNSServiceErr_NoSuchRecord): .dnsNoRecords(name, type)
+        default: .dnsService(code)
+        }
+    }
+}
 final class CancellationToken: @unchecked Sendable {
     private let lock = NSLock(); private var cancelled = false
     var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
@@ -84,6 +97,9 @@ public struct PortObservation: Equatable, Sendable {
 public enum DNSRecordType: UInt16, CaseIterable, Sendable { case a = 1, cname = 5, ptr = 12, mx = 15, txt = 16, aaaa = 28, srv = 33 }
 public struct DNSRecord: Equatable, Sendable {
     public let name: String; public let type: DNSRecordType; public let ttl: UInt32; public let data: Data
+    public init(name: String, type: DNSRecordType, ttl: UInt32, data: Data) {
+        self.name = name; self.type = type; self.ttl = ttl; self.data = data
+    }
     public var text: String {
         if type == .a, data.count == 4 { return data.map(String.init).joined(separator:".") }
         if type == .aaaa, data.count == 16 {
@@ -128,24 +144,41 @@ private final class DNSQuery: @unchecked Sendable {
     private var source: DispatchSourceRead?
     private var records: [DNSRecord] = []
     private var bytes = 0
+    private var requestedName = ""
+    private var requestedType = DNSRecordType.a
     private let gate = DiagnosticCompletion<[DNSRecord]>()
     func run(name: String, type: DNSRecordType, timeout: Double) async throws -> [DNSRecord] {
         queue.async { [self] in
-            let error = DNSServiceQueryRecord(&reference,0,0,name,type.rawValue,UInt16(kDNSServiceClass_IN),{ _,flags,_,error,name,type,_,length,data,ttl,context in
+            requestedName = name; requestedType = type
+            // Without ReturnIntermediates, authoritative negative answers are
+            // suppressed and an absent name looks like a generic timeout.
+            let error = DNSServiceQueryRecord(&reference,UInt32(kDNSServiceFlagsReturnIntermediates),0,name,type.rawValue,UInt16(kDNSServiceClass_IN),{ _,flags,_,error,name,type,_,length,data,ttl,context in
                 guard let context else { return }; let query = Unmanaged<DNSQuery>.fromOpaque(context).takeUnretainedValue()
-                if error != kDNSServiceErr_NoError { query.gate.finish(.failure(DiagnosticError.system("DNS query failed: \(error)"))); return }
-                guard flags & UInt32(kDNSServiceFlagsAdd) != 0, let name, let type = DNSRecordType(rawValue:type), Int(length) <= 65535 else { return }
+                if error != kDNSServiceErr_NoError {
+                    query.gate.finish(.failure(DiagnosticError.dnsServiceFailure(code:error,name:query.requestedName,type:query.requestedType))); return
+                }
+                // A CNAME referral from an A/AAAA query is intermediate, not
+                // the requested address result. Let DNS-SD follow the alias.
+                guard flags & UInt32(kDNSServiceFlagsAdd) != 0, let name,
+                      let type = DNSRecordType(rawValue:type), type == query.requestedType,
+                      Int(length) <= 65535 else { return }
+                if (type == .a && length != 4) || (type == .aaaa && length != 16) { return }
                 let bytes = data.map { Data(bytes:$0,count:Int(length)) } ?? Data()
                 guard query.records.count < 256, query.bytes+bytes.count <= 1024*1024 else { query.gate.finish(.failure(DiagnosticError.invalid("DNS result limit"))); return }
                 let value = DNSRecord(name:String(cString:name),type:type,ttl:ttl,data:bytes)
                 if !query.records.contains(value) { query.records.append(value); query.bytes += bytes.count }
                 if flags & UInt32(kDNSServiceFlagsMoreComing) == 0 { query.gate.finish(.success(query.records)) }
             },Unmanaged.passUnretained(self).toOpaque())
-            guard error == kDNSServiceErr_NoError, let reference else { gate.finish(.failure(DiagnosticError.system("DNS query unavailable: \(error)"))); return }
+            guard error == kDNSServiceErr_NoError else { gate.finish(.failure(DiagnosticError.dnsServiceFailure(code:error,name:name,type:type))); return }
+            guard let reference else { gate.finish(.failure(DiagnosticError.system("DNS query returned no service reference"))); return }
             let descriptor = DNSServiceRefSockFD(reference)
             guard descriptor >= 0 else { gate.finish(.failure(DiagnosticError.system("DNS query unavailable"))); return }
             let source = DispatchSource.makeReadSource(fileDescriptor:descriptor,queue:queue); self.source = source
-            source.setEventHandler { [weak self] in guard let self, let reference = self.reference else { return }; let result = DNSServiceProcessResult(reference); if result != 0 { self.gate.finish(.failure(DiagnosticError.system("DNS query failed: \(result)"))) } }
+            source.setEventHandler { [weak self] in
+                guard let self, let reference = self.reference else { return }
+                let result = DNSServiceProcessResult(reference)
+                if result != 0 { self.gate.finish(.failure(DiagnosticError.dnsServiceFailure(code:result,name:self.requestedName,type:self.requestedType))) }
+            }
             source.resume()
         }
         do { let result = try await gate.wait(seconds:timeout); await stop(); return result }

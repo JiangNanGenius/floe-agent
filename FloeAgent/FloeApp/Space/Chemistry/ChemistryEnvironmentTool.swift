@@ -58,6 +58,8 @@ nonisolated struct ChemistryEnvironmentTool: AgentTool {
         let location = try await environment.studioCoordinator.location(args.projectID, context: context,
             editing: true, allowedNames: ChemistryEnvironmentJobAdapter.toolNames)
         guard location.record.kind.rawValue == "chemistry" else { throw PersonalContentError.invalidProject }
+        let fileUse = try PersonalLibraryFileActions.acquireUse(id: location.record.id, directory: location.url)
+        defer { fileUse.release() }
         let session = try await ChemistryProjectSession.open(id: location.record.id,
             directory: location.url, environment: environment)
         let output: ChemistryEnvironmentResult

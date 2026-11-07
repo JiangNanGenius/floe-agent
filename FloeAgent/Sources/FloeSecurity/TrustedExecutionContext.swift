@@ -172,6 +172,9 @@ public struct TrustedExecutionContext: Sendable, Hashable, Codable {
     /// resolver, including a verified Canvas staged-document mapping. This
     /// cannot be reconstructed from a relative path against the task root.
     public var nativeCADDocumentPath: String?
+    /// Actual native PersonalContentLibrary document container. This is a
+    /// bounded service extent, not proof of access to any particular work.
+    public var nativeStudioContainerPath: String?
 
     /// The context attached when nothing was resolved: every carve-out fails
     /// closed to the task's existing approval policy.
@@ -183,7 +186,8 @@ public struct TrustedExecutionContext: Sendable, Hashable, Codable {
         hasUnresolvedExtent: Bool = false,
         typedContractCovered: Bool = false,
         workspaceRootPath: String? = nil,
-        nativeCADDocumentPath: String? = nil
+        nativeCADDocumentPath: String? = nil,
+        nativeStudioContainerPath: String? = nil
     ) {
         self.environmentClass = environmentClass
         self.mutableTargetPaths = mutableTargetPaths
@@ -191,6 +195,7 @@ public struct TrustedExecutionContext: Sendable, Hashable, Codable {
         self.typedContractCovered = typedContractCovered
         self.workspaceRootPath = workspaceRootPath
         self.nativeCADDocumentPath = nativeCADDocumentPath
+        self.nativeStudioContainerPath = nativeStudioContainerPath
     }
 
     /// True only when at least one MUTABLE target was pinned and EVERY pinned

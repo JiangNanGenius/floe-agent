@@ -943,6 +943,9 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
     /// and additive; older packages decode with nil, and older builds simply
     /// ignore the unknown key.
     public var designProjectAuthority: DesignProjectAuthority?
+    /// Complete mixed-canvas state and history carried by this same original
+    /// file. The host decodes it; Core never flattens unknown native content.
+    public var canvasKitState: Data?
     public var createdAt: Date
     public var updatedAt: Date
 
@@ -956,6 +959,7 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
         viewports: [UUID: CanvasViewportState] = [:], revision: Int64 = 0,
         sync: CanvasSyncSettings = .init(),
         designProjectAuthority: DesignProjectAuthority? = nil,
+        canvasKitState: Data? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -968,6 +972,7 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
         self.agentConversationIDsByDocument = agentConversationIDsByDocument
         self.viewports = viewports; self.revision = revision; self.sync = sync
         self.designProjectAuthority = designProjectAuthority
+        self.canvasKitState = canvasKitState
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
 
@@ -977,6 +982,7 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
         case agentConversationIDsByDocument
         case viewports, revision, sync, createdAt, updatedAt
         case designProjectAuthority
+        case canvasKitState
     }
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -1009,6 +1015,7 @@ public struct CanvasProject: Sendable, Codable, Hashable, Identifiable {
         designProjectAuthority = try values.decodeIfPresent(
             DesignProjectAuthority.self, forKey: .designProjectAuthority
         )
+        canvasKitState = try values.decodeIfPresent(Data.self, forKey: .canvasKitState)
         createdAt = try values.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
         if agentConversationIDsByDocument.isEmpty,

@@ -5,7 +5,7 @@ import FloeCanvasCore
 
 /// Explicit professional configuration surface. Its staged definition is
 /// bound to the opening document revision, never to a later reload.
-struct CanvasFlowDefinitionEditor: View {
+public struct CanvasFlowDefinitionEditor: View {
     private struct Draft {
         let snapshot: CanvasSnapshot
         let pageID: UUID
@@ -21,7 +21,7 @@ struct CanvasFlowDefinitionEditor: View {
     private var strings: CanvasStrings { store.strings }
     private static let byteLimit = 8 * 1024 * 1024
 
-    init(store: CanvasEditorStore, graphID: UUID) {
+    public init(store: CanvasEditorStore, graphID: UUID) {
         self.store = store
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -32,7 +32,7 @@ struct CanvasFlowDefinitionEditor: View {
             text: data.flatMap { String(data: $0, encoding: .utf8) } ?? ""))
     }
 
-    var body: some View {
+    public var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 12) {
                 Text(strings[.flowDefinitionHelp]).font(.callout).foregroundStyle(.secondary)

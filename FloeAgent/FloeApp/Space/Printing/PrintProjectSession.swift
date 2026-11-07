@@ -53,6 +53,7 @@ struct PrintProjectEdit: Codable, Sendable {
     var objectID: UUID?
     var plateID: UUID?
     var name: String?
+    var sizeMM: Double?
     var x: Double?, y: Double?, z: Double?
     var axis: Int?, degrees: Double?, scale: Double?
     var preset: PrintPreset?
@@ -87,7 +88,8 @@ actor PrintProjectDisk {
         let bytes = try Data(contentsOf: manifest)
         guard bytes.count < 512 * 1_024 else { throw PersonalContentError.invalidProject }
         let document = try JSONDecoder().decode(PrintProjectDocument.self, from: bytes)
-        let assets = [document.meshAsset, document.resultAsset].compactMap { $0 }
+        let assets = [document.meshAsset, document.resultAsset, document.sourceSnapshot?.geometryAsset,
+                      document.sourceSnapshot?.initialPlacement?.geometryAsset].compactMap { $0 }
             + (document.objects ?? []).map(\.meshAsset) + (document.plates ?? []).compactMap(\.resultAsset)
         for name in assets { try validateAssetName(name) }
         try document.machine?.validate()
@@ -168,6 +170,10 @@ actor PrintProjectDisk {
 
 @MainActor @Observable final class PrintProjectSession {
     private static var sessions: [UUID: PrintProjectSession] = [:]
+    static func requireIdleForDeletion(id: UUID) throws {
+        guard sessions[id]?.isBusy != true, sessions[id]?.isEditing != true else { throw PersonalFileActionError.busy }
+    }
+
     private static let service = PrintSlicingService(backend: NativePrintBackend())
     let id: UUID
     let disk: PrintProjectDisk
@@ -182,7 +188,11 @@ actor PrintProjectDisk {
     private(set) var isCancelling = false
     private(set) var progress = 0.0
     private(set) var completed = false
+    /// Changes only after a newly sliced artifact is durably committed.
+    /// A Bool can return to true within one UI update on a repeated slice.
+    private(set) var completedSliceRevision: UInt64?
     private(set) var result: URL?
+    private(set) var resultMatchesConfiguration = false
     var diagnostic: String?
     private(set) var isEditing = false
     private var undoDocuments: [PrintProjectDocument] = []
@@ -192,8 +202,8 @@ actor PrintProjectDisk {
     var plates: [PrintPlateDocument] { document.plates ?? [] }
     var objects: [PrintObjectDocument] { (document.objects ?? []).filter { $0.plateID == document.plateID } }
     var selectedObject: PrintObjectDocument? { objects.first { $0.id == selectedObjectID } ?? objects.first }
-    var hasUnsavedSettings: Bool { preset != document.preset || layerHeight != document.layerHeight || processSettings != (document.processSettings ?? [:]) || machine != (document.machine ?? .generic(for: document.preset)) }
-    var resultIsCurrent: Bool { result != nil && !hasUnsavedSettings && document.resultFingerprint != nil }
+    var hasUnsavedSettings: Bool { preset != document.preset || layerHeight != document.layerHeight || processSettings != Self.resolvedProcessSettings(document.processSettings, preset: document.preset) || machine != (document.machine ?? .generic(for: document.preset)) }
+    var resultIsCurrent: Bool { result != nil && !hasUnsavedSettings && resultMatchesConfiguration }
     private var operation: Task<Void, Never>?
     private var identity: PrintRequestIdentity?
     private var lastError: (any Error)?
@@ -201,7 +211,7 @@ actor PrintProjectDisk {
     private init(document: PrintProjectDocument, disk: PrintProjectDisk) {
         self.document = document; id = document.projectID; self.disk = disk
         preset = document.preset; layerHeight = document.layerHeight
-        processSettings = document.processSettings ?? [:]; machine = document.machine ?? .generic(for: document.preset)
+        processSettings = Self.resolvedProcessSettings(document.processSettings, preset: document.preset); machine = document.machine ?? .generic(for: document.preset)
         self.document.plates = document.plates ?? [.init(id: document.plateID, name: IDELanguageRunText.t("盘 1", "Plate 1"), resultAsset: document.resultAsset, resultFingerprint: document.resultFingerprint, resultLayerCount: document.resultLayerCount)]
         if document.objects == nil {
             self.document.objects = document.meshAsset.map { [.init(plateID: document.plateID, name: document.meshName ?? IDELanguageRunText.t("模型", "Model"), meshAsset: $0)] } ?? []
@@ -217,8 +227,23 @@ actor PrintProjectDisk {
         sessions[id] = value; return value
     }
     private func refresh() async throws {
-        triangleCount = objects.isEmpty ? 0 : try await disk.mesh(document).triangleCount
+        let activeMesh = objects.isEmpty ? nil : try await disk.mesh(document)
+        triangleCount = activeMesh?.triangleCount ?? 0
         result = try await disk.resultURL(document); completed = result != nil
+        resultMatchesConfiguration = false
+        if result != nil, let fingerprint = document.resultFingerprint, !objects.isEmpty {
+            var overrides = Self.resolvedProcessSettings(document.processSettings, preset: document.preset)
+            overrides[document.preset == .genericMarlinPLA ? "sliceHeight" : "slaSlice"] = document.layerHeight
+            var configured = document.machine ?? .generic(for: document.preset)
+            let assigned = Set(objects.map(\.toolID))
+            if assigned.count <= 1 {
+                if let selected = assigned.first { configured.selectedTool = selected }
+                if let activeMesh, let input = try? PrintInput(mesh: activeMesh, preset: document.preset,
+                    overrides: overrides, machine: configured) {
+                    resultMatchesConfiguration = input.fingerprint == fingerprint
+                }
+            }
+        }
         if !objects.contains(where: { $0.id == selectedObjectID }) { selectedObjectID = objects.first?.id }
     }
     private func remember(_ previous: PrintProjectDocument) {
@@ -284,8 +309,14 @@ actor PrintProjectDisk {
         for edit in edits {
             switch edit.action {
             case .settings:
+                let previousPreset = next.preset
                 next.preset = edit.preset ?? next.preset; next.layerHeight = edit.layerHeight ?? next.layerHeight
-                if let settings = edit.processSettings { next.processSettings = settings }
+                if previousPreset != next.preset { next.processSettings = Self.resolvedProcessSettings(nil, preset: next.preset) }
+                if let settings = edit.processSettings {
+                    let changes = try PrintInput.validatedOverrides(settings, preset: next.preset)
+                    next.processSettings = try PrintInput.validatedOverrides(
+                        Self.resolvedProcessSettings(next.processSettings, preset: next.preset).merging(changes) { _, new in new }, preset: next.preset)
+                }
                 if let machine = edit.machine { next.machine = machine }
                 else if next.preset != document.preset { next.machine = .generic(for: next.preset) }
                 try (next.machine ?? .generic(for: next.preset)).validate()
@@ -305,7 +336,7 @@ actor PrintProjectDisk {
                 if next.plateID == plateID, let first = next.plates?.first { next.plateID = first.id }
             case .addCube:
                 guard (next.objects?.count ?? 0) < 200 else { throw PrintError.sizeLimit }
-                let mesh = try Self.cube()
+                let mesh = try Self.cube(sizeMM: edit.sizeMM ?? 20)
                 let object = PrintObjectDocument(plateID: next.plateID, name: edit.name ?? IDELanguageRunText.t("立方体", "Cube"), meshAsset: try await disk.storeMesh(mesh))
                 next.objects?.append(object); selectedObjectID = object.id; invalidate(&next, plateID: next.plateID)
             case .arrange:
@@ -357,13 +388,13 @@ actor PrintProjectDisk {
         next.meshAsset = next.objects?.first(where: { $0.plateID == next.plateID })?.meshAsset
         let previous = document
         document = try await disk.commit(next, expectedRevision: expectedRevision); remember(previous)
-        preset = document.preset; layerHeight = document.layerHeight; processSettings = document.processSettings ?? [:]; machine = document.machine ?? .generic(for: preset)
+        preset = document.preset; layerHeight = document.layerHeight; processSettings = Self.resolvedProcessSettings(document.processSettings, preset: document.preset); machine = document.machine ?? .generic(for: preset)
         try await refresh(); diagnostic = nil
     }
     func saveSettings() async {
         await perform(.init(action: .settings, preset: preset, layerHeight: layerHeight, processSettings: processSettings, machine: machine))
     }
-    func changePreset(_ value: PrintPreset) { preset = value; layerHeight = value == .genericMarlinPLA ? 0.2 : 0.05; processSettings = [:]; machine = .generic(for: value) }
+    func changePreset(_ value: PrintPreset) { preset = value; layerHeight = value == .genericMarlinPLA ? 0.2 : 0.05; processSettings = Self.resolvedProcessSettings(nil, preset: value); machine = .generic(for: value) }
     func undo() async { await restoreHistory(undoing: true) }
     func redo() async { await restoreHistory(undoing: false) }
     private func restoreHistory(undoing: Bool) async {
@@ -372,12 +403,30 @@ actor PrintProjectDisk {
         do {
             let previous = document; document = try await disk.commit(stored, expectedRevision: document.revision)
             if undoing { undoDocuments.removeLast(); redoDocuments.append(previous) } else { redoDocuments.removeLast(); undoDocuments.append(previous) }
-            preset = document.preset; layerHeight = document.layerHeight; processSettings = document.processSettings ?? [:]; machine = document.machine ?? .generic(for: preset)
+            preset = document.preset; layerHeight = document.layerHeight; processSettings = Self.resolvedProcessSettings(document.processSettings, preset: document.preset); machine = document.machine ?? .generic(for: preset)
             try await refresh(); diagnostic = nil
         } catch { diagnostic = error.localizedDescription }
     }
     func updateSettings(preset: PrintPreset, layerHeight: Double, expectedRevision: UInt64) async throws {
         try await apply([.init(action: .settings, preset: preset, layerHeight: layerHeight)], expectedRevision: expectedRevision)
+    }
+    /// Display, persistence and slicing share one resolved set of defaults.
+    /// Missing keys must not fall through to a different engine preset.
+    nonisolated static func resolvedProcessSettings(_ saved: [String: Double]?, preset: PrintPreset) -> [String: Double] {
+        let defaults: [String: Double]
+        switch preset {
+        case .genericMarlinPLA:
+            defaults = ["sliceFillSparse": 0.15, "sliceShells": 2, "sliceTopLayers": 4, "sliceBottomLayers": 4,
+                        "outputFeedrate": 45, "sliceSupportEnable": 0, "sliceSupportDensity": 0.15, "sliceSupportAngle": 45]
+        case .genericCTBV3:
+            defaults = ["slaLayerOn": 2.5, "slaBaseOn": 25, "slaShell": 0,
+                        "slaSupportEnable": 0, "slaSupportDensity": 0.15, "slaSupportSize": 0.4, "slaSupportLayers": 5]
+        }
+        // Known Build 322 aliases migrate without dropping unknown settings.
+        // Invalid/ambiguous values remain visible and fail the ordinary
+        // validation path instead of silently changing the print.
+        let normalized = (try? PrintInput.validatedOverrides(saved ?? [:], preset: preset)) ?? saved ?? [:]
+        return defaults.merging(normalized) { _, explicit in explicit }
     }
     func slice() {
         guard !isBusy, !isEditing, !objects.isEmpty else { return }
@@ -409,6 +458,8 @@ actor PrintProjectDisk {
                 next = frozen; next.resultFingerprint = artifact.inputFingerprint; next.resultLayerCount = artifact.layerCount
                 document = try await disk.commit(next, expectedRevision: frozen.revision, asset: artifact.data, fileExtension: artifact.format == .gcode ? "gcode" : "ctb")
                 result = try await disk.resultURL(document); progress = 1; completed = true
+                resultMatchesConfiguration = result != nil && artifact.inputFingerprint == input.fingerprint
+                completedSliceRevision = document.revision
             } catch { lastError = error; if !Task.isCancelled, (error as? PrintError) != .cancelled { diagnostic = error.localizedDescription } }
         }
     }
@@ -453,8 +504,11 @@ actor PrintProjectDisk {
         if case .rotate = edit { let minimum = stride(from: 2, to: p.count, by: 3).map { p[$0] }.min() ?? 0; for i in stride(from: 2, to: p.count, by: 3) { p[i] -= minimum } }
         return try PrintMesh(positions: p)
     }
-    nonisolated private static func cube() throws -> PrintMesh {
-        let v: [[Float]] = [[-10,-10,0],[10,-10,0],[10,10,0],[-10,10,0],[-10,-10,20],[10,-10,20],[10,10,20],[-10,10,20]]
+    nonisolated private static func cube(sizeMM: Double = 20) throws -> PrintMesh {
+        guard sizeMM.isFinite, (0.01...2_000).contains(sizeMM) else { throw PrintError.invalidSetting("cube sizeMM") }
+        let half = Float(sizeMM / 2), height = Float(sizeMM)
+        let v: [[Float]] = [[-half,-half,0],[half,-half,0],[half,half,0],[-half,half,0],
+            [-half,-half,height],[half,-half,height],[half,half,height],[-half,half,height]]
         let faces = [[0,2,1],[0,3,2],[4,5,6],[4,6,7],[0,1,5],[0,5,4],[1,2,6],[1,6,5],[2,3,7],[2,7,6],[3,0,4],[3,4,7]]
         return try PrintMesh(positions: faces.flatMap { $0.flatMap { v[$0] } })
     }

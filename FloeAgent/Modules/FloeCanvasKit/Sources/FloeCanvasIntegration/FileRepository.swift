@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import FloeCanvasCore
 
 /// File-backed document authority at the explicit root supplied by the host.
@@ -8,7 +9,7 @@ import FloeCanvasCore
 ///
 /// Design (aligned with FloeDiagramKit's FileDiagramRepository):
 ///
-/// - The repository is an actor; every load/mutation also takes a
+/// - Every load/mutation takes a
 ///   per-document `flock`, so two instances in one process or writers in
 ///   different processes serialize on the same revision check.
 /// - The commit authority is a single `manifest.json` per canvas, written
@@ -16,26 +17,37 @@ import FloeCanvasCore
 ///   idempotency receipts of one commit into ONE record: a crash before the
 ///   manifest rename commits nothing, a crash after commits everything.
 ///   Recovery never guesses from uncommitted blobs.
-/// - `blobs/<sha256>.json` are immutable, content-addressed payloads. Failed
-///   or superseded artifacts are left in place (nothing truncates the old
-///   record); a later successful commit supersedes them.
+/// - `blobs/<sha256>.json` are immutable, content-addressed payloads. After
+///   a successful commit, best-effort GC under the SAME document lock keeps
+///   the authoritative snapshot and COMPLETE history (both stacks), only
+///   removing superseded regular blobs after successful durability barriers.
 ///
 /// Layout:
 ///
 ///     <root>/canvases/<canvasID>/<canvasID>.lock
 ///     <root>/canvases/<canvasID>/manifest.json
 ///     <root>/canvases/<canvasID>/blobs/<sha256>.json
-public actor FileCanvasRepository: CanvasDocumentStore {
+public final class FileCanvasRepository: CanvasDocumentStore, Sendable {
     public let root: URL
-    private let encoder: JSONEncoder
-    private let decoder: JSONDecoder
+    private var encoder: JSONEncoder {
+        let value = JSONEncoder()
+        value.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return value
+    }
+    private var decoder: JSONDecoder { JSONDecoder() }
     /// Test hook: when true the next mutation fails just before the atomic
     /// manifest write, exercising crash-at-commit-point recovery.
-    private var failBeforeManifestWrite = false
-    /// One decoded immutable record, bounded across documents. The live
-    /// manifest and BOTH blob digests are still read/verified on every
-    /// access; another writer or on-disk corruption cannot be hidden by it.
-    private var decodedRecord: DecodedRecord?
+    private let failureInjection = FailureInjection()
+    private let gcBarrierFailureInjection = FailureInjection()
+
+    private final class FailureInjection: @unchecked Sendable {
+        private let lock = NSLock()
+        private var failNext = false
+        func set(_ value: Bool) { lock.withLock { failNext = value } }
+        func consume() -> Bool {
+            lock.withLock { let value = failNext; failNext = false; return value }
+        }
+    }
 
     public init(root: URL) throws {
         let standardized = root.standardizedFileURL
@@ -45,10 +57,6 @@ public actor FileCanvasRepository: CanvasDocumentStore {
             throw CanvasKitError.repositoryRootViolation("root too broad: \(root.path)")
         }
         self.root = standardized
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        self.encoder = encoder
-        self.decoder = JSONDecoder()
         try FileManager.default.createDirectory(
             at: standardized, withIntermediateDirectories: true)
     }
@@ -99,30 +107,6 @@ public actor FileCanvasRepository: CanvasDocumentStore {
         }
         defer { _ = flock(fd, LOCK_UN) }
         return try operation()
-    }
-
-    /// Async variant for mutations that await the repository engine while
-    /// still holding the per-document lock.
-    private func withDocumentLock<T>(
-        _ canvasID: UUID,
-        operation: () async throws -> T
-    ) async throws -> T {
-        let directory = canvasDirectory(canvasID)
-        try FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true)
-        let lockURL = directory.appendingPathComponent("\(canvasID.uuidString).lock")
-        let fd = Darwin.open(lockURL.path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
-        guard fd >= 0 else {
-            throw CanvasKitError.io("open document lock: \(errno)")
-        }
-        defer { _ = Darwin.close(fd) }
-        while flock(fd, LOCK_EX) != 0 {
-            if errno != EINTR {
-                throw CanvasKitError.io("document lock: \(errno)")
-            }
-        }
-        defer { _ = flock(fd, LOCK_UN) }
-        return try await operation()
     }
 
     // MARK: Atomic file write (staged, fsynced, same-directory rename)
@@ -193,14 +177,6 @@ public actor FileCanvasRepository: CanvasDocumentStore {
         return data
     }
 
-    private struct DecodedRecord {
-        var canvasID: UUID
-        var snapshotHash: String
-        var historyHash: String
-        var snapshot: CanvasSnapshot
-        var history: CanvasHistoryState
-    }
-
     private struct PersistedState {
         var snapshot: CanvasSnapshot
         var history: CanvasHistoryState
@@ -233,22 +209,11 @@ public actor FileCanvasRepository: CanvasDocumentStore {
         }
         let snapshotData = try verifiedBlob(hash: manifest.snapshotBlob, canvasID: canvasID)
         let historyData = try verifiedBlob(hash: manifest.historyBlob, canvasID: canvasID)
-        let snapshot: CanvasSnapshot
-        let history: CanvasHistoryState
-        if let cached = decodedRecord, cached.canvasID == canvasID,
-           cached.snapshotHash == manifest.snapshotBlob, cached.historyHash == manifest.historyBlob {
-            snapshot = cached.snapshot
-            history = cached.history
-        } else {
-            snapshot = try decoder.decode(CanvasSnapshot.self, from: snapshotData)
-            history = try decoder.decode(CanvasHistoryState.self, from: historyData)
-        }
+        let snapshot = try decoder.decode(CanvasSnapshot.self, from: snapshotData)
+        let history = try decoder.decode(CanvasHistoryState.self, from: historyData)
         guard snapshot.id == canvasID, snapshot.revision == manifest.snapshotRevision else {
             throw CanvasKitError.io("committed snapshot identity or revision mismatch")
         }
-        decodedRecord = DecodedRecord(canvasID: canvasID,
-            snapshotHash: manifest.snapshotBlob, historyHash: manifest.historyBlob,
-            snapshot: snapshot, history: history)
         return PersistedState(
             snapshot: snapshot, history: history, receipts: manifest.receipts)
     }
@@ -275,6 +240,12 @@ public actor FileCanvasRepository: CanvasDocumentStore {
     // MARK: CanvasDocumentStore
 
     public func load(canvasID: UUID) async throws -> CanvasSnapshot {
+        try loadSynchronously(canvasID: canvasID)
+    }
+
+    /// The original native canvas has synchronous transaction callbacks.
+    /// Both entry points use this same locked manifest authority.
+    public func loadSynchronously(canvasID: UUID) throws -> CanvasSnapshot {
         try withDocumentLock(canvasID) {
             try readCommitted(canvasID).snapshot
         }
@@ -317,8 +288,8 @@ public actor FileCanvasRepository: CanvasDocumentStore {
         expectedRevision: Int64,
         requestID: UUID
     ) async throws -> CanvasCommitReceipt {
-        try await mutate(canvasID: canvasID) { engine in
-            try await engine.commit(
+        try mutate(canvasID: canvasID) { engine in
+            try engine.commit(
                 batch, canvasID: canvasID,
                 expectedRevision: expectedRevision, requestID: requestID)
         }
@@ -330,8 +301,15 @@ public actor FileCanvasRepository: CanvasDocumentStore {
         expectedRevision: Int64,
         requestID: UUID
     ) async throws -> CanvasCommitReceipt {
-        try await mutate(canvasID: canvasID) { engine in
-            try await engine.commitDocument(
+        try commitDocumentSynchronously(batch, canvasID: canvasID, expectedRevision: expectedRevision, requestID: requestID)
+    }
+
+    public func commitDocumentSynchronously(
+        _ batch: CanvasDocumentBatch, canvasID: UUID,
+        expectedRevision: Int64, requestID: UUID
+    ) throws -> CanvasCommitReceipt {
+        try mutate(canvasID: canvasID) { engine in
+            try engine.commitDocument(
                 batch, canvasID: canvasID,
                 expectedRevision: expectedRevision, requestID: requestID)
         }
@@ -342,8 +320,12 @@ public actor FileCanvasRepository: CanvasDocumentStore {
         expectedRevision: Int64,
         requestID: UUID
     ) async throws -> CanvasCommitReceipt {
-        try await mutate(canvasID: canvasID) { engine in
-            try await engine.undo(
+        try undoSynchronously(canvasID: canvasID, expectedRevision: expectedRevision, requestID: requestID)
+    }
+
+    public func undoSynchronously(canvasID: UUID, expectedRevision: Int64, requestID: UUID) throws -> CanvasCommitReceipt {
+        try mutate(canvasID: canvasID) { engine in
+            try engine.undo(
                 canvasID: canvasID,
                 expectedRevision: expectedRevision, requestID: requestID)
         }
@@ -354,8 +336,12 @@ public actor FileCanvasRepository: CanvasDocumentStore {
         expectedRevision: Int64,
         requestID: UUID
     ) async throws -> CanvasCommitReceipt {
-        try await mutate(canvasID: canvasID) { engine in
-            try await engine.redo(
+        try redoSynchronously(canvasID: canvasID, expectedRevision: expectedRevision, requestID: requestID)
+    }
+
+    public func redoSynchronously(canvasID: UUID, expectedRevision: Int64, requestID: UUID) throws -> CanvasCommitReceipt {
+        try mutate(canvasID: canvasID) { engine in
+            try engine.redo(
                 canvasID: canvasID,
                 expectedRevision: expectedRevision, requestID: requestID)
         }
@@ -367,6 +353,9 @@ public actor FileCanvasRepository: CanvasDocumentStore {
         }
     }
     public func historyAvailability(canvasID: UUID) async throws -> CanvasHistoryAvailability {
+        try historyAvailabilitySynchronously(canvasID: canvasID)
+    }
+    public func historyAvailabilitySynchronously(canvasID: UUID) throws -> CanvasHistoryAvailability {
         try withDocumentLock(canvasID) {
             let history = try readCommitted(canvasID).history
             return .init(undoCount: history.undoStack.count, redoCount: history.redoStack.count)
@@ -376,7 +365,29 @@ public actor FileCanvasRepository: CanvasDocumentStore {
     /// Test hook: make the next mutation fail right before the atomic
     /// manifest write, simulating a crash at the commit point.
     func setFailBeforeManifestWrite(_ value: Bool) {
-        failBeforeManifestWrite = value
+        failureInjection.set(value)
+    }
+    /// Internal qualification seam: unsupported/failed durability must skip
+    /// maintenance without changing a successfully committed receipt.
+    func setFailGarbageCollectionBarrier(_ value: Bool) { gcBarrierFailureInjection.set(value) }
+
+    /// Internal maintenance/qualification entry. Public reads retain their
+    /// existing behavior; this uses the exact same document flock and fails
+    /// closed on any current-manifest/snapshot/history validation error.
+    func collectUnreferencedBlobsSynchronously(canvasID: UUID) throws {
+        try withDocumentLock(canvasID) {
+            _ = try readCommitted(canvasID)
+            let data = try Data(contentsOf: manifestURL(canvasID))
+            let manifest = try decoder.decode(Manifest.self, from: data)
+            let blobs = canvasDirectory(canvasID).appendingPathComponent("blobs", isDirectory: true)
+            func size(_ hash: String) throws -> Int {
+                let attributes = try FileManager.default.attributesOfItem(atPath: blobs.appendingPathComponent(hash + ".json").path)
+                guard let n = attributes[.size] as? NSNumber, n.int64Value >= 0, let size = Int(exactly: n.int64Value) else { throw CanvasKitError.io("invalid current blob size") }
+                return size
+            }
+            reclaimUnreferencedBlobs(canvasID: canvasID, manifest: manifest, manifestData: data,
+                snapshotBytes: try size(manifest.snapshotBlob), historyBytes: try size(manifest.historyBlob))
+        }
     }
 
     // MARK: Commit pipeline
@@ -388,25 +399,24 @@ public actor FileCanvasRepository: CanvasDocumentStore {
     /// history) is discarded with the engine.
     private func mutate(
         canvasID: UUID,
-        _ mutation: (CanvasRepositoryEngine) async throws -> CanvasCommitReceipt
-    ) async throws -> CanvasCommitReceipt {
-        try await withDocumentLock(canvasID) {
+        _ mutation: (inout CanvasRepositoryEngine) throws -> CanvasCommitReceipt
+    ) throws -> CanvasCommitReceipt {
+        try withDocumentLock(canvasID) {
             let committed = try readCommitted(canvasID)
             var receiptsByID: [UUID: CanvasCommitReceipt] = [:]
             for receipt in committed.receipts {
                 receiptsByID[receipt.requestID] = receipt
             }
-            let engine = CanvasRepositoryEngine(
+            var engine = CanvasRepositoryEngine(
                 snapshot: committed.snapshot,
                 existingReceipts: receiptsByID,
                 foreignRequestIDs: foreignRequestIDs(excluding: canvasID),
                 historyState: committed.history)
-            let receipt = try await mutation(engine)
-            let finalSnapshot = await engine.snapshotForPersistence()
-            let finalHistory = await engine.historyForPersistence()
+            let receipt = try mutation(&engine)
+            let finalSnapshot = engine.snapshotForPersistence()
+            let finalHistory = engine.historyForPersistence()
             receiptsByID[receipt.requestID] = receipt
-            if failBeforeManifestWrite {
-                failBeforeManifestWrite = false
+            if failureInjection.consume() {
                 throw CanvasKitError.io("injected failure before manifest write")
             }
             try persist(
@@ -459,8 +469,66 @@ public actor FileCanvasRepository: CanvasDocumentStore {
         )
         let manifestData = try encoder.encode(manifest)
         try atomicWrite(manifestData, to: manifestURL(canvasID))
-        decodedRecord = DecodedRecord(canvasID: canvasID,
-            snapshotHash: snapshotHash, historyHash: historyHash,
-            snapshot: snapshot, history: history)
+        // The commit is already authoritative. Maintenance never converts
+        // this success into failure, drops history, or changes the receipt.
+        reclaimUnreferencedBlobs(canvasID: canvasID, manifest: manifest, manifestData: manifestData,
+            snapshotBytes: snapshotData.count, historyBytes: historyData.count)
+    }
+
+    /// Called ONLY while this canvas's existing exclusive flock is held.
+    /// Typed state was validated/encoded by persist (or readCommitted above).
+    /// Re-verify ALL on-disk bytes with bounded buffers, then durably pin the
+    /// current file names before touching any obsolete payload. Readers use
+    /// this same flock; history frames contain inline snapshots, not old hashes.
+    private func reclaimUnreferencedBlobs(canvasID: UUID, manifest: Manifest, manifestData: Data,
+                                           snapshotBytes: Int, historyBytes: Int) {
+        guard manifest.schemaVersion == 1, manifest.canvasID == canvasID else { return }
+        let directory = canvasDirectory(canvasID)
+        let parent = Darwin.open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard parent >= 0 else { return }; defer { _ = Darwin.close(parent) }
+        let blobs = Darwin.openat(parent, "blobs", O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard blobs >= 0 else { return }; defer { _ = Darwin.close(blobs) }
+        func regular(_ dir: Int32, _ name: String, bytes: Int, digest: String) -> Int32? {
+            let fd = Darwin.openat(dir, name, O_RDWR | O_NOFOLLOW | O_NONBLOCK)
+            guard fd >= 0 else { return nil }
+            var info = stat()
+            guard fstat(fd, &info) == 0, info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
+                  info.st_size == Int64(bytes), garbageCollectionDigest(fd) == digest else { _ = Darwin.close(fd); return nil }
+            return fd
+        }
+        guard let record = regular(parent, "manifest.json", bytes: manifestData.count, digest: CanvasBatchDigest.hash(manifestData)) else { return }
+        defer { _ = Darwin.close(record) }
+        guard let snapshot = regular(blobs, manifest.snapshotBlob + ".json", bytes: snapshotBytes, digest: manifest.snapshotBlob) else { return }
+        defer { _ = Darwin.close(snapshot) }
+        guard let history = regular(blobs, manifest.historyBlob + ".json", bytes: historyBytes, digest: manifest.historyBlob) else { return }
+        defer { _ = Darwin.close(history) }
+        // atomicWrite's historical directory fsync is best-effort. GC needs
+        // positive barriers: payload files+names first, manifest file+name
+        // last. An error/unsupported filesystem leaves ALL old blobs intact.
+        guard !gcBarrierFailureInjection.consume(),
+              [snapshot, history, blobs, record, parent].allSatisfy({ fsync($0) == 0 }),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent("blobs").path) else { return }
+        let keep: Set<String> = [manifest.snapshotBlob, manifest.historyBlob]
+        for name in names {
+            guard name.utf8.count == 69, name.hasSuffix(".json") else { continue }
+            let hash = String(name.dropLast(5))
+            guard !keep.contains(hash), hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { continue }
+            var info = stat()
+            guard fstatat(blobs, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
+                  info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else { continue }
+            _ = unlinkat(blobs, name, 0)
+        }
+        // A failure here can only leave dead files present after a crash;
+        // the already-synced current snapshot/history/receipt stay complete.
+        _ = fsync(blobs)
+    }
+    private func garbageCollectionDigest(_ fd: Int32) -> String? {
+        var hasher = SHA256(), buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            let count = buffer.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+            if count < 0 { if errno == EINTR { continue }; return nil }
+            if count == 0 { return CanvasBatchDigest.hex(hasher.finalize()) }
+            hasher.update(data: Data(buffer.prefix(count)))
+        }
     }
 }

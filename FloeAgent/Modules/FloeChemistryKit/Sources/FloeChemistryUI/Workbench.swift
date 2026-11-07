@@ -49,13 +49,19 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
     @State private var drawing = false
     @State private var showRuns = true
     @State private var sheet: ChemistrySheet?
+    @State private var pendingPreparation: UUID?
+    private let onPrepareStructure: (@MainActor (UUID) -> Void)?
     @Environment(\.scenePhase) private var scenePhase
     public init(service: ChemistryService, projectID: UUID) {
         _state = State(initialValue: ChemistryEditorState(service: service, projectID: projectID))
+        onPrepareStructure = nil
     }
     /// The App owns one editor state and calculation service across Notes,
     /// assistants and transient navigation. The standalone initializer remains.
-    public init(state: ChemistryEditorState) { _state = State(initialValue: state) }
+    public init(state: ChemistryEditorState, onPrepareStructure: (@MainActor (UUID) -> Void)? = nil) {
+        _state = State(initialValue: state)
+        self.onPrepareStructure = onPrepareStructure
+    }
     public var body: some View {
         GeometryReader { geometry in
             HStack(spacing: 0) {
@@ -99,10 +105,13 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
                 Button { sheet = .history } label: { Label(chemistryText("History", "历史版本"), systemImage: "clock.arrow.circlepath") }
             }
         }
-        .sheet(item: $sheet) { item in
+        .sheet(item: $sheet, onDismiss: {
+            if let id = pendingPreparation { pendingPreparation = nil; onPrepareStructure?(id) }
+        }) { item in
             switch item {
             case .importer: ChemistryImportSheet(state: state)
-            case .inspector: ChemistryInspectorSheet(state: state, selectedAtoms: atoms)
+            case .inspector: ChemistryInspectorSheet(state: state, selectedAtoms: atoms,
+                onPrepareStructure: onPrepareStructure == nil ? nil : requestPreparation)
             case .history: ChemistryHistorySheet(state: state)
             }
         }
@@ -187,7 +196,20 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
                     Text(object.source).font(.system(.body, design: .monospaced)).textSelection(.enabled)
                     if let facts = object.facts, let bytes = try? JSONEncoder().encode(facts) { Text(String(decoding: bytes, as: UTF8.self)).textSelection(.enabled) }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding() }
-            } else { ChemistryMoleculeView(object: object, selectedAtoms: $atoms) }
+            } else {
+                VStack(spacing: 0) {
+                    if object.requires3DPreparation {
+                        HStack {
+                            Text(chemistryText("The molecular graph is available; prepare 3D coordinates before force-field calculations.", "分子连接关系已保留；力场计算前需先准备三维坐标。"))
+                                .font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            Button(chemistryText("Prepare 3D", "生成三维")) { sheet = .inspector }
+                                .accessibilityIdentifier("chemistry.prepare3D")
+                        }.padding(10)
+                    }
+                    ChemistryMoleculeView(object: object, selectedAtoms: $atoms)
+                }
+            }
             }
         } else {
             ContentUnavailableView {
@@ -218,7 +240,14 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
             }.padding()
         }
     }
-    private var inspector: some View { ChemistryInspector(state: state, selectedAtoms: atoms) }
+    private var inspector: some View {
+        ChemistryInspector(state: state, selectedAtoms: atoms,
+            onPrepareStructure: onPrepareStructure == nil ? nil : requestPreparation)
+    }
+    private func requestPreparation(_ id: UUID) {
+        if sheet != nil { pendingPreparation = id; sheet = nil }
+        else { onPrepareStructure?(id) }
+    }
     private var runList: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 10) {

@@ -20,6 +20,7 @@ struct PrintProjectView: View {
     @State private var scale = 100.0
     @State private var viewReset = 0
     @State private var exportConfiguration: URL?
+    @FocusState private var focusedSetting: String?
     enum Stage: String, CaseIterable { case prepare, preview, export }
     enum Inspector: String, CaseIterable { case process, support, material, model }
     enum ObjectTool: String, CaseIterable { case select, move, rotate, scale }
@@ -65,7 +66,36 @@ struct PrintProjectView: View {
             .background(Color(uiColor: .systemBackground))
             .clipped()
             .accessibilityElement(children: .contain)
+#if DEBUG
+            .background {
+                PrintNativeInputObservation(geometrySize: geometry.size,
+                    geometryFrame: geometry.frame(in: .global), geometryInsets: geometry.safeAreaInsets,
+                    stage: stage.rawValue, busy: session.isBusy, editing: session.isEditing,
+                    completed: session.completed, revision: session.document.revision,
+                    rootInputFocused: focusedSetting != nil)
+                    .allowsHitTesting(false)
+            }
+#endif
         }
+        // This workbench owns its root settings inputs. A foreign or stale
+        // keyboard inset must not reserve its viewport when none is editing.
+        // Restore ordinary avoidance for every actual root TextField focus.
+        .ignoresSafeArea(.keyboard, edges: focusedSetting == nil ? .bottom : [])
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                if focusedSetting != nil {
+                    Spacer()
+                    Button(text("完成", "Done")) { focusedSetting = nil }
+                        .accessibilityIdentifier("printing.keyboard.done")
+                }
+            }
+        }
+        .onChange(of: stage) { _, _ in focusedSetting = nil }
+        .onChange(of: inspector) { _, _ in focusedSetting = nil }
+        .onChange(of: showingInspector) { _, visible in if !visible { focusedSetting = nil } }
+        .onChange(of: showingMachine) { _, presented in if presented { focusedSetting = nil } }
+        .onChange(of: importing) { _, presented in if presented { focusedSetting = nil } }
+        .onChange(of: session.preset) { _, _ in focusedSetting = nil }
         .sheet(isPresented: $showingMachine) { PrintMachineEditor(session: session) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [UTType(filenameExtension: "stl") ?? .data], allowsMultipleSelection: true) { result in
             switch result {
@@ -73,7 +103,9 @@ struct PrintProjectView: View {
             case .failure(let error): session.diagnostic = error.localizedDescription
             }
         }
-        .onChange(of: session.completed) { _, completed in if completed && session.result != nil { stage = .preview } }
+        .onChange(of: session.completedSliceRevision) { _, revision in
+            if revision != nil, session.completed, session.resultIsCurrent { stage = .preview }
+        }
         .onChange(of: session.document.plateID) { _, _ in stage = .prepare }
         .task(id: session.document.resultAsset) { exportConfiguration = nil }
         .accessibilityIdentifier("printing.workbench")
@@ -111,7 +143,7 @@ struct PrintProjectView: View {
     private var stagePicker: some View {
         HStack(spacing: 2) {
             stageButton(.prepare, text("准备", "Prepare"), "cube")
-            stageButton(.preview, text("逐层预览", "Preview"), "square.stack.3d.up")
+            stageButton(.preview, text("预览", "Preview"), "square.stack.3d.up")
             stageButton(.export, text("导出", "Export"), "square.and.arrow.up")
         }
     }
@@ -119,6 +151,7 @@ struct PrintProjectView: View {
         Button { stage = value } label: { Label(title, systemImage: icon).font(.subheadline.weight(stage == value ? .semibold : .regular)).padding(.horizontal, 10).frame(minHeight: 44).background(stage == value ? Color.accentColor.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 8)) }
             .buttonStyle(.plain).foregroundStyle(stage == value ? Color.accentColor : Color.primary)
             .accessibilityIdentifier("printing.stage.\(value.rawValue)")
+            .accessibilityAddTraits(stage == value ? .isSelected : [])
     }
     private var importButton: some View {
         Button { importing = true } label: { Label(text("导入", "Import"), systemImage: "square.and.arrow.down").frame(minHeight: 44) }
@@ -196,18 +229,9 @@ struct PrintProjectView: View {
     }
     private var viewport: some View {
         VStack(spacing: 0) {
-            ZStack(alignment: .topLeading) {
+            Group {
                 if stage == .prepare {
                     PrintMeshPreview(disk: session.disk, document: session.document, machine: session.machine, selectedObjectID: session.selectedObject?.id, reset: viewReset) { id in session.selectedObjectID = id }
-                    if session.objects.isEmpty {
-                        VStack {
-                            Spacer()
-                            HStack(spacing: 12) {
-                                Button(text("导入 STL", "Import STL")) { importing = true }.buttonStyle(.borderedProminent).disabled(disabled)
-                                Button(text("添加立方体", "Add cube")) { Task { await session.addCube() } }.frame(minHeight: 44).disabled(disabled).accessibilityIdentifier("printing.cube")
-                            }.padding(.bottom, 42)
-                        }.frame(maxWidth: .infinity)
-                    }
                 } else if stage == .preview, session.resultIsCurrent, let result = session.result {
                     PrintResultPreview(url: result, preset: session.document.preset, machine: session.document.machine ?? .generic(for: session.document.preset))
                 } else if stage == .export { exportPanel }
@@ -217,6 +241,20 @@ struct PrintProjectView: View {
                     } description: { Text(text("切片完成后，可以查看真实逐层路径或曝光图。", "After slicing, inspect actual layer paths or exposure images.")) }
                     actions: { Button(text("返回准备", "Back to prepare")) { stage = .prepare } }
                 }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(uiColor: .secondarySystemGroupedBackground))
+            // Floating controls must not become the minimum height of the
+            // HStack shared with the scrollable settings while typing.
+            .overlay(alignment: .bottom) {
+                if stage == .prepare, session.objects.isEmpty {
+                    HStack(spacing: 12) {
+                        Button(text("导入 STL", "Import STL")) { importing = true }.buttonStyle(.borderedProminent).disabled(disabled)
+                        Button(text("添加立方体", "Add cube")) { Task { await session.addCube() } }.frame(minHeight: 44).disabled(disabled).accessibilityIdentifier("printing.cube")
+                    }.padding(.bottom, 42).frame(maxWidth: .infinity)
+                }
+            }
+            .overlay(alignment: .topLeading) {
                 if stage == .prepare {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack { Text(plateName).font(.subheadline.weight(.semibold)); Spacer(); Button { viewReset += 1 } label: { Image(systemName: "viewfinder").frame(width: 44, height: 44) }.accessibilityLabel(text("适应视图", "Fit view")) }
@@ -225,13 +263,15 @@ struct PrintProjectView: View {
                         Text(text("拖动旋转视角 · 双指缩放", "Drag to orbit · Pinch to zoom")).font(.caption).foregroundStyle(.secondary)
                     }.padding(12)
                 }
+            }
+            .overlay(alignment: .bottom) {
                 if session.isBusy {
-                    VStack { Spacer(); VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 10) {
                         ProgressView(value: session.progress) { Text(session.isCancelling ? text("正在停止", "Stopping") : text("正在切片", "Slicing")) }
                         Button(text("停止", "Stop"), role: .destructive) { session.cancel() }.disabled(session.isCancelling)
-                    }.padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)).padding() }.accessibilityIdentifier("printing.progress")
+                    }.padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)).padding().accessibilityIdentifier("printing.progress")
                 }
-            }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Color(uiColor: .secondarySystemGroupedBackground))
+            }
             if showingAssistant { assistantPanel }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -248,6 +288,7 @@ struct PrintProjectView: View {
         }.padding(4).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 11)).disabled(disabled)
     }
     private var inspectorPanel: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Button { showingMachine = true } label: {
@@ -267,6 +308,15 @@ struct PrintProjectView: View {
                 Spacer(minLength: 12)
             }.padding(14)
         }.frame(maxHeight: .infinity, alignment: .top).background(Color(uiColor: .systemBackground)).clipped()
+            .onChange(of: focusedSetting) { _, field in
+                if let field { proxy.scrollTo(field, anchor: .center) }
+            }
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in
+                // Focus arrives before the keyboard's final viewport. Repeat
+                // against the actual resized scroll view, preserving field ID.
+                if let field = focusedSetting { proxy.scrollTo(field, anchor: .center) }
+            }
+        }
     }
     private func inspectorTab(_ value: Inspector, _ title: String) -> some View {
         Button { inspector = value } label: { Text(title).font(.caption.weight(.medium)).frame(maxWidth: .infinity, minHeight: 44).background(inspector == value ? Color.accentColor.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 6)) }.buttonStyle(.plain).foregroundStyle(inspector == value ? Color.accentColor : Color.secondary)
@@ -290,7 +340,14 @@ struct PrintProjectView: View {
             }
             Divider()
             HStack { Text(text("当前盘", "Current plate")).foregroundStyle(.secondary); Spacer(); Text("\(session.objects.count) " + text("个模型", "objects")) }.font(.caption)
-            if let layers = session.document.resultLayerCount { HStack { Text(text("切片层数", "Sliced layers")).foregroundStyle(.secondary); Spacer(); Text(layers.formatted()).monospacedDigit() }.font(.caption) }
+            if let layers = session.document.resultLayerCount {
+                HStack {
+                    Text(session.resultIsCurrent ? text("切片层数", "Sliced layers") : text("上次切片", "Previous slice")).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(layers.formatted()).monospacedDigit()
+                }.font(.caption)
+                if !session.resultIsCurrent { Text(text("模型或设置已改变，请重新切片。", "The model or settings changed. Slice again.")).font(.caption).foregroundStyle(.secondary) }
+            }
             Button { Task { await session.saveSettings() } } label: { Label(text("保存配置", "Save settings"), systemImage: "checkmark").frame(maxWidth: .infinity, minHeight: 44) }.buttonStyle(.bordered).disabled(!session.hasUnsavedSettings)
         }
     }
@@ -375,7 +432,7 @@ struct PrintProjectView: View {
                     Text(result.lastPathComponent).font(.caption).foregroundStyle(.secondary).lineLimit(2).textSelection(.enabled)
                     if !session.resultIsCurrent { Label(text("设置或模型已更改，请重新切片。", "Settings or objects changed. Slice again."), systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
                     LabeledContent(text("文件格式", "Format"), value: result.pathExtension.uppercased())
-                    if let count = session.document.resultLayerCount { LabeledContent(text("层数", "Layers"), value: count.formatted()) }
+                    if let count = session.document.resultLayerCount { LabeledContent(session.resultIsCurrent ? text("层数", "Layers") : text("上次结果层数", "Previous result layers"), value: count.formatted()) }
                     ShareLink(item: result) { Label(text("存储或共享完整文件", "Save or share complete file"), systemImage: "square.and.arrow.up").frame(maxWidth: .infinity, minHeight: 44) }.buttonStyle(.borderedProminent).disabled(!session.resultIsCurrent).accessibilityIdentifier("printing.export")
                     Button(text("保存配置副本", "Save configuration copy"), systemImage: "doc.badge.gearshape") { Task { exportConfiguration = await session.exportConfiguration() } }.frame(minHeight: 44)
                     if let exportConfiguration { ShareLink(item: exportConfiguration) { Label(text("共享机器与工艺配置", "Share machine and process settings"), systemImage: "square.and.arrow.up") }.frame(minHeight: 44) }
@@ -385,7 +442,7 @@ struct PrintProjectView: View {
                     Button(text("返回准备", "Back to prepare")) { stage = .prepare }.buttonStyle(.bordered)
                 }
             }.padding(24).frame(maxWidth: 480).frame(maxWidth: .infinity)
-        }
+        }.accessibilityIdentifier("printing.export.scroll")
     }
     private var footer: some View {
         HStack(spacing: 12) {
@@ -396,14 +453,14 @@ struct PrintProjectView: View {
                 if stage == .preview && session.resultIsCurrent { stage = .export }
                 else if stage == .export && session.resultIsCurrent { stage = .preview }
                 else { session.slice() }
-            } label: { Label(stage == .preview && session.resultIsCurrent ? text("导出文件", "Export file") : stage == .export && session.resultIsCurrent ? text("查看逐层预览", "View layers") : text("切片预览", "Slice preview"), systemImage: stage == .preview ? "square.and.arrow.up" : "play.fill").font(.subheadline.weight(.semibold)).frame(minHeight: 44).padding(.horizontal, 10) }
+            } label: { Label(stage == .preview && session.resultIsCurrent ? text("导出文件", "Export file") : stage == .export && session.resultIsCurrent ? text("预览", "Preview") : text("切片", "Slice"), systemImage: stage == .preview ? "square.and.arrow.up" : "play.fill").font(.subheadline.weight(.semibold)).frame(minHeight: 44).padding(.horizontal, 10) }
                 .buttonStyle(.borderedProminent).disabled(disabled || session.objects.isEmpty).accessibilityIdentifier("printing.slice")
         }.padding(.horizontal, 14).padding(.vertical, 8).background(.bar)
     }
     private func setting(_ key: String, _ fallback: Double) -> Binding<Double> { Binding(get: { session.processSettings[key] ?? fallback }, set: { session.processSettings[key] = $0 }) }
     private func flag(_ key: String) -> Binding<Bool> { Binding(get: { (session.processSettings[key] ?? 0) != 0 }, set: { session.processSettings[key] = $0 ? 1 : 0 }) }
     private func numberField(_ title: String, value: Binding<Double>) -> some View {
-        HStack { Text(title).font(.subheadline); Spacer(minLength: 6); TextField(title, value: value, format: .number.precision(.fractionLength(0...3))).keyboardType(.numbersAndPunctuation).multilineTextAlignment(.trailing).frame(width: 90).padding(.horizontal, 8).frame(minHeight: 44).background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 6)) }.accessibilityElement(children: .contain)
+        HStack { Text(title).font(.subheadline); Spacer(minLength: 6); TextField(title, value: value, format: .number.precision(.fractionLength(0...3))).keyboardType(.numbersAndPunctuation).focused($focusedSetting, equals: title).submitLabel(.done).onSubmit { focusedSetting = nil }.multilineTextAlignment(.trailing).frame(width: 90).padding(.horizontal, 8).frame(minHeight: 44).background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 6)) }.accessibilityElement(children: .contain).id(title)
     }
     private func numericSlider(_ title: String, key: String, default fallback: Double, range: ClosedRange<Double>, percent: Bool = false) -> some View {
         VStack(spacing: 6) { HStack { Text(title); Spacer(); Text(percent ? (session.processSettings[key] ?? fallback).formatted(.percent.precision(.fractionLength(0))) : (session.processSettings[key] ?? fallback).formatted()).monospacedDigit().foregroundStyle(.secondary) }.font(.subheadline); Slider(value: setting(key, fallback), in: range).accessibilityLabel(title) }

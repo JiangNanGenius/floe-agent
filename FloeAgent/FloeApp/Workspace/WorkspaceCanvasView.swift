@@ -18,6 +18,8 @@ import FloeCAD
 import FloeCore
 import FloeCanvasTemplates
 import FloeCanvasTemplatesUI
+import FloeCanvasUI
+import FloeCanvasIntegration
 import FloeImages
 import FloeLocalModels
 import FloeModels
@@ -104,6 +106,25 @@ struct CreativeModeHubView: View {
         let id: UUID
         let name: String
         let workspace: WorkspaceRecord?
+    }
+
+    private enum CanvasLibraryEntry: Identifiable {
+        case existing(WorkspaceCanvasRegistry.CanvasSummary), personal(PersonalContentRecord)
+        var id: String {
+            switch self { case .existing(let value): "existing/" + value.id.uuidString; case .personal(let value): "personal/" + value.id.uuidString }
+        }
+        var canvasID: UUID { switch self { case .existing(let value): value.id; case .personal(let value): value.id } }
+        var modifiedAt: Date { switch self { case .existing(let value): value.updatedAt; case .personal(let value): value.modifiedAt } }
+        var searchableText: String { switch self { case .existing(let value): value.searchableText; case .personal(let value): value.title } }
+    }
+
+    private var visibleCanvasEntries: [CanvasLibraryEntry] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existing = savedCanvases.filter { !query.isEmpty || selectedFolder != nil || $0.workspaceID == nil }.map(CanvasLibraryEntry.existing)
+        return (existing + mixedCanvases.map(CanvasLibraryEntry.personal)).filter { entry in
+            if !query.isEmpty { return entry.searchableText.localizedStandardContains(query) }
+            return selectedFolder == nil || organization.assignments[entry.canvasID] == selectedFolder
+        }.sorted { $0.modifiedAt == $1.modifiedAt ? $0.id < $1.id : $0.modifiedAt > $1.modifiedAt }
     }
 
     var body: some View {
@@ -387,52 +408,19 @@ struct CreativeModeHubView: View {
                     }
                 }
             }
-            if !mixedCanvases.isEmpty {
-                Section(IDELanguageRunText.t("混合画布", "Mixed canvases")) {
-                    ForEach(mixedCanvases.filter {
-                        (searchText.isEmpty || $0.title.localizedStandardContains(searchText))
-                            && (selectedFolder == nil || organization.assignments[$0.id] == selectedFolder)
-                    }) { record in
-                        Button { mixedCanvasPresentation = record } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: "rectangle.and.pencil.and.ellipsis").foregroundStyle(FloeTheme.primary)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(record.title).foregroundStyle(.primary)
-                                    Text(record.modifiedAt, format: .dateTime.month().day()).font(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                            }.frame(minHeight: FloeTheme.minimumTarget)
-                        }
-                        .contextMenu {
-                            if !organization.folders.isEmpty {
-                                Menu(IDELanguageRunText.t("移入文件夹", "Move to folder")) {
-                                    Button(IDELanguageRunText.t("所有画布", "All canvases")) {
-                                        updateOrganization { $0.assignments[record.id] = nil }
-                                    }
-                                    ForEach(organization.folders) { folder in
-                                        Button(folder.name) { updateOrganization { $0.assignments[record.id] = folder.id } }
-                                    }
-                                }
-                            }
-                        }
+            let search = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            Section {
+                ForEach(visibleCanvasEntries) { entry in
+                    switch entry {
+                    case .existing(let summary): canvasSummaryRow(summary)
+                    case .personal(let record): personalCanvasRow(record)
                     }
                 }
-            }
-            let search = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let summaries = savedCanvases
-            let matches = summaries.filter {
-                (search.isEmpty ? (selectedFolder == nil || organization.assignments[$0.id] == selectedFolder) : $0.searchableText.localizedStandardContains(search))
-            }.sorted { $0.updatedAt > $1.updatedAt }
-            if search.isEmpty && selectedFolder == nil, let recent = summaries.max(by: { $0.updatedAt < $1.updatedAt }) {
-                Section("workspace.workspace_canvas_view.recent") { canvasSummaryRow(recent) }
-            }
-            Section(search.isEmpty ? (selectedFolder == nil ? "workspace.workspace_canvas_view.private_canvases" : "workspace.workspace_canvas_view.canvases_in_folder") : "workspace.workspace_canvas_view.search_results") {
-                let visible = matches.filter { !search.isEmpty || selectedFolder != nil || $0.workspaceID == nil }
-                ForEach(visible) { summary in canvasSummaryRow(summary) }
-                if visible.isEmpty {
+                if visibleCanvasEntries.isEmpty {
                     Text(search.isEmpty ? "workspace.workspace_canvas_view.no_canvases_here_yet" : "workspace.workspace_canvas_view.no_matching_canvas_content").foregroundStyle(.secondary)
                 }
+            } header: {
+                Text(search.isEmpty ? IDELanguageRunText.t("画布", "Canvases") : IDELanguageRunText.t("搜索结果", "Search results"))
             }
 
             if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && selectedFolder == nil && !environment.workspaceCenter.projectWorkspaces.isEmpty {
@@ -467,6 +455,30 @@ struct CreativeModeHubView: View {
             }
         }
         .id(listRevision)
+    }
+
+    private func personalCanvasRow(_ record: PersonalContentRecord) -> some View {
+        Button { mixedCanvasPresentation = record } label: {
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 8).fill(FloeTheme.primary.opacity(0.12)).frame(width: 52, height: 38)
+                    .overlay { Image(systemName: "rectangle.and.pencil.and.ellipsis") }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(record.title).foregroundStyle(.primary)
+                    Text(record.modifiedAt.formatted(date: .abbreviated, time: .shortened))
+                        .font(FloeTheme.Typography.metadata).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+            }.frame(minHeight: FloeTheme.minimumTarget)
+        }.buttonStyle(.plain)
+            .contextMenu {
+                Menu(IDELanguageRunText.t("移入文件夹", "Move to folder"), systemImage: "folder") {
+                    Button(IDELanguageRunText.t("所有画布", "All canvases")) { updateOrganization { $0.assignments[record.id] = nil } }
+                    ForEach(organization.folders) { folder in
+                        Button(folder.name) { updateOrganization { $0.assignments[record.id] = folder.id } }
+                    }
+                }
+            }
     }
 
     private func canvasSummaryRow(_ summary: WorkspaceCanvasRegistry.CanvasSummary) -> some View {
@@ -511,8 +523,8 @@ struct CreativeModeHubView: View {
                 renameValue = summary.name
             }
             Button("workspace.workspace_canvas_view.copy", systemImage: "doc.on.doc") {
-                _ = try? WorkspaceCanvasRegistry.duplicate(canvasID: summary.id)
-                listRevision += 1
+                do { _ = try WorkspaceCanvasRegistry.duplicate(canvasID: summary.id); listRevision += 1 }
+                catch { environment.workspaceCenter.actionError = error.localizedDescription }
             }
             Button("workspace.workspace_canvas_view.export_editable_canvas_package", systemImage: "square.and.arrow.up") {
                 exportCanvasPackage(summary)
@@ -521,10 +533,10 @@ struct CreativeModeHubView: View {
                 Menu("workspace.workspace_canvas_view.move_to_workspace", systemImage: "folder") {
                     ForEach(environment.workspaceCenter.projectWorkspaces) { workspace in
                         Button(workspace.name) {
-                            try? WorkspaceCanvasRegistry.move(
-                                canvasID: summary.id, to: workspace
-                            )
-                            listRevision += 1
+                            Task { @MainActor in
+                                do { try await WorkspaceCanvasRegistry.move(canvasID: summary.id, to: workspace); listRevision += 1 }
+                                catch { environment.workspaceCenter.actionError = error.localizedDescription }
+                            }
                         }
                     }
                 }
@@ -770,7 +782,7 @@ private enum CanvasNodeCreationKind: String, CaseIterable, Identifiable {
     }
     var icon: String {
         switch self {
-        case .text: "textformat"
+        case .text: "character.cursor.ibeam"
         case .stickyNote: "note.text"
         case .card: "rectangle.and.text.magnifyingglass"
         case .shape: "square.on.circle"
@@ -872,7 +884,7 @@ private enum CanvasConnectedNodeKind: String, CaseIterable, Identifiable {
     }
     var icon: String {
         switch self {
-        case .text: "textformat"
+        case .text: "character.cursor.ibeam"
         case .card: "rectangle.and.text.magnifyingglass"
         case .generationTask: "wand.and.stars"
         }
@@ -1069,16 +1081,17 @@ enum WorkspaceCanvasRegistry {
         let source = try projectURL(canvasID: canvasID, createDirectory: false)
         var project = try decodeProject(at: source)
         let copyID = UUID()
-        project.id = copyID
-        project.workspaceID = nil
-        project.name += FloeL10n.l("workspace.canvas3_d_director_view.copy")
+        project = try CanvasFrameworkLegacyRepository.forkProject(project, newID: copyID, workspaceID: nil,
+            name: project.name + FloeL10n.l("workspace.canvas3_d_director_view.copy"))
         project.agentConversationID = nil
         project.assistantSessions = []
         project.selectedAssistantSessionID = nil
         project.agentConversationIDsByDocument = [:]
         project.createdAt = Date()
         project.updatedAt = Date()
+        if project.canvasKitState != nil { try CanvasFrameworkLegacyRepository.copyAuxiliaryAssets(from: canvasID, to: copyID) }
         forkCanvasOwnedCADPackages(in: &project, from: canvasID, to: copyID)
+        project = try CanvasFrameworkLegacyRepository.reconcileForkedProject(project)
         try encodeProject(project, to: projectURL(canvasID: copyID, createDirectory: true))
         return copyID
     }
@@ -1102,24 +1115,29 @@ enum WorkspaceCanvasRegistry {
                       parsed.canvasID == from else { continue }
                 guard let copied = try? CanvasCADStorage.copyPackage(
                     fromCanvas: from, fileName: parsed.packageFileName, toCanvas: to) else {
+                    project.documents[documentIndex].nodes[nodeIndex].metadata["floe.framework.cadForkPending"] = "true"
                     continue
                 }
+                project.documents[documentIndex].nodes[nodeIndex].metadata["floe.framework.cadForkPending"] = nil
                 project.documents[documentIndex].nodes[nodeIndex].metadata[pathKey] =
                     CanvasCADStorage.key(canvasID: to, packageFileName: copied)
             }
         }
     }
 
-    static func move(canvasID: UUID, to workspace: WorkspaceRecord) throws {
+    @MainActor
+    static func move(canvasID: UUID, to workspace: WorkspaceRecord) async throws {
         let source = try projectURL(canvasID: canvasID, createDirectory: false)
         let destination = try projectURL(canvasID: workspace.id, createDirectory: true)
         guard !FileManager.default.fileExists(atPath: destination.path) else {
             throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.this_workspace_already_has_a_canvas"))
         }
+        await CanvasHostSessions.shared.prepareIdentityMove(canvasID: canvasID)
         var project = try decodeProject(at: source)
-        project.id = workspace.id
-        project.workspaceID = workspace.id
-        project.name = workspace.name
+        project = try CanvasFrameworkLegacyRepository.forkProject(project, newID: workspace.id, workspaceID: workspace.id, name: workspace.name)
+        if project.canvasKitState != nil { try CanvasFrameworkLegacyRepository.copyAuxiliaryAssets(from: canvasID, to: workspace.id) }
+        forkCanvasOwnedCADPackages(in: &project, from: canvasID, to: workspace.id)
+        project = try CanvasFrameworkLegacyRepository.reconcileForkedProject(project)
         project.updatedAt = Date()
         try encodeProject(project, to: destination)
         try FileManager.default.removeItem(at: source)
@@ -1691,6 +1709,26 @@ func canvasLocalized(_ zh: String, _ en: String) -> String {
     FloeL10n.isChinese ? zh : en
 }
 
+#if DEBUG
+/// A narrow qualification surface for the original editor's private store.
+/// Every edit still passes through its normal commands, file CAS and history.
+@MainActor
+final class WorkspaceCanvasStoreQualification {
+    private let store: CanvasDocumentStore
+    init(backing: CanvasFrameworkBacking, project: FloeCore.CanvasProject) {
+        store = CanvasDocumentStore(backing: backing, project: project)
+    }
+    var project: FloeCore.CanvasProject { store.project }
+    var selectedDocument: FloeCore.CanvasDocument? { store.selectedDocument }
+    var saveError: String? { store.saveError }
+    var canUndo: Bool { store.canUndo }
+    func addNote(at point: CGPoint) -> UUID { store.addNote(at: point) }
+    func updateNode(_ id: UUID, text: String) { store.updateNode(id, text: text) }
+    func undo() { store.undo() }
+    func redo() { store.redo() }
+}
+#endif
+
 @MainActor
 private final class CanvasDocumentStore: ObservableObject {
     private static let fileCommitAttemptLimit = 4
@@ -1700,6 +1738,7 @@ private final class CanvasDocumentStore: ObservableObject {
     @Published var wasDeletedRemotely = false
 
     private var fileURL: URL
+    private var frameworkBacking: CanvasFrameworkBacking?
     private var syncOperationStore: CanvasSyncOperationStore?
     private var creativeAssetStore: CreativeAssetStore?
     private var globalSyncEnabled = true
@@ -1727,10 +1766,34 @@ private final class CanvasDocumentStore: ObservableObject {
 
     enum ExportFormat { case package, json, png, pdf }
 
-    var canUndo: Bool { !undoStack.isEmpty }
-    var canRedo: Bool { !redoStack.isEmpty }
+    var canUndo: Bool { frameworkBacking?.canUndo ?? !undoStack.isEmpty }
+    var canRedo: Bool { frameworkBacking?.canRedo ?? !redoStack.isEmpty }
+
+    init(backing: CanvasFrameworkBacking, project: FloeCanvasProject) {
+        frameworkBacking = backing
+        fileURL = backing.sourceURL
+        self.project = project
+    }
+
+    func prepareLegacyFramework() throws -> (CanvasFrameworkBacking, [UUID: CanvasAssetReference]) {
+        guard !interactiveMutationRecorded else { throw PersonalFileActionError.busy }
+        if let frameworkBacking { return (frameworkBacking, legacyAssetReferences()) }
+        let relative = ".CanvasExtensions/" + project.id.uuidString + ".floeproject"
+        let directory = try PersonalContentLibrary.applicationRoot().appendingPathComponent(relative, isDirectory: true)
+        let record = PersonalContentRecord(id: project.id, kind: .canvas, title: project.name,
+            createdAt: project.createdAt, modifiedAt: project.updatedAt, folders: [], relativePath: relative)
+        let repository = CanvasFrameworkLegacyRepository(record: record, originalURL: fileURL, root: directory)
+        let backing = try CanvasFrameworkBacking(record: record, directory: directory, repository: repository)
+        frameworkBacking = backing
+        return (backing, legacyAssetReferences())
+    }
+
+    private func legacyAssetReferences() -> [UUID: CanvasAssetReference] {
+        project.documents.flatMap(\.nodes).compactMap(\.asset).reduce(into: [:]) { $0[$1.id] = $1 }
+    }
 
     init(canvasID: UUID, workspaceID: UUID?, canvasName: String) {
+        frameworkBacking = nil
         let initial = FloeCanvasDocument(name: FloeL10n.l("workspace.workspace_canvas_view.canvas_1"))
         let fallback = FloeCanvasProject(
             id: canvasID,
@@ -1936,6 +1999,7 @@ private final class CanvasDocumentStore: ObservableObject {
     }
 
     func synchronizeFromCloud(_ service: CanvasCloudAssetService) async {
+        guard frameworkBacking == nil || frameworkBacking?.isLegacySource == true else { return }
         guard globalSyncEnabled, project.sync.isEnabled else { return }
         let canvasID = project.id
         let operations = await service.pullCanvasOperations(canvasID: canvasID)
@@ -1983,6 +2047,16 @@ private final class CanvasDocumentStore: ObservableObject {
     }
 
     func undo() {
+        if let frameworkBacking {
+            do {
+                let previous = project
+                project = try frameworkBacking.undo(expectedRevision: project.revision)
+                saveError = nil
+                scheduleReachableReconciliation(deltas: CanvasDrawingRevisionHistory.reachableDeltas(from: previous, to: project))
+                NotificationCenter.default.post(name: .floeStudioDocumentDidChange, object: nil)
+            } catch { saveError = error.localizedDescription }
+            return
+        }
         guard let previous = undoStack.popLast() else { return }
         // Snapshot BEFORE restoring: undo swaps whole-project state, so the
         // reachable-reference deltas must be computed against the state the
@@ -1997,6 +2071,16 @@ private final class CanvasDocumentStore: ObservableObject {
     }
 
     func redo() {
+        if let frameworkBacking {
+            do {
+                let previous = project
+                project = try frameworkBacking.redo(expectedRevision: project.revision)
+                saveError = nil
+                scheduleReachableReconciliation(deltas: CanvasDrawingRevisionHistory.reachableDeltas(from: previous, to: project))
+                NotificationCenter.default.post(name: .floeStudioDocumentDidChange, object: nil)
+            } catch { saveError = error.localizedDescription }
+            return
+        }
         guard let next = redoStack.popLast() else { return }
         let beforeMutation = project
         let currentRevision = project.revision
@@ -2011,6 +2095,15 @@ private final class CanvasDocumentStore: ObservableObject {
         // A drag or pen stroke owns an in-memory draft until its commit.
         // Reconciliation must not replace that draft halfway through a gesture.
         guard !interactiveMutationRecorded else { return }
+        if let frameworkBacking {
+            do {
+                let incoming = try frameworkBacking.load()
+                guard incoming.id == project.id, incoming.revision > project.revision else { return }
+                project = incoming
+                saveError = nil
+            } catch { saveError = error.localizedDescription }
+            return
+        }
         do {
             var observedURL = fileURL
             observedURL.removeAllCachedResourceValues()
@@ -3591,6 +3684,17 @@ private final class CanvasDocumentStore: ObservableObject {
         allowReplacingUnreadableFile: Bool = false,
         reconcilingFrom previousProject: FloeCanvasProject? = nil
     ) throws {
+        if let frameworkBacking {
+            let committed = try frameworkBacking.commit(candidate, expectedRevision: expectedRevision)
+            project = committed
+            saveError = nil
+            if let previousProject {
+                scheduleReachableReconciliation(deltas: CanvasDrawingRevisionHistory.reachableDeltas(from: previousProject, to: committed))
+            }
+            NotificationCenter.default.post(name: .floeStudioDocumentDidChange, object: nil)
+            if frameworkBacking.isLegacySource { try enqueueFrameworkSync(committed) }
+            return
+        }
         let data = try CanvasProjectFileWriter.shared.compareAndSwap(
             candidate,
             at: fileURL,
@@ -3625,13 +3729,21 @@ private final class CanvasDocumentStore: ObservableObject {
         Task { try? await syncOperationStore.enqueue(operation) }
     }
 
+    private func enqueueFrameworkSync(_ candidate: FloeCanvasProject) throws {
+        guard let syncOperationStore, globalSyncEnabled, candidate.sync.isEnabled else { return }
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        let data = try CanvasProjectCodec.encode(candidate, encoder: encoder)
+        let operation = CanvasSyncOperation(canvasID: candidate.id, entityKind: .project, entityID: candidate.id,
+            mutation: .upsert, revision: candidate.sync.revision, payload: data,
+            assetHashes: candidate.documents.flatMap(\.nodes).compactMap { $0.asset?.contentHash })
+        Task { try? await syncOperationStore.enqueue(operation) }
+    }
+
     @discardableResult
     private func reloadAuthoritativeProject(after error: Error) -> Bool {
         do {
-            project = try CanvasProjectFileWriter.shared.project(
-                canvasID: project.id,
-                at: fileURL
-            )
+            if let frameworkBacking { project = try frameworkBacking.load() }
+            else { project = try CanvasProjectFileWriter.shared.project(canvasID: project.id, at: fileURL) }
             undoStack.removeAll()
             redoStack.removeAll()
             saveError = FloeL10n.l("workspace.workspace_canvas_view.the_canvas_was_updated_by_another")
@@ -5768,6 +5880,7 @@ private struct CanvasSceneMigrationNoticeSheet: View {
 struct WorkspaceCanvasView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
+    @Environment(\.cadWorkbenchTransientlyCovered) private var nativeEditorCovered
     /// DEBUG fixture only: when present, the canvas selects this node and
     /// opens the native CAD editor through the production binding route once
     /// (`--ui-test-canvas-cad-fixture`). Nil in every product path.
@@ -5787,6 +5900,11 @@ struct WorkspaceCanvasView: View {
     @AppStorage("creative.canvas.onboarding.version") private var canvasOnboardingVersion = 0
     @StateObject private var store: CanvasDocumentStore
     private let workspace: WorkspaceRecord?
+    private let personalRecord: PersonalContentRecord?
+    @State private var kitStore: CanvasEditorStore?
+    @State private var moduleSession: CanvasHostSession?
+    @State private var moduleSourceRequest: CanvasFrameworkSourceRequest?
+    @State private var referenceGeneration = UUID()
     @State private var selectedNodeIDs = Set<UUID>()
     /// Manual canvas→ordinary-task handoff: the SAME service the model
     /// tool uses (supplementary path; materials are explicit by selection).
@@ -5912,11 +6030,20 @@ struct WorkspaceCanvasView: View {
 
     init(canvasID: UUID, name: String, workspace: WorkspaceRecord?) {
         self.workspace = workspace
+        personalRecord = nil
+        kitStore = nil
         _store = StateObject(wrappedValue: CanvasDocumentStore(
             canvasID: canvasID,
             workspaceID: workspace?.id,
             canvasName: name
         ))
+    }
+
+    init(backing: CanvasFrameworkBacking, project: FloeCore.CanvasProject, kitStore: CanvasEditorStore) {
+        workspace = nil
+        personalRecord = backing.record
+        self.kitStore = kitStore
+        _store = StateObject(wrappedValue: CanvasDocumentStore(backing: backing, project: project))
     }
 
     #if DEBUG
@@ -5929,6 +6056,7 @@ struct WorkspaceCanvasView: View {
 
     var body: some View {
         canvasWithHandwritingAlert
+        .fullScreenCover(item: $moduleSourceRequest) { request in CanvasFrameworkSourceDestination(sourceID: request.id) }
     }
 
     /// The canvas body used to be one ~290-line modifier chain; Xcode 26.6's
@@ -5940,7 +6068,7 @@ struct WorkspaceCanvasView: View {
             documentSidebar
                 .navigationSplitViewColumnWidth(min: 210, ideal: 250, max: 300)
         } detail: {
-            canvasDetail
+            canvasDetailWithModules
         }
         .navigationSplitViewStyle(.balanced)
         .preferredColorScheme(
@@ -6239,6 +6367,7 @@ struct WorkspaceCanvasView: View {
         canvasWithEditors
         .task { await runCanvasBackgroundLoop() }
         .onDisappear {
+            if !nativeEditorCovered && moduleSourceRequest == nil { referenceGeneration = UUID() }
             // The canvas is going away: flush unsaved CAD edits to their
             // durable staged drafts, then release every web view/server.
             // Draft files stay on disk so a future open can resume them.
@@ -6264,11 +6393,20 @@ struct WorkspaceCanvasView: View {
             }
         }
         .onChange(of: store.project.selectedDocumentID) { _, _ in
+            referenceGeneration = UUID()
             restoreViewport()
             selectedNodeIDs.removeAll()
             selectedConnectionID = nil
             editingNodeID = nil
             cancelConnectionCreation()
+            if let kitStore {
+                let pageID = store.project.selectedDocumentID
+                Task { await kitStore.refreshFromHost(); await kitStore.selectPage(pageID) }
+            }
+        }
+        .onChange(of: selectedNodeIDs) { _, selection in kitStore?.select(selection) }
+        .onChange(of: editingNodeID) { _, nodeID in
+            if nodeID != nil { revealInlineEditor(in: canvasViewportSize) }
         }
         .onChange(of: showsMaterials) { _, presented in
             if !presented {
@@ -6327,6 +6465,7 @@ struct WorkspaceCanvasView: View {
             assetStore: environment.creativeAssetStore,
             globalEnabled: globalCanvasSyncEnabled
         )
+        if kitStore == nil { await enableLegacyModules() }
         restoreViewport()
         await store.synchronizeFromCloud(environment.canvasCloudAssetService)
         while !Task.isCancelled {
@@ -6341,6 +6480,23 @@ struct WorkspaceCanvasView: View {
             }
             do { try await Task.sleep(for: .seconds(2)) } catch { break }
         }
+    }
+
+    @MainActor private func enableLegacyModules() async {
+        do {
+            let (backing, assets) = try store.prepareLegacyFramework()
+            let navigation = CanvasHostNavigation(openWork: { id in moduleSourceRequest = .init(id: id) },
+                openSource: { id, _ in moduleSourceRequest = .init(id: id) },
+                openAssistant: { _ in showsAgent = true; isAgentCollapsed = false })
+            let services = try await CanvasHostServices.make(record: backing.record, directory: backing.directory,
+                environment: environment, navigation: navigation, repository: backing.repository, legacyAssets: assets)
+            let native = CanvasEditorStore(canvasID: backing.record.id, services: services)
+            await native.load()
+            try Task.checkCancellation()
+            let session = try await CanvasHostSessions.shared.session(record: backing.record, directory: backing.directory,
+                environment: environment, repository: backing.repository, legacyAssets: assets)
+            kitStore = native; moduleSession = session
+        } catch is CancellationError {} catch { store.saveError = error.localizedDescription }
     }
 
     private var documentSidebar: some View {
@@ -6444,6 +6600,14 @@ struct WorkspaceCanvasView: View {
         }
     }
 
+    @ViewBuilder private var canvasDetailWithModules: some View {
+        if let kitStore, let record = personalRecord ?? moduleSession?.record {
+            // Toolbar preferences belong inside this split's detail column.
+            // An outer modifier has no navigation owner and drops its menu.
+            canvasDetail.modifier(CanvasModuleTools(record: record, store: kitStore, providedSession: moduleSession))
+        } else { canvasDetail }
+    }
+
     private var canvasDetail: some View {
         GeometryReader { geometry in
             ZStack {
@@ -6478,6 +6642,14 @@ struct WorkspaceCanvasView: View {
                         .allowsHitTesting(mode == .select)
                     nodeLayer(document)
                         .allowsHitTesting(mode == .select || mode == .connector)
+                    if let kitStore {
+                        CanvasFrameworkFlowLayer(store: kitStore, document: document, scale: scale,
+                            screenPoint: screenPoint,
+                            isCurrent: { store.project.id == kitStore.canvasID && store.project.selectedDocumentID == document.id },
+                            onCommitted: { store.reloadExternalChange() },
+                            onError: { store.saveError = $0 })
+                            .allowsHitTesting(mode == .select || mode == .connector)
+                    }
                 } else {
                     interactionLayer(size: geometry.size)
                 }
@@ -6656,12 +6828,12 @@ struct WorkspaceCanvasView: View {
             }
             .clipped()
             .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
-                if canvasViewportSize.width > 0, canvasViewportSize.height > 0 {
-                    pan.width += (size.width - canvasViewportSize.width) / 2
-                    pan.height += (size.height - canvasViewportSize.height) / 2
-                    panStart = pan
-                }
+                guard let resizedPan = CanvasInlineEditingViewport.recenteredPan(
+                    from: canvasViewportSize, to: size, currentPan: pan) else { return }
+                pan = resizedPan
                 canvasViewportSize = size
+                revealInlineEditor(in: size)
+                panStart = pan
                 // Feed the hysteresis input off the real viewport geometry.
                 canvasChromeExpanded = !FoldableLayoutEngine.canvasUsesCompactChrome(
                     snapshot: foldableDisplay,
@@ -6671,12 +6843,12 @@ struct WorkspaceCanvasView: View {
                     isPhoneIdiom: UIDevice.current.userInterfaceIdiom == .phone)
             }
             .overlay(alignment: .bottomTrailing) {
-                if editingNodeID == nil || !compactCanvas(size: geometry.size) {
+                if editingNodeID == nil {
                     zoomControls.padding(.bottom, compactCanvas(size: geometry.size) ? 130 : 0)
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                if showsMiniMap, !compactCanvas(size: geometry.size), let document = store.selectedDocument {
+                if editingNodeID == nil, showsMiniMap, !compactCanvas(size: geometry.size), let document = store.selectedDocument {
                     CanvasMiniMap(
                         document: document,
                         viewportCenter: CanvasPoint(
@@ -6699,7 +6871,7 @@ struct WorkspaceCanvasView: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                if editingNodeID == nil || !compactCanvas(size: geometry.size) {
+                if editingNodeID == nil {
                     VStack(spacing: 6) {
                         ScrollView(.horizontal, showsIndicators: false) {
                             selectionToolbar.frame(minWidth: max(0, geometry.size.width - 24))
@@ -6712,22 +6884,26 @@ struct WorkspaceCanvasView: View {
             .navigationTitle(store.selectedDocument?.name ?? "settings.settings_root_view.canvas")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("workspace.workspace_canvas_view.done") { dismiss() }
+                        .accessibilityIdentifier("space.editor.done")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
-                    if compactCanvas(size: geometry.size) {
-                        HStack {
-                            if editingNodeID != nil {
-                                Button("workspace.workspace_canvas_view.done_editing", systemImage: "checkmark") { editingNodeID = nil }
-                                    .accessibilityIdentifier("canvas.node.finishEditing")
-                            }
+                    HStack {
+                        if editingNodeID != nil {
+                            Button("workspace.workspace_canvas_view.done_editing", systemImage: "checkmark") { editingNodeID = nil }
+                                .accessibilityIdentifier("canvas.node.finishEditing")
+                        }
+                        if compactCanvas(size: geometry.size) {
                             Menu {
                                 canvasToolbarActions
                             } label: {
                                 Label("workspace.workspace_canvas_view.canvas_actions", systemImage: "ellipsis.circle")
                             }
                             .accessibilityIdentifier("canvas.actions")
+                        } else {
+                            canvasToolbarActions
                         }
-                    } else {
-                        HStack { canvasToolbarActions }
                     }
                 }
             }
@@ -6776,6 +6952,7 @@ struct WorkspaceCanvasView: View {
         Button("composer.editor.redo", systemImage: "arrow.uturn.forward") { store.redo() }
             .disabled(!store.canRedo)
         Button {
+            if kitStore != nil { openFrameworkAssistant(); return }
             withAnimation(.snappy) {
                 showsAgent = true
                 isAgentCollapsed = false
@@ -6956,7 +7133,6 @@ struct WorkspaceCanvasView: View {
         } label: {
             Image(systemName: "ellipsis.circle")
         }
-        Button("workspace.workspace_canvas_view.done") { dismiss() }
     }
 
     private func createNode(_ factory: (CGPoint) -> UUID) {
@@ -6964,6 +7140,45 @@ struct WorkspaceCanvasView: View {
         selectedStrokeIDs.removeAll()
         selectedConnectionID = nil
         mode = .select
+    }
+
+    private func openFrameworkAssistant() {
+        guard let kitStore, let open = kitStore.services.openAssistant else { return }
+        let canvasID = store.project.id, pageID = store.project.selectedDocumentID
+        let selection = selectedNodeIDs
+        Task { @MainActor in
+            await kitStore.refreshFromHost()
+            guard kitStore.canvasID == canvasID else { return }
+            await kitStore.selectPage(pageID)
+            kitStore.select(selection)
+            do {
+                try await open(.init(context: .init(canvasID: canvasID, pageID: pageID, revision: kitStore.revision),
+                    selectedNodeIDs: Array(selection), instruction: ""))
+            } catch { store.saveError = error.localizedDescription }
+        }
+    }
+
+    private func performNativeReference(_ action: CanvasFrameworkReferenceActions.Action, nodeID: UUID) {
+        guard let kitStore else { return }
+        let canvasID = store.project.id, pageID = store.project.selectedDocumentID
+        let revision = store.project.revision, generation = referenceGeneration
+        selectedNodeIDs = [nodeID]; editingNodeID = nil
+        Task { @MainActor in
+            do {
+                await kitStore.selectPage(pageID)
+                _ = try await CanvasFrameworkReferenceActions.perform(action, store: kitStore,
+                    canvasID: canvasID, pageID: pageID, nodeID: nodeID, revision: revision,
+                    isCurrent: { referenceGeneration == generation && store.project.id == canvasID && store.project.selectedDocumentID == pageID })
+                store.reloadExternalChange()
+                if let alert = kitStore.alert { store.saveError = alert.message }
+            } catch is CancellationError {} catch { store.saveError = error.localizedDescription }
+        }
+    }
+
+    private func showNativeFlow(_ graphID: UUID) {
+        guard let kitStore else { return }
+        NotificationCenter.default.post(name: .floeCanvasFrameworkFlowRequested, object: nil,
+            userInfo: ["canvasID": kitStore.canvasID, "pageID": store.project.selectedDocumentID, "graphID": graphID])
     }
 
     private func presentArtifactImporter(_ source: CanvasArtifactImportSource, at point: CGPoint) {
@@ -7223,6 +7438,7 @@ struct WorkspaceCanvasView: View {
             resultPoint: CanvasPoint(canvasPoint(draft.screenPoint))
         )
         cancelConnectionCreation()
+        if kitStore != nil { openFrameworkAssistant(); return }
         withAnimation(.snappy) {
             showsAgent = true
             isAgentCollapsed = false
@@ -7591,6 +7807,21 @@ struct WorkspaceCanvasView: View {
                 onOpenCAD: CADCanvasNodePlanner.isNativeCADNode(node) ? {
                     openUnified3DEditor(node)
                 } : nil,
+                onOpenLinkedEditor: CanvasFrameworkReferenceActions.hasEditor(node.id, store: kitStore) ? {
+                    performNativeReference(.openEditor, nodeID: node.id)
+                } : nil,
+                onApplyLinkedEditor: CanvasFrameworkReferenceActions.hasEditor(node.id, store: kitStore) ? {
+                    performNativeReference(.applyEditor, nodeID: node.id)
+                } : nil,
+                onOpenOriginalSource: CanvasFrameworkReferenceActions.hasSource(node.id, store: kitStore) ? {
+                    performNativeReference(.openSource, nodeID: node.id)
+                } : nil,
+                onRefreshOriginalSource: CanvasFrameworkReferenceActions.hasSource(node.id, store: kitStore) ? {
+                    performNativeReference(.refreshSource, nodeID: node.id)
+                } : nil,
+                onOpenFlow: CanvasFrameworkReferenceActions.flowGraph(node.id, store: kitStore).map { graphID in
+                    { showNativeFlow(graphID) }
+                },
                 onPreviewEngineering: engineeringPreviewAction(for: node),
                 onConfigureGeneration: node.kind == .generationTask ? {
                     handleGenerationAction(for: node)
@@ -7612,6 +7843,7 @@ struct WorkspaceCanvasView: View {
                     selectedNodeIDs = [node.id]
                     selectedConnectionID = nil
                     editingNodeID = nil
+                    if kitStore != nil { openFrameworkAssistant() }
                 },
                 onAssociate: {
                     selectedNodeIDs = [node.id]
@@ -7744,7 +7976,13 @@ struct WorkspaceCanvasView: View {
             .onTapGesture(count: 2) {
                 guard mode == .select else { return }
                 selectedConnectionID = nil
-                if CanvasDrawingNodePlanner.isDrawingNode(node), !node.isLocked {
+                if CanvasFrameworkReferenceActions.hasEditor(node.id, store: kitStore) {
+                    performNativeReference(.openEditor, nodeID: node.id)
+                } else if let graphID = CanvasFrameworkReferenceActions.flowGraph(node.id, store: kitStore) {
+                    showNativeFlow(graphID)
+                } else if CanvasFrameworkReferenceActions.hasSource(node.id, store: kitStore) {
+                    performNativeReference(.openSource, nodeID: node.id)
+                } else if CanvasDrawingNodePlanner.isDrawingNode(node), !node.isLocked {
                     selectedNodeIDs = [node.id]
                     openDrawingEditor(node)
                 } else if CADCanvasNodePlanner.isNativeCADNode(node), !node.isLocked {
@@ -8515,6 +8753,7 @@ struct WorkspaceCanvasView: View {
                 Menu("workspace.workspace_canvas_view.more", systemImage: "ellipsis.circle") {
                     if selectedNodeIDs.count == 1, let nodeID = selectedNodeIDs.first {
                         Button("workspace.workspace_canvas_view.ask_about_node", systemImage: FloeTheme.assistantSymbol) {
+                            if kitStore != nil { openFrameworkAssistant(); pencilContextPoint = nil; return }
                             pendingAgentRequest = CanvasAgentRequest(nodeID: nodeID, prompt: "")
                             showsAgent = true
                             isAgentCollapsed = false
@@ -8597,7 +8836,7 @@ struct WorkspaceCanvasView: View {
                     )))
                     pencilContextPoint = nil
                 }
-                Button("canvas.node.text", systemImage: "textformat") {
+                Button("canvas.node.text", systemImage: "character.cursor.ibeam") {
                     createNode(.text, at: canvasPoint(pencilContextPoint ?? CGPoint(
                         x: size.width / 2, y: size.height / 2
                     )))
@@ -9252,6 +9491,25 @@ struct WorkspaceCanvasView: View {
         CGPoint(x: (point.x - pan.width) / scale, y: (point.y - pan.height) / scale)
     }
 
+    /// Only the existing camera moves. Native body editing, the selected node,
+    /// geometry and persistence/undo remain owned by their current services.
+    private func revealInlineEditor(in viewport: CGSize) {
+        guard let editingNodeID, let node = store.selectedDocument?.nodes.first(where: { $0.id == editingNodeID }),
+              scale.isFinite, scale > 0 else { return }
+        let center = screenPoint(CGPoint(x: node.x, y: node.y))
+        // Basic text bodies have the native TextEditor's existing 10pt padding.
+        // Reveal that input rect when the keyboard leaves less than one card's
+        // height; larger node kinds keep their existing top-leading body first.
+        let inset = node.metadata["builtinPlugin"] == nil && [.text, .stickyNote].contains(node.kind) ? 10.0 * scale : 0
+        let frame = CGRect(x: center.x - node.width * scale / 2 + inset,
+                           y: center.y - node.height * scale / 2 + inset,
+                           width: node.width * scale - inset * 2,
+                           height: node.height * scale - inset * 2)
+        if let adjusted = CanvasInlineEditingViewport.revealing(frame, in: viewport, currentPan: pan) {
+            pan = adjusted; panStart = adjusted
+        }
+    }
+
     private func restoreViewport() {
         guard let viewport = store.project.viewports[store.project.selectedDocumentID] else { return }
         scale = viewport.scale
@@ -9271,6 +9529,18 @@ struct WorkspaceCanvasView: View {
     }
 
     private func prepareExport(_ format: CanvasDocumentStore.ExportFormat) {
+        if kitStore != nil {
+            let kind: String
+            switch format {
+            case .package: kind = "native"
+            case .json: kind = "json"
+            case .png: kind = "png"
+            case .pdf: kind = "pdf"
+            }
+            NotificationCenter.default.post(name: .floeCanvasFrameworkExportRequested, object: nil,
+                userInfo: ["canvasID": store.project.id, "format": kind])
+            return
+        }
         if format == .package {
             exportCanvasPackageFile()
             return
@@ -9455,6 +9725,10 @@ struct WorkspaceCanvasView: View {
     }
 
     private func openUnified3DEditor(_ node: FloeCanvasNode) {
+        guard node.metadata["floe.framework.cadForkPending"] != "true" else {
+            store.saveError = IDELanguageRunText.t("这份副本的 CAD 子项目尚未复制，原项目仍然保留。请先创建独立子项目。", "This copy's CAD child project was not duplicated. The original is kept; create an independent child project first.")
+            return
+        }
         guard !node.isLocked else { return }
         selectedNodeIDs = [node.id]
         selectedStrokeIDs.removeAll()
@@ -9924,7 +10198,7 @@ private struct CanvasPencilPalette: View {
             Text("workspace.workspace_canvas_view.quick_create").font(.subheadline.weight(.semibold))
             HStack {
                 Button("canvas.node.card", systemImage: "note.text", action: onCreateCard)
-                Button("canvas.node.text", systemImage: "textformat", action: onCreateText)
+                Button("canvas.node.text", systemImage: "character.cursor.ibeam", action: onCreateText)
                 Button("canvas.node.shape", systemImage: "square.on.circle", action: onCreateShape)
             }
             .buttonStyle(.bordered)
@@ -10753,6 +11027,37 @@ private extension FloeCanvasNode {
     }
 }
 
+/// Pure geometry for the original canvas camera. Invalid transient samples do
+/// not replace the last valid viewport; this is defensive, not a diagnosis of
+/// the UI04 keyboard transition. Oversized editors retain a visible beginning.
+enum CanvasInlineEditingViewport {
+    static func valid(_ size: CGSize) -> Bool {
+        size.width.isFinite && size.height.isFinite && size.width > 0 && size.height > 0
+    }
+    static func recenteredPan(from previous: CGSize, to next: CGSize, currentPan: CGSize) -> CGSize? {
+        guard valid(next), currentPan.width.isFinite, currentPan.height.isFinite else { return nil }
+        let result = valid(previous)
+            ? CGSize(width: currentPan.width + (next.width - previous.width) / 2,
+                     height: currentPan.height + (next.height - previous.height) / 2)
+            : currentPan
+        return result.width.isFinite && result.height.isFinite ? result : nil
+    }
+    static func revealing(_ frame: CGRect, in viewport: CGSize, currentPan: CGSize) -> CGSize? {
+        guard valid(viewport), frame.minX.isFinite, frame.minY.isFinite,
+              frame.maxX.isFinite, frame.maxY.isFinite, frame.width > 0, frame.height > 0,
+              currentPan.width.isFinite, currentPan.height.isFinite else { return nil }
+        func adjustment(start: CGFloat, length: CGFloat, extent: CGFloat) -> CGFloat {
+            let inset = min(8, extent / 4), end = extent - inset
+            if length > end - inset || start < inset { return inset - start }
+            if start + length > end { return end - start - length }
+            return 0
+        }
+        let result = CGSize(width: currentPan.width + adjustment(start: frame.minX, length: frame.width, extent: viewport.width),
+                            height: currentPan.height + adjustment(start: frame.minY, length: frame.height, extent: viewport.height))
+        return result.width.isFinite && result.height.isFinite ? result : nil
+    }
+}
+
 private struct CanvasNodeCard: View {
     let node: FloeCanvasNode
     @Binding var text: String
@@ -10766,6 +11071,11 @@ private struct CanvasNodeCard: View {
     /// Nil for non-CAD nodes; routes through the SAME document binding as
     /// double tap.
     let onOpenCAD: (() -> Void)?
+    let onOpenLinkedEditor: (() -> Void)?
+    let onApplyLinkedEditor: (() -> Void)?
+    let onOpenOriginalSource: (() -> Void)?
+    let onRefreshOriginalSource: (() -> Void)?
+    let onOpenFlow: (() -> Void)?
     /// Read-only shared engineering preview for a canvas file node whose
     /// format the viewer recognizes. Nil when no local/preparable asset or
     /// the file is not an engineering format.
@@ -10791,6 +11101,27 @@ private struct CanvasNodeCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             nodeContent
+            if onOpenLinkedEditor != nil || onOpenOriginalSource != nil || onOpenFlow != nil {
+                Divider()
+                HStack(spacing: 8) {
+                    if let onOpenLinkedEditor {
+                        Button(IDELanguageRunText.t("打开编辑器", "Open editor"), systemImage: "arrow.up.forward.app", action: onOpenLinkedEditor)
+                            .disabled(node.isLocked).accessibilityIdentifier("canvas.reference.openEditor")
+                    }
+                    if let onApplyLinkedEditor {
+                        Button(IDELanguageRunText.t("应用更新", "Apply update"), systemImage: "arrow.triangle.2.circlepath", action: onApplyLinkedEditor)
+                            .disabled(node.isLocked).accessibilityIdentifier("canvas.reference.applyEditor")
+                    }
+                    if let onOpenOriginalSource {
+                        Button(IDELanguageRunText.t("打开原件", "Open original"), systemImage: "doc.text", action: onOpenOriginalSource)
+                            .accessibilityIdentifier("canvas.reference.openSource")
+                    }
+                    if let onOpenFlow {
+                        Button(IDELanguageRunText.t("流程", "Workflow"), systemImage: "play.rectangle", action: onOpenFlow)
+                            .accessibilityIdentifier("canvas.reference.openFlow")
+                    }
+                }.font(.caption).buttonStyle(.borderless).frame(minHeight: 44).padding(.horizontal, 10)
+            }
             if !sourceURLs.isEmpty || licenseStatus != nil {
                 Divider()
                 HStack(spacing: 6) {
@@ -10813,6 +11144,19 @@ private struct CanvasNodeCard: View {
         }
         .shadow(color: node.kind == .group ? .clear : .black.opacity(0.08), radius: 8, y: 3)
         .contextMenu {
+            if let onOpenLinkedEditor {
+                Button(IDELanguageRunText.t("打开编辑器", "Open editor"), systemImage: "arrow.up.forward.app", action: onOpenLinkedEditor).disabled(node.isLocked)
+            }
+            if let onApplyLinkedEditor {
+                Button(IDELanguageRunText.t("应用编辑器更新", "Apply editor update"), systemImage: "arrow.triangle.2.circlepath", action: onApplyLinkedEditor).disabled(node.isLocked)
+            }
+            if let onOpenOriginalSource {
+                Button(IDELanguageRunText.t("打开原件", "Open original"), systemImage: "doc.text", action: onOpenOriginalSource)
+            }
+            if let onRefreshOriginalSource {
+                Button(IDELanguageRunText.t("更新引用", "Refresh source"), systemImage: "arrow.clockwise", action: onRefreshOriginalSource).disabled(node.isLocked)
+            }
+            if let onOpenFlow { Button(IDELanguageRunText.t("流程调试", "Workflow debugger"), systemImage: "play.rectangle", action: onOpenFlow) }
             if let onPreviewEngineering, !node.isLocked {
                 Button(canvasLocalized("预览工程文件", "Preview engineering file"),
                        systemImage: "eye", action: onPreviewEngineering)
@@ -10860,7 +11204,10 @@ private struct CanvasNodeCard: View {
             Divider()
             Button("workspace.workspace_canvas_view.delete_node", role: .destructive, action: onDelete)
         }
-        .accessibilityIdentifier("canvas.node.\(node.id.uuidString)")
+        // A browsing node ID must not replace the native TextEditor's own
+        // accessibility identity while its body is being edited. The enabled
+        // modifier keeps this view's state and focus intact across that change.
+        .accessibilityIdentifier("canvas.node.\(node.id.uuidString)", isEnabled: !isEditing)
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
                 if isEditing {

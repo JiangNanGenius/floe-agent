@@ -4003,6 +4003,13 @@ final class ConversationCenter: ObservableObject {
         // inside the store but never mint authority, and a missing key or an
         // invalid project id fails closed.
         var serviceStorePaths = environment.workbenchCenter.typedServiceStorePaths
+        // The real instance supplies its container, including custom/migrated
+        // roots and works created later in this same run. No model path or
+        // organizational folder is treated as ownership.
+        if let library = try? await PersonalContentService.shared.library() {
+            let studioStores = await library.typedServiceStorePaths()
+            serviceStorePaths.merge(studioStores) { _, actual in actual }
+        }
         for (key, path) in CadDocumentCenter.trustedNativeCanvasDocumentPaths(conversationID: conversationID) {
             serviceStorePaths[TypedMutationContract.cadCanvasBindingPrefix + key] = path
         }
@@ -7292,6 +7299,8 @@ final class ConversationCenter: ObservableObject {
     }
 
     private func stopRunsAndDelete(conversationIDs: Set<UUID>) async throws {
+        await environment.toolboxCenter.closeOrdinarySessions(conversationIDs: conversationIDs)
+        defer { environment.toolboxCenter.allowOrdinarySessions(conversationIDs: conversationIDs) }
         for id in conversationIDs { environment.interactiveHostCenter.discard(conversationID: id) }
         defer { for id in conversationIDs { environment.interactiveHostCenter.allowAfterDeletion(conversationID: id) } }
         for id in conversationIDs {

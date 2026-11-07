@@ -280,6 +280,9 @@ public struct CadAnimationExportReceipt: Sendable, Equatable {
 /// the engine service remains the authority and returns a structured refusal
 /// for anything it does not implement.
 public enum CadNativeEditActions {
+    /// Actual Building UI/model service, reached by the same parameters route.
+    public static let building: Set<String> = ["building.catalog", "building.inspect", "building.addWall", "building.addRoom"]
+    public static let buildingReads: Set<String> = ["building.catalog", "building.inspect"]
     public static let material: Set<String> = [
         "list", "read", "create", "update", "remove", "apply", "applyFaces",
         "reassignFaces", "mapping", "textures", "unresolved", "libraryExport",
@@ -336,7 +339,7 @@ public enum CadNativeEditActions {
         "datum.point.create", "datum.point.update", "datum.point.delete",
         "sketch.setSupport", "sketch.clearSupport",
         "undo", "redo",
-    ]).union(loftSurface)
+    ]).union(loftSurface).union(building)
     /// Authored/read animation operations. `capture`/`export` are media
     /// operations handled by the host, not document mutations.
     public static let animationReads: Set<String> = [
@@ -1575,9 +1578,10 @@ public enum CadServiceOperationCatalog: Sendable {
 
     private static let meshOperations: [Operation] = [
         Operation(kind: "mesh", action: "combine", mutating: true,
-                  summary: "Combine bodies into one new body.",
-                  arguments: [arg("bodyIDs", "[uuid]", required: true, note: "alias bodyID; <= 32 bodies"),
-                              arg("name", "string")],
+                  summary: "Combine render meshes into one new mesh body. Exact inputs require explicit forceMesh acknowledgement.",
+                  arguments: [arg("bodyIDs", "[uuid]", required: true, note: "alias bodyID; <= 16 bodies"),
+                              arg("name", "string"),
+                              arg("forceMesh", "boolean", note: "true explicitly acknowledges dropping an exact B-rep; not a standalone conversion")],
                   examples: [#"{"bodyIDs":["<body uuid>","<body uuid>"],"name":"Combined"}"#]),
         Operation(kind: "mesh", action: "boolean", mutating: true,
                   summary: "Mesh boolean (union/subtract/intersect) when the exact kernel path is not used.",
@@ -1586,15 +1590,14 @@ public enum CadServiceOperationCatalog: Sendable {
                               arg("forceMesh", "boolean", note: "required to downgrade analytic B-rep bodies")],
                   examples: [#"{"op":"subtract","target":"<body uuid>","tools":["<body uuid>"],"forceMesh":true}"#]),
         Operation(kind: "mesh", action: "transform", mutating: true,
-                  summary: "Translate/rotate/scale one body.",
+                  summary: "Translate/rotate/scale one body while preserving its analytic B-rep. This is not mesh conversion; forceMesh is refused.",
                   arguments: [arg("bodyID", "uuid", required: true), arg("translate", "[x,y,z]"),
-                              arg("rotate", "object"), arg("scale", "number | [x,y,z]"),
-                              arg("forceMesh", "boolean")],
+                              arg("rotate", "object"), arg("scale", "number | [x,y,z]")],
                   examples: [#"{"bodyID":"<body uuid>","translate":[10,0,0]}"#]),
         Operation(kind: "mesh", action: "recomputeNormals", mutating: true,
-                  summary: "Recompute render normals.",
-                  arguments: [arg("bodyIDs", "[uuid]", note: "alias bodyID"), arg("forceMesh", "boolean")],
-                  examples: [#"{"bodyID":"<body uuid>","forceMesh":true}"#]),
+                  summary: "Recompute render normals while preserving the body representation. This is not mesh conversion; forceMesh is refused.",
+                  arguments: [arg("bodyIDs", "[uuid]", note: "alias bodyID")],
+                  examples: [#"{"bodyID":"<body uuid>"}"#]),
         Operation(kind: "mesh", action: "repair", mutating: true,
                   summary: "Clean up welded vertices/degenerate triangles and inspect remaining defects. repairComplete is false while defects remain. Specific unsupported defect repairs refuse without mutation; recomputeNormals does not fix triangle winding.",
                   arguments: [arg("bodyIDs", "[uuid]", note: "alias bodyID"),
@@ -1608,7 +1611,7 @@ public enum CadServiceOperationCatalog: Sendable {
                               arg("forceMesh", "boolean")],
                   examples: [#"{"bodyID":"<body uuid>","ratio":0.5,"forceMesh":true}"#]),
         Operation(kind: "mesh", action: "material", mutating: true,
-                  summary: "Set material appearance on one body.",
+                  summary: "Set material appearance on one body, preserving its analytic or mesh representation; this does not convert geometry.",
                   arguments: [arg("bodyID", "uuid", required: true),
                               arg("color", "[r,g,b(,a)]", note: "0…1 components (canonical); #RRGGBB also accepted"),
                               arg("opacity", "number"), arg("metallic", "number"), arg("roughness", "number")],

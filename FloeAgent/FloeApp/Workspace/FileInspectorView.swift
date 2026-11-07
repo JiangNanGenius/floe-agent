@@ -158,7 +158,8 @@ struct FileInspectorView: View {
                 FilePreviewView(
                     relativePath: previewPath,
                     center: center,
-                    onAddToContext: { addToContext(previewPath) }
+                    onAddToContext: { addToContext(previewPath) },
+                    onDeleted: { if self.previewPath == previewPath { closePreview() } }
                 )
                 .id("\(previewPath)#\(ideDismissGeneration)")
             }

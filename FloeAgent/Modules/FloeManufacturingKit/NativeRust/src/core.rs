@@ -87,7 +87,7 @@ impl FrameSink {
     }
 }
 
-fn validate_budget(b: &BudgetReq) -> Result<(), Fail> {
+pub(crate) fn validate_budget(b: &BudgetReq) -> Result<(), Fail> {
     if b.max_cells == 0 || b.max_cells > MAX_CELLS_CEILING {
         return Err(format!(
             "budget: maxCells must be 1...{MAX_CELLS_CEILING}"
@@ -157,7 +157,7 @@ fn fixtures_from(req: &[FixtureReq]) -> Result<Vec<FixtureBox>, Fail> {
         .collect()
 }
 
-fn mesh_stock(
+pub(crate) fn mesh_stock(
     stock: &Stock,
     max_triangles: u64,
     _frame_budget: &mut u64,

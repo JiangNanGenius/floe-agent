@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import Foundation
+import FloeCore
 import FloeCanvasCore
 import FloeCanvasIntegration
 import FloeNotes
@@ -55,6 +56,8 @@ struct CanvasHostSources: CanvasSourceService {
         case .richText(let document): document.runs.map(\.text).joined()
         case .table(let header, let rows): ([header] + rows).map { $0.joined(separator: "\t") }.joined(separator: "\n")
         case .web(let url, let title): (title ?? "") + "\n" + url.absoluteString
+        case .unknown(let kind, let payload) where kind == CanvasFrameworkProjection.frameworkNodeKind:
+            if case .object(let values) = payload, case .string(let text) = values["text"] { text } else { nil }
         default: nil
         }
     }
@@ -81,7 +84,7 @@ struct CanvasHostSourceOpening: CanvasSourceOpening {
 
 struct CanvasHostEditorGateway: CanvasEditorGateway {
     let canvasID: UUID
-    let repository: FileCanvasRepository
+    let repository: any CanvasDocumentStore
     let navigation: CanvasHostNavigation
     func openEditor(_ reference: CanvasEditorReference, context: CanvasRuntimeContext) async throws {
         try await validate(reference, context: context)
@@ -100,8 +103,11 @@ struct CanvasHostEditorGateway: CanvasEditorGateway {
         let snapshot = try await repository.load(canvasID: canvasID)
         guard context.canvasID == canvasID, context.revision == snapshot.revision,
               let page = snapshot.pages.first(where: { $0.id == context.pageID }),
-              page.nodes.contains(where: { if case .editor(let value) = $0.content { return value.projectID == reference.projectID }; return false }) else {
+              let node = page.nodes.first(where: { if case .editor(let value) = $0.content { return value.projectID == reference.projectID }; return false }) else {
             throw CanvasHostError.staleRun
+        }
+        guard node.metadata[CanvasFrameworkLegacyRepository.pendingEditorForkKey] != "true" else {
+            throw FloeError.validationFailed(IDELanguageRunText.t("这份副本的子项目尚未复制。请先创建独立子项目，再从这里继续编辑。", "This copy's child project has not been duplicated. Create an independent child project before editing it here."))
         }
         let value = try await PersonalContentService.shared.library().resolve(reference.projectID)
         guard value.record.kind.rawValue == reference.editorKind || reference.editorKind == "mindMap" && value.record.kind == .diagram else {

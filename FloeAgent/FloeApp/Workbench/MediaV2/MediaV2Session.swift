@@ -6,9 +6,14 @@ import Foundation
 import Observation
 import UniformTypeIdentifiers
 import FloeWorkbench
+import FloeTools
 
 @MainActor @Observable final class MediaV2Session {
     private static var sessions: [String: MediaV2Session] = [:]
+    static func requireIdleForDeletion(id: UUID) throws {
+        guard !sessions.values.contains(where: { $0.id == id && ($0.saving || $0.rendering || $0.exportTask != nil) }) else { throw PersonalFileActionError.busy }
+    }
+
     let id: UUID
     let root: URL
     let store: MediaProjectStore
@@ -40,6 +45,7 @@ import FloeWorkbench
     private(set) var rendering = false
     private(set) var exportProgress: Double?
     private(set) var exportedFile: URL?
+    @ObservationIgnored private(set) var exportError: (any Error)?
     var diagnostic: String?
     var player: AVPlayer?
     private var playbackAuthority: NativeCreativeAudioSession?
@@ -86,12 +92,13 @@ import FloeWorkbench
     }
     @discardableResult
     func apply(_ operations: [MediaPreparedOperation], expectedRevision: Int64? = nil,
-               actor: MediaPreparedActorKind = .user) async throws -> MediaPreparedCommit {
+               actor: MediaPreparedActorKind = .user, didCommit: (() -> Void)? = nil) async throws -> MediaPreparedCommit {
         guard !saving else { throw MediaPreparedCoreError.conflict("an edit is saving") }
         if let expectedRevision, expectedRevision != document.revision { throw MediaPreparedCoreError.documentChanged }
         saving = true
         defer { saving = false }
         let commit = try await coordinator.applyUserOperations(operations, to: id, actor: actor)
+        didCommit?()
         try await reload()
         return commit
     }
@@ -135,7 +142,7 @@ import FloeWorkbench
                     let canvas = frozen.canvas ?? .init(width: 1600, height: 1200)
                     image = try await imageRenderer.render(project: frozen, canvas: CGSize(width: canvas.width, height: canvas.height), resolveAsset: { assets[$0] }, previewMaxEdge: 2048)
                 } else {
-                    guard duration > 0 else { preview = nil; return }
+                    guard duration > 0, Self.hasVisibleClips(frozen.prepared!.trackGraph) else { preview = nil; return }
                     let plan = try MediaPreparedVideoDocumentAdapter.resolve(frozen.prepared!, assetURLs: assets, includeAudio: false)
                     let canvas = plan.canvas
                     let scale = min(1, 1280 / Double(max(canvas.width, canvas.height)))
@@ -208,8 +215,22 @@ import FloeWorkbench
         } else { addLayer(.strokes(.init(strokes: [stroke])), name: WorkbenchText.t("笔迹", "Brush stroke")) }
     }
     func importFile(_ url: URL) async {
+        do { _ = try await importAuthorizedFile(url, expectedRevision: document.revision, actor: .user) }
+        catch { diagnostic = error.localizedDescription }
+    }
+    struct ImportedAsset { let commit: MediaPreparedCommit; let asset: MediaAssetReference }
+    /// URL is supplied only by a system picker or the verified native host.
+    /// No model-authored host URL is accepted at the callable boundary.
+    func importAuthorizedFile(_ url: URL, expectedRevision: Int64, expectedSHA256: String? = nil,
+                              actor: MediaPreparedActorKind = .user, cancellation: CancellationToken? = nil,
+                              validateSource: @MainActor () async throws -> Void = {}) async throws -> ImportedAsset {
+        guard expectedRevision == document.revision else { throw MediaPreparedCoreError.documentChanged }
+        let scope = MediaV2ImportScope(token: cancellation)
+        var admitted = false
+        try scope.validate(); try await validateSource()
         do {
-            let reference = try await stage(url)
+            let reference = try await stage(url, importScope: scope)
+            if let expectedSHA256, reference.contentHash != expectedSHA256 { throw MediaPreparedCoreError.conflict("import source SHA256 changed") }
             var actions: [MediaPreparedAction] = [.insertAsset(reference)]
             if project.kind == .image {
                 guard reference.kind == .image else { throw PersonalContentError.invalidProject }
@@ -227,55 +248,46 @@ import FloeWorkbench
                 let clip = MediaPreparedClip(assetID: reference.id, timelineRange: range, sourceRange: try Self.range(start: 0, duration: seconds), isMuted: reference.kind == .video && (reference.metadata?.audioTracks ?? 0) > 0)
                 actions.append(.insertClip(trackID: track.id, clip: clip, index: nil)); selectedTrackID = track.id; selectedClipID = clip.id
                 if reference.kind == .video, (reference.metadata?.audioTracks ?? 0) > 0 {
-                    let audio = try await extractAudio(reference)
+                    let audio = try await extractAudio(reference, importScope: scope)
                     actions.append(.insertAsset(audio))
                     let track = MediaPreparedTrack(kind: .audio, name: reference.originalName + WorkbenchText.t(" · 原声", " · source audio"))
                     actions.append(.insertTrack(track: track, index: nil))
                     actions.append(.insertClip(trackID: track.id, clip: .init(assetID: audio.id, timelineRange: range, sourceRange: try Self.range(start: 0, duration: seconds)), index: nil))
                 }
             }
-            _ = try await apply(actions.map { .init(action: $0) })
-        } catch { diagnostic = error.localizedDescription }
-    }
-    private func stage(_ source: URL) async throws -> MediaAssetReference {
-        let root = root
-        return try await Task.detached(priority: .userInitiated) {
-            let access = source.startAccessingSecurityScopedResource()
-            defer { if access { source.stopAccessingSecurityScopedResource() } }
-            let values = try source.resourceValues(forKeys: [.contentTypeKey, .fileSizeKey, .isRegularFileKey])
-            guard values.isRegularFile == true, let size = values.fileSize, size <= 2_147_483_648 else { throw PersonalContentError.invalidProject }
-            let type = values.contentType
-            let kind: MediaAssetKind
-            if type?.conforms(to: .image) == true { kind = .image }
-            else if type?.conforms(to: .audio) == true { kind = .audio }
-            else if type?.conforms(to: .movie) == true || type?.conforms(to: .video) == true { kind = .video }
-            else { throw PersonalContentError.invalidProject }
-            let directory = root.appendingPathComponent("Assets")
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let destination = directory.appendingPathComponent(UUID().uuidString + "." + source.pathExtension)
-            try FileManager.default.copyItem(at: source, to: destination)
-            var hasher = SHA256()
-            let file = try FileHandle(forReadingFrom: destination); defer { try? file.close() }
-            while let data = try file.read(upToCount: 1024 * 1024), !data.isEmpty { try Task.checkCancellation(); hasher.update(data: data) }
-            var metadata: MediaAssetMetadata?
-            if kind != .image {
-                let asset = AVURLAsset(url: destination)
-                let duration = try await asset.load(.duration).seconds
-                let audio = try await asset.loadTracks(withMediaType: .audio)
-                metadata = .init(durationSeconds: duration, audioTracks: audio.count)
+            try scope.validate()
+            try await validateSource()
+            try scope.validate()
+            admitted = true
+            let commit = try await apply(actions.map { .init(action: $0) }, expectedRevision: expectedRevision, actor: actor, didCommit: { scope.didCommit() })
+            return .init(commit: commit, asset: reference)
+        } catch {
+            if admitted {
+                // A reload/stop can fail after the atomic store commit. Only
+                // delete fresh assets proven unreferenced by durable state.
+                do {
+                    if let durable = try await store.loadProject(id: id), let prepared = durable.prepared { scope.retainReferenced(prepared.assets) }
+                    else { scope.didCommit() }
+                } catch { scope.didCommit() }
             }
-            return MediaAssetReference(kind: kind, relativePath: "Assets/" + destination.lastPathComponent, originalName: source.lastPathComponent, byteCount: Int64(size), contentHash: hasher.finalize().map { String(format: "%02x", $0) }.joined(), metadata: metadata)
-        }.value
+            throw error
+        }
     }
-    private func extractAudio(_ reference: MediaAssetReference) async throws -> MediaAssetReference {
+    private func stage(_ source: URL, importScope: MediaV2ImportScope? = nil, ephemeralSource: Bool = false) async throws -> MediaAssetReference {
+        let (staged, reference) = try await MediaV2ImportIO.stage(source, root: root, token: importScope?.token, ephemeralSource: ephemeralSource)
+        if let importScope { importScope.add(staged) } else { staged.keepCommitted() }
+        return reference
+    }
+    private func extractAudio(_ reference: MediaAssetReference, importScope: MediaV2ImportScope? = nil) async throws -> MediaAssetReference {
         let canonical = root.resolvingSymlinksInPath().standardizedFileURL
         let url = (reference.relativePath.hasPrefix("/") ? URL(fileURLWithPath: reference.relativePath) : canonical.appendingPathComponent(reference.relativePath)).resolvingSymlinksInPath().standardizedFileURL
         guard url.path.hasPrefix(canonical.path + "/") else { throw PersonalContentError.outsideLibrary }
-        let destination = root.appendingPathComponent("Assets/\(UUID().uuidString).m4a")
+        let temporary = try MediaV2ImportTemporaryFile(root: root)
+        let destination = temporary.url
+        defer { withExtendedLifetime(temporary) {} }
         guard let export = AVAssetExportSession(asset: AVURLAsset(url: url), presetName: AVAssetExportPresetAppleM4A) else { throw PersonalContentError.invalidProject }
         try await export.export(to: destination, as: .m4a)
-        let staged = try await stage(destination)
-        try? FileManager.default.removeItem(at: destination)
+        let staged = try await stage(destination, importScope: importScope, ephemeralSource: true)
         return staged
     }
     private func prepareVideoSourceAudio() async throws {
@@ -309,13 +321,21 @@ import FloeWorkbench
         return try .init(value: Int64((seconds * 90_000).rounded()), timescale: 90_000)
     }
     static func range(start: Double, duration: Double) throws -> MediaTimeRange { try .init(start: time(start), duration: time(duration)) }
+    static func hasVisibleClips(_ graph: MediaPreparedTrackGraph) -> Bool {
+        graph.tracks.contains { track in
+            track.kind == .visual && !track.isMuted && track.clips.contains { $0.timelineRange.durationSeconds > 0 }
+        }
+    }
     func export() {
         guard !rendering else { return }
-        rendering = true; diagnostic = nil; exportProgress = nil; exportedFile = nil
+        rendering = true; diagnostic = nil; exportError = nil; exportProgress = nil; exportedFile = nil
         let token = PreparedVideoCancellation(); cancellation = token
         exportTask = Task { [self] in
-            defer { rendering = false; exportTask = nil }
+            defer { rendering = false; exportTask = nil; cancellation = nil }
             do {
+                if project.kind == .video {
+                    guard Self.hasVisibleClips(document.trackGraph) else { throw PreparedVideoError.emptyTimeline }
+                }
                 try await prepareVideoSourceAudio()
                 let frozen = project
                 let urls = try resolvedAssets()
@@ -334,17 +354,28 @@ import FloeWorkbench
                 try token.check()
                 guard project.id == frozen.id, project.revision == frozen.revision else { throw MediaPreparedCoreError.documentChanged }
                 exportedFile = file
-            } catch { if !Task.isCancelled { diagnostic = error.localizedDescription } }
+            } catch {
+                exportError = error
+                if !Task.isCancelled { diagnostic = Self.exportFailureMessage(error) }
+            }
         }
     }
     func cancelExport() { cancellation?.cancel(); exportTask?.cancel() }
     func exportAndWait() async throws -> URL {
-        guard !rendering else { throw MediaV2CommandError.invalidInput }
+        guard !rendering else { throw MediaV2CommandError.exportInProgress }
         export()
-        await exportTask?.value
+        let task = exportTask, token = cancellation
+        await withTaskCancellationHandler { await task?.value } onCancel: { token?.cancel(); task?.cancel() }
         try Task.checkCancellation()
-        guard let file = exportedFile else { throw MediaV2CommandError.invalidInput }
+        if let error = exportError { throw error }
+        guard let file = exportedFile else { throw MediaV2CommandError.missingExport }
         return file
+    }
+    private static func exportFailureMessage(_ error: any Error) -> String {
+        if error as? PreparedVideoError == .emptyTimeline {
+            return WorkbenchText.t("时间线还没有可导出的画面。请先加入并显示视频或图片片段。", "The timeline has no visible frames to export. Add a video or image clip and make it visible.")
+        }
+        return error.localizedDescription
     }
     func recordExport(_ url: URL) { exportedFile = url }
     func play(authority: NativeCreativeAudioSession) {

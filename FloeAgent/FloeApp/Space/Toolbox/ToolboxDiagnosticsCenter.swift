@@ -13,15 +13,46 @@ import FloeToolboxWorkbenches
     @Published private(set) var roaming: RoamingSnapshot?
     @Published private(set) var tracing = false
     @Published private(set) var failed = false
+    @Published private(set) var defaultGateway: String?
+    @Published private(set) var wifiIdentity: WiFiIdentity?
+    @Published private(set) var readingNetwork = false
+    private var networkReadGeneration = UUID()
     private let database: DatabaseManager
     private var leases: [ToolboxTool: SessionLease] = [:]
     private var sampler: RoamingSampler?
     private var observer: Task<Void, Never>?
     private var traceGeneration = UUID()
     init(database: DatabaseManager) { self.database = database }
-    private var canReadWiFiIdentity: Bool {
-        let status = CLLocationManager().authorizationStatus
-        return status == .authorizedWhenInUse || status == .authorizedAlways
+    var canReadWiFiIdentity: Bool { LocationServicesCenter.shared.canReadWiFiIdentity }
+    var needsInitialWiFiAuthorization: Bool { LocationServicesCenter.shared.authorizationStatus == .notDetermined }
+    var wifiIdentityMessage: String? {
+        if !canReadWiFiIdentity {
+            return IDELanguageRunText.t("允许精确定位后可显示当前 Wi-Fi 名称和 AP 地址。", "Allow Precise Location to show the current Wi-Fi name and AP address.")
+        }
+        if wifiIdentity?.status == .notWiFi {
+            return IDELanguageRunText.t("当前未连接 Wi-Fi。", "Not currently connected to Wi-Fi.")
+        }
+        if wifiIdentity?.bssid == nil {
+            return IDELanguageRunText.t("系统尚未返回当前接入点信息。", "The system has not provided the current AP information.")
+        }
+        return nil
+    }
+    func refreshNetworkInfo() async {
+        let generation = UUID(); networkReadGeneration = generation
+        readingNetwork = true
+        defer { if networkReadGeneration == generation { readingNetwork = false } }
+        LocationServicesCenter.shared.refreshAuthorizationStatus()
+        let gateway = try? await WiFiGatewayService.current()
+        guard generation == networkReadGeneration, !Task.isCancelled else { return }
+        defaultGateway = gateway
+        let identity = try? await WiFiObservationService.current(mayReadIdentity: canReadWiFiIdentity)
+        guard generation == networkReadGeneration, !Task.isCancelled else { return }
+        wifiIdentity = identity
+    }
+    func requestWiFiIdentityAuthorization() async {
+        _ = await LocationServicesCenter.shared.requestWiFiIdentityAuthorization()
+        guard !Task.isCancelled else { return }
+        await refreshNetworkInfo()
     }
     func model(for tool: ToolboxTool) throws -> DiagnosticWorkbenchModel {
         if let existing = models[tool] { return existing }
@@ -41,6 +72,7 @@ import FloeToolboxWorkbenches
         if tool == .roaming { stopTraceNow() }
     }
     func leaveNow() {
+        networkReadGeneration = UUID(); readingNetwork = false
         for tool in Array(models.keys) { closeNow(tool) }
         stopTraceNow()
     }
@@ -52,7 +84,6 @@ import FloeToolboxWorkbenches
             guard let self else { return }
             await sampler?.stop(); sampler = nil
             let lease = SessionLease(ownerID: UUID()); leases[.roaming] = lease
-            let identityAllowed = canReadWiFiIdentity
             let authorize: DiagnosticAuthorizer = { [weak self] expected, _, _ in
                 await self?.isCurrent(.roaming, lease: expected) == true
             }
@@ -63,7 +94,10 @@ import FloeToolboxWorkbenches
                     repository: ToolboxCaptureStore(database: database, exportRoot: root), limits: CaptureLimits())
                 let configuration = try RoamingConfiguration(target: target, probeInterval: interval)
                 let service = try RoamingSampler(lease: lease, configuration: configuration, journal: journal,
-                    identity: { try await WiFiObservationService.current(mayReadIdentity: identityAllowed) },
+                    identity: { [weak self] in
+                        let allowed = await self?.canReadWiFiIdentity ?? false
+                        return try await WiFiObservationService.current(mayReadIdentity: allowed)
+                    },
                     probe: { host in
                         guard let result = try await diagnostic.ping(target: host, count: 1).first else { return .timeout }
                         if case .reply(let milliseconds) = result.status { return .reply(milliseconds: milliseconds) }
@@ -76,6 +110,10 @@ import FloeToolboxWorkbenches
                     let snapshot = await service.snapshot(), state = await service.state()
                     guard traceGeneration == generation, !Task.isCancelled else { break }
                     roaming = snapshot
+                    if let observation = snapshot.samples.last(where: { $0.observation.status != .notObserved })?.observation {
+                        wifiIdentity = WiFiIdentity(status: observation.status, ssid: observation.ssid,
+                            bssid: observation.bssid, signalDBM: observation.signalDBM)
+                    }
                     if !state.running { tracing = false; failed = state.error != nil; break }
                     try await Task.sleep(for: .seconds(1))
                 }

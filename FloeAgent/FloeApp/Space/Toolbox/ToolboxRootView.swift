@@ -8,6 +8,8 @@ import FloeToolboxUI
 import FloeToolboxClients
 import FloeToolboxUtilities
 import FloeToolboxWorkbenches
+import FloeToolboxDiagnostics
+import UIKit
 
 struct ToolboxRootView: View {
     @EnvironmentObject private var environment: AppEnvironment
@@ -15,8 +17,7 @@ struct ToolboxRootView: View {
     @ObservedObject var center: ToolboxCenter
     @ObservedObject private var files: ToolboxFileAccess
     @State private var selection: ToolboxTool?
-    @State private var exportURL: URL?
-    @State private var showingExport = false
+    @State private var exportArtifact: ToolboxExportArtifact?
     @State private var exportFailed = false
     @State private var showingCaptures = false
     init(center: ToolboxCenter) { self.center = center; files = center.files }
@@ -38,6 +39,7 @@ struct ToolboxRootView: View {
         NavigationStack {
             ToolboxHomeView(availability: availability) { selection = $0 }
                 .accessibilityIdentifier("toolbox.home")
+                .navigationBarTitleDisplayMode(.inline)
                 .toolbar { Button(IDELanguageRunText.t("记录与抓包", "Captures"), systemImage: "list.bullet.rectangle") { showingCaptures = true } }
                 .navigationDestination(item: $selection) { tool in
                     destination(tool).navigationTitle(tool.title(in: locale))
@@ -54,18 +56,18 @@ struct ToolboxRootView: View {
         .fileImporter(isPresented: $files.presenting, allowedContentTypes: files.types, allowsMultipleSelection: false) { result in
             files.finish(result.map { $0.first })
         }
-        .sheet(isPresented: $showingExport) {
+        .sheet(item: $exportArtifact) { artifact in
             NavigationStack {
-                if let exportURL {
-                    VStack(spacing: 20) {
-                        Image(systemName: "doc.badge.arrow.up").font(.largeTitle)
-                        Text(exportURL.lastPathComponent).textSelection(.enabled)
-                        ShareLink(item: exportURL) { Label(IDELanguageRunText.t("存储或分享", "Save or share"), systemImage: "square.and.arrow.up") }
-                            .buttonStyle(.borderedProminent)
-                    }.padding()
-                    .navigationTitle(IDELanguageRunText.t("导出", "Export"))
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button(IDELanguageRunText.t("完成", "Done")) { showingExport = false } } }
-                }
+                VStack(spacing: 20) {
+                    Image(systemName: "doc.badge.arrow.up").font(.largeTitle)
+                    Text(artifact.url.lastPathComponent).textSelection(.enabled)
+                        .accessibilityIdentifier("toolbox.export.filename")
+                    ShareLink(item: artifact.url) { Label(IDELanguageRunText.t("存储或分享", "Save or share"), systemImage: "square.and.arrow.up") }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("toolbox.export.share")
+                }.padding()
+                .navigationTitle(IDELanguageRunText.t("导出", "Export"))
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button(IDELanguageRunText.t("完成", "Done")) { exportArtifact = nil } } }
             }.presentationDetents([.medium, .large])
         }
         .alert(IDELanguageRunText.t("未能导出", "Unable to export"), isPresented: $exportFailed) {
@@ -76,8 +78,10 @@ struct ToolboxRootView: View {
         switch tool {
         case .http, .webSocket, .mqtt, .serialAssistant:
             ToolboxConnectionPage(tool: tool, center: center, onSave: showExport, onExport: { save($0, extension: "jsonl") })
-        case .ping, .traceroute, .dns, .port, .lan, .wifi:
+        case .ping, .traceroute, .dns, .port, .lan:
             ToolboxDiagnosticPage(tool: tool, center: environment.toolboxDiagnostics)
+        case .wifi:
+            ToolboxWiFiPage(center: environment.toolboxDiagnostics)
         case .roaming:
             ToolboxRoamingPage(center: environment.toolboxDiagnostics, onExport: { save($0, extension: "json") })
         case .json: ToolboxTextUtilityView(mode: .json)
@@ -88,7 +92,7 @@ struct ToolboxRootView: View {
         case .browser: ToolboxBrowserWorkspace()
         }
     }
-    private func showExport(_ url: URL) { exportURL = url; showingExport = true }
+    private func showExport(_ url: URL) { exportArtifact = ToolboxExportArtifact(url: url) }
     private func save(_ data: Data, extension suffix: String) {
         do {
             let root = try PersonalContentLibrary.applicationRoot().deletingLastPathComponent().appendingPathComponent("Toolbox/Exports", isDirectory: true)
@@ -99,6 +103,11 @@ struct ToolboxRootView: View {
             showExport(url)
         } catch { exportFailed = true }
     }
+}
+
+private struct ToolboxExportArtifact: Identifiable {
+    let id = UUID()
+    let url: URL
 }
 
 private struct ToolboxConnectionPage: View {
@@ -231,25 +240,92 @@ private struct ToolboxDiagnosticPage: View {
 }
 
 private struct ToolboxRoamingPage: View {
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var center: ToolboxDiagnosticsCenter
     let onExport: (Data) -> Void
     @State private var target = ""
+    @State private var targetWasEdited = false
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
+            ToolboxWiFiIdentityPanel(center: center).padding()
+            Divider()
             if let snapshot = center.roaming {
                 RoamingTraceView(snapshot: snapshot, isRecording: center.tracing,
                     onStart: { center.startTrace(target: $0, interval: $1) },
                     onStop: { Task { await center.stopTrace() } },
-                    onExport: { if let bytes = try? JSONEncoder().encode(snapshot) { onExport(bytes) } })
+                    onExport: { if let bytes = try? JSONEncoder().encode(snapshot) { onExport(bytes) } },
+                    defaultGateway: center.defaultGateway)
             } else {
                 Form {
-                    TextField(IDELanguageRunText.t("探测目标", "Probe target"), text: $target).textInputAutocapitalization(.never)
-                    Button(IDELanguageRunText.t("开始追踪", "Start trace")) { center.startTrace(target: target, interval: 1) }.disabled(target.isEmpty || center.tracing)
+                    TextField(IDELanguageRunText.t("探测目标", "Probe target"), text: Binding(
+                        get: { target }, set: { target = $0; targetWasEdited = true }))
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .accessibilityIdentifier("toolbox.roaming.target")
+                    Button(IDELanguageRunText.t("使用当前网关", "Use current gateway")) {
+                        if let gateway = center.defaultGateway { target = gateway; targetWasEdited = false }
+                    }.disabled(center.defaultGateway == nil || center.tracing)
+                    if !center.readingNetwork && center.defaultGateway == nil {
+                        Text(IDELanguageRunText.t("未能读取当前 Wi-Fi 网关，可手动填写探测目标。", "The current Wi-Fi gateway is unavailable. Enter a probe target manually."))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button(IDELanguageRunText.t("开始追踪", "Start trace")) { center.startTrace(target: target.trimmingCharacters(in: .whitespacesAndNewlines), interval: 1) }
+                        .disabled(target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || center.tracing)
+                        .accessibilityIdentifier("toolbox.roaming.start")
                     if center.tracing { ProgressView() }
                     if center.failed { Text(IDELanguageRunText.t("未能开始，请检查目标与权限。", "Unable to start. Check the target and permissions.")) }
                 }
             }
-        }.padding()
+        }
+        .task { await refresh() }
+        .onChange(of: center.defaultGateway) { _, gateway in
+            if !targetWasEdited, let gateway { target = gateway }
+        }
+        .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await refresh() } } }
+    }
+    private func refresh() async {
+        await center.refreshNetworkInfo()
+        if !targetWasEdited, let gateway = center.defaultGateway { target = gateway }
+    }
+}
+
+private struct ToolboxWiFiPage: View {
+    @ObservedObject var center: ToolboxDiagnosticsCenter
+    @Environment(\.scenePhase) private var scenePhase
+    var body: some View {
+        Form {
+            ToolboxWiFiIdentityPanel(center: center)
+            LabeledContent(IDELanguageRunText.t("网关", "Gateway"), value: center.defaultGateway ?? "—")
+            Button(IDELanguageRunText.t("刷新", "Refresh")) { Task { await center.refreshNetworkInfo() } }
+                .disabled(center.readingNetwork)
+        }
+        .task { await center.refreshNetworkInfo() }
+        .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await center.refreshNetworkInfo() } } }
+    }
+}
+
+private struct ToolboxWiFiIdentityPanel: View {
+    @Environment(\.openURL) private var openURL
+    @ObservedObject var center: ToolboxDiagnosticsCenter
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            LabeledContent(IDELanguageRunText.t("网络名称（SSID）", "Network name (SSID)"), value: identity?.ssid ?? "—")
+            LabeledContent(IDELanguageRunText.t("当前 AP（BSSID）", "Current AP (BSSID)")) {
+                Text(identity?.bssid ?? "—").monospaced().textSelection(.enabled)
+            }.accessibilityIdentifier("toolbox.wifi.bssid")
+            if let message = center.wifiIdentityMessage {
+                Text(message).font(.caption).foregroundStyle(.secondary)
+            }
+            if !center.canReadWiFiIdentity {
+                Button(center.needsInitialWiFiAuthorization ? IDELanguageRunText.t("允许读取 Wi-Fi 信息", "Allow Wi-Fi information") : IDELanguageRunText.t("打开定位设置", "Open Location settings")) {
+                    if center.needsInitialWiFiAuthorization { Task { await center.requestWiFiIdentityAuthorization() } }
+                    else if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                }.frame(minHeight: 44)
+            }
+            if center.readingNetwork { ProgressView().accessibilityLabel(IDELanguageRunText.t("正在读取网络", "Reading network")) }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private var identity: FloeToolboxDiagnostics.WiFiIdentity? {
+        center.wifiIdentity
     }
 }
 #endif

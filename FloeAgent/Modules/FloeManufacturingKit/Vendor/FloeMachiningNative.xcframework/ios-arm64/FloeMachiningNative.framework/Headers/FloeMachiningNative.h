@@ -33,6 +33,15 @@ typedef FMProgress FMProgressCallback;
  */
 char *fm_core_execute(const char *request_json, FMProgress callback, void *context);
 
+/* Source-bound path-prefix material replay. Reuses the execution stock/profile
+ * kernels and mesher. Explicit rapid/retract paths never remove material.
+ * Cursor is (pathIndex, pointIndex, fraction); optional initialStockState and
+ * fromPathIndex continue only at a completed-path checkpoint. JSON v1 response
+ * contains the remaining mesh/state, sampled collision rows and coverage.
+ * Cancellation/budgets fail explicitly, never return a completed part instead.
+ */
+char *fm_core_preview(const char *request_json, FMProgress callback, void *context);
+
 /*
  * A/C trunnion joint sampling request:
  * {"formatVersion":1,"start":[x,y,z,aDeg,cDeg],"end":[...],"toolLengthMM":10,"steps":40}

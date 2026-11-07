@@ -950,8 +950,14 @@ enum PiPAudioSystemEvents {
 @MainActor
 final class AVPiPAmbientPlayer: PiPAmbientPlaying {
     private var player: AVAudioPlayer?
+    private var silentPlayer: AVAudioPlayer?
+    private var gain: Float = 0
+    private var sourcePosition: TimeInterval = 0
+    private var mutedAnchor: TimeInterval?
 
-    var isPlaying: Bool { player?.isPlaying ?? false }
+    var isPlaying: Bool { gain == 0 ? silentPlayer?.isPlaying == true : player?.isPlaying == true }
+    var isAudibleSourcePlaying: Bool { player?.isPlaying == true }
+    var isSilentSourcePlaying: Bool { silentPlayer?.isPlaying == true }
 
     /// Location of the bundled loop for a sound choice. A missing asset is a
     /// real, reportable playback failure (the service surfaces
@@ -972,33 +978,82 @@ final class AVPiPAmbientPlayer: PiPAmbientPlaying {
         guard let url = Self.bundledURL(for: sound) else { return false }
         do {
             let next = try AVAudioPlayer(contentsOf: url)
+            let silence = try AVAudioPlayer(data: AmbientAudioSynthesizer.silentLoopWavData())
             next.numberOfLoops = -1
-            next.volume = Float(max(0, min(1, gain)))
+            silence.numberOfLoops = -1
+            self.gain = Self.normalizedGain(gain)
+            next.volume = self.gain
+            silence.volume = 0
             next.prepareToPlay()
-            let started = next.play()
-            player = started ? next : nil
+            silence.prepareToPlay()
+            player = next
+            silentPlayer = silence
+            let started = resume()
+            if !started { stop() }
             return started
         } catch {
-            player = nil
+            stop()
             return false
         }
     }
 
     func setGain(_ gain: Double) {
-        player?.volume = Float(max(0, min(1, gain)))
+        let next = Self.normalizedGain(gain)
+        let switchesSource = (next == 0) != (self.gain == 0)
+        let wasPlaying = isPlaying
+        if switchesSource { pause() }
+        self.gain = next
+        player?.volume = next
+        silentPlayer?.volume = 0
+        if switchesSource, wasPlaying { _ = resume() }
     }
 
     func pause() {
+        if gain == 0, let mutedAnchor {
+            sourcePosition = wrapped(sourcePosition + ProcessInfo.processInfo.systemUptime - mutedAnchor)
+        } else if gain != 0 {
+            sourcePosition = player?.currentTime ?? sourcePosition
+        }
+        mutedAnchor = nil
         player?.pause()
+        silentPlayer?.pause()
     }
 
     func resume() -> Bool {
-        player?.play() ?? false
+        guard let player, let silentPlayer else { return false }
+        if isPlaying { return true }
+        // At zero gain the non-silent asset is never played, even on routes
+        // that capture audio before the AVAudioPlayer volume stage.
+        if gain == 0 {
+            player.pause()
+            silentPlayer.volume = 0
+            let started = silentPlayer.play()
+            mutedAnchor = started ? ProcessInfo.processInfo.systemUptime : nil
+            return started
+        }
+        silentPlayer.pause()
+        player.currentTime = wrapped(sourcePosition)
+        player.volume = gain
+        return player.play()
     }
 
     func stop() {
         player?.stop()
+        silentPlayer?.stop()
         player = nil
+        silentPlayer = nil
+        gain = 0
+        sourcePosition = 0
+        mutedAnchor = nil
+    }
+
+    private static func normalizedGain(_ value: Double) -> Float {
+        value.isFinite ? Float(max(0, min(1, value))) : 0
+    }
+
+    private func wrapped(_ position: TimeInterval) -> TimeInterval {
+        guard let duration = player?.duration, duration > 0 else { return 0 }
+        return max(0, position.truncatingRemainder(dividingBy: duration))
     }
 }
 

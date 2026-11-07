@@ -118,7 +118,11 @@ nonisolated struct CADPresentationCamera: Equatable, Sendable {
     /// other one.
     var perspectiveCameraComponent: PerspectiveCameraComponent {
         PerspectiveCameraComponent(
-            near: 0.01, far: .infinity,
+            // A fitted millimetre-sized part can be only 4 mm from the
+            // camera. A fixed 10 mm near plane clips the entire model, even
+            // after Fit. Scale clipping with the same orbit distance used by
+            // the stage and exports; keep the existing limit for large scenes.
+            near: max(0.00001, min(0.01, distance * 0.01)), far: .infinity,
             fieldOfViewInDegrees: effectiveFovYDegrees,
             fieldOfViewOrientation: .vertical)
     }

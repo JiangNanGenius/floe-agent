@@ -61,7 +61,14 @@ public struct MediaPreparedAssetState: Sendable, Codable, Hashable {
     }
 }
 
+public struct MediaPreparedCaptionStyleState: Sendable, Codable, Hashable {
+    public var style: CaptionStyle?
+    public var revision: UInt64
+    public init(style: CaptionStyle?, revision: UInt64) { self.style = style; self.revision = revision }
+}
+
 public enum MediaPreparedObjectState: Sendable, Codable, Hashable {
+    case captionStyle(MediaPreparedCaptionStyleState)
     case asset(MediaPreparedAssetState)
     case layer(MediaPreparedLayer)
     case track(MediaPreparedTrackMetadata)
@@ -370,6 +377,21 @@ public enum MediaPreparedEngine {
     private static func apply(_ action: MediaPreparedAction,
                               to document: inout MediaPreparedDocument) throws -> [MediaPreparedObjectChange] {
         switch action {
+        case .setCaptionStyle(let expected, let style):
+            guard document.kind == .video else {
+                throw MediaPreparedCoreError.invalidOperation("caption style requires a video document")
+            }
+            let ref = MediaPreparedObjectRef(kind: .captionStyle, id: document.id)
+            let revision = document.trackGraph.captionStyleRevision ?? 0
+            try requireRevision(revision, expected, ref: ref)
+            if let style { try MediaPreparedIntegrity.validateCaptionStyle(style) }
+            guard document.trackGraph.captionStyle != style else { return [] }
+            guard revision < UInt64.max - 1 else { throw MediaPreparedCoreError.limitsExceeded("caption style generation") }
+            let before = MediaPreparedCaptionStyleState(style: document.trackGraph.captionStyle, revision: revision)
+            document.trackGraph.captionStyle = style
+            document.trackGraph.captionStyleRevision = revision + 1
+            return [.init(ref: ref, before: .captionStyle(before),
+                          after: .captionStyle(.init(style: style, revision: revision + 1)))]
         case .insertAsset(let asset):
             guard document.assets.count < 4_096, document.asset(asset.id) == nil,
                   !asset.relativePath.isEmpty else {
@@ -726,6 +748,14 @@ public enum MediaPreparedEngine {
     private static func restore(_ change: MediaPreparedObjectChange,
                                 in document: inout MediaPreparedDocument) throws {
         switch change.ref.kind {
+        case .captionStyle:
+            guard change.ref.id == document.id, case .captionStyle(let before)? = change.before else {
+                throw MediaPreparedCoreError.invalidOperation("caption style journal identity")
+            }
+            let revision = document.trackGraph.captionStyleRevision ?? 0
+            guard revision < UInt64.max - 1 else { throw MediaPreparedCoreError.limitsExceeded("caption style generation") }
+            document.trackGraph.captionStyle = before.style
+            document.trackGraph.captionStyleRevision = revision + 1
         case .asset:
             if let before = change.before {
                 guard case .asset(let state) = before else {
@@ -1000,6 +1030,8 @@ public enum MediaPreparedEngine {
             return false
         case (.some(let before), .some(let after)):
             switch (before, after) {
+            case (.captionStyle(let lhs), .captionStyle(let rhs)):
+                return lhs.style == rhs.style
             case (.layer(let lhs), .layer(let rhs)):
                 return sameLayerIgnoringRevision(lhs, rhs)
             case (.track(let lhs), .track(let rhs)):
@@ -1021,6 +1053,9 @@ public enum MediaPreparedEngine {
     private static func currentState(of ref: MediaPreparedObjectRef,
                                      in document: MediaPreparedDocument) -> MediaPreparedObjectState? {
         switch ref.kind {
+        case .captionStyle:
+            guard ref.id == document.id, document.kind == .video else { return nil }
+            return .captionStyle(.init(style: document.trackGraph.captionStyle, revision: document.trackGraph.captionStyleRevision ?? 0))
         case .asset:
             return document.asset(ref.id).map { .asset(.init(reference: $0, revision: document.assetRevisions?[ref.id] ?? 0)) }
         case .layer:
@@ -1042,6 +1077,7 @@ public enum MediaPreparedEngine {
                                      _ expected: MediaPreparedObjectState,
                                      ref: MediaPreparedObjectRef) -> Bool {
         switch (actual, expected) {
+        case (.captionStyle(let lhs), .captionStyle(let rhs)): return lhs == rhs
         case (.asset(let lhs), .asset(let rhs)): return lhs == rhs
         case (.layer(let lhs), .layer(let rhs)):
             return lhs == rhs
@@ -1062,7 +1098,7 @@ public enum MediaPreparedEngine {
     private static func stateKindMatches(_ lhs: MediaPreparedObjectState,
                                          _ rhs: MediaPreparedObjectState) -> Bool {
         switch (lhs, rhs) {
-        case (.asset, .asset), (.layer, .layer), (.track, .track), (.clip, .clip): return true
+        case (.captionStyle, .captionStyle), (.asset, .asset), (.layer, .layer), (.track, .track), (.clip, .clip): return true
         default: return false
         }
     }

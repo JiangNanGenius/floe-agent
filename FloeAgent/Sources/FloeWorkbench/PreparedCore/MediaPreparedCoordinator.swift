@@ -183,7 +183,7 @@ public actor MediaPreparedCoordinator {
             }
             if actor == .model {
                 switch state {
-                case .asset: break
+                case .asset, .captionStyle: break
                 case .layer(let layer):
                     if layer.isLocked { throw MediaPreparedCoreError.lockedObject(target) }
                 case .track(let metadata):
@@ -214,6 +214,7 @@ public actor MediaPreparedCoordinator {
         var assetIDs = Set<UUID>()
         for target in targets {
             switch target.kind {
+            case .captionStyle: break
             case .asset: assetIDs.insert(target.id)
             case .layer:
                 if let layer = document.layer(target.id), case .raster(let raster) = layer.content,
@@ -482,6 +483,9 @@ public actor MediaPreparedCoordinator {
     private func state(of ref: MediaPreparedObjectRef,
                        in document: MediaPreparedDocument) -> MediaPreparedObjectState? {
         switch ref.kind {
+        case .captionStyle:
+            guard ref.id == document.id, document.kind == .video else { return nil }
+            return .captionStyle(.init(style: document.trackGraph.captionStyle, revision: document.trackGraph.captionStyleRevision ?? 0))
         case .asset:
             return document.asset(ref.id).map { .asset(.init(reference: $0, revision: document.assetRevisions?[ref.id] ?? 0)) }
         case .layer:
@@ -517,6 +521,7 @@ public actor MediaPreparedCoordinator {
         }
         for operation in operations {
             switch operation.action {
+            case .setCaptionStyle: target(.captionStyle, document.id)
             case .insertAsset(let asset): introduced(.asset, asset.id)
             case .replaceAsset(let expected, _, _): target(.asset, expected.id)
             case .insertLayer(let layer, let parentID, _):

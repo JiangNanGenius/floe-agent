@@ -6,6 +6,39 @@ import AVFoundation
 
 @MainActor
 final class PiPAudioBackendAppTests: XCTestCase {
+    /// Zero gain must select actual zero-valued PCM, not merely turn down a
+    /// non-silent track. This test never starts an audible source.
+    func testZeroGainUsesSilentSourceAcrossPauseAndResume() async throws {
+        let data = AmbientAudioSynthesizer.silentLoopWavData()
+        XCTAssertEqual(data.count, 44 + 44_100 * 2)
+        XCTAssertTrue(data.dropFirst(44).allSatisfy { $0 == 0 })
+        let session = AVAudioSession.sharedInstance()
+        let previous = (session.category, session.mode, session.categoryOptions)
+        let backend = AVPiPAmbientPlayer()
+        defer {
+            backend.stop()
+            try? session.setActive(false, options: .notifyOthersOnDeactivation)
+            try? session.setCategory(previous.0, mode: previous.1, options: previous.2)
+        }
+        try session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
+        try session.setActive(true)
+        XCTAssertTrue(backend.play(sound: .meditation, gain: 0))
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertTrue(backend.isPlaying)
+        XCTAssertTrue(backend.isSilentSourcePlaying)
+        XCTAssertFalse(backend.isAudibleSourcePlaying)
+        backend.pause()
+        XCTAssertFalse(backend.isPlaying)
+        backend.setGain(0)
+        XCTAssertTrue(backend.resume())
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertTrue(backend.isSilentSourcePlaying)
+        XCTAssertFalse(backend.isAudibleSourcePlaying)
+        backend.stop()
+        XCTAssertFalse(backend.isSilentSourcePlaying)
+        XCTAssertFalse(backend.isAudibleSourcePlaying)
+    }
+
     /// Every bundled ambient loop is a real App resource: decode each one
     /// through Apple's audio stack, prove it is finite, non-silent and
     /// bounded, and measure that the wrap step stays inside that loop's

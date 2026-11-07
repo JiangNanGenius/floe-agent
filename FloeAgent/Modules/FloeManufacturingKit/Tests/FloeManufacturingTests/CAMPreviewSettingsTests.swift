@@ -10,6 +10,7 @@ final class CAMPreviewSettingsTests:XCTestCase {
         XCTAssertEqual(state.displayScope,.machining);XCTAssertEqual(state.structureDisplay,.hidden)
         XCTAssertEqual(state.spindleDisplay,.hidden);XCTAssertEqual(state.holderDisplay,.hidden)
         XCTAssertEqual(state.workholdingDisplay,.translucent)
+        XCTAssertTrue(state.stopOnCollision,"old saved previews default to pausing for an observed interference")
         XCTAssertEqual(try JSONDecoder().decode(CAMPreviewSettings.self,from:JSONEncoder().encode(state)),state)
         XCTAssertThrowsError(try JSONDecoder().decode(CAMPreviewSettings.self,from:Data(#"{"transparency":1.2}"#.utf8)))
     }
@@ -17,6 +18,7 @@ final class CAMPreviewSettingsTests:XCTestCase {
         let study = ManufacturingStudy.shaft(),artifact = try NativeManufacturingEngine().compute(study,control:.init()),source = CAMPreviewSource.study(study,artifact)
         let identity = try CAMPreviewProgram(source:source).sourceKey
         var state = CAMPreviewSettings();state.position = 12;state.applyScope(.machine)
+        state.stopOnCollision = false
         state.transparency = 0.8;state.spindleDisplay = .translucent;state.holderDisplay = .hidden
         XCTAssertEqual(state.opacity(.translucent),0.2,accuracy:1e-12)
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

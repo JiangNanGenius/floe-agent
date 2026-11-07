@@ -83,6 +83,24 @@ public enum ManufacturingDisplaySurface {
         public let normals:[[Double]]
         public let triangles:[[Int]]
     }
+    /// Extrude the actual convex insert outline. Separate cap/side normals
+    /// preserve a rhombus's planar faces and sharp edges, while adjacent small
+    /// circle segments share smooth radial normals. Never bevel the polygon.
+    public static func extrudedOutline(_ raw:[[Double]],bottom:Double,top:Double)->ShadedMesh? {
+        guard (3...256).contains(raw.count),raw.allSatisfy({ $0.count == 2 && $0.allSatisfy(\.isFinite) }),bottom.isFinite,top.isFinite,top>bottom else { return nil }
+        var outline = raw
+        if let a = outline.first,let b = outline.last,hypot(a[0]-b[0],a[1]-b[1])<1e-5 { outline.removeLast() }
+        guard outline.count>=3 else { return nil }
+        let area = outline.indices.reduce(0.0) { total,i in let j = (i+1)%outline.count;return total+outline[i][0]*outline[j][1]-outline[j][0]*outline[i][1] }
+        guard abs(area)>1e-12 else { return nil }
+        if area<0 { outline.reverse() }
+        let count = outline.count
+        let vertices = [bottom,top].flatMap { y in outline.map { [$0[0],y,$0[1]] } }
+        var faces = [[Int]]()
+        for i in 1..<(count-1) { faces += [[0,i,i+1],[count,count+i+1,count+i]] }
+        for i in 0..<count { let j = (i+1)%count;faces += [[i,count+i,j],[j,count+i,count+j]] }
+        return shadedMesh(vertices,triangles:faces,smoothing:true)
+    }
     /// Split render vertices at sharp edges. Original triangle positions, flat faces,
     /// dimensions and topology stay exact; never share an averaged normal across a
     /// right-angle corner. The 35 degree crease threshold only controls lighting.

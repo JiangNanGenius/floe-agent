@@ -12,6 +12,7 @@ import FloeCAD
         let url = directory.appendingPathComponent("Document.floecad")
         if let existing = documents[id], !existing.isClosed {
             guard existing.url == url else { throw PersonalContentError.changedDocument }
+            CADDrawingModelBridge.configure(existing)
             return existing
         }
         guard opening.insert(id).inserted else { throw PersonalFileActionError.busy }
@@ -19,18 +20,23 @@ import FloeCAD
         let value = try await FloeCADDocument.open(at: url)
         do { try PersonalLibraryFileActions.requireAvailable(id) }
         catch { value.close(); throw error }
+        // Personal 2D/3D editors share the same drawing import/export bridge
+        // as workspace CAD, including calls made before a view appears.
+        CADDrawingModelBridge.configure(value)
         documents[id] = value; return value
     }
     static func prepareForLibraryMove(id: UUID, directory: URL) throws {
         guard !opening.contains(id) else { throw PersonalFileActionError.busy }
-        guard let document = documents[id] else { return }
-        guard document.url.standardizedFileURL.resolvingSymlinksInPath()
+        if let document = documents[id] {
+            guard document.url.standardizedFileURL.resolvingSymlinksInPath()
                 == directory.appendingPathComponent("Document.floecad").standardizedFileURL.resolvingSymlinksInPath() else {
-            throw PersonalContentError.changedDocument
-        }
+                throw PersonalContentError.changedDocument
+            }
         // FloeCAD.close already cancels owned services and revokes the store
         // after draining its commit fence. Do not close another live editor.
-        guard document.isClosed else { throw PersonalFileActionError.closeFirst }
+            guard document.isClosed else { throw PersonalFileActionError.closeFirst }
+        }
+        try ManufacturingSessions.prepareForCADMove(directory: directory.appendingPathComponent("Manufacturing", isDirectory: true))
         documents.removeValue(forKey: id)
     }
 }

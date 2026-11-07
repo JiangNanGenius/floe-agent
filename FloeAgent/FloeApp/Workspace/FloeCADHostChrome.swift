@@ -36,15 +36,26 @@ struct FloeCADHostChrome: ViewModifier {
     var workspaceID: UUID? = nil
     var conversationID: UUID? = nil
     var externalCoverPresented = false
+    var manufacturingAvailable = true
+    var onPreparePrint: (() -> Void)? = nil
 
+    @State private var filePresentation = CADFilePresentationLease()
     @State private var saving = false
     @State private var saveOutcome: String?
     @State private var fullScreen = false
     @State private var building = false
+    @State private var printAfterFullscreen = false
 
     func body(content: Content) -> some View {
         content
-            .task(id:ObjectIdentifier(document)) { CADDrawingModelBridge.configure(document) }
+            .onAppear { filePresentation.attach(document) }
+            .onDisappear {
+                if !fullScreen && !building && !externalCoverPresented { filePresentation.release() }
+            }
+            .task(id:ObjectIdentifier(document)) {
+                filePresentation.attach(document)
+                CADDrawingModelBridge.configure(document)
+            }
             // While the fullscreen cover is presented, the editor underneath
             // is TRANSIENTLY covered — its disappearance is not a close, so
             // the close-time preview flush is suppressed (T7T). A real close
@@ -78,7 +89,9 @@ struct FloeCADHostChrome: ViewModifier {
             .fullScreenCover(isPresented:$building) {
                 CADBuildingWorkspaceView(document:document,root:workspaceRoot,workspaceID:workspaceID,conversationID:conversationID)
             }
-            .fullScreenCover(isPresented: $fullScreen) {
+            .fullScreenCover(isPresented: $fullScreen, onDismiss: {
+                if printAfterFullscreen { printAfterFullscreen = false; onPreparePrint?() }
+            }) {
                 NavigationStack {
                     // The cover's editor is a re-presentation of the SAME live
                     // session: its dismissal returns to the host editor, so it
@@ -87,6 +100,9 @@ struct FloeCADHostChrome: ViewModifier {
                         document: document,
                         canvasActions: canvasActions,
                         onSelectionContextChange: onSelectionContextChange)
+                        .modifier(CADManufacturingEntry(document: document,
+                            available: manufacturingAvailable, offered: onPreparePrint != nil,
+                            onPreparePrint: { printAfterFullscreen = true; fullScreen = false }))
                         .environment(\.cadWorkbenchTransientlyCovered, true)
                         .navigationTitle(document.name)
                         .navigationBarTitleDisplayMode(.inline)

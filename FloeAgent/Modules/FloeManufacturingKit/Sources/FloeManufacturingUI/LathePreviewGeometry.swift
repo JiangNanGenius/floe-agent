@@ -42,30 +42,15 @@ import simd
     }
     static func signature(_ tool:CAMPreviewTool)->String {
         let t = tool.definition,s = tool.insertSetup
-        return "\(tool.turning):\(t?.id ?? "turning"):\(t?.kind ?? ""):\(t?.diameterMM ?? 0):\(t?.cuttingLengthMM ?? 0):\(t?.tipAngleDegrees ?? 0):\(tool.gaugeLengthMM ?? 0):\(s?.insertShape ?? "D"):\(s?.insertEdgeLengthMM ?? 0):\(s?.insertRotationDegrees ?? 0)"
+        return "\(tool.turning):\(t?.id ?? "turning"):\(t?.kind ?? ""):\(t?.diameterMM ?? 0):\(t?.cuttingLengthMM ?? 0):\(t?.tipAngleDegrees ?? 0):\(tool.gaugeLengthMM ?? 0):\(s?.insertShape ?? "D"):\(s?.insertEdgeLengthMM ?? 0):\(s?.insertRotationDegrees ?? 0):\(tool.turningApproach?.rawValue ?? "positiveZ")"
     }
     static func tool(_ tool:CAMPreviewTool)->SCNNode {
         if tool.turning { return turning(tool) }
         return milling(tool)
     }
     private static func plate(_ input:[[Double]],bottom:Double,top:Double,material:SCNMaterial)->SCNNode {
-        let area = input.indices.reduce(0.0) { total,i in let j = (i+1)%input.count;return total+input[i][0]*input[j][1]-input[j][0]*input[i][1] }
-        let outline = area<0 ? Array(input.reversed()) : input
-        var vertices = [SCNVector3](),indices = [Int32]()
-        for y in [bottom,top] { vertices += outline.map { .init($0[0],y,$0[1]) } }
-        let count = outline.count
-        if count>=3 {
-            for i in 1..<(count-1) { indices += [0,Int32(i),Int32(i+1),Int32(count),Int32(count+i+1),Int32(count+i)] }
-            for i in 0..<count { let j = (i+1)%count;indices += [Int32(i),Int32(count+i),Int32(j),Int32(j),Int32(count+i),Int32(count+j)] }
-        }
-        var normals = [SIMD3<Float>](repeating:.zero,count:vertices.count)
-        for i in stride(from:0,to:indices.count,by:3) {
-            let ids = [Int(indices[i]),Int(indices[i+1]),Int(indices[i+2])],p = ids.map { vertices[$0] }
-            let n = simd_cross(SIMD3(p[1].x-p[0].x,p[1].y-p[0].y,p[1].z-p[0].z),SIMD3(p[2].x-p[0].x,p[2].y-p[0].y,p[2].z-p[0].z))
-            for id in ids { normals[id] += n }
-        }
-        let ns = normals.map { let n = simd_length_squared($0)>1e-16 ? simd_normalize($0):SIMD3<Float>(0,1,0);return SCNVector3(n.x,n.y,n.z) }
-        let blade = SCNGeometry(sources:[SCNGeometrySource(vertices:vertices),SCNGeometrySource(normals:ns)],elements:[SCNGeometryElement(indices:indices,primitiveType:.triangles)])
+        guard let mesh = ManufacturingDisplaySurface.extrudedOutline(input,bottom:bottom,top:top) else { return SCNNode() }
+        let blade = SCNGeometry(sources:[SCNGeometrySource(vertices:mesh.vertices.map { .init($0[0],$0[1],$0[2]) }),SCNGeometrySource(normals:mesh.normals.map { .init($0[0],$0[1],$0[2]) })],elements:[SCNGeometryElement(indices:mesh.triangles.flatMap { $0.map(Int32.init) },primitiveType:.triangles)])
         blade.materials = [material];return SCNNode(geometry:blade)
     }
     private static func turning(_ tool:CAMPreviewTool)->SCNNode {
@@ -123,13 +108,17 @@ import simd
     }
     private static func insertOutline(_ setup:TurningSetup)->[[Double]] {
         let l = setup.insertEdgeLengthMM
+        let raw:[[Double]]
         if setup.insertShape == "R" {
-            return (0...96).map { i in let a = -Double.pi/2+Double(i)*2*Double.pi/96;return [l/2+l/2*sin(a),l/2*cos(a)] }
-        }
+            // Same circle centre and tip-origin as the native receipt, including
+            // rotation. The old fallback used a different centre and skipped it.
+            raw = (0..<180).map { i in let a = -Double.pi/2+Double(i)*2*Double.pi/180;return [l/2*cos(a),l/2+l/2*sin(a)] }
+        } else {
         let shapeAngles:[String:Double] = ["C":80,"D":55,"V":35,"S":90,"T":60]
         let angle = shapeAngles[setup.insertShape] ?? 55
         let theta = angle*Double.pi/360,x = l*cos(theta),z = l*sin(theta)
-        let raw:[[Double]] = setup.insertShape == "T" ? [[0,0],[x,-z],[x,z]] : [[0,0],[x,-z],[2*x,0],[x,z]]
+        raw = setup.insertShape == "T" ? [[0,0],[x,-z],[x,z]] : [[0,0],[x,-z],[2*x,0],[x,z]]
+        }
         let a = setup.insertRotationDegrees*Double.pi/180,c = cos(a),s = sin(a)
         return raw.map { [c*$0[0]-s*$0[1],s*$0[0]+c*$0[1]] }
     }

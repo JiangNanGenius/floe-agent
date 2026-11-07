@@ -1,6 +1,210 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "cad.sculpt.allowConversion": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Convert the selected solid to a mesh"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将所选实体转为网格"
+          }
+        }
+      }
+    },
+    "cad.sculpt.captureAttributes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Meshes with UVs or face textures cannot be prepared yet. The source is kept."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂不支持将带 UV 或面纹理的网格转为可雕刻网格，原对象会保留。"
+          }
+        }
+      }
+    },
+    "cad.sculpt.captureLimit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This mesh exceeds the preparation limit. Use Mesh → Simplify before sculpting."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此网格超出雕刻准备上限，请先使用网格中的简化。"
+          }
+        }
+      }
+    },
+    "cad.sculpt.chooseBody": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a body"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择对象"
+          }
+        }
+      }
+    },
+    "cad.sculpt.conversionNeeded": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable mesh conversion to prepare this solid; Undo can restore it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用网格转换后可准备此实体，可通过撤销恢复。"
+          }
+        }
+      }
+    },
+    "cad.sculpt.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import a mesh or create a body to start sculpting."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先导入网格或创建对象，再开始雕刻。"
+          }
+        }
+      }
+    },
+    "cad.sculpt.openSurface": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open CAD surfaces cannot be prepared for sculpting."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂不支持将开放 CAD 曲面转为可雕刻网格。"
+          }
+        }
+      }
+    },
+    "cad.sculpt.prepareFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't prepare this body for sculpting."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法将此对象准备为可雕刻网格。"
+          }
+        }
+      }
+    },
+    "cad.sculpt.prepareHelp": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imported meshes are prepared for sculpting first. Apple Pencil pressure controls the brush; two fingers move the view."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入的网格会先转为可雕刻网格。Apple Pencil 笔压控制笔刷，双指移动视图。"
+          }
+        }
+      }
+    },
+    "cad.sculpt.prepareStart": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prepare and start sculpting"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "准备并开始雕刻"
+          }
+        }
+      }
+    },
+    "cad.sculpt.serviceUnavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sculpting is unavailable for this document. Reopen it and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此文档暂时无法雕刻，请重新打开后再试。"
+          }
+        }
+      }
+    },
+    "cad.sculpt.sourceChanged": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The selected body changed. Choose it again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所选对象已变化，请重新选择。"
+          }
+        }
+      }
+    },
     "settings.licenses.document.chemistry.title": {
       "localizations": {
         "en": {
@@ -49,23 +253,23 @@
         }
       }
     },
-  "space.title": {
-    "extractionState": "manual",
-    "localizations": {
-      "en": {
-        "stringUnit": {
-          "state": "translated",
-          "value": "Space"
-        }
-      },
-      "zh-Hans": {
-        "stringUnit": {
-          "state": "translated",
-          "value": "空间"
+    "space.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Space"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "空间"
+          }
         }
       }
-    }
-  },
+    },
     "shortcuts.note.entity": {
       "extractionState": "manual",
       "localizations": {
@@ -144446,6 +144650,396 @@
           "stringUnit": {
             "state": "translated",
             "value": "请在图纸工作区按每页最多 %d 个源构件选择出图范围。"
+          }
+        }
+      }
+    },
+    "cad.ui.constraint.settings": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Constraint Settings"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "约束设置"
+          }
+        }
+      }
+    },
+    "cad.ui.constraint.disconnect": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disconnect"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "断开"
+          }
+        }
+      }
+    },
+    "cad.ui.constraint.hint.pointsOrMeetingLines": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select two points, a point and line, or meeting lines"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择两个点、点和线，或相接的线"
+          }
+        }
+      }
+    },
+    "cad.ui.constraint.hint.linesOrPoints": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select lines or two points"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择线或两个点"
+          }
+        }
+      }
+    },
+    "cad.ui.constraint.hint.twoOrMoreLines": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select two or more lines"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择两条或更多的线"
+          }
+        }
+      }
+    },
+    "cad.ui.constraint.hint.twoLines": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select two lines"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择两条线"
+          }
+        }
+      }
+    },
+    "cad.ui.constraint.hint.lineAndCircleOrTwoCircles": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a line and circle/arc, or two circles"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择线与圆或圆弧，或两个圆"
+          }
+        }
+      }
+    },
+    "cad.ui.constraint.hint.geometryOrPoint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select geometry or a point"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择几何图形或一个点"
+          }
+        }
+      }
+    },
+    "cad.ui.constraint.hint.twoCircularEntities": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select two circular entities"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择两个圆或圆弧"
+          }
+        }
+      }
+    },
+    "cad.ui.constraint.hint.pointAndLine": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select one point and one line"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择一个点和一条线"
+          }
+        }
+      }
+    },
+    "cad.ui.constraint.hint.symmetric": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select two lines or circles, or two points and an axis line"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择两条线或两个圆，或两个点与一条轴线"
+          }
+        }
+      }
+    },
+    "cad.ui.rectangle.diagonal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagonal Rectangle"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对角矩形"
+          }
+        }
+      }
+    },
+    "cad.ui.rectangle.center": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Center Rectangle"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中心矩形"
+          }
+        }
+      }
+    },
+    "cad.ui.rectangle.threePoint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Three-Point Rectangle"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "三点矩形"
+          }
+        }
+      }
+    },
+    "cad.ui.rectangle.instruction.baseline": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Draw the baseline"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "绘制底边"
+          }
+        }
+      }
+    },
+    "cad.ui.rectangle.instruction.height": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Draw the perpendicular height"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "绘制垂直高度"
+          }
+        }
+      }
+    },
+    "cad.ui.rectangle.instruction.center": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Draw from center to corner"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从中心绘制到角点"
+          }
+        }
+      }
+    },
+    "cad.ui.rectangle.instruction.diagonal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Draw between opposite corners"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在对角点之间绘制"
+          }
+        }
+      }
+    },
+    "cad.ui.rectangle.cancel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel Rectangle"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消绘制矩形"
+          }
+        }
+      }
+    },
+    "cad.ui.transform.moveRotate": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move/Rotate"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移动／旋转"
+          }
+        }
+      }
+    },
+    "cad.ui.measure.length": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Length"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "长度"
+          }
+        }
+      }
+    },
+    "cad.ui.measure.totalLength": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Total Length"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "总长度"
+          }
+        }
+      }
+    },
+    "cad.import.drawingUnavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drawing import is unavailable. Reopen this work and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法导入图纸。请重新打开作品后再试。"
           }
         }
       }
