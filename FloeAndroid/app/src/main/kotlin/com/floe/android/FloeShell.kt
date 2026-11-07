@@ -217,7 +217,8 @@ private fun FloeShellContent(
     /** The one visible-selection write for every commit path: the live
      * surface always updates; the persisted key follows ONLY for durable/
      * ordinary targets, so a live temporary id never reaches saved state. */
-    fun commitVisibleSelection(next: SidebarSelection) {
+    fun commitVisibleSelection(next: SidebarSelection, componentReturnID: String? = null) {
+        if (selection != next) application?.componentDocumentReturns?.clear(exceptID = componentReturnID)
         if (selection != next) application?.cancelNotesPasswordPrompt()
         if (next is SidebarSelection.Conversation && selection !is SidebarSelection.Conversation) {
             conversationReturnTarget = selection
@@ -237,6 +238,10 @@ private fun FloeShellContent(
     var settingsSectionKey by rememberSaveable { mutableStateOf("") }
     var previewVisible by rememberSaveable { mutableStateOf(false) }
     var inspectorRoute by rememberSaveable { mutableStateOf<String?>(null) }
+    fun dismissInspector() {
+        application?.componentDocumentReturns?.clear()
+        inspectorRoute = null
+    }
     // Conversation artifact direct preview (typed full-window document over
     // the conversation that owns the link). The host publishes a one-shot
     // request only after its bindExisting owner proof; the shell mirrors it
@@ -531,6 +536,7 @@ private fun FloeShellContent(
         val requestedInspector by runtimeHost.conversations.inspectorRequest.collectAsState()
         LaunchedEffect(requestedInspector) {
             requestedInspector?.let { (content, conversationId) ->
+                application?.componentDocumentReturns?.clear()
                 runtimeHost.conversations.inspectorRequest.value = null
                 inspectorRoute = encodeInspectorRoute(
                     InspectorRoute(content = mapInspectorContent(content), conversationId = conversationId),
@@ -544,6 +550,7 @@ private fun FloeShellContent(
         val requestedArtifactPreview by runtimeHost.conversations.artifactPreviewRequest.collectAsState()
         LaunchedEffect(requestedArtifactPreview) {
             requestedArtifactPreview?.let { request ->
+                application?.componentDocumentReturns?.clear()
                 runtimeHost.conversations.artifactPreviewRequest.value = null
                 artifactTaskId = request.taskID
                 artifactWorkspaceId = request.workspaceID
@@ -662,11 +669,13 @@ private fun FloeShellContent(
             onCommitted: (() -> Unit)? = null,
             onRefused: (() -> Unit)? = null,
             mayCommit: () -> Boolean = { true },
+            componentReturnID: String? = null,
         ) {
             if (!mayCommit()) {
                 onRefused?.invoke()
                 return
             }
+            application?.componentDocumentReturns?.clear(exceptID = componentReturnID)
             officeNavigationGeneration++
             val navigationGeneration = officeNavigationGeneration
             val previousSelectionKey = selection.key
@@ -684,6 +693,7 @@ private fun FloeShellContent(
                     drawerOpen = false
                     settingsSectionKey =
                         com.floe.android.design.FloeSettingsSection.SKILLS.name
+                    application?.componentDocumentReturns?.clear()
                     settingsVisible = true
                     onCommitted?.invoke()
                 }
@@ -702,7 +712,7 @@ private fun FloeShellContent(
                             selection.key == previousSelectionKey && mayCommit()
                         ) {
                             runtimeHost?.home?.onNavigation(target)
-                            commitVisibleSelection(target)
+                            commitVisibleSelection(target, componentReturnID)
                             if (taskCenterSchedulesOpenOnCommit(target, openSchedules)) {
                                 taskCenterSchedulesToken++
                             }
@@ -718,7 +728,7 @@ private fun FloeShellContent(
                 }
                 else -> {
                     runtimeHost?.home?.onNavigation(target)
-                    commitVisibleSelection(target)
+                    commitVisibleSelection(target, componentReturnID)
                     if (taskCenterSchedulesOpenOnCommit(target, openSchedules)) {
                         taskCenterSchedulesToken++
                     }
@@ -728,6 +738,52 @@ private fun FloeShellContent(
                     // recreation, background and lock never reach this path.
                     inspectorRoute = null
                     onCommitted?.invoke()
+                }
+            }
+        }
+
+        if (application != null && runtimeHost != null) {
+            val returnReadiness by runtimeHost.readiness.collectAsState()
+            val cadInstall by application.cadComponent.state.collectAsState()
+            val officeInstall by application.officeComponent.state.collectAsState()
+            LaunchedEffect(returnReadiness.storeReady, cadInstall.phase, officeInstall.phase, consumesExternalRoutes) {
+                if (!returnReadiness.storeReady || !consumesExternalRoutes) return@LaunchedEffect
+                val returns = application.componentDocumentReturns
+                if (returns.restoring.value != null) return@LaunchedEffect
+                val pending = returns.candidate { module ->
+                    when (module) {
+                        "cadpreview" -> com.floe.android.host.cadcomponent.CadComponentController.installed(application)
+                        "officepreview" -> com.floe.android.host.officecomponent.OfficeComponentController.installed(application)
+                        else -> false
+                    }
+                } ?: return@LaunchedEffect
+                val navigationAtStart = officeNavigationGeneration
+                fun current() = returns.isCurrent(pending.id) && consumesExternalRoutes &&
+                    shellLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                    officeNavigationGeneration == navigationAtStart
+                try {
+                    val bound = kotlinx.coroutines.withContext(runtimeHost.ioDispatcher) {
+                        com.floe.android.host.G04WorkspaceBridgeClient.bindExisting(runtimeHost, pending.taskID, ::current)
+                    }
+                    if (!current()) return@LaunchedEffect
+                    check(bound.workspaceID.equals(pending.workspaceID, true))
+                    navigateTo(SidebarSelection.Conversation(pending.taskID), false,
+                        componentReturnID = pending.id,
+                        mayCommit = { returns.isCurrent(pending.id) && shellLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) },
+                        onCommitted = {
+                            if (returns.beginRestore(pending)) {
+                                settingsVisible = false
+                                inspectorRoute = encodeInspectorRoute(InspectorRoute(InspectorContent.WORKSPACE_FILES, pending.taskID))
+                            }
+                        },
+                        onRefused = { returns.discard(pending.id) })
+                } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (_: Exception) {
+                    if (returns.isCurrent(pending.id)) {
+                        returns.discard(pending.id)
+                        android.widget.Toast.makeText(application, R.string.preview_components_return_unavailable,
+                            android.widget.Toast.LENGTH_LONG).show()
+                    }
                 }
             }
         }
@@ -940,6 +996,7 @@ private fun FloeShellContent(
                 onOpenSettings = {
                     drawerOpen = false
                     settingsSectionKey = ""
+                    application?.componentDocumentReturns?.clear()
                     settingsVisible = true
                 },
                 onCollapseRequested = if (twoColumn && !inDrawer) {
@@ -949,6 +1006,7 @@ private fun FloeShellContent(
                 onOpenDocument = officePreviews?.let { controller ->
                     {
                         val navigation = ++officeNavigationGeneration
+                        application?.componentDocumentReturns?.clear()
                         drawerOpen = false
                         scope.launch {
                             val temporary = runtimeHost?.conversations?.activeTemporarySession()
@@ -1077,10 +1135,11 @@ private fun FloeShellContent(
                     },
                     compact = !twoColumn,
                     inspectorRoute = route,
-                    onInspectorDismiss = { inspectorRoute = null },
+                    onInspectorDismiss = { dismissInspector() },
                     onOpenSettingsSection = { sectionKey ->
                         drawerOpen = false
                         settingsSectionKey = sectionKey
+                        application?.componentDocumentReturns?.clear()
                         settingsVisible = true
                     },
                     runtimeHost = runtimeHost,
@@ -1132,7 +1191,7 @@ private fun FloeShellContent(
                                     .width(FloeLayout.InspectorIdealWidth)
                                     .fillMaxHeight(),
                             ) {
-                                FloeInspectorPane(route = route, onDismiss = { inspectorRoute = null }, runtimeHost = runtimeHost)
+                                FloeInspectorPane(route = route, onDismiss = { dismissInspector() }, runtimeHost = runtimeHost)
                             }
                         }
                     }
@@ -1183,14 +1242,14 @@ private fun FloeShellContent(
                     Modifier
                         .fillMaxSize()
                         .background(Floe.colors.label.copy(alpha = 0.18f))
-                        .clickable { inspectorRoute = null },
+                        .clickable { dismissInspector() },
                 )
                 Box(
                     Modifier
                         .widthIn(max = overlayMaxWidthDp)
                         .fillMaxHeight()
                         .background(Floe.colors.readingSurface),
-                ) { FloeInspectorPane(route = route, onDismiss = { inspectorRoute = null }, runtimeHost = runtimeHost) }
+                ) { FloeInspectorPane(route = route, onDismiss = { dismissInspector() }, runtimeHost = runtimeHost) }
             }
         }
 
@@ -1262,6 +1321,7 @@ private fun FloeShellContent(
         C07EntryFlowSurface(
             onOpenSettingsSection = { key ->
                 settingsSectionKey = key
+                application?.componentDocumentReturns?.clear()
                 settingsVisible = true
             },
             modifier = Modifier

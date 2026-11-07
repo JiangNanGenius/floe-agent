@@ -125,7 +125,11 @@ internal fun C04CadViewerDestination(
     } else {
         // First use: the signed component installs on demand (progress,
         // cancel and system confirmation live in the shared component UI).
-        LaunchedEffect(request.token) { cadComponent.requestInstall() }
+        LaunchedEffect(request.token) {
+            (context.applicationContext as FloeApplication).componentDocumentReturns.prepare(
+                "cadpreview", request.taskID, request.workspaceID, request.path)
+            cadComponent.requestInstall()
+        }
     }
     DisposableEffect(request.token) {
         onDispose {

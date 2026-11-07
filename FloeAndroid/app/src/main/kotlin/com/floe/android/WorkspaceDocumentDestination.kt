@@ -362,6 +362,7 @@ internal fun WorkspaceDocumentDestination(
         }
     }
     val closePreview: () -> Unit = {
+        (uiContext.applicationContext as? FloeApplication)?.componentDocumentReturns?.clear()
         if (previewKind != null) host.workspaceDocumentPreview.close(request.token)
     }
     val backToFiles: () -> Unit = {

@@ -614,6 +614,8 @@
     <string name="preview_components_cad">CAD 与三维预览</string>
     <string name="preview_components_installing">正在安装并校验预览组件…</string>
     <string name="preview_components_cancelling">正在停止下载…</string>
+    <string name="preview_components_cancelled">已取消安装，可以重试。</string>
+    <string name="preview_components_return_unavailable">未能重新打开文档，请从工作区文件重试。</string>
     <string name="preview_components_in_use">正在使用，请关闭对应预览后再卸载。</string>
     <string name="preview_components_offline">已安装，可离线使用。</string>
     <string name="preview_components_on_demand">首次预览时安装，用户文件独立保留。</string>

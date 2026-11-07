@@ -58,7 +58,7 @@ internal fun OfficeComponentDialog(visible: Boolean, onCancel: () -> Unit) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             FloeText(stringResource(R.string.office_module_title), style = Floe.typography.toolbarTitle)
             ComponentProgress(state)
-            if (state.phase in setOf("failed", "missing")) FloeCapsuleButton(stringResource(R.string.retry),
+            if (state.phase in setOf("failed", "missing", "cancelled")) FloeCapsuleButton(stringResource(R.string.retry),
                 onClick = service::requestInstall)
             if (state.phase in setOf("permission", "confirm", "play_confirm")) {
                 val activity = context as? Activity
@@ -77,6 +77,7 @@ private fun ComponentProgress(state: OfficeComponentState) {
         FloeText(stringResource(when (state.phase) {
             "downloading" -> R.string.office_component_downloading
             "cancelling" -> R.string.preview_components_cancelling
+            "cancelled" -> R.string.preview_components_cancelled
             "clearing" -> R.string.preview_components_clearing
             "installing" -> R.string.office_component_installing
             "permission", "confirm", "play_confirm" -> R.string.office_component_confirmation

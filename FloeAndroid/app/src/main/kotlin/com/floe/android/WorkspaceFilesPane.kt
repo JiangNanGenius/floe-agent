@@ -237,6 +237,7 @@ internal fun WorkspaceFilesPane(
         }
     }
     fun closeDocument() {
+        (context as? FloeApplication)?.componentDocumentReturns?.clear()
         documentTaskID = null
         documentWorkspaceID = null
         documentPath = null
@@ -380,6 +381,7 @@ internal fun WorkspaceFilesPane(
      * request, not that rendering succeeded).
      */
     fun openDocument(path: String): Boolean {
+        (context as? FloeApplication)?.componentDocumentReturns?.clear()
         externalEditorPath = path
         val surface = WorkspaceDocumentRouter.surfaceFor(path)
         if (surface == WorkspaceDocumentSurface.OFFICE) {
@@ -404,6 +406,16 @@ internal fun WorkspaceFilesPane(
         }
     }
     fun openFromPanel(path: String) { openDocument(path) }
+    val componentReturns = (context as? FloeApplication)?.componentDocumentReturns
+    val returningDocument by componentReturns?.restoring?.collectAsState()
+        ?: remember { mutableStateOf(null) }
+    LaunchedEffect(bound, returningDocument?.id) {
+        val returning = returningDocument ?: return@LaunchedEffect
+        if (bound.isCurrent() && componentReturns?.consume(
+                returning, bound.client.taskID, bound.client.workspaceID) == true) {
+            openDocument(returning.path)
+        }
+    }
     // The attached terminal slot is composed by whichever surface currently
     // owns the editor. Its content is the conversation's REAL owned session
     // (Application-owned controller); dismissing either surface never closes

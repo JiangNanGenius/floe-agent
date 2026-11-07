@@ -24,6 +24,8 @@ internal class PlayOptionalSplitBackend(
 ) : OptionalComponentBackend {
     private val manager: SplitInstallManager = SplitInstallManagerFactory.create(context)
     private val prefs = context.getSharedPreferences(spec.prefsName, Context.MODE_PRIVATE)
+    private val documentReturns = (context.applicationContext as? com.floe.android.FloeApplication)
+        ?.componentDocumentReturns
     private var sessionID = prefs.getInt("session", 0)
     private var confirmation: SplitInstallSessionState? = null
     private var requestEpoch = 0L
@@ -54,10 +56,12 @@ internal class PlayOptionalSplitBackend(
                 if (epoch != requestEpoch) return@addOnSuccessListener
                 starting = false
                 sessionID = id
+                documentReturns?.arm(spec.module, id)
                 prefs.edit().remove("starting").putInt("session", id).commit()
                 if (id == 0) {
                     prefs.edit().remove("session").remove("cancel").commit()
                     if (spec.installed(context)) {
+                        documentReturns?.completedInProcess(spec.module)
                         publish(OptionalComponentState("installed")); refresh()
                     } else publish(OptionalComponentState("failed", failure = "play_install_unconfirmed"))
                 } else if (cancelRequested) requestCancellation(id)
@@ -81,6 +85,7 @@ internal class PlayOptionalSplitBackend(
         }
         when (value.status()) {
             SplitInstallSessionStatus.INSTALLED -> {
+                documentReturns?.completedInProcess(spec.module)
                 SplitCompat.install(context)
                 prefs.edit().remove("session").remove("remove_pending").remove("cancel").commit()
                 sessionID = 0
@@ -107,17 +112,19 @@ internal class PlayOptionalSplitBackend(
                 "installing", value.bytesDownloaded(), value.totalBytesToDownload()))
             SplitInstallSessionStatus.CANCELING -> publish(OptionalComponentState("cancelling"))
             SplitInstallSessionStatus.FAILED -> {
+                documentReturns?.disarm(spec.module, value.sessionId())
                 prefs.edit().remove("session").remove("cancel").commit()
                 sessionID = 0
                 cancelRequested = false
                 publish(OptionalComponentState("failed", failure = "play_delivery_${value.errorCode()}"))
             }
             SplitInstallSessionStatus.CANCELED -> {
+                documentReturns?.disarm(spec.module, value.sessionId())
                 prefs.edit().remove("session").remove("cancel").commit()
                 sessionID = 0
                 cancelRequested = false
                 confirmation = null
-                publish(OptionalComponentState(if (spec.installed(context)) "installed" else "missing"))
+                publish(OptionalComponentState(if (spec.installed(context)) "installed" else "cancelled"))
             }
         }
     }

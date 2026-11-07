@@ -48,6 +48,9 @@ class FloeApplication : Application() {
         super.attachBaseContext(base)
         if (!android.os.Process.isIsolated()) com.google.android.play.core.splitcompat.SplitCompat.install(this)
     }
+    internal val componentDocumentReturns by lazy {
+        com.floe.android.host.optionalsplit.ComponentDocumentReturns(this)
+    }
     internal val officeComponent by lazy {
         com.floe.android.host.officecomponent.OfficeComponentController(this, hostScope)
     }

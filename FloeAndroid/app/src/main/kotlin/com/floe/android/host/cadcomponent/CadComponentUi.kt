@@ -134,7 +134,7 @@ internal fun CadComponentInstallSheet(
             FloeText(stringResource(R.string.cad_module_title),
                 style = Floe.typography.toolbarTitle)
             CadComponentProgress(state)
-            if (state.phase in setOf("failed", "missing")) {
+            if (state.phase in setOf("failed", "missing", "cancelled")) {
                 FloeCapsuleButton(stringResource(R.string.retry), onClick = onRetry)
             }
             if (state.phase in setOf("permission", "confirm", "play_confirm")) {
@@ -160,6 +160,7 @@ internal fun CadComponentProgress(state: CadComponentState) {
         FloeText(stringResource(when (state.phase) {
             "downloading" -> R.string.cad_component_downloading
             "cancelling" -> R.string.preview_components_cancelling
+            "cancelled" -> R.string.preview_components_cancelled
             "clearing" -> R.string.preview_components_clearing
             "installing" -> R.string.cad_component_installing
             "permission", "confirm", "play_confirm" -> R.string.cad_component_confirmation

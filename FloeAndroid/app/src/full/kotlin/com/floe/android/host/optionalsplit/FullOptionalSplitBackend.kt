@@ -51,6 +51,8 @@ internal class FullOptionalSplitBackend(
     private val canRemove: () -> Boolean,
 ) : OptionalComponentBackend {
     private val prefs = context.getSharedPreferences(spec.prefsName, Context.MODE_PRIVATE)
+    private val documentReturns = (context.applicationContext as? com.floe.android.FloeApplication)
+        ?.componentDocumentReturns
     private val root = File(context.filesDir, spec.stagingDir)
     private val gate = Any()
     @Volatile private var job: Job? = null
@@ -231,11 +233,13 @@ internal class FullOptionalSplitBackend(
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
                 emit(OptionalComponentState(if (remove) "removing" else "installing"))
                 operation.ensureActive()
+                if (!remove) documentReturns?.arm(spec.module, id)
                 session.commit(result.intentSender)
                 handedOff = true
             }
         } finally {
             if (!handedOff) {
+                documentReturns?.disarm(spec.module, id)
                 runCatching { installer.abandonSession(id) }
                 prefs.edit().remove("session").remove("token").apply()
             }
@@ -268,6 +272,7 @@ internal class FullOptionalSplitBackend(
         val present = spec.installed(context)
         if (status == PackageInstaller.STATUS_SUCCESS && versionMatches && present != remove) {
             if (present) SplitCompat.install(context)
+            if (present) documentReturns?.completedInProcess(spec.module)
             emit(OptionalComponentState(if (present) "installed" else "missing"))
             if (present) {
                 root.listFiles().orEmpty()
@@ -275,7 +280,11 @@ internal class FullOptionalSplitBackend(
                     .forEach { it.delete() }
             }
             refresh()
+        } else if (status == PackageInstaller.STATUS_FAILURE_ABORTED) {
+            documentReturns?.disarm(spec.module, intent.getIntExtra("session", -1))
+            emit(OptionalComponentState("cancelled"))
         } else {
+            documentReturns?.disarm(spec.module, intent.getIntExtra("session", -1))
             emit(OptionalComponentState("failed", failure = "component_install_unconfirmed"))
         }
     }
@@ -294,6 +303,7 @@ internal class FullOptionalSplitBackend(
                 val present = spec.installed(context)
                 if (versionMatches && present != remove) {
                     if (present) SplitCompat.install(context)
+                    if (present) documentReturns?.completedInProcess(spec.module)
                     emit(OptionalComponentState(if (present) "installed" else "missing"))
                     refresh()
                 } else emit(OptionalComponentState("failed", failure = "component_install_unconfirmed"))
@@ -341,6 +351,7 @@ internal class FullOptionalSplitBackend(
                 previous?.join()
                 synchronized(PackageInstallAdmission.lock) {
                     val id = prefs.getInt("session", -1)
+                    documentReturns?.disarm(spec.module, id)
                     if (id >= 0) runCatching {
                         context.packageManager.packageInstaller.abandonSession(id)
                     }

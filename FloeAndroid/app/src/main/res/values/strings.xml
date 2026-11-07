@@ -614,6 +614,8 @@
     <string name="preview_components_cad">CAD and 3D preview</string>
     <string name="preview_components_installing">Installing verified preview components…</string>
     <string name="preview_components_cancelling">Stopping download…</string>
+    <string name="preview_components_cancelled">Installation cancelled. You can try again.</string>
+    <string name="preview_components_return_unavailable">Could not reopen the document. Open it again from workspace files.</string>
     <string name="preview_components_in_use">In use. Close its previews before uninstalling.</string>
     <string name="preview_components_offline">Installed; available offline.</string>
     <string name="preview_components_on_demand">Installs on first preview. Your files are kept separately.</string>
