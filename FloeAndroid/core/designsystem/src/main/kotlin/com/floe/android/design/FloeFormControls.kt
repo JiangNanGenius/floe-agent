@@ -658,7 +658,7 @@ fun FloeInlineSwitch(
     Box(
         modifier = modifier
             .heightIn(min = FloeLayout.MinimumTarget)
-            .widthIn(min = if (compact) 52.dp else 64.dp)
+            .widthIn(min = if (compact) FloeLayout.MinimumTarget else 64.dp)
             .toggleable(checked, enabled = enabled, role = Role.Switch,
                 onValueChange = onCheckedChange)
             .semantics { contentDescription = description },
@@ -669,8 +669,8 @@ fun FloeInlineSwitch(
             onCheckedChange = onCheckedChange,
             modifier = Modifier
                 .graphicsLayer {
-                    scaleX = if (compact) 0.9f else 1f
-                    scaleY = if (compact) 0.9f else 1f
+                    scaleX = if (compact) 0.86f else 1f
+                    scaleY = if (compact) 0.86f else 1f
                 }
                 .clearAndSetSemantics { },
             enabled = enabled,

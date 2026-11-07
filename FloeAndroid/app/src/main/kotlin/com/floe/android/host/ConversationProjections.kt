@@ -2443,8 +2443,17 @@ internal object ConversationWire {
                 projectedStateName = null,
                 isArchived = false,
                 archivedAtLabel = null,
+                isPinned = obj.bool("pinned") ?: false,
             )
-        } ?: emptyList()
+        }?.distinctBy { it.id } ?: emptyList()
+
+    fun decodeSearchSnippets(value: JsonElement): Map<String, String> =
+        ((value as? JsonObject)?.get("rows") as? JsonArray)?.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val id = obj.string("conversationID") ?: return@mapNotNull null
+            val snippet = obj.string("snippet") ?: return@mapNotNull null
+            id to snippet
+        }?.toMap().orEmpty()
 
     /**
      * Decodes the ACTUAL `child.entries` typed page:

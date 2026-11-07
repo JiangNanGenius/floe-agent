@@ -5830,8 +5830,17 @@ class ConversationHostController internal constructor(
 
     override fun reloadHistory() = refreshHistory()
 
+    /** Native scheduled creation bypasses the ordinary conversation.create
+     * completion. Only its committed, same-root result invalidates the list. */
+    internal fun scheduledConversationCommitted(expectedEpoch: Long) {
+        if (host.nativeRootEpoch() == expectedEpoch) refreshHistory()
+    }
+
+    private val historyListGeneration = AtomicLong(0)
+
     internal fun refreshHistory() {
         if (!conversationAdmitted()) return
+        val generation = historyListGeneration.incrementAndGet()
         host.trackOperation(
             HostCommandRequest(
                 command = "conversation.list",
@@ -5841,12 +5850,13 @@ class ConversationHostController internal constructor(
                 payload = JsonObject(mapOf("includeArchived" to JsonPrimitive(true), "limit" to JsonPrimitive(50))),
             ),
         ) { outcome ->
+            if (historyListGeneration.get() != generation) return@trackOperation
             when (outcome) {
                 is HostOperationOutcome.Completed -> {
                     val page = outcome.value?.let { ConversationWire.decodeConversationList(it) }
                     if (page != null) {
                         val pinned = ConversationPinProjection.pinnedConversationIDs(outcome.value)
-                        historyHolder.applyHostState(
+                        historyHolder.applyBaseHistory(
                             HistoryListUiState(
                                 isLoading = false,
                                 items = page.active.map { it.copy(isPinned = it.id in pinned) },
@@ -5860,10 +5870,11 @@ class ConversationHostController internal constructor(
                                 networkActionsAvailable = conversationAdmitted(),
                             ),
                         )
+                        historyHolder.refreshContentSearch()
                     }
                 }
                 is HostOperationOutcome.Rejected ->
-                    historyHolder.applyHostState(
+                    historyHolder.applyBaseHistory(
                         HistoryListUiState(
                             isLoading = false,
                             items = emptyList(),
@@ -5914,6 +5925,7 @@ class ConversationHostController internal constructor(
     internal fun refreshAfterPrivacyHistoryClear() {
         if (!conversationAdmitted()) return
         val rootEpoch = host.nativeRootEpoch()
+        historyHolder.invalidateAfterHistoryClear()
         refreshHistory()
         if (rootEpoch == null) return
         val retained = holders.entries.map { entry ->
@@ -6284,25 +6296,26 @@ class ConversationHostController internal constructor(
         ) { outcome ->
             when (outcome) {
                 is HostOperationOutcome.Completed -> {
+                    if (historyHolder.currentSearchEpoch() != epoch ||
+                        historyHolder.searchQuery.trim() != query) return@trackOperation
                     val results = outcome.value?.let { ConversationWire.decodeSearch(it) }
                         ?: emptyList()
-                    val pinned = ConversationPinProjection.pinnedConversationIDs(outcome.value)
-                    historyHolder.applyHostState(
+                    historyHolder.applyContentSearch(
                         HistoryListUiState(
                             isLoading = false,
-                            items = results.map { it.copy(isPinned = it.id in pinned) },
+                            items = results,
                             archivedItems = emptyList(),
-                            contentSnippets = emptyMap(),
+                            contentSnippets = outcome.value?.let(ConversationWire::decodeSearchSnippets).orEmpty(),
                             searchEpoch = epoch,
                             isSearching = false,
                             needsProvider = false,
-                            runningConversationIds = emptySet(),
+                            runningConversationIds = runningConversationIds(),
                             bulkProgress = null,
                             networkActionsAvailable = conversationAdmitted(),
                         ),
                     )
                 }
-                else -> Unit
+                else -> historyHolder.finishContentSearch(epoch)
             }
         }
         return true

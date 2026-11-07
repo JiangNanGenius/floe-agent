@@ -680,6 +680,7 @@ class FloeApplication : Application() {
                 releaseLocalSession = { sessionID -> linuxShell.requestSessionStop(sessionID) },
                 onUnavailable = { _, failure -> host.reportBackgroundUnavailable(failure) },
                 onDiagnostic = { counts -> android.util.Log.i("FloeRunLedger", counts); Unit },
+                onAgentRunsSettled = { epoch -> host.conversations.scheduledConversationCommitted(epoch) },
             )
             host.privacyConfirmationIssuer = { expectedEpoch, operation,
                                                digest, invocation, action ->

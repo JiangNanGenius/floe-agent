@@ -25,6 +25,11 @@ class ConversationHistoryHolder(
 ) {
     val state: MutableState<HistoryListUiState?> = mutableStateOf(null)
 
+    // The durable list and the current query's matches are separate
+    // projections. A refreshed search must not replace the base/archive
+    // rows, or clearing the query would keep only the previous matches.
+    private var baseHistory: HistoryListUiState? = null
+
     /* ----------------------------- list presentation ----------------------------- */
 
     /** ⇄ searchText (user query text stays RAM-only; never logged). The
@@ -115,23 +120,9 @@ class ConversationHistoryHolder(
         // ⇄ searchContents guard: snippets land only for the exact query
         // generation that requested them (stale pages are dropped whole).
         if (next.searchEpoch != 0L && next.searchEpoch != searchEpoch) {
-            // A page for an older query: keep the current results, ignore it.
-            val current = state.value
-            if (current != null) {
-                state.value = current.copy(
-                    isLoading = next.isLoading,
-                    items = next.items,
-                    archivedItems = next.archivedItems,
-                    isSearching = next.isSearching,
-                    needsProvider = next.needsProvider,
-                    runningConversationIds = next.runningConversationIds,
-                    bulkProgress = next.bulkProgress,
-                    networkActionsAvailable = next.networkActionsAvailable,
-                    // contentSnippets/searchEpoch stay as currently applied
-                )
-                pruneSelectionToVisible()
-                return
-            }
+            // Reject the entire stale page: its rows can prune the current
+            // selection just as incorrectly as its snippets can.
+            return
         }
         state.value = next
         pruneSelectionToVisible()
@@ -139,6 +130,68 @@ class ConversationHistoryHolder(
         // the live list: the dialog keeps exactly what the user saw.
         // A finished batch clears the in-flight latch via the receipt echo
         // (applyBulkReceipt); the progress projection is the visual source.
+    }
+
+    fun applyBaseHistory(next: HistoryListUiState) {
+        baseHistory = next
+        val current = state.value
+        val snippets = if (searchQuery.isNotBlank()) current?.contentSnippets.orEmpty() else emptyMap()
+        val retainedMatches = current?.let { it.items + it.archivedItems }
+            .orEmpty().filter { it.id in snippets }
+        applyHostState(next.copy(
+            items = (next.items + retainedMatches.filterNot { it.isArchived }).distinctBy { it.id },
+            archivedItems = (next.archivedItems + retainedMatches.filter { it.isArchived }).distinctBy { it.id },
+            contentSnippets = snippets,
+            searchEpoch = searchEpoch,
+            isSearching = current?.isSearching == true && searchQuery.isNotBlank(),
+        ))
+    }
+
+    fun applyContentSearch(next: HistoryListUiState) {
+        if (next.searchEpoch != searchEpoch || searchQuery.isBlank()) return
+        val base = baseHistory ?: state.value ?: next
+        val known = (base.items + base.archivedItems).associateBy { it.id }
+        val matches = next.items.map { hit ->
+            known[hit.id]?.copy(isPinned = hit.isPinned) ?: hit
+        }
+        val byID = matches.associateBy { it.id }
+        applyHostState(base.copy(
+            items = (base.items.map { byID[it.id] ?: it } + matches.filterNot { it.isArchived }).distinctBy { it.id },
+            archivedItems = (base.archivedItems.map { byID[it.id] ?: it } + matches.filter { it.isArchived }).distinctBy { it.id },
+            contentSnippets = next.contentSnippets,
+            searchEpoch = next.searchEpoch,
+            isSearching = false,
+            needsProvider = next.needsProvider,
+            runningConversationIds = next.runningConversationIds,
+            networkActionsAvailable = next.networkActionsAvailable,
+        ))
+    }
+
+    /** A committed-list refresh keeps the current query's visible matches
+     * until the replacement answer arrives; query/filter/selection stay put. */
+    fun refreshContentSearch() {
+        val query = searchQuery.trim()
+        if (query.isEmpty()) return
+        searchEpoch += 1
+        state.value = state.value?.copy(searchEpoch = searchEpoch, isSearching = true)
+        if (!host.requestContentSearch(query, searchEpoch)) finishContentSearch(searchEpoch)
+    }
+
+    fun finishContentSearch(epoch: Long) {
+        if (epoch != searchEpoch) return
+        state.value = state.value?.copy(isSearching = false)
+    }
+
+    /** A successful/partial privacy clear invalidates old query answers too;
+     * the subsequent authoritative list repopulates retained conversations. */
+    fun invalidateAfterHistoryClear() {
+        baseHistory = null
+        searchEpoch += 1
+        state.value = state.value?.copy(
+            items = emptyList(), archivedItems = emptyList(), contentSnippets = emptyMap(),
+            searchEpoch = searchEpoch, isSearching = false,
+        )
+        pruneSelectionToVisible()
     }
 
     /* ------------------------------- query & search ------------------------------- */
@@ -152,10 +205,11 @@ class ConversationHistoryHolder(
         val trimmed = query.trim()
         if (trimmed.isEmpty()) {
             searchEpoch += 1 // the empty query owns the newest epoch (no page)
+            baseHistory?.let { applyHostState(it.copy(searchEpoch = searchEpoch)) }
+            host.reloadHistory()
             return
         }
-        searchEpoch += 1
-        host.requestContentSearch(trimmed, searchEpoch)
+        refreshContentSearch()
     }
 
     fun currentSearchEpoch(): Long = searchEpoch

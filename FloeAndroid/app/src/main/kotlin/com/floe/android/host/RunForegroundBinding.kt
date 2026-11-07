@@ -114,6 +114,9 @@ class RunForegroundBinding(
     private val onUnavailable: (operation: String, failure: RunForegroundFailure) -> Unit = { _, _ -> },
     /** Counts only; no task, conversation, provider or file identifiers. */
     private val onDiagnostic: (String) -> Unit = {},
+    /** Read-only history invalidation after real leases settle on a known
+     * ledger zero. Never infers a completed result or starts more work. */
+    private val onAgentRunsSettled: (rootEpoch: Long) -> Unit = {},
 ) {
 
     private val agentRunLeases = ConcurrentHashMap<String, ForegroundLease>()
@@ -326,16 +329,26 @@ class RunForegroundBinding(
      *  stays protected; the loop cost is one lock-only native read per
      *  lease and runs only on genuine settle events, never busy. */
     private fun settleAllAgentLeases() {
-        for (runID in agentRunLeases.keys.toList()) {
-            if (agentRunLeases[runID]?.isClosed == true) {
-                agentRunLeases.remove(runID)
+        var settledEpoch: Long? = null
+        try {
+            for (runID in agentRunLeases.keys.toList()) {
+                if (agentRunLeases[runID]?.isClosed == true) {
+                    agentRunLeases.remove(runID)
+                    agentRunConversation.remove(runID)
+                    continue
+                }
+                val fresh = nativeSnapshot?.read() ?: return // became unknown: retain rest.
+                if (fresh.nativeRootEpoch <= 0L || fresh.hasLiveRunOwnedWork) return
                 agentRunConversation.remove(runID)
-                continue
+                agentRunLeases.remove(runID)?.let { lease ->
+                    lease.close()
+                    settledEpoch = fresh.nativeRootEpoch
+                }
             }
-            val fresh = nativeSnapshot?.read() ?: return // became unknown: retain rest.
-            if (fresh.nativeRootEpoch <= 0L || fresh.hasLiveRunOwnedWork) return
-            agentRunConversation.remove(runID)
-            agentRunLeases.remove(runID)?.close()
+        } finally {
+            // One invalidation for a real settlement batch, including a
+            // partially settled batch whose next read became unknown/live.
+            settledEpoch?.let { epoch -> runCatching { onAgentRunsSettled(epoch) } }
         }
     }
 

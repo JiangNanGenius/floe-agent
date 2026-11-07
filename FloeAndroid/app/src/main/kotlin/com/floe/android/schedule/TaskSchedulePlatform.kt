@@ -415,6 +415,7 @@ internal class TaskScheduleCoordinator(
                     return ListenableWorker.Result.success()
                 }
                 if (runID != null && conversationID != null) {
+                    current.conversations.scheduledConversationCommitted(epochAtDispatch)
                     // A launch result that reached us MUST transfer coverage
                     // even if WorkManager cancels this coroutine now: attach
                     // the authoritative lease under NonCancellable before
@@ -569,6 +570,7 @@ internal class TaskScheduleCoordinator(
                             host.nativeRootEpoch() != epochAtDispatch) {
                             false
                         } else {
+                            host.conversations.scheduledConversationCommitted(epochAtDispatch)
                             foreground.agentLaunchAdmitted(
                                 operationID, conversationID, runID)
                         }

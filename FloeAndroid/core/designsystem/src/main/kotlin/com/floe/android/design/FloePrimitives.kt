@@ -350,11 +350,11 @@ fun FloeSidebarRow(
             .clip(capsule)
             .background(container)
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = if (compact) 4.dp else 8.dp),
+            .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 2.dp else 8.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
     ) {
-        IconGlyph(icon, iconTint, if (compact) 20.dp else FloeLayout.SidebarRowIconSize)
+        IconGlyph(icon, iconTint, if (compact) 18.dp else FloeLayout.SidebarRowIconSize)
         FloeText(
             text = label,
             style = Floe.typography.body,
@@ -380,8 +380,8 @@ fun FloeSectionHeader(title: String, modifier: Modifier = Modifier) {
             // 13sp group-header role but halves the iPad's generous 18dp
             // top gap so more rows reach the first viewport; the 48dp row
             // floor below is untouched.
-            top = if (compact) 10.dp else 18.dp,
-            bottom = if (compact) 4.dp else FloeLayout.SectionHeaderVPadding,
+            top = if (compact) 8.dp else 18.dp,
+            bottom = if (compact) 2.dp else FloeLayout.SectionHeaderVPadding,
         ),
         style = Floe.typography.groupHeader,
         color = Floe.colors.secondaryLabel,
@@ -503,7 +503,7 @@ fun FloeSettingsSectionCard(
         modifier = modifier.fillMaxWidth(),
         style = SectionStyle.InsetGrouped,
         state = rememberSectionState(canCollapse = false),
-        contentPadding = if (compact) PaddingValues(vertical = 4.dp)
+        contentPadding = if (compact) PaddingValues(vertical = 2.dp)
             else io.github.robinpcrd.cupertino.section.CupertinoSectionDefaults.paddingValues(SectionStyle.InsetGrouped, true),
         title = title?.let { t -> { FloeText(t, style = Floe.typography.groupHeader, color = Floe.colors.secondaryLabel) } },
         content = content,

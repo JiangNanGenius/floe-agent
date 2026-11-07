@@ -10,6 +10,7 @@ import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.robinpcrd.cupertino.theme.CupertinoTheme
@@ -58,10 +59,10 @@ fun FloeSettingsContentDensity(compact: Boolean, content: @Composable () -> Unit
     val base = Floe.typography
     val type = remember(base) {
         base.copy(
-            title = base.title.copy(fontSize = 17.sp, lineHeight = 22.sp),
-            section = base.section.copy(fontSize = 15.sp, lineHeight = 21.sp),
-            body = base.body.copy(fontSize = 14.sp, lineHeight = 20.sp),
-            bodyEmphasized = base.bodyEmphasized.copy(fontSize = 14.sp, lineHeight = 20.sp),
+            title = base.title.copy(fontSize = 16.sp, lineHeight = 21.sp),
+            section = base.section.copy(fontSize = 14.sp, lineHeight = 19.sp),
+            body = base.body.copy(fontSize = 13.sp, lineHeight = 18.sp),
+            bodyEmphasized = base.bodyEmphasized.copy(fontSize = 13.sp, lineHeight = 18.sp),
             metadata = base.metadata.copy(fontSize = 12.sp, lineHeight = 17.sp),
             groupHeader = base.groupHeader.copy(fontSize = 12.sp, lineHeight = 16.sp),
         )
@@ -95,6 +96,24 @@ fun FloeTheme(
     content: @Composable () -> Unit,
 ) {
     val dark = floeIsDarkAppearance(themeMode)
+    val configuration = LocalConfiguration.current
+    val compactWindow = FloeLayout.usesCompactNavigation(
+        configuration.screenWidthDp.toFloat(), configuration.smallestScreenWidthDp.toFloat())
+    val typography = remember(compactWindow) {
+        val base = FloeTypography()
+        if (!compactWindow) base else base.copy(
+            title = base.title.copy(fontSize = 20.sp, lineHeight = 26.sp),
+            section = base.section.copy(fontSize = 16.sp, lineHeight = 21.sp),
+            body = base.body.copy(fontSize = 15.sp, lineHeight = 22.sp),
+            bodyEmphasized = base.bodyEmphasized.copy(fontSize = 15.sp, lineHeight = 22.sp),
+            toolbarTitle = base.toolbarTitle.copy(fontSize = 16.sp, lineHeight = 21.sp),
+            navLargeTitle = base.navLargeTitle.copy(fontSize = 28.sp, lineHeight = 34.sp),
+            metadata = base.metadata.copy(fontSize = 12.sp, lineHeight = 17.sp),
+            groupHeader = base.groupHeader.copy(fontSize = 12.sp, lineHeight = 17.sp),
+            evidence = base.evidence.copy(fontSize = 12.sp, lineHeight = 17.sp),
+            composerField = base.composerField.copy(fontSize = 15.sp, lineHeight = 22.sp),
+        )
+    }
     val colors = if (dark) FloeDarkColors else FloeLightColors
     val scheme = if (dark) {
         darkColorScheme(
@@ -139,7 +158,7 @@ fun FloeTheme(
             androidx.compose.runtime.CompositionLocalProvider(
                 LocalMinimumInteractiveComponentSize provides FloeLayout.MinimumTarget,
                 LocalFloeColors provides colors,
-                LocalFloeType provides FloeTypography(),
+                LocalFloeType provides typography,
                 content = content,
             )
         }
