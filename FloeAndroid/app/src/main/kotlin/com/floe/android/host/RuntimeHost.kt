@@ -830,10 +830,20 @@ class RuntimeHost internal constructor(
     internal enum class BackgroundAvailability { NOTIFICATIONS_BLOCKED, SYSTEM_UNAVAILABLE }
     internal val backgroundAvailabilityNotice = MutableStateFlow<BackgroundAvailability?>(null)
     private val backgroundNoticeReported = java.util.concurrent.atomic.AtomicBoolean()
+    @Volatile private var backgroundNoticeDiagnostic: com.floe.android.runlifecycle.RunForegroundTrace.Attribution? = null
     internal fun reportBackgroundUnavailable(failure: com.floe.android.runlifecycle.RunForegroundFailure) {
-        if (backgroundNoticeReported.compareAndSet(false, true)) {
+        val posted = backgroundNoticeReported.compareAndSet(false, true)
+        val diagnostic = com.floe.android.runlifecycle.RunForegroundTrace.notice(failure, posted)
+        if (posted) {
+            backgroundNoticeDiagnostic = diagnostic
             backgroundAvailabilityNotice.value = if (failure is com.floe.android.runlifecycle.RunForegroundFailure.NotificationsBlocked)
                 BackgroundAvailability.NOTIFICATIONS_BLOCKED else BackgroundAvailability.SYSTEM_UNAVAILABLE
+        }
+    }
+
+    internal fun backgroundNoticeBoundToUi() {
+        if (backgroundAvailabilityNotice.value != null) {
+            com.floe.android.runlifecycle.RunForegroundTrace.noticeBoundToUi(backgroundNoticeDiagnostic)
         }
     }
 

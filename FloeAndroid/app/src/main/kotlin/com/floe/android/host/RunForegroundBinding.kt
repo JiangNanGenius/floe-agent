@@ -139,6 +139,7 @@ class RunForegroundBinding(
             controller.acquireOperation(
                 operationID = launchOperationID,
                 kind = OperationKind.AGENT_RUN,
+                traceOrigin = com.floe.android.runlifecycle.RunForegroundTrace.Origin.AGENT_LAUNCH_PROVISIONAL,
                 stopHandler = onStopRequested,
             )
         } catch (cancellation: kotlinx.coroutines.CancellationException) {
@@ -202,6 +203,7 @@ class RunForegroundBinding(
             controller.acquireOperation(
                 operationID = runID,
                 kind = OperationKind.AGENT_RUN,
+                traceOrigin = com.floe.android.runlifecycle.RunForegroundTrace.Origin.AGENT_RUN_AUTHORITATIVE,
                 stopHandler = {
                     val conversation = agentRunConversation[runID] ?: conversationID
                     cancelAgentRun(conversation, runID)

@@ -59,7 +59,9 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
     @Volatile private var inventoryNonce: String? = null
     @Volatile private var softwareNonce: String? = null
 
-    fun start(taskID: String, workspaceID: String, desktop: Boolean, install: Boolean) {
+    fun start(taskID: String, workspaceID: String, desktop: Boolean, install: Boolean,
+        initialApplication: String = "pcmanfm") {
+        require(initialApplication in LinuxDesktopCommands.applications)
         if (task?.isActive == true) return
         if (live() && terminalID != null && state.value.workspaceID == workspaceID &&
             state.value.phase == "running" && state.value.desktop == desktop) {
@@ -205,6 +207,9 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                         catch (_: Exception) { mutable.value = state.value.copy(phase = "failed", failure = "desktop_disconnected") }
                     }
                     refreshSoftware()
+                    // Launch only for this new owned session, after its control
+                    // channel is ready. Reopening a view never launches again.
+                    application(initialApplication, false)
                 } finally { password.fill(0) }
             } catch (timeout: TimeoutCancellationException) {
                 android.util.Log.w("FloeLinuxDesktop", "start_failed stage=$stage code=timeout")

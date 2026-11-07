@@ -166,7 +166,9 @@ class RunForegroundService : Service() {
             buildNotification(stamp)
         } catch (failure: Exception) {
             RunForegroundState.reportServiceDenial(this,
-                RunForegroundFailure.Unavailable("notification-build-failed")
+                RunForegroundTrace.serviceFailure(RunForegroundTrace.Stage.SERVICE_NOTIFICATION_FAILED,
+                    RunForegroundTrace.Cause.NOTIFICATION_BUILD,
+                    RunForegroundFailure.Unavailable("notification-build-failed"))
             )
             RunForegroundState.endForeground(this)
             return false
@@ -178,6 +180,8 @@ class RunForegroundService : Service() {
                 startForeground(NOTIFICATION_ID, notification)
             }
             if (!RunForegroundState.confirmForeground(this, stamp)) {
+                RunForegroundTrace.serviceEvent(RunForegroundTrace.Stage.SERVICE_INSTANCE_RETIRED,
+                    RunForegroundTrace.Cause.INSTANCE_REPLACED)
                 // This instance was REPLACED while the startForeground
                 // call was in flight: a dead instance never claims or
                 // stamps the shared truth. Retire OUR OWN notification
@@ -192,16 +196,21 @@ class RunForegroundService : Service() {
             // Wake ownership follows the CONFIRMED service, never the mere
             // intent to start one.
             syncWake()
+            RunForegroundTrace.serviceEvent(RunForegroundTrace.Stage.SERVICE_PROMOTION_CONFIRMED)
             true
         } catch (failure: IllegalStateException) {
             RunForegroundState.reportServiceDenial(this,
-                RunForegroundFailure.StartDenied("start-foreground-refused")
+                RunForegroundTrace.serviceFailure(RunForegroundTrace.Stage.SERVICE_PROMOTION_REFUSED,
+                    RunForegroundTrace.Cause.PROMOTION_STATE_EXCEPTION,
+                    RunForegroundFailure.StartDenied("start-foreground-refused"))
             )
             RunForegroundState.endForeground(this)
             false
         } catch (failure: SecurityException) {
             RunForegroundState.reportServiceDenial(this,
-                RunForegroundFailure.StartDenied("foreground-type-permission-missing")
+                RunForegroundTrace.serviceFailure(RunForegroundTrace.Stage.SERVICE_PROMOTION_REFUSED,
+                    RunForegroundTrace.Cause.PROMOTION_SECURITY_EXCEPTION,
+                    RunForegroundFailure.StartDenied("foreground-type-permission-missing"))
             )
             RunForegroundState.endForeground(this)
             false

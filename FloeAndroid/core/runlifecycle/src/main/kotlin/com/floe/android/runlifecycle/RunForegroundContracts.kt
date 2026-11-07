@@ -38,6 +38,9 @@ fun interface RunStopHandler {
  *  launches and no permission dialogs are ever triggered from here; the
  *  visible POST_NOTIFICATIONS UX belongs to Main's Core UI. */
 sealed class RunForegroundFailure(message: String) : Exception(message) {
+    /** Diagnostic correlation only; never serialized or used by a permission/lease. */
+    @Transient @Volatile internal var diagnosticAttempt: RunForegroundTrace.Attempt? = null
+    @Transient @Volatile internal var diagnosticCause: RunForegroundTrace.Cause? = null
 
     /** The OS/user blocks a *usable* foreground notification right now:
      *  POST_NOTIFICATIONS is not granted (API 33+) or notifications for the

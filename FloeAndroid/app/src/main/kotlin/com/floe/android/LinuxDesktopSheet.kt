@@ -111,7 +111,7 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
                         LocalRuntimeSettingsCard()
                     }
                     FloeCapsuleButton(stringResource(R.string.linux_desktop_start),
-                        onClick = { service.start(taskID, workspaceID, desktop, install) },
+                        onClick = { service.start(taskID, workspaceID, desktop, install, selectedApp) },
                         enabled = !busy && environmentReady, prominent = true)
                     if (busy) FloeCapsuleButton(stringResource(R.string.linux_desktop_stop), onClick = { stopRequested = true })
                     if (!owned && state.workspaceID != null) FloeText(stringResource(R.string.linux_desktop_switch_notice))

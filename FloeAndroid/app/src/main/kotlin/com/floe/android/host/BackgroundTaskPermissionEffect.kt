@@ -29,6 +29,7 @@ fun BackgroundTaskPermissionEffect(host: RuntimeHost) {
         host.backgroundAvailabilityNotice.value = null
     }
     if (notice == null) return
+    LaunchedEffect(notice) { host.backgroundNoticeBoundToUi() }
     val wide = LocalConfiguration.current.screenWidthDp >= 700
     FloePageSheet(visible = true,
         onDismiss = { host.backgroundAvailabilityNotice.value = null },

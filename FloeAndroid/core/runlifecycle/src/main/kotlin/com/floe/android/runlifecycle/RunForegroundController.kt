@@ -85,8 +85,19 @@ class RunForegroundController private constructor(
         operationID: String,
         kind: OperationKind,
         stopHandler: RunStopHandler? = null,
+    ): ForegroundLease = acquireOperation(
+        operationID, kind, RunForegroundTrace.Origin.ORDINARY_OPERATION, stopHandler)
+
+    /** The original overload keeps positional and trailing-lambda callers
+     * source-compatible. Origin is diagnostic only. */
+    suspend fun acquireOperation(
+        operationID: String,
+        kind: OperationKind,
+        traceOrigin: RunForegroundTrace.Origin,
+        stopHandler: RunStopHandler? = null,
     ): ForegroundLease {
         val stableID = OperationIds.normalize(operationID)
+        val trace = RunForegroundTrace.begin(traceOrigin, kind)
 
         // Build/channel reality first: only the four settled Core channels
         // have a runtime peer, and nothing here can run on a foreign or
@@ -94,14 +105,18 @@ class RunForegroundController private constructor(
         val runtimePackageName = try {
             com.floe.android.runtimeipc.RuntimePackages.forCore(appContext.packageName).runtime
         } catch (failure: SecurityException) {
-            throw RunForegroundFailure.Unavailable("core-channel-unrecognized")
+            throw RunForegroundTrace.failed(trace, RunForegroundTrace.Stage.PREFLIGHT_BLOCKED,
+                RunForegroundFailure.Unavailable("core-channel-unrecognized"))
         } catch (failure: IllegalArgumentException) {
-            throw RunForegroundFailure.Unavailable("core-channel-ambiguous")
+            throw RunForegroundTrace.failed(trace, RunForegroundTrace.Stage.PREFLIGHT_BLOCKED,
+                RunForegroundFailure.Unavailable("core-channel-ambiguous"))
         }
 
         // Honest preflight on REAL framework state. Blocked notifications
         // must never be reported as background-ready.
-        preflightNotifications()?.let { throw it }
+        preflightNotifications()?.let {
+            throw RunForegroundTrace.failed(trace, RunForegroundTrace.Stage.PREFLIGHT_BLOCKED, it)
+        }
 
         RunForegroundState.armNextAcquisition()
         val entry = when (val outcome = RunForegroundState.acquire(
@@ -114,7 +129,8 @@ class RunForegroundController private constructor(
             is RunForegroundState.RegistrationOutcome.Registered -> outcome.entry
             is RunForegroundState.RegistrationOutcome.Conflicting -> {
                 // Nothing mutated by this call; report honestly.
-                throw RunForegroundFailure.OwnerConflict(stableID, outcome.existingKind, kind)
+                throw RunForegroundTrace.failed(trace, RunForegroundTrace.Stage.OWNER_CONFLICT,
+                    RunForegroundFailure.OwnerConflict(stableID, outcome.existingKind, kind))
             }
         }
         val lease = ForegroundLease(
@@ -123,10 +139,12 @@ class RunForegroundController private constructor(
             runtimePermit = entry.token,
             ownerGeneration = entry.ownerGeneration,
         )
+        RunForegroundTrace.mark(trace, RunForegroundTrace.Stage.REGISTERED)
 
         if (RunForegroundState.foreground.value) {
             // A live, CONFIRMED foreground service already exists; the
             // owned-set listener re-rendered it with the new set stamp.
+            RunForegroundTrace.mark(trace, RunForegroundTrace.Stage.ATTACHED)
             return lease
         }
 
@@ -135,6 +153,7 @@ class RunForegroundController private constructor(
         // registered above; onStartCommand never reads task/lease/owner
         // information from any Intent.
         val serviceIntent = Intent(appContext, RunForegroundService::class.java)
+        RunForegroundTrace.mark(trace, RunForegroundTrace.Stage.SERVICE_START_REQUESTED)
         try {
             appContext.startForegroundService(serviceIntent)
         } catch (failure: Exception) {
@@ -144,12 +163,15 @@ class RunForegroundController private constructor(
             if (name.endsWith("ForegroundServiceStartNotAllowedException") ||
                 name.endsWith("ForegroundServiceDidNotStartInTimeException")
             ) {
-                throw RunForegroundFailure.StartDenied("system-refused-foreground-start")
+                throw RunForegroundTrace.failed(trace, RunForegroundTrace.Stage.SERVICE_START_REFUSED,
+                    RunForegroundFailure.StartDenied("system-refused-foreground-start"), RunForegroundTrace.Cause.START_RESTRICTED)
             }
             if (failure is SecurityException) {
-                throw RunForegroundFailure.StartDenied("foreground-service-permission-missing")
+                throw RunForegroundTrace.failed(trace, RunForegroundTrace.Stage.SERVICE_START_REFUSED,
+                    RunForegroundFailure.StartDenied("foreground-service-permission-missing"), RunForegroundTrace.Cause.START_PERMISSION)
             }
-            throw RunForegroundFailure.Unavailable("start-delivery-failed")
+            throw RunForegroundTrace.failed(trace, RunForegroundTrace.Stage.SERVICE_START_REFUSED,
+                RunForegroundFailure.Unavailable("start-delivery-failed"), RunForegroundTrace.Cause.START_DELIVERY)
         }
 
         // Cancellation edge (Main review): if the acquirer's coroutine is
@@ -167,16 +189,20 @@ class RunForegroundController private constructor(
             }
         } catch (cancellation: kotlinx.coroutines.CancellationException) {
             lease.close()
+            RunForegroundTrace.mark(trace, RunForegroundTrace.Stage.ACQUIRE_CANCELLED)
             throw cancellation
         }
         if (confirmed == null) {
             val denial = RunForegroundState.takeDenial()
             lease.close()
-            throw denial ?: RunForegroundFailure.Unavailable("start-foreground-unconfirmed")
+            throw RunForegroundTrace.failed(trace,
+                if (denial == null) RunForegroundTrace.Stage.CONFIRM_TIMEOUT else RunForegroundTrace.Stage.DENIAL_TYPED,
+                denial ?: RunForegroundFailure.Unavailable("start-foreground-unconfirmed"))
         }
         // A denial armed during a concurrently-successful confirm is no
         // longer relevant to this acquirer (foreground IS real now).
         RunForegroundState.takeDenial()
+        RunForegroundTrace.mark(trace, RunForegroundTrace.Stage.SERVICE_CONFIRMED)
         return lease
     }
 
