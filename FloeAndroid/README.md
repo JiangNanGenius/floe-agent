@@ -1,12 +1,12 @@
 # Floe for Android
 
-## Current delivery — Android Alpha43 (2026-11-07)
+## Current delivery — Android Alpha44 (2026-11-07)
 
-[Android 0.1.0-alpha.43](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.43), code62, is published from immutable source `c78b3e166c6bd2409115666af3f8d1b642f56436`. Actual Full packaging, Play Kotlin compilation, 2 focused JVM and 11 real-database checks, ARM64 Swift object/link, signing/16KiB checks, six anonymous asset downloads and update discovery passed. iOS Latest remains unchanged.
+[Android 0.1.0-alpha.44](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.44), code63, is published from immutable source `0c7bf50e1844572117633af8f41e676525e9e9ce`. Full packaging, Play Kotlin compilation, 7 focused Swift host and 13 conversation JVM regressions, ARM64 object/link, signing/16KiB and packaged-native checks passed. All six anonymous public downloads, the annotated source tag and public update metadata were read back; iOS Latest remains unchanged.
 
-The physical Samsung now receives the real handover question and launches the selected calculator after confirmation. The single subsequent observation was incorrectly denied by approval, so calculation did not complete; there was no tool retry. The post-run approval UI still displays Ask after an explicit first-send Automatic choice and is not accepted end to end. Dark/font-scale-1.3 long-value layout passed; unchanged tablet UI reuses Alpha42 reference only. Multi-step phone control, conditional schedules, project isolation, global visual polish and new CAD-toolbar actions continue. Alpha41 STL evidence remains separate.
+This version repairs the first-task approval projection and adds bounded, redacted settled-tool context to approval review. Samsung confirmed exact installed bytes, existing task/project navigation, startup and settings return. No new paid task was started: post-run approval display and a complete multi-step cross-App result remain unverified on this APK. Alpha43's interrupted calculation remains recorded. Global phone UI density, conditional schedules, project isolation and new CAD-toolbar flows continue. Unchanged tablet UI remains an Alpha42 reference only; the private ADB installation is not new online-upgrade evidence.
 
-当前已发布Alpha43/code62：接管弹窗与启动计算器已走通；后续观察被审批误判拦下，首次权限运行后仍显示每次询问，两项继续修复。整轮N01–N08继续，不能将本包算作全部功能完成。范围与限制见[交付记录](../docs/releases/ANDROID_ALPHA43_DELIVERY.md)和[当前推进计划](../docs/FLOE_ANDROID_NEXT_ITERATION_QA_20261106.zh-CN.md)。
+当前已发布Alpha44/code63，包含首次审批显示和前序工具上下文修复；三星启动、既有数据导航及设置返回通过，未再次发起付费任务，两项完整手机任务结果仍待新包实测。整轮N01–N08继续，菜单字号与留白仍需精修。范围与限制见[交付记录](../docs/releases/ANDROID_ALPHA44_DELIVERY.md)和[当前推进计划](../docs/FLOE_ANDROID_NEXT_ITERATION_QA_20261106.zh-CN.md)。
 
 ## Historical source checkpoint — G09-R2 (2026-11-01)
 
