@@ -23,6 +23,7 @@ internal class CoreWorkspaceNativeAuthority : WorkspaceNativeAuthority {
     override fun baselineBegin(sessionKey: String): ByteArray = known(LinuxWorkspaceNative.baselineBegin(sessionKey))
     override fun baselineHeader(sessionKey: String, index: Long): ByteArray = known(LinuxWorkspaceNative.baselineHeader(sessionKey, index))
     override fun baselineFinish(sessionKey: String, appliedCount: Long, appliedBytes: Long): ByteArray = known(LinuxWorkspaceNative.baselineFinish(sessionKey, appliedCount, appliedBytes))
+    override fun adoptInput(sessionKey: String, sourceSessionKey: String, index: Long): ByteArray = known(LinuxWorkspaceNative.adoptInput(sessionKey, sourceSessionKey, index))
     override fun exportBegin(sessionKey: String): ByteArray = known(LinuxWorkspaceNative.exportBegin(sessionKey))
     override fun exportStage(sessionKey: String, headerJson: ByteArray, dataFd: Int): ByteArray = known(LinuxWorkspaceNative.exportStage(sessionKey, headerJson, dataFd))
     override fun exportFinish(sessionKey: String): ByteArray = known(LinuxWorkspaceNative.exportFinish(sessionKey))

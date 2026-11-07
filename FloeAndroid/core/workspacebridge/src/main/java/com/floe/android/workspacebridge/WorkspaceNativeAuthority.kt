@@ -58,6 +58,9 @@ interface WorkspaceNativeAuthority {
 
     fun baselineFinish(sessionKey: String, appliedCount: Long, appliedBytes: Long): ByteArray
 
+    fun adoptInput(sessionKey: String, sourceSessionKey: String, index: Long): ByteArray =
+        """{"ok":false,"code":"inputAdoptionUnavailable"}""".toByteArray(Charsets.UTF_8)
+
     fun exportBegin(sessionKey: String): ByteArray
 
     /** Stages one received entry; `dataFd` is caller-owned and is NOT closed

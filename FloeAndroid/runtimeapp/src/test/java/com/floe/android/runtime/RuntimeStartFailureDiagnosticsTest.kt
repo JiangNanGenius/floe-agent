@@ -11,6 +11,10 @@ class RuntimeStartFailureDiagnosticsTest {
         assertEquals("workspace_owner_unavailable",
             RuntimeKernel.startFailureCode(IllegalArgumentException("workspaceOwnerUnavailable")))
         assertEquals("journalCollision", RuntimeKernel.startFailureCode(WorkspaceBridgeException("journalCollision")))
+        assertEquals("inputBaselineAdoptionFailed",
+            RuntimeKernel.startFailureCode(WorkspaceBridgeException("inputBaselineAdoptionFailed")))
+        assertEquals("workspace_input_owner_unavailable",
+            RuntimeKernel.startFailureCode(IllegalStateException("inputOwnerUnavailable")))
     }
 
     @Test fun arbitraryExceptionAndBridgeContentNeverEnterDiagnostics() {

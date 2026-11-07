@@ -13,6 +13,7 @@ object LinuxWorkspaceNative {
     /** New owned descriptor. Caller must adopt/close it exactly once. */
     external fun baselineOpenData(sessionKey: String, index: Long): Int
     external fun baselineFinish(sessionKey: String, count: Long, bytes: Long): ByteArray?
+    external fun adoptInput(sessionKey: String, sourceSessionKey: String, index: Long): ByteArray?
     external fun exportBegin(sessionKey: String): ByteArray?
     /** Caller retains ownership of dataFd throughout this synchronous call. */
     external fun exportStage(sessionKey: String, header: ByteArray, dataFd: Int): ByteArray?

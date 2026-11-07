@@ -1439,6 +1439,18 @@ public func floe_linux_workspace_baseline_finish(_ sessionKey: UnsafePointer<CCh
     }
 }
 
+@_cdecl("floe_linux_workspace_adopt_input")
+public func floe_linux_workspace_adopt_input(_ sessionKey: UnsafePointer<CChar>?,
+                                            _ sourceSessionKey: UnsafePointer<CChar>?, _ index: Int64,
+                                            _ outBuffer: UnsafeMutablePointer<CChar>?, _ capacity: Int32) -> Int32 {
+    guard let source = workspaceCString(sourceSessionKey, maximum: 64), index >= 0 else {
+        return workspaceError("inputSnapshotInvalid", buffer: outBuffer, capacity: capacity)
+    }
+    return engineCall(sessionKey: sessionKey, outBuffer: outBuffer, capacity: capacity) { key in
+        try WorkspaceTransferEngine.shared.adoptInput(sessionKey: key, sourceSessionKey: source, index: index)
+    }
+}
+
 @_cdecl("floe_linux_workspace_export_begin")
 public func floe_linux_workspace_export_begin(_ sessionKey: UnsafePointer<CChar>?,
                                               _ outBuffer: UnsafeMutablePointer<CChar>?,

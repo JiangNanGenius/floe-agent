@@ -12,6 +12,7 @@ int32_t floe_linux_workspace_baseline_begin(const char*, char*, int32_t);
 int32_t floe_linux_workspace_baseline_header(const char*, int64_t, char*, int32_t);
 int32_t floe_linux_workspace_baseline_open_data(const char*, int64_t);
 int32_t floe_linux_workspace_baseline_finish(const char*, int64_t, int64_t, char*, int32_t);
+int32_t floe_linux_workspace_adopt_input(const char*, const char*, int64_t, char*, int32_t);
 int32_t floe_linux_workspace_export_begin(const char*, char*, int32_t);
 int32_t floe_linux_workspace_export_stage(const char*, const char*, int32_t, int32_t, char*, int32_t);
 int32_t floe_linux_workspace_export_finish(const char*, char*, int32_t);
@@ -95,6 +96,15 @@ Java_com_floe_android_bridge_LinuxWorkspaceNative_baselineBegin(JNIEnv* env, job
     if (!identifier(env, sessionKey, key)) return nullptr;
     return response(env, [&](char* out, int32_t cap) {
         return floe_linux_workspace_baseline_begin(key.c_str(), out, cap);
+    });
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_floe_android_bridge_LinuxWorkspaceNative_adoptInput(JNIEnv* env, jobject, jstring sessionKey, jstring sourceSessionKey, jlong index) {
+    std::string owner, source;
+    if (index < 0 || !identifier(env, sessionKey, owner) || !identifier(env, sourceSessionKey, source)) return nullptr;
+    return response(env, [&](char* out, int32_t cap) {
+        return floe_linux_workspace_adopt_input(owner.c_str(), source.c_str(), index, out, cap);
     });
 }
 

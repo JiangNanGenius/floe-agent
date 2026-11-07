@@ -189,7 +189,8 @@ class WorkspaceImportSwap(
      * entries are never renamed, chmod'ed or deleted, even after cancellation.
      * These journal actions deliberately do not participate in reverse restore:
      * a live process may already have changed a newly delivered input. */
-    fun applyMissingOnly(entries: List<StagedEntry>, shouldCancel: () -> Boolean): SwapOutcome {
+    fun applyMissingOnly(entries: List<StagedEntry>, onCreated: (StagedEntry) -> Unit = {},
+                         shouldCancel: () -> Boolean): SwapOutcome {
         var created = 0
         var retained = 0
         var bytes = 0L
@@ -212,6 +213,7 @@ class WorkspaceImportSwap(
                 created += 1
                 if (entry.kind == "file") bytes += entry.size
                 appendJournal(swapRecord(index, entry, "newInputCreated", null))
+                onCreated(entry)
             } else if (ops.kindNoFollow(destination, entry.path) in
                 setOf(SwapKind.FILE, SwapKind.DIRECTORY, SwapKind.SYMLINK)) {
                 retained += 1 // A concurrent guest won atomic creation.

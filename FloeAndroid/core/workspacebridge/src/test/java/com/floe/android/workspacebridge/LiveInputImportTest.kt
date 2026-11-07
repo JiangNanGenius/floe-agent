@@ -71,6 +71,23 @@ class LiveInputImportTest {
         assertEquals(0, result.created)
         assertEquals(1, result.retainedExisting)
     }
+    @Test fun onlyActualNewCreationsGainOwnerBaselineProvenance() = fixture { guest, stage, swap, _ ->
+        File(guest, "existing.txt").writeText("guest edit")
+        val adopted = mutableListOf<String>()
+        swap.applyMissingOnly(listOf(entry(stage, "existing.txt", "host"), entry(stage, "new.txt", "input")),
+            onCreated = { adopted.add(it.path); assertEquals("input", File(guest, it.path).readText()) }) { false }
+        assertEquals(listOf("new.txt"), adopted)
+        assertEquals("guest edit", File(guest, "existing.txt").readText())
+    }
+    @Test fun failedOwnerAdoptionRetainsCommittedInputAndStopsLaterEntries() = fixture { guest, stage, swap, _ ->
+        try {
+            swap.applyMissingOnly(listOf(entry(stage, "a.txt", "input"), entry(stage, "b.txt", "later")),
+                onCreated = { throw WorkspaceBridgeException("inputBaselineAdoptionFailed") }) { false }
+            fail("the terminal cannot start on uncertain owner provenance")
+        } catch (_: WorkspaceBridgeException) { }
+        assertEquals("input", File(guest, "a.txt").readText())
+        assertFalse(File(guest, "b.txt").exists())
+    }
     @Test fun cancellationRetainsCommittedInputAndSubsequentGuestEdit() = fixture { guest, stage, swap, _ ->
         val entries = listOf(entry(stage, "a.txt", "input"), entry(stage, "b.txt", "other"))
         var checks = 0

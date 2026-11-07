@@ -23,6 +23,42 @@ import org.junit.Test
 class TerminalTabRegistryTest {
 
     @Test
+    fun `GUI control retains capacity and identity without becoming a human tab`() {
+        val registry = TerminalTabRegistry()
+        registry.newTab("conv-1", "gui", paneVisible = false)
+        assertTrue(registry.paneTabsFor("conv-1").isEmpty())
+        val control = requireNotNull(registry.adopt("gui", "control"))
+        assertFalse(control.paneVisible)
+        assertNotNull(registry.find("control"))
+        assertNull(registry.current("conv-1"))
+        assertFalse(registry.hasNativeTabHistory("conv-1"))
+        assertNull(registry.select("conv-1", "control"))
+        val manual = requireNotNull(registry.newTab("conv-1", "human"))
+        assertEquals("Terminal 1", manual.title)
+        registry.adopt("human", "human-session")
+        assertTrue(registry.hasNativeTabHistory("conv-1"))
+        assertEquals(listOf("human-session"), registry.paneTabsFor("conv-1").map { it.sessionID })
+        // Hiding a control PTY does not raise the real two-session limit.
+        assertNull(registry.newTab("conv-1", "third"))
+    }
+
+    @Test
+    fun `closing or dropping human tabs never selects the GUI control`() {
+        val registry = TerminalTabRegistry()
+        registry.newTab("conv-1", "gui", paneVisible = false)
+        registry.adopt("gui", "control")
+        registry.newTab("conv-1", "human")
+        registry.adopt("human", "human-session")
+        assertNull(registry.close("human-session"))
+        assertNull(registry.selectedSessionID("conv-1"))
+        assertNotNull(registry.find("control"))
+        registry.newTab("conv-1", "replacement")
+        registry.drop("replacement")
+        assertNull(registry.current("conv-1"))
+        assertNotNull(registry.find("control"))
+    }
+
+    @Test
     fun `two tabs are admitted and a third is refused before any native open`() {
         val registry = TerminalTabRegistry()
         val first = registry.newTab("conv-1", "req-1")

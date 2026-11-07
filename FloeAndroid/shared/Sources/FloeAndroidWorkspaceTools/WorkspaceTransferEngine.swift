@@ -75,6 +75,8 @@ public final class WorkspaceTransferEngine: @unchecked Sendable {
         var baseline: WorkspaceBaselineScan?
         var mirroredKeys: [String] = []      // ordered, transferable entries only
         var opsSinceRunRecheck = 0
+        var importApplied = false
+        var inputAdoptions: [String: String] = [:]
         // export
         var received: [WorkspaceReceivedEntry] = []
         var receivedBySeq: [Int64: WorkspaceReceivedEntry] = [:]
@@ -353,15 +355,94 @@ public final class WorkspaceTransferEngine: @unchecked Sendable {
     public func baselineFinish(sessionKey: String, appliedCount: Int64, appliedBytes: Int64) throws -> [String: Any] {
         guard let session = fetch(sessionKey) else { throw WorkspaceTransferError.noSession }
         try recheck(session, full: true)
-        session.lock.lock()
-        guard session.state == .baselineReady else {
-            session.lock.unlock(); throw WorkspaceTransferError.malformed
+        do {
+            session.lock.lock()
+            defer { session.lock.unlock() }
+            guard session.state == .baselineReady else { throw WorkspaceTransferError.malformed }
+            try session.journal.append(["record": "importApplied", "appliedCount": appliedCount,
+                                        "appliedBytes": appliedBytes])
+            session.importApplied = true
         }
-        try session.journal.append(["record": "importApplied", "appliedCount": appliedCount,
-                                    "appliedBytes": appliedBytes])
-        session.lock.unlock()
         lock.lock(); bump("baselineFinish"); lock.unlock()
         return ["state": "ready"]
+    }
+
+    /// The live owner adopts ONLY an input actually created from a second
+    /// grant's immutable Core snapshot. Existing owner entries are never
+    /// rebased: doing so would bless stale guest bytes over later Core edits.
+    /// The caller invokes this after atomic missing-only creation, before
+    /// aborting the source snapshot. Final writes still use the original CAS.
+    public func adoptInput(sessionKey: String, sourceSessionKey: String, index: Int64) throws -> [String: Any] {
+        guard sessionKey != sourceSessionKey,
+              let owner = fetch(sessionKey), let source = fetch(sourceSessionKey) else {
+            throw WorkspaceTransferError.noSession
+        }
+        try recheck(owner, full: true)
+        try recheck(source, full: true)
+        // Both keys are opaque capabilities. A matching project label alone
+        // cannot bridge different roots, epochs or owner fingerprints.
+        guard owner.binding.projectID == source.binding.projectID,
+              owner.binding.rootEpoch == source.binding.rootEpoch,
+              owner.binding.workspaceRootPath == source.binding.workspaceRootPath,
+              owner.binding.workspaceFingerprint == source.binding.workspaceFingerprint else {
+            throw WorkspaceTransferError.proofRefused(code: "inputOwnerMismatch")
+        }
+        let first = sessionKey < sourceSessionKey ? owner : source
+        let second = sessionKey < sourceSessionKey ? source : owner
+        first.lock.lock(); second.lock.lock()
+        defer { second.lock.unlock(); first.lock.unlock() }
+        guard owner.state == .baselineReady, owner.importApplied, !owner.abortRequested,
+              source.state == .baselineReady, !source.abortRequested,
+              index >= 0, index < Int64(source.mirroredKeys.count),
+              var merged = owner.baseline,
+              let entry = source.baseline?.entries[source.mirroredKeys[Int(index)]],
+              entry.skipped == nil else {
+            throw WorkspaceTransferError.malformed
+        }
+        let path = entry.relativePath
+        let provenance = sourceSessionKey + ":" + String(index)
+        if let existing = merged.entries[path] {
+            guard existing == entry, owner.inputAdoptions[path] == provenance else {
+                throw WorkspaceTransferError.proofRefused(code: "inputAlreadyOwned")
+            }
+            return ["state": "adopted"]
+        }
+        let budgets = owner.binding.budgets
+        _ = try WorkspaceRelativePath.validate(path, budgets: budgets)
+        guard merged.entries.count < budgets.entryCount,
+              entry.size >= 0,
+              entry.kind != .file || (entry.size <= budgets.maximumEntryBytes &&
+                  entry.size <= budgets.totalBytes - merged.totalMirroredBytes) else {
+            throw WorkspaceTransferError.budgetExceeded(code: "inputBaseline")
+        }
+        merged.entries[path] = entry
+        switch entry.kind {
+        case .file:
+            merged.totalMirroredBytes += entry.size
+            merged.mirroredFileCount += 1
+        case .directory: merged.directoryCount += 1
+        case .symlink: merged.safeLinkCount += 1
+        }
+        // Preserve the old durable manifest until the entire replacement is
+        // written and synced. No truncation of the original recovery record.
+        let staged = owner.paths.sessionDirectory + "/baseline-input-" + UUID().uuidString + ".jsonl"
+        defer { try? FileManager.default.removeItem(atPath: staged) }
+        try WorkspaceBaselineScanner.writeManifest(manifestPath: staged, plan: merged, budgets: budgets)
+        guard rename(staged, owner.paths.baselineManifest) == 0 else {
+            throw WorkspaceTransferError.ioFailed(stage: "inputBaselineRename", errnoCode: Int32(errno))
+        }
+        // A committed rename must also update the live authority even if a
+        // subsequent durability receipt fails. Never export using an older
+        // in-memory baseline after publishing the new durable representation.
+        owner.baseline = merged
+        owner.mirroredKeys = merged.entries.keys.filter { merged.entries[$0]?.skipped == nil }.sorted()
+        owner.inputAdoptions[path] = provenance
+        guard WorkspaceNoFollow.fsyncDirectory(owner.paths.sessionDirectory) else {
+            throw WorkspaceTransferError.ioFailed(stage: "inputBaselineDirectorySync", errnoCode: Int32(errno))
+        }
+        try owner.journal.append(["record": "baselineInputAdopted", "sourceSessionKey": sourceSessionKey,
+                                  "index": index, "entry": entry.dictionaryValue])
+        return ["state": "adopted"]
     }
 
     // MARK: - Export

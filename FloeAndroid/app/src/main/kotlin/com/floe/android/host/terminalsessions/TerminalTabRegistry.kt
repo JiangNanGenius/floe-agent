@@ -38,6 +38,7 @@ internal data class TerminalTabView(
     val purpose: String,
     val selected: Boolean,
     val pending: Boolean,
+    val paneVisible: Boolean = true,
 ) {
     /** A pending reservation is NOT a native session: it never counts as a
      *  live tab (no live dot, no attach, no live-file identity). */
@@ -54,6 +55,7 @@ internal class TerminalTabRegistry {
         var phase: String,
         var purpose: String,
         var pendingRequestID: String?,
+        val paneVisible: Boolean,
     )
 
     private val tabs = LinkedHashMap<String, Tab>() // tabID -> tab (insertion order = strip order)
@@ -76,9 +78,14 @@ internal class TerminalTabRegistry {
                 purpose = tab.purpose,
                 selected = tab.tabID == current,
                 pending = tab.pendingRequestID != null,
+                paneVisible = tab.paneVisible,
             )
         }
     }
+
+    @Synchronized
+    fun paneTabsFor(conversationID: String): List<TerminalTabView> =
+        tabsFor(conversationID).filter { it.paneVisible }
 
     @Synchronized
     fun current(conversationID: String): TerminalTabView? {
@@ -100,10 +107,11 @@ internal class TerminalTabRegistry {
      */
     @Synchronized
     fun newTab(conversationID: String, requestID: String,
-               title: String? = null, purpose: String = "interactive"): TerminalTabView? {
+               title: String? = null, purpose: String = "interactive",
+               paneVisible: Boolean = true): TerminalTabView? {
         if (tabs.values.count { it.conversationID == conversationID } >= TerminalTabLimits.MAX_TABS) return null
         if (tabs.values.any { it.pendingRequestID == requestID }) return null
-        val existingTitles = tabs.values.filter { it.conversationID == conversationID }.map { it.title }.toSet()
+        val existingTitles = tabs.values.filter { it.conversationID == conversationID && it.paneVisible }.map { it.title }.toSet()
         val ordinal = generateSequence(1) { it + 1 }.first {
             "${TerminalTabLimits.DEFAULT_TITLE} $it" !in existingTitles
         }
@@ -115,12 +123,13 @@ internal class TerminalTabRegistry {
             phase = "starting",
             purpose = purpose,
             pendingRequestID = requestID,
+            paneVisible = paneVisible,
         )
         tabs[tab.tabID] = tab
         // A brand-new conversation selects its first tab; an existing selection
         // stays put (a second tab is opened in the background, like a real tab
         // strip) and the pane can switch explicitly.
-        selected.putIfAbsent(conversationID, tab.tabID)
+        if (paneVisible) selected.putIfAbsent(conversationID, tab.tabID)
         return findPending(requestID)
     }
 
@@ -139,7 +148,7 @@ internal class TerminalTabRegistry {
         // adoption for the old request must find no pending reservation.
         tab.pendingRequestID = null
         tabs[sessionID] = tab
-        nativeTabHistory.add(tab.conversationID)
+        if (tab.paneVisible) nativeTabHistory.add(tab.conversationID)
         if (selected[tab.conversationID] == oldID) selected[tab.conversationID] = sessionID
         return find(sessionID)
     }
@@ -150,11 +159,11 @@ internal class TerminalTabRegistry {
         val tab = tabs.values.firstOrNull { it.pendingRequestID == requestID } ?: return null
         tabs.remove(tab.tabID)
         if (selected[tab.conversationID] == tab.tabID) {
-            val next = tabs.values.firstOrNull { it.conversationID == tab.conversationID }
+            val next = tabs.values.firstOrNull { it.conversationID == tab.conversationID && it.paneVisible }
             if (next == null) selected.remove(tab.conversationID) else selected[tab.conversationID] = next.tabID
         }
         return TerminalTabView(tab.tabID, null, tab.conversationID, tab.title, "closed",
-            tab.purpose, false, false)
+            tab.purpose, false, false, tab.paneVisible)
     }
 
     @Synchronized
@@ -174,7 +183,7 @@ internal class TerminalTabRegistry {
 
     @Synchronized
     fun select(conversationID: String, tabID: String): TerminalTabView? {
-        val tab = tabs[tabID]?.takeIf { it.conversationID == conversationID } ?: return null
+        val tab = tabs[tabID]?.takeIf { it.conversationID == conversationID && it.paneVisible } ?: return null
         selected[conversationID] = tab.tabID
         // A pending tab has no sessionID, so `find(sessionID)` cannot address
         // it; resolve by the actual tab key instead. Selecting a pending tab
@@ -194,8 +203,8 @@ internal class TerminalTabRegistry {
         val tab = tabs.values.firstOrNull { it.sessionID == sessionID } ?: return null
         tabs.remove(tab.tabID)
         if (selected[tab.conversationID] == tab.tabID) {
-            val next = tabs.values.firstOrNull { it.conversationID == tab.conversationID && it.isLiveForSelection() }
-                ?: tabs.values.firstOrNull { it.conversationID == tab.conversationID }
+            val next = tabs.values.firstOrNull { it.conversationID == tab.conversationID && it.paneVisible && it.isLiveForSelection() }
+                ?: tabs.values.firstOrNull { it.conversationID == tab.conversationID && it.paneVisible }
             if (next == null) selected.remove(tab.conversationID)
             else selected[tab.conversationID] = next.tabID
         }

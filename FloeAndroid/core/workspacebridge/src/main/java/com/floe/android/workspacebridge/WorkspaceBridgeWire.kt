@@ -33,6 +33,7 @@ object WorkspaceBridgeWire {
     const val EXPORT_FINISH = IBinder.FIRST_CALL_TRANSACTION + 7    // in {} out outcome JSON (synced/conflict/aborted)
     const val ABORT = IBinder.FIRST_CALL_TRANSACTION + 8            // in {reason} out {state:"aborted"}
     const val STATS = IBinder.FIRST_CALL_TRANSACTION + 9            // in {} out counters only
+    const val ADOPT_INPUT = IBinder.FIRST_CALL_TRANSACTION + 10     // in {sourceSessionKey,index}; owner key belongs to this grant
 
     /** One control JSON object, UTF-8 bytes (same 64 KiB boundary family). */
     const val MAX_CONTROL_BYTES = 65_536

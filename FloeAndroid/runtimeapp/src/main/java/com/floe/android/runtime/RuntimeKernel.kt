@@ -442,10 +442,12 @@ class RuntimeKernel(context: Context) {
                     "journalCollision", "newInputPathUnavailable", "snapshotPathUnsafe", "snapshotDataMissing",
                     "snapshotHeaderMismatch", "snapshotTableShort", "snapshotMalformed", "budgetExceeded",
                     "diskReserveUnmet", "transportUncertain", "nativeRejected", "importCancelled", "importFailed",
+                    "inputBaselineAdoptionFailed", "inputBaselineAdoptionUncertain",
                 ) } ?: "workspace_transfer_failed"
             }
             return when (failure.message) {
                 "workspaceOwnerUnavailable" -> "workspace_owner_unavailable"
+                "inputOwnerUnavailable" -> "workspace_input_owner_unavailable"
                 "newWorkspaceInputsUnavailable" -> "workspace_inputs_unavailable"
                 "workspaceIdentityChanged" -> "workspace_identity_changed"
                 else -> null

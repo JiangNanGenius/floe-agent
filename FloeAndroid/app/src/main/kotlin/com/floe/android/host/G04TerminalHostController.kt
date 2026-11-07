@@ -870,7 +870,7 @@ internal class G04TerminalHostController(
 
     /* ---------------- G07.3A terminal tabs (real independent sessions) ---------------- */
 
-    fun tabs(conversationID: String): List<TerminalTabView> = tabRegistry.tabsFor(conversationID)
+    fun tabs(conversationID: String): List<TerminalTabView> = tabRegistry.paneTabsFor(conversationID)
 
     fun currentTab(conversationID: String): TerminalTabView? = tabRegistry.current(conversationID)
 
@@ -949,11 +949,12 @@ internal class G04TerminalHostController(
      */
     suspend fun openTab(conversationID: String, workspaceID: String?,
                         columns: Int, rows: Int,
+                        paneVisible: Boolean = true,
                         onRefusal: (TerminalActionReply) -> Unit = {}): TerminalTabView? {
         val epoch = boundEpoch
         if (epoch == 0L || stopped.get() || currentNativeEpoch() != epoch) return null
         val requestID = UUID.randomUUID().toString()
-        val pending = tabRegistry.newTab(conversationID, requestID) ?: return null
+        val pending = tabRegistry.newTab(conversationID, requestID, paneVisible = paneVisible) ?: return null
         notifyTabs(conversationID)
         pendingTabOpens[requestID] = PendingTabOpen(conversationID, epoch)
         val reply = submit(buildJsonObject {
@@ -982,7 +983,7 @@ internal class G04TerminalHostController(
             }
             bindToken(conversationID, token)
             tabRegistry.adopt(requestID, token)
-            if (sessionTokens[conversationID] == null) sessionTokens[conversationID] = token
+            if (paneVisible) sessionTokens.putIfAbsent(conversationID, token)
             engineEnsurerForTab(conversationID, token)
             clearInputIssue(conversationID)
             notifyTabs(conversationID)
@@ -1322,7 +1323,7 @@ internal class G04TerminalHostController(
                 // First-entry compatibility: if no tab layer was used for this
                 // conversation yet, project the accepted session as its first
                 // tab (a second tab can then be opened on top of it).
-                if (tabRegistry.tabsFor(conversationID).isEmpty()) {
+                if (tabRegistry.paneTabsFor(conversationID).isEmpty()) {
                     val seed = "seed:" + newToken
                     tabRegistry.newTab(conversationID, seed)?.let { tabRegistry.adopt(seed, newToken) }
                     // The first tab adopts the SAME emulator the pane already
@@ -2063,7 +2064,11 @@ internal class G04TerminalHostController(
                         tabRegistry.updatePhase(snapshot.sessionToken, snapshot.phase.wireName())
                         notifyTabs(conversation)
                     }
-                    if (snapshot.conversationID.isNotEmpty()) {
+                    // Private GUI command pumps retain their exact metadata,
+                    // output and capacity slot, but never become the human
+                    // terminal's fallback or receive its keyboard input.
+                    val paneSession = tabRegistry.find(snapshot.sessionToken)?.paneVisible != false
+                    if (paneSession && snapshot.conversationID.isNotEmpty()) {
                         // The legacy conversation key must never be overwritten
                         // by a SECOND tab's status: only the current default
                         // token (or a not-yet-bound one) projects there.
@@ -2138,7 +2143,7 @@ internal class G04TerminalHostController(
                         }
                     }
                     onTerminalStatus?.invoke(snapshot)
-                    snapshot.conversationID.takeIf { it.isNotEmpty() }?.let { key ->
+                    snapshot.conversationID.takeIf { paneSession && it.isNotEmpty() }?.let { key ->
                         sessionWatchers[key]?.forEach { it(snapshot) }
                     }
                 }

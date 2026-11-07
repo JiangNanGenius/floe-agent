@@ -93,10 +93,23 @@ class RuntimeWorkspaceSession(
     fun importBeforeLaunch(cancel: WorkspaceCancelSignal): WorkspaceImportReceipt =
         importSnapshot(cancel, newInputsOnly = false)
 
-    fun importNewInputs(cancel: WorkspaceCancelSignal): WorkspaceImportReceipt =
-        importSnapshot(cancel, newInputsOnly = true)
+    fun importNewInputs(cancel: WorkspaceCancelSignal,
+                        onCreated: (String, Long, StagedEntry) -> Unit): WorkspaceImportReceipt =
+        importSnapshot(cancel, newInputsOnly = true, onCreated = onCreated)
 
-    private fun importSnapshot(cancel: WorkspaceCancelSignal, newInputsOnly: Boolean): WorkspaceImportReceipt {
+    /** Extend this original owner's baseline with one actually installed input. */
+    fun adoptNewInput(sourceSessionKey: String, index: Long, entry: StagedEntry) {
+        check(imported && !inputOnly && !exportSettled) { "inputOwnerUnavailable" }
+        val result = requireOk(transact(WorkspaceBridgeWire.ADOPT_INPUT,
+            JSONObject().put("sourceSessionKey", sourceSessionKey).put("index", index)).first,
+            "inputBaselineAdoptionFailed")
+        if (result.optString("state") != "adopted") throw WorkspaceBridgeException("inputBaselineAdoptionUncertain")
+        importedBaseline[entry.path] = WorkspaceMirrorEntry(entry.kind, entry.size, entry.linkTarget, entry.digest)
+    }
+
+    private fun importSnapshot(cancel: WorkspaceCancelSignal, newInputsOnly: Boolean,
+                               onCreated: ((String, Long, StagedEntry) -> Unit)? = null): WorkspaceImportReceipt {
+        require(!newInputsOnly || onCreated != null)
         inputOnly = newInputsOnly
         require(!imported) { "import already completed for this session" }
         val state = requireOk(
@@ -137,6 +150,7 @@ class RuntimeWorkspaceSession(
         })
 
         val staged = mutableListOf<StagedEntry>()
+        val sourceIndices = mutableMapOf<String, Long>()
         var stagedBytes = 0L
         var retainedExistingInputs = 0
         var swapOutcome: WorkspaceImportSwap.SwapOutcome? = null
@@ -158,6 +172,7 @@ class RuntimeWorkspaceSession(
                 val components = WorkspaceRelativeValidation.validate(path)
                     ?: throw WorkspaceBridgeException("snapshotPathUnsafe")
                 val kind = headerReply.optString("kind")
+                sourceIndices[path] = index
                 if (newInputsOnly) {
                     val current = ops.kindNoFollow(destination, path)
                     if (current == SwapKind.UNREADABLE) throw WorkspaceBridgeException("newInputPathUnavailable")
@@ -226,7 +241,9 @@ class RuntimeWorkspaceSession(
 
             // Phase 2: atomic swap into the STABLE destination.
             swapOutcome = try {
-                if (newInputsOnly) swap.applyMissingOnly(staged) { cancel.shouldCancel() || !grant.alive() }
+                if (newInputsOnly) swap.applyMissingOnly(staged, onCreated = { entry ->
+                    checkNotNull(onCreated).invoke(key, checkNotNull(sourceIndices[entry.path]), entry)
+                }) { cancel.shouldCancel() || !grant.alive() }
                 else swap.apply(staged) { cancel.shouldCancel() || !grant.alive() }
             } catch (failure: WorkspaceSwapException) {
                 if (newInputsOnly) throw WorkspaceBridgeException(failure.code, failure)

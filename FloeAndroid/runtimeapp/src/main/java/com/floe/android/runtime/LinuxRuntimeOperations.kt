@@ -698,9 +698,12 @@ internal class LinuxRuntimeOperations(
                     receipt.preservedUnsyncedCount + receipt.unchangedCount).toLong()
                 check(!isCancelled())
             } else {
+                val baselineOwner = checkNotNull(sharedOwner?.workspace ?: deferredExports[projectID]?.workspace) {
+                    "inputOwnerUnavailable"
+                }
                 openWorkspaceSession(workspaceGrant, projectID, runID, workspace).use { transfer ->
                     val receipt = transfer.importNewInputs(
-                        WorkspaceCancelSignal { isCancelled() })
+                        WorkspaceCancelSignal { isCancelled() }, baselineOwner::adoptNewInput)
                     check(receipt.skippedCount == 0 && receipt.conflictPaths.isEmpty()) { "newWorkspaceInputsUnavailable" }
                     newInputEntries = receipt.createdCount
                     retainedInputEntries = receipt.retainedExistingCount
@@ -1003,9 +1006,12 @@ internal class LinuxRuntimeOperations(
                     receipt.preservedUnsyncedCount + receipt.unchangedCount).toLong()
                 check(!cancelled())
             } else {
+                val baselineOwner = checkNotNull(sharedOwner?.workspace ?: deferredExports[projectID]?.workspace) {
+                    "inputOwnerUnavailable"
+                }
                 openWorkspaceSession(workspaceGrant, projectID, runID, workspace).use { transfer ->
                     val receipt = transfer.importNewInputs(
-                        WorkspaceCancelSignal { cancelled() })
+                        WorkspaceCancelSignal { cancelled() }, baselineOwner::adoptNewInput)
                     check(receipt.skippedCount == 0 && receipt.conflictPaths.isEmpty()) { "newWorkspaceInputsUnavailable" }
                     newInputEntries = receipt.createdCount
                     retainedInputEntries = receipt.retainedExistingCount

@@ -86,7 +86,7 @@ class CoreWorkspaceGrant private constructor(
             reply?.writeString(WorkspaceBridgeWire.DESCRIPTOR)
             return true
         }
-        if (code < WorkspaceBridgeWire.GET_STATE || code > WorkspaceBridgeWire.STATS) {
+        if (code < WorkspaceBridgeWire.GET_STATE || code > WorkspaceBridgeWire.ADOPT_INPUT) {
             return super.onTransact(code, data, reply, flags)
         }
         val peer = RuntimePeerVerifier(context)
@@ -212,6 +212,17 @@ class CoreWorkspaceGrant private constructor(
             }
             WorkspaceBridgeWire.STATS -> {
                 WorkspaceParcelIO.writeReply(reply, JSONObject(String(authority.stats(), Charsets.UTF_8)))
+            }
+            WorkspaceBridgeWire.ADOPT_INPUT -> {
+                require(incoming == null && control.keys().asSequence().toSet() == setOf("sourceSessionKey", "index"))
+                val source = control.get("sourceSessionKey")
+                val index = control.get("index")
+                require(source is String && source.matches(Regex(WorkspaceBridgeWire.SESSION_KEY_REGEX)))
+                require(index is Int || index is Long)
+                val ordinal = (index as Number).toLong()
+                require(ordinal >= 0)
+                WorkspaceParcelIO.writeReply(reply, JSONObject(String(
+                    authority.adoptInput(sessionKey, source, ordinal), Charsets.UTF_8)))
             }
             else -> writeError(reply, "unknownTransaction")
         }

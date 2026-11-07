@@ -1471,6 +1471,36 @@ class G04TerminalHostControllerTest {
     // MARK: - G07.3A real independent tabs (authored)
 
     @Test
+    fun guiControlStatusNeverBecomesTheHumanTerminalOrItsFallback() {
+        val (controller, _) = boundController()
+        val registry = tabRegistry(controller)
+        registry.newTab("c1", "gui-request", paneVisible = false)
+        registry.adopt("gui-request", "gui-control")
+        seedMap<String>(controller, "tokenConversations")["gui-control"] = "c1"
+        val observed = mutableListOf<String>()
+        val detach = controller.watchSessions("c1") { observed.add(it.sessionToken) }
+        fun status(token: String) = controller.handleEvent(0L,
+            """{"type":"terminalStatus","conversationID":"c1","sessionToken":"$token","phase":"running","purpose":"interactive"}""".toByteArray())
+        assertTrue(status("gui-control"))
+        assertEquals("gui-control", controller.snapshotFor("gui-control")?.sessionToken)
+        assertTrue(controller.tabs("c1").isEmpty())
+        assertNull(controller.currentSnapshot("c1"))
+        assertFalse(controller.hasTabHistory("c1"))
+        assertTrue(observed.isEmpty())
+
+        registry.newTab("c1", "human-request")
+        registry.adopt("human-request", "human")
+        seedMap<String>(controller, "sessionTokens")["c1"] = "human"
+        seedMap<String>(controller, "tokenConversations")["human"] = "c1"
+        assertTrue(status("human"))
+        assertTrue(status("gui-control"))
+        assertEquals("human", controller.currentSnapshot("c1")?.sessionToken)
+        assertEquals(listOf("human"), observed)
+        assertEquals(listOf("human"), controller.tabs("c1").map { it.sessionID })
+        detach()
+    }
+
+    @Test
     fun twoTabsReceiveOnlyTheirOwnOutputAndTheirOwnStatus() {
         val (controller, _) = boundController(Dispatchers.Unconfined)
         val tokens = seedMap<String>(controller, "sessionTokens")
