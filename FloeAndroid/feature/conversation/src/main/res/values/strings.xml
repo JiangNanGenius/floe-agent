@@ -121,6 +121,7 @@
 
     <!-- approvals -->
     <string name="approval_required">Approval required</string>
+    <string name="approval_model_missing">No approval model is selected. Review this action, or choose an approval model in Settings.</string>
     <string name="approval_action">Action</string>
     <string name="approval_scope_label">Scope</string>
     <string name="approval_evidence">Evidence</string>

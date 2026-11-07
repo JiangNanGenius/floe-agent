@@ -174,7 +174,9 @@ fun ConversationApprovalRow(
             }
             if (card.reason.isNotEmpty() && !reasonIsSlotConflict) {
                 FloeText(
-                    card.reason,
+                    if (card.reason == "No approval model is configured for this sensitive action") {
+                        stringResource(R.string.approval_model_missing)
+                    } else card.reason,
                     style = Floe.typography.metadata,
                     color = if (gateStopped) colors.destructive else colors.secondaryLabel,
                 )

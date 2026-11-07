@@ -120,6 +120,7 @@
 
     <!-- 授权 -->
     <string name="approval_required">需要授权</string>
+    <string name="approval_model_missing">未设置审批模型。请确认本次操作，或在设置中选择审批模型。</string>
     <string name="approval_action">操作</string>
     <string name="approval_scope_label">范围</string>
     <string name="approval_evidence">依据</string>
