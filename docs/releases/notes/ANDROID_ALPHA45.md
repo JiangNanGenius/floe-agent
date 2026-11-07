@@ -7,6 +7,7 @@
 - 模型角色和辅助模型有未保存修改时，在页头提供原有保存、取消操作，保留草稿及版本冲突处理。
 - 条件计划按真实充电状态观察，覆盖插电但暂停充电以及不拔线恢复充电的变化；电量变化不重复创建条件事件。
 - 手机界面观察的有界有效期纳入模型决策及审批的实际耗时；派发前仍核对任务、授权、页面代次和真实节点。
+- 修复系统语音可用性检测与切后台之间的互相等待，避免页面失去响应。
 - 提供完整 APK，以及 Alpha44 到 Alpha45 的增量包。
 
 ## Known issues / 已知问题
@@ -20,5 +21,7 @@ This intermediate prerelease makes phone settings denser while preserving system
 Charging schedules observe actual charging transitions, including paused charging while plugged in and resumption without reconnecting the cable. Battery-level changes alone do not create duplicate condition events. A full APK and an Alpha44-to-Alpha45 delta are provided.
 
 The bounded phone-observation lifetime now accommodates cloud planning and approval latency. Every dispatch still checks task ownership, current authorization, page generation and the live target node.
+
+System speech-availability checks run outside the voice-state lock, avoiding a deadlock with foreground changes.
 
 This is an intermediate version. A fresh Alpha44 Samsung task passed launch, observation and the first-run approval-mode display, but its first click expired after a 32-second decision path exceeded the 30-second observation lifetime. No calculation completed. This version repairs that bound; no additional real model call has been made. Original failures and tasks remain preserved without resume or retry. Conditional schedules, project isolation and further visual refinement remain under validation; existing physical CAD evidence covers one STL. Compilation alone does not verify permissions, third-party editors or manufacturer-specific behavior.

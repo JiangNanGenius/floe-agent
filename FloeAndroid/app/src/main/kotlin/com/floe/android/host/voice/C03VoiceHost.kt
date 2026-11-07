@@ -260,9 +260,12 @@ class C03VoiceHost(
         } else {
             true
         }
+        // The system adapter may wait for the main Looper. Probe before
+        // taking stateLock so onPause/stopSpeaking can update on that Looper.
+        val recognizerAvailable = recognizer.isAvailable()
         update { current ->
             current.copy(
-                recognizerAvailable = recognizer.isAvailable(),
+                recognizerAvailable = recognizerAvailable,
                 microphonePermissionGranted = granted,
             )
         }
