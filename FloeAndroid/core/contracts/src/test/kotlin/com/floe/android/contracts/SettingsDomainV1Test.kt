@@ -422,7 +422,7 @@ class SettingsDomainV1Test {
                 it.command == "content.read"
         })
         assertEquals(115, entries.size)
-        assertEquals(20, BridgeProtocolV3.CONFIGURATION_SCOPES.size)
+        assertEquals(21, BridgeProtocolV3.CONFIGURATION_SCOPES.size)
     }
 
     @Test

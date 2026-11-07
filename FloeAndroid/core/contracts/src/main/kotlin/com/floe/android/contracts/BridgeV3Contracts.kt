@@ -46,7 +46,7 @@ object BridgeProtocolV3 {
     val STAGED_OPERATIONS = listOf("command.submit", "event.poll", "effect.poll")
 
     /**
-     * Closed host-owned configuration vocabulary (20 declared labels).
+     * Closed host-owned configuration vocabulary (21 declared labels).
      * Active command labels are providers/models/preferences/catalog/skills/
      * mcp/settings.websearch/conversations/capabilities/system/attachmentStaging
      * plus the five additive Settings-domain P0 labels below;
