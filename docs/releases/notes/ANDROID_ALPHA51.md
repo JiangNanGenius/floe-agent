@@ -11,9 +11,9 @@
 
 ## 已知问题 / Known issues
 
-这是持续迭代的中间版本。上一版三星锁屏网络触发没有生成运行记录，原现场保留，本轮修复仍需按真实场景确认。手机观察间歇失效、跨项目图形隔离、专业软件保存及全局界面精修继续推进；本版不代表全应用验收完成。
+这是持续迭代的中间版本。此前三星锁屏网络触发没有生成运行记录；本轮补齐了实际发现的命令路由遗漏，原现场保留，长期待机及不同系统调度仍未完全验证。手机观察间歇失效、跨项目图形隔离、专业软件保存及全局界面精修继续推进；本版不代表全应用验收完成。
 
-This intermediate build does not represent full-app acceptance. The previous Samsung locked-screen network trigger produced no occurrence; its original evidence is retained and this repair still needs scenario-specific confirmation. Intermittent phone observations, cross-project graphics isolation, professional editor saves and broader UI refinement remain under iteration.
+This intermediate build does not represent full-app acceptance. The earlier Samsung locked-screen network trigger produced no occurrence. This iteration repairs the observed command-routing omission and preserves the original failure; extended idle and other system scheduling behavior are not fully verified. Intermittent phone observations, cross-project graphics isolation, professional editor saves and broader UI refinement remain under iteration.
 
 ## 更新 / Updating
 
