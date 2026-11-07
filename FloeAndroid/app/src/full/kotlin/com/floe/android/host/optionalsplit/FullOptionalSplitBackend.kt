@@ -30,6 +30,7 @@ import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -57,6 +58,7 @@ internal class FullOptionalSplitBackend(
     private val gate = Any()
     @Volatile private var job: Job? = null
     @Volatile private var cancellationJob: Job? = null
+    private var terminalWait: Job? = null
     @Volatile private var downloading: HttpURLConnection? = null
     private var activity = WeakReference<Activity>(null)
     private var pending: Intent? = null
@@ -246,14 +248,21 @@ internal class FullOptionalSplitBackend(
         }
     }
 
-    override fun onInstallResult(intent: Intent) {
+    override fun onInstallResult(intent: Intent) = synchronized(PackageInstallAdmission.lock) {
+        handleInstallResult(intent)
+    }
+
+    private fun handleInstallResult(intent: Intent) {
         if (cancellationJob?.isActive == true) return
         if (intent.getIntExtra("session", -1) != prefs.getInt("session", -2) ||
             intent.getStringExtra("token") != prefs.getString("token", null)
         ) {
             return
         }
+        terminalWait?.cancel()
+        terminalWait = null
         val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
+        android.util.Log.i("FloeOptionalSplit", "result module=${spec.module} status=$status")
         if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
             pending = if (Build.VERSION.SDK_INT >= 33) {
                 intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
@@ -293,20 +302,21 @@ internal class FullOptionalSplitBackend(
         this.activity = WeakReference(activity)
         if (job?.isActive == true || cancellationJob?.isActive == true) return
         if (prefs.contains("session")) {
+            val ownedSession = prefs.getInt("session", -1)
             val session = context.packageManager.packageInstaller
-                .getSessionInfo(prefs.getInt("session", -1))
+                .getSessionInfo(ownedSession)
             if (session == null) {
                 val remove = prefs.getBoolean("remove", false)
                 val versionMatches = context.packageManager.getPackageInfo(context.packageName, 0)
                     .longVersionCode == prefs.getLong("version", -1)
-                prefs.edit().remove("session").remove("token").remove("staged").remove("remove").commit()
                 val present = spec.installed(context)
                 if (versionMatches && present != remove) {
+                    prefs.edit().remove("session").remove("token").remove("staged").remove("remove").commit()
                     if (present) SplitCompat.install(context)
                     if (present) documentReturns?.completedInProcess(spec.module)
                     emit(OptionalComponentState(if (present) "installed" else "missing"))
                     refresh()
-                } else emit(OptionalComponentState("failed", failure = "component_install_unconfirmed"))
+                } else awaitTerminalResult(ownedSession)
             }
         } else if (prefs.contains("staged") &&
             context.packageManager.canRequestPackageInstalls() &&
@@ -327,6 +337,38 @@ internal class FullOptionalSplitBackend(
         }
     }
 
+    /** The confirmation Activity can return before the terminal broadcast.
+     * Session disappearance is not a failure receipt: keep its exact token
+     * briefly so a genuine ABORTED result can still settle cancellation. */
+    private fun awaitTerminalResult(ownedSession: Int) {
+        if (terminalWait?.isActive == true) return
+        pending = null
+        emit(OptionalComponentState("installing"))
+        terminalWait = scope.launch(Dispatchers.IO) {
+            delay(2_000)
+            synchronized(PackageInstallAdmission.lock) {
+                if (prefs.getInt("session", -1) != ownedSession ||
+                    context.packageManager.packageInstaller.getSessionInfo(ownedSession) != null) return@synchronized
+                val remove = prefs.getBoolean("remove", false)
+                val versionMatches = context.packageManager.getPackageInfo(context.packageName, 0)
+                    .longVersionCode == prefs.getLong("version", -1)
+                val present = spec.installed(context)
+                prefs.edit().remove("session").remove("token").remove("staged").remove("remove").commit()
+                if (versionMatches && present != remove) {
+                    if (present) {
+                        SplitCompat.install(context)
+                        documentReturns?.completedInProcess(spec.module)
+                    }
+                    emit(OptionalComponentState(if (present) "installed" else "missing"))
+                    refresh()
+                } else {
+                    documentReturns?.disarm(spec.module, ownedSession)
+                    emit(OptionalComponentState("failed", failure = "component_install_unconfirmed"))
+                }
+            }
+        }
+    }
+
     override fun confirm(activity: Activity) {
         val intent = pending
         if (intent != null) {
@@ -343,6 +385,8 @@ internal class FullOptionalSplitBackend(
         synchronized(gate) {
             if (cancellationJob?.isActive == true) return
             val previous = job
+            terminalWait?.cancel()
+            terminalWait = null
             val connection = downloading
             previous?.cancel()
             publish(OptionalComponentState("cancelling", cachedBytes = cacheBytes()))
