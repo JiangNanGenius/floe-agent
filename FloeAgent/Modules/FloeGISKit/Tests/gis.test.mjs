@@ -7,6 +7,7 @@ import { createGIS,sampleGIS,normalizeGIS,registerModelCommands,proj4,defineCRS,
 import { registerAnalysis,compileRasterExpression,terrainRaster,contours,shortestPath,rasterStatistics,geometryDistanceMeters } from '../Web/analysis.js';
 import { writeWKB,readWKB,parseCSV,writeGeoPackage,readGeoPackage,writeGeoTIFF,readGeoTIFF,writeASCIIGrid,readASCIIGrid,exportGIS,importGIS,registerFormats,writeShapefile,writeMBTiles,readMBTiles,sql,readWorldFile,writeWorldFile,querySQL } from '../Web/formats.js';
 import { registerViewCommands, makeMapSVG, layoutExtent, GISView } from '../Web/view.js';
+import { gisUI,gisTable,gisNativeSnapshot,registerGISUI } from '../Web/native.js';
 import { vectorColor, legendEntries } from '../Web/symbology.js';
 import { engine as bundledEngine } from '../Web/main.js';
 import { unzipSync, unzlibSync } from 'fflate';
@@ -189,4 +190,35 @@ test('official SQLite closes parser statements when iteration ends early and doe
     assert.throws(()=>db.exec('SELECT lower_quartile(1)'),/no such function/);
     assert.equal(db.exec('SELECT sqlite_version()')[0].values[0][0],'3.54.1');
   }finally{db.close();}
+});
+
+const makeNative=()=>{const e=new EditorEngine({kind:'gis',create:sampleGIS,normalize:normalizeGIS,nativeSnapshot:gisNativeSnapshot});registerModelCommands(e);registerAnalysis(e);registerFormats(e);registerViewCommands(e);registerGISUI(e);return e;};
+test('native GIS snapshot is a bounded projection without geometry, raster samples or tile bytes',()=>{
+  const e=makeNative(),features=Array.from({length:70},(_,i)=>({type:'Feature',id:i,geometry:{type:'Point',coordinates:[i/10,0]},properties:{name:'Site '+i,value:i,details:i===0?'x'.repeat(12000):'short'}})),layer=vectorLayer('Table',features);e.state.layers.push(layer,{id:'tiles',kind:'tiles',name:'Offline',visible:true,locked:true,opacity:1,crs:'EPSG:3857',group:'',tileCount:3,base64:'PRIVATE_TILE_BYTES',metadata:{format:'png'}});e.selection={layer:layer.id,features:[0]};
+  layer.style.unusedPayload='PRIVATE_STYLE_BYTES';e.state.layout.unusedPayload='PRIVATE_LAYOUT_BYTES';e.state.view.unusedPayload='PRIVATE_VIEW_BYTES';
+  const snapshot=e.nativeSnapshot(),serialized=JSON.stringify(snapshot);assert.equal(snapshot.table.rows.length,25);assert.equal(snapshot.table.pageCount,3);assert.equal(snapshot.selectedLayer.count,70);assert.equal(snapshot.selection.features[0].attributes.find(a=>a.name==='details').truncated,true);assert.equal(snapshot.table.rows[0].cells.find(a=>a.name==='details').truncated,true);assert.ok(!serialized.includes('PRIVATE_'));assert.ok(!serialized.includes('"geometry":'));assert.ok(!serialized.includes('"bands":'));assert.ok(serialized.length<50000);assert.equal(snapshot.kind,'gis');
+});
+test('native UI registry changes only transient UI state and canonical selection, with hidden read descriptors',async()=>{
+  const e=makeNative(),layer=e.state.layers[1],before=JSON.stringify(e.payload);e.selection={layer:layer.id,features:[]};
+  await run(e,'gis.ui.mode',{mode:'table'});await run(e,'gis.ui.options',{multiselect:true,snapping:false});await run(e,'gis.ui.selection',{layer:layer.id,features:[layer.data.features[0].id,'not-an-id']});await run(e,'gis.ui.table',{filter:'A',sort:'value',sortDescending:true,columns:['name','value'],page:9});
+  assert.equal(JSON.stringify(e.payload),before);assert.equal(e.nativeSnapshot().ui.mode,'table');assert.equal(e.nativeSnapshot().ui.multiselect,true);assert.equal(e.selection.features.length,1);assert.equal(e.nativeSnapshot().table.page,0);assert.equal(e.nativeSnapshot().table.rows[0].cells[0].name,'name');assert.ok(e.catalog().filter(c=>c.id.startsWith('gis.ui.')).every(c=>c.access==='read'&&c.sideEffecting&&c.hidden));
+  assert.equal(e.command('gis.ui.selection').fields.find(f=>f.key==='features').type,'json');assert.equal(e.command('gis.ui.options').fields.find(f=>f.key==='snapping').type,'checkbox');
+  await assert.rejects(run(e,'gis.ui.mode',{mode:'arbitrary-script'}),/Unknown/);await assert.rejects(run(e,'gis.ui.canvas',{action:'globalThis.eval'}),/Unknown/);
+  await assert.rejects(run(e,'gis.ui.selection',{layer:layer.id,features:'all'}),/must be an array/);await assert.rejects(run(e,'gis.ui.table',{onlySelected:'false'}),/Invalid table option/);
+});
+test('native attribute paging, filtering, sorting and selection remain linked to real editable features',async()=>{
+  const e=makeNative(),layer=vectorLayer('Rows',Array.from({length:70},(_,i)=>({type:'Feature',id:i,geometry:{type:'Point',coordinates:[i,0]},properties:{name:'Site '+i,value:i}})));e.state.layers.push(layer);await run(e,'gis.ui.selectLayer',{layer:layer.id});
+  await run(e,'gis.ui.table',{sort:'value',sortDescending:true,page:1,columns:['value']});let snapshot=e.nativeSnapshot();assert.equal(snapshot.table.rows[0].rawID,44);assert.equal(snapshot.table.rows.at(-1).rawID,20);assert.equal(snapshot.table.rows[0].cells.length,1);
+  await run(e,'attribute.set',{layer:layer.id,feature:44,field:'value',type:'number',value:'144'});assert.equal(e.state.layers.at(-1).data.features[44].properties.value,144);
+  await run(e,'gis.ui.selection',{layer:layer.id,features:[44,2]});await run(e,'gis.ui.table',{onlySelected:true,page:3});snapshot=e.nativeSnapshot();assert.equal(snapshot.table.rows.length,2);assert.equal(snapshot.table.page,0);assert.ok(snapshot.table.rows.every(row=>row.selected));
+  await run(e,'gis.ui.table',{onlySelected:false,filter:'Site 12'});assert.equal(e.nativeSnapshot().table.rows.length,1);assert.equal(e.nativeSnapshot().table.rows[0].rawID,12);await run(e,'gis.ui.table',{columns:[]});assert.equal(e.nativeSnapshot().table.columns.length,0);assert.equal(e.nativeSnapshot().table.rows[0].cells.length,0);
+  await run(e,'layer.properties',{layer:layer.id,visible:false,locked:true,group:'Native group',opacity:.4});assert.equal(e.nativeSnapshot().selectedLayer.visible,false);assert.equal(e.nativeSnapshot().selectedLayer.locked,true);assert.equal(e.nativeSnapshot().groups.find(g=>g.name==='Native group').layerIDs[0],layer.id);
+  await run(e,'group.properties',{group:'Native group',visible:true});assert.equal(e.nativeSnapshot().selectedLayer.visible,true);assert.equal(e.nativeSnapshot().selectedLayer.locked,true);
+  await run(e,'group.properties',{group:'Native group',locked:false});assert.equal(e.nativeSnapshot().selectedLayer.visible,true);assert.equal(e.nativeSnapshot().selectedLayer.locked,false);
+});
+test('truncated native values open a typed form with the full original value, including JSON',()=>{
+  const e=makeNative(),details='long-'.repeat(5000),json={items:Array.from({length:300},(_,i)=>i)},layer=vectorLayer('Details',[{type:'Feature',id:'full',geometry:{type:'Point',coordinates:[0,0]},properties:{details,json}}]);e.state.layers.push(layer);e.selection={layer:layer.id,features:['full']};
+  const attributes=e.nativeSnapshot().selection.features[0].attributes;assert.ok(attributes.find(f=>f.name==='details').truncated);assert.ok(attributes.find(f=>f.name==='json').truncated);
+  const form=e.formDescription('attribute.set',{layer:layer.id,feature:'full',field:'details',type:'string'});assert.equal(form.fields.find(f=>f.key==='value').default,details);
+  const jsonForm=e.formDescription('attribute.set',{layer:layer.id,feature:'full',field:'json',type:'json'});assert.deepEqual(JSON.parse(jsonForm.fields.find(f=>f.key==='value').default),json);
 });

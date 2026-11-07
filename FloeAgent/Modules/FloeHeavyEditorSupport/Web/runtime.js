@@ -70,6 +70,9 @@ export class EditorEngine {
     this.commands = new Map(); this.pending = new Map(); this.revision = 0;
     this.envelope = null; this.payload = { data: configuration.create(), history: { past: [], future: [] } };
     this.requestTail = Promise.resolve(); this.abortController = new AbortController(); this.state = this.payload.data;
+    this.nativeChrome=false;
+    let selection;
+    Object.defineProperty(this,'selection',{get:()=>selection,set:value=>{selection=value;this.notifyPresentation();},configurable:false});
     this.register({ id: 'document.save', title: t('保存', 'Save'), group: t('工程', 'Project'), access: 'edit', fields: [] }, () => ({ saved: true }));
     this.register({ id: 'document.inspect', title: t('工程信息', 'Project information'), group: t('工程', 'Project'), access: 'read', fields: [] }, () => ({ kind: configuration.kind, revision: this.revision, document: this.state }));
     this.register({ id: 'document.rename', title: t('重命名', 'Rename'), group: t('工程', 'Project'), access: 'edit', fields: [{ key: 'title', label: t('名称', 'Name'), type: 'text' }] }, args => { this.state.title = String(args.title || this.state.title); });
@@ -97,6 +100,23 @@ export class EditorEngine {
     });
     return {...descriptor,fields};
   }); }
+  commandIndex(){return [...this.commands.values()].map(({descriptor})=>({id:descriptor.id,title:descriptor.title,group:descriptor.group,access:descriptor.access,hidden:descriptor.hidden??false,sideEffecting:descriptor.sideEffecting??false,fields:(descriptor.fields??[]).map(({key,label,type})=>({key,label,type}))}));}
+  formDescription(id,values={}){
+    const descriptor=this.command(id),args={...values};
+    const fields=(descriptor.fields??[]).map(field=>{
+      const options=typeof field.options==='function'?field.options(this,args):field.options;
+      const initial=Object.hasOwn(values,field.key)?values[field.key]:typeof field.default==='function'?field.default(this,args):field.default;
+      if(initial!==undefined)args[field.key]=initial;
+      return {...field,default:initial,options};
+    });return {...descriptor,fields};
+  }
+  nativeSnapshot(){return this.configuration.nativeSnapshot?.(this)??{kind:this.configuration.kind,title:this.state.title,selection:this.selection??null};}
+  async setNativeChrome(value){this.nativeChrome=Boolean(value);if(this.root)this.root.classList.toggle('native-chrome',this.nativeChrome);await this.configuration.nativeChromeChanged?.(this,this.nativeChrome);this.notifyPresentation();}
+  notifyPresentation(){
+    if(!this.nativeChrome||this.presentationScheduled||!globalThis.webkit?.messageHandlers?.floeEditor)return;
+    this.presentationScheduled=true;
+    setTimeout(()=>{this.presentationScheduled=false;globalThis.webkit?.messageHandlers?.floeEditor?.postMessage({type:'presentationChanged'});},60);
+  }
   command(id) { return required(this.commands.get(id), 'Unknown editor command').descriptor; }
   async load(envelope) {
     if (envelope.kind !== this.configuration.kind) throw new Error('Wrong editor document');
@@ -126,7 +146,13 @@ export class EditorEngine {
         }
       }
       await this.render();
-      return { state: clone(this.payload), result: result?.result ?? result ?? null, artifacts: result?.artifacts ?? [] };
+      // Queries and presentation changes do not commit project data. Avoid
+      // copying an entire font/raster/history back for each native selection.
+      let value=result?.result??result??null;
+      if(result&&typeof result==='object'&&Object.hasOwn(result,'artifacts')&&!Object.hasOwn(result,'result')){
+        const {artifacts,...details}=result;value=Object.keys(details).length?details:null;
+      }
+      return { state: mutation?clone(this.payload):null, result: value, artifacts: result?.artifacts ?? [] };
     } catch (error) {
       if (previous) this.state = this.payload.data = previous;
       await this.render(); throw error;
@@ -166,6 +192,7 @@ export class EditorEngine {
     if (!this.root) this.createChrome();
     await this.configuration.render?.(this);
     this.titleNode.textContent = this.state.title ?? this.configuration.title;
+    this.root.classList.toggle('native-chrome',this.nativeChrome);this.notifyPresentation();
   }
   createChrome() {
     this.titleNode = element('strong', { text: this.configuration.title });
@@ -192,6 +219,7 @@ export class EditorEngine {
     }
   }
   showAction(action, preset = {}) {
+    if(this.nativeChrome&&globalThis.webkit?.messageHandlers?.floeEditor){webkit.messageHandlers.floeEditor.postMessage({type:'showCommand',command:action.id,arguments:preset});return;}
     const dialog = element('dialog', { class: 'action-dialog' });
     const form = element('form', { method: 'dialog' }, element('h2', { text: action.title }));
     const controls = [];
@@ -237,6 +265,7 @@ export class EditorEngine {
     dialog.append(form); document.body.append(dialog); dialog.addEventListener('close', () => dialog.remove()); dialog.showModal();
   }
   showResult(title, value) {
+    if(this.nativeChrome&&globalThis.webkit?.messageHandlers?.floeEditor){webkit.messageHandlers.floeEditor.postMessage({type:'showResult',title,value});return;}
     const dialog = element('dialog', { class: 'result-dialog' });
     dialog.append(element('h2', { text: title }));
     if (Array.isArray(value) && value.length && value.every(row => row && typeof row === 'object' && !Array.isArray(row))) {

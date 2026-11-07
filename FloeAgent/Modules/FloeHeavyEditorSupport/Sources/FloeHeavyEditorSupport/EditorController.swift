@@ -9,8 +9,12 @@ import WebKit
     public private(set) var isReady = false
     public private(set) var isWorking = false
     public private(set) var engineDiagnostics: [String] = []
+    public private(set) var presentation: EditorJSON = .object([:])
+    public private(set) var commandCatalog: [EditorJSON] = []
+    public var nativeModal: HeavyEditorNativeModal?
     public var errorMessage: String?
     public var importRequested = false
+    public private(set) var importCommand = "file.import"
     public var onAssistant: (() -> Void)?
     @ObservationIgnored public let webView: WKWebView
     @ObservationIgnored private let store: HeavyEditorProjectStore
@@ -26,6 +30,7 @@ import WebKit
     @ObservationIgnored private var activeCommand: String?
     @ObservationIgnored private var navigationBridge: HeavyEditorNavigation?
     @ObservationIgnored private var messageBridge: HeavyEditorMessageBridge?
+    @ObservationIgnored private var presentationRefresh: Task<Void, Never>?
 
     public init(descriptor: HeavyEditorDescriptor, document: HeavyEditorDocument,
                 store: HeavyEditorProjectStore, owner: HeavyEditorOwner, hooks: HeavyEditorHostHooks,
@@ -84,6 +89,56 @@ import WebKit
         guard fresh.id == document.id, fresh.kind == descriptor.kind else { throw HeavyEditorError.wrongDocument }
         document = fresh
         _ = try await call("return JSON.stringify(await window.FloeEditor.load(value));", value: try encoded(document))
+        if isReady { try await refreshPresentation() }
+    }
+    public func refreshPresentation() async throws {
+        guard isReady else { return }
+        try await hooks.authorize(access(.read, "document.presentation"))
+        let value = try await call("return JSON.stringify({presentation:window.FloeEditor.nativeSnapshot(),commands:window.FloeEditor.commandIndex()});", value: .null)
+        presentation = value["presentation"]; commandCatalog = value["commands"].array
+    }
+    public func commandForm(_ name: String, arguments: EditorJSON = .object([:])) async throws -> EditorJSON {
+        try await waitUntilReady()
+        guard allowedCommands.contains(name) else { throw HeavyEditorError.invalidCommand }
+        try await hooks.authorize(access(.read, "document.parameters"))
+        return try await call("return JSON.stringify(window.FloeEditor.formDescription(value.command,value.arguments));",
+            value: .object(["command": .string(name), "arguments": arguments]))
+    }
+    public func showCommand(_ name: String, preset: EditorJSON = .object([:])) {
+        guard isReady, allowedCommands.contains(name) else { return }
+        let metadata = commandCatalog.first { $0["id"].string == name }
+        if metadata?["access"].string == "importFile" { requestImport(name); return }
+        if metadata?["fields"].array.isEmpty == true {
+            runCommand(name, arguments: preset, showResult: metadata?["access"].string == "read" && metadata?["sideEffecting"].bool != true)
+            return
+        }
+        nativeModal = .command(.init(command: name, arguments: preset, baseRevision: document.revision))
+    }
+    public func requestImport(_ command: String = "file.import") {
+        guard allowedCommands.contains(command) else { return }
+        importCommand = command; importRequested = true
+    }
+    public func runCommand(_ name: String, arguments: EditorJSON = .object([:]), showResult: Bool = false) {
+        Task { @MainActor [self] in
+            do {
+                let response = try await execute(name, arguments: arguments)
+                if showResult { presentResult(name, value: response["result"]) }
+            } catch { errorMessage = error.localizedDescription }
+        }
+    }
+    public func presentResult(_ command: String, value: EditorJSON) {
+        let title = commandCatalog.first { $0["id"].string == command }?["title"].string ?? descriptor.title
+        nativeModal = .result(.init(title: title, value: value))
+    }
+    private func schedulePresentationRefresh() {
+        guard isReady, !isWorking, presentationRefresh == nil else { return }
+        presentationRefresh = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(50))
+            guard let self else { return }
+            defer { self.presentationRefresh = nil }
+            guard !self.isWorking else { return }
+            do { try await self.refreshPresentation() } catch { self.errorMessage = error.localizedDescription }
+        }
     }
     public func waitUntilReady(timeout: Duration = .seconds(30)) async throws {
         let deadline = ContinuousClock.now.advanced(by: timeout)
@@ -152,9 +207,11 @@ import WebKit
     fileprivate func ready() async {
         do {
             try await hooks.authorize(access(.read, "document.open"))
-            let catalog = try await call("return JSON.stringify(window.FloeEditor.catalog());", value: .null)
+            let catalog = try await call("return JSON.stringify(window.FloeEditor.commandIndex());", value: .null)
             allowedCommands = Set(catalog.array.compactMap { $0["id"].string })
+            _ = try await call("await window.FloeEditor.setNativeChrome(true);return 'null';", value: .null)
             try await reload(); isReady = true
+            try await refreshPresentation()
         } catch {
             let detail = (error as NSError).userInfo["WKJavaScriptExceptionMessage"].map { String(describing: $0) } ?? error.localizedDescription
             engineDiagnostics.append(String(detail.prefix(2048)))
@@ -166,6 +223,11 @@ import WebKit
         let id = message["requestID"].string ?? ""
         do {
             switch message["type"].string {
+            case "showCommand": if let command = message["command"].string { showCommand(command, preset: message["arguments"]) }; return
+            case "showResult":
+                nativeModal = .result(.init(title: message["title"].string ?? descriptor.title, value: message["value"]))
+                return
+            case "presentationChanged": schedulePresentationRefresh(); return
             case "engineFailure":
                 engineDiagnostics.append(String((message["message"].string ?? "Unknown engine failure").prefix(2048)))
                 if engineDiagnostics.count > 8 { engineDiagnostics.removeFirst(engineDiagnostics.count - 8) }
@@ -226,6 +288,7 @@ import WebKit
                 receipts.append(try encoded(receipt))
             }
             _ = try await call("window.FloeEditor.acknowledge(value); return 'null';", value: .number(Double(document.revision)))
+            try await refreshPresentation()
             if case .object(var object) = response { object["exports"] = .array(receipts); return .object(object) }
             throw HeavyEditorError.invalidDocument
         } catch {

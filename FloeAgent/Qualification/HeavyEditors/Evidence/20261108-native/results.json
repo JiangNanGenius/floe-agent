@@ -1,0 +1,158 @@
+{
+  "date": "2026-11-08",
+  "scope": "Independent macOS arm64 SwiftUI host and generic arm64 iOS Simulator compilation; production App and physical iPad are separate",
+  "nativeCompilation": {
+    "toolchain": "Xcode 27.2 (27B52)",
+    "macOS": "BUILD SUCCEEDED",
+    "iOSSimulator": "BUILD SUCCEEDED",
+    "iOSMinimum": "26.0",
+    "macOSMinimum": "15.0",
+    "commands": [
+      "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer bash FloeAgent/Qualification/HeavyEditors/script/build_and_run.sh --build-only",
+      "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer bash FloeAgent/Qualification/HeavyEditors/script/build_and_run.sh --sim-build"
+    ],
+    "simulatorBootedByThisTask": false,
+    "products": [
+      {
+        "executable": "Contents/MacOS/FloeHeavyEditorsQA.debug.dylib",
+        "sha256": "82ee3e1beed4dc975375aae5ec84cac5c9d07e605687c031d2fbe2e059467585",
+        "architecture": "arm64"
+      },
+      {
+        "executable": "FloeHeavyEditorsPadQA.debug.dylib",
+        "sha256": "8679d0bb61d3102ae3d2fe9e4729f0a48e950ae0c26a22535d1af83353c4d7d4",
+        "architecture": "arm64"
+      }
+    ]
+  },
+  "sourceManifest": "source-manifest.json",
+  "screenshots": [
+    {
+      "kind": "gis",
+      "file": "gis-swiftui-window.png",
+      "sha256": "4d5f3712e6998ce004b0d7b507ef844b57fc5a39b659f187821592021d958b91",
+      "scope": "Native domain controls; captured before final parent-route regrouping, later route verified separately"
+    },
+    {
+      "kind": "score",
+      "file": "score-swiftui-window.png",
+      "sha256": "cc38a792d2d50c616e84fd0678c4dabc366ea2949cf39f42aaacceb2c77a56ed",
+      "scope": "Native domain controls; captured before final parent-route regrouping, later route verified separately"
+    },
+    {
+      "kind": "font",
+      "file": "font-swiftui-window.png",
+      "sha256": "b3a99402499e21691adb116fcfe0a96a96353c9714fe9fbbedc2bc6e34751c5a",
+      "scope": "Native domain controls; captured before final parent-route regrouping, later route verified separately"
+    }
+  ],
+  "reusedUnchangedBridgeSmoke": {
+    "date": "2026-11-07T22:37:51Z",
+    "success": true,
+    "scope": "Persist/save/reopen/CAS, read-only transport guard and real managed-file export paths; prior source origin labels are superseded by parentRoutes",
+    "editors": [
+      {
+        "kind": "gis",
+        "commands": 84,
+        "revision": 2,
+        "reopenedEqual": true,
+        "staleMutationRejected": true,
+        "exportCount": 4
+      },
+      {
+        "kind": "score",
+        "commands": 61,
+        "revision": 10,
+        "reopenedEqual": true,
+        "staleMutationRejected": true,
+        "exportCount": 4
+      },
+      {
+        "kind": "font",
+        "commands": 78,
+        "revision": 4,
+        "reopenedEqual": true,
+        "staleMutationRejected": true,
+        "exportCount": 6
+      }
+    ]
+  },
+  "nativeInteraction": {
+    "success": true,
+    "host": "independent macOS SwiftUI qualification, no physical iPad",
+    "gis": {
+      "nativeAttributeEdit": 13,
+      "nativeSQLReadback": 13,
+      "durableRevision": 5
+    },
+    "font": {
+      "nativeCanvasDragThenParameterEdit": [
+        305,
+        735
+      ],
+      "durableRevision": 7,
+      "nativeInspectorToParameterSheet": true,
+      "parameterToResultView": true,
+      "exportName": "Floe Geometry.ttf",
+      "byteCount": 1528,
+      "sha256": "be6656cf4871e2b9133132707d01f11fefce11bcfa30be1317c35b80c35fff04",
+      "independentTTFCoordinateReadback": [
+        305,
+        735
+      ],
+      "advance": 620,
+      "reader": "opentype.js, separate from Rust fontc compiler"
+    },
+    "score": {
+      "nativeListSelectedMeasure": 2,
+      "engravedAXSelectedMeasure": 3,
+      "nativePianoInsertedPitch": "E4",
+      "durableXMLMeasure": 3,
+      "durableXMLDurationTicks": 960,
+      "durableRevision": 13,
+      "returnedTo": "notes attachments"
+    },
+    "parentRoutes": {
+      "scope": "independent native qualification host, production App integration in progress",
+      "rootStandaloneCreateKinds": [
+        "gis"
+      ],
+      "score": {
+        "path": [
+          "Music editor",
+          "Score"
+        ],
+        "existingOriginalReopened": true,
+        "closeReturnedTo": "Music editor"
+      },
+      "font": {
+        "path": [
+          "Settings",
+          "Font manager",
+          "Font editing"
+        ],
+        "existingOriginalReopened": true,
+        "closeReturnedTo": "Font manager"
+      }
+    }
+  },
+  "focusedChecks": {
+    "sharedRuntime": {
+      "command": "node --test FloeAgent/Modules/FloeHeavyEditorSupport/Tests/runtime.test.mjs",
+      "passed": 5
+    },
+    "gisNativePresentation": {
+      "initialPassed": 35,
+      "finalAffectedPassed": 5
+    },
+    "scoreNativePresentationAndActivation": {
+      "passed": 17,
+      "originalFailureAssertionsPreserved": true
+    },
+    "fontNativePresentation": {
+      "passed": 18
+    }
+  },
+  "productionIntegration": "Bounded App wiring is in progress under the mainline owner: score inside music, font design inside Settings Font manager. This record does not assert those App connections are accepted.",
+  "focusedChecksExecution": "Node/Web behavioral checks; native compilation and CUA interactions are recorded separately"
+}

@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: MPL-2.0
+import assert from 'node:assert/strict';
+import {EditorEngine} from '../../FloeHeavyEditorSupport/Web/runtime.js';
+import {createScore,normalizeScore} from '../Web/model.js';
+import {registerParts} from '../Web/parts.js';
+import {registerEditing} from '../Web/edit.js';
+import {registerNotation} from '../Web/notation.js';
+import {registerAnalysisAndLayout,diagnose} from '../Web/analysis.js';
+import {scoreDocument,serialize} from '../Web/model.js';
+import {registerPlayback} from '../Web/playback.js';
+import {registerFormats} from '../Web/formats.js';
+import {registerScoreNative,scoreNativeSnapshot,scoreTransportSnapshot} from '../Web/native.js';
+import {checkScoreActivation} from './accessibility.js';
+export async function run(){
+ const checks=[],engine=new EditorEngine({kind:'score',create:createScore,normalize:normalizeScore,nativeSnapshot:scoreNativeSnapshot});
+ for(const register of[registerParts,registerEditing,registerNotation,registerAnalysisAndLayout,registerPlayback,registerFormats,registerScoreNative])register(engine);
+ engine.render=async()=>{};let audioCalls=0;engine.native=async()=>{audioCalls++;throw new Error('No audio should be started by UI-state commands');};
+ const execute=async(command,args={})=>{const response=await engine.execute({command,arguments:args,revision:engine.revision});if(['edit','importFile'].includes(engine.command(command).access))engine.acknowledge(engine.revision+1);return response;};
+ assert.deepEqual(scoreNativeSnapshot({state:{},revision:0}).parts,[]);checks.push('An empty/unbuilt presentation returns a small valid DTO');
+ await engine.load({kind:'score',revision:0,content:createScore()});await execute('score.project.template',{template:'piano',bars:4});
+ let snapshot=engine.nativeSnapshot();assert.equal(snapshot.parts.length,1);assert.equal(snapshot.parts[0].staves,2);assert.equal(snapshot.measures.length,4);assert.equal(snapshot.current.index,1);checks.push('Native outline resolves the actual piano, staves and measure identities');
+ await execute('score.ui.select',{part:snapshot.parts[0].id,staff:2});assert.equal(engine.nativeSnapshot().input.staff,2);await execute('score.ui.select',{part:snapshot.parts[0].id,staff:1});checks.push('Native staff rows select the actual part and input staff through one transient command');
+ checks.push(await checkScoreActivation(engine));
+ const identityDoc=scoreDocument(engine.state),definitions=identityDoc.querySelectorAll('score-instrument');assert(definitions.length>0);assert(identityDoc.querySelector('midi-instrument').getAttribute('id')===definitions[0].getAttribute('id'));
+ assert.deepEqual(diagnose(engine.state).filter(issue=>issue.code==='duplicate-id'),[],'MusicXML part and MIDI instrument IDREFs must not be diagnosed as duplicate definitions');
+ definitions[0].parentNode.append(definitions[0].cloneNode(true));assert(diagnose({...engine.state,xml:serialize(identityDoc)}).some(issue=>issue.code==='duplicate-id'&&issue.severity==='error'),'A duplicate score-instrument identity must still be an error');
+ const noteDoc=scoreDocument(engine.state),firstNote=noteDoc.querySelector('note');firstNote.parentNode.append(firstNote.cloneNode(true));assert(diagnose({...engine.state,xml:serialize(noteDoc)}).some(issue=>issue.code==='duplicate-id'&&issue.severity==='error'),'Duplicate actual note identities must still be an error');checks.push('MusicXML IDREFs are valid references while duplicate instrument and note identity definitions remain errors');
+ const unchanged=engine.state.xml,revision=engine.revision,history=engine.payload.history.past.length;
+ await execute('score.ui.input',{type:'eighth',dots:1,voice:1,staff:1,octave:4,mode:'replace',rest:false});snapshot=engine.nativeSnapshot();assert.equal(snapshot.input.type,'eighth');assert.equal(snapshot.input.dots,1);assert.equal(engine.state.xml,unchanged);assert.equal(engine.revision,revision);assert.equal(engine.payload.history.past.length,history);checks.push('Input-state commands synchronize native controls without editing the original or history');
+ await execute('score.edit.insert',{...snapshot.input,pitch:'C4',part:snapshot.selection.part,measure:snapshot.selection.measure});snapshot=engine.nativeSnapshot();assert.equal(snapshot.current.note.pitch,60);assert.deepEqual(snapshot.current.note.duration,{n:3,d:4});checks.push('Native keyboard arguments enter an actual dotted-eighth note through the normal dispatcher');
+ await execute('score.edit.chord',{pitches:'E4,G4'});snapshot=engine.nativeSnapshot();const tones=snapshot.current.notes.filter(n=>!n.rest);assert.equal(tones.length,3);
+ const xmlBeforeSelect=engine.state.xml;for(let i=0;i<tones.length;i++)await execute('score.ui.select',{note:tones[i].id,extend:i>0});snapshot=engine.nativeSnapshot();assert.equal(snapshot.selection.count,3);assert(snapshot.current.notes.filter(n=>!n.rest).every(n=>n.selected));assert.equal(engine.state.xml,xmlBeforeSelect);checks.push('Score clicks and native note rows select the same chord IDs without an XML rewrite');
+ await execute('score.edit.update',{type:'quarter',dots:0,actual:1,normal:1});await execute('score.edit.transpose',{semitones:2});snapshot=engine.nativeSnapshot();assert.deepEqual(snapshot.current.notes.filter(n=>!n.rest).map(n=>n.pitch).sort((a,b)=>a-b),[62,66,69]);assert(snapshot.current.notes.filter(n=>!n.rest).every(n=>n.duration.n===1&&n.duration.d===1));checks.push('Native partial duration properties retain every chord pitch before ordinary transposition');
+ const compiled=(await execute('score.playback.compile')).result;assert.deepEqual(compiled.events.filter(n=>n.part===compiled.parts[0].id&&n.measure===1&&n.staff===1&&n.voice==='1'&&n.startQuarter===0).map(n=>n.pitch),[62,66,69]);checks.push('Native selection/property changes compile the same D4 F-sharp4 A4 performance');
+ await execute('score.ui.view',{part:snapshot.parts[0].id,concert:true,keyboardVisible:false});snapshot=engine.nativeSnapshot();assert.equal(snapshot.view.part,snapshot.parts[0].id);assert.equal(snapshot.view.concert,true);assert.equal(snapshot.view.keyboardVisible,false);checks.push('Linked-part, concert and native keyboard visibility share one transient presentation state');
+ await execute('score.playback.mix',{part:snapshot.parts[0].id,solo:true,mute:false,volume:.4});snapshot=engine.nativeSnapshot();assert.equal(snapshot.parts[0].mix.solo,true);assert.equal(snapshot.parts[0].mix.volume,.4);checks.push('Native mix controls use the existing document playback settings');
+ await execute('score.edit.direction',{kind:'dynamic',text:'mf',onset:0});snapshot=engine.nativeSnapshot();assert(snapshot.current.marks.some(mark=>mark.label==='mf'));checks.push('Native notation inspector receives actual MusicXML directions');
+ const inputBefore=structuredClone(engine.input),selectionBefore=structuredClone(engine.selection);await assert.rejects(execute('score.ui.input',{type:'quarter',staff:3}));await assert.rejects(execute('score.ui.select',{note:'missing-note'}));await assert.rejects(execute('score.ui.select',{part:snapshot.parts[0].id,staff:3}));assert.deepEqual(engine.input,inputBefore);assert.deepEqual(engine.selection,selectionBefore);checks.push('Invalid UI input or stale note IDs reject without partial UI-state changes');
+ engine.transport={playing:true,position:1,duration:10,received:performance.now()-2000};const transport=(await execute('score.ui.transport')).result;assert(transport.position>=3&&transport.position<3.5);assert.equal(transport.playing,true);assert.equal(audioCalls,0);checks.push('Native transport clock is derived from real transport state and does not start an audio service');
+ const ui=engine.commandIndex().filter(c=>c.id.startsWith('score.ui.'));assert.equal(ui.length,4);assert(ui.every(c=>c.hidden&&c.sideEffecting&&c.access==='read'));assert.equal(engine.commandIndex().filter(c=>!c.id.startsWith('score.ui.')).length,57);assert(!JSON.stringify(engine.nativeSnapshot()).includes('<score-partwise'));checks.push('All original 57 commands remain, plus four hidden UI commands and a DTO without raw XML');
+ const exampleSnapshot=engine.nativeSnapshot();await execute('score.ui.input',{staff:2});await execute('score.project.template',{template:'quartet',bars:2});snapshot=engine.nativeSnapshot();assert.equal(snapshot.input.staff,1);assert.equal(snapshot.view.part,'');assert.equal(snapshot.parts.length,4);checks.push('A new score clears a stale linked-part view and clamps transient entry to its actual staves');
+ return {passed:true,checks:checks.length,details:checks,uiCommands:ui.map(c=>c.id),snapshotBytes:new TextEncoder().encode(JSON.stringify(exampleSnapshot)).length,snapshot:exampleSnapshot};
+}

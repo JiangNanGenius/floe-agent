@@ -31481,21 +31481,21 @@ var FloeBundledEditor = (() => {
             Bounds2.prototype.add = function(x4, y4, w3, h4) {
               return new Bounds2(this.left + x4, this.top + y4, this.width + w3, this.height + h4);
             };
-            Bounds2.fromClientRect = function(context2, clientRect) {
-              return new Bounds2(clientRect.left + context2.windowBounds.left, clientRect.top + context2.windowBounds.top, clientRect.width, clientRect.height);
+            Bounds2.fromClientRect = function(context3, clientRect) {
+              return new Bounds2(clientRect.left + context3.windowBounds.left, clientRect.top + context3.windowBounds.top, clientRect.width, clientRect.height);
             };
-            Bounds2.fromDOMRectList = function(context2, domRectList) {
+            Bounds2.fromDOMRectList = function(context3, domRectList) {
               var domRect = Array.from(domRectList).find(function(rect) {
                 return rect.width !== 0;
               });
-              return domRect ? new Bounds2(domRect.left + context2.windowBounds.left, domRect.top + context2.windowBounds.top, domRect.width, domRect.height) : Bounds2.EMPTY;
+              return domRect ? new Bounds2(domRect.left + context3.windowBounds.left, domRect.top + context3.windowBounds.top, domRect.width, domRect.height) : Bounds2.EMPTY;
             };
             Bounds2.EMPTY = new Bounds2(0, 0, 0, 0);
             return Bounds2;
           })()
         );
-        var parseBounds = function(context2, node3) {
-          return Bounds.fromClientRect(context2, node3.getBoundingClientRect());
+        var parseBounds = function(context3, node3) {
+          return Bounds.fromClientRect(context3, node3.getBoundingClientRect());
         };
         var parseDocumentSize = function(document2) {
           var body = document2.body;
@@ -32999,13 +32999,13 @@ var FloeBundledEditor = (() => {
         };
         var color$1 = {
           name: "color",
-          parse: function(context2, value2) {
+          parse: function(context3, value2) {
             if (value2.type === 18) {
               var colorFunction = SUPPORTED_COLOR_FUNCTIONS[value2.name];
               if (typeof colorFunction === "undefined") {
                 throw new Error('Attempting to parse an unsupported color function "' + value2.name + '"');
               }
-              return colorFunction(context2, value2.values);
+              return colorFunction(context3, value2.values);
             }
             if (value2.type === 5) {
               if (value2.value.length === 3) {
@@ -33096,10 +33096,10 @@ var FloeBundledEditor = (() => {
             return t1;
           }
         }
-        var hsl = function(context2, args) {
+        var hsl = function(context3, args) {
           var tokens = args.filter(nonFunctionArgSeparator);
           var hue = tokens[0], saturation = tokens[1], lightness = tokens[2], alpha = tokens[3];
-          var h4 = (hue.type === 17 ? deg(hue.number) : angle.parse(context2, hue)) / (Math.PI * 2);
+          var h4 = (hue.type === 17 ? deg(hue.number) : angle.parse(context3, hue)) / (Math.PI * 2);
           var s4 = isLengthPercentage(saturation) ? saturation.number / 100 : 0;
           var l4 = isLengthPercentage(lightness) ? lightness.number / 100 : 0;
           var a4 = typeof alpha !== "undefined" && isLengthPercentage(alpha) ? getAbsoluteValue(alpha, 1) : 1;
@@ -33119,8 +33119,8 @@ var FloeBundledEditor = (() => {
           rgb,
           rgba: rgb
         };
-        var parseColor = function(context2, value2) {
-          return color$1.parse(context2, Parser2.create(value2).parseComponentValue());
+        var parseColor = function(context3, value2) {
+          return color$1.parse(context3, Parser2.create(value2).parseComponentValue());
         };
         var COLORS = {
           ALICEBLUE: 4042850303,
@@ -33299,8 +33299,8 @@ var FloeBundledEditor = (() => {
           type: 3,
           format: "color"
         };
-        var parseColorStop = function(context2, args) {
-          var color2 = color$1.parse(context2, args[0]);
+        var parseColorStop = function(context3, args) {
+          var color2 = color$1.parse(context3, args[0]);
           var stop = args[1];
           return stop && isLengthPercentage(stop) ? { color: color2, stop } : { color: color2, stop: null };
         };
@@ -33440,7 +33440,7 @@ var FloeBundledEditor = (() => {
           }
           return [rx, ry];
         };
-        var linearGradient = function(context2, tokens) {
+        var linearGradient = function(context3, tokens) {
           var angle$1 = deg(180);
           var stops = [];
           parseFunctionArgs(tokens).forEach(function(arg, i5) {
@@ -33450,11 +33450,11 @@ var FloeBundledEditor = (() => {
                 angle$1 = parseNamedSide(arg);
                 return;
               } else if (isAngle(firstToken)) {
-                angle$1 = angle.parse(context2, firstToken);
+                angle$1 = angle.parse(context3, firstToken);
                 return;
               }
             }
-            var colorStop = parseColorStop(context2, arg);
+            var colorStop = parseColorStop(context3, arg);
             stops.push(colorStop);
           });
           return {
@@ -33464,7 +33464,7 @@ var FloeBundledEditor = (() => {
             /* LINEAR_GRADIENT */
           };
         };
-        var prefixLinearGradient = function(context2, tokens) {
+        var prefixLinearGradient = function(context3, tokens) {
           var angle$1 = deg(180);
           var stops = [];
           parseFunctionArgs(tokens).forEach(function(arg, i5) {
@@ -33474,11 +33474,11 @@ var FloeBundledEditor = (() => {
                 angle$1 = parseNamedSide(arg);
                 return;
               } else if (isAngle(firstToken)) {
-                angle$1 = (angle.parse(context2, firstToken) + deg(270)) % deg(360);
+                angle$1 = (angle.parse(context3, firstToken) + deg(270)) % deg(360);
                 return;
               }
             }
-            var colorStop = parseColorStop(context2, arg);
+            var colorStop = parseColorStop(context3, arg);
             stops.push(colorStop);
           });
           return {
@@ -33488,7 +33488,7 @@ var FloeBundledEditor = (() => {
             /* LINEAR_GRADIENT */
           };
         };
-        var webkitGradient = function(context2, tokens) {
+        var webkitGradient = function(context3, tokens) {
           var angle2 = deg(180);
           var stops = [];
           var type = 1;
@@ -33508,15 +33508,15 @@ var FloeBundledEditor = (() => {
             }
             if (firstToken.type === 18) {
               if (firstToken.name === "from") {
-                var color2 = color$1.parse(context2, firstToken.values[0]);
+                var color2 = color$1.parse(context3, firstToken.values[0]);
                 stops.push({ stop: ZERO_LENGTH, color: color2 });
               } else if (firstToken.name === "to") {
-                var color2 = color$1.parse(context2, firstToken.values[0]);
+                var color2 = color$1.parse(context3, firstToken.values[0]);
                 stops.push({ stop: HUNDRED_PERCENT, color: color2 });
               } else if (firstToken.name === "color-stop") {
                 var values = firstToken.values.filter(nonFunctionArgSeparator);
                 if (values.length === 2) {
-                  var color2 = color$1.parse(context2, values[1]);
+                  var color2 = color$1.parse(context3, values[1]);
                   var stop_1 = values[0];
                   if (isNumberToken(stop_1)) {
                     stops.push({
@@ -33542,7 +33542,7 @@ var FloeBundledEditor = (() => {
         var ELLIPSE = "ellipse";
         var COVER = "cover";
         var CONTAIN = "contain";
-        var radialGradient = function(context2, tokens) {
+        var radialGradient = function(context3, tokens) {
           var shape = 0;
           var size = 3;
           var stops = [];
@@ -33607,7 +33607,7 @@ var FloeBundledEditor = (() => {
               }, isColorStop);
             }
             if (isColorStop) {
-              var colorStop = parseColorStop(context2, arg);
+              var colorStop = parseColorStop(context3, arg);
               stops.push(colorStop);
             }
           });
@@ -33620,7 +33620,7 @@ var FloeBundledEditor = (() => {
             /* RADIAL_GRADIENT */
           };
         };
-        var prefixRadialGradient = function(context2, tokens) {
+        var prefixRadialGradient = function(context3, tokens) {
           var shape = 0;
           var size = 3;
           var stops = [];
@@ -33685,7 +33685,7 @@ var FloeBundledEditor = (() => {
               }, isColorStop);
             }
             if (isColorStop) {
-              var colorStop = parseColorStop(context2, arg);
+              var colorStop = parseColorStop(context3, arg);
               stops.push(colorStop);
             }
           });
@@ -33706,14 +33706,14 @@ var FloeBundledEditor = (() => {
         };
         var image = {
           name: "image",
-          parse: function(context2, value2) {
+          parse: function(context3, value2) {
             if (value2.type === 22) {
               var image_1 = {
                 url: value2.value,
                 type: 0
                 /* URL */
               };
-              context2.cache.addImage(value2.value);
+              context3.cache.addImage(value2.value);
               return image_1;
             }
             if (value2.type === 18) {
@@ -33721,7 +33721,7 @@ var FloeBundledEditor = (() => {
               if (typeof imageFunction === "undefined") {
                 throw new Error('Attempting to parse an unsupported image function "' + value2.name + '"');
               }
-              return imageFunction(context2, value2.values);
+              return imageFunction(context3, value2.values);
             }
             throw new Error("Unsupported image type " + value2.type);
           }
@@ -33747,7 +33747,7 @@ var FloeBundledEditor = (() => {
           initialValue: "none",
           type: 1,
           prefix: false,
-          parse: function(context2, tokens) {
+          parse: function(context3, tokens) {
             if (tokens.length === 0) {
               return [];
             }
@@ -33758,7 +33758,7 @@ var FloeBundledEditor = (() => {
             return tokens.filter(function(value2) {
               return nonFunctionArgSeparator(value2) && isSupportedImage(value2);
             }).map(function(value2) {
-              return image.parse(context2, value2);
+              return image.parse(context3, value2);
             });
           }
         };
@@ -34093,11 +34093,11 @@ var FloeBundledEditor = (() => {
           initialValue: "none",
           type: 0,
           prefix: false,
-          parse: function(context2, token) {
+          parse: function(context3, token) {
             if (token.type === 20 && token.value === "none") {
               return null;
             }
-            return image.parse(context2, token);
+            return image.parse(context3, token);
           }
         };
         var listStylePosition = {
@@ -34340,7 +34340,7 @@ var FloeBundledEditor = (() => {
           initialValue: "none",
           type: 1,
           prefix: false,
-          parse: function(context2, tokens) {
+          parse: function(context3, tokens) {
             if (tokens.length === 1 && isIdentWithValue(tokens[0], "none")) {
               return [];
             }
@@ -34364,7 +34364,7 @@ var FloeBundledEditor = (() => {
                   }
                   c5++;
                 } else {
-                  shadow.color = color$1.parse(context2, token);
+                  shadow.color = color$1.parse(context3, token);
                 }
               }
               return shadow;
@@ -34729,9 +34729,9 @@ var FloeBundledEditor = (() => {
           initialValue: "0s",
           prefix: false,
           type: 1,
-          parse: function(context2, tokens) {
+          parse: function(context3, tokens) {
             return tokens.filter(isDimensionToken).map(function(token) {
-              return time.parse(context2, token);
+              return time.parse(context3, token);
             });
           }
         };
@@ -34776,7 +34776,7 @@ var FloeBundledEditor = (() => {
           initialValue: "none",
           type: 1,
           prefix: false,
-          parse: function(context2, tokens) {
+          parse: function(context3, tokens) {
             if (tokens.length === 1 && isIdentWithValue(tokens[0], "none")) {
               return [];
             }
@@ -34806,7 +34806,7 @@ var FloeBundledEditor = (() => {
                   }
                   c5++;
                 } else {
-                  shadow.color = color$1.parse(context2, token);
+                  shadow.color = color$1.parse(context3, token);
                 }
               }
               return shadow;
@@ -34878,75 +34878,75 @@ var FloeBundledEditor = (() => {
         var CSSParsedDeclaration = (
           /** @class */
           (function() {
-            function CSSParsedDeclaration2(context2, declaration) {
+            function CSSParsedDeclaration2(context3, declaration) {
               var _a2, _b2;
-              this.animationDuration = parse(context2, duration, declaration.animationDuration);
-              this.backgroundClip = parse(context2, backgroundClip, declaration.backgroundClip);
-              this.backgroundColor = parse(context2, backgroundColor, declaration.backgroundColor);
-              this.backgroundImage = parse(context2, backgroundImage, declaration.backgroundImage);
-              this.backgroundOrigin = parse(context2, backgroundOrigin, declaration.backgroundOrigin);
-              this.backgroundPosition = parse(context2, backgroundPosition, declaration.backgroundPosition);
-              this.backgroundRepeat = parse(context2, backgroundRepeat, declaration.backgroundRepeat);
-              this.backgroundSize = parse(context2, backgroundSize, declaration.backgroundSize);
-              this.borderTopColor = parse(context2, borderTopColor, declaration.borderTopColor);
-              this.borderRightColor = parse(context2, borderRightColor, declaration.borderRightColor);
-              this.borderBottomColor = parse(context2, borderBottomColor, declaration.borderBottomColor);
-              this.borderLeftColor = parse(context2, borderLeftColor, declaration.borderLeftColor);
-              this.borderTopLeftRadius = parse(context2, borderTopLeftRadius, declaration.borderTopLeftRadius);
-              this.borderTopRightRadius = parse(context2, borderTopRightRadius, declaration.borderTopRightRadius);
-              this.borderBottomRightRadius = parse(context2, borderBottomRightRadius, declaration.borderBottomRightRadius);
-              this.borderBottomLeftRadius = parse(context2, borderBottomLeftRadius, declaration.borderBottomLeftRadius);
-              this.borderTopStyle = parse(context2, borderTopStyle, declaration.borderTopStyle);
-              this.borderRightStyle = parse(context2, borderRightStyle, declaration.borderRightStyle);
-              this.borderBottomStyle = parse(context2, borderBottomStyle, declaration.borderBottomStyle);
-              this.borderLeftStyle = parse(context2, borderLeftStyle, declaration.borderLeftStyle);
-              this.borderTopWidth = parse(context2, borderTopWidth, declaration.borderTopWidth);
-              this.borderRightWidth = parse(context2, borderRightWidth, declaration.borderRightWidth);
-              this.borderBottomWidth = parse(context2, borderBottomWidth, declaration.borderBottomWidth);
-              this.borderLeftWidth = parse(context2, borderLeftWidth, declaration.borderLeftWidth);
-              this.boxShadow = parse(context2, boxShadow, declaration.boxShadow);
-              this.color = parse(context2, color, declaration.color);
-              this.direction = parse(context2, direction, declaration.direction);
-              this.display = parse(context2, display, declaration.display);
-              this.float = parse(context2, float, declaration.cssFloat);
-              this.fontFamily = parse(context2, fontFamily, declaration.fontFamily);
-              this.fontSize = parse(context2, fontSize, declaration.fontSize);
-              this.fontStyle = parse(context2, fontStyle, declaration.fontStyle);
-              this.fontVariant = parse(context2, fontVariant, declaration.fontVariant);
-              this.fontWeight = parse(context2, fontWeight, declaration.fontWeight);
-              this.letterSpacing = parse(context2, letterSpacing, declaration.letterSpacing);
-              this.lineBreak = parse(context2, lineBreak, declaration.lineBreak);
-              this.lineHeight = parse(context2, lineHeight, declaration.lineHeight);
-              this.listStyleImage = parse(context2, listStyleImage, declaration.listStyleImage);
-              this.listStylePosition = parse(context2, listStylePosition, declaration.listStylePosition);
-              this.listStyleType = parse(context2, listStyleType, declaration.listStyleType);
-              this.marginTop = parse(context2, marginTop, declaration.marginTop);
-              this.marginRight = parse(context2, marginRight, declaration.marginRight);
-              this.marginBottom = parse(context2, marginBottom, declaration.marginBottom);
-              this.marginLeft = parse(context2, marginLeft, declaration.marginLeft);
-              this.opacity = parse(context2, opacity, declaration.opacity);
-              var overflowTuple = parse(context2, overflow, declaration.overflow);
+              this.animationDuration = parse(context3, duration, declaration.animationDuration);
+              this.backgroundClip = parse(context3, backgroundClip, declaration.backgroundClip);
+              this.backgroundColor = parse(context3, backgroundColor, declaration.backgroundColor);
+              this.backgroundImage = parse(context3, backgroundImage, declaration.backgroundImage);
+              this.backgroundOrigin = parse(context3, backgroundOrigin, declaration.backgroundOrigin);
+              this.backgroundPosition = parse(context3, backgroundPosition, declaration.backgroundPosition);
+              this.backgroundRepeat = parse(context3, backgroundRepeat, declaration.backgroundRepeat);
+              this.backgroundSize = parse(context3, backgroundSize, declaration.backgroundSize);
+              this.borderTopColor = parse(context3, borderTopColor, declaration.borderTopColor);
+              this.borderRightColor = parse(context3, borderRightColor, declaration.borderRightColor);
+              this.borderBottomColor = parse(context3, borderBottomColor, declaration.borderBottomColor);
+              this.borderLeftColor = parse(context3, borderLeftColor, declaration.borderLeftColor);
+              this.borderTopLeftRadius = parse(context3, borderTopLeftRadius, declaration.borderTopLeftRadius);
+              this.borderTopRightRadius = parse(context3, borderTopRightRadius, declaration.borderTopRightRadius);
+              this.borderBottomRightRadius = parse(context3, borderBottomRightRadius, declaration.borderBottomRightRadius);
+              this.borderBottomLeftRadius = parse(context3, borderBottomLeftRadius, declaration.borderBottomLeftRadius);
+              this.borderTopStyle = parse(context3, borderTopStyle, declaration.borderTopStyle);
+              this.borderRightStyle = parse(context3, borderRightStyle, declaration.borderRightStyle);
+              this.borderBottomStyle = parse(context3, borderBottomStyle, declaration.borderBottomStyle);
+              this.borderLeftStyle = parse(context3, borderLeftStyle, declaration.borderLeftStyle);
+              this.borderTopWidth = parse(context3, borderTopWidth, declaration.borderTopWidth);
+              this.borderRightWidth = parse(context3, borderRightWidth, declaration.borderRightWidth);
+              this.borderBottomWidth = parse(context3, borderBottomWidth, declaration.borderBottomWidth);
+              this.borderLeftWidth = parse(context3, borderLeftWidth, declaration.borderLeftWidth);
+              this.boxShadow = parse(context3, boxShadow, declaration.boxShadow);
+              this.color = parse(context3, color, declaration.color);
+              this.direction = parse(context3, direction, declaration.direction);
+              this.display = parse(context3, display, declaration.display);
+              this.float = parse(context3, float, declaration.cssFloat);
+              this.fontFamily = parse(context3, fontFamily, declaration.fontFamily);
+              this.fontSize = parse(context3, fontSize, declaration.fontSize);
+              this.fontStyle = parse(context3, fontStyle, declaration.fontStyle);
+              this.fontVariant = parse(context3, fontVariant, declaration.fontVariant);
+              this.fontWeight = parse(context3, fontWeight, declaration.fontWeight);
+              this.letterSpacing = parse(context3, letterSpacing, declaration.letterSpacing);
+              this.lineBreak = parse(context3, lineBreak, declaration.lineBreak);
+              this.lineHeight = parse(context3, lineHeight, declaration.lineHeight);
+              this.listStyleImage = parse(context3, listStyleImage, declaration.listStyleImage);
+              this.listStylePosition = parse(context3, listStylePosition, declaration.listStylePosition);
+              this.listStyleType = parse(context3, listStyleType, declaration.listStyleType);
+              this.marginTop = parse(context3, marginTop, declaration.marginTop);
+              this.marginRight = parse(context3, marginRight, declaration.marginRight);
+              this.marginBottom = parse(context3, marginBottom, declaration.marginBottom);
+              this.marginLeft = parse(context3, marginLeft, declaration.marginLeft);
+              this.opacity = parse(context3, opacity, declaration.opacity);
+              var overflowTuple = parse(context3, overflow, declaration.overflow);
               this.overflowX = overflowTuple[0];
               this.overflowY = overflowTuple[overflowTuple.length > 1 ? 1 : 0];
-              this.overflowWrap = parse(context2, overflowWrap, declaration.overflowWrap);
-              this.paddingTop = parse(context2, paddingTop, declaration.paddingTop);
-              this.paddingRight = parse(context2, paddingRight, declaration.paddingRight);
-              this.paddingBottom = parse(context2, paddingBottom, declaration.paddingBottom);
-              this.paddingLeft = parse(context2, paddingLeft, declaration.paddingLeft);
-              this.paintOrder = parse(context2, paintOrder, declaration.paintOrder);
-              this.position = parse(context2, position, declaration.position);
-              this.textAlign = parse(context2, textAlign, declaration.textAlign);
-              this.textDecorationColor = parse(context2, textDecorationColor, (_a2 = declaration.textDecorationColor) !== null && _a2 !== void 0 ? _a2 : declaration.color);
-              this.textDecorationLine = parse(context2, textDecorationLine, (_b2 = declaration.textDecorationLine) !== null && _b2 !== void 0 ? _b2 : declaration.textDecoration);
-              this.textShadow = parse(context2, textShadow, declaration.textShadow);
-              this.textTransform = parse(context2, textTransform, declaration.textTransform);
-              this.transform = parse(context2, transform$1, declaration.transform);
-              this.transformOrigin = parse(context2, transformOrigin, declaration.transformOrigin);
-              this.visibility = parse(context2, visibility, declaration.visibility);
-              this.webkitTextStrokeColor = parse(context2, webkitTextStrokeColor, declaration.webkitTextStrokeColor);
-              this.webkitTextStrokeWidth = parse(context2, webkitTextStrokeWidth, declaration.webkitTextStrokeWidth);
-              this.wordBreak = parse(context2, wordBreak, declaration.wordBreak);
-              this.zIndex = parse(context2, zIndex, declaration.zIndex);
+              this.overflowWrap = parse(context3, overflowWrap, declaration.overflowWrap);
+              this.paddingTop = parse(context3, paddingTop, declaration.paddingTop);
+              this.paddingRight = parse(context3, paddingRight, declaration.paddingRight);
+              this.paddingBottom = parse(context3, paddingBottom, declaration.paddingBottom);
+              this.paddingLeft = parse(context3, paddingLeft, declaration.paddingLeft);
+              this.paintOrder = parse(context3, paintOrder, declaration.paintOrder);
+              this.position = parse(context3, position, declaration.position);
+              this.textAlign = parse(context3, textAlign, declaration.textAlign);
+              this.textDecorationColor = parse(context3, textDecorationColor, (_a2 = declaration.textDecorationColor) !== null && _a2 !== void 0 ? _a2 : declaration.color);
+              this.textDecorationLine = parse(context3, textDecorationLine, (_b2 = declaration.textDecorationLine) !== null && _b2 !== void 0 ? _b2 : declaration.textDecoration);
+              this.textShadow = parse(context3, textShadow, declaration.textShadow);
+              this.textTransform = parse(context3, textTransform, declaration.textTransform);
+              this.transform = parse(context3, transform$1, declaration.transform);
+              this.transformOrigin = parse(context3, transformOrigin, declaration.transformOrigin);
+              this.visibility = parse(context3, visibility, declaration.visibility);
+              this.webkitTextStrokeColor = parse(context3, webkitTextStrokeColor, declaration.webkitTextStrokeColor);
+              this.webkitTextStrokeWidth = parse(context3, webkitTextStrokeWidth, declaration.webkitTextStrokeWidth);
+              this.wordBreak = parse(context3, wordBreak, declaration.wordBreak);
+              this.zIndex = parse(context3, zIndex, declaration.zIndex);
             }
             CSSParsedDeclaration2.prototype.isVisible = function() {
               return this.display > 0 && this.opacity > 0 && this.visibility === 0;
@@ -34999,9 +34999,9 @@ var FloeBundledEditor = (() => {
         var CSSParsedPseudoDeclaration = (
           /** @class */
           /* @__PURE__ */ (function() {
-            function CSSParsedPseudoDeclaration2(context2, declaration) {
-              this.content = parse(context2, content, declaration.content);
-              this.quotes = parse(context2, quotes, declaration.quotes);
+            function CSSParsedPseudoDeclaration2(context3, declaration) {
+              this.content = parse(context3, content, declaration.content);
+              this.quotes = parse(context3, quotes, declaration.quotes);
             }
             return CSSParsedPseudoDeclaration2;
           })()
@@ -35009,14 +35009,14 @@ var FloeBundledEditor = (() => {
         var CSSParsedCounterDeclaration = (
           /** @class */
           /* @__PURE__ */ (function() {
-            function CSSParsedCounterDeclaration2(context2, declaration) {
-              this.counterIncrement = parse(context2, counterIncrement, declaration.counterIncrement);
-              this.counterReset = parse(context2, counterReset, declaration.counterReset);
+            function CSSParsedCounterDeclaration2(context3, declaration) {
+              this.counterIncrement = parse(context3, counterIncrement, declaration.counterIncrement);
+              this.counterReset = parse(context3, counterReset, declaration.counterReset);
             }
             return CSSParsedCounterDeclaration2;
           })()
         );
-        var parse = function(context2, descriptor, style) {
+        var parse = function(context3, descriptor, style) {
           var tokenizer = new Tokenizer();
           var value2 = style !== null && typeof style !== "undefined" ? style.toString() : descriptor.initialValue;
           tokenizer.write(value2);
@@ -35024,21 +35024,21 @@ var FloeBundledEditor = (() => {
           switch (descriptor.type) {
             case 2:
               var token = parser.parseComponentValue();
-              return descriptor.parse(context2, isIdentToken(token) ? token.value : descriptor.initialValue);
+              return descriptor.parse(context3, isIdentToken(token) ? token.value : descriptor.initialValue);
             case 0:
-              return descriptor.parse(context2, parser.parseComponentValue());
+              return descriptor.parse(context3, parser.parseComponentValue());
             case 1:
-              return descriptor.parse(context2, parser.parseComponentValues());
+              return descriptor.parse(context3, parser.parseComponentValues());
             case 4:
               return parser.parseComponentValue();
             case 3:
               switch (descriptor.format) {
                 case "angle":
-                  return angle.parse(context2, parser.parseComponentValue());
+                  return angle.parse(context3, parser.parseComponentValue());
                 case "color":
-                  return color$1.parse(context2, parser.parseComponentValue());
+                  return color$1.parse(context3, parser.parseComponentValue());
                 case "image":
-                  return image.parse(context2, parser.parseComponentValue());
+                  return image.parse(context3, parser.parseComponentValue());
                 case "length":
                   var length_1 = parser.parseComponentValue();
                   return isLength(length_1) ? length_1 : ZERO_LENGTH;
@@ -35046,7 +35046,7 @@ var FloeBundledEditor = (() => {
                   var value_1 = parser.parseComponentValue();
                   return isLengthPercentage(value_1) ? value_1 : ZERO_LENGTH;
                 case "time":
-                  return time.parse(context2, parser.parseComponentValue());
+                  return time.parse(context3, parser.parseComponentValue());
               }
               break;
           }
@@ -35074,8 +35074,8 @@ var FloeBundledEditor = (() => {
         var ElementContainer = (
           /** @class */
           /* @__PURE__ */ (function() {
-            function ElementContainer2(context2, element2) {
-              this.context = context2;
+            function ElementContainer2(context3, element2) {
+              this.context = context3;
               this.textNodes = [];
               this.elements = [];
               this.flags = 0;
@@ -35086,7 +35086,7 @@ var FloeBundledEditor = (() => {
               )) {
                 debugger;
               }
-              this.styles = new CSSParsedDeclaration(context2, window.getComputedStyle(element2, null));
+              this.styles = new CSSParsedDeclaration(context3, window.getComputedStyle(element2, null));
               if (isHTMLElementNode(element2)) {
                 if (this.styles.animationDuration.some(function(duration2) {
                   return duration2 > 0;
@@ -35576,7 +35576,7 @@ var FloeBundledEditor = (() => {
             return TextBounds2;
           })()
         );
-        var parseTextBounds = function(context2, value2, styles, node3) {
+        var parseTextBounds = function(context3, value2, styles, node3) {
           var textList = breakText(value2, styles);
           var textBounds = [];
           var offset = 0;
@@ -35588,15 +35588,15 @@ var FloeBundledEditor = (() => {
                   var subSegments = segmentGraphemes(text2);
                   var subOffset_1 = 0;
                   subSegments.forEach(function(subSegment) {
-                    textBounds.push(new TextBounds(subSegment, Bounds.fromDOMRectList(context2, createRange(node3, subOffset_1 + offset, subSegment.length).getClientRects())));
+                    textBounds.push(new TextBounds(subSegment, Bounds.fromDOMRectList(context3, createRange(node3, subOffset_1 + offset, subSegment.length).getClientRects())));
                     subOffset_1 += subSegment.length;
                   });
                 } else {
-                  textBounds.push(new TextBounds(text2, Bounds.fromDOMRectList(context2, clientRects)));
+                  textBounds.push(new TextBounds(text2, Bounds.fromDOMRectList(context3, clientRects)));
                 }
               } else {
                 var replacementNode = node3.splitText(text2.length);
-                textBounds.push(new TextBounds(text2, getWrapperBounds(context2, node3)));
+                textBounds.push(new TextBounds(text2, getWrapperBounds(context3, node3)));
                 node3 = replacementNode;
               }
             } else if (!FEATURES.SUPPORT_RANGE_BOUNDS) {
@@ -35606,7 +35606,7 @@ var FloeBundledEditor = (() => {
           });
           return textBounds;
         };
-        var getWrapperBounds = function(context2, node3) {
+        var getWrapperBounds = function(context3, node3) {
           var ownerDocument = node3.ownerDocument;
           if (ownerDocument) {
             var wrapper = ownerDocument.createElement("html2canvaswrapper");
@@ -35614,7 +35614,7 @@ var FloeBundledEditor = (() => {
             var parentNode = node3.parentNode;
             if (parentNode) {
               parentNode.replaceChild(wrapper, node3);
-              var bounds = parseBounds(context2, wrapper);
+              var bounds = parseBounds(context3, wrapper);
               if (wrapper.firstChild) {
                 parentNode.replaceChild(wrapper.firstChild, wrapper);
               }
@@ -35693,9 +35693,9 @@ var FloeBundledEditor = (() => {
         var TextContainer = (
           /** @class */
           /* @__PURE__ */ (function() {
-            function TextContainer2(context2, node3, styles) {
+            function TextContainer2(context3, node3, styles) {
               this.text = transform(node3.data, styles.textTransform);
-              this.textBounds = parseTextBounds(context2, this.text, styles, node3);
+              this.textBounds = parseTextBounds(context3, this.text, styles, node3);
             }
             return TextContainer2;
           })()
@@ -35723,8 +35723,8 @@ var FloeBundledEditor = (() => {
           /** @class */
           (function(_super) {
             __extends(ImageElementContainer2, _super);
-            function ImageElementContainer2(context2, img) {
-              var _this = _super.call(this, context2, img) || this;
+            function ImageElementContainer2(context3, img) {
+              var _this = _super.call(this, context3, img) || this;
               _this.src = img.currentSrc || img.src;
               _this.intrinsicWidth = img.naturalWidth;
               _this.intrinsicHeight = img.naturalHeight;
@@ -35738,8 +35738,8 @@ var FloeBundledEditor = (() => {
           /** @class */
           (function(_super) {
             __extends(CanvasElementContainer2, _super);
-            function CanvasElementContainer2(context2, canvas) {
-              var _this = _super.call(this, context2, canvas) || this;
+            function CanvasElementContainer2(context3, canvas) {
+              var _this = _super.call(this, context3, canvas) || this;
               _this.canvas = canvas;
               _this.intrinsicWidth = canvas.width;
               _this.intrinsicHeight = canvas.height;
@@ -35752,10 +35752,10 @@ var FloeBundledEditor = (() => {
           /** @class */
           (function(_super) {
             __extends(SVGElementContainer2, _super);
-            function SVGElementContainer2(context2, img) {
-              var _this = _super.call(this, context2, img) || this;
+            function SVGElementContainer2(context3, img) {
+              var _this = _super.call(this, context3, img) || this;
               var s4 = new XMLSerializer();
-              var bounds = parseBounds(context2, img);
+              var bounds = parseBounds(context3, img);
               img.setAttribute("width", bounds.width + "px");
               img.setAttribute("height", bounds.height + "px");
               _this.svg = "data:image/svg+xml," + encodeURIComponent(s4.serializeToString(img));
@@ -35771,8 +35771,8 @@ var FloeBundledEditor = (() => {
           /** @class */
           (function(_super) {
             __extends(LIElementContainer2, _super);
-            function LIElementContainer2(context2, element2) {
-              var _this = _super.call(this, context2, element2) || this;
+            function LIElementContainer2(context3, element2) {
+              var _this = _super.call(this, context3, element2) || this;
               _this.value = element2.value;
               return _this;
             }
@@ -35783,8 +35783,8 @@ var FloeBundledEditor = (() => {
           /** @class */
           (function(_super) {
             __extends(OLElementContainer2, _super);
-            function OLElementContainer2(context2, element2) {
-              var _this = _super.call(this, context2, element2) || this;
+            function OLElementContainer2(context3, element2) {
+              var _this = _super.call(this, context3, element2) || this;
               _this.start = element2.start;
               _this.reversed = typeof element2.reversed === "boolean" && element2.reversed === true;
               return _this;
@@ -35827,8 +35827,8 @@ var FloeBundledEditor = (() => {
           /** @class */
           (function(_super) {
             __extends(InputElementContainer2, _super);
-            function InputElementContainer2(context2, input) {
-              var _this = _super.call(this, context2, input) || this;
+            function InputElementContainer2(context3, input) {
+              var _this = _super.call(this, context3, input) || this;
               _this.type = input.type.toLowerCase();
               _this.checked = input.checked;
               _this.value = getInputValue(input);
@@ -35864,8 +35864,8 @@ var FloeBundledEditor = (() => {
           /** @class */
           (function(_super) {
             __extends(SelectElementContainer2, _super);
-            function SelectElementContainer2(context2, element2) {
-              var _this = _super.call(this, context2, element2) || this;
+            function SelectElementContainer2(context3, element2) {
+              var _this = _super.call(this, context3, element2) || this;
               var option = element2.options[element2.selectedIndex || 0];
               _this.value = option ? option.text || "" : "";
               return _this;
@@ -35877,8 +35877,8 @@ var FloeBundledEditor = (() => {
           /** @class */
           (function(_super) {
             __extends(TextareaElementContainer2, _super);
-            function TextareaElementContainer2(context2, element2) {
-              var _this = _super.call(this, context2, element2) || this;
+            function TextareaElementContainer2(context3, element2) {
+              var _this = _super.call(this, context3, element2) || this;
               _this.value = element2.value;
               return _this;
             }
@@ -35889,17 +35889,17 @@ var FloeBundledEditor = (() => {
           /** @class */
           (function(_super) {
             __extends(IFrameElementContainer2, _super);
-            function IFrameElementContainer2(context2, iframe) {
-              var _this = _super.call(this, context2, iframe) || this;
+            function IFrameElementContainer2(context3, iframe) {
+              var _this = _super.call(this, context3, iframe) || this;
               _this.src = iframe.src;
               _this.width = parseInt(iframe.width, 10) || 0;
               _this.height = parseInt(iframe.height, 10) || 0;
               _this.backgroundColor = _this.styles.backgroundColor;
               try {
                 if (iframe.contentWindow && iframe.contentWindow.document && iframe.contentWindow.document.documentElement) {
-                  _this.tree = parseTree(context2, iframe.contentWindow.document.documentElement);
-                  var documentBackgroundColor = iframe.contentWindow.document.documentElement ? parseColor(context2, getComputedStyle(iframe.contentWindow.document.documentElement).backgroundColor) : COLORS.TRANSPARENT;
-                  var bodyBackgroundColor = iframe.contentWindow.document.body ? parseColor(context2, getComputedStyle(iframe.contentWindow.document.body).backgroundColor) : COLORS.TRANSPARENT;
+                  _this.tree = parseTree(context3, iframe.contentWindow.document.documentElement);
+                  var documentBackgroundColor = iframe.contentWindow.document.documentElement ? parseColor(context3, getComputedStyle(iframe.contentWindow.document.documentElement).backgroundColor) : COLORS.TRANSPARENT;
+                  var bodyBackgroundColor = iframe.contentWindow.document.body ? parseColor(context3, getComputedStyle(iframe.contentWindow.document.body).backgroundColor) : COLORS.TRANSPARENT;
                   _this.backgroundColor = isTransparent(documentBackgroundColor) ? isTransparent(bodyBackgroundColor) ? _this.styles.backgroundColor : bodyBackgroundColor : documentBackgroundColor;
                 }
               } catch (e4) {
@@ -35910,18 +35910,18 @@ var FloeBundledEditor = (() => {
           })(ElementContainer)
         );
         var LIST_OWNERS = ["OL", "UL", "MENU"];
-        var parseNodeTree = function(context2, node3, parent, root) {
+        var parseNodeTree = function(context3, node3, parent, root) {
           for (var childNode = node3.firstChild, nextNode = void 0; childNode; childNode = nextNode) {
             nextNode = childNode.nextSibling;
             if (isTextNode(childNode) && childNode.data.trim().length > 0) {
-              parent.textNodes.push(new TextContainer(context2, childNode, parent.styles));
+              parent.textNodes.push(new TextContainer(context3, childNode, parent.styles));
             } else if (isElementNode(childNode)) {
               if (isSlotElement(childNode) && childNode.assignedNodes) {
                 childNode.assignedNodes().forEach(function(childNode2) {
-                  return parseNodeTree(context2, childNode2, parent, root);
+                  return parseNodeTree(context3, childNode2, parent, root);
                 });
               } else {
-                var container = createContainer(context2, childNode);
+                var container = createContainer(context3, childNode);
                 if (container.styles.isVisible()) {
                   if (createsRealStackingContext(childNode, container, root)) {
                     container.flags |= 4;
@@ -35934,49 +35934,49 @@ var FloeBundledEditor = (() => {
                   parent.elements.push(container);
                   childNode.slot;
                   if (childNode.shadowRoot) {
-                    parseNodeTree(context2, childNode.shadowRoot, container, root);
+                    parseNodeTree(context3, childNode.shadowRoot, container, root);
                   } else if (!isTextareaElement(childNode) && !isSVGElement(childNode) && !isSelectElement(childNode)) {
-                    parseNodeTree(context2, childNode, container, root);
+                    parseNodeTree(context3, childNode, container, root);
                   }
                 }
               }
             }
           }
         };
-        var createContainer = function(context2, element2) {
+        var createContainer = function(context3, element2) {
           if (isImageElement(element2)) {
-            return new ImageElementContainer(context2, element2);
+            return new ImageElementContainer(context3, element2);
           }
           if (isCanvasElement(element2)) {
-            return new CanvasElementContainer(context2, element2);
+            return new CanvasElementContainer(context3, element2);
           }
           if (isSVGElement(element2)) {
-            return new SVGElementContainer(context2, element2);
+            return new SVGElementContainer(context3, element2);
           }
           if (isLIElement(element2)) {
-            return new LIElementContainer(context2, element2);
+            return new LIElementContainer(context3, element2);
           }
           if (isOLElement(element2)) {
-            return new OLElementContainer(context2, element2);
+            return new OLElementContainer(context3, element2);
           }
           if (isInputElement(element2)) {
-            return new InputElementContainer(context2, element2);
+            return new InputElementContainer(context3, element2);
           }
           if (isSelectElement(element2)) {
-            return new SelectElementContainer(context2, element2);
+            return new SelectElementContainer(context3, element2);
           }
           if (isTextareaElement(element2)) {
-            return new TextareaElementContainer(context2, element2);
+            return new TextareaElementContainer(context3, element2);
           }
           if (isIFrameElement(element2)) {
-            return new IFrameElementContainer(context2, element2);
+            return new IFrameElementContainer(context3, element2);
           }
-          return new ElementContainer(context2, element2);
+          return new ElementContainer(context3, element2);
         };
-        var parseTree = function(context2, element2) {
-          var container = createContainer(context2, element2);
+        var parseTree = function(context3, element2) {
+          var container = createContainer(context3, element2);
           container.flags |= 4;
-          parseNodeTree(context2, element2, container, container);
+          parseNodeTree(context3, element2, container, container);
           return container;
         };
         var createsRealStackingContext = function(node3, container, root) {
@@ -36520,8 +36520,8 @@ var FloeBundledEditor = (() => {
         var DocumentCloner = (
           /** @class */
           (function() {
-            function DocumentCloner2(context2, element2, options) {
-              this.context = context2;
+            function DocumentCloner2(context3, element2, options) {
+              this.context = context3;
               this.options = options;
               this.scrolledElements = [];
               this.referenceElement = element2;
@@ -37003,8 +37003,8 @@ var FloeBundledEditor = (() => {
         var Cache = (
           /** @class */
           (function() {
-            function Cache2(context2, _options) {
-              this.context = context2;
+            function Cache2(context3, _options) {
+              this.context = context3;
               this._options = _options;
               this._cache = {};
             }
@@ -37875,8 +37875,8 @@ var FloeBundledEditor = (() => {
         var Renderer = (
           /** @class */
           /* @__PURE__ */ (function() {
-            function Renderer2(context2, options) {
-              this.context = context2;
+            function Renderer2(context3, options) {
+              this.context = context3;
               this.options = options;
             }
             return Renderer2;
@@ -37887,8 +37887,8 @@ var FloeBundledEditor = (() => {
           /** @class */
           (function(_super) {
             __extends(CanvasRenderer2, _super);
-            function CanvasRenderer2(context2, options) {
-              var _this = _super.call(this, context2, options) || this;
+            function CanvasRenderer2(context3, options) {
+              var _this = _super.call(this, context3, options) || this;
               _this._activeEffects = [];
               _this.canvas = options.canvas ? options.canvas : document.createElement("canvas");
               _this.ctx = _this.canvas.getContext("2d");
@@ -38874,8 +38874,8 @@ var FloeBundledEditor = (() => {
           /** @class */
           (function(_super) {
             __extends(ForeignObjectRenderer2, _super);
-            function ForeignObjectRenderer2(context2, options) {
-              var _this = _super.call(this, context2, options) || this;
+            function ForeignObjectRenderer2(context3, options) {
+              var _this = _super.call(this, context3, options) || this;
               _this.canvas = options.canvas ? options.canvas : document.createElement("canvas");
               _this.ctx = _this.canvas.getContext("2d");
               _this.options = options;
@@ -39012,7 +39012,7 @@ var FloeBundledEditor = (() => {
         }
         var renderElement = function(element2, opts) {
           return __awaiter(void 0, void 0, void 0, function() {
-            var ownerDocument, defaultView, resourceOptions, contextOptions, windowOptions, windowBounds, context2, foreignObjectRendering, cloneOptions, documentCloner, clonedElement, container, _a2, width, height, left, top, backgroundColor2, renderOptions, canvas, renderer, root, renderer;
+            var ownerDocument, defaultView, resourceOptions, contextOptions, windowOptions, windowBounds, context3, foreignObjectRendering, cloneOptions, documentCloner, clonedElement, container, _a2, width, height, left, top, backgroundColor2, renderOptions, canvas, renderer, root, renderer;
             var _b2, _c, _d, _e2, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t3;
             return __generator(this, function(_u) {
               switch (_u.label) {
@@ -39042,7 +39042,7 @@ var FloeBundledEditor = (() => {
                     scrollY: (_j = opts.scrollY) !== null && _j !== void 0 ? _j : defaultView.pageYOffset
                   };
                   windowBounds = new Bounds(windowOptions.scrollX, windowOptions.scrollY, windowOptions.windowWidth, windowOptions.windowHeight);
-                  context2 = new Context(contextOptions, windowBounds);
+                  context3 = new Context(contextOptions, windowBounds);
                   foreignObjectRendering = (_k = opts.foreignObjectRendering) !== null && _k !== void 0 ? _k : false;
                   cloneOptions = {
                     allowTaint: (_l = opts.allowTaint) !== null && _l !== void 0 ? _l : false,
@@ -39051,8 +39051,8 @@ var FloeBundledEditor = (() => {
                     inlineImages: foreignObjectRendering,
                     copyStyles: foreignObjectRendering
                   };
-                  context2.logger.debug("Starting document clone with size " + windowBounds.width + "x" + windowBounds.height + " scrolled to " + -windowBounds.left + "," + -windowBounds.top);
-                  documentCloner = new DocumentCloner(context2, element2, cloneOptions);
+                  context3.logger.debug("Starting document clone with size " + windowBounds.width + "x" + windowBounds.height + " scrolled to " + -windowBounds.left + "," + -windowBounds.top);
+                  documentCloner = new DocumentCloner(context3, element2, cloneOptions);
                   clonedElement = documentCloner.clonedReferenceElement;
                   if (!clonedElement) {
                     return [2, Promise.reject("Unable to find element in cloned iframe")];
@@ -39060,8 +39060,8 @@ var FloeBundledEditor = (() => {
                   return [4, documentCloner.toIFrame(ownerDocument, windowBounds)];
                 case 1:
                   container = _u.sent();
-                  _a2 = isBodyElement(clonedElement) || isHTMLElement(clonedElement) ? parseDocumentSize(clonedElement.ownerDocument) : parseBounds(context2, clonedElement), width = _a2.width, height = _a2.height, left = _a2.left, top = _a2.top;
-                  backgroundColor2 = parseBackgroundColor(context2, clonedElement, opts.backgroundColor);
+                  _a2 = isBodyElement(clonedElement) || isHTMLElement(clonedElement) ? parseDocumentSize(clonedElement.ownerDocument) : parseBounds(context3, clonedElement), width = _a2.width, height = _a2.height, left = _a2.left, top = _a2.top;
+                  backgroundColor2 = parseBackgroundColor(context3, clonedElement, opts.backgroundColor);
                   renderOptions = {
                     canvas: opts.canvas,
                     backgroundColor: backgroundColor2,
@@ -39072,21 +39072,21 @@ var FloeBundledEditor = (() => {
                     height: (_s = opts.height) !== null && _s !== void 0 ? _s : Math.ceil(height)
                   };
                   if (!foreignObjectRendering) return [3, 3];
-                  context2.logger.debug("Document cloned, using foreign object rendering");
-                  renderer = new ForeignObjectRenderer(context2, renderOptions);
+                  context3.logger.debug("Document cloned, using foreign object rendering");
+                  renderer = new ForeignObjectRenderer(context3, renderOptions);
                   return [4, renderer.render(clonedElement)];
                 case 2:
                   canvas = _u.sent();
                   return [3, 5];
                 case 3:
-                  context2.logger.debug("Document cloned, element located at " + left + "," + top + " with size " + width + "x" + height + " using computed rendering");
-                  context2.logger.debug("Starting DOM parsing");
-                  root = parseTree(context2, clonedElement);
+                  context3.logger.debug("Document cloned, element located at " + left + "," + top + " with size " + width + "x" + height + " using computed rendering");
+                  context3.logger.debug("Starting DOM parsing");
+                  root = parseTree(context3, clonedElement);
                   if (backgroundColor2 === root.styles.backgroundColor) {
                     root.styles.backgroundColor = COLORS.TRANSPARENT;
                   }
-                  context2.logger.debug("Starting renderer for element at " + renderOptions.x + "," + renderOptions.y + " with size " + renderOptions.width + "x" + renderOptions.height);
-                  renderer = new CanvasRenderer(context2, renderOptions);
+                  context3.logger.debug("Starting renderer for element at " + renderOptions.x + "," + renderOptions.y + " with size " + renderOptions.width + "x" + renderOptions.height);
+                  renderer = new CanvasRenderer(context3, renderOptions);
                   return [4, renderer.render(root)];
                 case 4:
                   canvas = _u.sent();
@@ -39094,20 +39094,20 @@ var FloeBundledEditor = (() => {
                 case 5:
                   if ((_t3 = opts.removeContainer) !== null && _t3 !== void 0 ? _t3 : true) {
                     if (!DocumentCloner.destroy(container)) {
-                      context2.logger.error("Cannot detach cloned iframe as it is not in the DOM anymore");
+                      context3.logger.error("Cannot detach cloned iframe as it is not in the DOM anymore");
                     }
                   }
-                  context2.logger.debug("Finished rendering");
+                  context3.logger.debug("Finished rendering");
                   return [2, canvas];
               }
             });
           });
         };
-        var parseBackgroundColor = function(context2, element2, backgroundColorOverride) {
+        var parseBackgroundColor = function(context3, element2, backgroundColorOverride) {
           var ownerDocument = element2.ownerDocument;
-          var documentBackgroundColor = ownerDocument.documentElement ? parseColor(context2, getComputedStyle(ownerDocument.documentElement).backgroundColor) : COLORS.TRANSPARENT;
-          var bodyBackgroundColor = ownerDocument.body ? parseColor(context2, getComputedStyle(ownerDocument.body).backgroundColor) : COLORS.TRANSPARENT;
-          var defaultBackgroundColor = typeof backgroundColorOverride === "string" ? parseColor(context2, backgroundColorOverride) : backgroundColorOverride === null ? COLORS.TRANSPARENT : 4294967295;
+          var documentBackgroundColor = ownerDocument.documentElement ? parseColor(context3, getComputedStyle(ownerDocument.documentElement).backgroundColor) : COLORS.TRANSPARENT;
+          var bodyBackgroundColor = ownerDocument.body ? parseColor(context3, getComputedStyle(ownerDocument.body).backgroundColor) : COLORS.TRANSPARENT;
+          var defaultBackgroundColor = typeof backgroundColorOverride === "string" ? parseColor(context3, backgroundColorOverride) : backgroundColorOverride === null ? COLORS.TRANSPARENT : 4294967295;
           return element2 === ownerDocument.documentElement ? isTransparent(documentBackgroundColor) ? isTransparent(bodyBackgroundColor) ? defaultBackgroundColor : bodyBackgroundColor : documentBackgroundColor : defaultBackgroundColor;
         };
         return html2canvas;
@@ -46151,9 +46151,9 @@ var FloeBundledEditor = (() => {
     if (!canvas || _typeof2(canvas) !== "object" || !("getContext" in canvas)) {
       throw new TypeError("Expecting canvas with `getContext` method in processCanvasRGB(A) calls!");
     }
-    var context2 = canvas.getContext("2d");
+    var context3 = canvas.getContext("2d");
     try {
-      return context2.getImageData(topX, topY, width, height);
+      return context3.getImageData(topX, topY, width, height);
     } catch (e3) {
       throw new Error("unable to access image data: " + e3);
     }
@@ -53032,6 +53032,12 @@ var FloeBundledEditor = (() => {
       this.requestTail = Promise.resolve();
       this.abortController = new AbortController();
       this.state = this.payload.data;
+      this.nativeChrome = false;
+      let selection;
+      Object.defineProperty(this, "selection", { get: () => selection, set: (value2) => {
+        selection = value2;
+        this.notifyPresentation();
+      }, configurable: false });
       this.register({ id: "document.save", title: t("\u4FDD\u5B58", "Save"), group: t("\u5DE5\u7A0B", "Project"), access: "edit", fields: [] }, () => ({ saved: true }));
       this.register({ id: "document.inspect", title: t("\u5DE5\u7A0B\u4FE1\u606F", "Project information"), group: t("\u5DE5\u7A0B", "Project"), access: "read", fields: [] }, () => ({ kind: configuration.kind, revision: this.revision, document: this.state }));
       this.register({ id: "document.rename", title: t("\u91CD\u547D\u540D", "Rename"), group: t("\u5DE5\u7A0B", "Project"), access: "edit", fields: [{ key: "title", label: t("\u540D\u79F0", "Name"), type: "text" }] }, (args) => {
@@ -53070,6 +53076,36 @@ var FloeBundledEditor = (() => {
         return { ...descriptor, fields };
       });
     }
+    commandIndex() {
+      return [...this.commands.values()].map(({ descriptor }) => ({ id: descriptor.id, title: descriptor.title, group: descriptor.group, access: descriptor.access, hidden: descriptor.hidden ?? false, sideEffecting: descriptor.sideEffecting ?? false, fields: (descriptor.fields ?? []).map(({ key, label, type }) => ({ key, label, type })) }));
+    }
+    formDescription(id, values = {}) {
+      const descriptor = this.command(id), args = { ...values };
+      const fields = (descriptor.fields ?? []).map((field2) => {
+        const options = typeof field2.options === "function" ? field2.options(this, args) : field2.options;
+        const initial = Object.hasOwn(values, field2.key) ? values[field2.key] : typeof field2.default === "function" ? field2.default(this, args) : field2.default;
+        if (initial !== void 0) args[field2.key] = initial;
+        return { ...field2, default: initial, options };
+      });
+      return { ...descriptor, fields };
+    }
+    nativeSnapshot() {
+      return this.configuration.nativeSnapshot?.(this) ?? { kind: this.configuration.kind, title: this.state.title, selection: this.selection ?? null };
+    }
+    async setNativeChrome(value2) {
+      this.nativeChrome = Boolean(value2);
+      if (this.root) this.root.classList.toggle("native-chrome", this.nativeChrome);
+      await this.configuration.nativeChromeChanged?.(this, this.nativeChrome);
+      this.notifyPresentation();
+    }
+    notifyPresentation() {
+      if (!this.nativeChrome || this.presentationScheduled || !globalThis.webkit?.messageHandlers?.floeEditor) return;
+      this.presentationScheduled = true;
+      setTimeout(() => {
+        this.presentationScheduled = false;
+        globalThis.webkit?.messageHandlers?.floeEditor?.postMessage({ type: "presentationChanged" });
+      }, 60);
+    }
     command(id) {
       return required(this.commands.get(id), "Unknown editor command").descriptor;
     }
@@ -53104,7 +53140,12 @@ var FloeBundledEditor = (() => {
           }
         }
         await this.render();
-        return { state: clone(this.payload), result: result?.result ?? result ?? null, artifacts: result?.artifacts ?? [] };
+        let value2 = result?.result ?? result ?? null;
+        if (result && typeof result === "object" && Object.hasOwn(result, "artifacts") && !Object.hasOwn(result, "result")) {
+          const { artifacts, ...details } = result;
+          value2 = Object.keys(details).length ? details : null;
+        }
+        return { state: mutation ? clone(this.payload) : null, result: value2, artifacts: result?.artifacts ?? [] };
       } catch (error) {
         if (previous) this.state = this.payload.data = previous;
         await this.render();
@@ -53163,6 +53204,8 @@ var FloeBundledEditor = (() => {
       if (!this.root) this.createChrome();
       await this.configuration.render?.(this);
       this.titleNode.textContent = this.state.title ?? this.configuration.title;
+      this.root.classList.toggle("native-chrome", this.nativeChrome);
+      this.notifyPresentation();
     }
     createChrome() {
       this.titleNode = element("strong", { text: this.configuration.title });
@@ -53203,6 +53246,10 @@ var FloeBundledEditor = (() => {
       }
     }
     showAction(action, preset = {}) {
+      if (this.nativeChrome && globalThis.webkit?.messageHandlers?.floeEditor) {
+        webkit.messageHandlers.floeEditor.postMessage({ type: "showCommand", command: action.id, arguments: preset });
+        return;
+      }
       const dialog = element("dialog", { class: "action-dialog" });
       const form = element("form", { method: "dialog" }, element("h2", { text: action.title }));
       const controls = [];
@@ -53260,6 +53307,10 @@ var FloeBundledEditor = (() => {
       dialog.showModal();
     }
     showResult(title, value2) {
+      if (this.nativeChrome && globalThis.webkit?.messageHandlers?.floeEditor) {
+        webkit.messageHandlers.floeEditor.postMessage({ type: "showResult", title, value: value2 });
+        return;
+      }
       const dialog = element("dialog", { class: "result-dialog" });
       dialog.append(element("h2", { text: title }));
       if (Array.isArray(value2) && value2.length && value2.every((row) => row && typeof row === "object" && !Array.isArray(row))) {
@@ -53400,8 +53451,8 @@ var FloeBundledEditor = (() => {
     return { part, measure: required(measure, t("\u8BF7\u9009\u62E9\u4E00\u4E2A\u5C0F\u8282\u3002", "Choose a measure.")) };
   }
   function currentNote(e3, doc, args = {}) {
-    const context2 = currentMeasure(e3, doc, args), id = args.note ?? e3.selection?.note;
-    return { ...context2, note: required(children(context2.measure, "note").find((n2) => n2.getAttribute("id") === id), t("\u8BF7\u9009\u62E9\u4E00\u4E2A\u97F3\u7B26\u3002", "Choose a note.")) };
+    const context3 = currentMeasure(e3, doc, args), id = args.note ?? e3.selection?.note;
+    return { ...context3, note: required(children(context3.measure, "note").find((n2) => n2.getAttribute("id") === id), t("\u8BF7\u9009\u62E9\u4E00\u4E2A\u97F3\u7B26\u3002", "Choose a note.")) };
   }
   function commit(e3, doc) {
     ensureIDs(doc);
@@ -71306,10 +71357,12 @@ var FloeBundledEditor = (() => {
   }
 
   // FloeAgent/Modules/FloeScoreKit/Web/analysis.js
+  var identityReferences = /* @__PURE__ */ new Set(["part", "midi-device", "midi-instrument", "play", "instrument-change", "instrument", "instrument-link"]);
   function diagnose(state) {
     const doc = scoreDocument(state), issues = [], parts = partList(doc), add2 = (severity, code, message, p4, index2, note) => issues.push({ severity, code, message, part: p4.id, measure: index2 + 1, measureID: p4.measures[index2]?.getAttribute("id"), note });
     const ids = /* @__PURE__ */ new Set();
     for (const el of doc.querySelectorAll("[id]")) {
+      if (identityReferences.has(el.tagName)) continue;
       const id = el.getAttribute("id");
       if (ids.has(id)) issues.push({ severity: "error", code: "duplicate-id", message: t("\u6807\u8BC6\u91CD\u590D\uFF1A", "Duplicate identifier: ") + id });
       ids.add(id);
@@ -71440,8 +71493,237 @@ var FloeBundledEditor = (() => {
     });
   }
 
+  // FloeAgent/Modules/FloeScoreKit/Web/native.js
+  var scoreInputDefaults = () => ({ type: "quarter", dots: 0, voice: 1, staff: 1, octave: 4, mode: "replace", rest: false });
+  var fractionText = (f4) => f4.d === 1 ? String(f4.n) : f4.n + "/" + f4.d;
+  function context2(e3, doc = scoreDocument(e3.state)) {
+    const part = currentPart(e3, doc), index2 = Math.max(0, part.measures.findIndex((m5) => m5.getAttribute("id") === e3.selection?.measure));
+    return { doc, part, index: index2, measure: part.measures[index2] };
+  }
+  function synchronizeScoreNativeContext(e3) {
+    e3.input ??= scoreInputDefaults();
+    if (!e3.state?.xml) return;
+    const doc = scoreDocument(e3.state), parts = partList(doc);
+    if (!parts.length) return;
+    if (e3.viewPart && !parts.some((part) => part.id === e3.viewPart)) {
+      e3.viewPart = null;
+      e3.renderKey = null;
+    }
+    const current = context2(e3, doc), staves = attributesAt(current.part, current.index).staves;
+    e3.input.staff = Math.max(1, Math.min(staves, Number(e3.input.staff) || 1));
+  }
+  function scoreTransportSnapshot(e3) {
+    const transport = e3.transport ?? {}, duration = Math.max(0, Number(transport.duration ?? e3.performance?.duration ?? 0));
+    let position = Math.max(0, Number(transport.position ?? 0)), playing = Boolean(transport.playing);
+    if (playing) {
+      const now = globalThis.performance?.now?.() ?? Date.now();
+      position += Math.max(0, (now - (transport.received ?? now)) / 1e3);
+      if (duration > 0 && position >= duration) {
+        if (e3.state?.playback?.loop) position %= duration;
+        else {
+          position = duration;
+          playing = false;
+        }
+      }
+    }
+    return { playing, position: Math.min(duration || position, position), duration, sampledAt: Date.now(), referenceTimbres: Boolean(transport.referenceTimbres) };
+  }
+  function markLabel(mark) {
+    if (mark.tagName === "harmony") {
+      const root = mark.querySelector("root-step")?.textContent ?? "", alter = Number(mark.querySelector("root-alter")?.textContent ?? 0), kind = string(mark, "kind", "");
+      return root + (alter > 0 ? "\u266F".repeat(alter) : "\u266D".repeat(-alter)) + " " + kind;
+    }
+    const type = child(mark, "direction-type"), first = type?.firstElementChild;
+    if (!first) return t("\u6F14\u594F\u8BB0\u53F7", "Performance mark");
+    if (["words", "rehearsal"].includes(first.tagName)) return first.textContent || t("\u6587\u5B57", "Text");
+    if (first.tagName === "dynamics") return first.firstElementChild?.tagName ?? t("\u529B\u5EA6", "Dynamic");
+    if (first.tagName === "metronome") return t("\u901F\u5EA6 ", "Tempo ") + (first.querySelector("per-minute")?.textContent ?? "");
+    const names = { wedge: t("\u6E10\u53D8\u529B\u5EA6", "Hairpin"), pedal: t("\u8E0F\u677F", "Pedal"), "octave-shift": t("\u516B\u5EA6\u7EBF", "Octave line"), segno: "Segno", coda: "Coda" };
+    return (names[first.tagName] ?? t("\u6F14\u594F\u8BB0\u53F7", "Performance mark")) + (first.getAttribute("type") ? " \xB7 " + first.getAttribute("type") : "");
+  }
+  function scoreNativeSnapshot(e3) {
+    synchronizeScoreNativeContext(e3);
+    const empty2 = () => ({ schemaVersion: 1, kind: "score", title: e3.state?.title ?? "", revision: e3.revision ?? 0, selection: { part: "", measure: "", note: null, notes: [], count: 0 }, parts: [], measures: [], current: { notes: [], marks: [], staves: 1 }, input: clone(e3.input), layout: clone(e3.state?.layout ?? {}), view: { part: "", concert: false, keyboardVisible: e3.nativeUI?.keyboardVisible !== false }, playback: { tempoScale: 1, loop: false, loopFrom: 0, loopTo: 0, metronome: false, ...clone(e3.state?.playback ?? {}) }, transport: scoreTransportSnapshot(e3), diagnostics: [] });
+    if (!e3.state?.xml) return empty2();
+    const parsed = scoreDocument(e3.state);
+    if (!partList(parsed).length) return empty2();
+    const { doc, part, index: index2, measure } = context2(e3, parsed), parts = partList(doc), timeline = noteTimeline(part, index2), selected = new Set(e3.selection?.notes ?? (e3.selection?.note ? [e3.selection.note] : []));
+    const notes = timeline.notes.map((n2) => ({ id: n2.id, pitch: n2.pitch, pitchName: n2.rest ? t("\u4F11\u6B62\u7B26", "Rest") : n2.pitch === null ? t("\u9F13\u97F3", "Drum") : chooseSpelling(n2.pitch), onset: n2.onset, duration: n2.duration, onsetText: fractionText(n2.onset), durationText: fractionText(n2.duration), type: string(n2.node, "type", "quarter"), dots: children(n2.node, "dot").length, voice: n2.voice, staff: n2.staff, rest: n2.rest, grace: n2.grace, selected: selected.has(n2.id), actual: Number(string(child(n2.node, "time-modification") ?? n2.node, "actual-notes", 1)), normal: Number(string(child(n2.node, "time-modification") ?? n2.node, "normal-notes", 1)) }));
+    const current = notes.find((n2) => n2.id === e3.selection?.note) ?? notes.find((n2) => n2.selected) ?? null;
+    const allNoteIDs = new Set([...doc.querySelectorAll("note")].map((note) => note.getAttribute("id"))), selectedIDs = [...selected].filter((id) => allNoteIDs.has(id));
+    return {
+      schemaVersion: 1,
+      kind: "score",
+      title: e3.state.title,
+      revision: e3.revision,
+      selection: { part: part.id, measure: measure.getAttribute("id"), note: current?.id ?? null, notes: selectedIDs.slice(0, 512), count: selectedIDs.length },
+      parts: parts.map((p4) => ({ id: p4.id, name: p4.name, staves: attributesAt(p4, 0).staves, measureCount: p4.measures.length, mix: { solo: false, mute: false, volume: 1, ...e3.state.playback?.parts?.[p4.id] } })),
+      measures: part.measures.map((m5, i4) => {
+        const attrs = attributesAt(part, i4);
+        return { id: m5.getAttribute("id"), number: m5.getAttribute("number") ?? String(i4 + 1), index: i4 + 1, beats: attrs.beats, beatType: attrs.beatType, notesCount: children(m5, "note").length };
+      }),
+      current: { part: part.id, partName: part.name, measure: measure.getAttribute("id"), index: index2 + 1, beats: timeline.attrs.beats, beatType: timeline.attrs.beatType, fifths: timeline.attrs.fifths, staves: timeline.attrs.staves, clefs: Object.entries(timeline.attrs.clefs).map(([staff, clef]) => ({ staff: Number(staff), ...clef })), notes, note: current, marks: [...measure.children].filter((n2) => ["direction", "harmony"].includes(n2.tagName)).map((n2) => ({ id: n2.getAttribute("id"), kind: n2.tagName, label: markLabel(n2) })) },
+      input: clone(e3.input),
+      layout: clone(e3.state.layout ?? {}),
+      view: { part: e3.viewPart ?? "", concert: Boolean(e3.concertPitch), keyboardVisible: e3.nativeUI?.keyboardVisible !== false },
+      playback: { tempoScale: 1, loop: false, loopFrom: 0, loopTo: 0, metronome: false, ...clone(e3.state.playback ?? {}) },
+      transport: scoreTransportSnapshot(e3),
+      diagnostics: (e3.diagnostics ?? []).slice(0, 100).map((issue, index3) => ({ index: index3 + 1, ...issue }))
+    };
+  }
+  function selectScoreContext(e3, args = {}) {
+    const doc = scoreDocument(e3.state), parts = partList(doc);
+    let part, measure, note;
+    if (args.note) {
+      for (const p4 of parts) {
+        if (args.part && p4.id !== args.part) continue;
+        for (const m5 of p4.measures) {
+          const n2 = children(m5, "note").find((n3) => n3.getAttribute("id") === args.note);
+          if (n2) {
+            part = p4;
+            measure = m5;
+            note = n2;
+            break;
+          }
+        }
+        if (note) break;
+      }
+      if (!note) throw new Error(t("\u97F3\u7B26\u5DF2\u4E0D\u5B58\u5728\u3002", "The note no longer exists."));
+    } else {
+      part = currentPart(e3, doc, args.part);
+      measure = args.measure ? part.measures.find((m5) => m5.getAttribute("id") === args.measure) : part.measures.find((m5) => m5.getAttribute("id") === e3.selection?.measure) ?? part.measures[0];
+      if (!measure) throw new Error(t("\u5C0F\u8282\u5DF2\u4E0D\u5B58\u5728\u3002", "The measure no longer exists."));
+    }
+    const staves = attributesAt(part, part.measures.indexOf(measure)).staves;
+    if (args.staff !== void 0 && (!Number.isInteger(args.staff) || args.staff < 1 || args.staff > staves)) throw new Error("Invalid score selection staff");
+    const id = note?.getAttribute("id"), notes = id ? args.extend && e3.selection?.part === part.id ? [.../* @__PURE__ */ new Set([...e3.selection?.notes ?? [], id])] : [id] : [];
+    e3.selection = { part: part.id, measure: measure.getAttribute("id"), ...id ? { note: id } : {}, notes };
+    e3.input ??= scoreInputDefaults();
+    if (note) {
+      e3.input.staff = Number(string(note, "staff", 1));
+      const voice = Number(string(note, "voice", 1));
+      if (Number.isFinite(voice)) e3.input.voice = voice;
+    } else e3.input.staff = args.staff ?? Math.max(1, Math.min(staves, e3.input.staff));
+    if (e3.viewPart && e3.viewPart !== part.id) {
+      e3.viewPart = part.id;
+      e3.renderKey = null;
+    }
+    return { part: part.id, measure: measure.getAttribute("id"), note: id ?? null, selected: notes.length };
+  }
+  function registerScoreNative(e3) {
+    e3.input ??= scoreInputDefaults();
+    const ui = (id, title, handler) => e3.register({ id, title, access: "read", sideEffecting: true, hidden: true, fields: [] }, handler);
+    ui("score.ui.input", t("\u8C31\u9762\u8F93\u5165\u72B6\u6001", "Score input state"), (args) => {
+      const next = { ...e3.input }, integer = (key, min, max2) => {
+        if (args[key] === void 0) return;
+        const v4 = Number(args[key]);
+        if (!Number.isInteger(v4) || v4 < min || v4 > max2) throw new Error("Invalid score input " + key);
+        next[key] = v4;
+      };
+      if (args.type !== void 0) {
+        if (!Object.hasOwn(durationTypes, args.type)) throw new Error("Unknown score duration");
+        next.type = args.type;
+      }
+      if (args.mode !== void 0) {
+        if (!["replace", "append", "insert"].includes(args.mode)) throw new Error("Invalid score entry mode");
+        next.mode = args.mode;
+      }
+      integer("dots", 0, 3);
+      integer("voice", 1, 64);
+      if (args.staff !== void 0) {
+        const current = context2(e3);
+        integer("staff", 1, attributesAt(current.part, current.index).staves);
+      }
+      integer("octave", 0, 8);
+      if (args.rest !== void 0) {
+        if (typeof args.rest !== "boolean") throw new Error("Invalid rest input");
+        next.rest = args.rest;
+      }
+      e3.input = next;
+      return clone(next);
+    });
+    ui("score.ui.select", t("\u8C31\u9762\u9009\u62E9", "Score selection"), (args) => selectScoreContext(e3, args));
+    ui("score.ui.view", t("\u8C31\u9762\u663E\u793A\u72B6\u6001", "Score view state"), (args) => {
+      if (args.part !== void 0 && args.part !== "" && !partList(scoreDocument(e3.state)).some((p4) => p4.id === args.part)) throw new Error("Unknown score part");
+      if (args.part !== void 0) e3.viewPart = args.part || null;
+      if (args.concert !== void 0) e3.concertPitch = Boolean(args.concert);
+      if (args.keyboardVisible !== void 0) e3.nativeUI = { ...e3.nativeUI, keyboardVisible: Boolean(args.keyboardVisible) };
+      e3.renderKey = null;
+      return { part: e3.viewPart ?? "", concert: Boolean(e3.concertPitch), keyboardVisible: e3.nativeUI?.keyboardVisible !== false };
+    });
+    ui("score.ui.transport", t("\u8C31\u9762\u64AD\u653E\u72B6\u6001", "Score transport state"), () => scoreTransportSnapshot(e3));
+  }
+
+  // FloeAgent/Modules/FloeScoreKit/Web/interaction.js
+  function installScoreInteractions(e3, { select, transpose, edit }) {
+    const surface = e3.scoreSurface;
+    let activated;
+    function hit(event) {
+      const group = event.target.closest?.("[data-score-notes]");
+      if (!group || !surface.contains(group)) return;
+      const ids = group.dataset.scoreNotes.split(","), exact = event.target.closest("[data-score-note]"), heads = [...group.querySelectorAll("[data-score-note]")], nearest = heads.sort((a3, b5) => Math.abs(a3.getBoundingClientRect().top + a3.getBoundingClientRect().height / 2 - event.clientY) - Math.abs(b5.getBoundingClientRect().top + b5.getBoundingClientRect().height / 2 - event.clientY))[0];
+      return { group, id: exact?.dataset.scoreNote ?? (event.type === "pointerdown" ? nearest?.dataset.scoreNote : null) ?? ids[0] };
+    }
+    surface.addEventListener("pointerdown", (event) => {
+      if (event.button > 0) return;
+      const target = hit(event);
+      if (!target) return;
+      const selection = select(target.id, event.shiftKey || event.metaKey);
+      activated = { group: target.group, kind: "pointer", stamp: event.timeStamp };
+      e3.drag = { pointer: event.pointerId, y: event.clientY, note: target.id, selection };
+    });
+    surface.addEventListener("pointerup", (event) => {
+      if (!e3.drag || e3.drag.pointer !== event.pointerId) return;
+      const drag = e3.drag, dy = event.clientY - drag.y;
+      e3.drag = null;
+      if (activated?.kind === "pointer") activated.stamp = event.timeStamp;
+      if (Math.abs(dy) > 12) {
+        const semitones = Math.round(-dy / (7 * (e3.state.layout.zoom ?? 1)));
+        if (semitones) Promise.resolve(drag.selection).then(() => transpose(semitones)).catch(() => {
+        });
+      }
+    });
+    surface.addEventListener("pointercancel", () => {
+      e3.drag = null;
+      activated = null;
+    });
+    surface.addEventListener("click", (event) => {
+      const target = hit(event);
+      if (!target) return;
+      const previous = activated;
+      activated = null;
+      const age = event.timeStamp - (previous?.stamp ?? -Infinity);
+      if (previous?.group === target.group && age >= 0 && age < 900) return;
+      select(target.id, event.shiftKey || event.metaKey);
+    });
+    surface.addEventListener("dblclick", (event) => {
+      if (hit(event)) edit();
+    });
+    surface.addEventListener("keydown", (event) => {
+      if (!["Enter", " ", "Spacebar"].includes(event.key)) return;
+      const target = hit(event);
+      if (!target) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.repeat) return;
+      activated = { group: target.group, kind: "keyboard", stamp: event.timeStamp };
+      select(target.id, event.shiftKey || event.metaKey);
+    });
+    surface.addEventListener("keyup", (event) => {
+      if (!["Enter", " ", "Spacebar"].includes(event.key)) return;
+      const target = hit(event);
+      if (!target) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (activated?.kind === "keyboard" && activated.group === target.group) activated.stamp = event.timeStamp;
+    });
+  }
+
   // FloeAgent/Modules/FloeScoreKit/Web/main.js
-  var engine = new EditorEngine({ kind: "score", title: t("\u4E50\u8C31", "Score"), create: createScore, normalize: normalizeScore, render: renderEditor, cancel: () => {
+  var engine = new EditorEngine({ kind: "score", title: t("\u4E50\u8C31", "Score"), create: createScore, normalize: normalizeScore, nativeSnapshot: scoreNativeSnapshot, nativeChromeChanged: (e3) => {
+    syncScoreChrome(e3);
+    e3.renderKey = null;
+  }, render: renderEditor, cancel: () => {
     engine.browserPlayer?.run({ action: "stop" });
     engine.stopPlaybackCursor?.();
   } });
@@ -71451,6 +71733,7 @@ var FloeBundledEditor = (() => {
   registerPlayback(engine);
   registerFormats(engine);
   registerAnalysisAndLayout(engine);
+  registerScoreNative(engine);
   var scoreEngine = expose(engine);
   function button(text2, action, args = {}, className = "") {
     return element("button", { text: text2, class: className, onclick: () => engine.perform(action, args).catch(() => {
@@ -71468,7 +71751,7 @@ var FloeBundledEditor = (() => {
   function initChrome(e3) {
     e3.root.classList.add("score-editor");
     e3.root.querySelector("header").append(element("button", { text: t("\u5C5E\u6027", "Inspector"), onclick: () => e3.root.classList.toggle("show-inspector") }));
-    e3.input = { type: "quarter", dots: 0, voice: 1, staff: 1, octave: 4, mode: "replace", rest: false };
+    e3.input ??= scoreInputDefaults();
     e3.noteVisuals = /* @__PURE__ */ new Map();
     const fileInput = element("input", { type: "file", accept: ".musicxml,.xml,.mxl,.mid,.midi,.floescore", hidden: true, onchange: async () => {
       const file = fileInput.files?.[0];
@@ -71498,28 +71781,9 @@ var FloeBundledEditor = (() => {
       const black = [1, 3, 6, 8, 10].includes(pitch % 12), key = element("button", { class: black ? "black" : "white", text: chooseSpelling(pitch), title: chooseSpelling(pitch), onclick: () => enterPitch(pitch) });
       e3.keyboard.append(key);
     }
-    e3.canvas.replaceChildren(e3.quick, e3.scoreSurface, e3.transportBar, e3.keyboard);
+    e3.canvas.replaceChildren(...e3.nativeChrome ? [e3.scoreSurface] : [e3.quick, e3.scoreSurface, e3.transportBar, e3.keyboard]);
     e3.canvas.addEventListener("keydown", keyDown);
-    e3.scoreSurface.addEventListener("pointerdown", (event) => {
-      const target = event.target.closest("[data-score-notes]");
-      if (!target) return;
-      const ids = target.dataset.scoreNotes.split(","), heads = [...target.querySelectorAll("[data-score-note]")], exact = event.target.closest("[data-score-note]"), nearest = heads.sort((a3, b5) => Math.abs(a3.getBoundingClientRect().top + a3.getBoundingClientRect().height / 2 - event.clientY) - Math.abs(b5.getBoundingClientRect().top + b5.getBoundingClientRect().height / 2 - event.clientY))[0], id = exact?.dataset.scoreNote ?? nearest?.dataset.scoreNote ?? ids[0];
-      selectNote(e3, id, event.shiftKey || event.metaKey);
-      e3.drag = { pointer: event.pointerId, y: event.clientY, note: id };
-    });
-    e3.scoreSurface.addEventListener("pointerup", (event) => {
-      if (!e3.drag || e3.drag.pointer !== event.pointerId) return;
-      const dy = event.clientY - e3.drag.y;
-      e3.drag = null;
-      if (Math.abs(dy) > 12 && e3.selection?.note) {
-        const semitones = Math.round(-dy / (7 * (e3.state.layout.zoom ?? 1)));
-        if (semitones) e3.perform("score.edit.transpose", { semitones }).catch(() => {
-        });
-      }
-    });
-    e3.scoreSurface.addEventListener("dblclick", (event) => {
-      if (event.target.closest("[data-score-notes]")) e3.showAction(e3.command("score.edit.update"), currentNotePreset(e3));
-    });
+    installScoreInteractions(e3, { select: (id, extend) => selectNote(e3, id, extend), transpose: (semitones) => e3.perform("score.edit.transpose", { semitones }), edit: () => e3.showAction(e3.command("score.edit.update"), currentNotePreset(e3)) });
     e3.scrollToSelection = () => {
       e3.noteVisuals.get(e3.selection?.note)?.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
     };
@@ -71535,6 +71799,7 @@ var FloeBundledEditor = (() => {
           else {
             e3.transport.playing = false;
             e3.stopPlaybackCursor();
+            e3.notifyPresentation?.();
             return;
           }
         }
@@ -71544,6 +71809,10 @@ var FloeBundledEditor = (() => {
         const fullSeconds = seconds + (e3.playbackSourceOffset ?? 0), clock = e3.performance ? tempoClock(e3.performance.tempo.map((p4) => ({ q: p4.q, bpm: p4.bpm }))) : null, q3 = clock?.quarters(fullSeconds) ?? 0, active = e3.performance?.events.filter((n2) => n2.part !== "metronome" && n2.start <= seconds + 0.03 && n2.start + n2.duration > seconds).map((n2) => n2.note) ?? [];
         for (const g3 of e3.scoreSurface.querySelectorAll(".score-playing")) g3.classList.remove("score-playing");
         for (const id of active) e3.noteVisuals.get(id)?.classList.add("score-playing");
+        if (e3.nativeChrome && performance.now() - (e3.lastNativeTransportUpdate ?? 0) > 1e3) {
+          e3.lastNativeTransportUpdate = performance.now();
+          e3.notifyPresentation?.();
+        }
         e3.playbackFrame = requestAnimationFrame(tick);
       };
       e3.playbackFrame = requestAnimationFrame(tick);
@@ -71633,39 +71902,49 @@ var FloeBundledEditor = (() => {
     }
     const types = { 1: "whole", 2: "half", 3: "quarter", 4: "eighth", 5: "16th", 6: "32nd", 7: "64th" };
     if (types[key]) {
-      e3.input.type = types[key];
-      e3.quick.querySelector("select").value = types[key];
+      if (e3.nativeChrome) e3.perform("score.ui.input", { type: types[key] }).catch(() => {
+      });
+      else {
+        e3.input.type = types[key];
+        e3.quick.querySelector("select").value = types[key];
+      }
       event.preventDefault();
     }
   }
   function selectNote(e3, id, extend) {
-    const doc = scoreDocument(e3.state);
-    for (const p4 of partList(doc)) for (let i4 = 0; i4 < p4.measures.length; i4++) {
-      const n2 = noteTimeline(p4, i4).notes.find((n3) => n3.id === id);
-      if (n2) {
-        const notes = extend ? [.../* @__PURE__ */ new Set([...e3.selection?.notes ?? [], id])] : [id];
-        e3.selection = { part: p4.id, measure: p4.measures[i4].getAttribute("id"), note: id, notes };
-        e3.input.staff = n2.staff;
-        e3.input.voice = Number(n2.voice);
-        updateSelectionHighlight(e3);
-        renderOutline(e3);
-        renderInspector(e3);
-        e3.canvas.focus({ preventScroll: true });
-        return;
-      }
+    if (e3.nativeChrome) {
+      const pending = e3.perform("score.ui.select", { note: id, extend: Boolean(extend) });
+      pending.catch(() => {
+      });
+      return pending;
     }
+    selectScoreContext(e3, { note: id, extend: Boolean(extend) });
+    updateSelectionHighlight(e3);
+    renderOutline(e3);
+    renderInspector(e3);
+    e3.canvas.focus({ preventScroll: true });
   }
   function updateSelectionHighlight(e3) {
     for (const g3 of e3.scoreSurface.querySelectorAll(".score-selected")) g3.classList.remove("score-selected");
     for (const id of e3.selection?.notes ?? (e3.selection?.note ? [e3.selection.note] : [])) e3.noteVisuals.get(id)?.classList.add("score-selected");
   }
+  function syncScoreChrome(e3) {
+    if (e3.nativeChrome) synchronizeScoreNativeContext(e3);
+    if (!e3.root || !e3.canvas || !e3.scoreSurface) return;
+    e3.root.classList.toggle("score-native-chrome", Boolean(e3.nativeChrome));
+    const nodes = e3.nativeChrome ? [e3.scoreSurface] : [e3.quick, e3.scoreSurface, e3.transportBar, e3.keyboard];
+    if (e3.canvas.children.length !== nodes.length || nodes.some((node3, index2) => e3.canvas.children[index2] !== node3)) e3.canvas.replaceChildren(...nodes);
+  }
   async function renderEditor(e3) {
     if (!e3.scoreSurface) initChrome(e3);
+    syncScoreChrome(e3);
     if (e3.transport?.playing && e3.playingXML !== e3.state.xml) {
       await executeTransport(e3, { action: "pause" });
     }
-    renderOutline(e3);
-    renderInspector(e3);
+    if (!e3.nativeChrome) {
+      renderOutline(e3);
+      renderInspector(e3);
+    }
     await renderScore(e3);
     updateSelectionHighlight(e3);
   }
@@ -71760,12 +72039,6 @@ var FloeBundledEditor = (() => {
           g3.setAttribute("role", "button");
           g3.setAttribute("tabindex", "0");
           g3.setAttribute("aria-label", pool.map((n2) => n2.rest ? t("\u4F11\u6B62\u7B26", "Rest") : n2.pitch === null ? t("\u9F13\u97F3", "Drum") : chooseSpelling(n2.pitch)).join(", ") + ", " + t("\u5C0F\u8282", "measure") + " " + (mi + 1));
-          g3.addEventListener("keydown", (event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              selectNote(e3, ids[0], event.shiftKey);
-            }
-          });
           for (const id of ids) e3.noteVisuals.set(id, g3);
         }
         for (const [g3, heads_] of groupHeads) {

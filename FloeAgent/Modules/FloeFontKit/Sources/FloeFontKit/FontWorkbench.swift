@@ -24,5 +24,12 @@ public struct FontEditorView:View {
     private let controller:HeavyEditorController
     private let onClose:()->Void
     public init(controller:HeavyEditorController,onClose:@escaping()->Void={}){self.controller=controller;self.onClose=onClose}
-    public var body:some View{HeavyEditorView(controller:controller,onClose:onClose)}
+    public var body:some View {
+        HeavyEditorView(controller:controller,onClose:onClose,
+            outline:AnyView(FontGlyphOutline(controller:controller)),
+            canvasToolbar:AnyView(FontModeToolbar(controller:controller)),
+            inspector:AnyView(FontInspector(controller:controller)),
+            canvasContent:FontNativePanels.canvas(controller),
+            bottomBar:AnyView(FontStatusBar(controller:controller)))
+    }
 }

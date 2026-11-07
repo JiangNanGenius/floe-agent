@@ -6,13 +6,13 @@ Floe-authored sources are MPL-2.0. Third-party components retain their own notic
 
 ## 使用与验证
 
-- `GISWorkbench.descriptor`、`makeDocument`、`open` 与 `GISEditorView` 为 Swift 入口。
+- `GISWorkbench.descriptor`、`makeDocument`、`open` 与 `GISEditorView` 为 Swift 入口。`GISNativePanels.swift` 提供原生图层栏、属性／样式检查器、地图工具、属性表和状态栏；地图、三维与制图中央画布保留在内置绘制组件中。
 - `Integration/README.md` 定义宿主所有权、修订、文件与 AI 调用合同；`Integration/smoke-plan.json` 是可直接执行的同一 dispatcher 验证步骤。
 - `node FloeAgent/Modules/FloeGISKit/Tests/run.mjs` 运行组件验证。默认复用主线固定的内部 Web 工具链，也可设置 `FLOE_EDITOR_WEB_TOOLCHAIN`。测试临时构件写入内部 SSD 缓存，不修改锁文件或安装依赖。
 - `node FloeAgent/Qualification/HeavyEditors/WebBuild/build.mjs gis` 只重建本模块的离线资源与依赖声明。
-- iOS 对象编译使用 Xcode 27.2（27B52）、Swift 6.4.2、`arm64-apple-ios26.0-simulator`，独立 scratch、2 jobs。没有启动 Simulator。
+- 原生面板已由统一资格宿主通过 macOS arm64 和 iOS Simulator arm64 实际对象编译，使用 Xcode 27.2（27B52）、独立暖缓存与 2 jobs；本任务未启动 Simulator。
 
-当前组件的 31 项 Node 功能验证通过，涵盖实际二进制重读和 `main.js` dispatcher；iOS arm64 对象编译通过。触摸／笔、WebGL、WKWebView PNG/PDF 导出与真实 App 导航的实际屏幕验收由主线资格宿主负责，不将 Node 或对象编译等同于设备通过。
+当前组件的 35 项 Node 功能验证通过，涵盖实际二进制重读、`main.js` dispatcher、原生显示快照、分页／选区联动及真实属性修改。统一宿主另已验证原生图层选择、属性表修改、原生 SQL 表单与结果读回，以及真实 PNG／PDF 导出；见 [原生资格证据](../../Qualification/HeavyEditors/Evidence/20261108-native/results.json)。真实 App 接线、iPad／iPhone 触摸与 Pencil 仍分别验收，不以独立 Mac 宿主替代。
 
 ## G01–G10 功能矩阵
 
@@ -20,13 +20,13 @@ Floe-authored sources are MPL-2.0. Third-party components retain their own notic
 | --- | --- | --- |
 | G01 工程 | `model.js`：`createGIS`／`normalizeGIS`；`project.*`、`layer.*`、`group.properties`。多图层／字符串图层组，顺序、可见、锁定、透明度、CRS、范围、书签、源元数据。`document.save` 保存当前实际地图范围；共享 runtime 持久化可逆修订。 | 保存重开、空图层字段模式、撤销／重做、跨 CRS 剪切粘贴验证。`.floegis` 是带 `schemaVersion`、`data`、`history` 的 JSON 工程快照；宿主保存使用同一 payload。历史上限由共享 runtime 管理。 |
 | G02 矢量编辑 | `model.js`：Point／MultiPoint／LineString／MultiLineString／Polygon holes／MultiPolygon／GeometryCollection，ID、属性、增删、多选、复制／剪切／跨图层粘贴、共同中心变换、节点插删改与原子批量更新。`view.js`：Draw、Modify、Translate、Snap；触摸插删点、完成／取消线面绘制、多选拖动。 | holes／Z／闭环／退化环拒绝、批量失败回滚、锁定、跨 CRS 粘贴均验证。`vector.split`／`mergeLines`／`difference` 提供切线、接线、挖洞；`query.measure` 测量面积／长度。实际触控精度待宿主验收。 |
-| G03 表与样式 | `view.js` 属性表可直接编辑，搜索、排序、仅选区、分页与地图选区联动；`field.edit`／`calculate`、`attribute.set`、`query.attributes`／`sql`。`symbology.js` 为地图、图例、打印与瓦片共用单色／分类／等间隔分级、填充／线宽／点径／标签。 | 空图层字段、重命名、类型、JSON／布尔、引用字段名、SQL 只读／单语句及选区回流验证。SQL 表为当前图层的隔离 SQLite 快照，`_id`／`_geometry` 为查询保留列，不访问宿主文件。 |
+| G03 表与样式 | `GISNativePanels.swift` 属性表可直接编辑，搜索、排序、选列、仅选区、分页与地图选区联动；`native.js` 只投影当前页，长值经原生命令表单读取完整原值。`field.edit`／`calculate`、`attribute.set`、`query.attributes`／`sql` 与原生样式控件使用同一命令。`symbology.js` 为地图、图例、打印与瓦片共用单色／分类／等间隔分级、填充／线宽／点径／标签。 | 空图层字段、重命名、类型、JSON／布尔、引用字段名、SQL 只读／单语句、分页／筛选／排序、长值与选区回流验证。SQL 表为当前图层的隔离 SQLite 快照，`_id`／`_geometry` 为查询保留列，不访问宿主文件。 |
 | G04 格式 | `formats.js`：GeoJSON、CSV WKT／坐标列、GPX、KML／KMZ、真实 Shapefile、GeoPackage、GeoTIFF、ASCII Grid、PNG／JPEG／WebP＋world file、影像 MBTiles。 | 下表逐项列明编码变体。Shapefile／GeoPackage／GeoTIFF／MBTiles／CSV／world file 有实际写入重读；GPX／KML 使用内置 OpenLayers 格式实现，DOM 路径由宿主验收。没有用改后缀 JSON 冒充格式。 |
 | G05 坐标 | `defineCRS`／`transformPosition`／`transformGeometry`／`projectedBounds`；EPSG:4326、3857、32601–32660／32701–32760 UTM、自定义 proj4／WKT。工程 CRS 实际用于地图；图层重投影、栅格 warp 和导出转换。 | 南半球 UTM 真坐标与投影往返、多波段 UTM GeoTIFF、3857 GeoPackage 重读验证。坐标始终为传统 GIS 的 X/Y，经纬度是经度／纬度，距离／面积分析输出米／平方米。日界线约定见下文。 |
 | G06 空间与栅格 | `analysis.js`：buffer、clip、intersection、union、difference、dissolve、simplify、convex hull、spatial join／汇总、位置查询、最近边界距离、面积／线长；栅格采样、nearest／bilinear 重采样／warp、安全波段表达式／指数、阈值／分位数／等间隔分类、面裁切、拼接、统计与分区统计。 | 真实 union／intersection bbox、含洞差集、多线裁剪／切割、空间连接数值、真实最近边界、裁切／拼接像素、波段表达式、NoData、分区统计验证。改变数据的计算生成可继续编辑的新图层并选中；查询／全局统计返回表。 |
 | G07 地形与图 | Horn 坡度／坡向／hillshade、marching-squares 等高线、采样剖面与结果图、Three.js 三维 DEM、无向矢量网络的交点连通／吸附起终点／Dijkstra 最短或字段倍率成本路径、IDW 插值。 | 平面 DEM 0 坡度／真实阴影、等高线坐标、线段内部起终点路径、成本／长度、常值 IDW、剖面高程验证。平地坡向为 -1；不将三维 mesh 声称为原生 GIS 引擎，GPU／手势实屏另验。 |
 | G08 制图与导出 | `layout.settings`／`annotation`／`clearAnnotations`、`layout.export`。A4／A3／Letter、横竖版、当前实际范围／固定比例尺、指北针、共用分类图例、标签／文字标注，真实 SVG／PNG／PDF。 | SVG 是矢量要素＋重投影后的内嵌 PNG；数据 URI PNG 已重读。范围保持比例，透明度／分类颜色／holes／标签与地图一致。PNG／PDF 是浏览器实际栅格化的成品；PDF 按纸张大小居中适配，交给宿主既有保护预览。Node 不替代 WKWebView PNG/PDF 屏幕验收。 |
-| G09 UI | `GISView`：图层栏、地图／属性表／3D／制图、属性／样式 inspector、参数化工具菜单。iPhone 可打开属性对话框；工具、表、节点与选区调用同一 `perform`。地图支持平移／缩放、绘制完成、吸附开关、触摸多选／拖动／节点插删，键盘 Cmd/Ctrl+C/X/V 和 Delete。 | 源码可达入口与结果 dispatcher 已核对；资源释放验证覆盖地图、离线 DB／Blob、3D 对象生命周期。iPad／iPhone 与笔的实际交互由主线验收，未宣称物理设备通过。 |
+| G09 UI | `GISEditorView`／`GISNativePanels.swift`：原生图层组、显示／锁定／排序、选层、书签、属性／样式检查器、地图／属性表／3D／制图工具与可编辑属性表；稀有功能使用共享原生参数表单。`native.js` 的隐藏 `gis.ui.*` 命令只管理瞬态 UI，数据修改仍走原编辑命令。`GISView` 原生模式只保留中央地图／地形／制图画布，支持平移／缩放、完成绘制、吸附、触摸多选／拖动／节点插删与键盘快捷键。 | 原生快照无几何／栅格／瓦片内容；UI 切换不写工程或历史，真实属性修改与图层组属性独立切换已验证。资源释放覆盖地图、离线 DB／Blob、3D 生命周期。原生面板已完成独立 Mac／iOS Simulator 对象编译和 Mac 属性表交互；真实 App、iPad／iPhone／笔仍由主线验收，未宣称物理设备通过。 |
 | G10 AI／宿主 | `main.js` 实际 `EditorEngine` dispatcher、可发现命令／字段／访问级别；共享 `HeavyEditorModelCalls` 与宿主 lease、owner／revision／authorize、真实导出回执。`GISWorkbench` 只开放当前绑定原件。 | 真实 bundled dispatcher 执行样例→计算面积→导出并重读 GeoPackage→导出包含 DEM 的 SVG；见 smoke-plan。宿主决定 owner／目录／文件身份，模型没有选择任意路径、授权自己或导入任意 base64 的旁路。App 导航与发布不在模块验证范围。 |
 
 ## 格式与计算约定

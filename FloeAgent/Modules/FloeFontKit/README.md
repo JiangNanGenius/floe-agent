@@ -1,6 +1,8 @@
 # FloeFontKit
 
-独立、离线的字体设计模块。入口为 `FontWorkbench` / `FontEditorView`，工程扩展名为 `.floefont`。自有源码采用 MPL-2.0；原生 fontc 与 Web 依赖的原始许可证由统一宿主闭包记录，不能用本模块 SPDX 代替第三方许可。
+离线字体设计组件。App 入口限定在 **设置→现有字体管理器** `FontManagementView`，由其打开 `FontWorkbench` / `FontEditorView`，编辑、编译和安装编辑版本后返回同一管理器；不得在 Space、Notes 或 Creative 添加独立字体编辑器入口。工程扩展名为 `.floefont`，由字体管理域保存，不覆盖输入字体原件。自有源码采用 MPL-2.0；原生 fontc 与 Web 依赖的原始许可证由统一宿主闭包记录，不能用本模块 SPDX 代替第三方许可。
+
+`FontEditorView` 提供 SwiftUI 列表/搜索、字符网格、母版选择、检查器、模式与工具栏、轮廓 Canvas、字距画布、特性 TextEditor、轴/母版/实例 Form。计算、布尔、编译和文件格式继续复用同一引擎；WebKit 仅在文本打样区域显示已编译字体的真实成形。原生接口及有界快照见 [Integration/native-presentation.md](Integration/native-presentation.md)。
 
 原生库以真正的 `.a + Headers` XCFramework 交付，不把静态 archive 伪装成可嵌入 framework。producer 保留原薄 LTO；打包副本仅移除冗余 `__LLVM` 段，保留全部机器码/运行段、平台信息、非 STAB 符号和 DWARF，逐对象核对后才提交。实际 raw→consumer 哈希见 `Vendor/FloeFontCompiler.xcframework/normalization-manifest.json`。完整 Cargo、WOFF2 与实际 Rust 标准库版权原文入口见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 
@@ -16,8 +18,8 @@
 | F06 变量字体 | 轴与坐标映射、母版/命名实例 CRUD、轮廓/组件/锚点/位置兼容检查、复制字形修正兼容、OpenType support-tent 源插值、静态实例工程和字体、变量 TTF/WOFF/WOFF2 | 双轴、角点与中间修正母版在真实 fontc 输出上交叉验证，包含 kerning/竖排 metrics。导入二进制变量字体的可编辑母版为轴端采样；未编辑时预览和实例轮廓读取原始 gvar/CFF2，不能把端点采样称为原始完整源。OTF 只导出静态 CFF。 |
 | F07 格式 | TTF/OTF/WOFF/WOFF2、UFO ZIP/Designspace ZIP、SVG 字体及矢量字形导入；原件保留与逐字节导出；当前工程对应格式导出 | UFO/Designspace 的映射坐标、字形、组件、锚点、许可、每母版 kerning/info、垂直 origin/advance 有往返测试。Designspace 要与全部 UFO 一起 ZIP 导入。SVG 支持变换、圆弧、基本矢量形状与本地 use，文本/栅格须先转轮廓，不取远程资源。 |
 | F08 输出 | 真正 glyf TTF、真正 CFF OTF、标准 WOFF/内置 WASM WOFF2、单字形 SVG、SVG 字体、UFO/Designspace ZIP、工程、字体/许可包、示字 PDF/SVG/PNG | 原生 TTF 与 CFF 经 CoreText 加载/成形；OTF sfnt checksum、CFF/GSUB/GPOS 回读，以及静态/变量 WOFF 与 WOFF2 实际编解码回读均通过。PDF/PNG 的可见 WebKit 导出交给统一宿主验收，不以 JSDOM 代替。 |
-| F09 iPad UI | 字符网格/搜索侧栏、中央轮廓、控制柄、触摸/笔指针、双指缩放/平移、框选/吸附、键盘移动/多选/删除、metrics、features、masters/axes、导出和诊断；中英双语 | 六面板与 inspector 操作入口已做 DOM 行为检查；原生 WKWebView、触摸与真实 App 入口验收由统一宿主完成。本模块未启动 Simulator 或使用实体设备。 |
-| F10 AI/宿主 | 与 UI 共用可发现字段和命令的 dispatcher、共享 revision/history、宿主授权的 `font.compile` 扩展、受控本地 fontc staging | 接入合同和有具体参数的 smoke plan 见 `Integration/`。模型只能得到绑定工程 lease；目录、owner、授权与文件服务不由工程或模型参数决定。 |
+| F09 iPad UI | SwiftUI 字符网格/搜索侧栏、中央轮廓 Canvas/Path、控制柄、触摸/笔指针、缩放/平移、框选/吸附、键盘移动/多选/删除、字距画布、特性编辑、母版/轴/实例、原生导出和诊断表单；中英双语 | Web 行为检查覆盖路径/组件/分页 DTO、暂态 UI 命令、空工程及 nativeChrome 下六模式无 HTML 普通控件；统一宿主已完成 Mac／iOS Simulator 对象编译、Mac 原生节点拖动与参数编辑、TTF 节点独立读回及返回字体管理器（[证据](../../Qualification/HeavyEditors/Evidence/20261108-native/results.json)）。真实 App、触摸／Pencil／键盘专项另验；本模块未启动 Simulator 或使用实体设备。 |
+| F10 AI/宿主 | 与 UI 共用可发现字段和命令的 dispatcher、共享 revision/history、宿主授权的 `font.compile` 扩展、受控本地 fontc staging；产品入口为设置字体管理器 | 接入合同和有具体参数的组件 smoke plan 见 `Integration/`。模型只能得到绑定字体管理项目的 lease；目录、`.fontLibrary` owner、授权与文件服务不由工程或模型参数决定。FontKit 导出不隐含全局安装；既有 DeviceFontStore 尚无同名替换事务，接线边界见合同。 |
 
 ## 二进制导入与重建策略
 

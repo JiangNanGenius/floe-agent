@@ -14,3 +14,35 @@ GIS 包只管理当前工程的内容与编辑器状态。Space、Notes、任务
 `smoke-plan.json` 的每一步均经 `main.js` 同一 dispatcher 实际执行；GeoPackage 的 CRS、几何和面积字段已重读，SVG 的内嵌 DEM PNG 已解码。统一 NativeBridge 可按步骤依次调用，不需要知道样例随机图层 ID：样例首先选中面图层，后续命令使用当前选层。
 
 组件证据不代表主 App 验收。主线需确认真实入口、原件绑定／返回、宿主授权、保存重开、工具发现／执行、真实导出回执；屏幕验收另覆盖触摸节点、多选拖动、表联动、三维手势、布局与 PNG/PDF 输出。已有组件通过项无需为每个入口重复全套检查。
+
+## 原生界面合同
+
+`GISEditorView` 把 `GISNativeOutline`、`GISNativeCanvasToolbar`、`GISNativeInspector`、`GISNativeStatusBar` 传给共享 `HeavyEditorView` 的原生槽位；属性表模式另外用 `GISNativeAttributeTable` 覆盖中央画布。`controller.presentation` 是 `configuration.nativeSnapshot` 的显示投影。普通按钮使用 `controller.runCommand`，参数化操作使用 `controller.showCommand`；两者都复用同一 service-owned dispatcher、访问控制与保存链。视图不执行任意 JavaScript，也不维护第二份工程模型。
+
+| 快照字段 | 内容与边界 |
+| --- | --- |
+| `kind` / `crs` | 固定 `gis` 与工程坐标系。空工程返回空列表／空选层，可在初始化时读取。 |
+| `ui` | `mode`、`tool`、`multiselect`、`snapping`、`page`、`filter`、`sort`、`sortDescending`、`onlySelected`、`columns`、`terrainFactor`、`vertexAction`、`drawing`。只存在运行时，不进入 payload／历史。 |
+| `layers` / `groups` | 每层的 `id`、`name`、`kind`、`group`、0 起 `index`、`visible`、`locked`、`opacity`、`crs`，及适用的 `count`／`width`／`height`／`bandCount`；组包含 `id`、`name`、聚合显示／锁定状态与 `layerIDs`。 |
+| `selectedLayer` | 上述图层摘要、受支持的 `style` 字段、完整字段模式 `fields`、最多 20 条 `legend` 与 `legendCount`；无选层时为 null。不会复制任意导入样式附带的未知内容。 |
+| `selection` | `layerID`、规范字符串 `featureIDs`、`count`、`hasClipboard`；最多 4 个要素摘要，包含 `rawID`、名称、几何类型、最多 24 个属性摘要与 `attributeCount`。属性文本最多 512 个 UTF-16 单元，保持代理对完整，带 `truncated`／`isNull`。 |
+| `table` | `layerID`、完整 `fields`、选定 `columns`、当前页 `rows`、`total`、`filteredCount`、0 起 `page`、`pageSize=25`、`pageCount` 及筛选／排序设置。默认 8 列、最多 12 列，也可只显示 ID。行包含字符串 `id`、原始 `rawID`、`selected` 与单元格摘要；单元格文本最多 256 个 UTF-16 单元。 |
+| `bookmarks` / `layout` / `view` / `terrain` | 书签 ID／名称；受支持的纸张／比例尺／标题／图例设置与 `annotationCount`；实际地图中心／缩放／范围；地形来源层 ID／名称与夸大倍率。排除标注正文、几何坐标、波段样本、瓦片字节、离线数据库和历史。 |
+
+所有 `gis.ui.*` 命令均有显式参数字段，并设置 `access: read`、`sideEffecting: true`、`hidden: true`。它们不写内容或修订，也不会作为普通分析工具出现在菜单中。`features` 和 `columns` 字段是 JSON 数组，调用时传原生数组。
+
+| 命令 | 参数 |
+| --- | --- |
+| `gis.ui.mode` | `mode`: `map` / `table` / `terrain` / `layout`。 |
+| `gis.ui.tool` | `tool`: `select` / `Point` / `LineString` / `Polygon` / `modify` / `translate`。 |
+| `gis.ui.options` | 可选 Bool `multiselect`、`snapping`。 |
+| `gis.ui.selectLayer` | `layer`: 实际图层 ID；清空原选区并重置表格页／列／筛选。 |
+| `gis.ui.selection` | `layer`: 实际矢量图层 ID，`features`: 原始或字符串要素 ID 数组；只保留当前层实际存在的规范 ID。 |
+| `gis.ui.table` | 可选 `filter`、`sort`、Bool `sortDescending`／`onlySelected`、字符串数组 `columns`、0 起 `page`；页码按实际结果约束。 |
+| `gis.ui.terrain` | `factor`: 0.1–20。 |
+| `gis.ui.drawing` | Bool `active`；由实际 Draw 事件通知原生完成／取消按钮状态。 |
+| `gis.ui.canvas` | `action`: `fitLayer` / `zoomIn` / `zoomOut` / `finishDrawing` / `abortDrawing` / `insertVertex` / `deleteVertex` / `clearSelection`。只调用固定画布动作。 |
+
+地图点击和原生表格选区互相回流；修改节点／平移等写入仍使用原 `feature.*` 命令。长文本或 JSON 单元格打开 `attribute.set` 原生表单时，动态默认值从当前原件取完整值，不以显示用截断文本回写。原生组显示／锁定按钮只传被修改的属性，不覆盖组内另一项的混合状态。
+
+共享宿主在首次 reload 前设置 `nativeChrome`；GIS 在该模式不生成 Web 图层栏、检查器、模式栏、绘图工具栏或属性表，中央 OpenLayers／Three.js／SVG 绘制保留。fallback Web 宿主仍可使用原有完整 HTML 界面。新增面板的对象编译与屏幕验收归主线，此次 Node 证据只验证显示投影、命令语义及实际数据编辑。

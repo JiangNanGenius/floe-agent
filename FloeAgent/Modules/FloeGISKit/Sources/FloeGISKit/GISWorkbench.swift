@@ -21,9 +21,16 @@ public enum GISWorkbench {
         return try HeavyEditorController(descriptor: descriptor, document: await store.read(), store: store, owner: owner, hooks: hooks)
     }
 }
-public struct GISEditorView: View {
+@MainActor public struct GISEditorView: View {
     private let controller: HeavyEditorController
     private let onClose: () -> Void
     public init(controller: HeavyEditorController, onClose: @escaping () -> Void = {}) { self.controller = controller; self.onClose = onClose }
-    public var body: some View { HeavyEditorView(controller: controller, onClose: onClose) }
+    public var body: some View {
+        HeavyEditorView(controller: controller, onClose: onClose,
+            outline: AnyView(GISNativeOutline(controller: controller)),
+            canvasToolbar: AnyView(GISNativeCanvasToolbar(controller: controller)),
+            inspector: AnyView(GISNativeInspector(controller: controller)),
+            canvasContent: controller.presentation["ui"]["mode"].string == "table" ? AnyView(GISNativeAttributeTable(controller: controller)) : nil,
+            bottomBar: AnyView(GISNativeStatusBar(controller: controller)))
+    }
 }

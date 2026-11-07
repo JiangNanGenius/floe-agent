@@ -5,7 +5,7 @@
   },
   {
     "source": "FloeHeavyEditorSupport/Web/runtime.js",
-    "bytes": 18930
+    "bytes": 21525
   },
   {
     "source": "FloeScoreKit/Web/model.js",
@@ -881,14 +881,22 @@
   },
   {
     "source": "FloeScoreKit/Web/analysis.js",
-    "bytes": 10627
+    "bytes": 10956
+  },
+  {
+    "source": "FloeScoreKit/Web/native.js",
+    "bytes": 9745
+  },
+  {
+    "source": "FloeScoreKit/Web/interaction.js",
+    "bytes": 2602
   },
   {
     "source": "FloeScoreKit/Web/score.css",
-    "bytes": 4699
+    "bytes": 5039
   },
   {
     "source": "FloeScoreKit/Web/main.js",
-    "bytes": 19987
+    "bytes": 19798
   }
 ]

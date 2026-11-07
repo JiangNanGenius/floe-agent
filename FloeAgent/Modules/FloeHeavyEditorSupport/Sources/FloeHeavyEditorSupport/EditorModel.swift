@@ -34,7 +34,12 @@ public enum EditorJSON: Codable, Sendable, Equatable {
 }
 
 public enum HeavyEditorKind: String, Codable, Sendable, CaseIterable { case gis, score, font }
-public enum HeavyEditorOwner: Codable, Sendable, Equatable { case space(UUID), note(UUID), task(UUID), qualification(UUID) }
+public enum HeavyEditorOwner: Codable, Sendable, Equatable {
+    case space(UUID), note(UUID), task(UUID)
+    /// Parent music project and font-library identity, resolved only by the host.
+    case music(UUID), fontLibrary(UUID)
+    case qualification(UUID)
+}
 public enum HeavyEditorAccess: String, Codable, Sendable { case read, edit, importFile, exportFile }
 public struct HeavyEditorDocument: Codable, Sendable, Equatable {
     public var schemaVersion = 1

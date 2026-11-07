@@ -805,7 +805,7 @@
   },
   {
     "source": "FloeHeavyEditorSupport/Web/runtime.js",
-    "bytes": 18930
+    "bytes": 21525
   },
   {
     "source": "npm/proj4/lib/global.js",
@@ -1973,7 +1973,15 @@
   },
   {
     "source": "FloeGISKit/Web/model.js",
-    "bytes": 39454
+    "bytes": 39894
+  },
+  {
+    "source": "FloeGISKit/Web/symbology.js",
+    "bytes": 3965
+  },
+  {
+    "source": "FloeGISKit/Web/native.js",
+    "bytes": 10203
   },
   {
     "source": "npm/ol/extent/Relationship.js",
@@ -2600,10 +2608,6 @@
     "bytes": 7647
   },
   {
-    "source": "FloeGISKit/Web/symbology.js",
-    "bytes": 3965
-  },
-  {
     "source": "FloeGISKit/Web/formats.js",
     "bytes": 44956
   },
@@ -3153,11 +3157,11 @@
   },
   {
     "source": "FloeGISKit/Web/view.js",
-    "bytes": 39821
+    "bytes": 41569
   },
   {
     "source": "FloeGISKit/Web/main.js",
-    "bytes": 2754
+    "bytes": 3110
   },
   {
     "source": "npm/@sqlite.org/sqlite-wasm/dist/index.mjs",

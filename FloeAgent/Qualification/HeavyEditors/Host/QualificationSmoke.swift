@@ -33,9 +33,13 @@ import WebKit
     }
     var evidence: [EditorJSON] = []
     do {
-      for (index, kind) in HeavyEditorKind.allCases.enumerated() {
+      for kind in HeavyEditorKind.allCases {
         if let requestedKind, requestedKind != kind { continue }
-        workspace.entry = QualificationEntry.allCases[index]
+        workspace.entry = switch kind {
+        case .gis: .space
+        case .score: .music
+        case .font: .fontManager
+        }
         workspace.smokeStatus = "Checking " + kind.rawValue
         let moduleName =
           switch kind {
@@ -144,6 +148,24 @@ import WebKit
         try png.write(
           to: workspace.root.appendingPathComponent(kind.rawValue + "-native-host.png"),
           options: .atomic)
+        // Capture the real native hosting view as well as the drawing engine.
+        // This is the task's own window, not a desktop/other-app screen read.
+        #if os(macOS)
+          if let content = controller.webView.window?.contentView,
+            let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds)
+          {
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            if let nativePNG = bitmap.representation(using: .png, properties: [:]) {
+              try nativePNG.write(to: workspace.root.appendingPathComponent(kind.rawValue + "-swiftui-window.png"), options: .atomic)
+            }
+          }
+        #else
+          if let window = controller.webView.window {
+            let renderer = UIGraphicsImageRenderer(bounds: window.bounds)
+            let nativePNG = renderer.pngData { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            try nativePNG.write(to: workspace.root.appendingPathComponent(kind.rawValue + "-swiftui-window.png"), options: .atomic)
+          }
+        #endif
         evidence.append(
           .object([
             "kind": .string(kind.rawValue), "entry": .string(record.entry.rawValue),
@@ -195,7 +217,7 @@ import WebKit
     _ workspace: QualificationWorkspace, evidence: [EditorJSON], success: Bool, error: String?
   ) throws {
     try EditorJSON.object([
-      "host": .string("independent native WK qualification"), "success": .bool(success),
+      "host": .string("independent native SwiftUI and WK qualification"), "success": .bool(success),
       "date": .string(ISO8601DateFormatter().string(from: Date())),
       "error": error.map(EditorJSON.string) ?? .null, "editors": .array(evidence),
     ]).data().write(to: workspace.root.appendingPathComponent("SmokeResult.json"), options: .atomic)

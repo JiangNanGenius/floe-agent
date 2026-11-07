@@ -21,3 +21,14 @@ test('literal prototype-named data remains ordinary JSON data',async()=>{
   await e.execute({command:'data',revision:0,arguments:{}});await e.execute({command:'history.undo',revision:0,arguments:{}});await e.execute({command:'history.redo',revision:0,arguments:{}});
   assert.equal(Object.getPrototypeOf(e.state),Object.prototype);assert.deepEqual(e.state.__proto__,{data:2});
 });
+test('native command index stays small and native form dependencies resolve from current arguments',()=>{
+  const e=engine();e.register({id:'choice',access:'read',fields:[{key:'part',default:'one'},{key:'bar',options:(_e,args)=>args.part==='two'?['b1','b2']:['a1'],default:'a1'}]},()=>{});
+  assert.deepEqual(e.commandIndex().find(row=>row.id==='choice').fields,[{key:'part',label:undefined,type:undefined},{key:'bar',label:undefined,type:undefined}]);
+  assert.deepEqual(e.formDescription('choice',{part:'two'}).fields[1].options,['b1','b2']);
+});
+test('native read/UI commands do not return the whole project or duplicate export bytes',async()=>{
+  const e=engine();e.register({id:'select',access:'read',sideEffecting:true,hidden:true},()=>({selected:2}));
+  e.register({id:'output',access:'exportFile'},()=>({artifacts:[{name:'fixture.txt',base64:'aGk='}]}));
+  const selection=await e.execute({command:'select',revision:0,arguments:{}});assert.equal(selection.state,null);assert.deepEqual(selection.result,{selected:2});
+  const output=await e.execute({command:'output',revision:0,arguments:{}});assert.equal(output.state,null);assert.equal(output.result,null);assert.equal(output.artifacts.length,1);
+});

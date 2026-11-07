@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: MPL-2.0
+// One activation path for engraved notes; selection still uses the score registry.
+export function installScoreInteractions(e,{select,transpose,edit}){
+ const surface=e.scoreSurface;let activated;
+ function hit(event){const group=event.target.closest?.('[data-score-notes]');if(!group||!surface.contains(group))return;const ids=group.dataset.scoreNotes.split(','),exact=event.target.closest('[data-score-note]'),heads=[...group.querySelectorAll('[data-score-note]')],nearest=heads.sort((a,b)=>Math.abs(a.getBoundingClientRect().top+a.getBoundingClientRect().height/2-event.clientY)-Math.abs(b.getBoundingClientRect().top+b.getBoundingClientRect().height/2-event.clientY))[0];return {group,id:exact?.dataset.scoreNote??(event.type==='pointerdown'?nearest?.dataset.scoreNote:null)??ids[0]};}
+ surface.addEventListener('pointerdown',event=>{if(event.button>0)return;const target=hit(event);if(!target)return;const selection=select(target.id,event.shiftKey||event.metaKey);activated={group:target.group,kind:'pointer',stamp:event.timeStamp};e.drag={pointer:event.pointerId,y:event.clientY,note:target.id,selection};});
+ surface.addEventListener('pointerup',event=>{if(!e.drag||e.drag.pointer!==event.pointerId)return;const drag=e.drag,dy=event.clientY-drag.y;e.drag=null;if(activated?.kind==='pointer')activated.stamp=event.timeStamp;if(Math.abs(dy)>12){const semitones=Math.round(-dy/(7*(e.state.layout.zoom??1)));if(semitones)Promise.resolve(drag.selection).then(()=>transpose(semitones)).catch(()=>{});}});
+ surface.addEventListener('pointercancel',()=>{e.drag=null;activated=null;});
+ surface.addEventListener('click',event=>{const target=hit(event);if(!target)return;const previous=activated;activated=null;const age=event.timeStamp-(previous?.stamp??-Infinity);if(previous?.group===target.group&&age>=0&&age<900)return;select(target.id,event.shiftKey||event.metaKey);});
+ surface.addEventListener('dblclick',event=>{if(hit(event))edit();});
+ surface.addEventListener('keydown',event=>{if(!['Enter',' ','Spacebar'].includes(event.key))return;const target=hit(event);if(!target)return;event.preventDefault();event.stopPropagation();if(event.repeat)return;activated={group:target.group,kind:'keyboard',stamp:event.timeStamp};select(target.id,event.shiftKey||event.metaKey);});
+ surface.addEventListener('keyup',event=>{if(!['Enter',' ','Spacebar'].includes(event.key))return;const target=hit(event);if(!target)return;event.preventDefault();event.stopPropagation();if(activated?.kind==='keyboard'&&activated.group===target.group)activated.stamp=event.timeStamp;});
+}

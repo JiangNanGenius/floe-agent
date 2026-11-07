@@ -27,19 +27,26 @@ The host opens all three editors, executes the checked-in domain smoke plans
 through `HeavyEditorModelCalls`, commits and reopens documents through new
 controllers, rejects stale mutations, rejects score playback through a read-only
 query, and verifies managed export receipts against actual files and signatures.
-`SmokeResult.json` and real WK snapshots are written only to that workspace.
+`SmokeResult.json`, native SwiftUI window captures and separate WK canvas
+snapshots are written only to that workspace. The public domain EditorViews
+mount the actual native lists, toolbars, inspectors, forms and transport controls;
+see [Native editor presentation](NATIVE_UI_CONTRACT.md).
 Use `--smoke-kind gis|score|font` to rerun only an affected editor.
 Domain semantic tests and engine/native compiler tests remain in each module;
 this smoke does not duplicate them or establish production App acceptance.
 
 ## Entrypoints and ownership
 
-The host demonstrates Space / Note attachments / Task results, three create
-cards, recent documents, full-screen editor return and managed exports. The
-reduced host uses an explicit `qualification` owner and isolated index. Its
+The host demonstrates GIS from Space / Note attachments / Task results,
+Music editor → Score and Settings → Font manager → Font editing. Score and
+font are not independent Space create cards. Closing an editor restores its
+parent route. Recent documents and managed exports use an isolated index. The
+reduced host uses an explicit `qualification` owner. Its
 callbacks must never be copied as production authorization. Mainline composes
 these features inside existing App navigation and existing project, Notes,
-task, file, permission and conversation services. Original documents and
+task, file, permission and conversation services, the existing music project
+session and DeviceFontStore. Production score/font controllers bind the actual
+`music` / `fontLibrary` owner; the model cannot choose this identity. Original documents and
 editor undo/selection remain separate from chat/assistant state.
 
 `Integration/FloeHeavyEditorsHostAdapter` compiles against the actual FloeTools

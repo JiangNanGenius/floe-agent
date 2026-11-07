@@ -4,6 +4,16 @@
 
 An offline MusicXML score editor. The native host owns identity, revision, authorization, persistence and managed export receipts. UI and AI share the same bundled command registry. This is an independent module; compiling or qualifying it does not establish full-App or physical iPad acceptance.
 
+## Music workspace entry contract
+
+正式 App 必须把乐谱放入现有 `MusicWorkbenchView` 的“乐谱”视图，由同一 `MusicProjectSession` 持有并返回现有音乐工程。个人文件类型继续为 `.music`；不得新增 Space、Notes 或结果卡中的独立 `.score` 工程入口。其他入口引用父音乐工程并打开其乐谱视图；独立 `ScoreEditorView` 宿主仅用于组件资格验证。
+
+The App must host Score inside the existing music workbench and music project session. It must not create an independent Space/Notes score project or destination. Links from other surfaces resolve the parent music project and its Score view. Standalone hosts qualify the component only.
+
+MusicXML 及布局、附属文件和记谱历史保存在父音乐工程管理的 `Music/Notation` 子目录，继续作为完整记谱原件。音轨、速度和 MIDI 是可关联的演奏数据，不能在切换视图时反向重建或覆盖 MusicXML。具体接线点与保存／导出合同见 [原生入口合同](Integration/NATIVE_PANELS.md#music-parent-workspace) 和 [宿主合同](Integration/README.md)。
+
+The music project retains the complete notation original under its managed `Music/Notation` directory. Track/tempo/MIDI projections do not replace MusicXML or regenerate it when switching views. The linked contracts describe the integration work; this package does not independently wire the formal App.
+
 ## Implemented scope
 
 | Matrix | Source / actual behavior | Checks |
@@ -15,9 +25,9 @@ An offline MusicXML score editor. The native host owns identity, revision, autho
 | S05 | `formats.js`, `midi.js`: XML and compressed MXL read/write, partwise and timewise import, true SMF 0/1 PPQ import and format 1 export, tempo/meter/track/voice reconstruction, quantization, genuine multi-page SVG/PNG/PDF | Official MusicXML 4.0 schema; MXL unzip/rootfile and SMF semantic round-trip; real PDF/PNG decoders |
 | S06 | `playback.js`, `ScorePlaybackService.swift`: performed repeat route, tempo map/inverse clock, ties/dynamics/wedges/staccato/pedal, play/pause/resume/stop/seek/loop, tempo/metronome, part solo/mute/volume, cursor; injectable existing music-service adapter or actual AVFoundation reference audio | Piecewise clock and routes; PCM WAV decoded by AVAudioFile with A4 frequency/energy check; fixed operation and owner-stop lifecycle |
 | S07 | `analysis.js`: navigable rhythm/range/tie/slur diagnostics, notated duration checks, interval/chord analysis, duration-weighted key estimate, transposition, rhythmic repair, blank/piano/quartet/ensemble/orchestra/voice/guitar/drum templates | Real diagnostic-to-note targets and gap repair; musical fixture analysis |
-| S08 | `main.js`, `score.css`: iPad outline/score/inspector, compact phone panels, keyboard and piano entry, touch/Pencil pointer selection/drag transposition, chord-head hit targets, selection, transport and linked-part switcher | WKWebView logical 1240×980 and 390×844 snapshots; click → transpose → selected glyph; all commands in grouped menus |
+| S08 | `ScoreNativePanels.swift`, `native.js`: native iPad outline/staff/measure lists, input toolbar, inspector, transport/mix/piano and linked-part/layout controls; compact sheets; `main.js` retains OSMD note hit targets and drag transposition | 17 focused Node/Web checks; independent macOS/iOS Simulator object compilation plus native outline, engraved AX selection, piano editing/save and music-parent return passed; production App integration remains separate ([evidence](../../Qualification/HeavyEditors/Evidence/20261108-native/results.json)) |
 | S09 | Fixed OSMD 2.2.1 / VexFlow 1.2.93 offline bundle and Gonville/custom/microtonal path glyphs; no MuseScore/LilyPond code, no system font redistributed | `Web/bundle-inputs.json`, shared lock, third-party notices and original glyph terms |
-| S10 | 57 bundled commands in `score.project.*`, `score.edit.*`, `score.parts.*`, `score.layout.*`, `score.playback.*`, `score.analyze.*`, `score.import.*`, `score.export`; generic `file.import`, `document.*`, `history.*`; native capability token only during authorized execution | Shared original and history; invalid explicit IDs reject; transport marked `sideEffecting`; `Integration/smoke-plan.json` for real host |
+| S10 | 57 original commands plus 4 hidden transient native-UI commands in `score.project.*`, `score.edit.*`, `score.parts.*`, `score.layout.*`, `score.playback.*`, `score.analyze.*`, `score.import.*`, `score.export`; generic `file.import`, `document.*`, `history.*`; native capability token only during authorized execution | Shared original and history; invalid explicit IDs reject; transport marked `sideEffecting`; `Integration/smoke-plan.json` for real host |
 
 ## Build and focused qualification
 
@@ -26,6 +36,7 @@ Run from the repository root, after the shared pinned WebBuild toolchain is inst
 ```sh
 node FloeAgent/Qualification/HeavyEditors/WebBuild/build.mjs score
 node FloeAgent/Modules/FloeScoreKit/Tests/run.mjs
+node FloeAgent/Modules/FloeScoreKit/Tests/run-native-panels.mjs
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --package-path FloeAgent/Modules/FloeScoreKit --scratch-path "$HOME/Library/Caches/CodexBuild/FloeHeavyEditors/shared-main/xcode-27B52/score/swift-tests" --jobs 2
 ```
 
@@ -34,6 +45,8 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --package-pa
 `ScoreWebQualification` is a macOS-only bounded WKWebView executable. Pass the fixture and a task-owned evidence output directory. It loads the actual resource bundle, renders and edits the score, exports all formats, captures iPad/phone layouts, and creates a multipage PDF. It is not the formal App or an iOS Simulator run. Its inactive test window closes at completion.
 
 For iOS object compilation use the `FloeScoreKit` package scheme, generic iOS Simulator destination, explicit internal-SSD DerivedData, `-jobs 2 OTHER_SWIFT_FLAGS=-j2 CODE_SIGNING_ALLOWED=NO`. No Simulator is created or booted.
+
+Native panel DTO, command arguments and integration boundaries: [Integration/NATIVE_PANELS.md](Integration/NATIVE_PANELS.md).
 
 ## Format and playback boundaries
 

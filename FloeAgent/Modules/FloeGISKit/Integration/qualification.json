@@ -1,7 +1,8 @@
 {
   "kind": "gis",
-  "sourceHead": "a468c879578034e2dbbcdeac161d1ccc4f20d3b1",
+  "sourceHead": "941cae725bea1fd36ad7154dc3bc828f1678f4c8",
   "workingTreeSources": true,
+  "stage": "native SwiftUI panels source handoff",
   "toolchain": {
     "xcode": "27.2 (27B52)",
     "swift": "6.4.2",
@@ -10,33 +11,45 @@
   "verification": {
     "node": {
       "command": "node FloeAgent/Modules/FloeGISKit/Tests/run.mjs",
-      "passed": 27,
+      "passed": 35,
       "failed": 0,
-      "skipped": 0
+      "skipped": 0,
+      "evidenceReuse": "Initial native-panel full suite passed 35; final affected cases and real dispatcher passed 5 after command metadata, bounded projections and independent group property changes.",
+      "finalAffected": {
+        "command": "node FloeAgent/Modules/FloeGISKit/Tests/run.mjs --test-name-pattern='native|truncated'",
+        "passed": 5,
+        "failed": 0,
+        "skipped": 0
+      }
     },
     "iosObjectBuild": {
+      "result": "pending main integration",
+      "reason": "GISNativePanels.swift and GISEditorView slot wiring are new Swift sources. Earlier wrapper object evidence does not compile these additions. This task was explicitly source/Node only.",
+      "simulatorStarted": false
+    },
+    "previousIosObjectBuild": {
+      "sourceHead": "a468c879578034e2dbbcdeac161d1ccc4f20d3b1",
       "result": "passed",
-      "jobs": 2,
-      "simulatorStarted": false,
-      "command": "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swift build --package-path FloeAgent/Modules/FloeGISKit --scratch-path <GIS-owned-internal-SSD-scratch> --triple arm64-apple-ios26.0-simulator --sdk /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk --jobs 2",
-      "reuseReason": "Swift wrapper unchanged after the successful object build; later changes are Web resources and notices. Main integration owns the next native-host build."
+      "wrapperSHA256": "71ff3d45177dbd54da39fea4fe915e0ead414fdd514ba12258c497c0d7bd385f",
+      "scope": "Earlier Swift wrapper only, before native-panel migration; historical evidence retained."
     },
     "bundle": {
       "command": "node FloeAgent/Qualification/HeavyEditors/WebBuild/build.mjs gis",
       "result": "passed",
       "offline": true,
-      "noticeRecords": 99
+      "noticeRecords": 101
     },
-    "actualScreenAcceptance": "main integration pending; Node and object builds are component evidence"
+    "actualScreenAcceptance": "main integration pending; no claim of native-panel object or screen acceptance"
   },
   "sha256": {
-    "Integration/README.md": "eead83fd95e1cce97d466ccccb7c338c1b9f0f8038a5fc63c7cce68d5a65bcbf",
+    "Integration/README.md": "a3e8dd0fb4c6044e0b62f6272791ba8148cf5e7b1ef37fd5ed12539aeaf7fe03",
     "Integration/smoke-plan.json": "3fcfec5f00cc664cfa3d4ae945c842cfc008dcf0b85f9fe0d9e368e83e976274",
     "LICENSE": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
     "Package.swift": "decd2f4eff4c9d2e5d33d961fc630aaefb1c809f2313d29ec1b13508d94fce21",
-    "README.md": "78bb5cb4139830901f2f3ee66f3442ed75ef2eee0d7c9e91bf35691a9211816d",
-    "Sources/FloeGISKit/GISWorkbench.swift": "71ff3d45177dbd54da39fea4fe915e0ead414fdd514ba12258c497c0d7bd385f",
-    "Sources/FloeGISKit/Resources/Web/THIRD-PARTY-NOTICES.txt": "5b3bfaf3674385fbc8786854c4607775744b8061e678e3de8cc3cef6a82f05a4",
+    "README.md": "e5b3be228309132dfe717443c9cac735b4d159e3d9099ac7a15002f2f59769ee",
+    "Sources/FloeGISKit/GISNativePanels.swift": "331d9ab19608dd49026de01aa967dc91bd0f9ed05c76b41fd08de6e85ea2661b",
+    "Sources/FloeGISKit/GISWorkbench.swift": "3f710ef75f7164bbd45fbd41aaefd1a1972253dfc68bc738df89badc24fea61a",
+    "Sources/FloeGISKit/Resources/Web/THIRD-PARTY-NOTICES.txt": "331e48906904f5f2e6b5ea59198a0dd49864d7ec0e61c3b3fc400304efc82961",
     "Sources/FloeGISKit/Resources/Web/ThirdParty/JSTS/LICENSE_EDLv1.txt": "e67a91b5489cd78292d2654f1b587fe68296e28df7c766b9b675614fbdce4fd1",
     "Sources/FloeGISKit/Resources/Web/ThirdParty/JSTS/NOTICE.txt": "312440b81aaeeb18dc0eac21227ba67955ba95c1171a2a7d2e9daa198cabac1d",
     "Sources/FloeGISKit/Resources/Web/ThirdParty/JSTS/SOURCES.json": "78e345b246017a3eb249d06d173457c2c159cca43c840fcf37680037b59d571c",
@@ -49,11 +62,12 @@
     "Sources/FloeGISKit/Resources/Web/ThirdParty/LERC/LICENSE": "77a8b761727c75e2167b15bfdf61b2c0bcf8792271228bebe80779106ad00671",
     "Sources/FloeGISKit/Resources/Web/ThirdParty/LERC/NOTICE": "1aafa4a1157927c8a745b0856356ef32161563b4e253d02a6d3ee891dae4c21f",
     "Sources/FloeGISKit/Resources/Web/ThirdParty/LERC/SOURCES.json": "f0dcb2d73bda207611509f3c2cb13a204bca86f9bc21fb5f152b333e6fb1ca51",
-    "Sources/FloeGISKit/Resources/Web/dependency-inventory.json": "95720cd00d50c7a07679515616dfa33b9df659b6eac3f144ca071927eb96b929",
-    "Sources/FloeGISKit/Resources/Web/editor.css": "175010ac4fb4798519da890342eccf2b187defa1d3cea41d8d49b50c30de3665",
-    "Sources/FloeGISKit/Resources/Web/editor.js": "e3e2a3d32fd122f910c00295386390be6ed9a49dff79f6660fdfb9565f46a0ff",
-    "Sources/FloeGISKit/Resources/Web/index.html": "1b3106ea5e0a3f7e596aa7ce255aeb0be9f1d0636b9fe1aaa64e092aeb42ef0e",
-    "Sources/FloeGISKit/Resources/Web/sql-wasm.wasm": "0dfeecda2070b36da0cd4f6afa250af9453de528a983770f85b13d5d6b667572",
+    "Sources/FloeGISKit/Resources/Web/dependency-inventory.json": "e1305463530e7653f8a82c1a66f855d4aebb075984e50a8312d5c36ac6a3914f",
+    "Sources/FloeGISKit/Resources/Web/editor.css": "fb28e8933df55d41307f6c9e641ff50375307e43808575d80014c3965b864c11",
+    "Sources/FloeGISKit/Resources/Web/editor.js": "270d1270fb58c02ba3897ade5464821865b448201a8df0e4f5fae41386774f81",
+    "Sources/FloeGISKit/Resources/Web/index.html": "4ac821b10c5bdefe20f2d7b25cd37260afb564f83e5ae8f59893d41e3c3a1ed7",
+    "Sources/FloeGISKit/Resources/Web/sqlite3.js": "eba70e9cb257f5e67e0e25260965cb81b1596f1358d7423a8d6c4ed44a859925",
+    "Sources/FloeGISKit/Resources/Web/sqlite3.wasm": "b8a92a19f441a90ff2339fe988fbe317c4adf3ed844096f12aee04aa72d58257",
     "THIRD_PARTY/JSTS/LICENSE_EDLv1.txt": "e67a91b5489cd78292d2654f1b587fe68296e28df7c766b9b675614fbdce4fd1",
     "THIRD_PARTY/JSTS/NOTICE.txt": "312440b81aaeeb18dc0eac21227ba67955ba95c1171a2a7d2e9daa198cabac1d",
     "THIRD_PARTY/JSTS/SOURCES.json": "78e345b246017a3eb249d06d173457c2c159cca43c840fcf37680037b59d571c",
@@ -66,14 +80,19 @@
     "THIRD_PARTY/LERC/LICENSE": "77a8b761727c75e2167b15bfdf61b2c0bcf8792271228bebe80779106ad00671",
     "THIRD_PARTY/LERC/NOTICE": "1aafa4a1157927c8a745b0856356ef32161563b4e253d02a6d3ee891dae4c21f",
     "THIRD_PARTY/LERC/SOURCES.json": "f0dcb2d73bda207611509f3c2cb13a204bca86f9bc21fb5f152b333e6fb1ca51",
-    "Tests/gis.test.mjs": "7e68ea1301994980fcec6a7675226b95a5aba02aca2f6200c30a9011b8443337",
-    "Tests/run.mjs": "e8264b4903c0c62943ab4d268c03d3bafa0ec6c78bf79ef60635410f26fff90a",
+    "THIRD_PARTY.md": "aca117b17d221077dc4b17108697fd1e63a286ae649b1dd5233f30bd32292ff0",
+    "Tests/gis.test.mjs": "0f5b3ccb1bf2411ba64ac918ac99c35be67362db35738bc93e2b98309c1aef73",
+    "Tests/run.mjs": "67240fa75f6759c68d1fd8463670d960525faa950cdef4a992c8e659e20d1bfd",
+    "Tests/sqlite-fixture-entry.js": "5279cf0f497ce86fde84264a64ae363d2da961e378f6eab086d4251c4963d14f",
+    "Tests/sqlite-readback.mjs": "a680f75f08d8888b96eb4111ba6e915f37c75625b3c0da64b7e7af63fac2a46f",
     "Web/analysis.js": "e2b0808cddf7e5d270a502bc55e69706ca2ce6d67b8463b3a67d78c125b30cc3",
-    "Web/bundle-inputs.json": "0b70d9af4228c944d890bccdc634a9063ffecb6009acbe41bf73e38bf9a27dbd",
-    "Web/formats.js": "c1399e782f22dbeee22e6a035599b65f24dfe5453c2b47395af6ce3dbca42f84",
-    "Web/main.js": "172c7b4ff165de394ff5cbc39c24353f7be66cc6c47044de5161902999b723d0",
-    "Web/model.js": "a4dfcb4ab1a8c1e0088a88c3a6648e3c60c4d4a37ff8e2ada6d439e7880a5eda",
+    "Web/bundle-inputs.json": "3fdc12848d1408692a155142c06c8ee2af1bcdf8f356eb458af69614ce541053",
+    "Web/formats.js": "364a2fabfd003b5721a5484c658df6a1e7cbb8a9521f36045719ba4462115bf9",
+    "Web/main.js": "132ca10d68522a8fa6b71b1034ff74a05d65c7615eb679ab87b1d8cc8ec5fc3f",
+    "Web/model.js": "625de188e5406fc7c5dedd4e1660dd7a4585874cb783db7041b6b6410200dcd8",
+    "Web/native.js": "4ab36ad584c8da40e71b0365a2968ddd101c825df5a0b4bf1527308b887de7c8",
+    "Web/sqlite.js": "a02f804fa253f2eaf00c505d62edcc94aab868d8edda40847b584cd249c7be38",
     "Web/symbology.js": "7e21389d328d31af81dd00858ae9da2b040f54b01e6efe947aa202626a773bc7",
-    "Web/view.js": "26d22cacaa0756af5f3383e04f1d06a307d74ab90e005dff5db8f67e151ec078"
+    "Web/view.js": "a19c9fdc6cf4649fe5c57b523ab63b45abeaa30f67781ac43ca53b0039b682cc"
   }
 }

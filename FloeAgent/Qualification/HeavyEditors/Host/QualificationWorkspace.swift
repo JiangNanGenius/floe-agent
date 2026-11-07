@@ -10,13 +10,15 @@ import Foundation
 import Observation
 
 enum QualificationEntry: String, CaseIterable, Codable, Identifiable {
-  case space, notes, task
+  case space, notes, task, music, fontManager
   var id: String { rawValue }
   var title: String {
     switch self {
     case .space: EditorText.t("空间", "Space")
     case .notes: EditorText.t("手记附件", "Note attachments")
     case .task: EditorText.t("任务产物", "Task results")
+    case .music: EditorText.t("音乐编辑器", "Music editor")
+    case .fontManager: EditorText.t("字体管理器", "Font manager")
     }
   }
 }

@@ -9,6 +9,7 @@ import { makeDesignspaceArchive,readFontArchive } from '../../Web/ufo.js';
 import { toCFF,sfntTables,fromOpenType,pathContours,sourceSignature,importFont,exportFont,registerFontFormats,attachVerticalMetrics,codecWOFF2 } from '../../Web/formats.js';
 import { registerGeometry,readSVGOutlines,svgTransform } from '../../Web/geometry.js';
 import { FontView } from '../../Web/view.js';
+import { fontNativeSnapshot,registerFontNative,pathCommands } from '../../Web/native.js';
 import { EditorEngine } from '../../../FloeHeavyEditorSupport/Web/runtime.js';
 import * as opentype from 'opentype.js';
 import fonteditor from 'fonteditor-core';
@@ -24,6 +25,28 @@ function modelEngine(font=createFont()){
   registerFontModel(e);e.call=(id,args={})=>commands.get(id).handler(args);return e;
 }
 function rectangle(width=300,height=600){return [point(0,0),point(width,0),point(width,height),point(0,height)];}
+test('native presentation has exact flattened paths, paged glyphs and no original bytes / history',()=>{
+  const font=sampleFont();normalizeFont(font);font.original={base64:'PRIVATE-ORIGINAL-BYTES'};font.info.opaque={base64:'PRIVATE-ORIGINAL-BYTES'};font.glyphs.find(g=>g.name==='A').contours[0][0].opaque={base64:'PRIVATE-ORIGINAL-BYTES'};
+  const e=modelEngine(font),v=new FontView(e);e.revision=12;e.selection={glyph:'A',points:[font.glyphs.find(g=>g.name==='A').contours[0][0].id]};
+  for(let i=0;i<105;i++)font.glyphs.push(glyph('test'+i,[0x100+i],[rectangle(10+i,20)],100));
+  const before=JSON.stringify(font),snapshot=fontNativeSnapshot(e,v);assert.equal(snapshot.revision,12);assert.equal(snapshot.glyphList.items.length,48);assert.equal(snapshot.glyphList.total,font.glyphs.length);assert.equal(snapshot.selectedPoints.length,1);
+  assert.equal(snapshot.glyph.name,'A');assert.equal(snapshot.glyph.commands[0].op,'M');assert.equal(snapshot.glyph.commands.at(-1).op,'Z');assert.equal(JSON.stringify(font),before);assert.ok(!JSON.stringify(snapshot).includes('PRIVATE-ORIGINAL-BYTES'));assert.equal(snapshot.history,undefined);
+  v.search='test99';assert.deepEqual(fontNativeSnapshot(e,v).glyphList.items.map(g=>g.name),['test99']);
+  const q=pathCommands([[point(0,0,'offcurve'),point(100,0,'offcurve'),point(100,100,'offcurve'),point(0,100,'offcurve')]]);assert.equal(q.filter(c=>c.op==='Q').length,4);near(q[0].x,0);near(q[0].y,50);
+  const composite=glyph('composite',[],[],600);composite.components.push({id:'component',base:'A',matrix:[1,0,0,1,75,20]});font.glyphs.push(composite);e.selection={glyph:'composite',points:[]};const shape=fontNativeSnapshot(e,v).glyph;assert.ok(shape.componentCommands.length>0);assert.deepEqual(shape.commands,shape.componentCommands);near(shape.bounds.xMin,glyphBounds(font,font.glyphs.find(g=>g.name==='A')).xMin+75);
+});
+test('typed native UI commands preserve source masters/history and reject invalid selections or state',()=>{
+  const e=modelEngine(sampleFont()),v=new FontView(e);e.call=(id,args={})=>e.commands.get(id).handler(args);registerFontNative(e,()=>v);
+  const before=JSON.stringify(e.state),master=e.state.masters[0],pointID=e.state.glyphs.find(g=>g.name==='A').contours[0][0].id;
+  e.call('font.ui.mode',{mode:'outline'});e.call('font.ui.points',{glyph:'A',points:[pointID,pointID]});assert.equal(e.selection.points.length,1);
+  e.call('font.ui.search',{query:'A'});e.call('font.ui.page',{page:2});e.call('font.ui.tool',{tool:'pen',curveType:'curve',snap:10});
+  e.call('font.ui.proof',{text:'AVA',size:80,direction:'rtl',language:'ar',vertical:true,features:{liga:false},location:{wght:550}});
+  assert.equal(v.previewLocation.wght,550);assert.equal(v.previewFeatures.liga,false);assert.equal(v.vertical,true);
+  e.call('font.ui.master',{master:master.id});const snapshot=fontNativeSnapshot(e,v);assert.equal(snapshot.masterID,master.id);assert.equal(snapshot.glyph.advance,master.glyphs.find(g=>g.name==='A').advance);assert.equal(JSON.stringify(e.state),before);
+  e.call('font.ui.mode',{mode:'metrics'});const spacing=fontNativeSnapshot(e,v).spacing;assert.equal(spacing.length,3);assert.equal(spacing[1].previous,'A');near(spacing[1].kern,master.kerning.A.V);near(spacing[1].x,master.glyphs.find(g=>g.name==='A').advance+master.kerning.A.V);
+  for(const [command,args]of [['mode',{mode:'unsafe'}],['points',{glyph:'A',points:['unknown']}],['master',{master:'unknown'}],['tool',{snap:NaN}],['proof',{location:{wght:100000}}],['proof',{features:{eval:true}}]])assert.throws(()=>e.call('font.ui.'+command,args));
+  for(const [id,entry]of e.commands)if(id.startsWith('font.ui.')){assert.equal(entry.descriptor.access,'read');assert.equal(entry.descriptor.sideEffecting,true);assert.equal(entry.descriptor.hidden,true);}
+});
 export function multiAxisFixture(){
   const font=createFont();font.info.familyName='Floe Two Axis';font.info.openTypeVheaVertTypoAscender=500;font.info.openTypeVheaVertTypoDescender=-500;font.info.openTypeVheaVertTypoLineGap=0;
   font.glyphs.push(glyph('A',[65],[rectangle()],600),glyph('V',[86],[rectangle(250)],600));
@@ -114,6 +137,15 @@ test('SVG glyph import applies group transforms, arcs, shapes and local reuse wi
 asyncTest('all six editor panes render and their inspector actions resolve to real commands',async()=>{
   const e=modelEngine(sampleFont());registerGeometry(e);registerFontFormats(e);e.command=id=>{const command=e.commands.get(id);assert.ok(command,'Missing UI command '+id);return command.descriptor;};e.showAction=descriptor=>{e.lastAction=descriptor.id;};e.sidebar=document.createElement('aside');e.canvas=document.createElement('main');e.inspector=document.createElement('aside');
   const view=new FontView(e);for(const mode of ['overview','outline','metrics','features','variations','proof']){view.mode=mode;await view.render();assert.ok(e.canvas.children.length>1);for(const button of e.inspector.querySelectorAll('button'))button.click();}
+});
+asyncTest('native chrome suppresses Web controls, retains safe shaped proof and loads the Swift empty document',async()=>{
+  const make=()=>{let view;const e=new EditorEngine({kind:'font',title:'Font',create:createFont,normalize:normalizeFont,nativeSnapshot:e=>fontNativeSnapshot(e,view),render:async e=>{view??=new FontView(e);await view.render();}});registerFontModel(e);registerFontNative(e,()=>view);return e;};
+  const e=make();e.nativeChrome=true;e.catalog();await e.load({kind:'font',revision:0,content:{title:'Empty',info:{familyName:'Empty',styleName:'Regular',unitsPerEm:1000,ascender:800,descender:-200,xHeight:500,capHeight:700},glyphs:[],masters:[],axes:[],instances:[],groups:{},kerning:{},features:''}});
+  let snapshot=e.nativeSnapshot();assert.equal(snapshot.glyph.name,'.notdef');assert.equal(snapshot.axes.length,0);assert.equal(snapshot.masters.length,1);
+  for(const mode of ['overview','outline','metrics','features','variations','proof']){await e.execute({command:'font.ui.mode',arguments:{mode},revision:0});assert.equal(e.canvas.querySelectorAll('button,input,select,textarea,.canvas-tools').length,0);assert.equal(e.sidebar.childElementCount,0);assert.equal(e.inspector.childElementCount,0);}
+  await e.execute({command:'font.ui.proof',arguments:{text:'<img src=x onerror=alert(1)>',multisize:true},revision:0});assert.equal(e.canvas.querySelectorAll('img').length,0);assert.equal(e.canvas.querySelectorAll('.preview-text').length,5);assert.equal(e.canvas.querySelector('.preview-text').getAttribute('contentEditable'),'false');
+  // An incomplete imported master is inspectable; compatibility still reports it.
+  e.state.masters.push({id:'empty-master',name:'Empty master',location:{},info:structuredClone(e.state.info),glyphs:[],kerning:{}});e.revision++;await e.execute({command:'font.ui.master',arguments:{master:'empty-master'},revision:1});snapshot=e.nativeSnapshot();assert.equal(snapshot.glyph,null);assert.equal(snapshot.glyphList.items.length,0);assert.ok(snapshot.compatibility.count>0);
 });
 asyncTest('shared dispatcher history serializes / reopens and undoes / redoes master kerning edits',async()=>{
   const make=()=>{const e=new EditorEngine({kind:'font',title:'Font',create:sampleFont,normalize:normalizeFont,render:async()=>{}});registerFontModel(e);return e;};

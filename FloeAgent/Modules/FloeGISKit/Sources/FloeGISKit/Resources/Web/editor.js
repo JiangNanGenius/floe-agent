@@ -34714,7 +34714,11 @@ end`;
   }
   var EditorEngine = class {
     constructor(configuration) {
-      this.configuration = configuration, this.commands = /* @__PURE__ */ new Map(), this.pending = /* @__PURE__ */ new Map(), this.revision = 0, this.envelope = null, this.payload = { data: configuration.create(), history: { past: [], future: [] } }, this.requestTail = Promise.resolve(), this.abortController = new AbortController(), this.state = this.payload.data, this.register({ id: "document.save", title: t3("\u4FDD\u5B58", "Save"), group: t3("\u5DE5\u7A0B", "Project"), access: "edit", fields: [] }, () => ({ saved: !0 })), this.register({ id: "document.inspect", title: t3("\u5DE5\u7A0B\u4FE1\u606F", "Project information"), group: t3("\u5DE5\u7A0B", "Project"), access: "read", fields: [] }, () => ({ kind: configuration.kind, revision: this.revision, document: this.state })), this.register({ id: "document.rename", title: t3("\u91CD\u547D\u540D", "Rename"), group: t3("\u5DE5\u7A0B", "Project"), access: "edit", fields: [{ key: "title", label: t3("\u540D\u79F0", "Name"), type: "text" }] }, (args) => {
+      this.configuration = configuration, this.commands = /* @__PURE__ */ new Map(), this.pending = /* @__PURE__ */ new Map(), this.revision = 0, this.envelope = null, this.payload = { data: configuration.create(), history: { past: [], future: [] } }, this.requestTail = Promise.resolve(), this.abortController = new AbortController(), this.state = this.payload.data, this.nativeChrome = !1;
+      let selection;
+      Object.defineProperty(this, "selection", { get: () => selection, set: (value) => {
+        selection = value, this.notifyPresentation();
+      }, configurable: !1 }), this.register({ id: "document.save", title: t3("\u4FDD\u5B58", "Save"), group: t3("\u5DE5\u7A0B", "Project"), access: "edit", fields: [] }, () => ({ saved: !0 })), this.register({ id: "document.inspect", title: t3("\u5DE5\u7A0B\u4FE1\u606F", "Project information"), group: t3("\u5DE5\u7A0B", "Project"), access: "read", fields: [] }, () => ({ kind: configuration.kind, revision: this.revision, document: this.state })), this.register({ id: "document.rename", title: t3("\u91CD\u547D\u540D", "Rename"), group: t3("\u5DE5\u7A0B", "Project"), access: "edit", fields: [{ key: "title", label: t3("\u540D\u79F0", "Name"), type: "text" }] }, (args) => {
         this.state.title = String(args.title || this.state.title);
       }), this.register({ id: "history.undo", title: t3("\u64A4\u9500", "Undo"), group: t3("\u5DE5\u7A0B", "Project"), access: "edit", fields: [] }, () => {
         let entry = this.payload.history.past.pop();
@@ -34737,6 +34741,27 @@ end`;
         return { ...descriptor, fields };
       });
     }
+    commandIndex() {
+      return [...this.commands.values()].map(({ descriptor }) => ({ id: descriptor.id, title: descriptor.title, group: descriptor.group, access: descriptor.access, hidden: descriptor.hidden ?? !1, sideEffecting: descriptor.sideEffecting ?? !1, fields: (descriptor.fields ?? []).map(({ key: key2, label, type }) => ({ key: key2, label, type })) }));
+    }
+    formDescription(id, values2 = {}) {
+      let descriptor = this.command(id), args = { ...values2 }, fields = (descriptor.fields ?? []).map((field2) => {
+        let options = typeof field2.options == "function" ? field2.options(this, args) : field2.options, initial = Object.hasOwn(values2, field2.key) ? values2[field2.key] : typeof field2.default == "function" ? field2.default(this, args) : field2.default;
+        return initial !== void 0 && (args[field2.key] = initial), { ...field2, default: initial, options };
+      });
+      return { ...descriptor, fields };
+    }
+    nativeSnapshot() {
+      return this.configuration.nativeSnapshot?.(this) ?? { kind: this.configuration.kind, title: this.state.title, selection: this.selection ?? null };
+    }
+    async setNativeChrome(value) {
+      this.nativeChrome = !!value, this.root && this.root.classList.toggle("native-chrome", this.nativeChrome), await this.configuration.nativeChromeChanged?.(this, this.nativeChrome), this.notifyPresentation();
+    }
+    notifyPresentation() {
+      !this.nativeChrome || this.presentationScheduled || !globalThis.webkit?.messageHandlers?.floeEditor || (this.presentationScheduled = !0, setTimeout(() => {
+        this.presentationScheduled = !1, globalThis.webkit?.messageHandlers?.floeEditor?.postMessage({ type: "presentationChanged" });
+      }, 60));
+    }
     command(id) {
       return required(this.commands.get(id), "Unknown editor command").descriptor;
     }
@@ -34756,7 +34781,13 @@ end`;
           if (changes.forward.length)
             for (this.payload.history.future = [], this.payload.history.past.push({ id: uid(), title: entry.descriptor.title, date: (/* @__PURE__ */ new Date()).toISOString(), ...changes }); this.payload.history.past.length > 64 || this.payload.history.past.length > 1 && JSON.stringify(this.payload.history).length > 16 * 1024 * 1024; ) this.payload.history.past.shift();
         }
-        return await this.render(), { state: clone2(this.payload), result: result?.result ?? result ?? null, artifacts: result?.artifacts ?? [] };
+        await this.render();
+        let value = result?.result ?? result ?? null;
+        if (result && typeof result == "object" && Object.hasOwn(result, "artifacts") && !Object.hasOwn(result, "result")) {
+          let { artifacts, ...details } = result;
+          value = Object.keys(details).length ? details : null;
+        }
+        return { state: mutation ? clone2(this.payload) : null, result: value, artifacts: result?.artifacts ?? [] };
       } catch (error2) {
         throw previous && (this.state = this.payload.data = previous), await this.render(), error2;
       } finally {
@@ -34793,7 +34824,7 @@ end`;
       this.abortController.abort(), this.configuration.cancel?.();
     }
     async render() {
-      typeof document > "u" || (this.root || this.createChrome(), await this.configuration.render?.(this), this.titleNode.textContent = this.state.title ?? this.configuration.title);
+      typeof document > "u" || (this.root || this.createChrome(), await this.configuration.render?.(this), this.titleNode.textContent = this.state.title ?? this.configuration.title, this.root.classList.toggle("native-chrome", this.nativeChrome), this.notifyPresentation());
     }
     createChrome() {
       this.titleNode = element("strong", { text: this.configuration.title }), this.statusNode = element("span", { class: "status", role: "status" }), this.toolbar = element("div", { class: "toolbar" }), this.sidebar = element("aside", { class: "sidebar" }), this.canvas = element("main", { class: "canvas", tabIndex: 0 }), this.inspector = element("aside", { class: "inspector" }), this.root = element(
@@ -34824,6 +34855,10 @@ end`;
       }
     }
     showAction(action, preset = {}) {
+      if (this.nativeChrome && globalThis.webkit?.messageHandlers?.floeEditor) {
+        webkit.messageHandlers.floeEditor.postMessage({ type: "showCommand", command: action.id, arguments: preset });
+        return;
+      }
       let dialog = element("dialog", { class: "action-dialog" }), form = element("form", { method: "dialog" }, element("h2", { text: action.title })), controls = [], readArguments = () => {
         let args = { ...preset };
         for (let { field: field2, input } of controls) args[field2.key] = field2.type === "number" || field2.type === "range" ? finite(input.value) : field2.type === "checkbox" ? input.checked : input.value;
@@ -34856,6 +34891,10 @@ end`;
       }), dialog.append(form), document.body.append(dialog), dialog.addEventListener("close", () => dialog.remove()), dialog.showModal();
     }
     showResult(title, value) {
+      if (this.nativeChrome && globalThis.webkit?.messageHandlers?.floeEditor) {
+        webkit.messageHandlers.floeEditor.postMessage({ type: "showResult", title, value });
+        return;
+      }
       let dialog = element("dialog", { class: "result-dialog" });
       if (dialog.append(element("h2", { text: title })), Array.isArray(value) && value.length && value.every((row) => row && typeof row == "object" && !Array.isArray(row))) {
         let fields = [...new Set(value.flatMap((row) => Object.keys(row)))], table = element("table", { class: "data-table" }, element("thead", {}, element("tr", {}, fields.map((key2) => element("th", { text: key2 }))))), rows = element("tbody");
@@ -45687,7 +45726,7 @@ northing meters` + mgrsString;
     }), add5("group.properties", t3("\u4FEE\u6539\u56FE\u5C42\u7EC4", "Edit layer group"), [field("group", t3("\u7EC4\u540D", "Group name")), field("name", t3("\u65B0\u7EC4\u540D", "New group name")), field("visible", t3("\u663E\u793A\u7EC4", "Show group"), "checkbox", { default: !0 }), field("locked", t3("\u9501\u5B9A\u7EC4", "Lock group"), "checkbox")], (a3) => {
       let count = 0;
       for (let layer of e2.state.layers.filter((l4) => l4.group === a3.group))
-        layer.group = a3.name || a3.group, layer.visible = !!a3.visible, layer.locked = !!a3.locked, count++;
+        "name" in a3 && (layer.group = a3.name || a3.group), "visible" in a3 && (layer.visible = !!a3.visible), "locked" in a3 && (layer.locked = !!a3.locked), count++;
       return { count };
     }), add5("layer.move", t3("\u8C03\u6574\u56FE\u5C42\u987A\u5E8F", "Move layer"), [layerField(), field("index", t3("\u4F4D\u7F6E\uFF08\u4ECE0\u8D77\uFF09", "Position (from 0)"), "number", { default: 0 })], (a3) => {
       let l4 = getLayer(e2, a3.layer), index2 = e2.state.layers.indexOf(l4);
@@ -45756,7 +45795,10 @@ northing meters` + mgrsString;
     }), add5("feature.node", t3("\u7F16\u8F91\u51E0\u4F55\u8282\u70B9", "Edit geometry vertex"), [layerField(), field("feature", t3("\u8981\u7D20\u7F16\u53F7", "Feature ID"), "text", { default: (e3) => e3.selection?.features?.[0] ?? "" }), field("path", t3("\u8282\u70B9\u4F4D\u7F6E", "Vertex path"), "text", { default: "0,0" }), field("action", t3("\u64CD\u4F5C", "Action"), "select", { options: ["set", "insert", "delete"], default: "set" }), field("x", t3("\u6A2A\u5750\u6807", "X"), "number"), field("y", t3("\u7EB5\u5750\u6807", "Y"), "number")], (a3) => {
       let { feature: feature2 } = getFeature(e2, a3);
       feature2.geometry = changeVertex(feature2.geometry, a3);
-    }), add5("attribute.set", t3("\u4FEE\u6539\u8981\u7D20\u5C5E\u6027", "Edit feature attribute"), [layerField(), field("feature", t3("\u8981\u7D20\u7F16\u53F7", "Feature ID"), "text", { default: (e3) => e3.selection?.features?.[0] ?? "" }), field("field", t3("\u5B57\u6BB5", "Field")), field("value", t3("\u503C", "Value")), field("type", t3("\u7C7B\u578B\uFF08\u53EF\u7559\u7A7A\uFF09", "Type (optional)"), "select", { options: ["", "string", "number", "boolean", "json"], default: "" })], (a3) => {
+    }), add5("attribute.set", t3("\u4FEE\u6539\u8981\u7D20\u5C5E\u6027", "Edit feature attribute"), [layerField(), field("feature", t3("\u8981\u7D20\u7F16\u53F7", "Feature ID"), "text", { default: (e3) => e3.selection?.features?.[0] ?? "" }), field("field", t3("\u5B57\u6BB5", "Field")), field("value", t3("\u503C", "Value"), "textarea", { default: (e3, a3) => {
+      let layer = e3.state.layers.find((l4) => l4.id === (a3.layer || e3.selection?.layer)), feature2 = layer?.data?.features.find((f3) => String(f3.id) === String(a3.feature ?? e3.selection?.features?.[0])), value = feature2?.properties?.[a3.field];
+      return (a3.type || layer?.fields?.find((f3) => f3.name === a3.field)?.type) === "json" || typeof value == "object" ? JSON.stringify(value ?? null) : String(value ?? "");
+    } }), field("type", t3("\u7C7B\u578B\uFF08\u53EF\u7559\u7A7A\uFF09", "Type (optional)"), "select", { options: ["", "string", "number", "boolean", "json"], default: "" })], (a3) => {
       let { layer, feature: feature2 } = getFeature(e2, a3), name = propertyName(a3.field), type = a3.type || layer.fields.find((f3) => f3.name === name)?.type;
       feature2.properties[name] = type ? attributeValue(a3.value, type) : a3.value, layer.fields = inferFields([feature2], layer.fields);
     }), add5("field.edit", t3("\u7BA1\u7406\u5B57\u6BB5", "Manage fields"), [layerField(), field("name", t3("\u5B57\u6BB5\u540D", "Field name")), field("action", t3("\u64CD\u4F5C", "Action"), "select", { options: ["add", "delete", "rename", "convert"], default: "add" }), field("newName", t3("\u65B0\u540D\u79F0", "New name")), field("type", t3("\u7C7B\u578B", "Type"), "select", { options: ["string", "number", "boolean", "json"], default: "string" }), field("value", t3("\u9ED8\u8BA4\u503C", "Default value"))], (a3) => {
@@ -45783,6 +45825,164 @@ northing meters` + mgrsString;
       let layer = getLayer(e2, a3.layer, "vector"), ids = new Set((e2.selection?.layer === layer.id ? e2.selection.features : []).map(String));
       return inGeographic(layer).features.filter((f3) => f3.geometry && (!ids.size || ids.has(String(f3.id)))).map((f3) => ({ id: f3.id, areaSquareMeters: turf.area(f3), lengthMeters: ["LineString", "MultiLineString", "Polygon", "MultiPolygon"].includes(f3.geometry.type) ? turf.length(f3, { units: "meters" }) : 0, centroid: turf.centroid(f3).geometry.coordinates }));
     }, t3("\u67E5\u8BE2", "Query"), "read");
+  }
+
+  // FloeAgent/Modules/FloeGISKit/Web/symbology.js
+  var palette = ["#2379b5", "#de7d2e", "#3b9b70", "#b25aa1", "#b3a52e", "#4b4eb3", "#bf5353", "#55a5a3"], numeric2 = (value) => value != null && value !== "" && Number.isFinite(Number(value));
+  function vectorColor(layer, properties = {}) {
+    let style = layer.style ?? {}, value = properties[style.field];
+    if (style.mode === "categorical") {
+      let hash2 = 0;
+      for (let c5 of String(value ?? "")) hash2 = hash2 * 31 + c5.charCodeAt(0) >>> 0;
+      return palette[hash2 % palette.length];
+    }
+    if (style.mode === "graduated") {
+      let values2 = layer.data.features.map((f3) => f3.properties[style.field]).filter(numeric2).map(Number);
+      if (!values2.length || !numeric2(value)) return "#89939d";
+      let min = Math.min(...values2), max2 = Math.max(...values2), classes = Math.max(2, Math.min(16, Number(style.classes) || 5)), index2 = Math.min(classes - 1, Math.max(0, Math.floor((Number(value) - min) / (max2 - min || 1) * classes)));
+      return palette[Math.round(index2 / (classes - 1) * (palette.length - 1))];
+    }
+    return /^#[0-9a-f]{6}$/i.test(style.color) ? style.color : "#2879c7";
+  }
+  function vectorFill(layer, color) {
+    let style = layer.style ?? {};
+    if (style.mode === "single" && /^#[0-9a-f]{8}$/i.test(style.fill)) return style.fill;
+    let base = style.mode === "single" && /^#[0-9a-f]{6}$/i.test(style.fill) ? style.fill : color, opacity = Math.max(0, Math.min(1, Number(style.fillOpacity ?? 0.24)));
+    return base + Math.round(opacity * 255).toString(16).padStart(2, "0");
+  }
+  function legendEntries(layer) {
+    if (layer.kind !== "vector") return [{ label: layer.name, color: layer.kind === "tiles" ? "#80949a" : "#769e74" }];
+    let style = layer.style ?? {};
+    if (style.mode === "categorical") return [...new Set(layer.data.features.map((f3) => String(f3.properties[style.field] ?? "")))].map((value) => ({ label: value || "\u2205", color: vectorColor(layer, { [style.field]: value }) }));
+    if (style.mode === "graduated") {
+      let values2 = layer.data.features.map((f3) => f3.properties[style.field]).filter(numeric2).map(Number);
+      if (!values2.length) return [];
+      let min = Math.min(...values2), max2 = Math.max(...values2), classes = Math.max(2, Math.min(16, Number(style.classes) || 5));
+      return Array.from({ length: classes }, (_3, i4) => {
+        let low = min + (max2 - min) * i4 / classes, high = min + (max2 - min) * (i4 + 1) / classes;
+        return { label: `${Number(low.toPrecision(5))} \u2013 ${Number(high.toPrecision(5))}`, color: vectorColor(layer, { [style.field]: (low + high) / 2 }) };
+      });
+    }
+    return [{ label: layer.name, color: vectorColor(layer) }];
+  }
+  function rasterRange(layer, band = 0) {
+    let min = 1 / 0, max2 = -1 / 0;
+    for (let v5 of layer.bands[band] ?? []) v5 !== layer.nodata && Number.isFinite(v5) && (min = Math.min(min, v5), max2 = Math.max(max2, v5));
+    return { min: layer.style?.min ?? (min === 1 / 0 ? 0 : min), max: layer.style?.max ?? (max2 === -1 / 0 ? 1 : max2) };
+  }
+  function rasterPixel(layer, values2, range = rasterRange(layer, layer.style?.band ?? 0)) {
+    let band = Math.max(0, Math.min(layer.bands.length - 1, layer.style?.band ?? 0)), v5 = values2[band];
+    if (v5 === layer.nodata || !Number.isFinite(v5)) return [0, 0, 0, 0];
+    let scale7 = Math.min(1, Math.max(0, (v5 - range.min) / (range.max - range.min || 1))), rgb;
+    if (layer.style?.palette === "rgb" && values2.length >= 3) rgb = values2.slice(0, 3);
+    else if (layer.style?.palette === "gray") rgb = [scale7 * 255, scale7 * 255, scale7 * 255];
+    else if (layer.style?.palette === "classes") {
+      let c5 = palette[((Math.round(v5) - 1) % palette.length + palette.length) % palette.length];
+      rgb = [parseInt(c5.slice(1, 3), 16), parseInt(c5.slice(3, 5), 16), parseInt(c5.slice(5, 7), 16)];
+    } else rgb = [Math.min(255, 40 + scale7 * 260), Math.max(30, 145 + Math.sin(scale7 * Math.PI) * 75 - scale7 * 65), Math.max(25, 170 - scale7 * 145)];
+    return [...rgb.map((x3) => Math.max(0, Math.min(255, Math.round(x3)))), layer.source?.image && values2.length > 3 ? Math.max(0, Math.min(255, values2[3])) : 255];
+  }
+  function rasterRGBA(layer) {
+    let result = new Uint8ClampedArray(layer.width * layer.height * 4), range = rasterRange(layer, layer.style?.band ?? 0);
+    for (let i4 = 0; i4 < layer.width * layer.height; i4++) result.set(rasterPixel(layer, layer.bands.map((b3) => b3[i4]), range), i4 * 4);
+    return result;
+  }
+
+  // FloeAgent/Modules/FloeGISKit/Web/native.js
+  var GIS_TABLE_PAGE_SIZE = 25;
+  function gisUI(e2) {
+    return e2.gisUI ??= { mode: "map", tool: "select", multiselect: !1, snapping: !0, page: 0, filter: "", sort: "", sortDescending: !1, onlySelected: !1, columns: null, terrainFactor: 1, vertexAction: null, drawing: !1 };
+  }
+  var textValue = (value, type) => type === "json" || typeof value == "object" ? JSON.stringify(value ?? null) : String(value ?? "");
+  function cell(name, type, value, limit) {
+    let complete = textValue(value, type), text3 = complete.slice(0, limit);
+    return text3.length < complete.length && /[\uD800-\uDBFF]$/.test(text3) && (text3 = text3.slice(0, -1)), { name, type, text: text3, truncated: text3.length < complete.length, isNull: value === null };
+  }
+  var pick = (source, keys) => Object.fromEntries(keys.filter((key2) => Object.hasOwn(source ?? {}, key2)).map((key2) => [key2, clone2(source[key2])]));
+  function styleSnapshot(style = {}) {
+    let result = {};
+    for (let key2 of ["color", "fill", "mode", "field", "label", "palette"]) typeof style[key2] == "string" && (result[key2] = style[key2]);
+    for (let key2 of ["width", "radius", "classes", "fillOpacity", "band", "min", "max"]) (typeof style[key2] == "number" && Number.isFinite(style[key2]) || ["min", "max"].includes(key2) && style[key2] === null) && (result[key2] = style[key2]);
+    return result;
+  }
+  function gisTable(e2) {
+    let ui = gisUI(e2), layer = e2.state.layers.find((l4) => l4.id === e2.selection?.layer && l4.kind === "vector");
+    if (!layer) return { layerID: null, fields: [], columns: [], rows: [], total: 0, filteredCount: 0, page: 0, pageSize: GIS_TABLE_PAGE_SIZE, pageCount: 0, filter: ui.filter, sort: ui.sort, sortDescending: ui.sortDescending, onlySelected: ui.onlySelected };
+    let fields = inferFields(layer.data.features, layer.fields), ids = new Set((e2.selection?.features ?? []).map(String)), selected = Array.isArray(ui.columns) ? ui.columns.filter((name) => fields.some((f3) => f3.name === name)) : fields.slice(0, 8).map((f3) => f3.name), columns = selected.slice(0, 12).map((name) => fields.find((f3) => f3.name === name)), features = layer.data.features.filter((f3) => (!ui.onlySelected || ids.has(String(f3.id))) && (!ui.filter || JSON.stringify(f3.properties).toLocaleLowerCase().includes(ui.filter.toLocaleLowerCase())));
+    ui.sort && (features = [...features].sort((a3, b3) => String(a3.properties[ui.sort] ?? "").localeCompare(String(b3.properties[ui.sort] ?? ""), void 0, { numeric: !0 }) * (ui.sortDescending ? -1 : 1)));
+    let pageCount = Math.ceil(features.length / GIS_TABLE_PAGE_SIZE), page = Math.max(0, Math.min(Math.trunc(finite(ui.page)), pageCount - 1)), start2 = page * GIS_TABLE_PAGE_SIZE;
+    return { layerID: layer.id, fields, columns, rows: features.slice(start2, start2 + GIS_TABLE_PAGE_SIZE).map((f3) => ({ id: String(f3.id), rawID: f3.id, selected: ids.has(String(f3.id)), cells: columns.map((field2) => cell(field2.name, field2.type, f3.properties[field2.name], 256)) })), total: layer.data.features.length, filteredCount: features.length, page, pageSize: GIS_TABLE_PAGE_SIZE, pageCount, filter: ui.filter, sort: ui.sort, sortDescending: ui.sortDescending, onlySelected: ui.onlySelected };
+  }
+  function gisNativeSnapshot(e2) {
+    let ui = gisUI(e2), layers = e2.state.layers.map((l4, index2) => ({ id: l4.id, name: l4.name, kind: l4.kind, group: l4.group ?? "", index: index2, visible: l4.visible !== !1, locked: !!l4.locked, opacity: l4.opacity ?? 1, crs: l4.crs, count: l4.kind === "vector" ? l4.data.features.length : l4.kind === "tiles" ? l4.tileCount : void 0, width: l4.width, height: l4.height, bandCount: l4.bands?.length })), source = e2.state.layers.find((l4) => l4.id === e2.selection?.layer), summary = layers.find((l4) => l4.id === source?.id), selectedIDs = new Set((e2.selection?.features ?? []).map(String)), selected = source?.kind === "vector" ? source.data.features.filter((f3) => selectedIDs.has(String(f3.id))) : [], fields = source?.kind === "vector" ? inferFields(source.data.features, source.fields) : [], groups = [...new Set(layers.map((l4) => l4.group))].map((name) => {
+      let members = layers.filter((l4) => l4.group === name);
+      return { id: name, name, visible: members.some((l4) => l4.visible), locked: members.every((l4) => l4.locked), layerIDs: members.map((l4) => l4.id) };
+    }), table = gisTable(e2), legend = source ? legendEntries(source) : [], terrain = e2.state.layers.find((l4) => l4.id === source?.id && l4.kind === "raster") ?? e2.state.layers.find((l4) => l4.kind === "raster");
+    return {
+      kind: "gis",
+      crs: e2.state.crs,
+      ui: { ...clone2(ui), page: table.page },
+      layers,
+      groups,
+      selectedLayer: source ? { ...summary, style: styleSnapshot(source.style), fields, legend: legend.slice(0, 20), legendCount: legend.length } : null,
+      selection: { layerID: source?.id ?? null, featureIDs: selected.map((f3) => String(f3.id)), count: selected.length, features: selected.slice(0, 4).map((f3) => ({ id: String(f3.id), rawID: f3.id, name: String(f3.properties.name ?? f3.id), geometryType: f3.geometry?.type ?? null, attributes: fields.slice(0, 24).map((field2) => cell(field2.name, field2.type, f3.properties[field2.name], 512)), attributeCount: fields.length })), hasClipboard: !!e2.gisClipboard?.features?.length },
+      table,
+      bookmarks: e2.state.bookmarks.map((b3) => ({ id: b3.id, name: b3.name })),
+      layout: { ...pick(e2.state.layout, ["title", "paper", "orientation", "legend", "north", "scale", "scaleDenominator"]), annotationCount: e2.state.layout.annotations?.length ?? 0 },
+      view: pick(e2.liveView ?? e2.state.view, ["center", "zoom", "extent", "extentCRS", "fit"]),
+      terrain: { layerID: terrain?.id ?? null, name: terrain?.name ?? "", factor: ui.terrainFactor }
+    };
+  }
+  function registerGISUI(e2, currentView = () => null) {
+    let add5 = (id, title, fields, handler) => e2.register({ id: "gis.ui." + id, title, group: t3("\u5730\u56FE\u754C\u9762", "Map interface"), access: "read", sideEffecting: !0, hidden: !0, fields }, handler), redraw = (kind) => {
+      e2.gisRenderHint = kind, e2.notifyPresentation?.();
+    };
+    add5("mode", t3("\u5207\u6362\u5730\u56FE\u89C6\u56FE", "Change map view"), [field("mode", t3("\u89C6\u56FE", "View"), "select", { options: ["map", "table", "terrain", "layout"] })], (a3) => {
+      if (!["map", "table", "terrain", "layout"].includes(a3.mode)) throw new Error("Unknown map view");
+      return gisUI(e2).mode = a3.mode, gisUI(e2).drawing = !1, gisUI(e2).vertexAction = null, redraw("full"), { mode: a3.mode };
+    }), add5("tool", t3("\u9009\u62E9\u5730\u56FE\u5DE5\u5177", "Choose map tool"), [field("tool", t3("\u5DE5\u5177", "Tool"), "select", { options: ["select", "Point", "LineString", "Polygon", "modify", "translate"] })], (a3) => {
+      if (!["select", "Point", "LineString", "Polygon", "modify", "translate"].includes(a3.tool)) throw new Error("Unknown map tool");
+      return gisUI(e2).tool = a3.tool, gisUI(e2).vertexAction = null, gisUI(e2).drawing = !1, redraw("full"), { tool: a3.tool };
+    }), add5("options", t3("\u5730\u56FE\u9009\u62E9\u4E0E\u6355\u6349", "Map selection & snapping"), [field("multiselect", t3("\u591A\u9009", "Multi-select"), "checkbox"), field("snapping", t3("\u6355\u6349", "Snap"), "checkbox")], (a3) => {
+      let ui = gisUI(e2);
+      for (let key2 of ["multiselect", "snapping"]) if (key2 in a3) {
+        if (typeof a3[key2] != "boolean") throw new Error("Invalid map option");
+        ui[key2] = a3[key2];
+      }
+      return redraw("full"), { multiselect: ui.multiselect, snapping: ui.snapping };
+    }), add5("selectLayer", t3("\u9009\u62E9\u56FE\u5C42", "Select layer"), [layerField()], (a3) => {
+      let layer = getLayer(e2, a3.layer);
+      return e2.selection = { layer: layer.id, features: [] }, gisUI(e2).page = 0, gisUI(e2).columns = null, gisUI(e2).filter = "", gisUI(e2).sort = "", redraw("full"), { layerID: layer.id };
+    }), add5("selection", t3("\u9009\u62E9\u5730\u56FE\u8981\u7D20", "Select map features"), [layerField(), field("features", t3("\u8981\u7D20\u7F16\u53F7", "Feature IDs"), "json")], (a3) => {
+      if (!Array.isArray(a3.features)) throw new Error("Feature IDs must be an array");
+      let previous = e2.selection?.layer, layer = getLayer(e2, a3.layer, "vector"), wanted = new Set(a3.features.map(String));
+      return e2.selection = { layer: layer.id, features: layer.data.features.filter((f3) => wanted.has(String(f3.id))).map((f3) => f3.id) }, redraw(previous === layer.id && gisUI(e2).tool !== "modify" ? "selection" : "full"), { count: e2.selection.features.length };
+    }), add5("table", t3("\u5C5E\u6027\u8868\u89C6\u56FE", "Attribute table view"), [field("filter", t3("\u7B5B\u9009\u5C5E\u6027", "Filter attributes")), field("sort", t3("\u6392\u5E8F\u5B57\u6BB5", "Sort field")), field("sortDescending", t3("\u5012\u5E8F", "Descending"), "checkbox"), field("onlySelected", t3("\u53EA\u770B\u9009\u533A", "Selection only"), "checkbox"), field("columns", t3("\u663E\u793A\u5217", "Columns"), "json"), field("page", t3("\u9875\u7801\uFF08\u4ECE0\u8D77\uFF09", "Page (from 0)"), "number")], (a3) => {
+      let ui = gisUI(e2);
+      for (let key2 of ["filter", "sort"]) key2 in a3 && (ui[key2] = String(a3[key2]).slice(0, 1024));
+      for (let key2 of ["sortDescending", "onlySelected"]) if (key2 in a3) {
+        if (typeof a3[key2] != "boolean") throw new Error("Invalid table option");
+        ui[key2] = a3[key2];
+      }
+      if ("columns" in a3) {
+        if (!Array.isArray(a3.columns)) throw new Error("Columns must be an array");
+        ui.columns = [...new Set(a3.columns.map(String))].slice(0, 12);
+      }
+      return ui.page = "page" in a3 ? Math.max(0, Math.trunc(finite(a3.page))) : 0, ui.page = gisTable(e2).page, redraw("table"), { page: ui.page };
+    }), add5("terrain", t3("\u5730\u5F62\u663E\u793A", "Terrain display"), [field("factor", t3("\u9AD8\u7A0B\u5938\u5927", "Elevation exaggeration"), "number", { min: 0.1, max: 20 })], (a3) => (gisUI(e2).terrainFactor = Math.max(0.1, Math.min(20, finite(a3.factor, 1))), redraw("full"), { factor: gisUI(e2).terrainFactor })), add5("drawing", t3("\u7ED8\u56FE\u72B6\u6001", "Drawing state"), [field("active", t3("\u6B63\u5728\u7ED8\u56FE", "Drawing"), "checkbox")], (a3) => {
+      if (typeof a3.active != "boolean") throw new Error("Invalid drawing state");
+      return gisUI(e2).drawing = a3.active, redraw("canvas"), { drawing: gisUI(e2).drawing };
+    }), add5("canvas", t3("\u5730\u56FE\u753B\u5E03\u64CD\u4F5C", "Map canvas action"), [field("action", t3("\u64CD\u4F5C", "Action"), "select", { options: ["fitLayer", "zoomIn", "zoomOut", "finishDrawing", "abortDrawing", "insertVertex", "deleteVertex", "clearSelection"] })], (a3) => {
+      if (!["fitLayer", "zoomIn", "zoomOut", "finishDrawing", "abortDrawing", "insertVertex", "deleteVertex", "clearSelection"].includes(a3.action)) throw new Error("Unknown map canvas action");
+      let ui = gisUI(e2);
+      if (a3.action === "clearSelection")
+        return e2.selection = { layer: e2.selection?.layer, features: [] }, redraw(["modify", "translate"].includes(ui.tool) ? "full" : "selection"), { cleared: !0 };
+      if (a3.action === "insertVertex" || a3.action === "deleteVertex")
+        return ui.vertexAction = a3.action === "insertVertex" ? "insert" : "delete", redraw("canvas"), { vertexAction: ui.vertexAction };
+      let view2 = currentView();
+      if (!view2) throw new Error(t3("\u5730\u56FE\u5C1A\u672A\u6253\u5F00\u3002", "The map is not open."));
+      return view2.nativeCanvasAction(a3.action), redraw("canvas"), { action: a3.action };
+    });
   }
 
   // ../../../Users/jiangnangenius/Library/Caches/CodexBuild/FloeHeavyEditors/shared-main/web-toolchain/node_modules/ol/extent/Relationship.js
@@ -61590,67 +61790,6 @@ northing meters` + mgrsString;
         sourceID: sqlite3.version.sourceId
       })
     });
-  }
-
-  // FloeAgent/Modules/FloeGISKit/Web/symbology.js
-  var palette = ["#2379b5", "#de7d2e", "#3b9b70", "#b25aa1", "#b3a52e", "#4b4eb3", "#bf5353", "#55a5a3"], numeric2 = (value) => value != null && value !== "" && Number.isFinite(Number(value));
-  function vectorColor(layer, properties = {}) {
-    let style = layer.style ?? {}, value = properties[style.field];
-    if (style.mode === "categorical") {
-      let hash2 = 0;
-      for (let c5 of String(value ?? "")) hash2 = hash2 * 31 + c5.charCodeAt(0) >>> 0;
-      return palette[hash2 % palette.length];
-    }
-    if (style.mode === "graduated") {
-      let values2 = layer.data.features.map((f3) => f3.properties[style.field]).filter(numeric2).map(Number);
-      if (!values2.length || !numeric2(value)) return "#89939d";
-      let min = Math.min(...values2), max2 = Math.max(...values2), classes = Math.max(2, Math.min(16, Number(style.classes) || 5)), index2 = Math.min(classes - 1, Math.max(0, Math.floor((Number(value) - min) / (max2 - min || 1) * classes)));
-      return palette[Math.round(index2 / (classes - 1) * (palette.length - 1))];
-    }
-    return /^#[0-9a-f]{6}$/i.test(style.color) ? style.color : "#2879c7";
-  }
-  function vectorFill(layer, color) {
-    let style = layer.style ?? {};
-    if (style.mode === "single" && /^#[0-9a-f]{8}$/i.test(style.fill)) return style.fill;
-    let base = style.mode === "single" && /^#[0-9a-f]{6}$/i.test(style.fill) ? style.fill : color, opacity = Math.max(0, Math.min(1, Number(style.fillOpacity ?? 0.24)));
-    return base + Math.round(opacity * 255).toString(16).padStart(2, "0");
-  }
-  function legendEntries(layer) {
-    if (layer.kind !== "vector") return [{ label: layer.name, color: layer.kind === "tiles" ? "#80949a" : "#769e74" }];
-    let style = layer.style ?? {};
-    if (style.mode === "categorical") return [...new Set(layer.data.features.map((f3) => String(f3.properties[style.field] ?? "")))].map((value) => ({ label: value || "\u2205", color: vectorColor(layer, { [style.field]: value }) }));
-    if (style.mode === "graduated") {
-      let values2 = layer.data.features.map((f3) => f3.properties[style.field]).filter(numeric2).map(Number);
-      if (!values2.length) return [];
-      let min = Math.min(...values2), max2 = Math.max(...values2), classes = Math.max(2, Math.min(16, Number(style.classes) || 5));
-      return Array.from({ length: classes }, (_3, i4) => {
-        let low = min + (max2 - min) * i4 / classes, high = min + (max2 - min) * (i4 + 1) / classes;
-        return { label: `${Number(low.toPrecision(5))} \u2013 ${Number(high.toPrecision(5))}`, color: vectorColor(layer, { [style.field]: (low + high) / 2 }) };
-      });
-    }
-    return [{ label: layer.name, color: vectorColor(layer) }];
-  }
-  function rasterRange(layer, band = 0) {
-    let min = 1 / 0, max2 = -1 / 0;
-    for (let v5 of layer.bands[band] ?? []) v5 !== layer.nodata && Number.isFinite(v5) && (min = Math.min(min, v5), max2 = Math.max(max2, v5));
-    return { min: layer.style?.min ?? (min === 1 / 0 ? 0 : min), max: layer.style?.max ?? (max2 === -1 / 0 ? 1 : max2) };
-  }
-  function rasterPixel(layer, values2, range = rasterRange(layer, layer.style?.band ?? 0)) {
-    let band = Math.max(0, Math.min(layer.bands.length - 1, layer.style?.band ?? 0)), v5 = values2[band];
-    if (v5 === layer.nodata || !Number.isFinite(v5)) return [0, 0, 0, 0];
-    let scale7 = Math.min(1, Math.max(0, (v5 - range.min) / (range.max - range.min || 1))), rgb;
-    if (layer.style?.palette === "rgb" && values2.length >= 3) rgb = values2.slice(0, 3);
-    else if (layer.style?.palette === "gray") rgb = [scale7 * 255, scale7 * 255, scale7 * 255];
-    else if (layer.style?.palette === "classes") {
-      let c5 = palette[((Math.round(v5) - 1) % palette.length + palette.length) % palette.length];
-      rgb = [parseInt(c5.slice(1, 3), 16), parseInt(c5.slice(3, 5), 16), parseInt(c5.slice(5, 7), 16)];
-    } else rgb = [Math.min(255, 40 + scale7 * 260), Math.max(30, 145 + Math.sin(scale7 * Math.PI) * 75 - scale7 * 65), Math.max(25, 170 - scale7 * 145)];
-    return [...rgb.map((x3) => Math.max(0, Math.min(255, Math.round(x3)))), layer.source?.image && values2.length > 3 ? Math.max(0, Math.min(255, values2[3])) : 255];
-  }
-  function rasterRGBA(layer) {
-    let result = new Uint8ClampedArray(layer.width * layer.height * 4), range = rasterRange(layer, layer.style?.band ?? 0);
-    for (let i4 = 0; i4 < layer.width * layer.height; i4++) result.set(rasterPixel(layer, layer.bands.map((b3) => b3[i4]), range), i4 * 4);
-    return result;
   }
 
   // FloeAgent/Modules/FloeGISKit/Web/formats.js
@@ -106883,12 +107022,35 @@ void main() {
   }
   var GISView = class {
     constructor(engine2) {
-      this.e = engine2, this.mode = "map", this.tool = "select", this.sources = new globalThis.Map(), this.olLayers = new globalThis.Map(), this.page = 0, this.multiselect = !1, this.snapping = !0, this.terrainFactor = 1, this.resources = [], this.generation = 0, this.filter = "", this.sort = "", this.sortDescending = !1, this.onlySelected = !1;
+      this.e = engine2;
+      for (let key2 of ["mode", "tool", "page", "multiselect", "snapping", "terrainFactor", "filter", "sort", "sortDescending", "onlySelected", "vertexAction", "drawing"]) Object.defineProperty(this, key2, { get: () => gisUI(engine2)[key2], set: (value) => {
+        gisUI(engine2)[key2] = value, engine2.notifyPresentation?.();
+      } });
+      this.sources = new globalThis.Map(), this.olLayers = new globalThis.Map(), this.resources = [], this.generation = 0;
+    }
+    chooseSelection(selection) {
+      this.e.nativeChrome ? this.e.perform("gis.ui.selection", selection).catch(() => {
+      }) : (this.e.selection = selection, this.refreshSelection());
+    }
+    nativeCanvasAction(action) {
+      if (action === "finishDrawing" || action === "abortDrawing") {
+        if (!this.draw) throw new Error(t3("\u8BF7\u5148\u9009\u62E9\u7ED8\u56FE\u5DE5\u5177\u3002", "Choose a drawing tool first."));
+        action === "finishDrawing" ? this.draw.finishDrawing() : this.draw.abortDrawing();
+        return;
+      }
+      if (!this.map) throw new Error(t3("\u8BF7\u5148\u6253\u5F00\u5730\u56FE\u89C6\u56FE\u3002", "Open the map view first."));
+      let view2 = this.map.getView();
+      if (action === "zoomIn" || action === "zoomOut") view2.setZoom((view2.getZoom() ?? 2) + (action === "zoomIn" ? 1 : -1));
+      else if (action === "fitLayer") {
+        let current = this.e.state.layers.find((l4) => l4.id === this.e.selection?.layer), source = this.sources.get(current?.id), extent = source?.getExtent();
+        extent?.every(Number.isFinite) ? view2.fit(extent, { padding: [30, 30, 30, 30], maxZoom: 18 }) : current?.bounds && view2.fit(projectedBounds(current.bounds, current.kind === "tiles" ? "EPSG:4326" : current.crs, view2.getProjection().getCode()), { padding: [20, 20, 20, 20] });
+      }
+      this.captureView();
     }
     captureView() {
       if (!this.map?.getSize()?.every((v5) => v5 > 0)) return;
       let view2 = this.map.getView(), projection2 = view2.getProjection().getCode();
-      this.e.liveView = { center: transformPosition(view2.getCenter(), projection2, "EPSG:4326"), zoom: view2.getZoom(), extent: view2.calculateExtent(this.map.getSize()), extentCRS: projection2 }, this.lastLiveView = this.e.liveView;
+      this.e.liveView = { center: transformPosition(view2.getCenter(), projection2, "EPSG:4326"), zoom: view2.getZoom(), extent: view2.calculateExtent(this.map.getSize()), extentCRS: projection2 }, this.lastLiveView = this.e.liveView, this.e.notifyPresentation?.();
     }
     disposeMap() {
       this.mapState === this.e.state && this.e.liveView === this.lastLiveView && this.captureView(), this.map?.setTarget(void 0), this.map?.dispose(), this.map = null;
@@ -106900,17 +107062,17 @@ void main() {
     }
     async render() {
       let generation = ++this.generation, e2 = this.e;
-      register(lib_default), this.disposeMap(), this.disposeTerrain?.(), this.disposeTerrain = null, e2.sidebar.replaceChildren(), e2.inspector.replaceChildren(), e2.canvas.replaceChildren(), this.sidebar(), this.inspector(), e2.canvas.onkeydown = (event) => {
+      register(lib_default), this.disposeMap(), this.disposeTerrain?.(), this.disposeTerrain = null, e2.sidebar.replaceChildren(), e2.inspector.replaceChildren(), e2.canvas.replaceChildren(), e2.nativeChrome || (this.sidebar(), this.inspector()), e2.canvas.onkeydown = (event) => {
         if (event.target.closest("input,textarea,select,dialog")) return;
         let modifier = event.metaKey || event.ctrlKey, command;
         modifier && event.key.toLowerCase() === "c" && (command = "feature.copy"), modifier && event.key.toLowerCase() === "x" && (command = "feature.cut"), modifier && event.key.toLowerCase() === "v" && (command = "feature.paste"), (event.key === "Delete" || event.key === "Backspace") && e2.selection?.features?.length && (command = "feature.delete"), command && (event.preventDefault(), e2.perform(command, { layer: e2.selection?.layer }).catch(() => {
         })), event.key === "Escape" && (this.draw?.abortDrawing(), e2.selection = { layer: e2.selection?.layer, features: [] }, this.refreshSelection());
       };
-      let tabs = element("div", { class: "canvas-tools" });
+      let tabs = e2.nativeChrome ? document.createDocumentFragment() : element("div", { class: "canvas-tools" });
       for (let [mode2, label] of [["map", t3("\u5730\u56FE", "Map")], ["table", t3("\u5C5E\u6027\u8868", "Table")], ["terrain", t3("\u4E09\u7EF4\u5730\u5F62", "3D terrain")], ["layout", t3("\u5236\u56FE", "Layout")]]) tabs.append(element("button", { text: label, class: this.mode === mode2 ? "active" : "", onclick: () => {
         this.mode = mode2, this.render().catch((error2) => e2.status(error2.message, !0));
       } }));
-      tabs.append(element("button", { text: t3("\u5C5E\u6027", "Inspector"), onclick: () => this.openInspector() })), e2.canvas.append(tabs), this.surface = element("div", { class: "canvas-frame" }), this.surface.style.height = "calc(100% - 56px)", e2.canvas.append(this.surface), this.mode === "table" ? this.table() : this.mode === "terrain" ? this.terrain() : this.mode === "layout" ? await this.layout(generation) : await this.mapView(tabs, generation, this.surface);
+      e2.nativeChrome || (tabs.append(element("button", { text: t3("\u5C5E\u6027", "Inspector"), onclick: () => this.openInspector() })), e2.canvas.append(tabs)), this.surface = element("div", { class: "canvas-frame" }), this.surface.style.height = e2.nativeChrome ? "100%" : "calc(100% - 56px)", e2.canvas.append(this.surface), this.mode === "table" ? e2.nativeChrome || this.table() : this.mode === "terrain" ? this.terrain() : this.mode === "layout" ? await this.layout(generation) : await this.mapView(tabs, generation, this.surface);
     }
     openInspector() {
       let dialog = element("dialog"), body = element("div");
@@ -106984,7 +107146,7 @@ void main() {
     refreshSelection() {
       let e2 = this.e;
       for (let layer of e2.state.layers.filter((l4) => l4.kind === "vector")) this.olLayers.get(layer.id)?.setStyle(olStyle(layer, new Set((e2.selection?.layer === layer.id ? e2.selection.features : []).map(String))));
-      this.inspector();
+      e2.nativeChrome || this.inspector();
     }
     async mapView(tools, generation, surface) {
       let e2 = this.e, layers = [], sources = new globalThis.Map(), olLayers = new globalThis.Map(), resources = [], projection2 = defineCRS(e2.state.crs), stale = !1, disposeLocal = () => {
@@ -107056,9 +107218,11 @@ void main() {
         let p5 = event.coordinate;
         e2.status(`${p5[0].toFixed(projection2 === "EPSG:4326" ? 5 : 2)}, ${p5[1].toFixed(projection2 === "EPSG:4326" ? 5 : 2)}`);
       });
-      let current = e2.state.layers.find((l4) => l4.id === e2.selection?.layer), source = current?.kind === "vector" ? sources.get(current.id) : null, button = (id, label, handler) => tools.append(element("button", { text: label, class: this.tool === id ? "active" : "", onclick: handler ?? (() => {
-        this.tool = id, this.render().catch((error2) => e2.status(error2.message, !0));
-      }) }));
+      let current = e2.state.layers.find((l4) => l4.id === e2.selection?.layer), source = current?.kind === "vector" ? sources.get(current.id) : null, button = (id, label, handler) => {
+        e2.nativeChrome || tools.append(element("button", { text: label, class: this.tool === id ? "active" : "", onclick: handler ?? (() => {
+          this.tool = id, this.render().catch((error2) => e2.status(error2.message, !0));
+        }) }));
+      };
       for (let [id, label] of [["select", t3("\u9009\u62E9", "Select")], ["Point", t3("\u70B9", "Point")], ["LineString", t3("\u7EBF", "Line")], ["Polygon", t3("\u9762", "Polygon")], ["modify", t3("\u8282\u70B9", "Vertices")], ["translate", t3("\u79FB\u52A8", "Move")]]) button(id, label);
       if (button("multi", this.multiselect ? t3("\u591A\u9009\uFF1A\u5F00", "Multi: on") : t3("\u591A\u9009", "Multi"), () => {
         this.multiselect = !this.multiselect, this.render().catch((error2) => e2.status(error2.message, !0));
@@ -107072,15 +107236,18 @@ void main() {
           !hit && f3.get("_floeLayer") && (hit = f3);
         }, { hitTolerance: 12 }), hit) {
           let id = hit.getId(), layer = hit.get("_floeLayer"), previous = e2.selection?.layer === layer ? e2.selection.features : [], ids = this.multiselect || event.originalEvent.shiftKey ? previous.map(String).includes(String(id)) ? previous.filter((v5) => String(v5) !== String(id)) : [...previous, id] : [id];
-          e2.selection = { layer, features: ids };
-        } else this.multiselect || (e2.selection = { layer: e2.selection?.layer, features: [] });
-        this.refreshSelection();
+          this.chooseSelection({ layer, features: ids });
+        } else this.multiselect || e2.state.layers.find((l4) => l4.id === e2.selection?.layer)?.kind === "vector" && this.chooseSelection({ layer: e2.selection?.layer, features: [] });
       }), source && current && !current.locked) {
         let toChange = (features) => features.map((f3) => ({ layer: current.id, feature: f3.getId(), geometry: format.writeGeometryObject(f3.getGeometry()) })).map((c5) => ({ ...c5, geometry: transformGeometry(c5.geometry, projection2, current.crs) })), commit = (features) => e2.perform("feature.geometries", { changes: toChange(features) }).catch(() => {
         });
         if (["Point", "LineString", "Polygon"].includes(this.tool)) {
-          let draw = this.draw = new Draw_default({ type: this.tool, wrapX: !1 });
-          draw.on("drawend", (event) => {
+          let draw = this.draw = new Draw_default({ type: this.tool, wrapX: !1 }), drawing = (active) => {
+            this.drawing = active, e2.nativeChrome && e2.perform("gis.ui.drawing", { active }).catch(() => {
+            });
+          };
+          draw.on("drawstart", () => drawing(!0)), draw.on("drawabort", () => drawing(!1)), draw.on("drawend", (event) => {
+            drawing(!1);
             let geometry = transformGeometry(format.writeGeometryObject(event.feature.getGeometry()), projection2, current.crs);
             e2.perform("feature.add", { layer: current.id, geometry: geometry.type, coordinates: geometry.coordinates, properties: {} }).catch(() => {
             });
@@ -107097,12 +107264,12 @@ void main() {
         } else if (this.tool === "translate") {
           let ids = new Set((e2.selection?.features ?? []).map(String)), selected = source.getFeatures().filter((f3) => ids.has(String(f3.getId()))), translate2 = new Translate_default({ ...selected.length ? { features: new Collection_default(selected) } : { filter: (f3) => f3.get("_floeLayer") === current.id }, hitTolerance: 12 });
           translate2.on("translatestart", (event) => {
-            e2.selection = { layer: current.id, features: event.features.getArray().map((f3) => f3.getId()) }, this.refreshSelection();
+            this.chooseSelection({ layer: current.id, features: event.features.getArray().map((f3) => f3.getId()) });
           }), translate2.on("translateend", (event) => commit(event.features.getArray())), map.addInteraction(translate2);
         }
         if (this.snapping) for (let [id, snapSource] of sources) e2.state.layers.find((l4) => l4.id === id)?.visible && map.addInteraction(new Snap_default({ source: snapSource, pixelTolerance: 14 }));
       }
-      e2.state.layers.length || surface.append(element("div", { class: "empty" }, element("h2", { text: t3("\u5F00\u59CB\u7F16\u8F91\u5730\u56FE", "Start a map") }), element("p", { text: t3("\u5BFC\u5165\u5730\u7406\u6570\u636E\u3001\u521B\u5EFA\u56FE\u5C42\uFF0C\u6216\u6253\u5F00\u5305\u542B\u77E2\u91CF\u4E0E\u5730\u5F62\u7684\u6837\u4F8B\u3002", "Import geographic data, create a layer, or open a sample with vectors and terrain.") }), element("button", { text: t3("\u6253\u5F00\u6837\u4F8B", "Open sample"), onclick: () => e2.perform("project.sample").catch(() => {
+      !e2.nativeChrome && !e2.state.layers.length && surface.append(element("div", { class: "empty" }, element("h2", { text: t3("\u5F00\u59CB\u7F16\u8F91\u5730\u56FE", "Start a map") }), element("p", { text: t3("\u5BFC\u5165\u5730\u7406\u6570\u636E\u3001\u521B\u5EFA\u56FE\u5C42\uFF0C\u6216\u6253\u5F00\u5305\u542B\u77E2\u91CF\u4E0E\u5730\u5F62\u7684\u6837\u4F8B\u3002", "Import geographic data, create a layer, or open a sample with vectors and terrain.") }), element("button", { text: t3("\u6253\u5F00\u6837\u4F8B", "Open sample"), onclick: () => e2.perform("project.sample").catch(() => {
       }) }))), requestAnimationFrame(() => {
         generation === this.generation && (map.updateSize(), saved.extent && (saved.fit || saved.extentCRS && saved.extentCRS !== projection2) && view2.fit(projectedBounds(saved.extent, saved.extentCRS ?? "EPSG:3857", projection2), { padding: [0, 0, 0, 0] }), this.captureView());
       });
@@ -107191,7 +107358,7 @@ void main() {
       };
       animate(), this.disposeTerrain = () => {
         stopped = !0, cancelAnimationFrame(frame), observer.disconnect(), controls.dispose(), geometry.dispose(), material.dispose(), renderer.dispose();
-      }, e2.inspector.append(element("h3", { text: t3("\u9AD8\u7A0B\u5938\u5927", "Elevation exaggeration") }), element("input", { type: "range", min: 0.1, max: 20, step: 0.1, value: this.terrainFactor, "aria-label": t3("\u9AD8\u7A0B\u5938\u5927", "Elevation exaggeration"), onchange: (event) => {
+      }, e2.nativeChrome || e2.inspector.append(element("h3", { text: t3("\u9AD8\u7A0B\u5938\u5927", "Elevation exaggeration") }), element("input", { type: "range", min: 0.1, max: 20, step: 0.1, value: this.terrainFactor, "aria-label": t3("\u9AD8\u7A0B\u5938\u5927", "Elevation exaggeration"), onchange: (event) => {
         this.terrainFactor = Number(event.target.value), this.render().catch((error2) => e2.status(error2.message, !0));
       } }));
     }
@@ -107331,13 +107498,22 @@ void main() {
   }
 
   // FloeAgent/Modules/FloeGISKit/Web/main.js
-  var view, engine = new EditorEngine({ kind: "gis", title: t3("\u5730\u7406\u4FE1\u606F", "GIS"), create: createGIS, normalize: normalizeGIS, render: async (e2) => {
-    view ??= new GISView(e2), await view.render();
+  var view, engine = new EditorEngine({ kind: "gis", title: t3("\u5730\u7406\u4FE1\u606F", "GIS"), create: createGIS, normalize: normalizeGIS, nativeSnapshot: gisNativeSnapshot, nativeChromeChanged: async (e2) => {
+    view && await view.render();
+  }, render: async (e2) => {
+    view ??= new GISView(e2);
+    let hint = e2.gisRenderHint;
+    if (e2.gisRenderHint = null, e2.nativeChrome && ["selection", "canvas", "table"].includes(hint)) {
+      hint === "selection" && view.refreshSelection();
+      return;
+    }
+    await view.render();
   } });
   registerModelCommands(engine);
   registerFormats(engine);
   registerAnalysis(engine);
   registerViewCommands(engine);
+  registerGISUI(engine, () => view);
   engine.commands.get("document.save").handler = () => (engine.state.view = { ...engine.liveView ?? engine.state.view }, { saved: !0 });
   engine.register({ id: "layout.export", title: t3("\u5BFC\u51FA\u5730\u56FE", "Export map"), group: t3("\u5236\u56FE", "Layout"), access: "exportFile", fields: [field("format", t3("\u683C\u5F0F", "Format"), "select", { options: ["svg", "png", "pdf"], default: "pdf" }), field("width", t3("\u5BBD\u5EA6\uFF08\u50CF\u7D20\uFF09", "Width (pixels)"), "number", { default: (e2) => Math.round(paperSize(e2.state.layout)[0] * 96 / 25.4), min: 200 }), field("height", t3("\u9AD8\u5EA6\uFF08\u50CF\u7D20\uFF09", "Height (pixels)"), "number", { default: (e2) => Math.round(paperSize(e2.state.layout)[1] * 96 / 25.4), min: 200 })] }, async (a3) => {
     let width = Math.max(200, Math.min(1e4, a3.width)), height = Math.max(200, Math.min(1e4, a3.height)), svg2 = await makeMapSVG(engine, { width, height }), name = engine.state.title.replace(/[\\/:]/g, "_");

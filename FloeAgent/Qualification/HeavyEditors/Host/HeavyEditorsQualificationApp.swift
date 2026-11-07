@@ -40,23 +40,30 @@ import SwiftUI
 }
 struct QualificationRootView: View {
   @Bindable var workspace: QualificationWorkspace
+  @State private var path: [Destination] = []
+  @State private var gisOrigin: QualificationEntry = .space
+  private enum Destination: Hashable { case music, settings, fontManager }
   var body: some View {
     Group {
       if let current = workspace.current {
-        HeavyEditorView(controller: current, onClose: { workspace.close() })
+        switch current.descriptor.kind {
+        case .gis: GISEditorView(controller: current, onClose: { workspace.close() })
+        case .score: ScoreEditorView(controller: current, onClose: { workspace.close() })
+        case .font: FontEditorView(controller: current, onClose: { workspace.close() })
+        }
       } else {
-        NavigationStack {
+        NavigationStack(path: $path) {
           ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-              Picker(EditorText.t("打开位置", "Open from"), selection: $workspace.entry) {
-                ForEach(QualificationEntry.allCases) { entry in Text(entry.title).tag(entry) }
+              Picker(EditorText.t("打开位置", "Open from"), selection: $gisOrigin) {
+                ForEach([QualificationEntry.space, .notes, .task]) { entry in Text(entry.title).tag(entry) }
               }.pickerStyle(.segmented)
               Text(EditorText.t("新建作品", "Create work")).font(.title2.bold())
               LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 16)], spacing: 16) {
-                ForEach(HeavyEditorKind.allCases, id: \.self) { kind in
+                ForEach([HeavyEditorKind.gis], id: \.self) { kind in
                   let descriptor = QualificationWorkspace.descriptor(kind)
                   Button {
-                    launch { _ = try await workspace.create(kind) }
+                    launch { workspace.entry = gisOrigin; _ = try await workspace.create(kind) }
                   } label: {
                     VStack(alignment: .leading, spacing: 14) {
                       Image(systemName: descriptor.symbol).font(.system(size: 28)).foregroundStyle(
@@ -70,8 +77,16 @@ struct QualificationRootView: View {
                     "create-" + kind.rawValue)
                 }
               }
+              NavigationLink(value: Destination.music) {
+                Label(EditorText.t("音乐编辑器", "Music editor"), systemImage: "music.note.list")
+                  .font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(16)
+              }.accessibilityIdentifier("open-music")
+              NavigationLink(value: Destination.settings) {
+                Label(EditorText.t("设置", "Settings"), systemImage: "gearshape")
+                  .font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(16)
+              }.accessibilityIdentifier("open-settings")
               Text(EditorText.t("最近作品", "Recent work")).font(.title2.bold())
-              let records = workspace.records.filter { $0.entry == workspace.entry }
+              let records = workspace.records.filter { $0.entry == gisOrigin && $0.kind == .gis }
               if records.isEmpty {
                 ContentUnavailableView(
                   EditorText.t("还没有作品", "No work yet"), systemImage: "folder",
@@ -88,7 +103,7 @@ struct QualificationRootView: View {
                       .title2)
                     VStack(alignment: .leading) {
                       Text(record.title).font(.headline)
-                      Text(workspace.entry.title).font(.caption).foregroundStyle(.secondary)
+                      Text(record.entry.title).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Image(systemName: "chevron.right").foregroundStyle(.tertiary)
@@ -111,6 +126,20 @@ struct QualificationRootView: View {
           }.background(Color.secondary.opacity(0.05)).navigationTitle(
             EditorText.t("预研工作台", "Editor workbenches")
           )
+          .navigationDestination(for: Destination.self) { destination in
+            switch destination {
+            case .music:
+              parentWorkspace(.score, title: EditorText.t("音乐编辑器", "Music editor"))
+            case .settings:
+              List {
+                NavigationLink(value: Destination.fontManager) {
+                  Label(EditorText.t("字体管理器", "Font manager"), systemImage: "textformat")
+                }.accessibilityIdentifier("open-font-manager")
+              }.navigationTitle(EditorText.t("设置", "Settings"))
+            case .fontManager:
+              parentWorkspace(.font, title: EditorText.t("字体管理器", "Font manager"))
+            }
+          }
           .overlay { if workspace.isOpening { ProgressView() } }
         }
       }
@@ -138,6 +167,37 @@ struct QualificationRootView: View {
       defer { workspace.isOpening = false }
       do { try await work() } catch { workspace.error = error.localizedDescription }
     }
+  }
+  private func parentWorkspace(_ kind: HeavyEditorKind, title: String) -> some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 20) {
+        Button {
+          launch {
+            workspace.entry = kind == .score ? .music : .fontManager
+            _ = try await workspace.create(kind)
+          }
+        } label: {
+          Label(kind == .score ? EditorText.t("新建乐谱", "New score") : EditorText.t("新建字体", "New font"),
+                systemImage: "plus")
+            .font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(16)
+        }.accessibilityIdentifier("create-" + kind.rawValue)
+        let records = workspace.records.filter { $0.kind == kind }
+        if records.isEmpty {
+          ContentUnavailableView(EditorText.t("还没有作品", "No work yet"), systemImage: "folder")
+        }
+        ForEach(records.reversed()) { record in
+          Button {
+            launch { _ = try await workspace.open(record) }
+          } label: {
+            HStack {
+              Label(record.title, systemImage: QualificationWorkspace.descriptor(kind).symbol)
+              Spacer()
+              Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+            }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+          }.buttonStyle(.borderless)
+        }
+      }.padding(24)
+    }.navigationTitle(title)
   }
   private func detail(_ kind: HeavyEditorKind) -> String {
     switch kind {
