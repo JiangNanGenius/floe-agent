@@ -5,7 +5,7 @@ import SwiftUI
 /// Durable originals and media entrances share one professional workbench.
 struct MusicEditorView: View {
     @Bindable var session: MusicProjectSession
-    var onAssistant: (() -> Void)? = nil
-    var body: some View { MusicWorkbenchView(session: session, onAssistant: onAssistant) }
+    // PersonalContentEditor owns the single navigation-bar assistant entry.
+    var body: some View { MusicWorkbenchView(session: session) }
 }
 #endif

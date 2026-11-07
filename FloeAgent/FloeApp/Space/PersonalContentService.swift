@@ -11,6 +11,7 @@ import FloeMusicCore
 import FloeMeetings
 import FloeChemistryCore
 import FloeCAD
+import FloeLaTeXCore
 
 /// Shared by Files, Creative, and agent tools. Editor commits stay in the
 /// corresponding native repository; this service owns their durable location.
@@ -98,6 +99,9 @@ actor PersonalContentService {
                 let host = try await self.configuredBiology()
                 try await host.createReserved(id: id, title: title)
                 try BiologyOriginalBinding(projectID: id).write(to: directory)
+            case .latex:
+                let template=IDELanguageRunText.isChinese ? "chinese":"article"
+                _ = try Self.createLaTeXOriginal(id:id,title:title,templateID:template,directory:directory)
             case .meeting:
                 let destination = directory.appendingPathComponent("Meeting")
                 try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
@@ -137,6 +141,10 @@ actor PersonalContentService {
             try BiologyOriginalBinding.verify(id: record.id, directory: location.url)
             let project = try await configuredBiology().store.load(record.id)
             guard project.id == record.id else { throw PersonalContentError.invalidProject }
+        case .latex:
+            let store=try LaTeXProjectStore(root:location.url.appendingPathComponent("LaTeX"))
+            let manifest=try await store.manifest()
+            guard manifest.id==record.id,manifest.owner == .init(kind:.space,id:record.id) else {throw PersonalContentError.invalidProject}
         case .meeting:
             let file = location.url.appendingPathComponent("Meeting/meeting.sqlite")
             guard FileManager.default.fileExists(atPath: file.path) else { throw PersonalContentError.invalidProject }
@@ -151,6 +159,7 @@ actor PersonalContentService {
     }
 
     func importFile(_ source: URL, folders: [String]) async throws -> PersonalContentRecord {
+        if source.pathExtension.lowercased()=="tex" {return try await importLaTeX(source,folders:folders)}
         let library = try library()
         let title = source.deletingPathExtension().lastPathComponent
         return try await library.create(kind: .document, title: title, in: folders) { directory, _ in
@@ -179,6 +188,43 @@ actor PersonalContentService {
         }
     }
 
+    func importLaTeX(_ source:URL,folders:[String]) async throws -> PersonalContentRecord {
+        let files=try await Task.detached(priority:.userInitiated) {
+            let scoped=source.startAccessingSecurityScopedResource();defer {if scoped {source.stopAccessingSecurityScopedResource()}}
+            var coordinationError:NSError?,result:Result<[String:Data],Error>?
+            NSFileCoordinator().coordinate(readingItemAt:source,options:[],error:&coordinationError) {readable in
+                result=Result {
+                    let values=try readable.resourceValues(forKeys:[.isRegularFileKey,.isSymbolicLinkKey,.fileSizeKey])
+                    guard values.isRegularFile==true,values.isSymbolicLink != true,(values.fileSize ?? 0)<=512*1024*1024 else {throw PersonalContentError.invalidProject}
+                    if source.pathExtension.lowercased()=="zip" {return try LaTeXProjectArchive.inspect(readable)}
+                    guard source.pathExtension.lowercased()=="tex",(values.fileSize ?? 0)<=16*1024*1024 else {throw PersonalContentError.invalidProject}
+                    let data=try Data(contentsOf:readable);guard String(data:data,encoding:.utf8) != nil else {throw LaTeXError.invalidText}
+                    return ["main.tex":data]
+                }
+            }
+            if let coordinationError {throw coordinationError}
+            guard let result else {throw PersonalContentError.storageUnavailable};return try result.get()
+        }.value
+        let main=try LaTeXProjectArchive.recommendedMainFile(files),title=source.deletingPathExtension().lastPathComponent
+        let record=try await library().create(kind:.latex,title:title,in:folders) {directory,id in
+            _ = try LaTeXProjectStore.create(root:directory.appendingPathComponent("LaTeX"),id:id,owner:.init(kind:.space,id:id),title:title,files:files,mainFile:main,engine:.xeLaTeX)
+        }
+        try await verify(record);return record
+    }
+
+    nonisolated static func createLaTeXOriginal(id:UUID,title:String,templateID:String,directory:URL) throws -> LaTeXProjectStore {
+        guard let template=LaTeXTemplates.all.first(where:{$0.id==templateID}) else {throw PersonalContentError.invalidProject}
+        return try LaTeXProjectStore.create(root:directory.appendingPathComponent("LaTeX"),id:id,
+            owner:.init(kind:.space,id:id),title:title,files:template.files,mainFile:template.mainFile,engine:template.engine)
+    }
+
+    func createLaTeX(title:String,templateID:String,folders:[String]=[],id:UUID=UUID()) async throws -> PersonalContentRecord {
+        let record=try await library().create(kind:.latex,title:title,in:folders,id:id) {directory,id in
+            _ = try Self.createLaTeXOriginal(id:id,title:title,templateID:templateID,directory:directory)
+        }
+        try await verify(record);return record
+    }
+
     func originalFile(_ id: UUID) async throws -> URL {
         let library = try library()
         let value = try await library.resolve(id)
@@ -205,6 +251,7 @@ extension PersonalContentKind {
         case .meeting: IDELanguageRunText.t("会议", "Meeting")
         case .chemistry: IDELanguageRunText.t("化学工程", "Chemistry project")
         case .biology: IDELanguageRunText.t("生物工程", "Biology project")
+        case .latex: IDELanguageRunText.t("LaTeX 论文", "LaTeX document")
         case .cad2D: IDELanguageRunText.t("二维设计", "2D design")
         case .cad3D: IDELanguageRunText.t("三维设计", "3D design")
         case .printing: IDELanguageRunText.t("3D 打印", "3D printing")
@@ -223,6 +270,7 @@ extension PersonalContentKind {
         case .meeting: "waveform.and.mic"
         case .chemistry: "atom"
         case .biology: "microbe"
+        case .latex: "doc.richtext"
         case .cad2D: "ruler"
         case .cad3D: "cube.transparent"
         case .printing: "printer"
@@ -232,6 +280,6 @@ extension PersonalContentKind {
     }
     // Printing and machining are created from CAD's Manufacturing workspace.
     // Keep their record kinds readable for existing projects and results.
-    static var creationKinds: [Self] { [.canvas, .diagram, .music, .meeting, .chemistry, .biology, .document, .drawing, .image, .video, .cad2D, .cad3D] }
+    static var creationKinds: [Self] { [.canvas, .diagram, .latex, .music, .meeting, .chemistry, .biology, .document, .drawing, .image, .video, .cad2D, .cad3D] }
 }
 #endif

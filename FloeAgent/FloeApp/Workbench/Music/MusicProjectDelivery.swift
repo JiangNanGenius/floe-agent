@@ -41,7 +41,13 @@ struct MusicAssetLibrary: View {
                 }
             }
             Section(WorkbenchText.t("乐器", "Instruments")) {
+                NavigationLink {
+                    MusicPresetBrowser(session: session)
+                } label: {
+                    Label(WorkbenchText.t("浏览合成音色", "Browse synthesized presets"), systemImage: "pianokeys").frame(minHeight: 44)
+                }.accessibilityIdentifier("music.library.presets")
                 Button(action: onInstrument) { Label(WorkbenchText.t("添加合成器轨", "Add synthesizer track"), systemImage: "pianokeys").frame(minHeight: 44) }
+                MusicEditingActionsButton(session: session, initialPanel: .patterns)
             }
         }
     }

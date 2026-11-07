@@ -23,7 +23,7 @@ enum MusicWorkbenchDock: String, CaseIterable, Identifiable {
     }
 }
 
-/// Transport, arrangement, effects/AI inspector and an expanded mixer follow
+/// Transport, arrangement, effects inspector and an expanded mixer follow
 /// the accepted studio. Only transient editor state belongs to the view.
 struct MusicWorkbenchView: View {
     @Bindable var session: MusicProjectSession
@@ -31,7 +31,6 @@ struct MusicWorkbenchView: View {
     var onExported: ((URL) -> Void)? = nil
     @State private var dock: MusicWorkbenchDock = .mixer
     @State private var section = "arrange"
-    @State private var inspector = "effects"
     @State private var importing = false
     @State private var exporting = false
     @State private var library = false
@@ -114,6 +113,10 @@ struct MusicWorkbenchView: View {
                 }
             }.buttonStyle(.plain).frame(minHeight: 44)
             Spacer(minLength: 4)
+            if let onAssistant {
+                MusicIconButton("sparkles", WorkbenchText.t("作品助手", "Work assistant"), action: onAssistant)
+                    .accessibilityIdentifier("music.assistant")
+            }
             MusicIconButton("arrow.uturn.backward", WorkbenchText.t("撤销", "Undo")) { Task { await session.undo() } }.accessibilityIdentifier("music.undo")
             MusicIconButton("arrow.uturn.forward", WorkbenchText.t("重做", "Redo")) { Task { await session.undo(redo: true) } }
             Button { exporting = true } label: { Label(WorkbenchText.t("导出", "Export"), systemImage: "square.and.arrow.up").frame(minHeight: 44) }
@@ -131,8 +134,11 @@ struct MusicWorkbenchView: View {
                         .frame(minWidth: 64, minHeight: 44)
                 }.buttonStyle(.borderedProminent).disabled(session.isRendering || session.isRecording).accessibilityIdentifier("music.play")
                 Menu {
-                    Button(session.isMIDIRecording ? WorkbenchText.t("结束演奏录制", "Finish performance") : WorkbenchText.t("录制键盘演奏", "Record keyboard")) {
-                        if session.isMIDIRecording { Task { await session.stopMIDIRecording() } } else { dock = .keyboard; session.startMIDIRecording() }
+                    Button(session.isMIDIRecording ? WorkbenchText.t("结束演奏录制", "Finish performance")
+                        : session.currentTrack?.kind == .midi ? WorkbenchText.t("录制键盘演奏", "Record keyboard")
+                        : WorkbenchText.t("添加乐器轨并录制", "Add instrument track and record")) {
+                        if session.isMIDIRecording { Task { await session.stopMIDIRecording() } }
+                        else { dock = .keyboard; Task { await session.activateKeyboard(recording: true) } }
                     }
                     Button(session.isRecording ? WorkbenchText.t("结束麦克风录音", "Finish microphone recording") : WorkbenchText.t("麦克风录音", "Record microphone")) {
                         Task { if session.isRecording { await session.stopMicrophone() } else { await session.startMicrophone() } }
@@ -167,14 +173,12 @@ struct MusicWorkbenchView: View {
             Text(WorkbenchText.t("编排", "Arrange")).tag("arrange")
             Text(WorkbenchText.t("调音台", "Mixer")).tag("mixer")
             Text(WorkbenchText.t("效果器", "Effects")).tag("effects")
-            Text("AI").tag("ai")
         }.pickerStyle(.segmented).padding(.horizontal, 8).padding(.vertical, 6)
     }
     @ViewBuilder private var compactContent: some View {
         switch section {
         case "mixer": MusicMixerPanel(session: session)
         case "effects": MusicEffectsInspector(session: session)
-        case "ai": assistantPanel
         default:
             VStack(spacing: 0) {
                 if !expanded { arrangement.frame(maxHeight: .infinity) }
@@ -195,6 +199,7 @@ struct MusicWorkbenchView: View {
                     } label: { Image(systemName: "plus").frame(width: 44, height: 44) }.accessibilityIdentifier("music.addTrack")
                     MusicIconButton("scissors", WorkbenchText.t("在播放头处分割", "Split at playhead")) { session.splitSelection() }.disabled(session.currentClip == nil)
                     MusicIconButton("plus.square.on.square", WorkbenchText.t("复制片段", "Duplicate clip")) { session.duplicateSelection() }.disabled(session.currentClip == nil)
+                    MusicEditingActionsButton(session: session)
                     MusicIconButton("trash", WorkbenchText.t("删除片段", "Delete clip")) { if let clip = session.currentClip { session.edit([.removeClip(clip.id)]) } }.disabled(session.currentClip == nil)
                     Toggle(WorkbenchText.t("吸附", "Snap"), isOn: $snap).toggleStyle(.button).frame(minHeight: 44)
                     Toggle(WorkbenchText.t("自动化", "Automation"), isOn: $automation).toggleStyle(.button).frame(minHeight: 44)
@@ -205,7 +210,7 @@ struct MusicWorkbenchView: View {
             Divider()
             MusicArrangementTimeline(session: session, zoom: zoom, snap: snap, showsAutomation: automation) { clip in
                 session.selectClip(clip)
-                if case .midi = clip.body { dock = .piano } else { inspector = "effects" }
+                if case .midi = clip.body { dock = .piano }
             }
             HStack {
                 Text(session.currentClip?.name ?? session.currentTrack?.name ?? WorkbenchText.t("选择轨道或导入素材", "Select a track or import media")).lineLimit(1)
@@ -240,26 +245,11 @@ struct MusicWorkbenchView: View {
     }
     private var inspectorContent: some View {
         VStack(spacing: 0) {
-            Picker(WorkbenchText.t("通道面板", "Channel panel"), selection: $inspector) {
-                Text(WorkbenchText.t("效果器", "Effects")).tag("effects")
-                Text(WorkbenchText.t("AI 助手", "AI assistant")).tag("ai")
-            }.pickerStyle(.segmented).padding(8)
+            Text(WorkbenchText.t("效果器", "Effects")).font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(12)
             Divider()
-            if inspector == "ai" { assistantPanel } else { MusicEffectsInspector(session: session) }
+            MusicEffectsInspector(session: session)
         }
-    }
-    private var assistantPanel: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Label(WorkbenchText.t("音乐助手", "Music assistant"), systemImage: "sparkles").font(.headline)
-            Text(session.currentTrack?.name ?? session.document.name).font(.subheadline.weight(.medium))
-            if let clip = session.currentClip { Text(clip.name).font(.caption).foregroundStyle(.secondary) }
-            Text(WorkbenchText.t("剪辑、调音、编曲或生成素材，与当前工程一起保存。", "Edit, mix, arrange or generate media for this project.")).font(.callout).foregroundStyle(.secondary)
-            Button { onAssistant?() } label: {
-                Label(WorkbenchText.t("打开作品助手", "Open work assistant"), systemImage: "sparkles").frame(maxWidth: .infinity, minHeight: 44)
-            }.buttonStyle(.borderedProminent).disabled(onAssistant == nil).accessibilityIdentifier("music.assistant")
-            if onAssistant == nil { Text(WorkbenchText.t("从工程的作品助手继续。", "Continue from this project's work assistant.")).font(.caption).foregroundStyle(.secondary) }
-            Spacer()
-        }.padding(16).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
     private var statusBar: some View {
         HStack(spacing: 6) {

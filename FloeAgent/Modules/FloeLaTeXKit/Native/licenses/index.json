@@ -1,0 +1,42 @@
+[
+  {
+    "source": "freetype/docs/FTL.TXT",
+    "file": "licenses/freetype-FTL.TXT",
+    "sha256": "5a5ee54c5001bbad1cdc1a57cc3dd4c42199b2da09d39c7ee41fab002d02967f"
+  },
+  {
+    "source": "freetype/docs/GPLv2.TXT",
+    "file": "licenses/freetype-GPLv2.TXT",
+    "sha256": "c4120c6752c910c299e3bd9cb3a46ff262c268303ca2069b61f92f10a5656c18"
+  },
+  {
+    "source": "freetype/LICENSE.TXT",
+    "file": "licenses/freetype-LICENSE.TXT",
+    "sha256": "bd36c8b474855fa294c2ec5c184544478ef3720aad37d65a6296a4f264fd2d3b"
+  },
+  {
+    "source": "harfbuzz/COPYING",
+    "file": "licenses/harfbuzz-COPYING",
+    "sha256": "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64"
+  },
+  {
+    "source": "graphite2/COPYING",
+    "file": "licenses/graphite2-COPYING",
+    "sha256": "2c272829ff23f182c8bf7ea12fedea69b0ae148663123ed5240c117cb129c9c1"
+  },
+  {
+    "source": "graphite2/LICENSE",
+    "file": "licenses/graphite2-LICENSE",
+    "sha256": "cab46cd45adbfea4b1d0f14b033c70062c73074fa0b56532c2f351576ddf455e"
+  },
+  {
+    "source": "icu/LICENSE",
+    "file": "licenses/icu-LICENSE",
+    "sha256": "e09827667e0bb3c808b2a463548ba814a5e6249b67353234d70c8dfc2bcc417d"
+  },
+  {
+    "source": "libpng/LICENSE",
+    "file": "licenses/libpng-LICENSE",
+    "sha256": "bdb0a645ea18c60507d0368379b1ac5474b92255fcc2d115e07486a7672ba526"
+  }
+]

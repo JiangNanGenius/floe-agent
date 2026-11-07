@@ -275,6 +275,7 @@ enum NotesAssistantToolCatalog {
         "document.pdf.inspect", "document.pdf.render", "document.office.inspect",
         "image.ocr", "image.inspect", "audio.inspect",
         "exec.shell",
+        "latex.create", "latex.inspect", "latex.edit", "latex.typeset", "latex.restore", "latex.export",
         "conversation.search", "conversation.read", "conversation.list",
         "checklist.readPlan", "checklist.updatePlan", "memory.recall",
         "tools.search", "tools.list"
@@ -3020,13 +3021,16 @@ struct NotesDocumentApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     /// policy. When false, network-capable calls (exec, shell, package
     /// installs) escalate instead of inheriting scope.
     let networkPermitted: Bool
+    let latexAuthorization:(@Sendable (ProposedAction) async throws -> Bool)?
     let policyName = "document-assistant"
 
-    init(conversationID: UUID, store: NotesStore, executionConfined: Bool = false, networkPermitted: Bool = true) {
+    init(conversationID: UUID, store: NotesStore, executionConfined: Bool = false, networkPermitted: Bool = true,
+         latexAuthorization:(@Sendable (ProposedAction) async throws -> Bool)? = nil) {
         self.conversationID = conversationID
         self.store = store
         self.executionConfined = executionConfined
         self.networkPermitted = networkPermitted
+        self.latexAuthorization=latexAuthorization
     }
 
     func requiresModelReview(_ action: ProposedAction) -> Bool { false }
@@ -3036,6 +3040,14 @@ struct NotesDocumentApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             return try await HumanApprovalPolicy().decide(action)
         }
         let name = action.toolCall.toolName
+        if name.hasPrefix("latex.") {
+            guard let latexAuthorization,try await latexAuthorization(action) else {return .deny(reason:"This LaTeX original is outside the granted note")}
+            let installs=(try? JSONSerialization.jsonObject(with:action.toolCall.argumentsJSON) as? [String:Any])?["installProfile"] is String
+            if name == "latex.typeset",(!executionConfined || (installs && !networkPermitted)) {
+                return .escalateToHuman(reason:"Typesetting requires the Notes task's available local Linux environment and execution policy")
+            }
+            return .allow(scope:.init(toolName:name,singleUse:true),expiresAt:nil)
+        }
         if name == NotesEditTool.name {
             // propose/preview never touch the document; they inherit the
             // read grant like notes.read. apply/applyProposal keep the

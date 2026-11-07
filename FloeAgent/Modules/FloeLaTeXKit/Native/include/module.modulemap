@@ -1,0 +1,4 @@
+module FloeTeXNative {
+    header "FloeTeXNative.h"
+    export *
+}

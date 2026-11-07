@@ -5,7 +5,7 @@ import CryptoKit
 /// The personal library organizes durable originals. It never changes a task's
 /// workspace, execution environment, or the native editor's commit authority.
 enum PersonalContentKind: String, Codable, CaseIterable, Hashable, Sendable {
-    case canvas, diagram, image, drawing, video, music, meeting, chemistry, biology
+    case canvas, diagram, image, drawing, video, music, meeting, chemistry, biology, latex
     case cad2D, cad3D, printing, manufacturing, document
 }
 

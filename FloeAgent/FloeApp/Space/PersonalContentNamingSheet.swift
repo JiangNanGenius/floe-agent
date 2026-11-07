@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import SwiftUI
+import FloeLaTeXCore
 
 /// One naming presentation freezes its target and destination. It is a UI
 /// request, not a new document identity or storage/permission authority.
@@ -36,6 +37,7 @@ struct PersonalContentNamingSheet: View {
     @State private var title: String
     @State private var creating = false
     @State private var diagnostic: String?
+    @State private var latexTemplate=IDELanguageRunText.isChinese ? "chinese":"article"
 
     init(request: PersonalContentCreationRequest, onCreated: @escaping (PersonalContentRecord) -> Void) {
         self.request = request; self.onCreated = onCreated
@@ -56,6 +58,13 @@ struct PersonalContentNamingSheet: View {
                 if creating {
                     ProgressView(IDELanguageRunText.t("正在创建…", "Creating…"))
                         .accessibilityIdentifier("space.creation.progress")
+                }
+                if case .work(.latex)=request.target {
+                    Section(IDELanguageRunText.t("模板","Template")) {
+                        Picker(IDELanguageRunText.t("文档类型","Document type"),selection:$latexTemplate) {
+                            ForEach(LaTeXTemplates.all) {value in Text(IDELanguageRunText.isChinese ? value.chineseTitle:value.englishTitle).tag(value.id)}
+                        }.disabled(creating).accessibilityIdentifier("latex.creation.template")
+                    }
                 }
                 if let diagnostic {
                     Section {
@@ -98,7 +107,10 @@ struct PersonalContentNamingSheet: View {
                 switch request.target {
                 case .work(let kind):
                     if kind == .biology { _ = try await environment.biologyComposition.host() }
-                    record = try await PersonalContentService.shared.create(kind: kind, title: name, folders: request.folders)
+                    if kind == .latex {
+                        _ = try await environment.latexComposition.host()
+                        record=try await PersonalContentService.shared.createLaTeX(title:name,templateID:latexTemplate,folders:request.folders)
+                    } else {record = try await PersonalContentService.shared.create(kind: kind, title: name, folders: request.folders)}
                 case .document(let format):
                     record = try await PersonalContentService.shared.createDocument(format: format, title: name, folders: request.folders)
                 }

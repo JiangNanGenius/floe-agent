@@ -32,6 +32,7 @@ struct SpaceRootView: View {
     @State private var newTitle = ""
     @State private var creatingFolder = false
     @State private var importing = false
+    @State private var importingLaTeX = false
     @State private var busy = false
     @State private var notice: String?
     @AppStorage("space.personalFiles.showGrid") private var showingGrid = false
@@ -90,7 +91,7 @@ struct SpaceRootView: View {
         func includes(_ kind: PersonalContentKind) -> Bool {
             switch self {
             case .all: true
-            case .document: kind == .document
+            case .document: kind == .document || kind == .latex
             case .drawing: [.image, .drawing, .canvas].contains(kind)
             case .video: kind == .video
             case .cad: [.cad2D, .cad3D].contains(kind)
@@ -274,7 +275,9 @@ struct SpaceRootView: View {
                     guard let file = try result.get().first else { return }
                     busy = true
                     defer { busy = false }
-                    let record = try await PersonalContentService.shared.importFile(file, folders: folders)
+                    let record:PersonalContentRecord
+                    if importingLaTeX {record=try await PersonalContentService.shared.importLaTeX(file,folders:folders)}
+                    else {record=try await PersonalContentService.shared.importFile(file,folders:folders)}
                     await refresh()
                     presentWork(record)
                 } catch { notice = error.localizedDescription }
@@ -410,7 +413,8 @@ struct SpaceRootView: View {
                 overviewEntry(PersonalOfficeFormat.word.title, PersonalOfficeFormat.word.systemImage, .create(.document(.word))),
                 overviewEntry(PersonalOfficeFormat.workbook.title, PersonalOfficeFormat.workbook.systemImage, .create(.document(.workbook))),
                 overviewEntry(PersonalOfficeFormat.presentation.title, PersonalOfficeFormat.presentation.systemImage, .create(.document(.presentation))),
-                overviewEntry(PersonalOfficeFormat.plainText.title, PersonalOfficeFormat.plainText.systemImage, .create(.document(.plainText)))
+                overviewEntry(PersonalOfficeFormat.plainText.title, PersonalOfficeFormat.plainText.systemImage, .create(.document(.plainText))),
+                overviewEntry(kind.latex.title,kind.latex.systemImage,.create(.work(.latex)))
             ]),
             OverviewGroup(id: "media", title: IDELanguageRunText.t("绘画与媒体", "Drawing & media"), entries: [
                 overviewEntry(IDELanguageRunText.t("绘画／图片", "Drawing / image"), kind.drawing.systemImage, .create(.work(.drawing))),
@@ -713,7 +717,7 @@ struct SpaceRootView: View {
                     }
                 } label: { Label("CAD", systemImage: "cube.transparent") }
                 .accessibilityIdentifier("space.new.cad")
-                ForEach([PersonalContentKind.diagram, .music], id: \.self) { kind in
+                ForEach([PersonalContentKind.diagram, .music, .latex], id: \.self) { kind in
                     Button(kind.title, systemImage: kind.systemImage) { requestCreation(.work(kind)) }
                         .accessibilityIdentifier("space.create." + kind.rawValue)
                 }
@@ -731,8 +735,10 @@ struct SpaceRootView: View {
             Menu {
                 // Import lives here (not as a standalone arrow) and keeps the
                 // existing flow: one original copied into the current folder.
-                Button(IDELanguageRunText.t("导入…", "Import…"), systemImage: "square.and.arrow.down") { importing = true }
+                Button(IDELanguageRunText.t("导入…", "Import…"), systemImage: "square.and.arrow.down") { importingLaTeX=false;importing = true }
                     .accessibilityIdentifier("space.import")
+                Button(IDELanguageRunText.t("导入 LaTeX 工程…","Import LaTeX project…"),systemImage:"doc.richtext") {importingLaTeX=true;importing=true}
+                    .accessibilityIdentifier("space.import.latex")
                 Button(IDELanguageRunText.t("最近删除", "Recently Deleted"), systemImage: "trash") { showingRecentlyDeleted = true }
                     .accessibilityIdentifier("space.files.recentlyDeleted")
                 Divider()

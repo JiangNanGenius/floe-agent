@@ -1,0 +1,90 @@
+{
+  "upstreamRevision": "8c0126a9653239a2e6e0a5274af9b8510f643030",
+  "patchSHA256": "e2a6a7203da8af036f3efaf1b7a4464130cb8f7533a4591efa574fba3f30bc48",
+  "files": {
+    "crates/bridge_harfbuzz/Cargo.toml": {
+      "upstreamSHA256": "38483efdbdd460d347194c607211cf5eedfee0b6001f314431ca66deb7661ce5",
+      "patchedSHA256": "c0d8e679b67ac878ed5e2a1411362c58fb0199b404db8f194985c4a39afed767"
+    },
+    "crates/bridge_harfbuzz/build.rs": {
+      "upstreamSHA256": "67fdc3892615b5350544821ddddb58bc4c2e4a10756aa1a9754775ab8f2f5429",
+      "patchedSHA256": "f7c47bf1a94abcd3699973ee924881fb5ad0ae657cabf8fbf03b4916242dbbf8"
+    },
+    "crates/bridge_harfbuzz/src/lib.rs": {
+      "upstreamSHA256": "50e70dc7d0e31067ee56a3ef6c56437b4a77114782953b1814979e04a6c1ecac",
+      "patchedSHA256": "599773a18634fd0accdd2edbea5cd327fd8262ce9b1672ce5d38617fdfc5d734"
+    },
+    "crates/cfg_support/src/lib.rs": {
+      "upstreamSHA256": "f895a7b8f38820268202d81f58cdd3c7a77543247f99a73aef1633710f493c54",
+      "patchedSHA256": "b7fb14cc69a025fc55dfe24e68afdb4a6185e1e9c9af94a978add46ddbec6143"
+    },
+    "crates/engine_xetex/build.rs": {
+      "upstreamSHA256": "afc8ef2d8009aec2987bd59e159b7c8156ae9cfc2fb96d44b203c06459c686b3",
+      "patchedSHA256": "30a64a594e8c8c2aa4342634aab00b5b2389d466f1c1f0879ecf001418f609e2"
+    },
+    "crates/engine_xetex/xetex/xetex-macos.c": {
+      "upstreamSHA256": "47b8d97fde1eeea97e02dba732b176695679e8d85351ccadc6323a0a80934357",
+      "patchedSHA256": "24775e2648806e0b3df6a542358a05203b06c0b96606c61cb268c28233ee9eea"
+    },
+    "crates/engine_xetex/xetex/xetex-xetexd.h": {
+      "upstreamSHA256": "a248aebd06e0f6d20d1c5202e43de845a282aa797f6a674b08b626e7c6f222cd",
+      "patchedSHA256": "595836305a2e861842e2e7990b6e02bebf5fead39254c370dd6572647d07c591"
+    },
+    "crates/geturl/src/reqwest.rs": {
+      "upstreamSHA256": "cbe2fb3aaf23b705bfe59ad2dcb31378e18b69c6aa2b7f88259b56c4c57eef85",
+      "patchedSHA256": "b36128929d41f1a349ae651f3d040e9003f809a4f98e05f408be8c7944bd6961"
+    },
+    "crates/io_base/src/filesystem.rs": {
+      "upstreamSHA256": "191a03d18b57778bdd3caf91634ba5a9f8076824b8eca02c43185444b4d556a5",
+      "patchedSHA256": "985c08474ff7adc651ca4a78dd821ff3dcf5b304f36ade3a0b36e5956b626fca"
+    },
+    "crates/mac_core/build.rs": {
+      "upstreamSHA256": "065cb918ea764bf7e6ab0d423f58f94ff60e7c6a28e01a5ac9501ab6fc2ac4a4",
+      "patchedSHA256": "07e75c859215c5cde4b739a399a42f1fbe2a3ffc40b4f798a90dfb4f057d7b04"
+    },
+    "crates/mac_core/src/lib.rs": {
+      "upstreamSHA256": "0c9587ab8678964990aa48d08b25ccafa06c748b4ebfe96fb81f362b1f63d21c",
+      "patchedSHA256": "3d2e1e980cb1f59d60cf9c95618c9b32fda9cae2913945e31eaf31a7d03949dc"
+    },
+    "crates/xetex_layout/Cargo.toml": {
+      "upstreamSHA256": "a872d58ea601f3bb3890dfba8bbfb8cd74a870555cdd01bedae4c0f8b4bbd1e1",
+      "patchedSHA256": "e7e49817166b8c0c5c2918fa56c947313a7090b8918d525c5d63afcb09474a51"
+    },
+    "crates/xetex_layout/layout/tectonic_xetex_layout.h": {
+      "upstreamSHA256": "bf45e0b8177ccfb5fc093ad94c66bda0682b1bb20ff6af1648b3aed3f54fefaa",
+      "patchedSHA256": "55ad5980fd20385e21fbd20ba8f5820ea96ac392fb1bdd29992f8e980d12b3b3"
+    },
+    "crates/xetex_layout/src/c_api.rs": {
+      "upstreamSHA256": "72fdbc2b98301bc3f024471552898a74d0f14a9f33f5ed420bbbd65b0d11edbb",
+      "patchedSHA256": "b9bb2ccb4e0b36100af294036748a18fdcd41bca0db70dfc02834ba16510ca87"
+    },
+    "crates/xetex_layout/src/c_api/font.rs": {
+      "upstreamSHA256": "eb57d6f44e4eaeaca095fd7ee13ff237479811d535d61c10d9d2e5d44e9e87f1",
+      "patchedSHA256": "00f8f7bbf080249b33a9a4f6999becf28b489dbb6a715b477720cf33fffd0d38"
+    },
+    "crates/xetex_layout/src/c_api/manager.rs": {
+      "upstreamSHA256": "4eda48a0a482b04fc02edd91f35ed06f09d9034370593a3c6fdcab300597e6f5",
+      "patchedSHA256": "f1d2717697fdf8b1d7f55bb529cd573b43e3dd444981aeda178e330f763c1aa9"
+    },
+    "crates/xetex_layout/src/font.rs": {
+      "upstreamSHA256": "184ed5dc63e46ed4c30bc4f5342fae0f8b86f17f2697f9bfa13915805e9342e9",
+      "patchedSHA256": "1fcafc4b0c0f8bec534f82cab38d0703b84caac6cc3cdcfc6a4a35b8e2c6e8c3"
+    },
+    "crates/xetex_layout/src/manager.rs": {
+      "upstreamSHA256": "f5593ab7a8c0ff387925b44ee8ee3778f71bff62d8ad00143c8627480bfb06b3",
+      "patchedSHA256": "c6d3a0f9267dfb179ddde280a7ab322bf8012bc9c309702cca136508758d3819"
+    },
+    "crates/xetex_layout/src/utils.rs": {
+      "upstreamSHA256": "dec0cb598e8f8a3db179d4d888811bb29d6ff8386407faa945faa8a8cc5c5fdf",
+      "patchedSHA256": "faafee63ff6806eaf7744a6855d2b67c6c715a647fa079de8feb70b91f67db76"
+    },
+    "src/driver.rs": {
+      "upstreamSHA256": "56daca0b71062bfac889238137681f9efa2f6f23159d925196d1692abad2018c",
+      "patchedSHA256": "b42d4fe8197a0c0bcec9b829c8c1f693677253b8271c18e50a857f19316d4c86"
+    },
+    "src/io/memory.rs": {
+      "upstreamSHA256": "79aa488fc678649d5e282ec654e7d50d67b7a172d136e1e6e5266e7b8944c545",
+      "patchedSHA256": "1996594e41cf16924413a7ae21d4a7c70e35633e144b3786e528d6e2d59ed755"
+    }
+  }
+}

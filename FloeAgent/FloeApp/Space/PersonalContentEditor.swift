@@ -50,6 +50,7 @@ struct PersonalContentEditor: View {
         case meeting(MeetingProjectSession)
         case chemistry(ChemistryProjectSession)
         case biology(BiologyProjectSession)
+        case latex(LaTeXProjectSession)
         case text(PersonalTextDocument)
         case office(PersonalOfficeDocument)
         case media(URL)
@@ -151,7 +152,17 @@ struct PersonalContentEditor: View {
         }
     }
 
-    private var navigationContent: some View {
+    @ViewBuilder private var navigationContent: some View {
+        if let content, case .cad(let document) = content {
+            // Building is a navigation sibling of the viewport. Keep its host
+            // presenter above the stack so the destination and sheet share it.
+            editorNavigation.modifier(CADBuildingProfessionalEntry(document: document))
+        } else {
+            editorNavigation
+        }
+    }
+
+    private var editorNavigation: some View {
         NavigationStack {
             Group {
                 if let content {
@@ -167,7 +178,7 @@ struct PersonalContentEditor: View {
                     case .manufacturing:
                         EmptyView()
                     case .music(let session):
-                        MusicEditorView(session: session, onAssistant: { showingAssistant = true })
+                        MusicEditorView(session: session)
                     case .meeting(let session):
                         MeetingProjectView(session: session, record: record, assistantRequested: $showingAssistant)
                     case .chemistry(let session):
@@ -176,6 +187,8 @@ struct PersonalContentEditor: View {
                         BiologyEditorSurface(session: session, onInsertIntoNotes: { [returns = biologyNotesReturn] payload in
                             try await returns.insert(payload, host: session.host)
                         })
+                    case .latex(let session):
+                        LaTeXEditorSurface(session:session)
                     case .text(let document):
                         PersonalTextDocumentView(document: document)
                     case .office:
@@ -318,6 +331,8 @@ struct PersonalContentEditor: View {
                 let host = try await environment.biologyComposition.host()
                 try BiologyOriginalBinding.verify(id: record.id, directory: value.url)
                 content = .biology(try await BiologyProjectSession.open(id: record.id, directory: value.url, host: host))
+            case .latex:
+                content = .latex(try await LaTeXProjectSession.open(id:record.id,composition:environment.latexComposition))
             case .meeting:
                 content = .meeting(try await MeetingProjectSession.open(id: record.id, directory: value.url.appendingPathComponent("Meeting"), environment: environment))
             default:
@@ -339,6 +354,7 @@ struct PersonalContentEditor: View {
         case .meeting(let session): Task { await session.refresh() }
         case .chemistry(let session): Task { await session.refreshFromHost() }
         case .biology(let session): Task { try? await session.refreshFromHost() }
+        case .latex(let session): Task { await session.refresh() }
         default: break // These process-owned sessions are already observed.
         }
     }
@@ -353,6 +369,7 @@ struct PersonalContentEditor: View {
         case .biology(let session):
             guard await session.flushForClose() else { return }
             await session.close()
+        case .latex(let session): guard await session.flushForClose() else {return}
         case .cad(let document):
             do { try await CADSimulationSessions.close(document:document) }
             catch { self.error = error.localizedDescription; return }

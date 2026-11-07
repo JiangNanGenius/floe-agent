@@ -166,13 +166,7 @@ struct MusicEffectsInspector: View {
                     routing(track)
                     if track.kind == .midi {
                         Divider()
-                        Text(WorkbenchText.t("乐器", "Instrument")).font(.caption.weight(.medium))
-                        MusicValueSlider(title: WorkbenchText.t("起音", "Attack"), value: track.instrument?.parameters["attack"] ?? 0.008, range: 0...2, suffix: "s") {
-                            value in Task { await session.updateInstrument(parameter: "attack", value: value) }
-                        }
-                        MusicValueSlider(title: WorkbenchText.t("释音", "Release"), value: track.instrument?.parameters["release"] ?? 0.08, range: 0...4, suffix: "s") {
-                            value in Task { await session.updateInstrument(parameter: "release", value: value) }
-                        }
+                        instrumentControls(track)
                     }
                     Divider()
                     Button(WorkbenchText.t("在播放头添加音量自动化", "Add volume automation at playhead")) { addAutomation(track) }.font(.caption).frame(minHeight: 44)
@@ -181,6 +175,30 @@ struct MusicEffectsInspector: View {
                 }
             }.padding(14)
         }.accessibilityIdentifier("music.effects")
+    }
+    @ViewBuilder private func instrumentControls(_ track: MusicTrack) -> some View {
+        HStack {
+            Text(WorkbenchText.t("乐器", "Instrument")).font(.caption.weight(.medium))
+            Spacer()
+            MusicPresetPickerButton(session: session)
+        }
+        Text(MusicInstrumentPresentation.name(track.instrument)).font(.callout).foregroundStyle(.secondary)
+        if MusicInstrumentPresentation.isEditable(track.instrument) {
+            instrumentParameter(WorkbenchText.t("起音", "Attack"), key: "attack", fallback: 0.008, upper: 2, suffix: "s")
+            instrumentParameter(WorkbenchText.t("衰减", "Decay"), key: "decay", fallback: 0.15, upper: 2, suffix: "s")
+            instrumentParameter(WorkbenchText.t("延音", "Sustain"), key: "sustain", fallback: 1, upper: 1)
+            instrumentParameter(WorkbenchText.t("释音", "Release"), key: "release", fallback: 0.08, upper: 4, suffix: "s")
+            instrumentParameter(WorkbenchText.t("乐器电平", "Instrument level"), key: "gain", fallback: 0.2, upper: 1)
+        } else {
+            Text(WorkbenchText.t("选择一个合成音色后可调整声音。", "Choose a synthesized preset to adjust its sound."))
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+    private func instrumentParameter(_ title: String, key: String, fallback: Double, upper: Double, suffix: String = "") -> some View {
+        let value = session.instrumentParameter(key, fallback: fallback)
+        return MusicValueSlider(title: title, value: value, range: 0...max(upper, value), suffix: suffix) {
+            value in Task { await session.updateInstrument(parameter: key, value: value) }
+        }.disabled(!session.canEditMIDI)
     }
     @ViewBuilder private func effectView(_ effect: MusicPluginState, index: Int, track: MusicTrack) -> some View {
         VStack(alignment: .leading, spacing: 8) {

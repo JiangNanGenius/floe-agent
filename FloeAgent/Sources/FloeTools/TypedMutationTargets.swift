@@ -170,6 +170,9 @@ public enum TypedMutationContract {
     /// App-owned native Biology originals, assets and lifecycle journals.
     /// This is injected by the concrete host, never accepted from arguments.
     public static let nativeBiologyStoreKey = "nativeBiology"
+    /// Actual app-owned LaTeX original/build/history container, never a path
+    /// accepted from a model or imported project.
+    public static let nativeLaTeXStoreKey = "nativeLaTeX"
 
     public static func nativeStudioContainerPath(serviceStorePaths:[String:String]) -> String? {
         guard let path = serviceStorePaths[nativeStudioLibraryStoreKey], (path as NSString).isAbsolutePath,
@@ -204,7 +207,7 @@ public enum TypedMutationContract {
     /// Every other typed family fully bounds its write set and drops the
     /// wildcard for narrow file keys.
     public static func keepsWorkspaceBounding(_ toolName: String) -> Bool {
-        toolName == "media.project" || ["biology.analyze", "biology.job", "biology.export"].contains(toolName)
+        toolName == "media.project" || ["biology.analyze", "biology.job", "biology.export", "latex.typeset", "latex.export"].contains(toolName)
     }
 
     // MARK: - Contract table
@@ -219,6 +222,10 @@ public enum TypedMutationContract {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         switch toolName {
+        case "latex.create", "latex.edit", "latex.typeset", "latex.restore", "latex.export":
+            return [nativeLaTeXStoreKey,nativeStudioLibraryStoreKey].map {
+                .init(argument:"projectID",role:.sourceWrite,whenAbsent:.required,storeKey:$0)
+            }
         case "biology.create", "biology.importProject", "biology.import", "biology.edit", "biology.analyze",
              "biology.job", "biology.derive", "biology.export", "biology.update", "biology.select",
              "biology.stop", "biology.restore", "biology.deleteProject", "biology.restoreDeleted":
@@ -498,7 +505,7 @@ public enum TypedMutationContract {
         let role: TypedMutableRole
         if toolName == "studio.create" {
             guard keys(["kind","title","format"]), let kind = arguments["kind"] as? String,
-                  ["canvas","diagram","image","drawing","video","music","meeting","chemistry","biology","document","cad2D","cad3D"].contains(kind),
+                  ["canvas","diagram","image","drawing","video","music","meeting","chemistry","biology","latex","document","cad2D","cad3D"].contains(kind),
                   let title = arguments["title"] as? String, (1...160).contains(title.count) else { return [] }
             if let format = arguments["format"], !(format is NSNull) {
                 guard kind == "document", let name = format as? String, ["docx","xlsx","pptx","md"].contains(name) else { return [] }
@@ -617,6 +624,12 @@ public enum TypedMutationContract {
         fileManager: FileManager
     ) -> TypedMutableTarget?? {
         if let storeKey = spec.storeKey {
+            if storeKey == nativeLaTeXStoreKey {
+                guard let raw=serviceStorePaths[storeKey],(raw as NSString).isAbsolutePath,!raw.contains("\0") else {return nil}
+                let path=URL(fileURLWithPath:raw,isDirectory:true).standardizedFileURL.resolvingSymlinksInPath().path
+                guard path != "/" else {return nil}
+                return .some(TypedMutableTarget(path:path,role:spec.role))
+            }
             if storeKey == nativeStudioLibraryStoreKey {
                 guard let container = nativeStudioContainerPath(serviceStorePaths:serviceStorePaths) else { return nil }
                 return .some(TypedMutableTarget(path:container,role:spec.role))

@@ -28,7 +28,9 @@ extension StudioCoordinator {
         if value.record.kind == .meeting {
             text += "\nThis is the current meeting / 当前会议. Its meeting notes / 会议笔记 are personalNote in studio.read, independently bound to this meeting. notes.read is the ordinary Notes selection and is not a substitute for this meeting notebook. Infer from the user’s question or instruction whether to answer from the meeting or apply a requested change; do not ask the user to select a question/edit mode. Use read-only tools for questions, cite available transcript source times, and use only offered authorized edit actions for requested changes. Never invent missing meeting content or source times."
         }
-        if availableToolNames?.contains("studio.edit") != false,
+        if value.record.kind == .latex {
+            text += "\nThis is the current LaTeX paper. Use latex.inspect with this exact projectID, latex.edit with its actual expectedRevision, then latex.typeset and inspect real build diagnostics. latex.export returns the verified PDF or source ZIP. Preserve comments and unsupported macros."
+        } else if availableToolNames?.contains("studio.edit") != false,
            try await access.get().canAccess(conversationID: conversationID, projectID: id, editing: true) {
             text += "\nFor an authorized edit use the exact studio.read revision/editFormat with studio.edit, then inspect its saved readback. Meeting note appends use the note action from studio.read editFormat; no recording, playback or transcription is required. Existing task approval and cancellation checks remain authoritative."
         }

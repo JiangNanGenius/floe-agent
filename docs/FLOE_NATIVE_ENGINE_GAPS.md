@@ -1,8 +1,25 @@
-# Floe existing capabilities and implementation plan
+# Floe heavy editor gaps and existing capability baseline
 
 Updated: 2026-11-08. [简体中文](FLOE_NATIVE_ENGINE_GAPS.zh-CN.md)
 
-This plan uses current source, existing work scopes and observed qualification results. Focus on sustained iPad interaction and computation that is expensive inside interpreted execution. Ordinary scripts, small statistics and one-off plots keep the Python route. Reuse existing engines and preserve Floe-authored MPL-2.0 code alongside each dependency's actual license obligations.
+The initial review identified missing heavy editor categories; the user subsequently authorized full GIS/notation/font predevelopment: persistent project manipulation, structured editing and complex iPad interaction that a one-off script output cannot replace. Existing features can improve gradually; algorithm and performance improvements are not new editor requirements in this round. Count existing and in-progress workbenches as covered. Preserve Floe-authored MPL-2.0 and each third party's actual terms.
+
+## 0 Confirmed gaps and subsequent implementation
+
+The user subsequently authorized **full predevelopment of E04.2–E04.4**. The three independent modules now implement the agreed scope; the unified native qualification host is checking entrypoints, durable reopen and exports. See the [complete scope and integration boundaries](FLOE_GIS_SCORE_FONT_PREDEVELOPMENT.zh-CN.md). The category comparison below preserves the original gap assessment, rather than describing these implementations as still absent. Mainline owns production Space/Notes/task composition; component evidence does not establish full-App or physical-iPad acceptance.
+
+The initial scope review used `76c3981d6f31540b3b557792e1591aafe24c3e1d` plus the shared working tree. Editor entrypoints, project types and targeted searches for domain formats/editing models did not then reveal a complete dedicated editor path for the categories below. This is not an exhaustive classification of all professional software. Same-day mainline coordination confirmed that a complete PCB/schematic editor was already planned, its actual App editing entrypoint is missing, and mainline has taken ownership of completing it. Preserve E04.1 as existing planned scope; the new category candidates are E04.2–E04.4.
+
+| ID | Missing category | Editor shape | Distinction from existing capabilities | Current implementation |
+| --- | --- | --- | --- | --- |
+| E04.1 | Actual App gap in the previously planned complete PCB/schematic editor (EDA) | Complete schematic and PCB projects; components/symbols/footprints, connectivity/netlists, layers/routing, ERC/DRC, manufacturing output and save/reopen inherit the original plan rather than narrowing it to partial routing | CAD, diagrams and Gerber/drill previews do not provide the complete circuit-design project; KiCad schematic/PCB formats are explicitly unsupported | Existing planned scope owned by mainline; do not start a duplicate implementation |
+| E04.2 | GIS | Layers, feature/attribute editing, coordinate systems, rasters/terrain, spatial analysis and offline projects | Map display, CAD terrain and biological spatial data do not establish a general GIS editor | Module implemented; unified-host acceptance and production App composition tracked separately |
+| E04.3 | Music notation / score engraving | Measures, staves, multiple voices, notes/rests, expressions, lyrics, scores/parts and MusicXML | Tracks, keyboard and MIDI exist; the initial review lacked a score document model and notation editor | Notation module implemented; mainline continues existing music-editor enhancements |
+| E04.4 | Font / glyph design | Glyph outlines, character mapping, spacing/kerning, ligatures and font export | Font picking, text layout and ordinary vector drawing do not provide a font project | Module and native font compiler implemented; mainline intake tracked separately |
+
+Local evidence: [engineering preview formats](../FloeAgent/Sources/FloeWorkspace/EngineeringPreviewPackage.swift), [Space content types](../FloeAgent/FloeApp/Space/PersonalContentLibrary.swift), [existing MIDI model](../FloeAgent/Modules/FloeMusicKit/Sources/FloeMusicCore/MIDI.swift). Product-shape references: [KiCad PCB](https://www.kicad.org/discover/pcb-design/), [QGIS feature editing](https://documentation.qgis.org/3.44/en/docs/user_manual/working_with_vector/editing_geometry_attributes.html), [MuseScore notation](https://handbook.musescore.org/), [FontForge font design](https://fontforge.org/docs/). These references do not select or authorize reuse of their source code.
+
+LaTeX, Office/PDF/Notes, images/painting/basic vectors, video, music/audio, CAD/Mesh/buildings, animation/physics/CAE, manufacturing/printing, chemistry, biology, diagrams/canvas and the code IDE are not new missing categories. Professional vector design, publishing layout, compositing and scientific plotting overlap existing workbenches; retain them as possible specializations rather than declaring the entire category absent. The existing inventory and E01–E03 below are background, not a new enhancement or performance program for this round.
 
 The initial audit used `60f803afae967905529cbb01e0c8229ae0b92cdb` plus the shared working tree. The implementation baseline is now mainline checkpoint `9b016097d7169cdf864ca25ccbc4f280b0d07a6b`, including the unchanged analysis sources, both tests and qualification package. Independently developed LaTeX work is not all included in that commit. Implementation and evidence do not imply a published installer; pending scope is not an ETA.
 
@@ -33,26 +50,28 @@ Sources: [execution routing](../FloeAgent/Sources/FloeTools/CapabilityExecutionR
 | Physics, animation and CAE | Native tet4, Rapier, particles, Netgen, MFEM electrostatics/acoustics and CAD result viewport | Fourth-batch Mesh, skin/Morph/ragdoll/camera, GLB/MP4 and history are included; four App integration cases have passing evidence, including rig/camera and sequential exports | These bounded capabilities enter the existing baseline. Advanced structures/nonlinear, CFD, magnetics/RF and coupled solvers remain existing-plan backend gaps. |
 | Chemistry | Native editing/3D, Avogadro/UFF, balancing/spectra and RDKit/Gemmi/OpenMM/xTB environment adapters | Space/Notes, jobs/cancel/results/tools are wired and under mainline checks; xTB is not a bundled native runtime | Accelerate selected local workloads while preserving existing UI and protocols. |
 | Biology | Sequence, structure, microscopy, omics and networks; component has 21 native methods, 32 optional scientific methods and 22 tools | App composition and registration are connected; 11 host/tool contracts passed, with actual sequence creation, save/reopen and analysis UI reviewed. External scientific backends and live model calls were not newly accepted | Include the current workbench; measure heavy methods instead of recreating five workbenches. |
-| LaTeX | Project transactions/history, source/visual UI, references, templates, SyncTeX and tool adapter; native XeLaTeX/BibTeX | Observed 15 core tests and 2 native iPad-host PDF/source-map/bibliography/cancellation tests passed; editing UI checks continue. Inspected main-App project/environment/Space routes do not yet reference the module | Handoff and integrate after component completion. Environment support for pdfLaTeX/LuaLaTeX/Biber is not completed native support. |
+| LaTeX | Shared native editing/storage/PDF preview, source/visual UI, references, templates, SyncTeX and tool adapter; production typesetting uses task-bound existing Linux `exec.shell`/jobs, without the native TeX experiment dependency | Owner handoff reports independent iPad dual-mode editing/formula/PDF/save/reopen, 11 real Debian13 ARM64 typesetting cases and 3 isolation/timeout/cancellation checks passed; the owner is still integrating and accepting main-App entrypoints, ownership, tool discovery and execution | Count as an in-progress editor. Native TeX experiments are excluded from production App dependencies; CLI separation does not establish license or App Store approval. |
 | Local models, OCR and speech | Existing resource/inference services, Vision OCR, speech/transcription | Model configuration, resources and domain wiring remain separately verified | Reuse inference rather than introducing another runtime per domain. |
 | Toolbox, scripts and lightweight statistics | Network/connections/serial assistant, files/tasks/environments and `data.analyze` with 18 numerical tests | History and ordinary serial work continue; USB serial is deferred pending approval by latest user direction | Keep lightweight statistics as a helper rather than a new heavy mathematics workbench. |
 
 Preserve [N01–N17 and C01–C67](FLOE_NEXT_ROUND_ENGINES_AND_USABILITY_PLAN.zh-CN.md) and the independently owned LaTeX item list at `docs/FLOE_LATEX_PREDEVELOPMENT_PLAN.zh-CN.md`, including ownership and unfinished goals. Current source supersedes older “component not integrated” descriptions only where the actual App adapters now exist.
 
-Sources: [App integration](FLOE_PREDEVELOPMENT_APP_INTEGRATION.zh-CN.md), [CAD/Mesh/buildings](CAD_MESH_BUILDING_PREDEVELOPMENT_20261106.zh-CN.md), [simulation boundaries](FLOE_3D_SIMULATION_IMPLEMENTATION_STATUS.zh-CN.md), [native chemistry](../FloeAgent/Modules/FloeChemistryNative/README.md) and [workers](../FloeAgent/Modules/FloeChemistryKit/README.md), [biology](../FloeAgent/Modules/FloeBiologyKit/README.md) and [App composition](../FloeAgent/FloeApp/Space/Biology/BiologyAppComposition.swift). Independently developed LaTeX sources are `FloeAgent/Modules/FloeLaTeXKit/Package.swift`, `Sources/FloeLaTeXEngine/NativeEngine.swift` and `Integration/FloeLaTeXHostAdapter/Sources/FloeLaTeXHostAdapter/Tools.swift`; the latter paths are relative to that module. Their audited hashes are recorded without treating uncommitted source as a committed dependency.
+Sources: [App integration](FLOE_PREDEVELOPMENT_APP_INTEGRATION.zh-CN.md), [CAD/Mesh/buildings](CAD_MESH_BUILDING_PREDEVELOPMENT_20261106.zh-CN.md), [simulation boundaries](FLOE_3D_SIMULATION_IMPLEMENTATION_STATUS.zh-CN.md), [native chemistry](../FloeAgent/Modules/FloeChemistryNative/README.md) and [workers](../FloeAgent/Modules/FloeChemistryKit/README.md), [biology](../FloeAgent/Modules/FloeBiologyKit/README.md) and [App composition](../FloeAgent/FloeApp/Space/Biology/BiologyAppComposition.swift). Current LaTeX boundaries are in its `Package.swift`, `THIRD_PARTY.md`, `Integration/APP_INTEGRATION.zh-CN.md` and [original plan](FLOE_LATEX_PREDEVELOPMENT_PLAN.zh-CN.md). Earlier evidence for 15 core tests and 2 native-host experiments remains historical component evidence, not proof that the production App links or may use that native TeX backend. This review does not rerun those checks or treat uncommitted sources as committed dependencies.
 
-## 3 Complete current implementation
+## 3 Existing work background (retained by its owners)
 
 | Work | Completion boundary |
 | --- | --- |
 | Physics/biology App intake | The bounded App cases and manual flows above are verified. Reuse component evidence rather than repeating unchanged checks. External scientific backends, live providers and physical-device behavior remain separate and are not established by App25 compilation or contracts. |
-| LaTeX component/handoff | Finish editing checks; hand off shared engine/queue/resources/tools. Mainline connects project, Space and Notes ownership without qualification-host authority shortcuts. |
+| LaTeX actual App integration | Reuse shared native editing services and existing Linux worker/jobs. The owner completes project and Space/task/Notes ownership, tool discovery and real execution acceptance without qualification-host authority shortcuts or the quarantined native TeX experiment. |
 | Media and general tools | Check actual schemas, parameters, selection, source revision, execution, result and export; keep unconnected commands explicit. |
 | Usability | Continue N03–N17 layout/history/meeting/files/previews/input work; USB remains explicitly deferred. |
 
 New circuits/GIS and a repository-wide performance audit are not gates for this batch or authorization to expand publication.
 
-## 4 Subsequent enhancement order
+## 4 Historical enhancement directions and new-category index
+
+E01–E03 describe future improvements to existing features. They are not new editors or this task's execution order.
 
 ### E01 Heavy gaps in existing media workbenches
 
@@ -80,12 +99,7 @@ Advanced/spectral/nonlinear/contact structures, transient heat, CFD, magnetics/R
 
 ### E04 New independent heavy domains
 
-| Order | Domain | First complete project | Reuse |
-| --- | --- | --- | --- |
-| 1 | Circuits | Schematics/netlists, DC/AC/transient analysis, sweeps, probes and interactive waveforms; PCB routing is a separate decision | Diagrams/CAD, files, parameters, jobs and waveforms. Evaluate [ngspice](https://ngspice.sourceforge.io/shared.html); exact pins and dependency licenses remain to be checked. |
-| 2 | GIS | Offline layers, CRS, spatial queries, tiled large rasters/terrain and export | Maps, files and 3D views. Evaluate [PROJ](https://proj.org/en/stable/about.html)/[GDAL](https://gdal.org/en/stable/), auditing selected drivers and resources. |
-
-These are future candidates, not ports started by this audit or expanded publication authority. Ordinary statistics, algebra, small ODEs, Bode/PID plots, cleaning and reports keep the script route.
+Section 0 is the current classification. E04.1 records the actual App gap in the existing complete PCB/schematic plan, owned by mainline; it is not this thread's new recommendation or a reduction of its original scope. E04.2 is GIS, E04.3 score engraving and E04.4 font design. This thread has since implemented the three independent modules under the user's full-predevelopment authorization. Production App composition and publication remain separately owned by mainline. Ordinary statistics, algebra, small ODEs, Bode/PID plots, cleaning and reports keep the script route.
 
 ## 5 MPL 2.0 and external source
 
@@ -102,11 +116,13 @@ Prefer suitable MIT/BSD/ISC/Apache-2.0 dependency closures with full notices, pi
 
 Retain the [CAD license assessment](FLOE_CAD_3D_REUSE_LICENSE_EVALUATION_20261031.zh-CN.md). Prefer engine/file subsets that satisfy this project's distribution objective. GPL is not inherently unusable; this constraint follows the user's chosen distribution policy.
 
-## 6 Completion and evidence
+## 6 Conditions for future implementation and historical evidence
 
 - Preserve actual inputs, source/engine identity, results, cancellation, save/readback and model calls; UI and AI use the same original and service.
 - Reuse unchanged build/component evidence and check affected behavior. Current implementation does not wait for E04.
 - Measure acceleration and distinguish component/App/Simulator/device results; downloads and menu counts are not acceptance.
 - Keep notices and source materials aligned with selected dependencies and actual artifacts. Concrete unresolved links remain visible.
 
-This audit changes documentation only: no new production engine, version, upload or device operation. [Audit record](qualification/native-engine-inventory-20261108/results.json) captures 29 implementation/plan source hashes, the catalog comparison and license findings. Earlier [data.analyze qualification](qualification/native-data-analysis-20261108/results.json) remains 18 numerical tests plus object compilation, not full-App or heavy-computation completion.
+The initial audit changed documentation only: no new production engine, version, upload or device operation. [Audit record](qualification/native-engine-inventory-20261108/results.json) captures 29 implementation/plan source hashes, the catalog comparison and license findings. Earlier [data.analyze qualification](qualification/native-data-analysis-20261108/results.json) remains 18 numerical tests plus object compilation, not full-App or heavy-computation completion.
+
+Subsequent implementation, 2026-11-08: FloeGISKit, FloeScoreKit, FloeFontKit and shared FloeHeavyEditorSupport now exist, with native UI work continuing under their independent owner. Notation exposes timing/SMF and an injectable playback adapter without editing existing DAW sources. Mainline has verified music save/reopen and real 30-second audio export, and all eight LaTeX App identity/authority cases have now passed; see the [music and Building checkpoint](qualification/music-tool-contract-20261108/README.md). LaTeX production entrypoints use existing Linux jobs, while the native TeX experiment remains outside the App. The full in-App Linux/PDF cycle remains unverified. Keep implementation evidence separate from the initial audit.

@@ -45,13 +45,14 @@ struct FloeCADHostChrome: ViewModifier {
     @State private var fullScreen = false
     @State private var building = false
     @State private var simulationCovered = false
+    @State private var buildingProfessionalCovered = false
     @State private var printAfterFullscreen = false
 
     func body(content: Content) -> some View {
         content
             .onAppear { filePresentation.attach(document) }
             .onDisappear {
-                if !fullScreen && !building && !externalCoverPresented && !simulationCovered { filePresentation.release() }
+                if !fullScreen && !building && !externalCoverPresented && !simulationCovered && !buildingProfessionalCovered { filePresentation.release() }
             }
             .task(id:ObjectIdentifier(document)) {
                 filePresentation.attach(document)
@@ -61,9 +62,12 @@ struct FloeCADHostChrome: ViewModifier {
             // is TRANSIENTLY covered — its disappearance is not a close, so
             // the close-time preview flush is suppressed (T7T). A real close
             // (cover dismissed) leaves this false and flushes normally.
-            .environment(\.cadWorkbenchTransientlyCovered, fullScreen || building || externalCoverPresented || simulationCovered)
+            .environment(\.cadWorkbenchTransientlyCovered, fullScreen || building || externalCoverPresented || simulationCovered || buildingProfessionalCovered)
             .modifier(CADOfflineRenderEntry(document:document,root:workspaceRoot,workspaceID:workspaceID,conversationID:conversationID))
             .modifier(CADSimulationEntry(document:document,onCoverChange:{ simulationCovered = $0 }))
+            .modifier(CADBuildingProfessionalEntry(document: document, root: workspaceRoot,
+                workspaceID: workspaceID, conversationID: conversationID,
+                onCoverChange: { buildingProfessionalCovered = $0 }))
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { building=true } label:{
@@ -105,7 +109,6 @@ struct FloeCADHostChrome: ViewModifier {
                         .modifier(CADManufacturingEntry(document: document,
                             available: manufacturingAvailable, offered: onPreparePrint != nil,
                             onPreparePrint: { printAfterFullscreen = true; fullScreen = false }))
-                        .environment(\.cadWorkbenchTransientlyCovered, true)
                         .navigationTitle(document.name)
                         .navigationBarTitleDisplayMode(.inline)
                         .modifier(CADOfflineRenderEntry(document:document,root:workspaceRoot,workspaceID:workspaceID,conversationID:conversationID))
@@ -119,6 +122,9 @@ struct FloeCADHostChrome: ViewModifier {
                             }
                         }
                 }
+                .modifier(CADBuildingProfessionalEntry(document: document, root: workspaceRoot,
+                    workspaceID: workspaceID, conversationID: conversationID))
+                .environment(\.cadWorkbenchTransientlyCovered, true)
                 // Same sizing-transition rule as the 2D fullscreen: the live
                 // session (including unsaved edits) is re-adopted on return.
             }

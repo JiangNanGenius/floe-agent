@@ -33,7 +33,9 @@
 |---|---|
 | [../AGENTS.md](../AGENTS.md) | Repository instructions for coding agents: architecture, focused checks, release recovery and cleanup |
 | [../README.md](../README.md) / [../README.zh-CN.md](../README.zh-CN.md) | 项目门面：能力总览与当前交付版本 |
-| [现有／在研能力与增强计划](FLOE_NATIVE_ENGINE_GAPS.zh-CN.md) / [English](FLOE_NATIVE_ENGINE_GAPS.md) | 现有／在研基线、重计算增强与 MPL 许可约束 / Existing and upcoming capabilities, heavy computation and MPL constraints |
+| [重型编辑器缺口与现有基线](FLOE_NATIVE_ENGINE_GAPS.zh-CN.md) / [English](FLOE_NATIVE_ENGINE_GAPS.md) | 缺失编辑器候选、现有／在研覆盖与 MPL 约束 / Missing editor candidates, existing/upcoming coverage and MPL constraints |
+| [GIS／制谱／字体全量预研发](FLOE_GIS_SCORE_FONT_PREDEVELOPMENT.zh-CN.md) | 三个编辑器完整功能矩阵、独立原生宿主、Space／手记／任务接入与验证边界 / Full editor scope and native-host integration boundaries |
+| [音乐编辑与建筑入口检查点](qualification/music-tool-contract-20261108/README.md) | 实际 App 30 秒保存／音频导出、音色与 MIDI 操作、建筑二级导航及验证边界 / App music tools, real audio export and Building navigation evidence |
 | [USER_GUIDE.md](USER_GUIDE.md) / [USER_GUIDE.zh-CN.md](USER_GUIDE.zh-CN.md) | 使用说明（工具、后台任务、Python、字体、工作区、远端） |
 | [Skill 依赖作者规范](skills/SKILL_DEPENDENCIES_AUTHOR_GUIDE.zh-CN.md) / [English](skills/SKILL_DEPENDENCIES_AUTHOR_GUIDE.md) | 精确依赖、版本与签名覆盖；[机器 Schema](skills/dependencies.schema.json) 和[示例](skills/examples/README.md) / Exact dependencies, versioning and signed package coverage |
 | [Skill Hub artwork](SKILL_HUB_ARTWORK.md) | 商店分类原创插图的固定来源与摘要 / Immutable sources and hashes for category illustrations |

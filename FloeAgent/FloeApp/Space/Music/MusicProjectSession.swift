@@ -36,7 +36,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
     private static var sessions: [UUID: MusicProjectSession] = [:]
     static func requireIdleForDeletion(id: UUID) throws {
         guard let value = sessions[id] else { return }
-        guard !value.saving, !value.isRendering, !value.isLive, value.player?.isPlaying != true, !value.isRecording, !value.isMIDIRecording else { throw PersonalFileActionError.busy }
+        guard !value.saving, !value.isRendering, !value.isLive, value.previewPresetIndex == nil, value.player?.isPlaying != true, !value.isRecording, !value.isMIDIRecording else { throw PersonalFileActionError.busy }
     }
 
     /// Read-only lookup; observing audio must not construct an editor, prefetch
@@ -60,6 +60,13 @@ private nonisolated struct MusicImportDirectory: Sendable {
     private let sink = MusicKeyboardSink()
     private let audio: NativeCreativeAudioSession
     private var instrument: MusicLiveInstrument?
+    private var liveIdentity = UUID()
+    private var keyboardActivation: UUID?
+    private var previewInstrument: MusicLiveInstrument?
+    private var previewTask: Task<Void, Never>?
+    private var previewIdentity: UUID?
+    private var previewResumeTrack: MusicTrackID?
+    private(set) var previewPresetIndex: Int?
     private var player: AVAudioPlayer?
     private var recorder: AVAudioRecorder?
     private var microphoneFile: URL?
@@ -84,7 +91,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
     private(set) var dj: MusicDJSession?
     private var waveformTasks: [MusicAssetID: Task<Void, Never>] = [:]
     var diagnostic: String?
-    var preset = "0"
+    var preset: String { String(currentTrack?.instrument?.presetIndex ?? 0) }
     private var midiStart: UInt64?
     private var heldNotes: [String: (PerformanceNote, Int64)] = [:]
     private var capturedNotes: [MusicMIDINote] = []
@@ -119,6 +126,21 @@ private nonisolated struct MusicImportDirectory: Sendable {
         if let expectedRevision, expectedRevision != document.revision {
             throw MusicError.staleRevision(expected: expectedRevision, actual: document.revision)
         }
+        let instrumentTargets = operations.compactMap { operation -> MusicTrackID? in
+            if case .setInstrument(let trackID, _) = operation { return trackID }
+            return nil
+        }
+        guard instrumentTargets.isEmpty || (!isRecording && !isMIDIRecording) else {
+            throw MusicError.invalidTrack(reason: IDELanguageRunText.t("请先结束录制，再更换音色。", "Finish recording before changing the instrument."))
+        }
+        // Raw studio edits share the same live-voice lifetime as native preset
+        // controls. Observation updates the title, not the running audio graph.
+        let resumeTrack = selectedTrack.flatMap { trackID in
+            instrumentTargets.contains(trackID) && (isLive || previewResumeTrack == trackID) ? trackID : nil
+        }
+        if resumeTrack != nil { stopLive() }
+        let resumeIdentity = liveIdentity
+        defer { resumeLive(resumeTrack, ifIdentity: resumeIdentity) }
         saving = true
         defer { saving = false }
         cancelRender()
@@ -126,13 +148,17 @@ private nonisolated struct MusicImportDirectory: Sendable {
         document = try await store.commit(.init(baseRevision: document.revision, author: "native-editor", ops: operations), as: handle)
         handle = .init(sessionID: handle.sessionID, ownerToken: handle.ownerToken, baseRevision: document.revision)
         loadWaveforms()
+        reconcileSelection()
     }
     func addTrack() async {
         do {
+            guard !isMIDIRecording, !isRecording else {
+                throw MusicError.invalidTrack(reason: IDELanguageRunText.t("请先结束录制，再添加乐器轨。", "Finish recording before adding an instrument track."))
+            }
             let track = try FloeMusicCore.MusicTrack(name: IDELanguageRunText.t("乐器轨", "Instrument"),
                 kind: .midi, instrument: .init(pluginID: MusicNativeBuiltins.synth))
             try await apply([.insertTrack(track)])
-            selectedTrack = track.id
+            selectTrack(track.id)
         } catch { diagnostic = error.localizedDescription }
     }
     func addMIDIClip(to trackID: MusicTrackID) async throws -> MusicClip {
@@ -143,15 +169,25 @@ private nonisolated struct MusicImportDirectory: Sendable {
             offset: .init(Int64(playheadSeconds * Double(document.tempoMap.sampleRate))),
             body: .midi(.init(durationTicks: Int64(document.tempoMap.ticksPerQuarter) * 16, notes: [])))
         try await apply([.insertClip(clip)])
-        selectedTrack = trackID
+        selectTrack(trackID)
         selectedClip = clip.id
         return clip
     }
     func undo(redo: Bool = false) async {
+        guard !saving, !isRecording, !isMIDIRecording else {
+            diagnostic = IDELanguageRunText.t("请先结束录制，再撤销或重做。", "Finish recording before undoing or redoing."); return
+        }
+        saving = true
+        defer { saving = false }
+        let resumeTrack = isLive ? selectedTrack : nil
+        stopLive(); stopPlayback()
+        let resumeIdentity = liveIdentity
+        defer { resumeLive(resumeTrack, ifIdentity: resumeIdentity) }
         do {
             cancelRender()
             document = try await (redo ? store.redo(handle) : store.undo(handle))
             handle = .init(sessionID: handle.sessionID, ownerToken: handle.ownerToken, baseRevision: document.revision)
+            reconcileSelection()
         } catch { diagnostic = error.localizedDescription }
     }
     func importFile(_ url: URL) async {
@@ -180,7 +216,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
             operations += imported.1.map(MusicEditOp.insertTrack)
             if document.tracks.isEmpty, let tempo = imported.2 { operations.append(.setTempoMap(tempo)) }
             try await apply(operations)
-            selectedTrack = imported.1.first?.id
+            if let trackID = imported.1.first?.id { selectTrack(trackID) }
             selectedClip = imported.1.first?.clips.first?.id
         } catch { diagnostic = error.localizedDescription }
     }
@@ -267,27 +303,120 @@ private nonisolated struct MusicImportDirectory: Sendable {
         cancelRender(); stopPlayback()
         document = try await store.commit(.init(baseRevision: expectedRevision, author: "native-task-import", ops: operations), as: handle)
         handle = .init(sessionID: handle.sessionID, ownerToken: handle.ownerToken, baseRevision: document.revision)
-        selectedTrack = prepared.1.first?.id; selectedClip = prepared.1.first?.clips.first?.id
+        if let trackID = prepared.1.first?.id { selectTrack(trackID) }
+        selectedClip = prepared.1.first?.clips.first?.id
         loadWaveforms()
         return .init(asset: prepared.0, trackIDs: prepared.1.map(\.id), clipIDs: prepared.1.flatMap(\.clips).map(\.id),
             revision: document.revision, byteCount: prepared.3.count)
     }
     func startLive() {
         guard !isLive else { return }
+        stopPresetPreview()
+        liveIdentity = UUID()
         do {
-            let patch = currentTrack?.instrument
+            guard !isRecording, let track = currentTrack, track.kind == .midi else {
+                throw MusicError.invalidTrack(reason: IDELanguageRunText.t("请先选择或添加乐器轨。", "Select or add an instrument track first."))
+            }
+            guard let patch = track.instrument, patch.pluginID == MusicNativeBuiltins.synth,
+                  MusicPresetCatalog.preset(index: patch.presetIndex) != nil else {
+                throw MusicError.invalidTrack(reason: IDELanguageRunText.t("此乐器当前无法演奏，请选择一个合成音色。", "This instrument cannot be played here. Select a synthesized preset."))
+            }
             let voice = try MusicLiveInstrument(ownerToken: keyboard.owner.rawValue, authority: audio,
-                preset: patch?.presetIndex ?? Int(preset) ?? 0, parameters: patch?.parameters ?? [:])
+                preset: patch.presetIndex, parameters: patch.parameters)
             try voice.start(); instrument = voice; isLive = true
         } catch { diagnostic = error.localizedDescription }
     }
     func stopLive() {
+        liveIdentity = UUID(); keyboardActivation = nil
+        stopPresetPreview()
         keyboard.releaseAll(reason: .panelClosed)
         instrument?.stop(); instrument = nil; isLive = false
     }
+    private func resumeLive(_ trackID: MusicTrackID?, ifIdentity identity: UUID) {
+        guard liveIdentity == identity, let trackID, selectedTrack == trackID, currentTrack?.kind == .midi else { return }
+        startLive()
+    }
+    /// A late track-save callback may finish its authorized save after panel
+    /// closure, but cannot activate audio or recording in a closed context.
+    func activateKeyboard(recording: Bool = false) async {
+        guard !saving, !isRecording, !isMIDIRecording else {
+            diagnostic = IDELanguageRunText.t("请先结束当前录制或保存。", "Finish recording or saving first."); return
+        }
+        let identity = UUID()
+        keyboardActivation = identity
+        defer { if keyboardActivation == identity { keyboardActivation = nil } }
+        do {
+            let trackID: MusicTrackID
+            if let track = currentTrack, track.kind == .midi { trackID = track.id }
+            else {
+                let track = try FloeMusicCore.MusicTrack(name: IDELanguageRunText.t("乐器轨", "Instrument"),
+                    kind: .midi, instrument: .init(pluginID: MusicNativeBuiltins.synth))
+                try await apply([.insertTrack(track)], expectedRevision: document.revision)
+                trackID = track.id
+            }
+            guard keyboardActivation == identity else { return }
+            selectTrack(trackID)
+            startLive()
+            if recording, isLive { startMIDIRecording() }
+        } catch { if keyboardActivation == identity { diagnostic = error.localizedDescription } }
+    }
     func changePreset(_ value: String?) {
-        preset = value ?? "0"
-        Task { await updateInstrument(preset: Int(preset) ?? 0) }
+        guard let value, let index = Int(value), MusicPresetCatalog.preset(index: index) != nil else {
+            diagnostic = IDELanguageRunText.t("此音色不可用，请从列表重新选择。", "This preset is unavailable. Choose one from the list."); return
+        }
+        Task { await updateInstrument(preset: index) }
+    }
+    /// Auditions never write an instrument or enter the keyboard recording sink.
+    /// One session-owned voice and cancellation fence cover every exit path.
+    func previewPreset(_ index: Int) {
+        guard MusicPresetCatalog.preset(index: index) != nil else {
+            diagnostic = IDELanguageRunText.t("此音色不可用。", "This preset is unavailable."); return
+        }
+        guard !saving, !isRendering, !isRecording, !isMIDIRecording else {
+            diagnostic = IDELanguageRunText.t("请先结束当前录制或处理，再试听。", "Finish recording or processing before auditioning."); return
+        }
+        let resumeTrack = isLive ? selectedTrack : previewResumeTrack
+        stopLive(); stopPlayback()
+        let identity = UUID()
+        let owner = keyboard.owner.rawValue + ":preset-preview:" + identity.uuidString
+        diagnostic = nil
+        do {
+            let voice = try MusicLiveInstrument(ownerToken: owner, authority: audio, preset: index)
+            try voice.start()
+            previewInstrument = voice; previewPresetIndex = index
+            previewIdentity = identity; previewResumeTrack = resumeTrack
+            previewTask = Task { [weak self] in
+                do {
+                    for note: UInt8 in [60, 64, 67, 72] {
+                        try Task.checkCancellation()
+                        guard self?.previewIdentity == identity else { return }
+                        try voice.send(.noteOn(note: note, velocity: 92, channel: 0), ownerToken: owner)
+                        try await Task.sleep(for: .milliseconds(180))
+                        try voice.send(.noteOff(note: note, channel: 0), ownerToken: owner)
+                        try await Task.sleep(for: .milliseconds(60))
+                    }
+                    try await Task.sleep(for: .milliseconds(350))
+                    guard let self, self.previewIdentity == identity else { return }
+                    let resume = self.previewResumeTrack
+                    self.stopPresetPreview()
+                    if let resume, self.selectedTrack == resume { self.startLive() }
+                } catch {
+                    guard let self, self.previewIdentity == identity else { return }
+                    let cancelled = Task.isCancelled
+                    self.stopPresetPreview()
+                    if !cancelled { self.diagnostic = error.localizedDescription }
+                }
+            }
+        } catch { diagnostic = error.localizedDescription }
+    }
+    func stopPresetPreview() {
+        previewIdentity = nil; previewResumeTrack = nil; previewPresetIndex = nil
+        previewTask?.cancel(); previewTask = nil
+        previewInstrument?.stop(); previewInstrument = nil
+    }
+    func instrumentParameter(_ key: String, fallback: Double) -> Double {
+        guard let patch = currentTrack?.instrument else { return fallback }
+        return patch.parameters[key] ?? MusicPresetCatalog.preset(index: patch.presetIndex)?.parameters[key] ?? fallback
     }
     func startMIDIRecording() {
         guard !isRecording, midiStart == nil else { return }
@@ -349,10 +478,14 @@ private nonisolated struct MusicImportDirectory: Sendable {
             if let instrument, isLive { try instrument.send(message, ownerToken: owner.rawValue) }
         } catch { diagnostic = error.localizedDescription }
     }
-    func render(asMP3: Bool, play: Bool = false) {
+    func render(asMP3: Bool, play: Bool = false, tailFrames: Int64 = 48_000) {
         guard !isRendering else { return }
+        do { try validateRenderTail(tailFrames) }
+        catch { renderError = error; diagnostic = error.localizedDescription; return }
+        stopPresetPreview()
         isRendering = true; diagnostic = nil; renderError = nil; renderedFrames = 0
         let frozen = document
+        let frozenTailFrames = tailFrames
         renderTask = Task { [self] in
             defer { isRendering = false; renderTask = nil }
             do {
@@ -367,7 +500,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
                     if asset.kind == .midiFile { continue }
                     sources.append(.init(asset: asset, url: try await repository.resolvedURL(for: asset)))
                 }
-                _ = try await renderer.render(document: frozen, sources: sources, destination: wav, lease: lease) { [weak self] frames in
+                _ = try await renderer.render(document: frozen, sources: sources, destination: wav, lease: lease, tailFrames: frozenTailFrames) { [weak self] frames in
                     Task { @MainActor in self?.renderedFrames = frames }
                 }
                 var output = wav
@@ -392,9 +525,15 @@ private nonisolated struct MusicImportDirectory: Sendable {
             } catch { renderError = error; if !Task.isCancelled { diagnostic = error.localizedDescription } }
         }
     }
-    func renderAndWait(asMP3: Bool) async throws -> URL {
+    private func validateRenderTail(_ frames: Int64) throws {
+        guard frames >= 0, frames <= Int64(document.tempoMap.sampleRate) * 10 else {
+            throw MusicNativeError.invalid(IDELanguageRunText.t("尾音时长必须在 0 到 10 秒之间。", "Render tail must be between 0 and 10 seconds."))
+        }
+    }
+    func renderAndWait(asMP3: Bool, tailFrames: Int64 = 48_000) async throws -> URL {
         guard !isRendering else { throw MusicError.invalidBatch(reason: "another render is running") }
-        render(asMP3: asMP3)
+        try validateRenderTail(tailFrames)
+        render(asMP3: asMP3, tailFrames: tailFrames)
         await withTaskCancellationHandler { await renderTask?.value } onCancel: {
             Task { @MainActor in self.cancelRender() }
         }
@@ -405,12 +544,14 @@ private nonisolated struct MusicImportDirectory: Sendable {
     }
     func cancelRender() { lease?.invalidate(); lease = nil; renderTask?.cancel() }
     func stopPlayback() {
+        stopPresetPreview()
         let owned = player != nil
         player?.stop(); player = nil; isPlaying = false
         if owned { audio.releasePlayback() }
     }
     func startMicrophone() async {
         guard !isRecording, !isLive, !isPlaying else { return }
+        stopPresetPreview()
         do {
             guard await AVAudioApplication.requestRecordPermission() else { throw MusicNativeError.invalid("microphone permission denied") }
             try audio.acquireRecording()
@@ -442,18 +583,39 @@ private nonisolated struct MusicImportDirectory: Sendable {
     }
     func setLooping(_ value: Bool) { looping = value; player?.numberOfLoops = value ? -1 : 0 }
     func selectTrack(_ id: MusicTrackID) {
+        guard document.tracks.contains(where: { $0.id == id }) else { return }
+        guard !isMIDIRecording || selectedTrack == id else {
+            diagnostic = IDELanguageRunText.t("请先结束演奏录制，再切换轨道。", "Finish the performance recording before changing tracks."); return
+        }
         let wasLive = isLive
-        if selectedTrack != id, wasLive { stopLive() }
+        stopPresetPreview()
+        if selectedTrack != id { stopLive() }
         selectedTrack = id
-        preset = String(currentTrack?.instrument?.presetIndex ?? 0)
-        if wasLive { startLive() }
+        if currentClip?.trackID != id { selectedClip = nil }
+        if wasLive, currentTrack?.kind == .midi { startLive() }
     }
-    func selectClip(_ clip: MusicClip) { selectTrack(clip.trackID); selectedClip = clip.id }
+    func selectClip(_ clip: MusicClip) {
+        selectTrack(clip.trackID)
+        if selectedTrack == clip.trackID { selectedClip = clip.id }
+    }
     func reload() async throws {
         guard !saving else { return }
+        let resumeTrack = isLive ? selectedTrack : nil
+        stopLive()
+        let resumeIdentity = liveIdentity
+        defer { resumeLive(resumeTrack, ifIdentity: resumeIdentity) }
         document = try await store.currentSnapshot()
         handle = .init(sessionID: handle.sessionID, ownerToken: handle.ownerToken, baseRevision: document.revision)
         loadWaveforms()
+        reconcileSelection()
+    }
+    private func reconcileSelection() {
+        if let selectedTrack, !document.tracks.contains(where: { $0.id == selectedTrack }) {
+            stopLive(); self.selectedTrack = nil
+        }
+        if let selectedClip, !document.tracks.flatMap(\.clips).contains(where: { $0.id == selectedClip && $0.trackID == selectedTrack }) {
+            self.selectedClip = nil
+        }
     }
     func edit(_ operations: [MusicEditOp]) {
         Task { do { try await apply(operations) } catch { diagnostic = error.localizedDescription } }
@@ -468,21 +630,57 @@ private nonisolated struct MusicImportDirectory: Sendable {
         guard var strip = document.tracks.first(where: { $0.id == id })?.strip else { return }
         change(&strip); edit([.setStrip(id, strip)])
     }
+    /// Shared by native controls and the existing studio tools. Success means
+    /// the preset has been committed to the durable, revision-checked store.
+    func applyPreset(index: Int, trackID: MusicTrackID, expectedRevision: Int64? = nil) async throws {
+        guard !isRecording, !isMIDIRecording else {
+            throw MusicError.invalidTrack(reason: IDELanguageRunText.t("请先结束录制，再更换音色。", "Finish recording before changing the instrument."))
+        }
+        guard document.tracks.contains(where: { $0.id == trackID && $0.kind == .midi }) else {
+            throw MusicError.invalidTrack(reason: IDELanguageRunText.t("请先选择乐器轨。", "Select an instrument track first."))
+        }
+        guard MusicPresetCatalog.preset(index: index) != nil else {
+            throw MusicError.invalidTrack(reason: IDELanguageRunText.t("此音色不可用。", "This preset is unavailable."))
+        }
+        let resumeTrack = (isLive || previewResumeTrack == trackID) && selectedTrack == trackID ? trackID : nil
+        if resumeTrack != nil { stopLive() } else { stopPresetPreview() }
+        let resumeIdentity = liveIdentity
+        defer { resumeLive(resumeTrack, ifIdentity: resumeIdentity) }
+        // Empty overrides take the selected preset's real defaults; parameters
+        // from a previously chosen voice never leak into the new preset.
+        let patch = try MusicPluginState(pluginID: MusicNativeBuiltins.synth, presetIndex: index)
+        try await apply([.setInstrument(trackID, patch)], expectedRevision: expectedRevision)
+    }
     func updateInstrument(preset: Int? = nil, parameter: String? = nil, value: Double = 0) async {
+        guard !isRecording, !isMIDIRecording else {
+            diagnostic = IDELanguageRunText.t("请先结束录制，再更换音色。", "Finish recording before changing the instrument."); return
+        }
+        if let preset {
+            do {
+                guard let track = currentTrack else {
+                    throw MusicError.invalidTrack(reason: IDELanguageRunText.t("请先选择乐器轨。", "Select an instrument track first."))
+                }
+                try await applyPreset(index: preset, trackID: track.id, expectedRevision: document.revision)
+            } catch { diagnostic = error.localizedDescription }
+            return
+        }
+        let resumeTrack = isLive ? selectedTrack : nil
+        stopLive()
+        let resumeIdentity = liveIdentity
+        defer { resumeLive(resumeTrack, ifIdentity: resumeIdentity) }
         do {
             guard let track = currentTrack, track.kind == .midi else {
                 throw MusicError.invalidTrack(reason: IDELanguageRunText.t("请先选择乐器轨。", "Select an instrument track first."))
             }
-            let running = isLive
-            stopLive()
             var patch: MusicPluginState
             if let instrument = track.instrument { patch = instrument }
             else { patch = try MusicPluginState(pluginID: MusicNativeBuiltins.synth) }
-            if let preset { patch.presetIndex = preset }
+            guard patch.pluginID == MusicNativeBuiltins.synth,
+                  MusicPresetCatalog.preset(index: patch.presetIndex) != nil else {
+                throw MusicError.invalidTrack(reason: IDELanguageRunText.t("请先选择一个合成音色。", "Select a synthesized preset first."))
+            }
             if let parameter { patch.parameters[parameter] = value }
             try await apply([.setInstrument(track.id, patch)])
-            self.preset = String(patch.presetIndex)
-            if running { startLive() }
         } catch { diagnostic = error.localizedDescription }
     }
     func duplicateSelection() {
@@ -557,6 +755,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
     }
     func exportOriginals(stems: Bool) {
         guard !isRendering else { return }
+        stopPresetPreview()
         let frozen = document
         isRendering = true; diagnostic = nil; renderError = nil
         renderTask = Task { [self] in
@@ -621,6 +820,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
     }
     func renderDJ(deck: MusicDJSession.DeckSlot? = nil) {
         guard !isRendering, var snapshot = dj else { return }
+        stopPresetPreview()
         do {
             try snapshot.setPlaying(.a, snapshot.deckA.assetID != nil && deck != .b)
             try snapshot.setPlaying(.b, snapshot.deckB.assetID != nil && deck != .a)

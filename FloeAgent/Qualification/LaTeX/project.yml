@@ -1,0 +1,70 @@
+name: FloeLaTeXQualification
+options:
+  deploymentTarget:
+    iOS: '26.0'
+packages:
+  FloeLaTeXKit:
+    path: ../../Modules/FloeLaTeXKit
+  FloeLaTeXNativeExperiment:
+    path: ../../Modules/FloeLaTeXKit/Native/Experiment
+  SwiftMath:
+    path: ../../Modules/FloeDiagramKit/Vendor/SwiftMath
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+targets:
+  LaTeXHost:
+    type: application
+    platform: iOS
+    sources: [Host.swift, MathRenderer.swift]
+    dependencies:
+      - package: FloeLaTeXKit
+        product: FloeLaTeXKit
+      - package: FloeLaTeXNativeExperiment
+        product: FloeLaTeXNativeExperiment
+      - package: SwiftMath
+        product: SwiftMath
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.latex
+        TARGETED_DEVICE_FAMILY: '1,2'
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Floe LaTeX QA
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+  LaTeXNativeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [NativeTests.swift]
+    dependencies:
+      - target: LaTeXHost
+      - package: FloeLaTeXKit
+        product: FloeLaTeXKit
+      - package: FloeLaTeXNativeExperiment
+        product: FloeLaTeXNativeExperiment
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.latex.native-tests
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/LaTeXHost.app/LaTeXHost
+        BUNDLE_LOADER: $(TEST_HOST)
+  LaTeXUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests.swift]
+    dependencies:
+      - target: LaTeXHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.latex.ui-tests
+        TEST_TARGET_NAME: LaTeXHost
+schemes:
+  LaTeXQualification:
+    build:
+      targets:
+        LaTeXHost: all
+    test:
+      targets: [LaTeXNativeTests, LaTeXUITests]
+      parallelizable: false

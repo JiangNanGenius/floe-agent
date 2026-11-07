@@ -375,6 +375,7 @@ struct RootView: View {
     /// SceneStorage belongs to one WindowGroup content instance even though
     /// navigation and the environment remain app-wide shared objects.
     @SceneStorage("floe.windowSceneIdentity") private var sceneID = UUID().uuidString
+    @State private var latexOpenRequest:LaTeXOpenRequest?
     @State private var expandedWorkspaceIDs: Set<UUID> = []
     /// Sidebar conversation selection: the row long press opens the native
     /// context menu (Pin/Unpin, Rename, Move, Multi-select, Archive, Delete)
@@ -541,6 +542,7 @@ struct RootView: View {
             }
         }
         .onOpenURL { handleEntryURL($0) }
+        .fullScreenCover(item:$latexOpenRequest) {request in LaTeXOriginalEditor(projectID:request.id)}
         .task(id: "\(entryNavigationReady)-\(pendingEntry?.id.uuidString ?? "none")") {
             await deliverPendingEntry()
         }
@@ -1025,7 +1027,16 @@ struct RootView: View {
                     documentID: id, title: note.title, sceneID: sceneID)
                 router.openMore(.notes)
             case .work(let id):
-                let value = try await PersonalContentService.shared.library().resolve(id)
+                let location=try? await PersonalContentService.shared.library().resolve(id)
+                if location == nil {
+                    _ = try await environment.latexComposition.host()
+                    _ = try await environment.latexComposition.original(id)
+                    try Task.checkCancellation()
+                    guard pendingEntry?.id==entry.id,router.workbenchSelection==selection,router.sidebarSelection==entrySidebarSelection else {pendingEntry=nil;return}
+                    latexOpenRequest = .init(id:id)
+                    break
+                }
+                guard let value=location else {throw PersonalContentError.missingDocument}
                 try Task.checkCancellation()
                 guard pendingEntry?.id == entry.id else { return }
                 guard router.workbenchSelection == selection,

@@ -123,6 +123,7 @@ public actor MusicOfflineRenderer {
                       nodes: busNodes, engine: engine, format: format)
         }
         var tracks: [MusicTrackID: MusicRenderTrack] = [:]
+        defer { for runtime in tracks.values { runtime.synth?.allOff(); runtime.player?.stop() } }
         var events: [MusicSynthEvent] = []
         for track in audible {
             let runtime = MusicRenderTrack(track)
@@ -232,7 +233,6 @@ public actor MusicOfflineRenderer {
             position += Int64(count)
             onProgress(position)
         }
-        for runtime in tracks.values { runtime.synth?.allOff(); runtime.player?.stop() }
         engine.stop(); writer = nil
         phase = "commit rendered audio"
         try musicSynchronize(staged)

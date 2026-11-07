@@ -1,0 +1,606 @@
+[
+  {
+    "scope": "existing host SwiftMath bundle; not a LaTeX package dependency",
+    "file": "Asana-Math.otf",
+    "sha256": "b0d9e681c08ff1f4dc6ebf085cc962585ec12cdbd25dc6225890b9f8fd12d568",
+    "nameTable": {
+      "0": [
+        "Copyright (C) 2007-2019 Apostolos Syropoulos. \nCopyright (C) 2000 Young Ryu.\nCopyright (C) 1997, 1999 Claudio Beccari."
+      ],
+      "1": [
+        "Asana Math"
+      ],
+      "5": [
+        "Version 000.958 "
+      ],
+      "13": [
+        "Copyright (c) 2007-2019, Apostolos Syropoulos (<asyropoulos@yahoo.com),\nwith Reserved Font Name Asana Math.\nCopyright (c) 2000 Young Ryu,\nwith Reserved Font Name pxfonts.\nCopyright (c) 1997, 1999 Claudio Beccari, \nwith Reserved Font Name gsmn1000.\n\nThis Font Software is licensed under the SIL Open Font License, Version 1.1.\nThis license is copied below, and is also available with a FAQ at:\nhttp://scripts.sil.org/OFL\n\n\n-----------------------------------------------------------\nSIL OPEN FONT LICENSE Version 1.1 - 26 February 2007\n-----------------------------------------------------------\n\nPREAMBLE\nThe goals of the Open Font License (OFL) are to stimulate worldwide\ndevelopment of collaborative font projects, to support the font creation\nefforts of academic and linguistic communities, and to provide a free and\nopen framework in which fonts may be shared and improved in partnership\nwith others.\n\nThe OFL allows the licensed fonts to be used, studied, modified and\nredistributed freely as long as they are not sold by themselves. The\nfonts, including any derivative works, can be bundled, embedded, \nredistributed and/or sold with any software provided that any reserved\nnames are not used by derivative works. The fonts and derivatives,\nhowever, cannot be released under any other type of license. The\nrequirement for fonts to remain under this license does not apply\nto any document created using the fonts or their derivatives.\n\nDEFINITIONS\n\"Font Software\" refers to the set of files released by the Copyright\nHolder(s) under this license and clearly marked as such. This may\ninclude source files, build scripts and documentation.\n\n\"Reserved Font Name\" refers to any names specified as such after the\ncopyright statement(s).\n\n\"Original Version\" refers to the collection of Font Software components as\ndistributed by the Copyright Holder(s).\n\n\"Modified Version\" refers to any derivative made by adding to, deleting,\nor substituting -- in part or in whole -- any of the components of the\nOriginal Version, by changing formats or by porting the Font Software to a\nnew environment.\n\n\"Author\" refers to any designer, engineer, programmer, technical\nwriter or other person who contributed to the Font Software.\n\nPERMISSION & CONDITIONS\nPermission is hereby granted, free of charge, to any person obtaining\na copy of the Font Software, to use, study, copy, merge, embed, modify,\nredistribute, and sell modified and unmodified copies of the Font\nSoftware, subject to the following conditions:\n\n1) Neither the Font Software nor any of its individual components,\nin Original or Modified Versions, may be sold by itself.\n\n2) Original or Modified Versions of the Font Software may be bundled,\nredistributed and/or sold with any software, provided that each copy\ncontains the above copyright notice and this license. These can be\nincluded either as stand-alone text files, human-readable headers or\nin the appropriate machine-readable metadata fields within text or\nbinary files as long as those fields can be easily viewed by the user.\n\n3) No Modified Version of the Font Software may use the Reserved Font\nName(s) unless explicit written permission is granted by the corresponding\nCopyright Holder. This restriction only applies to the primary font name as\npresented to the users.\n\n4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font\nSoftware shall not be used to promote, endorse or advertise any\nModified Version, except to acknowledge the contribution(s) of the\nCopyright Holder(s) and the Author(s) or with their explicit written\npermission.\n\n5) The Font Software, modified or unmodified, in part or in whole,\nmust be distributed entirely under this license, and must not be\ndistributed under any other license. The requirement for fonts to\nremain under this license does not apply to any document created\nusing the Font Software.\n\nTERMINATION\nThis license becomes null and void if any of the above conditions are\nnot met.\n\nDISCLAIMER\nTHE FONT SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND,\nEXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF\nMERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT\nOF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE\nCOPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,\nINCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL\nDAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING\nFROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM\nOTHER DEALINGS IN THE FONT SOFTWARE."
+      ],
+      "14": [
+        "http://scripts.sil.org/ofl"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "existing host SwiftMath bundle; not a LaTeX package dependency",
+    "file": "Euler-Math.otf",
+    "sha256": "bd07fef1faecea7fa4a89256e4e06ef94b19e23b1785db6e420229fda37c2efb",
+    "nameTable": {
+      "0": [
+        "Copyright (c) 1997, 2009 American Mathematical Society (http://www.ams.org).\nCopyright (c) 2009, 2021 Khaled Hosny (khaledhosny@eglug.org).\nCopyright (c) 2022-2024, Daniel Flipo (daniel.flipo@free.fr)"
+      ],
+      "1": [
+        "Euler Math"
+      ],
+      "5": [
+        "Version 0.61"
+      ],
+      "13": [
+        "This Font Software is licensed under the SIL Open Font License, Version 1.1.\n"
+      ],
+      "14": [
+        "http://scripts.sil.org/OFL"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "existing host SwiftMath bundle; not a LaTeX package dependency",
+    "file": "FiraMath-Regular.otf",
+    "sha256": "2028cbd3dd4d8c0cf1608520eb4759956a83a67931d7b6d8e7c313520186e35b",
+    "nameTable": {
+      "0": [
+        "Copyright (C) 2018–2020 Xiangdong Zeng"
+      ],
+      "1": [
+        "Fira Math"
+      ],
+      "5": [
+        "Version 0.3.4"
+      ],
+      "13": [
+        "This Font Software is licensed under the SIL Open Font License, Version 1.1. This Font Software is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the SIL Open Font License for the specific language, permissions and limitations governing your use of this Font Software."
+      ],
+      "14": [
+        "http://scripts.sil.org/OFL"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "existing host SwiftMath bundle; not a LaTeX package dependency",
+    "file": "Garamond-Math.otf",
+    "sha256": "c6161377e97084152b948f62abe874cbe27405938956346b54a4c6488a5009f1",
+    "nameTable": {
+      "0": [
+        "Copyleft (C) 2018-2022 Yuansheng Zhao and Xiangdong Zeng"
+      ],
+      "1": [
+        "Garamond-Math"
+      ],
+      "5": [
+        "Version 2022-01-03 "
+      ],
+      "13": [
+        "This Font Software is licensed under the SIL Open Font License, Version 1.1."
+      ],
+      "14": [
+        "http://scripts.sil.org/OFL"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "existing host SwiftMath bundle; not a LaTeX package dependency",
+    "file": "KpMath-Light.otf",
+    "sha256": "aa6713ae76838a7db9eefe4f503b963dad50df77555ff67a50b72eb832221660",
+    "nameTable": {
+      "0": [
+        "Copyright (c) 2007-2018, Christophe Caignaert (c.caignaert@free.fr),\nwith Reserved Font Name <Kp>.\nCopyright (c) 2019-2024, Daniel Flipo (daniel.flipo@free.fr),\nwith Reserved Font Name <KpMath-Light>.\n"
+      ],
+      "1": [
+        "KpMath"
+      ],
+      "5": [
+        "Version 0.63"
+      ],
+      "13": [
+        "This Font Software is licensed under the SIL Open Font License, Version 1.1.\n"
+      ],
+      "14": [
+        "http://scripts.sil.org/OFL"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "existing host SwiftMath bundle; not a LaTeX package dependency",
+    "file": "KpMath-Sans.otf",
+    "sha256": "a9e82575a514f10ceed193d393bf2ea6ac82980ce7eb8c81be085df159a8c253",
+    "nameTable": {
+      "0": [
+        "Copyright (c) 2007-2018, Christophe Caignaert (c.caignaert@free.fr),\nwith Reserved Font Name <Kp>.\nCopyright (c) 2019-2024, Daniel Flipo (daniel.flipo@free.fr),\nwith Reserved Font Name <KpMath-Sans>.\n",
+        "bbsans"
+      ],
+      "1": [
+        "KpMath"
+      ],
+      "5": [
+        "Version 0.63"
+      ],
+      "13": [
+        "This Font Software is licensed under the SIL Open Font License, Version 1.1.\n"
+      ],
+      "14": [
+        "http://scripts.sil.org/OFL"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "existing host SwiftMath bundle; not a LaTeX package dependency",
+    "file": "LeteSansMath.otf",
+    "sha256": "b9242115e4d41b9ccbe179340d4ddaf5598863389a23677eefb87e8950781313",
+    "nameTable": {
+      "0": [
+        "Lete Sans Math (c) 2024 Chenjing Bu, Daniel Flipo."
+      ],
+      "1": [
+        "Lete Sans Math"
+      ],
+      "5": [
+        "Version 0.41"
+      ],
+      "13": [
+        "This Font Software is licensed under the SIL Open Font License, Version 1.1.\nThis license is copied below, and is also available with a FAQ at:\nhttp://scripts.sil.org/OFL\n\n\n-----------------------------------------------------------\nSIL OPEN FONT LICENSE Version 1.1 - 26 February 2007\n-----------------------------------------------------------\n\nPREAMBLE\nThe goals of the Open Font License (OFL) are to stimulate worldwide\ndevelopment of collaborative font projects, to support the font creation\nefforts of academic and linguistic communities, and to provide a free and\nopen framework in which fonts may be shared and improved in partnership\nwith others.\n\nThe OFL allows the licensed fonts to be used, studied, modified and\nredistributed freely as long as they are not sold by themselves. The\nfonts, including any derivative works, can be bundled, embedded, \nredistributed and/or sold with any software provided that any reserved\nnames are not used by derivative works. The fonts and derivatives,\nhowever, cannot be released under any other type of license. The\nrequirement for fonts to remain under this license does not apply\nto any document created using the fonts or their derivatives.\n\nDEFINITIONS\n\"Font Software\" refers to the set of files released by the Copyright\nHolder(s) under this license and clearly marked as such. This may\ninclude source files, build scripts and documentation.\n\n\"Reserved Font Name\" refers to any names specified as such after the\ncopyright statement(s).\n\n\"Original Version\" refers to the collection of Font Software components as\ndistributed by the Copyright Holder(s).\n\n\"Modified Version\" refers to any derivative made by adding to, deleting,\nor substituting -- in part or in whole -- any of the components of the\nOriginal Version, by changing formats or by porting the Font Software to a\nnew environment.\n\n\"Author\" refers to any designer, engineer, programmer, technical\nwriter or other person who contributed to the Font Software.\n\nPERMISSION & CONDITIONS\nPermission is hereby granted, free of charge, to any person obtaining\na copy of the Font Software, to use, study, copy, merge, embed, modify,\nredistribute, and sell modified and unmodified copies of the Font\nSoftware, subject to the following conditions:\n\n1) Neither the Font Software nor any of its individual components,\nin Original or Modified Versions, may be sold by itself.\n\n2) Original or Modified Versions of the Font Software may be bundled,\nredistributed and/or sold with any software, provided that each copy\ncontains the above copyright notice and this license. These can be\nincluded either as stand-alone text files, human-readable headers or\nin the appropriate machine-readable metadata fields within text or\nbinary files as long as those fields can be easily viewed by the user.\n\n3) No Modified Version of the Font Software may use the Reserved Font\nName(s) unless explicit written permission is granted by the corresponding\nCopyright Holder. This restriction only applies to the primary font name as\npresented to the users.\n\n4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font\nSoftware shall not be used to promote, endorse or advertise any\nModified Version, except to acknowledge the contribution(s) of the\nCopyright Holder(s) and the Author(s) or with their explicit written\npermission.\n\n5) The Font Software, modified or unmodified, in part or in whole,\nmust be distributed entirely under this license, and must not be\ndistributed under any other license. The requirement for fonts to\nremain under this license does not apply to any document created\nusing the Font Software.\n\nTERMINATION\nThis license becomes null and void if any of the above conditions are\nnot met.\n\nDISCLAIMER\nTHE FONT SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND,\nEXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF\nMERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT\nOF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE\nCOPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,\nINCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL\nDAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING\nFROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM\nOTHER DEALINGS IN THE FONT SOFTWARE."
+      ],
+      "14": [
+        "http://scripts.sil.org/OFL"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "existing host SwiftMath bundle; not a LaTeX package dependency",
+    "file": "LibertinusMath-Regular.otf",
+    "sha256": "e81bd44acbb7119c8f00128b36fecc5d980e10d2450a226ba52402ccf4da9d32",
+    "nameTable": {
+      "0": [
+        "Copyright © 2012-2024 The Libertinus Project Authors."
+      ],
+      "1": [
+        "Libertinus Math"
+      ],
+      "5": [
+        "Version 7.051;RELEASE"
+      ],
+      "13": [
+        "This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org"
+      ],
+      "14": [
+        "https://openfontlicense.org"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "existing host SwiftMath bundle; not a LaTeX package dependency",
+    "file": "NotoSansMath-Regular.otf",
+    "sha256": "9dda7e17fa67b7e34083798f56faf5e53ac524456e730ead35c2957e4397ca28",
+    "nameTable": {
+      "0": [
+        "Copyright 2022 Google LLC. All Rights Reserved."
+      ],
+      "1": [
+        "Noto Sans Math"
+      ],
+      "5": [
+        "Version 3.000"
+      ],
+      "13": [
+        "This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://scripts.sil.org/OFL"
+      ],
+      "14": [
+        "https://scripts.sil.org/OFL"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "existing host SwiftMath bundle; not a LaTeX package dependency",
+    "file": "latinmodern-math.otf",
+    "sha256": "6075562b771f8b82f0c179e363389684f2dd09de30038269e2628e504bd7be0f",
+    "nameTable": {
+      "0": [
+        "Copyright 2012--2014 for Latin Modern Math OTF by B. Jackowski, P. Strzelczyk and P. Pianowski (on behalf of TeX users groups). This work is released under the GUST Font License -- see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details."
+      ],
+      "1": [
+        "Latin Modern Math"
+      ],
+      "5": [
+        "Version 1.959"
+      ]
+    },
+    "defaultUsedByEditor": true
+  },
+  {
+    "scope": "existing host SwiftMath bundle; not a LaTeX package dependency",
+    "file": "texgyretermes-math.otf",
+    "sha256": "e5ce42b4fe826b7ea4c0874359decf0b294439355c511a4794107a9924e2cd5a",
+    "nameTable": {
+      "0": [
+        "Copyright 2012--2014 for Tex Gyre Termes Math OTF by B. Jackowski, P. Strzelczyk and P. Pianowski (on behalf of TeX users groups). This work is released under the GUST Font License -- see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details."
+      ],
+      "1": [
+        "TeX Gyre Termes Math"
+      ],
+      "5": [
+        "Version 1.543"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "existing host SwiftMath bundle; not a LaTeX package dependency",
+    "file": "xits-math.otf",
+    "sha256": "d76666cb2dc222b4a811db96c41cc1853988b91008ec44a194126b4e010a5c6c",
+    "nameTable": {
+      "0": [
+        "Copyright (c) 2001-2011 by the STI Pub Companies, consisting of the American Chemical Society, the American Institute of Physics, the American Mathematical Society, the American Physical Society, Elsevier, Inc., and The Institute of Electrical and Electronic Engineers, Inc.  Portions copyright (c) 1998-2003 by MicroPress, Inc.  Portions copyright (c) 1990 by Elsevier, Inc.  Portions copyright (c) 2009-2012 by Khaled Hosny.  All rights reserved. "
+      ],
+      "1": [
+        "XITS Math"
+      ],
+      "5": [
+        "Version 1.108 "
+      ],
+      "13": [
+        "As a condition for receiving these fonts at no charge, each person downloading the fonts must agree to some simple license terms. The license is based on the SIL Open Font License <http://scripts.sil.org/cms/scripts/page.php?site_id=nrsi&id=OFL>. The SIL License is a free and open source license specifically designed for fonts and related software. The basic terms are that the recipient will not remove the copyright and trademark statements from the fonts and that, if the person decides to create a derivative work based on the STIX Fonts but incorporating some changes or enhancements, the derivative work (\"Modified Version\") will carry a different name. The copyright and trademark restrictions are part of the agreement between the STI Pub companies and the typeface designer. The \"renaming\" restriction results from the desire of the STI Pub companies to assure that the STIX Fonts will continue to function in a predictable fashion for all that use them. No copy of one or more of the individual Font typefaces that form the STIX Fonts(TM) set may be sold by itself, but other than this one restriction, licensees are free to sell the fonts either separately or as part of a package that combines other software or fonts with this font set."
+      ],
+      "14": [
+        "http://www.stixfonts.org/user_license.html"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "FandolKai-Regular.otf",
+    "sha256": "ea7e7fb4f9b3ac694a68d43946e04d21deed6e8c29a7c2d3081e1a4138f2f827",
+    "nameTable": {
+      "0": [
+        "Copyright © 2012-2013, the Fandol team."
+      ],
+      "1": [
+        "FandolKai"
+      ],
+      "5": [
+        "Version 1.300;PS 1;hotconv 1.0.81;makeotf.lib2.5.63406 DEVELOPMENT"
+      ],
+      "13": [
+        ""
+      ],
+      "14": [
+        "http://www.gnu.org/licenses/licenses.html"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "FandolSong-Bold.otf",
+    "sha256": "ffa76a70e128947a4dd22151d5ee829b23e24ce3cb6fe8ad49891cd1c2d9e9b9",
+    "nameTable": {
+      "0": [
+        "Copyright © 2012-2013, the Fandol team."
+      ],
+      "1": [
+        "FandolSong"
+      ],
+      "5": [
+        "Version 1.300;PS 1;hotconv 1.0.81;makeotf.lib2.5.63406 DEVELOPMENT"
+      ],
+      "13": [
+        ""
+      ],
+      "14": [
+        "http://www.gnu.org/licenses/licenses.html"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "FandolSong-Regular.otf",
+    "sha256": "a3820003227d4abe31fe28b493200d94a849ccfd078b50a019264f70353020b0",
+    "nameTable": {
+      "0": [
+        "Copyright © 2012-2013, the Fandol team."
+      ],
+      "1": [
+        "FandolSong"
+      ],
+      "5": [
+        "Version 1.300;PS 1;hotconv 1.0.81;makeotf.lib2.5.63406 DEVELOPMENT"
+      ],
+      "13": [
+        ""
+      ],
+      "14": [
+        "http://www.gnu.org/licenses/licenses.html"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "lmroman10-bold.otf",
+    "sha256": "102fe06c430a8b681b2bf6876b7cd967ae4d47b4b6b41d915eb7913b726d9fb1",
+    "nameTable": {
+      "0": [
+        "Copyright 2003, 2009 B. Jackowski and J. M. Nowacki (on behalf of TeX users groups). This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details."
+      ],
+      "1": [
+        "Latin Modern Roman",
+        "LM Roman 10"
+      ],
+      "5": [
+        "Version 2.004;PS 2.004;hotconv 1.0.49;makeotf.lib2.0.14853"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "lmroman10-regular.otf",
+    "sha256": "1aa18cfefa58132c52ce5de70db1fd1154201c19cd2b2cdaffba4906a33e6852",
+    "nameTable": {
+      "0": [
+        "Copyright 2003, 2009 B. Jackowski and J. M. Nowacki (on behalf of TeX users groups). This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details."
+      ],
+      "1": [
+        "Latin Modern Roman",
+        "LM Roman 10"
+      ],
+      "5": [
+        "Version 2.004;PS 2.004;hotconv 1.0.49;makeotf.lib2.0.14853"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "lmroman12-bold.otf",
+    "sha256": "28c8782ac2b6486958b5dc7610ada7800c53546ff7f36bc65909a876e1cd338e",
+    "nameTable": {
+      "0": [
+        "Copyright 2003, 2009 B. Jackowski and J. M. Nowacki (on behalf of TeX users groups). This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details."
+      ],
+      "1": [
+        "Latin Modern Roman",
+        "LM Roman 12"
+      ],
+      "5": [
+        "Version 2.004;PS 2.004;hotconv 1.0.49;makeotf.lib2.0.14853"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "lmroman12-regular.otf",
+    "sha256": "e6be218ae83e61aa8a29990d3cdc401c678c1962188cb9a4a8b6359e4f5e5870",
+    "nameTable": {
+      "0": [
+        "Copyright 2003, 2009 B. Jackowski and J. M. Nowacki (on behalf of TeX users groups). This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details."
+      ],
+      "1": [
+        "Latin Modern Roman",
+        "LM Roman 12"
+      ],
+      "5": [
+        "Version 2.004;PS 2.004;hotconv 1.0.49;makeotf.lib2.0.14853"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "lmroman17-regular.otf",
+    "sha256": "ed048c80fb4b67663b80899b89fe5fba17d7442e1286d61fd08fe5689c6b7c3c",
+    "nameTable": {
+      "0": [
+        "Copyright 2003, 2009 B. Jackowski and J. M. Nowacki (on behalf of TeX users groups). This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details."
+      ],
+      "1": [
+        "Latin Modern Roman",
+        "LM Roman 17"
+      ],
+      "5": [
+        "Version 2.004;PS 2.004;hotconv 1.0.49;makeotf.lib2.0.14853"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "lmroman5-regular.otf",
+    "sha256": "954bd9c376597c7043e7b616430163e0158155edf7434fd70082cf8460c08533",
+    "nameTable": {
+      "0": [
+        "Copyright 2003, 2009 B. Jackowski and J. M. Nowacki (on behalf of TeX users groups). This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details."
+      ],
+      "1": [
+        "Latin Modern Roman",
+        "LM Roman 5"
+      ],
+      "5": [
+        "Version 2.004;PS 2.004;hotconv 1.0.49;makeotf.lib2.0.14853"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "lmroman6-regular.otf",
+    "sha256": "501396c437f76c260b8724265b8495f318a640ee5a4674852ecbb20daf256696",
+    "nameTable": {
+      "0": [
+        "Copyright 2003, 2009 B. Jackowski and J. M. Nowacki (on behalf of TeX users groups). This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details."
+      ],
+      "1": [
+        "Latin Modern Roman",
+        "LM Roman 6"
+      ],
+      "5": [
+        "Version 2.004;PS 2.004;hotconv 1.0.49;makeotf.lib2.0.14853"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "lmroman7-regular.otf",
+    "sha256": "48c4b46ab255eec96588fb992fba1ed6102e53d051da480738a61cc6cdb328c3",
+    "nameTable": {
+      "0": [
+        "Copyright 2003, 2009 B. Jackowski and J. M. Nowacki (on behalf of TeX users groups). This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details."
+      ],
+      "1": [
+        "Latin Modern Roman",
+        "LM Roman 7"
+      ],
+      "5": [
+        "Version 2.004;PS 2.004;hotconv 1.0.49;makeotf.lib2.0.14853"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "lmroman8-regular.otf",
+    "sha256": "f73015c3827596586faa380c398501caf9b5bcbb6f40b46af6a51277ca97c9fc",
+    "nameTable": {
+      "0": [
+        "Copyright 2003, 2009 B. Jackowski and J. M. Nowacki (on behalf of TeX users groups). This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details."
+      ],
+      "1": [
+        "Latin Modern Roman",
+        "LM Roman 8"
+      ],
+      "5": [
+        "Version 2.004;PS 2.004;hotconv 1.0.49;makeotf.lib2.0.14853"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "lmroman9-bold.otf",
+    "sha256": "f72feac9ea12eb858d8093d6c0ee710a6c25f59b61278c88ec41c0a680838415",
+    "nameTable": {
+      "0": [
+        "Copyright 2003, 2009 B. Jackowski and J. M. Nowacki (on behalf of TeX users groups). This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details."
+      ],
+      "1": [
+        "Latin Modern Roman",
+        "LM Roman 9"
+      ],
+      "5": [
+        "Version 2.004;PS 2.004;hotconv 1.0.49;makeotf.lib2.0.14853"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "lmroman9-regular.otf",
+    "sha256": "8ab7b017fc67ea0e30cbf9e7ebd940010442ea67b40cf65f87d73f3ca11b0e6f",
+    "nameTable": {
+      "0": [
+        "Copyright 2003, 2009 B. Jackowski and J. M. Nowacki (on behalf of TeX users groups). This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details."
+      ],
+      "1": [
+        "Latin Modern Roman",
+        "LM Roman 9"
+      ],
+      "5": [
+        "Version 2.004;PS 2.004;hotconv 1.0.49;makeotf.lib2.0.14853"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "lmromanslant10-regular.otf",
+    "sha256": "056ad4d08d2eb58d6b7fd0ac5de3f1fb799f2bb0c16b66c7e6b5bc5b6aef6481",
+    "nameTable": {
+      "0": [
+        "Copyright 2003, 2009 B. Jackowski and J. M. Nowacki (on behalf of TeX users groups). This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details."
+      ],
+      "1": [
+        "Latin Modern Roman Slanted",
+        "LM Roman Slanted 10"
+      ],
+      "5": [
+        "Version 2.004;PS 2.004;hotconv 1.0.49;makeotf.lib2.0.14853"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "lmsans10-regular.otf",
+    "sha256": "d431b786b9b603662718e79cfe9b441f47a8b0b3e854dde89d5acb3ed7cfd682",
+    "nameTable": {
+      "0": [
+        "Copyright 2003, 2009 B. Jackowski and J. M. Nowacki (on behalf of TeX users groups). This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details."
+      ],
+      "1": [
+        "Latin Modern Sans",
+        "LM Sans 10"
+      ],
+      "5": [
+        "Version 2.004;PS 2.004;hotconv 1.0.49;makeotf.lib2.0.14853"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "lmsans12-regular.otf",
+    "sha256": "f87ebdea035a96e8787e2c663cfcc78ce73205d37800eafe7948278e2cc7666a",
+    "nameTable": {
+      "0": [
+        "Copyright 2003, 2009 B. Jackowski and J. M. Nowacki (on behalf of TeX users groups). This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details."
+      ],
+      "1": [
+        "Latin Modern Sans",
+        "LM Sans 12"
+      ],
+      "5": [
+        "Version 2.004;PS 2.004;hotconv 1.0.49;makeotf.lib2.0.14853"
+      ]
+    },
+    "defaultUsedByEditor": false
+  },
+  {
+    "scope": "downloaded experimental TeX resources",
+    "file": "lmsans8-regular.otf",
+    "sha256": "04f0d25ca474494cb707e752170f6c22cdcb8ae2b5fb80872143e18d5cc463f8",
+    "nameTable": {
+      "0": [
+        "Copyright 2003, 2009 B. Jackowski and J. M. Nowacki (on behalf of TeX users groups). This work is released under the GUST Font License --  see http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt for details."
+      ],
+      "1": [
+        "Latin Modern Sans",
+        "LM Sans 8"
+      ],
+      "5": [
+        "Version 2.004;PS 2.004;hotconv 1.0.49;makeotf.lib2.0.14853"
+      ]
+    },
+    "defaultUsedByEditor": false
+  }
+]

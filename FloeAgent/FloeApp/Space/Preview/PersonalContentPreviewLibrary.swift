@@ -3,6 +3,8 @@
 import Foundation
 import FloeWorkbench
 import FloeChemistryCore
+import FloeLaTeXCore
+import FloeLaTeXEngine
 
 extension PersonalContentPreviewService {
     /// Resolves the same durable original as Files. Missing records, deleted
@@ -26,6 +28,43 @@ extension PersonalContentPreviewService {
         }
         let inner: PersonalContentPreviewRequest
         switch record.kind {
+        case .latex:
+            let projectRoot=directory.appendingPathComponent("LaTeX",isDirectory:true)
+            // Read saved bytes only. A thumbnail never recovers a journal,
+            // creates a store, compiles a document or acquires execution.
+            let saved=try await personalPreviewOffMain {
+                let file=try PersonalPreviewFile(root:projectRoot,url:projectRoot.appendingPathComponent("LaTeXProject.json"),maximumBytes:16*1024*1024)
+                let manifest=try JSONDecoder().decode(LaTeXProjectManifest.self,from:file.data())
+                guard manifest.id==record.id,manifest.owner == .init(kind:.space,id:record.id),manifest.revision>=0,
+                      let main=manifest.files.first(where:{$0.path==manifest.mainFile}) else {throw PersonalContentPreviewError.sourceChanged}
+                let builds=projectRoot.appendingPathComponent("Builds",isDirectory:true)
+                let directories=(try? FileManager.default.contentsOfDirectory(at:builds,includingPropertiesForKeys:nil)) ?? []
+                var latest:LaTeXBuildRecord?
+                for directory in directories.prefix(500) where UUID(uuidString:directory.lastPathComponent) != nil {
+                    guard let path=try? LaTeXPath.child(directory.lastPathComponent+"/Build.json",root:builds),
+                          let value=try? PersonalPreviewFile(root:builds,url:path,maximumBytes:1024*1024),
+                          let build=try? JSONDecoder().decode(LaTeXBuildRecord.self,from:value.data()),
+                          build.projectID==record.id,build.succeeded,build.pdfRelativePath != nil else {continue}
+                    if latest==nil || build.startedAt>latest!.startedAt {latest=build}
+                }
+                return (file,manifest,main,latest)
+            }
+            let check:@MainActor @Sendable () async throws -> Void = {try await validate();try saved.0.validate()}
+            if let build=saved.3,let path=build.pdfRelativePath {
+                let pdf=try LaTeXPath.child("Builds/"+build.id.uuidString+"/"+path,root:projectRoot)
+                let request=try await PersonalContentPreviewProducers.file(ownerID:owner,objectID:record.id.uuidString,
+                    revision:String(saved.1.revision)+"/"+build.id.uuidString,root:projectRoot,url:pdf,kind:.pdf,
+                    maximumPixelSize:maximumPixelSize,validate:check)
+                inner = .init(key:request.key,validate:request.validate,produce:{
+                    let value=try await request.produce()
+                    return .init(value.content,provenance:value.provenance,detail:build.revision==saved.1.revision ? nil:previewText("上次排版结果","Last typeset version"))
+                })
+            } else {
+                let source=try LaTeXPath.child("Source/"+saved.1.mainFile,root:projectRoot)
+                inner=try await PersonalContentPreviewProducers.file(ownerID:owner,objectID:record.id.uuidString,
+                    revision:String(saved.1.revision),root:projectRoot,url:source,kind:.text,maximumPixelSize:maximumPixelSize,
+                    expectedSHA256:saved.2.sha256,validate:check)
+            }
         case .document:
             let file = try await contentService.originalFile(record.id)
             inner = try await PersonalContentPreviewProducers.file(ownerID: owner, objectID: record.id.uuidString,

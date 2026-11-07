@@ -1,8 +1,25 @@
-# Floe 现有与在研能力盘点及后续计划
+# Floe 重型编辑器缺口清单与现有能力基线
 
 更新：2026-11-08。[English](FLOE_NATIVE_ENGINE_GAPS.md)
 
-本计划按实际源码、原研发表和当前收尾证据重排。范围是需要复杂 iPad 交互的工作台，或在解释执行环境中代价高的计算。简单脚本、普通统计和一次性出图沿用 Python；已有引擎不重复建设。新增源码必须保留自有 MPL-2.0，并满足各第三方的实际许可。
+初次调查聚焦尚未覆盖的重型编辑器类别，后续已按用户授权全量预研发 GIS／制谱／字体：需要持续操作工程、结构化编辑和复杂 iPad 交互，不能仅靠一次脚本输出替代。现有功能可以逐步加强，算法补强与性能优化不作为本轮新增编辑器需求。已有和在研工作台均计入覆盖范围。新增源码必须保留自有 MPL-2.0，并满足各第三方的实际许可。
+
+## 0 缺口确认与后续实现
+
+用户随后授权 E04.2–E04.4 **全量预研发**。三个模块现已实现约定范围，当前正完成统一独立原生宿主的入口、保存回读与导出验证；详见[完整功能矩阵与接入边界](FLOE_GIS_SCORE_FONT_PREDEVELOPMENT.zh-CN.md)。以下类别对照保留最初缺口判断，不能再读作当前仓库没有这些实现。主 App 的 Space／手记／任务入口组合由主线接收，尚不以组件证据宣称正式 App 或物理 iPad 已验收。
+
+初次范围复核基于 `76c3981d6f31540b3b557792e1591aafe24c3e1d` 及共享工作树。结合已有编辑器入口、工程类型及专用格式／编辑模型检索，当时尚未找到下列完整的专用编辑器链路；这不是声称已穷尽所有专业软件类别。主线同日协调进一步确认：完整 PCB／原理图属于此前已有规划，当前 App 编辑入口缺失，主线已经承接补全。因此 E04.1 保留原规划身份，真正新增候选为 E04.2–E04.4。
+
+| 编号 | 缺失类别 | 应有的编辑器形态 | 与现有能力的区别 | 当前实施状态 |
+| --- | --- | --- | --- | --- |
+| E04.1 | 原完整 PCB／原理图规划的 App 缺口（EDA） | 完整原理图与 PCB 工程编辑；元件／符号／封装、连通性／网表、板层／布线、ERC／DRC、制造输出、保存重开等具体范围继承原计划，不缩成局部布线 | 现有 CAD、图示和 Gerber／钻孔预览未形成完整电路设计工程；KiCad 原理图／PCB 格式目前明确不支持 | 既有规划待落地；主线已承接，不重复启动实现 |
+| E04.2 | GIS 地理信息 | 图层、要素／属性编辑、坐标系、栅格／地形、空间分析与离线工程 | 地图显示、CAD 地形或生物空间数据不等同于通用 GIS 工程编辑 | 已完成模块预研发；统一宿主验收与主线 App 组合分别记录 |
+| E04.3 | 五线谱／制谱 | 小节、谱表、多声部、音符／休止符、演奏记号、歌词、总谱／分谱和 MusicXML | 已有轨道、键盘与 MIDI；初次调查时缺少乐谱文档模型及制谱编辑器 | 已完成制谱模块；主线继续既有音乐编辑器增强 |
+| E04.4 | 字体／字形设计 | 字形轮廓、字符映射、字宽／字距、连字与字体导出 | 字体选择、文本排版和普通矢量绘图不构成字体工程 | 已完成模块及原生字体编译器；主线接入单独记录 |
+
+本地依据：[工程预览格式边界](../FloeAgent/Sources/FloeWorkspace/EngineeringPreviewPackage.swift)、[空间内容类型](../FloeAgent/FloeApp/Space/PersonalContentLibrary.swift)、[现有 MIDI 模型](../FloeAgent/Modules/FloeMusicKit/Sources/FloeMusicCore/MIDI.swift)。产品形态参考：[KiCad PCB](https://www.kicad.org/discover/pcb-design/)、[QGIS 要素编辑](https://documentation.qgis.org/3.44/en/docs/user_manual/working_with_vector/editing_geometry_attributes.html)、[MuseScore 制谱](https://handbook.musescore.org/)、[FontForge 字体设计](https://fontforge.org/docs/)。这些参考不代表选择或获准复用其源码。
+
+LaTeX、Office／PDF／手记、图片／绘画／基础矢量、视频、音乐／音频、CAD／Mesh／建筑、动画／物理／CAE、制造／打印、化学、生物、图示／画布和代码 IDE 均不重复列为新类别。专业矢量、出版排版、影视合成、科学绘图等与现有工作台有重叠，先保留为专业化方向，不据此认定整类缺失。以下既有盘点与 E01–E03 保留作背景，不代表本轮要启动补强或性能工程。
 
 初始调查基于 `60f803afae967905529cbb01e0c8229ae0b92cdb` 与当日共享工作树；现有实现基线更新为主线检查点 `9b016097d7169cdf864ca25ccbc4f280b0d07a6b`。数据分析源码、两份测试及资格包已纳入该检查点，逐文件摘要与原资格结果一致。LaTeX 等独立在研工作尚未全部进入该提交。下表的实现与证据不等同于公开安装包；在研目标也不是完成时间承诺。
 
@@ -33,26 +50,28 @@
 | 物理／动画／CAE | 原生 tet4、Rapier、粒子、Netgen、MFEM 静电／声学；现有 CAD 结果视口 | 第四批 Mesh、蒙皮／Morph、布娃娃、相机、GLB／MP4 与历史已纳入本轮；4 项 App 集成检查有通过证据，含骨骼／相机和连续导出 | 上述限定能力进入现有基线。高级结构／非线性、CFD、低频磁场／射频、耦合仍属于原计划未接求解器。 |
 | 化学 | 原生编辑／三维、Avogadro/UFF；反应配平／谱图；RDKit、Gemmi、OpenMM、xTB 环境适配 | 空间／手记、作业／取消／结果和工具链已有接线，主线继续验证；xTB 尚非内置原生运行时 | 算法不是全部缺失。后续研究本地重任务加速，复用原 UI 和作业协议。 |
 | 生物 | 序列、结构、显微、组学、网络；21 原生方法、32 可选科学方法和 22 工具的组件 | 实际 App 组合与注册已接入；11 项宿主／工具合同通过，实际序列创建、保存重开与分析界面已复核；外部科学后端和真实模型调用未新增验收 | 现有工作台进入基线；重点测重方法，不重复建设五类工作台。 |
-| LaTeX | 新模块已含工程／事务／历史、源码与可视化 UI、文献、模板、SyncTeX、模型适配；原生声明为 XeLaTeX／BibTeX | 已见 15 项核心测试、2 项 iPad 宿主原生 PDF／定位／文献／取消恢复通过；编辑交互检查在继续。核查时主 App 工程、AppEnvironment 和空间路由尚未引用该模块 | 组件完成后交主线接入；不把 LaTeX 再列为新立项，也不把 pdfLaTeX／LuaLaTeX／Biber 的环境适配算作原生完成。 |
+| LaTeX | 共享原生编辑／存储／PDF 预览、源码与可视化 UI、文献、模板、SyncTeX 和模型适配；正式排版经绑定任务的既有 Linux `exec.shell`／jobs，正式包不依赖原生 TeX 实验 | 负责人交接：独立 iPad 双模式编辑／公式／PDF／保存重开，以及真实 Debian13 ARM64 排版 11 例、隔离／超时／取消 3 项通过；主 App 入口、所有权、模型发现和实际运行仍由原负责人接入验收 | 作为在研编辑器计入覆盖；原生 TeX 实验不进入正式 App 依赖，CLI 分离也不代表许可或 App Store 批准。 |
 | 本机模型／OCR／语音 | 已有本机模型资源和推理服务、Vision OCR、语音与转写服务 | 各模型的实际配置、资源和业务接线分别处理 | 重用原有推理，不因为某领域需要模型就复制整套推理引擎。 |
 | 工具箱／脚本／轻量统计 | 现有网络／连接／串口助手、文件／任务／环境；本轮 `data.analyze` 的三类固定统计已写入并有 18 项数值检查 | 历史复用与常规串口继续；USB 串口按用户最新方向等待审批、本轮排除 | 轻量统计保留为辅助；不优先新建通用统计或简单数学工作台。 |
 
 在研范围继承 [N01–N17 与 C01–C67](FLOE_NEXT_ROUND_ENGINES_AND_USABILITY_PLAN.zh-CN.md)，以及尚由独立负责人持有的 LaTeX 原功能表 `docs/FLOE_LATEX_PREDEVELOPMENT_PLAN.zh-CN.md`，不替换原身份、负责人和未完成目标。上表按实际源码修正旧交接中“独立组件尚未接 App”的陈述；相关完成证据仍分别归原任务。
 
-关键来源：[当前 App 集成](FLOE_PREDEVELOPMENT_APP_INTEGRATION.zh-CN.md)、[CAD／Mesh／建筑](CAD_MESH_BUILDING_PREDEVELOPMENT_20261106.zh-CN.md)、[仿真实际边界](FLOE_3D_SIMULATION_IMPLEMENTATION_STATUS.zh-CN.md)、[化学本机](../FloeAgent/Modules/FloeChemistryNative/README.md)与[环境后端](../FloeAgent/Modules/FloeChemistryKit/README.md)、[生物组件](../FloeAgent/Modules/FloeBiologyKit/README.md)与[App 组合](../FloeAgent/FloeApp/Space/Biology/BiologyAppComposition.swift)。LaTeX 在研来源为 `FloeAgent/Modules/FloeLaTeXKit/Package.swift`、`Sources/FloeLaTeXEngine/NativeEngine.swift` 及 `Integration/FloeLaTeXHostAdapter/Sources/FloeLaTeXHostAdapter/Tools.swift`；后两条相对于该模块根目录，核查摘要保存在记录中，不把尚未入库的源码作为已提交依赖。
+关键来源：[当前 App 集成](FLOE_PREDEVELOPMENT_APP_INTEGRATION.zh-CN.md)、[CAD／Mesh／建筑](CAD_MESH_BUILDING_PREDEVELOPMENT_20261106.zh-CN.md)、[仿真实际边界](FLOE_3D_SIMULATION_IMPLEMENTATION_STATUS.zh-CN.md)、[化学本机](../FloeAgent/Modules/FloeChemistryNative/README.md)与[环境后端](../FloeAgent/Modules/FloeChemistryKit/README.md)、[生物组件](../FloeAgent/Modules/FloeBiologyKit/README.md)与[App 组合](../FloeAgent/FloeApp/Space/Biology/BiologyAppComposition.swift)。LaTeX 最新路线见其 `Package.swift`、`THIRD_PARTY.md`、`Integration/APP_INTEGRATION.zh-CN.md` 和 [LaTeX 原计划](FLOE_LATEX_PREDEVELOPMENT_PLAN.zh-CN.md)。此前 15 项核心及 2 项原生宿主实验的证据保留为历史组件证据，不代表正式 App 已链接或获准使用该原生 TeX 后端；本次未重跑其检查，也不把尚未入库的源码作为已提交依赖。
 
-## 3 先收尾当前实现
+## 3 既有任务背景（由原负责人继续）
 
 | 工作 | 本阶段完成条件 |
 | --- | --- |
 | 物理／生物与 App 集成 | 已有上述限定 App 检查与实际界面复核；复用原组件证据，不重新启动已通过的同范围检查。外部科学后端、真实供应商调用和物理设备行为继续单独记录，不能由 App25 编译或合同测试推定。 |
-| LaTeX 组件及主线交接 | 完成当前编辑交互检查，交付共享引擎／队列／资源／工具合同；主线按原所有权接入工程、空间与手记，不复用测试宿主的简化授权。 |
+| LaTeX 实际 App 接入 | 复用共享原生编辑服务与既有 Linux worker／jobs；原负责人完成工程、空间／任务／手记归属、模型发现和实际执行验收，不复用测试宿主的简化授权，不接入隔离原生 TeX 实验。 |
 | 媒体与通用工具链 | 按实际能力逐项核对模型目录、参数、选区、原件修订、运行、结果与导出；保留未接命令的明确状态。 |
 | 界面与可用性 | 继续原 N03–N17 的布局、历史、会议、批量文件、预览和输入修整；USB 部分保留为明确暂缓。 |
 
 这一步不以新增电路／GIS 或一次全仓性能大审查为交付门槛，也不扩展当前发布授权。
 
-## 4 后续增强按实际缺口排序
+## 4 历史增强方向与新增类别索引
+
+E01–E03 是既有功能的后续增强背景，不是本轮筛选的新编辑器，也不构成当前任务的执行顺序。
 
 ### E01 现有媒体工作台中的重型缺口
 
@@ -80,12 +99,7 @@
 
 ### E04 新增独立重型领域
 
-| 顺序 | 新方向 | 第一个完整项目范围 | 可复用基础 |
-| --- | --- | --- | --- |
-| 1 | 电路设计与仿真 | 原理图／网表、DC／AC／瞬态、参数扫描、节点探针和交互波形；PCB 布线另定范围 | 现有图示／CAD、文件、参数、作业和波形。可评估 [ngspice 库接口](https://ngspice.sourceforge.io/shared.html)，具体固定来源与传递依赖尚待核对。 |
-| 2 | GIS 与空间分析 | 离线多图层、坐标系、空间查询、大栅格与地形的分块操作和导出 | 现有地图、文件和三维显示。可评估 [PROJ](https://proj.org/en/stable/about.html)／[GDAL](https://gdal.org/en/stable/)，所选驱动的依赖与资源单独核对。 |
-
-这是下一阶段候选，不表示本次已经开始移植或获准改变发布范围。普通统计、代数、小规模 ODE、Bode／PID 图、数据清洗与报告仍优先使用脚本。
+当前分类以第 0 节为准：E04.1 是已有完整 PCB／原理图规划的实际 App 缺口，由主线补全，不作为新推荐或缩减原范围；E04.2 为 GIS，E04.3 为制谱，E04.4 为字体设计。初始分类审计没有启动移植，随后已获授权的三模块研发独立记录；没有扩大 App 发布授权。普通统计、代数、小规模 ODE、Bode／PID 图、数据清洗与报告仍优先使用脚本。
 
 ## 5 MPL 2.0 与第三方源码约束
 
@@ -102,11 +116,13 @@
 
 [既有 CAD 许可评估](FLOE_CAD_3D_REUSE_LICENSE_EVALUATION_20261031.zh-CN.md)继续有效。新方向不能整包照搬有冲突义务的应用代码；优先复用可满足当前许可目标的引擎或文件切片。GPL 本身不是不可使用的坏许可证，本条限制来自用户选择的项目分发目标。
 
-## 6 完成条件与证据
+## 6 后续若立项的完成条件与历史证据
 
 - 每批保留实际输入、源码／引擎身份、计算结果、取消、保存回读和模型调用；UI 与 AI 使用同一原件和服务。
 - 优先复用已有编译和组件证据，只补受影响验证；当前在研项目不等待 E04 新领域。
 - 原生性能收益由测量决定，区分组件、主 App、Simulator 与物理设备；不以资源下载或菜单数量计完成度。
 - 第三方许可与实际产物一致，按所选依赖补声明与必要源码材料；未解决的具体链接问题保持可见。
 
-本次只更新盘点与计划，没有新增生产引擎、改版本、上传或操作设备。29 个实现／计划来源的摘要、媒体目录逐项差异和本次许可检查事实另存为[核查记录](qualification/native-engine-inventory-20261108/results.json)。较早 `data.analyze` 的[18 项数值及对象编译证据](qualification/native-data-analysis-20261108/results.json)保持原边界，不算作整 App 或重计算加速完成。
+初始审计只更新盘点与计划，没有新增生产引擎、改版本、上传或操作设备；随后授权的三个编辑器实施单独记录。29 个实现／计划来源的摘要、媒体目录逐项差异和本次许可检查事实另存为[核查记录](qualification/native-engine-inventory-20261108/results.json)。较早 `data.analyze` 的[18 项数值及对象编译证据](qualification/native-data-analysis-20261108/results.json)保持原边界，不算作整 App 或重计算加速完成。
+
+2026-11-08 后续实施：FloeGISKit、FloeScoreKit、FloeFontKit 与共享 FloeHeavyEditorSupport 已建立，独立负责人继续原生界面接入。制谱通过明确的时序／SMF 与可注入播放适配器复用音频所有权，不修改既有 DAW 文件。主线音乐增强已验证 30 秒保存／重开和真实音频导出，LaTeX 的 8 项 App 身份／权限合同已实际通过，见[音乐与建筑接入检查点](qualification/music-tool-contract-20261108/README.md)。LaTeX 生产路径接 Space／手记／任务与既有 Linux jobs，原生 TeX 实验不进入 App，完整 App Linux/PDF 往返仍待验。以上实施与初始审计证据分别记录。

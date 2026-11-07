@@ -532,6 +532,7 @@ struct FloeCADEditorView: View {
     /// Host-installed selection observer; nil in standalone/qualification
     /// hosts, in which case no context is published.
     @Environment(\.cadSelectionObserver) private var selectionObserver
+    @Environment(\.cadBuildingProfessionalPresenter) private var buildingProfessionalPresenter
     @State private var viewModel: EditorViewModel?
     @State private var exportDocument: ExportDocument?
     /// X22 quick mesh exports (STL/3MF/USDZ/DXF) show the model-only notice
@@ -552,6 +553,9 @@ struct FloeCADEditorView: View {
     @State private var showWorkbenchTools = false
     @State private var pendingWorkbenchDestination: (destination: CADWorkbenchDestination, owner: ObjectIdentifier)?
     @State private var showBuildingWorkspace = false
+    /// Retained across the pushed page and its sheets; actual pop or owner
+    /// destruction releases the host's original file-presentation token.
+    @State private var buildingNavigationLease: AnyObject?
     @State private var showMeshInspector = false
     @Environment(\.cadBuildingWorkspaceActive) private var buildingWorkspaceActive
     /// User-named design versions (E34) sheet.
@@ -680,6 +684,11 @@ struct FloeCADEditorView: View {
         .navigationTitle(document.name)
         .onAppear { MacWindowTitle.want(document.name) }
         .onChange(of: document.name) { _, name in MacWindowTitle.want(name) }
+        .onChange(of: ObjectIdentifier(document)) { _, _ in
+            pendingWorkbenchDestination = nil
+            showBuildingWorkspace = false
+            buildingNavigationLease = nil
+        }
         .navigationBarTitleDisplayMode(.inline)
         .onDisappear {
             // A RELEASED document (e.g. a successful Cancel already deleted
@@ -692,7 +701,7 @@ struct FloeCADEditorView: View {
             // keeps the semantic MODEL identity exact, and the cancel route
             // verifies that identity plus the session's own committed
             // revision before treating the model as untouched.
-            guard !document.isClosed, !transientlyCovered else { return }
+            guard !document.isClosed, !transientlyCovered, !showBuildingWorkspace else { return }
             viewModel?.saveThumbnail()
             Task { _ = await document.save() }
         }
@@ -2509,7 +2518,12 @@ struct FloeCADEditorView: View {
         )
         return AnyView(toolsSurface
             .navigationDestination(isPresented: $showBuildingWorkspace) {
-                CADBuildingEditorPage(document: document)
+                let page = AnyView(CADBuildingEditorPage(document: document))
+                (buildingProfessionalPresenter?.navigationHost(document, page) ?? page)
+                    .environment(\.cadBuildingProfessionalPresenter, buildingProfessionalPresenter)
+            }
+            .onChange(of: showBuildingWorkspace) { _, visible in
+                if !visible { buildingNavigationLease = nil }
             }
             .inspector(isPresented: $showMeshInspector) {
                 CADMeshInspectorContent(document: document, viewModel: viewModel,
@@ -2521,6 +2535,10 @@ struct FloeCADEditorView: View {
 
     private func requestWorkbenchDestination(_ destination: CADWorkbenchDestination) {
         guard !document.isClosed else { return }
+        if case .building = destination {
+            guard !buildingWorkspaceActive else { return }
+            buildingNavigationLease = buildingProfessionalPresenter?.retainNavigation(document)
+        } else if !showBuildingWorkspace { buildingNavigationLease = nil }
         pendingWorkbenchDestination = (destination, ObjectIdentifier(document))
         showWorkbenchTools = false
     }
@@ -2528,10 +2546,13 @@ struct FloeCADEditorView: View {
     private func finishWorkbenchDestination() {
         guard let pending = pendingWorkbenchDestination else { return }
         pendingWorkbenchDestination = nil
-        guard pending.owner == ObjectIdentifier(document), !document.isClosed else { return }
+        guard pending.owner == ObjectIdentifier(document), !document.isClosed else {
+            if !showBuildingWorkspace { buildingNavigationLease = nil }
+            return
+        }
         switch pending.destination {
         case .building:
-            guard !buildingWorkspaceActive else { return }
+            guard !buildingWorkspaceActive else { buildingNavigationLease = nil; return }
             showMeshInspector = false
             showBuildingWorkspace = true
         case .mesh: showMeshInspector = true

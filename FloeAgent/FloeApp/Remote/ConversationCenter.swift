@@ -25,6 +25,7 @@ import FloeSkills
 import FloeSync
 import FloeTools
 import FloeExecution
+import FloeLaTeXHostAdapter
 import FloeWorkspace
 #if canImport(NaturalLanguage)
 import NaturalLanguage
@@ -3721,9 +3722,17 @@ final class ConversationCenter: ObservableObject {
         if isTemporary || runSurface == .canvas {
             runExecutionEnvironmentID = nil
         } else if isNotesAssistant {
-            runExecutionEnvironmentID = await Self.ensureRunEnvironmentBinding(
-                registry: environment.environmentRegistry, conversationID: conversationID,
-                taskRoot: notesScratchRoot)
+            if let notesScratchRoot {
+                do {
+                    let pin=try await environment.taskExecutionEnvironments.resolveNotesBinding(conversationID:conversationID,runID:runID,root:notesScratchRoot)
+                    runExecutionBinding=pin;runExecutionEnvironmentID=pin.target.environmentID
+                    notesExecutionConfined=pin.target.backend == .linuxVM
+                } catch {
+                    notesExecutionConfined=false;externalEnvironmentUnavailable=error.localizedDescription
+                    let pin=try await TaskExecutionBindingStore(database:environment.database).pinRetainedBinding(runID:runID,conversationID:conversationID)
+                    runExecutionBinding=pin;runExecutionEnvironmentID=pin?.target.environmentID
+                }
+            } else {runExecutionEnvironmentID=nil}
         } else if let root = taskRootLease?.url {
             do {
                 let pin = try await environment.taskExecutionEnvironments.resolveBinding(
@@ -3749,6 +3758,7 @@ final class ConversationCenter: ObservableObject {
         }
 
         await environment.biologyComposition.prepare()
+        await environment.latexComposition.prepare()
         let catalogExecutor = CatalogToolExecutor()
         let availableDescriptors = catalogExecutor.allDescriptors
         let skills: SkillsCenter.RuntimeSelection
@@ -4005,6 +4015,7 @@ final class ConversationCenter: ObservableObject {
         // invalid project id fails closed.
         var serviceStorePaths = environment.workbenchCenter.typedServiceStorePaths
         serviceStorePaths.merge(environment.biologyComposition.typedServiceStorePaths) { _, native in native }
+        serviceStorePaths.merge(environment.latexComposition.typedServiceStorePaths) { _, native in native }
         // The real instance supplies its container, including custom/migrated
         // roots and works created later in this same run. No model path or
         // organizational folder is treated as ownership.
@@ -4120,6 +4131,9 @@ final class ConversationCenter: ObservableObject {
                 let biology = await environment.biologyComposition.discoverableToolNames(for: biologyCatalogContext)
                 names.subtract(biologyToolNames)
                 names.formUnion(biology)
+                let latex=await environment.latexComposition.discoverableToolNames(for:biologyCatalogContext)
+                names.subtract(LaTeXHostTools.names)
+                names.formUnion(latex)
                 return names
             }
         )
@@ -4159,6 +4173,7 @@ final class ConversationCenter: ObservableObject {
             }
         }
         let studioContext: String?
+        let latexContext = isTemporary ? nil:(try? await environment.latexComposition.runtimeContext(conversationID:conversationID))
         do {
             studioContext = try await environment.studioCoordinator.workRuntimeContext(
                 conversationID: conversationID, runID: runID, temporary: isTemporary,
@@ -4270,6 +4285,7 @@ final class ConversationCenter: ObservableObject {
                     skills.instructions,
                     authoringInstructions,
                     studioContext,
+                    latexContext,
                     notesContext,
                     runSurface == .ordinary || isTemporary
                         ? AppleCapabilityPreferences.skillInstructions() : nil
@@ -4350,7 +4366,11 @@ final class ConversationCenter: ObservableObject {
                 conversationID: taskPolicy.conversationID,
                 store: store,
                 executionConfined: notesExecutionConfined,
-                networkPermitted: taskPolicy.networkAllowed != false
+                networkPermitted: taskPolicy.networkAllowed != false,
+                latexAuthorization:{[weak environment] action in
+                    guard let environment else {return false}
+                    return try await environment.latexComposition.authorizeNotesAction(action,conversationID:taskPolicy.conversationID)
+                }
             )
         }
         let packageBackend = reviewBackend(modelID: modelPreferences.packageReviewModelID

@@ -1,0 +1,924 @@
+{
+  "status": "excluded from production package",
+  "upstreamCommit": "8c0126a9653239a2e6e0a5274af9b8510f643030",
+  "files": [
+    {
+      "path": "crates/engine_xdvipdfmx/xdvipdfmx/dvipdfmx.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "1ac8fb0d6f7d7ff389c55aece5bda77714d27b119d723e157d201a2872c92409",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/engine_xdvipdfmx/xdvipdfmx/dvipdfmx.c"
+    },
+    {
+      "path": "crates/engine_xetex/xetex/teckit-Common.h",
+      "declaredLicense": "LGPL; exact upstream terms required",
+      "sha256": "bbc9079b26e121b009b596c29d7b9f0cca9e2370ac7a0e3bc3cc6b072d63ae38",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/engine_xetex/xetex/teckit-Common.h"
+    },
+    {
+      "path": "crates/engine_xetex/xetex/teckit-Engine.cpp",
+      "declaredLicense": "LGPL; exact upstream terms required",
+      "sha256": "707befff4b320ea0bba1fb548798de39a28f9899717fc325939baa962b39f8b3",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/engine_xetex/xetex/teckit-Engine.cpp"
+    },
+    {
+      "path": "crates/engine_xetex/xetex/teckit-Format.h",
+      "declaredLicense": "LGPL; exact upstream terms required",
+      "sha256": "5d62b9d21f0352eccd030956ebd8e7a88eea47dfac6a239049293cd3c54bf7aa",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/engine_xetex/xetex/teckit-Format.h"
+    },
+    {
+      "path": "crates/engine_xetex/xetex/teckit-c-Engine.h",
+      "declaredLicense": "LGPL; exact upstream terms required",
+      "sha256": "89f239df5a46b9a1d1062b323d85f0176bd550a25dbd2c86ec5285866567deaf",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/engine_xetex/xetex/teckit-c-Engine.h"
+    },
+    {
+      "path": "crates/engine_xetex/xetex/teckit-cxx-Engine.h",
+      "declaredLicense": "LGPL; exact upstream terms required",
+      "sha256": "2773012c442c658ce097cfa1301a415c1bdb9bd0c5c06e5f0da783b0d6b16991",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/engine_xetex/xetex/teckit-cxx-Engine.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-agl.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "b053526bb1c5b830476ba31f150405a36a82677a5f0b70b2faf67225900b45e5",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-agl.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-agl.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "ecae1f665c98e66bf3505a26eb80ad4c970041f0898c9749a6f7ed625046d980",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-agl.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-bmpimage.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "7385a2d42ad7160176492508fa6cbf4e28d6fb288cc8651ead310c0c05057650",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-bmpimage.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-bmpimage.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "80d974aa61fae60404515703cd5bd8fefd5e1377def32d54d2f4f8d0988f89ce",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-bmpimage.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cff.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "9361950db78b61e32094da0d88a2f2f7f2504da3e94da0f01a5afb2ff53d2318",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cff.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cff.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "322fcebc8eb19a7de57b5a985499ba2a7a9f4f59fa658beefda0fc68e9b576ec",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cff.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cff_dict.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "1ca4457e569d7a7f70816777b9d2f2acddbd9fd7d61e832ea74408440a68c15c",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cff_dict.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cff_dict.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "4c6a570b7f42a20e4394d6f1e1c6148862288bea3e2d09f4ce7e745d625a9984",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cff_dict.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cff_limits.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "a28814074f4d1a07e10b24be4437ba02ee29414c3addae5b45852a2e1b0ef4a7",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cff_limits.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cff_stdstr.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "115ed60b0552036d5676409f6cb35c362e6413e29f90ea9405d3bd85367d3cac",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cff_stdstr.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cff_types.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "8380a8d3ab0928bdc3e5e29d8ebcf69aa7ae21a12f03f114424a6ab3736323fa",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cff_types.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cid.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "c262ae13fbec362f963c242b9d96aa734089f22231f86efe2a18eaed1dd1f3c3",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cid.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cid.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "f4a229251e9dcd3c4ffebc8fe1f3997c649ec8f7795d19e591574a2532a1c79f",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cid.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cid_basefont.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "0b3e82070e24f934a90af74bc98d28c327b4b11e46c173bd6ed237b4ea761dab",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cid_basefont.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cidtype0.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "1adb6cdb15a4c800be93469e9f5c5325a2c644fd4efa7506661b7c2b90b38eae",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cidtype0.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cidtype0.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "cefff13211008181b6a24c2c65cde45e6a042b5faa95e2aa2be900d077471d3b",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cidtype0.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cidtype2.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "002f43328faeed722abebba063be5fd28bbe0af4120834c44eadcb895572fdf5",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cidtype2.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cidtype2.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "b8f7318cfd61437dc16cda290204b4c4b969c068289b3ff6aa30a7cb050728bc",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cidtype2.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cmap.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "8759c6580ce66ef8d2a38fe0a3324ae9bfc0082fb93cab01a80d30462a3bb46e",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cmap.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cmap.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "bd6608c591142162b909a55d267382a8b3eb580a6798e179d98cb37be7b3c206",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cmap.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cmap_p.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "21bb86e79b79603f226e08e743d97c73244cbc4c8c8a2c2f64417232161f3983",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cmap_p.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cmap_read.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "807a744fe5c2e5a7a7917f6ac184778099ae0f092b55f23fcd784095e9434cee",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cmap_read.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cmap_read.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "05cc7598816bb88861355aa32750ca54b7414c08eea7e62e41f48bcbae37852d",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cmap_read.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cmap_write.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "7120289a21366dff6afda0770bcdcd874d73b8ee007551e32ab996c1b5065db1",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cmap_write.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cmap_write.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "2aacc95e1a06a7a46b7a4be8bc758ac679e4d456b9c77b605d054d45e0f8176e",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cmap_write.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cs_type2.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "1f4d9e57b5a4a23a1afd4804f34467056bcaa78756c7b4a9c0c1cf12602f0e7d",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cs_type2.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-cs_type2.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "78890f3c94b409c3338eb8b4a42fa9483210d12aa15dbc3d33e1ba4e5c131007",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-cs_type2.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-dpxconf.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "d75a50561e30a5bd0b53ed8ea9d3480ee4934c54b6a1e0cc0ec218bf22004a24",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-dpxconf.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-dpxconf.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "69b872a08cabfb2975e640427fd16ab94446e4e8ea5f8e4740dfd7b42695ac1f",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-dpxconf.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-dpxcrypt.c",
+      "declaredLicense": "LGPL; exact upstream terms required",
+      "sha256": "9cf90def2820184f3ef7c858a14a51699a28b7d260fb4c6026c7d8501169ad4b",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-dpxcrypt.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-dpxcrypt.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "e78bf3c9bbcc933149ac4a45e04d4eefae28b96dcc87d4708bdc4bf705eb3a79",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-dpxcrypt.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-dpxfile.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "e527f463c94f89e81dcc10e7fcc90991b18324810011b66742366ba8d73a029f",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-dpxfile.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-dpxfile.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "b6bef961e20d5a48734d736c5233ba5b81513ebc8c6bfd3f631d1e5dbd113afe",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-dpxfile.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-dpxutil.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "822f090781d63e7c040f5a960fe737e4e013fdf46c17d814c6defb22e12f3d91",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-dpxutil.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-dpxutil.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "24d7e1afcea1c2ef539f646acd917c484e356991f6dd8e0d8a10c96cd35182bf",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-dpxutil.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-dvi.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "bb6f1b32cdcc6588ee1c8998190162814b6508dd97bf11ce4154b48a631036ed",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-dvi.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-dvi.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "a1cd3c566025fdb3dbfcf2a0c5d8800ae4b2db77206fb1d7ef8bafb098277ea0",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-dvi.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-dvicodes.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "2a2e9105415b192d45da9d2b6dbe2faddfbd9267f6eb0a44f90bb04d4bfa22a0",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-dvicodes.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-dvipdfmx.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "8662766a69ee556bc49b7f6d191774e7272137e4fddd4cd1c12aac556a5e1498",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-dvipdfmx.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-dvipdfmx.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "9e7b3d01e376e399c959154d79f544afb9ccf5c5dec0d2c40b2bc5826ddc93dc",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-dvipdfmx.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-epdf.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "911f8d96695e43b145f3266b75e092519baa1e4b0041a84cbb0809e14c9ef879",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-epdf.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-epdf.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "2a8bc5794e5f23238ce92897a8e9370482f54c7c4ded93398b23e21dd8a874b7",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-epdf.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-error.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "bcc548423e55c22bf945b47eb57b9a77a1c5a8cd752d1d7376a587f5d8583fe3",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-error.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-error.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "7e5bfa53fd0d9f66106533bc260f285a727b044749351ab341dd6b9fb80e0092",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-error.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-fontmap.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "14524f3a990e1c963d42b73255445fbc7fcd3f6a2fdb71270dc454c3a641834a",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-fontmap.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-fontmap.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "bbe00b2d2356f394ddeed71b0a8eae479603d23eedcb9d5b3c8eb08b1c79b8a7",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-fontmap.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-jp2image.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "bf1d3504a7be2f47b7eef9e6755b4a37dfba046d9a6fd82f4ea115605c8f08c5",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-jp2image.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-jp2image.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "4ca1dd0f1e2cfc873df25bd4ad97fb13c696453a3f97ac9f722981898bd2746a",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-jp2image.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-jpegimage.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "0cc02c4e732d19b05a1de076f35364e0a70e47573a4147e3bfc66a4906ebe7f0",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-jpegimage.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-jpegimage.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "d5b3477ee91d24300f4b484cb4d23c6c387af9375f8713744b5fdca600c9cb80",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-jpegimage.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-mem.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "d5f0120ff579d35a2d97748faa0c1316a4b46fa3d2054703183af4e0c536c47a",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-mem.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-mem.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "33ba2f56807c761d20662d51f23205dfe65926473304b9502325a6748cdaf508",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-mem.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-mfileio.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "92c912f63597ca36598bd5bd2ed40d69de93b0763ea7f660e92c83080141d103",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-mfileio.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-mfileio.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "bf54c049a4bff3862084657b1da0059cbe673729849d3742f1635ff19058a0e7",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-mfileio.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-mpost.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "cfbbc1ade3e46118025bf0b0030d8f5a35fbc21ef48ca9f91522e2cfb4c8d96b",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-mpost.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-mpost.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "68aa5f59ea6fe344e0d07c0caac6716cbf38145e2cb0f7dba085e726c6d3e08d",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-mpost.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-numbers.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "c98ae8c078cb52b9591170a984770c56f2091b3435bf57914e965ea1c016181b",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-numbers.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-numbers.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "c3aa9cd823c09e5a4c614d3ae8e5ded3482d57eb01fa08583b2737c38109ff3b",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-numbers.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-otl_opt.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "c791d000e7de63c4969cb3554542b43f82c12f20a73f37413b397d1341538b8a",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-otl_opt.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-otl_opt.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "d5218dd57187a2d6c6f8c908d516de7d7efe7ff850de51513a78db364d8f6759",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-otl_opt.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfcolor.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "2b17f242c491bb8e8eddb1f7c9b0c552d0487519c196b60208ec0bd32ca909a3",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfcolor.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfcolor.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "a21c4846897ce4f3df303e7e773984eab536683fa6baa6402613012a4262561c",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfcolor.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfdev.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "7d79ac4610d77b1cc9058f6f7df1ad6463a305868e9ac7faf41d0b584dd34484",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfdev.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfdev.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "40d1568c2ce721c5935707d1d9b526737899cfd49a8eb20641e62599c5d7cae2",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfdev.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfdoc.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "c0e39efc014a50385ffa6fabae8e5de810b0a1b3cc3a4b45204eb1090785124e",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfdoc.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfdoc.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "d10a2daf69b675ee54aaed857f55bfe485135a9f5312e3ce0b5130f79b277acb",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfdoc.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfdraw.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "4dfc200cf00427d122f1dc0d5ed81401f3e0035d967e4892704b9361dbeb16ff",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfdraw.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfdraw.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "c60671c69b0dac518f28e0a0ccb04a81f5152227204354783936a171850c2ac2",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfdraw.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfencoding.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "5c1e214b084753fc5e293ffca30c8ec4c608cca72cacc094983f3621e0a15a7d",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfencoding.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfencoding.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "31ef9625dadeb9bbda220d17f11041bb2a62f22c14080ad544f8d4447412895e",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfencoding.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfencrypt.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "de8531d1a8e2e766dc8db9e3abb4a903ab9232c633159509672a32b69edfa5a8",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfencrypt.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfencrypt.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "6613541a47d400773b7694671e7c41b06188fad87253948e3c74b25bc65caba8",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfencrypt.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdffont.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "afb68f5904dee79a7e9c9471987071fd4862df487a957d0c070518a31d31f076",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdffont.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdffont.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "0a1d4f7baeb6ca641e3dace918d62a4abbf0bae9c707dda5581ef1d105b9332b",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdffont.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdflimits.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "0bf7d9e3567d84f3abd5f93c33bf07f501ab92ebb2c64de78e5f61bac63ae6d7",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdflimits.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfnames.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "de523804a64275f4648f7e397613c53e6be95a9c7339865b842c5b21b8270260",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfnames.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfnames.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "998593690609ef9db3dffb86502bc461521d32652b068bd306065646c51c8cad",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfnames.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfobj.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "b6f2b4024f448a1def4c88d292d852039b402a28233db43d7ee1e7634c5202ee",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfobj.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfobj.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "b3471fefe54ec962839d0f9664e3e2c7cadfdf6e8dfac323486ec4d22ae695f3",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfobj.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfparse.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "0b36ea0f4b7e71e7ba3dc450da8e1a281e0163828e788a484b9e643b6c28a363",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfparse.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfparse.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "a78558cb5b0a0a5b6dbf3afbb7e6731b7723d37135bf147c3fe6dd17a43e4605",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfparse.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfresource.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "a1414f851e1b0789110003df3a6229872585c115444bd32fd50b7f5b487a7c3b",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfresource.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfresource.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "4952da8b0f2ba09542c2ea1d5f4344a0aa44016f57d705a98d11105e80957b85",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfresource.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfximage.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "5f9eb181a8fa164973874493a6ba685001f80f45a8d04ca74551f70d5fecc750",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfximage.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pdfximage.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "31793d3dfc8cbe2738164a90007d914b79412b99922979f6cce8ebf847efaa44",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pdfximage.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pkfont.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "c6d39ed8f65be78b672cb39c0935b1e4c50ff7a90771bff27e88368af24261ad",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pkfont.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pkfont.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "fe441bb635cd5f80e90bb01839f224660b3036d7fc3fbd9e30444d51521d4910",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pkfont.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pngimage.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "512420a1a83490720391e7e99a7b00b8a3ca5c479fc6bbd0a225334c72687074",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pngimage.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pngimage.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "b8c2b29d9e7d0d6f1ce139f37b0e57e3617b9e541aafd11f7d42a2eb7232d36c",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pngimage.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pst.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "2f7139e6b82f979f6c6f178ba8c83d67368cc97539fb7bdd4ce3d5344dcb6238",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pst.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pst.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "aefaf91d7d3f966e819cb3590b9b7acbd37bad35095f5f3341f8fc2da6a3a41a",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pst.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pst_obj.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "b28b3d5777350fb3c94d3e76db09c10e19be15d445436c90da693b156d848cb7",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pst_obj.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-pst_obj.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "36ce613e562a5f956a13dc1b76741a157eb9c084ecf875fd49e3dbc54e52d699",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-pst_obj.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-sfnt.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "2697f73bf740955bcf528c154a640b3ee61e52ea6c5ba4d3e1b8d1b23de7ab94",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-sfnt.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-sfnt.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "b17e71ec9f82bc44a1b91846fd48074b0ce8bfa282263d6dec458775bb79b3a0",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-sfnt.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_color.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "ac1c7d0d948becf459220c8ba9c08ae1f9bb7e33a258a342cc62ed66ee59d939",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_color.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_color.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "a0a4d72eaee1fecfb00029da97346541de947ff9b8a6e87b3b3bcdb176dea2ea",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_color.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_dvipdfmx.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "07cd37f30310a372220a9bec20f402c283254ea9faf90dead85bbacd64e543ee",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_dvipdfmx.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_dvipdfmx.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "173261db61302cd3c30bd3065e1e81f64bcfff8f1367355025a08ee6c500580e",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_dvipdfmx.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_dvips.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "12821047190e834398e0bb6bd034528e3b809e367ee346be6e54bbf094081635",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_dvips.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_dvips.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "012f501c27ece95374b23373ea441bff705e63819b92624c8c97b3a243887aee",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_dvips.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_html.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "b1c2ddd062d45733bbfad2fc57413ccb020e70e8b4005b46a20997d0ac0e74cf",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_html.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_html.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "76b184a6a5a3d6b9134a40d00a88ea7b7527ef6ba5025977ffb81128b312b569",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_html.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_misc.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "3f175e66385814eb61393216a9dfd5d3ea5a23fe20ece2749dd0e5c34546f916",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_misc.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_misc.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "d188a3f2696fa69ae264e1571d642b5432180867fe978ba438c6837d487ea4bb",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_misc.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_pdfm.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "f43fdabf0f57a7fd18477f429d0adbd9603bb316754d234d0fcc5e793cc99dce",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_pdfm.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_pdfm.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "53ebadd8a56dc169f00bc0c80df68ab45109815b8c117aba5adfba19f82b5192",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_pdfm.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_tpic.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "10e11e2e8ed63bcb7e4cc2684bb2f3d225d3015ca590d825cd170ccf6f80ebbd",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_tpic.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_tpic.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "006c0739fa4cb2aa3f92ce72fb761154eb0468232b7a46c23b0bb33a795d3094",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_tpic.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_util.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "67035745feb09736c9bd3b07764670be6809aeda9f5ebd3378c12c7c81e4b528",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_util.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_util.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "4081f3ac9ef322746dee57972444ebc66285fc49671f4cddd6dfc1c78fa43515",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_util.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_xtx.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "e33a6b8626b4060653d572013f0de74fb7ea28c87ad0c2da04b1ca7d6cd7742d",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_xtx.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-spc_xtx.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "aebc963a4e3a9c6df3b69146b908b3f20e9398f8787ac42f0eecbb6af150780d",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-spc_xtx.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-specials.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "aec5f1c7c3e98febc522ec91318b7e96c220b5101003448af19ba9e7e04fe0de",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-specials.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-specials.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "5cf4f27b847b0c87d80ec4ba6323fa9ac85a4a0eaf7536e4b65d09a67f12f24b",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-specials.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-subfont.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "1a65c5e35a884d7d153bbee51acd88a1fdcfe99fe09809ef7c94f0ac9ec92482",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-subfont.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-subfont.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "0a4f9cd70003c48834a3b3fa4f3360798e5b9867ffdfe3b2c693bd32b96639d4",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-subfont.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-system.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "154e3f2a5962aeb9a78e927a5e8623e04ea6176360ef296823713a23d8d4c661",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-system.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-t1_char.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "d06418bd46e2bda5a5ba2e64c1dd3d0fa82c1f2d3efec49608a1f862fe093898",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-t1_char.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-t1_load.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "a72279a3f6c4a79749f67be23547a707ffa43a1567e625a244eb8f7db11b5dd4",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-t1_load.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-t1_load.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "0a21ea0ed4e7e2c6030dc23e5cc339e4b3b1caeb88d2e7422a85f081720f9192",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-t1_load.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-tfm.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "f01e4d6f749bbcc698bcac7dc92febb0134bc2ed8cb4b4299026396fe39f3980",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-tfm.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-tfm.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "d8c35cb1fbe5176ab04ab7be449e57cdbe0f14a89d0aaea4b67c8cfb949f6087",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-tfm.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-truetype.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "5dd9c3d82db87d44d1cb0f44fbe4639e0c5f8a0a393d04a72a65f4e5aab8c78f",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-truetype.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-truetype.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "3dd73f1f24c25b7a8dd18ded091b1dd1db22d076fa060c721a270975e4b8e33d",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-truetype.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-tt_aux.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "0ddc521a5c9cebc7ed8e2f557f3708b6b8bc01d7feacf8c8280fc5d23000e865",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-tt_aux.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-tt_aux.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "31b8e38d9459500852dd086941e044ac0c2c6e7726dca6f784846da343af39b7",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-tt_aux.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-tt_cmap.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "39038331b40fb6e78f9189c59c4ca836d163a54e00cec3ef36d910fef08a87fc",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-tt_cmap.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-tt_cmap.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "45d0727e30ecf1a57e852e3b90d4db4b15b0e02e8d89de0a9dc3dc238d874bad",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-tt_cmap.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-tt_glyf.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "a10190c8948183a265f6ed36bffa1b7caa2dd25f29d206fa3d874910d33e235f",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-tt_glyf.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-tt_glyf.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "94a7f9b57ed4f01bc272f20b049cfc551915c8d10cc7e92e10cc07297cab3bbd",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-tt_glyf.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-tt_gsub.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "919867d28755579681b9983ba8a7643dba07f3aa99a0378187449dd978e8b44b",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-tt_gsub.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-tt_gsub.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "265d2093dbdcf1102515c6f9ba67291372790cd0ab172474051a5c1dc959093d",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-tt_gsub.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-tt_post.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "48486243f3696ff8e5fd987efa7e2bc6e41eeea7d16367a05a71f54c86ffa38d",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-tt_post.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-tt_post.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "eb2a6e29406de9807cf649268ab3048568f1c8eb4708ff1c59b6b2e9abb2cd86",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-tt_post.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-tt_table.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "9177526860fc0d1b797f3c463a487f3314a72eca45660cb09e29f5386efdf2a2",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-tt_table.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-tt_table.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "d4406d5a63584f338c05245ca29da779ba913b6bbb7de1e24aad2bbdd512c7d8",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-tt_table.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-type0.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "02325da06324b6ebca1425aba48e55135084f80f67cbe417d2a5d63bef07075c",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-type0.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-type0.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "69b0f75902c451d436b84a716c6546863500d308db51cf9ebd7b1db5b9a47b69",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-type0.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-type1.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "3540c1de8e90cde3ff1a8e740410419275db9bbaac21c2056f8b1742189a76d4",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-type1.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-type1.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "8bc0423d2e0f116a7fbddb3c77358ca42b8238c9c5958597a528e5d83acaa1b8",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-type1.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-type1c.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "b1824f521546d97b81addb8413cf12b4b47272f3b1ddd278a4f830010b8664c5",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-type1c.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-type1c.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "9fa5de82ab5d6deba109bea3690e2d1aebf6ae82e5b01e84587a05a2947106fd",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-type1c.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-unicode.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "a5244b0add2e868e8c43f462b7235383216408888384587822e26334fa48fd0c",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-unicode.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-unicode.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "b9a87b6419ef3989bf7ff06076c17b5db57fd36f6e023c9b443493dba2a4abe0",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-unicode.h"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-vf.c",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "1cab1e11df05061236c7d5bf0e52f0f1191f67c2bb940607ae9fe617e8653b5d",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-vf.c"
+    },
+    {
+      "path": "crates/pdf_io/pdf_io/dpx-vf.h",
+      "declaredLicense": "GPL-2.0-or-later",
+      "sha256": "9cd24204edc8e2b13d1da7dfc4fe74a8cbf0247e956633a79315097baf7e8eb9",
+      "source": "https://github.com/tectonic-typesetting/tectonic/blob/8c0126a9653239a2e6e0a5274af9b8510f643030/crates/pdf_io/pdf_io/dpx-vf.h"
+    }
+  ]
+}

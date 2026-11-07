@@ -1,0 +1,618 @@
+--- a/crates/bridge_harfbuzz/Cargo.toml
++++ b/crates/bridge_harfbuzz/Cargo.toml
+@@ -31,7 +31,7 @@
+ tectonic_dep_support = { path = "../dep_support", version = ">=0.1.0,<1" }
+ tectonic_cfg_support = { path = "../cfg_support", version = ">=0.1.5,<1" }
+ 
+-[target.'cfg(target_os = "macos")'.dependencies]
++[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+ tectonic_mac_core = { path = "../mac_core", version = ">=0.1.0,<1" }
+ 
+ [features]
+--- a/crates/bridge_harfbuzz/build.rs
++++ b/crates/bridge_harfbuzz/build.rs
+@@ -42,7 +42,7 @@
+         let mut sep = "cargo:include-path=";
+ 
+         let is_macos_external =
+-            target_cfg!(target_os = "macos") && env::var("CARGO_FEATURE_EXTERNAL_HARFBUZZ").is_ok();
++            (target_cfg!(target_os = "macos") || target_cfg!(target_os = "ios")) && env::var("CARGO_FEATURE_EXTERNAL_HARFBUZZ").is_ok();
+ 
+         dep.foreach_include_path(|p| {
+             // HACK: On macOS, the default brew harfbuzz for some reason points into the harfbuzz
+--- a/crates/bridge_harfbuzz/src/lib.rs
++++ b/crates/bridge_harfbuzz/src/lib.rs
+@@ -37,7 +37,7 @@
+     #[allow(unused_imports)]
+     use tectonic_bridge_freetype2 as clippyrenamehack1;
+     #[allow(unused_imports)]
+-    #[cfg(target_os = "macos")]
++    #[cfg(any(target_os = "macos", target_os = "ios"))]
+     use tectonic_mac_core as clippyrenamehack2;
+ }
+ 
+--- a/crates/cfg_support/src/lib.rs
++++ b/crates/cfg_support/src/lib.rs
+@@ -127,11 +127,11 @@
+ /// Supported syntaxes:
+ ///
+ /// ```notest
+-/// target_cfg!(target_os = "macos");
+-/// target_cfg!(not(target_os = "macos"));
+-/// target_cfg!(any(target_os = "macos", target_endian = "big"));
+-/// target_cfg!(all(target_os = "macos", target_endian = "big"));
+-/// target_cfg!(all(target_os = "macos", not(target_endian = "big")));
++/// target_cfg!(any(target_os = "macos", target_os = "ios"));
++/// target_cfg!(not(any(target_os = "macos", target_os = "ios")));
++/// target_cfg!(any(any(target_os = "macos", target_os = "ios"), target_endian = "big"));
++/// target_cfg!(all(any(target_os = "macos", target_os = "ios"), target_endian = "big"));
++/// target_cfg!(all(any(target_os = "macos", target_os = "ios"), not(target_endian = "big")));
+ /// ```
+ // Here we go with some exciting macro fun!
+ //
+--- a/crates/engine_xetex/build.rs
++++ b/crates/engine_xetex/build.rs
+@@ -108,7 +108,7 @@
+ 
+     // Platform-specific adjustments:
+ 
+-    let is_mac_os = target_cfg!(target_os = "macos");
++    let is_mac_os = (target_cfg!(target_os = "macos") || target_cfg!(target_os = "ios"));
+ 
+     if is_mac_os {
+         c_cfg.define("XETEX_MAC", Some("1"));
+--- a/crates/engine_xetex/xetex/xetex-macos.c
++++ b/crates/engine_xetex/xetex/xetex-macos.c
+@@ -41,7 +41,12 @@
+ #include "teckit-c-Engine.h"
+ #include "xetex-ext.h"
+ 
+-#include <ApplicationServices/ApplicationServices.h>
++#include <CoreText/CoreText.h>
++
++/* Preserve the historical fixed-point constant without importing Carbon. */
++#ifndef fract1
++#define fract1 ((int32_t)0x40000000L)
++#endif
+ 
+ 
+ static inline double
+--- a/crates/engine_xetex/xetex/xetex-xetexd.h
++++ b/crates/engine_xetex/xetex/xetex-xetexd.h
+@@ -24,7 +24,7 @@
+ /* include this here to avoid conflict between clang's emmintrin.h and
+  * texmfmem.h. Should be removed once a fixed clang is widely available
+  * http://llvm.org/bugs/show_bug.cgi?id=14964 */
+-#include <ApplicationServices/ApplicationServices.h>
++#include <CoreText/CoreText.h>
+ #endif
+ 
+ #define odd(x) ((x) & 1)
+--- a/crates/geturl/src/reqwest.rs
++++ b/crates/geturl/src/reqwest.rs
+@@ -3,6 +3,7 @@
+ 
+ //! A URL-get backend based on the `reqwest` crate.
+ 
++use std::time::Duration;
+ use reqwest::{
+     blocking::{Client, Response},
+     header::{HeaderMap, RANGE},
+@@ -24,7 +25,7 @@
+     type RangeReader = ReqwestRangeReader;
+ 
+     fn get_url(&mut self, url: &str) -> Result<Response> {
+-        let res = Client::new().get(url).send()?;
++        let res = Client::builder().https_only(true).connect_timeout(Duration::from_secs(5)).timeout(Duration::from_secs(60)).build().expect("fixed resource HTTP configuration").get(url).send()?;
+         if !res.status().is_success() {
+             bail!(
+                 "unexpected HTTP response code {} for URL {}",
+@@ -76,6 +77,9 @@
+         });
+ 
+         let res = Client::builder()
++            .https_only(true)
++            .connect_timeout(Duration::from_secs(5))
++            .timeout(Duration::from_secs(60))
+             .redirect(redirect_policy)
+             .build()?
+             .head(url)
+@@ -114,7 +118,7 @@
+     fn new(url: &str) -> ReqwestRangeReader {
+         ReqwestRangeReader {
+             url: url.to_owned(),
+-            client: Client::new(),
++            client: Client::builder().https_only(true).connect_timeout(Duration::from_secs(5)).timeout(Duration::from_secs(60)).build().expect("fixed resource HTTP configuration"),
+         }
+     }
+ }
+--- a/crates/io_base/src/filesystem.rs
++++ b/crates/io_base/src/filesystem.rs
+@@ -115,8 +115,27 @@
+             return Err(TectonicIoError::PathForbidden(path.to_owned()).into());
+         }
+ 
+-        let mut combined = PathBuf::from(&self.root);
+-        combined.push(path);
++        // Floe: every document read is confined, including absolute probes and symlinks.
++        let root = self.root.canonicalize()?;
++        let joined = root.join(path);
++        let mut combined = PathBuf::new();
++        for component in joined.components() {
++            match component {
++                std::path::Component::ParentDir => { combined.pop(); }
++                std::path::Component::CurDir => {}
++                other => combined.push(other.as_os_str()),
++            }
++        }
++        if !combined.starts_with(&root) {
++            return Err(TectonicIoError::PathForbidden(path.to_owned()).into());
++        }
++        let mut ancestor = combined.as_path();
++        while !ancestor.exists() {
++            ancestor = ancestor.parent().ok_or_else(|| std::io::Error::other("Invalid document path"))?;
++        }
++        if !ancestor.canonicalize()?.starts_with(&root) {
++            return Err(TectonicIoError::PathForbidden(path.to_owned()).into());
++        }
+         Ok(combined)
+     }
+ }
+--- a/crates/mac_core/build.rs
++++ b/crates/mac_core/build.rs
+@@ -3,13 +3,13 @@
+ use tectonic_cfg_support::target_cfg;
+ 
+ fn main() {
+-    let is_mac_os = target_cfg!(target_os = "macos");
++    let is_mac_os = (target_cfg!(target_os = "macos") || target_cfg!(target_os = "ios"));
+ 
+     if is_mac_os {
+         println!("cargo:rustc-link-lib=framework=Foundation");
+         println!("cargo:rustc-link-lib=framework=CoreFoundation");
+         println!("cargo:rustc-link-lib=framework=CoreGraphics");
+         println!("cargo:rustc-link-lib=framework=CoreText");
+-        println!("cargo:rustc-link-lib=framework=AppKit");
++        if target_cfg!(target_os = "macos") { println!("cargo:rustc-link-lib=framework=AppKit"); }
+     }
+ }
+--- a/crates/mac_core/src/lib.rs
++++ b/crates/mac_core/src/lib.rs
+@@ -3,7 +3,7 @@
+ //! This currently includes only Foundation and CoreText, as those are the libraries needed by
+ //! Tectonic.
+ 
+-#![cfg(target_os = "macos")]
++#![cfg(any(target_os = "macos", target_os = "ios"))]
+ 
+ use std::mem::ManuallyDrop;
+ use std::ptr::NonNull;
+--- a/crates/xetex_layout/Cargo.toml
++++ b/crates/xetex_layout/Cargo.toml
+@@ -34,10 +34,10 @@
+ cc = "^1.0.66"
+ tectonic_cfg_support = { path = "../cfg_support", version = ">=0.1.3,<1" }
+ 
+-[target.'cfg(not(target_os = "macos"))'.dependencies]
++[target.'cfg(not(any(target_os = "macos", target_os = "ios")))'.dependencies]
+ tectonic_bridge_fontconfig = { path = "../bridge_fontconfig", version = ">=0.1.0,<1" }
+ 
+-[target.'cfg(target_os = "macos")'.dependencies]
++[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+ tectonic_mac_core = { path = "../mac_core", version = ">=0.1.3,<1" }
+ 
+ [features]
+--- a/crates/xetex_layout/layout/tectonic_xetex_layout.h
++++ b/crates/xetex_layout/layout/tectonic_xetex_layout.h
+@@ -8,7 +8,7 @@
+ #include "harfbuzz/hb.h"
+ #include "harfbuzz/hb-ft.h"
+ #ifdef XETEX_MAC
+-#include <ApplicationServices/ApplicationServices.h>
++#include <CoreText/CoreText.h>
+ #else
+ #include <fontconfig/fontconfig.h>
+ #endif
+--- a/crates/xetex_layout/src/c_api.rs
++++ b/crates/xetex_layout/src/c_api.rs
+@@ -2,7 +2,7 @@
+ use crate::font::Font;
+ use std::collections::BTreeMap;
+ use std::sync::Mutex;
+-#[cfg(not(target_os = "macos"))]
++#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+ use tectonic_bridge_fontconfig as fc;
+ 
+ mod engine;
+@@ -26,10 +26,10 @@
+     pub y_max: f32,
+ }
+ 
+-#[cfg(not(target_os = "macos"))]
++#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+ pub type Fixed = i32;
+ /// cbindgen:ignore
+-#[cfg(target_os = "macos")]
++#[cfg(any(target_os = "macos", target_os = "ios"))]
+ pub type Fixed = u32;
+ pub type OTTag = u32;
+ pub type GlyphID = u16;
+@@ -37,15 +37,15 @@
+ pub type XeTeXFont = *mut Font;
+ /// cbindgen:ignore
+ pub type XeTeXLayoutEngine = *mut LayoutEngine;
+-#[cfg(not(target_os = "macos"))]
++#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+ pub(crate) type RawPlatformFontRef = *mut fc::sys::FcPattern;
+-#[cfg(target_os = "macos")]
++#[cfg(any(target_os = "macos", target_os = "ios"))]
+ pub(crate) type RawPlatformFontRef = tectonic_mac_core::sys::CTFontDescriptorRef;
+ /// cbindgen:ignore
+-#[cfg(not(target_os = "macos"))]
++#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+ pub(crate) type PlatformFontRef = fc::Pattern;
+ /// cbindgen:ignore
+-#[cfg(target_os = "macos")]
++#[cfg(any(target_os = "macos", target_os = "ios"))]
+ pub(crate) type PlatformFontRef = tectonic_mac_core::CTFontDescriptor;
+ 
+ /// key is combined value representing `(font_id, glyph)`
+--- a/crates/xetex_layout/src/c_api/font.rs
++++ b/crates/xetex_layout/src/c_api/font.rs
+@@ -5,7 +5,7 @@
+ use std::ptr;
+ use tectonic_bridge_freetype2 as ft;
+ use tectonic_bridge_harfbuzz as hb;
+-#[cfg(target_os = "macos")]
++#[cfg(any(target_os = "macos", target_os = "ios"))]
+ use tectonic_mac_core::{sys::CTFontRef, CTFont, CoreType};
+ 
+ #[no_mangle]
+@@ -213,7 +213,7 @@
+     rval as libc::c_uint
+ }
+ 
+-#[cfg(target_os = "macos")]
++#[cfg(any(target_os = "macos", target_os = "ios"))]
+ #[no_mangle]
+ pub unsafe extern "C" fn getFileNameFromCTFont(
+     ct_font: CTFontRef,
+--- a/crates/xetex_layout/src/c_api/manager.rs
++++ b/crates/xetex_layout/src/c_api/manager.rs
+@@ -36,14 +36,14 @@
+         Some(slice::from_raw_parts_mut(var.cast(), len))
+     };
+ 
+-    #[cfg(target_os = "macos")]
++    #[cfg(any(target_os = "macos", target_os = "ios"))]
+     return FontManager::with_font_manager(|mgr| {
+         use tectonic_mac_core::CoreType;
+         mgr.find_font(name, var, size)
+             .map(tectonic_mac_core::CTFontDescriptor::into_type_ref)
+             .unwrap_or(ptr::null_mut())
+     });
+-    #[cfg(not(target_os = "macos"))]
++    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+     FontManager::with_font_manager(|mgr| {
+         mgr.find_font(name, var, size)
+             .map(|pat| pat.as_ref().as_ptr())
+--- a/crates/xetex_layout/src/font.rs
++++ b/crates/xetex_layout/src/font.rs
+@@ -7,11 +7,11 @@
+ use std::str::FromStr;
+ use std::sync::{Arc, Mutex, OnceLock};
+ use tectonic_bridge_core::{CoreBridgeState, FileFormat};
+-#[cfg(not(target_os = "macos"))]
++#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+ use tectonic_bridge_fontconfig as fc;
+ use tectonic_bridge_freetype2 as ft;
+ use tectonic_bridge_harfbuzz as hb;
+-#[cfg(target_os = "macos")]
++#[cfg(any(target_os = "macos", target_os = "ios"))]
+ use tectonic_mac_core::{
+     CFArray, CFDictionary, CFType, CFUrl, CTFont, CTFontDescriptor, FontAttribute, FontNameKey,
+ };
+@@ -147,7 +147,7 @@
+ 
+ enum FontKind {
+     FtFont,
+-    #[cfg(target_os = "macos")]
++    #[cfg(any(target_os = "macos", target_os = "ios"))]
+     Mac(CTFontDescriptor, Option<CTFont>),
+ }
+ 
+@@ -175,7 +175,7 @@
+ }
+ 
+ impl Font {
+-    #[cfg(not(target_os = "macos"))]
++    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+     pub(crate) fn new(font: PlatformFontRef, point_size: f32) -> Result<Font, ()> {
+         let path = font
+             .as_ref()
+@@ -187,7 +187,7 @@
+         Font::new_path_index(path, index as usize, point_size)
+     }
+ 
+-    #[cfg(target_os = "macos")]
++    #[cfg(any(target_os = "macos", target_os = "ios"))]
+     pub(crate) fn new(descriptor: PlatformFontRef, point_size: f32) -> Result<Font, ()> {
+         let mut out = Font {
+             units_per_em: 0,
+@@ -347,7 +347,7 @@
+         Ok(())
+     }
+ 
+-    #[cfg(target_os = "macos")]
++    #[cfg(any(target_os = "macos", target_os = "ios"))]
+     fn initialize_mac(&mut self) -> Result<(), ()> {
+         let FontKind::Mac(descriptor, font_ref) = &mut self.kind else {
+             return Err(());
+@@ -556,7 +556,7 @@
+     }
+ }
+ 
+-#[cfg(target_os = "macos")]
++#[cfg(any(target_os = "macos", target_os = "ios"))]
+ pub(crate) fn get_file_name_from_ct_font(ct_font: &CTFont, index: &mut u32) -> Option<CString> {
+     let url = ct_font
+         .attr(FontAttribute::URL)
+--- a/crates/xetex_layout/src/manager.rs
++++ b/crates/xetex_layout/src/manager.rs
+@@ -10,9 +10,9 @@
+ use std::ffi::{CStr, CString};
+ use tectonic_bridge_freetype2 as ft;
+ 
+-#[cfg(not(target_os = "macos"))]
++#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+ mod fc;
+-#[cfg(target_os = "macos")]
++#[cfg(any(target_os = "macos", target_os = "ios"))]
+ mod mac;
+ 
+ thread_local! {
+@@ -313,11 +313,11 @@
+     fn init_font_manager() {
+         let backend: Box<dyn FontManagerBackend>;
+ 
+-        #[cfg(target_os = "macos")]
++        #[cfg(any(target_os = "macos", target_os = "ios"))]
+         {
+             backend = Box::new(mac::MacBackend::new());
+         }
+-        #[cfg(not(target_os = "macos"))]
++        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+         {
+             backend = Box::new(fc::FcBackend::new());
+         }
+@@ -778,7 +778,7 @@
+         }
+     }
+ 
+-    #[cfg_attr(target_os = "macos", allow(unused))]
++    #[cfg_attr(any(target_os = "macos", target_os = "ios"), allow(unused))]
+     fn prepend_to_list<T: Into<CString> + AsRef<CStr>>(list: &mut Vec<CString>, str: T) {
+         *list = list.drain(..).filter(|s| **s != *str.as_ref()).collect();
+         list.insert(0, str.into());
+--- a/crates/xetex_layout/src/utils.rs
++++ b/crates/xetex_layout/src/utils.rs
+@@ -10,13 +10,13 @@
+ }
+ 
+ pub fn raw_to_rs(font: RawPlatformFontRef) -> Option<PlatformFontRef> {
+-    #[cfg(target_os = "macos")]
++    #[cfg(any(target_os = "macos", target_os = "ios"))]
+     let out = {
+         use tectonic_mac_core::CoreType;
+         // SAFETY: Pointer must be from us, and is thus a borrowed ref
+         NonNull::new(font.cast_mut()).map(|ptr| unsafe { PlatformFontRef::new_borrowed(ptr) })
+     };
+-    #[cfg(not(target_os = "macos"))]
++    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+     // SAFETY: Pointer must be from us, and is thus a borrowed ref
+     let out = { unsafe { NonNull::new(font).map(|p| PlatformFontRef::from_raw_borrowed(p)) } };
+     out
+--- a/src/driver.rs
++++ b/src/driver.rs
+@@ -41,6 +41,7 @@
+     time::{Duration, SystemTime},
+ };
+ use tectonic_bridge_core::{CoreBridgeLauncher, DriverHooks, SecuritySettings, SystemRequestError};
++use tectonic_errors::prelude::bail;
+ use tectonic_bundles::Bundle;
+ use tectonic_engine_spx2html::AssetSpecification;
+ use tectonic_errors::{Error, Result};
+@@ -277,150 +278,8 @@
+         tool: &ExternalToolPass,
+         status: &mut dyn StatusBackend,
+     ) -> Result<()> {
+-        status.note_highlighted("Running external tool ", &tool.argv[0], " ...");
+-
+-        // Process the command arguments. Filenames appearing in the arguments
+-        // are treated as "requirements" that will be placed in the tool's
+-        // working directory.
+-
+-        let mut cmd = Command::new(&tool.argv[0]);
+-        let mut read_files = tool.extra_requires.clone();
+-
+-        {
+-            let mem_files = &*self.mem.files.borrow();
+-
+-            for arg in &tool.argv[1..] {
+-                cmd.arg(arg);
+-
+-                if mem_files.contains_key(arg) {
+-                    read_files.insert(arg.to_owned());
+-                }
+-            }
+-        }
+-
+-        // Now that we're validated, write those files to disk so that the tool
+-        // can actually use them.
+-
+-        let tempdir = tempfile::Builder::new()
+-            .tempdir()
+-            .context("can't create temporary directory for external tool")?;
+-
+-        {
+-            for name in &read_files {
+-                // If a relative parent is found in the file to open, this fn
+-                // does not properly handle that. Thus, throw an error.
+-                if name.contains("../") {
+-                    return Err(Error::msg(format!(
+-                        "relative parent paths are not supported for the \
+-                        external tool. Got path `{}`.",
+-                        name,
+-                    )));
+-                }
+-
+-                let mut ih = ctry!(
+-                    self.input_open_name(name, status).must_exist();
+-                    "can't open path `{}`", name
+-                );
+-
+-                // If the input path is absolute, we don't need to create a
+-                // version in the tempdir, and in fact the current
+-                // implementation below will blow away the input file. However,
+-                // we do want to try to open the input so that it gets
+-                // registered with the I/O tracking system.
+-
+-                let path = Path::new(name);
+-                if path.is_absolute() {
+-                    continue;
+-                }
+-
+-                let tool_path = tempdir.path().join(name);
+-                let tool_parent = tool_path.parent().unwrap();
+-
+-                if tool_parent != tempdir.path() {
+-                    ctry!(
+-                        std::fs::create_dir_all(tool_parent);
+-                        "failed to create sub directory `{}`", tool_parent.display()
+-                    );
+-                }
+-                let mut f = ctry!(
+-                    File::create(&tool_path);
+-                    "failed to create file `{}`", tool_path.display()
+-                );
+-                ctry!(
+-                    std::io::copy(&mut ih, &mut f);
+-                    "failed to write file `{}`", tool_path.display()
+-                );
+-            }
+-        }
+-
+-        // Now we can actually run the command.
+-
+-        let output = cmd.current_dir(tempdir.path()).output()?;
+-
+-        if let Some(0) = output.status.code() {
+-        } else {
+-            tt_error!(
+-                status,
+-                "the external tool exited with an error code; its stdout was:\n"
+-            );
+-            status.dump_error_logs(&output.stdout[..]);
+-            tt_error!(status, "its stderr was:\n");
+-            status.dump_error_logs(&output.stderr[..]);
+-
+-            return if let Some(n) = output.status.code() {
+-                Err(Error::msg(format!(
+-                    "the external tool exited with error code {}",
+-                    n
+-                )))
+-            } else {
+-                Err(Error::msg("the external tool was terminated by a signal"))
+-            };
+-        }
+-
+-        // Search for any files that the tool created, and import them into the
+-        // memory layer.
+-
+-        for entry in std::fs::read_dir(tempdir.path())? {
+-            let entry = entry?;
+-
+-            if !entry.file_type()?.is_file() {
+-                continue;
+-            }
+-
+-            if let Some(basename) = entry.file_name().to_str() {
+-                if !self.mem.files.borrow().contains_key(basename) {
+-                    let path = entry.path();
+-                    let mut data = Vec::new();
+-
+-                    let mut f = ctry!(
+-                        File::open(&path);
+-                        "failed to open tool-created file `{}`", path.display()
+-                    );
+-                    ctry!(
+-                        f.read_to_end(&mut data);
+-                        "failed to read tool-created file `{}`", path.display()
+-                    );
+-
+-                    self.mem.create_entry(basename, data);
+-                    self.events.insert(
+-                        basename.to_owned(),
+-                        FileSummary::new(AccessPattern::Written, InputOrigin::NotInput),
+-                    );
+-                }
+-            }
+-        }
+-
+-        // Mark the input files as having been read, and we're done.
+-
+-        for name in &read_files {
+-            let summ = self.events.get_mut(name).unwrap();
+-            summ.access_pattern = match summ.access_pattern {
+-                AccessPattern::Written => AccessPattern::WrittenThenRead,
+-                c => c, // identity mapping makes sense for remaining options
+-            };
+-        }
+-
+-        Ok(())
++        let _ = status;
++        bail!("The document requires a separately authorized bibliography service: {}", tool.argv.first().map(String::as_str).unwrap_or("unknown"));
+     }
+ 
+     // Get the names of all intermediate files which are generated from
+@@ -1135,7 +994,7 @@
+                     }
+                 };
+ 
+-                filesystem_root.clone_from(&parent);
++                if filesystem_root.as_os_str().is_empty() { filesystem_root.clone_from(&parent); }
+                 let pio: Box<dyn IoProvider> = Box::new(FilesystemPrimaryInputIo::new(&p));
+                 (pio, Some(p), parent)
+             }
+@@ -1641,7 +1500,12 @@
+                 continue;
+             }
+ 
+-            let real_path = root.join(name);
++            // Floe: output names come from the document, not from host authority.
++            let relative = std::path::Path::new(name);
++            if relative.is_absolute() || relative.components().any(|p| matches!(p, std::path::Component::ParentDir)) {
++                bail!("Output path is outside this build");
++            }
++            let real_path = root.join(relative);
+             let byte_len = Byte::from_u128(file.data.len() as u128).unwrap();
+             status.note_highlighted(
+                 "Writing ",
+--- a/src/io/memory.rs
++++ b/src/io/memory.rs
+@@ -97,6 +97,15 @@
+ 
+ impl Write for MemoryIoItem {
+     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
++        let end = self.state.position().checked_add(buf.len() as u64)
++            .ok_or_else(|| io::Error::other("Document output limit reached"))?;
++        if end > 64 * 1024 * 1024 {
++            return Err(io::Error::other("Document output file limit reached"));
++        }
++        let stored: usize = self.files.borrow().values().map(|f| f.data.len()).sum();
++        if stored.saturating_add(end as usize) > 256 * 1024 * 1024 {
++            return Err(io::Error::other("Document output memory limit reached"));
++        }
+         self.was_modified = true;
+         self.state.write(buf)
+     }

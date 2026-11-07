@@ -63,6 +63,12 @@ packages:
     path: Modules/FloeBiologyKit
   FloeBiologyHostAdapter:
     path: Modules/FloeBiologyKit/Integration/FloeBiologyHostAdapter
+  FloeLaTeXKit:
+    path: Modules/FloeLaTeXKit
+  FloeLaTeXHostAdapter:
+    path: Modules/FloeLaTeXKit/Integration/FloeLaTeXHostAdapter
+  SwiftMath:
+    path: Modules/FloeDiagramKit/Vendor/SwiftMath
   FloeToolbox:
     path: Modules/FloeToolbox
   ZLImageEditor:
@@ -424,6 +430,12 @@ targets:
         product: FloeBiologyUI
       - package: FloeBiologyHostAdapter
         product: FloeBiologyHostAdapter
+      - package: FloeLaTeXKit
+        product: FloeLaTeXKit
+      - package: FloeLaTeXHostAdapter
+        product: FloeLaTeXHostAdapter
+      - package: SwiftMath
+        product: SwiftMath
       - package: FloeAgentPackages
         product: FloeToolboxSSH
       - package: FloeAgentPackages
@@ -1678,6 +1690,8 @@ targets:
       Release: Vendor/Office/native-host.xcconfig
     sources:
       - path: Tests/FloeAppTests/AppQualificationEnvironment.swift
+      - path: Tests/FloeAppTests/LaTeXAppIntegrationTests.swift
+      - path: Modules/FloeLaTeXKit/Integration/FloeLaTeXHostAdapter/Tests/FloeLaTeXHostAdapterTests/AuthorityTests.swift
       - path: Tests/FloeAppTests/ToolboxUSBAppIntegrationTests.swift
       - path: Tests/FloeAppTests/ToolboxUSBTransportTests.swift
       - path: Tests/FloeAppTests/ToolboxHistoryAndSerialTests.swift
@@ -1821,6 +1835,10 @@ targets:
         product: FloeBiologyEngine
       - package: FloeBiologyHostAdapter
         product: FloeBiologyHostAdapter
+      - package: FloeLaTeXKit
+        product: FloeLaTeXKit
+      - package: FloeLaTeXHostAdapter
+        product: FloeLaTeXHostAdapter
       - package: FloeInteractiveContent
         product: FloeInteractiveContentCore
       - package: GRDB

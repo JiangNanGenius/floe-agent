@@ -73,6 +73,7 @@ final class AppEnvironment: ObservableObject {
     lazy var studioCoordinator = StudioCoordinator(environment: self)
     lazy var chemistryEnvironmentJobs = ChemistryEnvironmentJobAdapter(environment: self)
     lazy var biologyComposition = BiologyAppComposition(environment: self)
+    lazy var latexComposition = LaTeXAppComposition(environment: self)
     lazy var interactiveHostCenter = InteractiveHostCenter(environment: self)
     private lazy var _globalSourceMemory: GlobalSourceMemoryService = makeGlobalSourceMemory()
     private func makeGlobalSourceMemory() -> GlobalSourceMemoryService {
@@ -2145,6 +2146,7 @@ final class AppEnvironment: ObservableObject {
         }
         if let backgroundJobService {
             Task { [weak self] in await self?.biologyComposition.prepare() }
+            Task { [weak self] in await self?.latexComposition.prepare() }
             registerLocalServiceCommand(service: backgroundJobService, store: BackgroundJobStore(database: database))
             // First verified readiness of a long-lived service settles its
             // durable dependency edge and resumes a parked submitting run in

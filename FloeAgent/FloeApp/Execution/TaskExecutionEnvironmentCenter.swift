@@ -38,6 +38,8 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
     }
     @Published private(set) var snapshots: [UUID: Snapshot] = [:]
     private unowned let environment: AppEnvironment
+    // Compiled Notes binding extension uses the same resolver and registry.
+    var environmentForNotesBinding: AppEnvironment { environment }
     private var checkedChoices: [UUID: (choiceID: String, preview: SkillMigrationPreview, requiredSkills: Set<String>)] = [:]
     private var checks: [UUID: UUID] = [:]
     private var jobs: [UUID: Task<Void, Never>] = [:]

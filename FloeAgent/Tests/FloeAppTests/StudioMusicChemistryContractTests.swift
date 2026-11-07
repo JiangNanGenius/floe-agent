@@ -7,6 +7,7 @@ import FloeTools
 import FloeMusicCore
 import FloeMusicNative
 import FloeChemistryCore
+import AVFoundation
 @testable import FloeApp
 
 /// Real registered runners and the existing App service graph. The authored
@@ -52,6 +53,161 @@ import FloeChemistryCore
     private func graph(_ object:ChemicalObject) throws -> FloeChemistryCore.JSONValue {
         try JSONDecoder().decode(FloeChemistryCore.JSONValue.self,
             from:Data(try #require(object.facts?["cjson"]?.string).utf8))
+    }
+    private func completeMusic(_ id: String, _ context: ToolContext) async throws -> (page: [String: Any], document: MusicDocument) {
+        let first = try await read(id, context)
+        let revision = try #require(first["revision"] as? String)
+        let digest = try #require(first["contentSHA256"] as? String)
+        var page = first, text = ""
+        while true {
+            #expect(page["revision"] as? String == revision)
+            #expect(page["contentSHA256"] as? String == digest)
+            text += try #require(page["contentJSON"] as? String)
+            guard let next = page["nextOffset"] as? Int else { break }
+            page = try json(try await invoke("studio.read", ["projectID": id, "offset": next, "limit": 12_000], context))
+        }
+        #expect(StudioToolOutput.hash(Data(text.utf8)) == digest)
+        return (first, try JSONDecoder().decode(MusicDocument.self, from: Data(text.utf8)))
+    }
+    private func musicFixture(_ context: ToolContext, muted: Bool) async throws -> (id: String, document: MusicDocument) {
+        let created = try json(try await invoke("studio.create", ["kind": "music", "title": "Music JSON regression \(UUID().uuidString.prefix(8))"], context))
+        let id = try #require((created["record"] as? [String: Any])?["id"] as? String)
+        let before = try await completeMusic(id, context)
+        guard case .insertTrack(var track) = try #require(StudioTypedEditExamples.musicOperations(ticksPerQuarter: 960).first),
+              case .midi(let notes) = track.clips[0].body else {
+            throw MusicError.invalidBatch(reason: "The real typed fixture must contain its three original notes")
+        }
+        track.name = "QA-Piano"
+        track.instrument = try MusicPluginState(pluginID: MusicNativeBuiltins.synth, presetIndex: 2)
+        track.clips[0].body = .midi(try MusicMIDIClipPayload(durationTicks: 15_360, notes: notes.notes))
+        let map = try MusicTempoMap(ticksPerQuarter: 960, sampleRate: 48_000,
+            segments: [.init(startTick: .init(0), bpm: 100, beatsPerBar: 4, beatUnit: 4)])
+        let operations: [MusicEditOp] = [.setTempoMap(map), .insertTrack(track),
+            .setMasterStrip(try .init(muted: muted))]
+        _ = try await invoke("studio.edit", ["projectID": id, "expectedRevision": try #require(before.page["revision"] as? String),
+            "operationsJSON": try StudioTypedEditExamples.encode(operations)], context)
+        let saved = try await completeMusic(id, context)
+        #expect(saved.document.masterStrip.muted == muted)
+        FileHandle.standardOutput.write(Data("FLOE_MUSIC_REGRESSION_FIXTURE|\(id)|muted=\(muted)\n".utf8))
+        return (id, saved.document)
+    }
+    @Test func thirtySecondPlainUpdateSavesReopensAndRendersTheExactMixThroughRegisteredTools() async throws {
+        try await withSavedTask { initial in
+            var context = initial
+            for muted in [true, false] {
+                let fixture = try await musicFixture(context, muted: muted)
+                let original = fixture.document, track = try #require(original.tracks.only), clip = try #require(track.clips.only)
+                guard case .midi(let originalMIDI) = clip.body else { Issue.record("MIDI original required"); return }
+                #expect(originalMIDI.notes.count == 3 && originalMIDI.durationTicks == 15_360)
+                let melody = [60, 64, 67, 72, 69, 67, 64, 62]
+                var notes: [[String: Any]] = (3..<48).map { beat in
+                    ["pitch": melody[beat % melody.count], "startTick": beat * 960, "durationTicks": 720, "velocity": 80 + beat % 12]
+                }
+                notes += [60, 64, 67].map { ["pitch": $0, "startTick": 46_080, "durationTicks": 1_920, "velocity": 90] }
+                let commands: [[String: Any]] = [["op": "midi.clip.update", "clipID": clip.id.rawValue,
+                    "durationTicks": 48_000, "notesMode": "append", "notes": notes]]
+                context.toolCallID = "append-real-thirty-second-phrase-\(muted)"
+                let operations = String(decoding: try JSONSerialization.data(withJSONObject: commands), as: UTF8.self)
+                _ = try await invoke("studio.edit", ["projectID": fixture.id, "expectedRevision": String(original.revision), "operationsJSON": operations], context)
+                let saved = try await completeMusic(fixture.id, context)
+                #expect(saved.document.revision == original.revision + 1)
+                #expect(saved.document.buses == original.buses)
+                #expect(saved.document.masterStrip == original.masterStrip)
+                #expect(saved.document.tracks[0].strip == track.strip)
+                guard case .midi(let midi) = saved.document.tracks[0].clips[0].body else { Issue.record("Saved MIDI required"); return }
+                #expect(Array(midi.notes.prefix(3)) == originalMIDI.notes)
+                #expect(midi.durationTicks == 48_000 && midi.notes.count == 51)
+                let location = try await PersonalContentService.shared.library().resolve(try #require(UUID(uuidString: fixture.id)))
+                let disk = try NativeMusicRepository(root: location.url.appendingPathComponent("Music"))
+                #expect(try await disk.load(projectID: saved.document.id) == saved.document)
+                let capabilities = try #require(saved.page["musicCapabilities"] as? [String: Any])
+                #expect((capabilities["presets"] as? [Any])?.count == 41)
+                let guide = try #require(saved.page["editFormat"] as? String)
+                #expect(guide.contains("midi.clip.update") && guide.contains("midi.clip.insert"))
+                context.toolCallID = "render-exact-thirty-second-phrase-\(muted)"
+                let rendered = try json(try await invoke("studio.run", ["projectID": fixture.id, "action": "renderWAV", "inputJSON": "{\"tailFrames\":0}"], context))
+                #expect(rendered["outputFile"] != nil && rendered["audioObservation"] != nil)
+                let session = try await MusicProjectSession.open(id: try #require(UUID(uuidString: fixture.id)), directory: location.url.appendingPathComponent("Music"), environment: FloeAgentApp.liveEnvironment)
+                let url = try #require(session.exportedFile)
+                let file = try AVAudioFile(forReading: url)
+                #expect(file.processingFormat.sampleRate == 48_000 && file.length == 1_440_000)
+                let buffer = try #require(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4_096))
+                var peak: Float = 0, finite = true
+                while file.framePosition < file.length {
+                    try file.read(into: buffer)
+                    let channels = try #require(buffer.floatChannelData)
+                    for channel in 0..<Int(buffer.format.channelCount) {
+                        for frame in 0..<Int(buffer.frameLength) {
+                            let sample = channels[channel][frame]
+                            finite = finite && sample.isFinite
+                            peak = max(peak, abs(sample))
+                        }
+                    }
+                }
+                #expect(finite)
+                #expect(muted ? peak < 0.000_000_1 : peak > 0.001)
+                let bytes = try Data(contentsOf: url)
+                #expect(bytes.count == rendered["bytes"] as? Int)
+                #expect(StudioToolOutput.hash(bytes) == rendered["sha256"] as? String)
+                #expect(session.document.buses == original.buses)
+                #expect(session.document.masterStrip == original.masterStrip)
+                FileHandle.standardOutput.write(Data("FLOE_MUSIC_THIRTY_SECONDS|\(fixture.id)|muted=\(muted)|frames=\(file.length)|peak=\(peak)|file=\(url.path)\n".utf8))
+            }
+        }
+    }
+    @Test func thirtySecondPlainInsertPreservesTheOriginalClipAndSavedMix() async throws {
+        try await withSavedTask { initial in
+            var context = initial
+            let fixture = try await musicFixture(context, muted: true)
+            let original = fixture.document, track = try #require(original.tracks.only)
+            let command: [[String: Any]] = [["op": "midi.clip.insert", "trackID": track.id.rawValue,
+                "name": "New thirty-second phrase", "durationTicks": 48_000, "offsetSamples": 0,
+                "notes": [60, 64, 67].map { ["pitch": $0, "startTick": 46_080, "durationTicks": 1_920, "velocity": 96] }]]
+            context.toolCallID = "insert-new-thirty-second-phrase"
+            _ = try await invoke("studio.edit", ["projectID": fixture.id, "expectedRevision": String(original.revision),
+                "operationsJSON": String(decoding: try JSONSerialization.data(withJSONObject: command), as: UTF8.self)], context)
+            let saved = try await completeMusic(fixture.id, context)
+            #expect(saved.document.revision == original.revision + 1)
+            #expect(saved.document.buses == original.buses)
+            #expect(saved.document.masterStrip == original.masterStrip)
+            let clips = try #require(saved.document.tracks.only).clips
+            #expect(clips.count == 2 && clips.first == track.clips.first)
+            let inserted = try #require(clips.last)
+            #expect(inserted.id != track.clips.first?.id && inserted.trackID == track.id)
+            guard case .midi(let midi) = inserted.body else { Issue.record("Inserted MIDI required"); return }
+            #expect(midi.durationTicks == 48_000 && midi.notes.count == 3)
+            #expect(midi.notes.allSatisfy { $0.startTick.value == 46_080 && $0.durationTicks == 1_920 })
+            let location = try await PersonalContentService.shared.library().resolve(try #require(UUID(uuidString: fixture.id)))
+            let repository = try NativeMusicRepository(root: location.url.appendingPathComponent("Music"))
+            #expect(try await repository.load(projectID: saved.document.id) == saved.document)
+        }
+    }
+    @Test func invalidMusicFieldReportsItsPathAndNoOpKeepsTheSavedRevision() async throws {
+        try await withSavedTask { initial in
+            var context = initial
+            let fixture = try await musicFixture(context, muted: true)
+            let clip = try #require(fixture.document.tracks.first?.clips.first)
+            let before = try await completeMusic(fixture.id, context)
+            let bad: [[String: Any]] = [["op": "midi.clip.update", "clipID": clip.id.rawValue, "durationTicks": "48000"]]
+            context.toolCallID = "invalid-music-duration-field"
+            do {
+                _ = try await invoke("studio.edit", ["projectID": fixture.id, "expectedRevision": String(fixture.document.revision),
+                    "operationsJSON": String(decoding: try JSONSerialization.data(withJSONObject: bad), as: UTF8.self)], context)
+                Issue.record("Invalid integer field must not be accepted")
+            } catch {
+                let message = error.localizedDescription
+                #expect(message.contains("operations[0].durationTicks"))
+                #expect(message.contains("Expected:"))
+            }
+            let after = try await completeMusic(fixture.id, context)
+            #expect(after.document == before.document)
+            #expect(after.page["contentSHA256"] as? String == before.page["contentSHA256"] as? String)
+            context.toolCallID = "recognized-music-transform-noop"
+            let unchanged: [[String: Any]] = [["op": "midi.clip.quantize", "clipID": clip.id.rawValue, "gridTicks": 1]]
+            _ = try await invoke("studio.edit", ["projectID": fixture.id, "expectedRevision": String(after.document.revision),
+                "operationsJSON": String(decoding: try JSONSerialization.data(withJSONObject: unchanged), as: UTF8.self)], context)
+            #expect(try await completeMusic(fixture.id, context).document == after.document)
+        }
     }
     @Test func publishedMusicExampleCommitsReopensAndRendersThroughRegisteredTools() async throws {
         try await withSavedTask { initial in

@@ -7,6 +7,7 @@ import FloeDiagramCore
 import FloeDiagramIntegration
 import FloeDiagramExchange
 import FloePrintCore
+import FloeLaTeXCore
 
 nonisolated enum PersonalFileAction: String, Sendable { case move, duplicate, share }
 nonisolated enum PersonalFileActionError: Error, LocalizedError {
@@ -235,7 +236,7 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
             try await ChemistryProjectSession.prepareForLibraryDeletion(id: record.id, directory: directory, environment: environment)
         case .biology: break // The same held barrier wraps native stop/trash and the atomic Library commit above.
         case .canvas: try await CanvasHostSessions.shared.requireIdleForDeletion(canvasID: record.id, directory: directory)
-        case .diagram: break // The editor/AI usage lease owns all diagram writes.
+        case .diagram, .latex: break // The editor/AI usage lease owns all writes.
         }
     }
     static func requireAvailable(_ id: UUID) throws {
@@ -243,9 +244,9 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
     }
     static func supports(_ action: PersonalFileAction, kind: PersonalContentKind) -> Bool {
         switch action {
-        case .move: [.document, .cad2D, .cad3D, .biology].contains(kind)
-        case .duplicate: [.document, .printing].contains(kind)
-        case .share: [.document, .diagram, .printing].contains(kind)
+        case .move: [.document, .cad2D, .cad3D, .biology, .latex].contains(kind)
+        case .duplicate: [.document, .printing, .latex].contains(kind)
+        case .share: [.document, .diagram, .printing, .latex].contains(kind)
         }
     }
     static func limitation(_ action: PersonalFileAction, kind: PersonalContentKind) -> String {
@@ -261,6 +262,10 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
         let library = try await PersonalContentService.shared.library(), source = try await library.resolve(selection.id)
         guard source.record.relativePath == selection.relativePath, source.record.kind == selection.kind else { throw PersonalFileActionError.changed }
         switch source.record.kind {
+        case .latex:
+            guard uses[selection.id]?.isEmpty != false else {throw PersonalFileActionError.closeFirst}
+            let manifest=try await LaTeXProjectStore(root:source.url.appendingPathComponent("LaTeX")).manifest()
+            guard manifest.id==selection.id,manifest.owner == .init(kind:.space,id:selection.id) else {throw PersonalFileActionError.changed}
         case .biology:
             guard uses[selection.id]?.isEmpty != false else { throw PersonalFileActionError.closeFirst }
             try BiologyOriginalBinding.verify(id: selection.id, directory: source.url)
@@ -283,7 +288,23 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
         let library = try await PersonalContentService.shared.library(), source = try await library.resolve(selection.id)
         guard source.record.relativePath == selection.relativePath, source.record.kind == selection.kind else { throw PersonalFileActionError.changed }
         let result: PersonalContentRecord
-        if source.record.kind == .document {
+        if source.record.kind == .latex {
+            let store=try LaTeXProjectStore(root:source.url.appendingPathComponent("LaTeX")),snapshot=try await store.snapshot()
+            do {
+                guard snapshot.manifest.id==selection.id,snapshot.manifest.owner == .init(kind:.space,id:selection.id) else {throw PersonalFileActionError.changed}
+                result=try await library.create(kind:.latex,title:title,in:folders) {directory,id in
+                    var files=[String:Data]()
+                    for entry in snapshot.manifest.files {
+                        let data=try Data(contentsOf:LaTeXPath.child(entry.path,root:snapshot.sourceRoot))
+                        guard LaTeXDigest.hash(data)==entry.sha256 else {throw PersonalFileActionError.changed};files[entry.path]=data
+                    }
+                    _ = try LaTeXProjectStore.create(root:directory.appendingPathComponent("LaTeX"),id:id,owner:.init(kind:.space,id:id),title:title,files:files,mainFile:snapshot.manifest.mainFile,engine:snapshot.manifest.engine)
+                    try await verifyLocation(selection.id,expected:source.record.relativePath)
+                    try writeCopyReceipt(directory:directory,source:source.record,newID:id,revision:String(snapshot.manifest.revision))
+                }
+                try await store.releaseSnapshot(snapshot)
+            } catch {try? await store.releaseSnapshot(snapshot);throw error}
+        } else if source.record.kind == .document {
             try PersonalTextDocument.requireClosedForFileAction(projectID: selection.id)
             try PersonalOfficeDocument.requireClosedForFileAction(projectID: selection.id)
             let original = try await PersonalContentService.shared.originalFile(selection.id)
@@ -321,6 +342,10 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
         defer { if !adopted { try? FileManager.default.removeItem(at: directory) } }
         let url: URL
         switch source.record.kind {
+        case .latex:
+            let store=try LaTeXProjectStore(root:source.url.appendingPathComponent("LaTeX")),snapshot=try await store.snapshot()
+            url=directory.appendingPathComponent(safeName(source.record.title)+".zip")
+            do {try LaTeXProjectArchive.export(snapshot,to:url);try await store.releaseSnapshot(snapshot)}catch {try? await store.releaseSnapshot(snapshot);throw error}
         case .document:
             try PersonalTextDocument.requireClosedForFileAction(projectID: selection.id)
             try PersonalOfficeDocument.requireClosedForFileAction(projectID: selection.id)

@@ -49,6 +49,7 @@ struct NotesDocumentEditor: View {
     @State private var editedElement: NoteElement?
     @State private var linkedMapAssistant: NoteDocument?
     @State private var showLinkedMaps = false
+    @State private var showLaTeXProjects = false
     @State private var mapWindow: NoteMindMapLink?
     @State private var topicToInspect: MindMapNode?
     @State private var showOutline = false
@@ -415,6 +416,9 @@ struct NotesDocumentEditor: View {
                 NotesMindMapWindow(parentSession: session, parentID: document.id, link: mapWindow, close: { self.mapWindow = nil }, onAssistant: { linkedMapAssistant = $0 })
                     .padding(.top, hidesEmbeddedChrome ? 0 : headerHeight).padding(8)
             }
+        }
+        .sheet(isPresented:$showLaTeXProjects) {
+            LaTeXOwnedProjectsSheet(owner:.init(kind:.note,id:document.id))
         }
         .sheet(item: $linkedMapAssistant) { map in
             if let store = session.store {
@@ -898,6 +902,8 @@ struct NotesDocumentEditor: View {
     // Group preserves native Menu entries without introducing a layout row.
     private var headerActionItems: some View {
         Group {
+            Button(IDELanguageRunText.t("LaTeX 论文","LaTeX documents"),systemImage:"doc.richtext") {showLaTeXProjects=true}
+                .accessibilityIdentifier("notes.latex")
             AnyView(headerRecoveryAndHistoryActions)
             AnyView(headerExportActions)
             AnyView(headerDocumentActions)

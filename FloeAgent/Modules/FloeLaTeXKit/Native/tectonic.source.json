@@ -1,0 +1,10 @@
+{
+  "upstream": "https://github.com/tectonic-typesetting/tectonic",
+  "tag": "tectonic@0.17.0",
+  "commit": "8c0126a9653239a2e6e0a5274af9b8510f643030",
+  "licensing": "MIT umbrella; retain per-component licenses",
+  "patches": [
+    "patches/apple-and-embedded.patch"
+  ],
+  "patchSHA256": "e2a6a7203da8af036f3efaf1b7a4464130cb8f7533a4591efa574fba3f30bc48"
+}

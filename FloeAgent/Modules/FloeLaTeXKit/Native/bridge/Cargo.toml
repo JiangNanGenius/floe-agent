@@ -1,0 +1,25 @@
+[package]
+name = "floe_tex_native"
+version = "0.1.0"
+edition = "2021"
+license = "MPL-2.0"
+
+[workspace]
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+tectonic = { path = "../tectonic", default-features = false, features = ["geturl-reqwest", "external-harfbuzz"] }
+tectonic_bridge_core = { path = "../tectonic/crates/bridge_core" }
+tectonic_bundles = { path = "../tectonic/crates/bundles", features = ["geturl-reqwest"] }
+tectonic_engine_xetex = { path = "../tectonic/crates/engine_xetex" }
+tectonic_status_base = { path = "../tectonic/crates/status_base" }
+tectonic_errors = { path = "../tectonic/crates/errors" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level = 2
+debug = 1
+panic = "unwind"

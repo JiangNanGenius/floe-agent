@@ -29,6 +29,7 @@ public struct FloeBuildingWorkbenchView: View {
     let incomingPlan: CADSketchTransferEnvelope?
     let onProfessionalRequest: ((CADBuildingProfessionalAction) -> Void)?
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.cadBuildingProfessionalPresenter) private var professionalPresenter
     @State private var model = CADBuildingDocument()
     @State private var floorID: UUID?
     @State private var mode = Mode.plan
@@ -108,8 +109,10 @@ public struct FloeBuildingWorkbenchView: View {
                     ForEach(CADBuildingProfessionalAction.allCases) { action in
                         Button(action.title) {
                             if let onProfessionalRequest { onProfessionalRequest(action) }
+                            else if let professionalPresenter { professionalPresenter.handler(document, action) }
                             else { message=text("taskRequired","Open this model from a task workspace to run a professional study.") }
                         }
+                        .accessibilityIdentifier("building.professional." + action.rawValue)
                     }
                     Button(text("checks","Project checks"),systemImage:"checklist") {
                         do { inspection=Inspection(rows:try document.inspectBuilding()) } catch { message=error.localizedDescription }

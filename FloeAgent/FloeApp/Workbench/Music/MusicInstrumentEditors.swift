@@ -12,21 +12,16 @@ struct MusicPianoRoll: View {
     private let row: CGFloat = 16
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 8) {
                 Text(session.currentClip?.name ?? WorkbenchText.t("钢琴卷帘", "Piano roll")).font(.caption.weight(.medium)).lineLimit(1)
                 Spacer()
-                Button { addClip() } label: { Image(systemName: "plus.rectangle").frame(width: 44, height: 44) }.accessibilityIdentifier("music.addMIDIClip")
-                Menu {
-                    ForEach([4, 8, 16, 32], id: \.self) { division in
-                        Button("1/\(division)") {
-                            guard let clip = session.currentClip else { return }
-                            do { session.edit([.updateClip(try MusicWorkbenchEditing.quantize(clip, gridTicks: max(1, Int64(session.document.tempoMap.ticksPerQuarter * 4 / division))))]) }
-                            catch { session.diagnostic = error.localizedDescription }
-                        }
-                    }
-                } label: { Label(WorkbenchText.t("量化", "Quantize"), systemImage: "align.horizontal.left").frame(minHeight: 44) }
+                Button { addClip() } label: { Image(systemName: "plus.rectangle").frame(width: 44, height: 44) }
+                    .accessibilityLabel(session.currentTrack?.kind == .midi ? WorkbenchText.t("添加 MIDI 片段", "Add MIDI clip")
+                        : WorkbenchText.t("添加乐器轨和 MIDI 片段", "Add instrument track and MIDI clip"))
+                    .accessibilityIdentifier("music.addMIDIClip")
+                MusicEditingActionsButton(session: session)
                 MusicIconButton("trash", WorkbenchText.t("删除音符", "Delete note")) { changeNote { notes in notes.removeAll { $0.id == selectedNote } } }.disabled(selectedNote == nil)
-            }.padding(.horizontal, 10)
+            }.padding(.horizontal, 10) }
             Divider()
             if let clip = session.currentClip, case .midi(let midi) = clip.body {
                 noteGrid(clip, midi: midi)
@@ -43,10 +38,12 @@ struct MusicPianoRoll: View {
             } else {
                 VStack(spacing: 10) {
                     Text(WorkbenchText.t("选择 MIDI 片段，或创建一个片段。", "Select a MIDI clip, or create one.")).foregroundStyle(.secondary)
-                    Button(WorkbenchText.t("创建 MIDI 片段", "Create MIDI clip")) { addClip() }.frame(minHeight: 44)
+                    Button(session.currentTrack?.kind == .midi ? WorkbenchText.t("创建 MIDI 片段", "Create MIDI clip")
+                        : WorkbenchText.t("添加乐器轨和 MIDI 片段", "Add instrument track and MIDI clip")) { addClip() }.frame(minHeight: 44)
                 }.font(.callout).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.accessibilityIdentifier("music.pianoRoll")
+            .onChange(of: session.selectedClip) { _, _ in selectedNote = nil }
     }
     private func noteGrid(_ clip: MusicClip, midi: MusicMIDIClipPayload) -> some View {
         let low = min(48, midi.notes.map(\.pitch).min() ?? 48)
@@ -120,7 +117,11 @@ struct MusicDrumGrid: View {
     private var labels: [String] { [WorkbenchText.t("底鼓", "Kick"), WorkbenchText.t("军鼓", "Snare"), WorkbenchText.t("闭镲", "Closed hat"), WorkbenchText.t("开镲", "Open hat")] }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack { Text(WorkbenchText.t("节奏步进", "Step sequencer")).font(.caption.weight(.medium)); Spacer(); Text("1/16").font(.caption.monospacedDigit()) }.padding(.horizontal, 12)
+            HStack {
+                Text(WorkbenchText.t("节奏步进", "Step sequencer")).font(.caption.weight(.medium)); Spacer()
+                MusicEditingActionsButton(session: session, initialPanel: .patterns)
+                Text("1/16").font(.caption.monospacedDigit())
+            }.padding(.horizontal, 12)
             if let clip = session.currentClip, case .midi(let payload) = clip.body {
                 ScrollView(.horizontal) {
                     VStack(spacing: 3) {
@@ -131,7 +132,7 @@ struct MusicDrumGrid: View {
                                     let tick = Int64(step * session.document.tempoMap.ticksPerQuarter / 4)
                                     let active = payload.notes.contains { $0.pitch == pitch && $0.startTick.value == tick }
                                     Button { toggle(clip, pitch: pitch, tick: tick) } label: {
-                                        Text("\(step + 1)").font(.caption2.monospacedDigit()).frame(width: 38, height: 40)
+                                        Text("\(step + 1)").font(.caption2.monospacedDigit()).frame(width: 44, height: 44)
                                             .background(active ? Color.accentColor : Color.secondary.opacity(step % 4 == 0 ? 0.18 : 0.08), in: RoundedRectangle(cornerRadius: 4))
                                             .foregroundStyle(active ? Color.white : Color.primary)
                                     }.buttonStyle(.plain).accessibilityLabel(labels[index] + " \(step + 1)").accessibilityAddTraits(active ? .isSelected : [])
@@ -143,10 +144,11 @@ struct MusicDrumGrid: View {
                 Text(WorkbenchText.t("步进写入当前乐器轨的 MIDI 音符。", "Steps write MIDI notes to the current instrument track.")).font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 12)
             } else {
                 Text(WorkbenchText.t("先在编排中选择 MIDI 片段。", "Select a MIDI clip in the arrangement.")).font(.callout).foregroundStyle(.secondary).padding()
-                Button(WorkbenchText.t("添加节奏片段", "Add rhythm clip")) {
+                Button(session.currentTrack?.kind == .midi ? WorkbenchText.t("添加节奏片段", "Add rhythm clip")
+                    : WorkbenchText.t("添加电子鼓组和节奏片段", "Add electronic drums and rhythm clip")) {
                     Task {
-                        if session.currentTrack?.kind != .midi { await session.addTrack() }
-                        if let id = session.selectedTrack { do { _ = try await session.addMIDIClip(to: id) } catch { session.diagnostic = error.localizedDescription } }
+                        _ = await session.insertPattern(.drumGroove, bars: 1, rootPitch: 60, velocity: 96,
+                            newTrack: session.currentTrack?.kind != .midi)
                     }
                 }.padding(.horizontal).frame(minHeight: 44)
             }
@@ -166,27 +168,49 @@ struct MusicDrumGrid: View {
 
 struct MusicKeyboardWorkbench: View {
     @Bindable var session: MusicProjectSession
+    private var presetDescriptors: [KeyboardPresetDescriptor] {
+        var values = MusicPresetCatalog.all.map {
+            KeyboardPresetDescriptor(id: String($0.index), displayName: $0.displayName(isChinese: WorkbenchText.isChinese))
+        }
+        if let patch = session.currentTrack?.instrument, !MusicInstrumentPresentation.isEditable(patch) {
+            values.insert(.init(id: "unavailable", displayName: MusicInstrumentPresentation.name(patch)), at: 0)
+        }
+        return values
+    }
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text(session.currentTrack?.name ?? WorkbenchText.t("电子琴", "Keyboard")).font(.caption.weight(.medium)).lineLimit(1)
-                Spacer()
-                Button(session.isLive ? WorkbenchText.t("关闭琴声", "Mute keyboard") : WorkbenchText.t("启用琴声", "Enable keyboard")) {
+            ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.currentTrack?.name ?? WorkbenchText.t("电子琴", "Keyboard")).font(.caption.weight(.medium))
+                    Text(MusicInstrumentPresentation.name(session.currentTrack?.instrument)).font(.caption2).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("music.keyboard.currentPreset")
+                }.lineLimit(1).frame(maxWidth: 220, alignment: .leading)
+                MusicPresetPickerButton(session: session)
+                Button(session.isLive ? WorkbenchText.t("关闭琴声", "Mute keyboard")
+                    : session.currentTrack?.kind == .midi ? WorkbenchText.t("启用琴声", "Enable keyboard")
+                    : WorkbenchText.t("添加乐器并启用", "Add instrument and enable")) {
                     if session.isLive { session.stopLive() }
-                    else { Task { if session.currentTrack?.kind != .midi { await session.addTrack() }; session.startLive() } }
-                }.frame(minHeight: 44)
-                Button(session.isMIDIRecording ? WorkbenchText.t("结束录制", "Finish take") : WorkbenchText.t("录制演奏", "Record take"), systemImage: session.isMIDIRecording ? "stop.circle.fill" : "record.circle") {
+                    else { Task { await session.activateKeyboard() } }
+                }.frame(minHeight: 44).disabled(session.saving || session.isRecording)
+                Button(session.isMIDIRecording ? WorkbenchText.t("结束录制", "Finish take")
+                    : session.currentTrack?.kind == .midi ? WorkbenchText.t("录制演奏", "Record take")
+                    : WorkbenchText.t("添加乐器并录制", "Add instrument and record"), systemImage: session.isMIDIRecording ? "stop.circle.fill" : "record.circle") {
                     if session.isMIDIRecording { Task { await session.stopMIDIRecording() } }
-                    else { Task { if session.currentTrack?.kind != .midi { await session.addTrack() }; session.startMIDIRecording() } }
-                }.foregroundStyle(.red).frame(minHeight: 44)
-            }.font(.caption).padding(.horizontal, 12)
+                    else { Task { await session.activateKeyboard(recording: true) } }
+                }.foregroundStyle(.red).frame(minHeight: 44).disabled(session.saving || session.isRecording)
+            }.font(.caption).padding(.horizontal, 12) }
             ElectronicKeyboardPanel(controller: session.keyboard, configuration: .init(keyCount: 25, showsExpandControl: false),
-                toneSurface: .init(presets: [
-                    .init(id: "0", displayName: WorkbenchText.t("纯音合成器", "Sine synthesizer")),
-                    .init(id: "1", displayName: WorkbenchText.t("锯齿合成器", "Saw synthesizer"))
-                ], selectedPresetID: Binding(get: { session.preset }, set: { session.changePreset($0) })))
+                toneSurface: .init(presets: presetDescriptors,
+                    selectedPresetID: Binding(get: {
+                        guard session.currentTrack?.kind == .midi else { return nil }
+                        return MusicInstrumentPresentation.isEditable(session.currentTrack?.instrument) ? session.preset : "unavailable"
+                    }, set: { session.changePreset($0) })))
                 .disabled(!session.isLive).frame(maxHeight: .infinity)
         }.accessibilityIdentifier("music.keyboard")
+            .onDisappear {
+                session.stopLive()
+                if session.isMIDIRecording { Task { await session.stopMIDIRecording() } }
+            }
     }
 }
 #endif

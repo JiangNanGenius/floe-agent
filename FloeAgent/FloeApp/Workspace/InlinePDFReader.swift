@@ -3,6 +3,9 @@ import SwiftUI
 import PDFKit
 import Combine
 
+/// PDF points measured from the top-left, with one-based page numbers.
+struct PDFReadingDestination:Equatable {let page:Int;let x:Double;let y:Double}
+
 extension Notification.Name {
     /// Posted after any PDF tool commits a document, so an open reader can
     /// refresh in near-real-time instead of waiting for its poll interval.
@@ -17,6 +20,7 @@ final class PDFReadingSession: ObservableObject {
     @Published var error: String?
     @Published var locked = false
     @Published var fullScreen = false
+    @Published var destination:PDFReadingDestination?
     weak var activeView: PDFView?
     var pageIndex = 0
     var pagePoint = CGPoint.zero
@@ -68,6 +72,8 @@ final class PDFReadingSession: ObservableObject {
 struct InlinePDFReader: View {
     let url: URL
     var validateRead: (() throws -> Void)? = nil
+    var destination:PDFReadingDestination? = nil
+    var onSource:(@MainActor (Int,Double,Double)->Void)? = nil
     @StateObject private var session = PDFReadingSession()
     @State private var expanded = false
     @State private var password = ""
@@ -89,10 +95,26 @@ struct InlinePDFReader: View {
                 }
             }
             .task(id: url) {
+                session.destination=destination
                 await session.load(url, force: true, validateRead: validateRead)
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(2)) } catch { break }
                     await session.load(url, validateRead: validateRead)
+                }
+            }
+            .onChange(of:destination) {_,value in session.destination=value}
+            .overlay(alignment:.bottomTrailing) {
+                if let onSource,session.document != nil,!session.locked {
+                    Button(IDELanguageRunText.t("定位到源码","Locate source"),systemImage:"text.line.first.and.arrowtriangle.forward") {
+                        do {
+                            try withPDFExceptionGuard {
+                                guard let view=session.activeView,let document=session.document,
+                                      let page=view.page(for:CGPoint(x:view.bounds.midX,y:view.bounds.midY),nearest:true) else {return}
+                                let point=view.convert(CGPoint(x:view.bounds.midX,y:view.bounds.midY),to:page),box=page.bounds(for:.mediaBox)
+                                onSource(document.index(for:page)+1,point.x-box.minX,box.maxY-point.y)
+                            }
+                        } catch {session.error=error.localizedDescription}
+                    }.buttonStyle(.bordered).padding(12).accessibilityIdentifier("latex.pdf.source")
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .floePDFDocumentDidChange)) { notification in
@@ -165,7 +187,10 @@ private struct PDFReadingSurface: UIViewRepresentable {
         guard presentationID == session.fullScreen else { return }
         let changed = view.document !== session.document
         let restored = session.activeView !== view
-        guard changed || restored else { return }
+        if !changed && !restored {
+            applyDestination(view,coordinator:context.coordinator)
+            return
+        }
         view.document = session.document
         context.coordinator.presentationID = presentationID
         if let page = session.document?.page(at: min(session.pageIndex, max(0, (session.document?.pageCount ?? 1) - 1))) {
@@ -176,9 +201,23 @@ private struct PDFReadingSurface: UIViewRepresentable {
             } else { view.go(to: page) }
         }
         session.activeView = view
+        applyDestination(view,coordinator:context.coordinator)
+    }
+
+    private func applyDestination(_ view:PDFView,coordinator:Coordinator) {
+        guard let destination=session.destination,destination != coordinator.lastDestination,
+              destination.page>0,destination.x.isFinite,destination.y.isFinite else {return}
+        do {
+            try withPDFExceptionGuard {
+                guard let page=session.document?.page(at:destination.page-1) else {return}
+                let box=page.bounds(for:.mediaBox)
+                view.go(to:PDFDestination(page:page,at:CGPoint(x:box.minX+destination.x,y:box.maxY-destination.y)))
+                coordinator.lastDestination=destination
+            }
+        } catch {session.error=error.localizedDescription}
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
-    final class Coordinator { var presentationID: Bool? }
+    final class Coordinator { var presentationID: Bool?;var lastDestination:PDFReadingDestination? }
 }
 #endif
