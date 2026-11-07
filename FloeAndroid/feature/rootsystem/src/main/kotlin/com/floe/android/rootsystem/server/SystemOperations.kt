@@ -261,13 +261,7 @@ internal class SystemOperations(
     // -------------------------------------------------------------- process
 
     fun processQuery(filter: String?, maxEntries: Int): List<ProcessRecord> {
-        val bound = maxEntries.coerceIn(1, BinderProtocol.MAX_LIST)
-        val needle = filter?.take(BinderProtocol.MAX_TEXT)?.lowercase()
-        val records = readProcessTable()
-        return records.asSequence()
-            .filter { needle == null || it.name.lowercase().contains(needle) || it.pid.toString() == needle }
-            .take(bound)
-            .toList()
+        return ProcessTableQuery.select(readProcessTable(), filter, maxEntries)
     }
 
     // -------------------------------------------------------------- service
@@ -583,18 +577,7 @@ internal class SystemOperations(
         }
         if (process.exitValue() != 0) return fallbackProcesses()
 
-        val records = ArrayList<ProcessRecord>()
-        for (line in output.lineSequence()) {
-            if (line.isBlank() || line.startsWith("PID")) continue
-            val match = PS_LINE.matchEntire(line.trim()) ?: continue
-            val pid = match.groupValues[1].toIntOrNull() ?: continue
-            val uid = match.groupValues[2].toIntOrNull() ?: continue
-            val name = match.groupValues[3].trim()
-            if (name.isEmpty()) continue
-            records.add(ProcessRecord(pid, uid, name.take(BinderProtocol.MAX_NAME)))
-            if (records.size >= BinderProtocol.MAX_LIST) break
-        }
-        return records
+        return ProcessTableQuery.parse(output)
     }
 
     @Suppress("DEPRECATION")
@@ -603,7 +586,7 @@ internal class SystemOperations(
             ?: return emptyList()
         return manager.runningAppProcesses.orEmpty().map {
             ProcessRecord(it.pid, it.uid, it.processName.take(BinderProtocol.MAX_NAME))
-        }.take(BinderProtocol.MAX_LIST)
+        }
     }
 
     private fun packageUid(packageName: String): Int? = try {
@@ -637,6 +620,5 @@ internal class SystemOperations(
         const val MAX_DELETE_ENTRIES = 5000
         const val MAX_PS_BYTES = 256 * 1024
         val PACKAGE_NAME = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$")
-        val PS_LINE = Regex("^(\\d+)\\s+(\\d+)\\s+(.+)$")
     }
 }

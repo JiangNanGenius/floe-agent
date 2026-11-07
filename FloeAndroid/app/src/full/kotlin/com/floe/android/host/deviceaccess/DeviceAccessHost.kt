@@ -3113,7 +3113,7 @@ internal class DeviceAccessHost(
             append(" connected=").append(phone.connected)
             append(" blocker=").append(phone.blocker?.name?.lowercase() ?: "none")
             append(" selectedApps=").append(targets.size)
-            append(" toolsAvailable=").append(phoneServiceUsable(phone) && targets.isNotEmpty())
+            append(" phoneToolsAvailable=").append(phoneServiceUsable(phone) && targets.isNotEmpty())
             append(" userStopped=").append(userStopped)
             append(" automaticControl=").append(settings.automaticPhoneControl)
             val phoneNext = when {

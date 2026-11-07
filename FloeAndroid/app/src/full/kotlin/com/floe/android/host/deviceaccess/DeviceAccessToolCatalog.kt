@@ -209,7 +209,9 @@ internal object DeviceAccessToolCatalog {
             "selected app scope and user stop), embedded-ADB and root service state, the " +
             "user-granted file root ids, write ceiling and whether package " +
             "management is allowed. Reports unavailable layers honestly; it " +
-            "never changes a permission. If phone tools are absent, check this status " +
+            "never changes a permission. Phone UI readiness is independent of system " +
+            "queries: an authorized live ADB/root service can query the system while " +
+            "accessibility is disabled. If phone tools are absent, check this status " +
             "and ask the user to complete Settings > Phone. VNC controls a remote " +
             "or Linux desktop, not the Android phone screen.",
         schema = schema(properties = JSONObject(), required = emptyList()),

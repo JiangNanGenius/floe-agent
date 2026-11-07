@@ -1,5 +1,11 @@
 # 安卓与 iOS 主线的增量差异记录
 
+## Alpha47 本批增量（2026-11-07）
+
+Android固定源 `ad811235194e24484cc81f8ae539b0d943bce2d9`，Alpha47/code66；组件安装返回、取消及在线完整包升级的分层证据见[交付记录](releases/ANDROID_ALPHA47_DELIVERY.md)。原G/C/N和IOS-D编号、已完成证据及未完成项保留。
+
+47冻结时实际读回iOS最近已提交来源为 `e4d334904ae59c17d3cf86a8e40ee0f60bf9dcc0`。交付补充期间新提交 `eb3bb7bca14e3bd741782f9c9bfa4c5eedc0ee34`，相对该基线仅新增45条Biology模块与6条独立资格宿主路径；列为下一轮独立需求复核，不扩张本轮N01–N08，也不据模块／宿主源码宣称完整App可用。根工作区其他活跃iOS编辑仍归原任务，本Android包未吸收其未完成修改。原IOS-D编号和 `36f63bf4` 视觉参照保留，不重跑183项审计。
+
 ## Alpha45 本批增量（2026-11-07）
 
 Android固定交付源`cec45cdea1c6bbc536270374ee9883f74fc129f5`，Alpha45/code64；紧凑设置与运行断点修复及其明确证据见[交付记录](releases/ANDROID_ALPHA45_DELIVERY.md)。原G/C/N与IOS-D编号及历史验收不重置，全局视觉和其余既定能力继续。

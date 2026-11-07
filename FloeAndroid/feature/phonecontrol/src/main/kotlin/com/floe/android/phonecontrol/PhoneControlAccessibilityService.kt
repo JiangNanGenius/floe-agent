@@ -32,7 +32,15 @@ class PhoneControlAccessibilityService : AccessibilityService() {
         val session = PhoneControlRuntime.session() ?: return
         when (event?.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-            AccessibilityEvent.TYPE_WINDOWS_CHANGED -> session.onWindowChanged()
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED -> session.onWindowChanged(
+                eventType = event.eventType,
+                sourceWindowId = event.windowId,
+                windowChanges = if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+                    event.windowChanges
+                } else {
+                    0
+                },
+            )
 
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> session.onContentChanged()
 

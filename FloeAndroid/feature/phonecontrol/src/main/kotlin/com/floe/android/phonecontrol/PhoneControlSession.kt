@@ -152,6 +152,7 @@ internal class PhoneControlSession(
                 return PhoneControlResult.Denied(PhoneControlDenial.FOREIGN_RUN)
             PhoneControlFence.Claim.Ok -> Unit
         }
+        traceObservationClear("explicit_arm")
         latest = null
         PhoneControlRuntime.publish()
         return PhoneControlResult.Ok(PhoneControlRuntime.snapshot())
@@ -215,6 +216,17 @@ internal class PhoneControlSession(
         val record = latest
         val early = validateBeforeDispatch(record, principal, observationId, action, grant)
         if (early != null) {
+            val state = fence.state()
+            android.util.Log.i(
+                "FloePhoneControl",
+                "action_refused reason=${early.reason.name}" +
+                    " has_observation=${record != null}" +
+                    " id_matches=${record?.observation?.observationId == observationId}" +
+                    " owner_matches=${record?.observation?.owner == principal.owner}" +
+                    " fence_matches=${record?.observation?.fenceGeneration == state.fenceGeneration}" +
+                    " page_matches=${record?.observation?.pageGeneration == state.pageGeneration}" +
+                    " remaining_ms=${record?.observation?.expiresAtElapsedRealtimeMillis?.minus(SystemClock.elapsedRealtime())}",
+            )
             complete(early)
             return
         }
@@ -991,8 +1003,9 @@ internal class PhoneControlSession(
         }
     }
 
-    fun onWindowChanged() {
+    fun onWindowChanged(eventType: Int = 0, sourceWindowId: Int = -1, windowChanges: Int = 0) {
         if (closed) return
+        traceObservationClear("window_event", eventType, sourceWindowId, windowChanges)
         fence.onPageChanged()
         latest = null
         lastWindowChangeAt = SystemClock.elapsedRealtime()
@@ -1012,6 +1025,7 @@ internal class PhoneControlSession(
         lastUserInteractionWallMillis = System.currentTimeMillis() - lag
         unlocker.userInteraction()
         if (fence.state().owner == null && inFlightId == null) return
+        traceObservationClear("user_interaction")
         fence.block(PhoneControlBlocker.USER_TOUCH)
         latest = null
         abortInFlight(PhoneControlBlocker.USER_TOUCH, "a user touch interrupted the run")
@@ -1398,6 +1412,25 @@ internal class PhoneControlSession(
         } finally {
             windows.forEach { runCatching { it.recycle() } }
         }
+    }
+
+    /** Only numeric transition metadata for an already-owned observation; no
+     * node text, packages, credentials, owner IDs or observation IDs are logged. */
+    private fun traceObservationClear(
+        reason: String,
+        eventType: Int = 0,
+        sourceWindowId: Int = -1,
+        windowChanges: Int = 0,
+    ) {
+        val observation = latest?.observation ?: return
+        android.util.Log.i(
+            "FloePhoneControl",
+            "observation_cleared reason=$reason event=$eventType" +
+                " source_window=$sourceWindowId observed_window=${observation.windowId}" +
+                " changes=$windowChanges fence=${observation.fenceGeneration}" +
+                " page=${observation.pageGeneration}" +
+                " remaining_ms=${observation.expiresAtElapsedRealtimeMillis - SystemClock.elapsedRealtime()}",
+        )
     }
 
     private fun suppressOwnInput() {

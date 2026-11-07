@@ -1,12 +1,12 @@
 # Floe for Android
 
-## Current delivery — Android Alpha45 (2026-11-07)
+## Current delivery — Android Alpha47 (2026-11-07)
 
-[Android 0.1.0-alpha.45](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.45), code64, is published from immutable source `cec45cdea1c6bbc536270374ee9883f74fc129f5`. Full packaging, Play Kotlin,54 relevant JVM results (38 reused after matching unchanged source), native binding, signing and 16KiB checks passed. All six public asset bytes and the annotated source tag were verified; iOS Latest remains unchanged.
+[Android 0.1.0-alpha.47](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.47), code66, is published from immutable source `ad811235194e24484cc81f8ae539b0d943bce2d9`. Full packaging, Play Kotlin,11 focused recovery tests reused from the matching repair implementation, native binding, signing and16KiB checks passed. All seven public asset bytes and the annotated source tag were verified; iOS Latest remains unchanged.
 
-Compact settings now have separate voice pages and model routing with accessible save/discard actions. Charging observation, phone timing and a speech/foreground lock inversion are repaired. Samsung and the reused API37 tablet received the same exact final APK; focused settings and foreground-return checks passed, with original failures retained. The Alpha44 phone run launched and observed Calculator, then its first click expired; no additional real model call followed. A complete post-fix calculation, conditional/project scenarios and the remaining N01–N08 work remain open. Private ADB installation and metadata discovery are not new device online-upgrade evidence.
+Office/CAD component installation now restores the originating owned document, distinguishes cancellation and avoids staging Office recovery data before the component is available. Matching private code65 Samsung checks cover these changes. Samsung actually upgraded through the in-App public full download to both code66 packages, with installed bytes, UIDs and visible project/history retention checked. The46→47 patch was locally reconstructed; this is separate from device incremental-update acceptance. Office close receipts, complete phone workflows, ADB pairing, conditional/project scenarios and the remaining N01–N08 work remain open.
 
-当前已发布Alpha45/code64，包含紧凑设置、语音二级页面、模型路由入口、充电状态监听、手机观察时限和语音锁等待修复。三星与平板同包的设置／前后台场景已检查；完整多步手机结果仍待验收，原故障保留，整轮N01–N08继续。范围见[交付记录](../docs/releases/ANDROID_ALPHA45_DELIVERY.md)和[推进计划](../docs/FLOE_ANDROID_NEXT_ITERATION_QA_20261106.zh-CN.md)。
+当前已发布Alpha47/code66，补齐可选组件安装后返回原文档、取消状态与Office安装前工作副本处理。三星已通过App完整包升级，两包版本、实际字节、UID及可见项目／历史保留已核对；组件修复行为证据绑定匹配的私有65候选。Office关闭回执、完整手机多步、ADB配对及其余N01–N08继续。范围见[交付记录](../docs/releases/ANDROID_ALPHA47_DELIVERY.md)和[推进计划](../docs/FLOE_ANDROID_NEXT_ITERATION_QA_20261106.zh-CN.md)。
 
 ## Historical source checkpoint — G09-R2 (2026-11-01)
 
