@@ -19,6 +19,10 @@ internal interface UpdateStore {
     var pendingDownloadJson: String?
     /** Serialized [PendingInstall] awaiting system/install reconciliation. */
     var pendingInstallJson: String?
+    /** Old stores/records default to the original direct transport. */
+    var downloadSource: UpdateDownloadSource
+        get() = UpdateDownloadSource.GITHUB
+        set(@Suppress("UNUSED_PARAMETER") value) {}
 }
 
 internal class SharedPrefsUpdateStore(context: Context) : UpdateStore {
@@ -62,6 +66,12 @@ internal class SharedPrefsUpdateStore(context: Context) : UpdateStore {
             prefs.edit().putString(KEY_PENDING_INSTALL, value).commit()
         }
 
+    override var downloadSource: UpdateDownloadSource
+        get() = UpdateDownloadSource.fromId(prefs.getString(KEY_DOWNLOAD_SOURCE, null))
+        set(value) {
+            prefs.edit().putString(KEY_DOWNLOAD_SOURCE, value.id).commit()
+        }
+
     private companion object {
         const val FILE = "floe_app_update"
         const val KEY_AUTO_CHECK = "auto_check_enabled"
@@ -69,6 +79,7 @@ internal class SharedPrefsUpdateStore(context: Context) : UpdateStore {
         const val KEY_DISMISSED_VERSION = "dismissed_version"
         const val KEY_PENDING_DOWNLOAD = "pending_download"
         const val KEY_PENDING_INSTALL = "pending_install"
+        const val KEY_DOWNLOAD_SOURCE = "download_source"
     }
 }
 

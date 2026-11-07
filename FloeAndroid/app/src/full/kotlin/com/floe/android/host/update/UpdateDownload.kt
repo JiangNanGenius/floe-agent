@@ -8,6 +8,7 @@ import java.io.InputStream
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -229,7 +230,7 @@ internal object DownloadPlanning {
         if (stagedBytes <= 0L) return ResumePlan.Restart
         if (httpStatus != 206) return ResumePlan.Restart
         if (contentRangeStart == null || contentRangeStart != stagedBytes) return ResumePlan.Restart
-        if (contentRangeTotal != null && expectedTotal > 0L && contentRangeTotal != expectedTotal) {
+        if (expectedTotal > 0L && contentRangeTotal != expectedTotal) {
             return ResumePlan.Restart
         }
         // No stable validator means the staged prefix cannot be attributed to
@@ -276,6 +277,8 @@ internal class UpdateDownloader(
     private enum class DeltaOutcome { PROCEED_TO_FULL, FINISHED }
     private val mutable = MutableStateFlow<AppDownloadState>(AppDownloadState.Idle)
     val state: StateFlow<AppDownloadState> = mutable.asStateFlow()
+    private val mutableSource = MutableStateFlow(UpdateSourceState(store.downloadSource))
+    val sourceState: StateFlow<UpdateSourceState> = mutableSource.asStateFlow()
 
     /** Serializes start/resume/discard transitions (cancel + join + delete). */
     private val transitions = Mutex()
@@ -285,8 +288,51 @@ internal class UpdateDownloader(
     private var writer: Writer? = null
     private val generations = AtomicLong(0)
 
-    private class Writer(val generation: Long, val cancelled: AtomicBoolean) {
+    private class Writer(
+        val generation: Long,
+        val cancelled: AtomicBoolean,
+        val source: UpdateDownloadSource,
+    ) {
         lateinit var job: Job
+        val activeCall = AtomicReference<DownloadCall?>()
+    }
+
+    /** Explicit user choice. A new connection never races the old staging writer. */
+    fun changeSource(source: UpdateDownloadSource) {
+        scope.launch(Dispatchers.IO) {
+            transitions.withLock {
+                if (source == store.downloadSource) return@withLock
+                val before = mutable.value
+                if (before is AppDownloadState.Applying || before is AppDownloadState.Verifying) return@withLock
+                val resumeActive = synchronized(writerLock) {
+                    writer != null && before is AppDownloadState.InProgress
+                }
+                mutableSource.value = UpdateSourceState(source, switching = resumeActive)
+                try {
+                    if (resumeActive) cancelAndJoinWriter()
+                    store.downloadSource = source
+                    // Paused/failed transfers stay paused. Selecting a source is
+                    // not consent to start another download after a failure.
+                    if (resumeActive) {
+                        val meta = DownloadMeta.fromJson(store.pendingDownloadJson)
+                        if (meta != null && !meta.completed && mutable.value !is AppDownloadState.Ready) {
+                            if (meta.mode == DownloadMode.DELTA) {
+                                cleanupDeltaLeftovers()
+                                mutable.value = AppDownloadState.DeltaFallback(
+                                    meta.versionName, DeltaFallbackReason.INTERRUPTED, meta.totalBytes,
+                                )
+                            } else {
+                                beginWriter(meta)
+                            }
+                        } else if (meta == null && mutable.value is AppDownloadState.InProgress) {
+                            mutable.value = AppDownloadState.Idle
+                        }
+                    }
+                } finally {
+                    mutableSource.value = mutableSource.value.copy(selected = store.downloadSource, switching = false)
+                }
+            }
+        }
     }
 
     /** Process-restart reconciliation of a staged/incomplete download. */
@@ -440,6 +486,7 @@ internal class UpdateDownloader(
         }
         current.cancelled.set(true)
         current.job.cancel()
+        scope.launch(Dispatchers.IO) { current.activeCall.get()?.cancel() }
     }
 
     /** Explicit "delete the downloaded package" action. */
@@ -480,13 +527,15 @@ internal class UpdateDownloader(
         } ?: return
         previous.cancelled.set(true)
         previous.job.cancel()
+        previous.activeCall.get()?.cancel()
         previous.job.join()
     }
 
     private fun beginWriter(initial: DownloadMeta, release: AndroidRelease? = null) {
         prepareStaging(initial)
         val generation = generations.incrementAndGet()
-        val owner = Writer(generation, AtomicBoolean(false))
+        val owner = Writer(generation, AtomicBoolean(false), store.downloadSource)
+        mutableSource.value = mutableSource.value.copy(restarted = false)
         val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             runWriter(owner, initial, release)
         }
@@ -509,7 +558,7 @@ internal class UpdateDownloader(
             publishPaused(owner)
             throw cancellation
         } catch (failure: StageFailure) {
-            publish(owner, AppDownloadState.Failed(
+            if (owner.cancelled.get()) publishPaused(owner) else publish(owner, AppDownloadState.Failed(
                 versionName = failure.versionName,
                 kind = failure.kind,
                 resumable = failure.resumable,
@@ -522,10 +571,13 @@ internal class UpdateDownloader(
                     ""
                 }
             }
-            if (!owner.cancelled.get()) {
+            if (owner.cancelled.get()) {
+                publishPaused(owner)
+            } else {
                 publish(owner, AppDownloadState.Failed(versionName, DownloadFailure.NETWORK, true))
             }
         } finally {
+            runCatching { owner.activeCall.getAndSet(null)?.cancel() }
             synchronized(writerLock) {
                 if (writer === owner) writer = null
             }
@@ -534,6 +586,21 @@ internal class UpdateDownloader(
 
     private fun checkCancelled(owner: Writer) {
         if (owner.cancelled.get()) throw CancellationException("download-cancelled")
+    }
+
+    private fun open(
+        owner: Writer,
+        canonicalUrl: String,
+        rangeFrom: Long? = null,
+        etag: String? = null,
+        assetBytes: Boolean = false,
+    ): DownloadResponse {
+        checkCancelled(owner)
+        val url = if (assetBytes) owner.source.assetUrl(canonicalUrl) else canonicalUrl
+        val call = transport.newCall(url, rangeFrom, etag)
+        owner.activeCall.getAndSet(call)?.cancel()
+        checkCancelled(owner)
+        return call.execute().also { checkCancelled(owner) }
     }
 
     private fun publish(owner: Writer, state: AppDownloadState) {
@@ -586,7 +653,7 @@ internal class UpdateDownloader(
             existing = 0L
         }
 
-        var response = transport.open(working.apkUrl, existing.takeIf { it > 0L }, working.etag)
+        var response = open(owner, working.apkUrl, existing.takeIf { it > 0L }, working.etag, assetBytes = true)
         checkCancelled(owner)
         var plan = DownloadPlanning.plan(
             stagedBytes = existing,
@@ -603,7 +670,10 @@ internal class UpdateDownloader(
             runCatching { response.stream.close() }
             part.delete()
             existing = 0L
-            response = transport.open(working.apkUrl, null, null)
+            synchronized(writerLock) {
+                if (writer === owner) mutableSource.value = mutableSource.value.copy(restarted = true)
+            }
+            response = open(owner, working.apkUrl, assetBytes = true)
             checkCancelled(owner)
             plan = ResumePlan.Restart
         }
@@ -706,7 +776,7 @@ internal class UpdateDownloader(
         val manifestAsset = release.delta ?: return DeltaOutcome.PROCEED_TO_FULL
         val installed = provider.read() ?: return DeltaOutcome.PROCEED_TO_FULL
         val manifestText = try {
-            val response = transport.open(manifestAsset.downloadUrl, null, null)
+            val response = open(owner, manifestAsset.downloadUrl)
             checkCancelled(owner)
             response.stream.use {
                 readBoundedBytes(owner, it, UpdateDeltaFormat.MAX_MANIFEST_BYTES)
@@ -883,7 +953,7 @@ internal class UpdateDownloader(
         output: File,
     ) {
         val response = try {
-            transport.open(asset.downloadUrl, null, null)
+            open(owner, asset.downloadUrl, assetBytes = true)
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (failure: Exception) {
@@ -1109,7 +1179,7 @@ internal class UpdateDownloader(
      */
     private suspend fun fetchChecksums(owner: Writer, meta: DownloadMeta): Map<String, String> {
         val response = try {
-            transport.open(meta.checksumsUrl, null, null)
+            open(owner, meta.checksumsUrl)
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (failure: Exception) {

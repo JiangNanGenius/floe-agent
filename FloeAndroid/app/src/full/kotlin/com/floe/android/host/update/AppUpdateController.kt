@@ -43,6 +43,7 @@ internal data class AppUpdateUiState(
     val reinstallsOffice: Boolean = false,
     val cadInstallBusy: Boolean = false,
     val reinstallsCad: Boolean = false,
+    val sourceState: UpdateSourceState = UpdateSourceState(UpdateDownloadSource.GITHUB),
 )
 
 /**
@@ -157,7 +158,8 @@ internal class AppUpdateController private constructor(
                 checkController.state,
                 downloader.state,
                 installer.state,
-            ) { check, download, install -> Triple(check, download, install) }
+                downloader.sourceState,
+            ) { _, _, _, _ -> Unit }
                 .collect { refresh() }
         }
         // Startup automatic check follows the same cooldown/enabled rules as
@@ -176,6 +178,14 @@ internal class AppUpdateController private constructor(
     fun setAutoCheckEnabled(enabled: Boolean) {
         checkController.setAutoCheckEnabled(enabled)
         refresh()
+    }
+
+    fun setDownloadSource(source: UpdateDownloadSource) {
+        if (installer.state.value !is AppInstallState.Idle || downloader.sourceState.value.switching) return
+        if (source != store.downloadSource && downloader.state.value is AppDownloadState.InProgress) {
+            startDownloadService()
+        }
+        downloader.changeSource(source)
     }
 
     fun checkNow() {
@@ -386,6 +396,7 @@ internal class AppUpdateController private constructor(
         return AppUpdateUiState(
             currentVersion = currentVersion?.toString() ?: BuildConfig.VERSION_NAME,
             autoCheckEnabled = store.autoCheckEnabled,
+            sourceState = downloader.sourceState.value,
             check = check,
             download = download,
             install = install,

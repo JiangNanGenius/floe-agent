@@ -3,8 +3,11 @@ package com.floe.android.host.update
 
 import java.io.IOException
 import java.io.InputStream
+import java.io.FilterInputStream
 import java.net.HttpURLConnection
 import java.net.URI
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Public, credential-free GitHub release feed access.
@@ -103,6 +106,31 @@ internal data class DownloadResponse(
 
 internal interface DownloadTransport {
     fun open(url: String, rangeFrom: Long?, ifRangeEtag: String?): DownloadResponse
+
+    /** A single writer-owned request. Legacy test transports need no connection implementation. */
+    fun newCall(url: String, rangeFrom: Long?, ifRangeEtag: String?): DownloadCall = object : DownloadCall {
+        private val cancelled = AtomicBoolean(false)
+        private val stream = AtomicReference<InputStream?>()
+        override fun execute(): DownloadResponse {
+            if (cancelled.get()) throw IOException("download-cancelled")
+            val response = open(url, rangeFrom, ifRangeEtag)
+            stream.set(response.stream)
+            if (cancelled.get()) {
+                response.stream.close()
+                throw IOException("download-cancelled")
+            }
+            return response
+        }
+        override fun cancel() {
+            cancelled.set(true)
+            runCatching { stream.get()?.close() }
+        }
+    }
+}
+
+internal interface DownloadCall {
+    fun execute(): DownloadResponse
+    fun cancel()
 }
 
 internal class HttpsDownloadTransport(
@@ -111,46 +139,70 @@ internal class HttpsDownloadTransport(
     private val onConnection: (HttpURLConnection) -> Unit = {},
 ) : DownloadTransport {
 
-    override fun open(url: String, rangeFrom: Long?, ifRangeEtag: String?): DownloadResponse {
-        if (!url.startsWith("https://")) throw IOException("refusing non-HTTPS source")
-        val connection = try {
-            (URI.create(url).toURL().openConnection() as? HttpURLConnection)
-        } catch (failure: IOException) {
-            throw IOException("connection-open-failed", failure)
-        } ?: throw IOException("unsupported-connection")
-        try {
-            connection.requestMethod = "GET"
-            connection.connectTimeout = connectTimeoutMs
-            connection.readTimeout = readTimeoutMs
-            connection.instanceFollowRedirects = true
-            connection.useCaches = false
-            connection.setRequestProperty("Accept", "application/octet-stream")
-            connection.setRequestProperty("User-Agent", "floe-android-update")
-            if (rangeFrom != null && rangeFrom > 0L) {
-                connection.setRequestProperty("Range", "bytes=$rangeFrom-")
-                if (!ifRangeEtag.isNullOrEmpty()) connection.setRequestProperty("If-Range", ifRangeEtag)
+    override fun open(url: String, rangeFrom: Long?, ifRangeEtag: String?): DownloadResponse =
+        newCall(url, rangeFrom, ifRangeEtag).execute()
+
+    override fun newCall(url: String, rangeFrom: Long?, ifRangeEtag: String?): DownloadCall = object : DownloadCall {
+        private val cancelled = AtomicBoolean(false)
+        private val active = AtomicReference<HttpURLConnection?>()
+
+        override fun cancel() {
+            cancelled.set(true)
+            runCatching { active.get()?.disconnect() }
+        }
+
+        override fun execute(): DownloadResponse {
+            if (!url.startsWith("https://")) throw IOException("refusing non-HTTPS source")
+            if (cancelled.get()) throw IOException("download-cancelled")
+            val connection = try {
+                (URI.create(url).toURL().openConnection() as? HttpURLConnection)
+            } catch (failure: IOException) {
+                throw IOException("connection-open-failed", failure)
+            } ?: throw IOException("unsupported-connection")
+            active.set(connection)
+            if (cancelled.get()) {
+                connection.disconnect()
+                throw IOException("download-cancelled")
             }
-            onConnection(connection)
-            val code = connection.responseCode
-            if (code != HttpURLConnection.HTTP_OK && code != 206) {
-                throw IOException("http-$code")
+            try {
+                connection.requestMethod = "GET"
+                connection.connectTimeout = connectTimeoutMs
+                connection.readTimeout = readTimeoutMs
+                connection.instanceFollowRedirects = true
+                connection.useCaches = false
+                connection.setRequestProperty("Accept", "application/octet-stream")
+                connection.setRequestProperty("User-Agent", "floe-android-update")
+                if (rangeFrom != null && rangeFrom > 0L) {
+                    connection.setRequestProperty("Range", "bytes=$rangeFrom-")
+                    if (!ifRangeEtag.isNullOrEmpty()) connection.setRequestProperty("If-Range", ifRangeEtag)
+                }
+                onConnection(connection)
+                if (cancelled.get()) throw IOException("download-cancelled")
+                val code = connection.responseCode
+                if (code != HttpURLConnection.HTTP_OK && code != 206) {
+                    throw IOException("http-$code")
+                }
+                if (!connection.url.toString().startsWith("https://")) {
+                    throw IOException("redirect-left-https")
+                }
+                val contentRange = connection.getHeaderField("Content-Range")
+                val (rangeStart, rangeTotal) = parseContentRange(contentRange)
+                return DownloadResponse(
+                    code = code,
+                    contentLength = connection.getHeaderFieldLong("Content-Length", -1L),
+                    contentRangeStart = rangeStart,
+                    contentRangeTotal = rangeTotal,
+                    etag = connection.getHeaderField("ETag"),
+                    stream = object : FilterInputStream(connection.inputStream) {
+                        override fun close() {
+                            try { super.close() } finally { connection.disconnect() }
+                        }
+                    },
+                )
+            } catch (failure: IOException) {
+                connection.disconnect()
+                throw failure
             }
-            if (!connection.url.toString().startsWith("https://")) {
-                throw IOException("redirect-left-https")
-            }
-            val contentRange = connection.getHeaderField("Content-Range")
-            val (rangeStart, rangeTotal) = parseContentRange(contentRange)
-            return DownloadResponse(
-                code = code,
-                contentLength = connection.getHeaderFieldLong("Content-Length", -1L),
-                contentRangeStart = rangeStart,
-                contentRangeTotal = rangeTotal,
-                etag = connection.getHeaderField("ETag"),
-                stream = connection.inputStream,
-            )
-        } catch (failure: IOException) {
-            connection.disconnect()
-            throw failure
         }
     }
 
@@ -161,9 +213,9 @@ internal class HttpsDownloadTransport(
         val start = match.groupValues[1].toLongOrNull()
         val end = match.groupValues[2].toLongOrNull()
         val total = match.groupValues[3].toLongOrNull()
-        // The start must be real; the total may legitimately be `*`.
-        if (start == null) return null to null
-        return start to (total ?: end?.plus(1L))
+        // An unknown total cannot prove safe continuation of the staged APK.
+        if (start == null || end == null || end < start || (total != null && end >= total)) return null to null
+        return start to total
     }
 
     private companion object {

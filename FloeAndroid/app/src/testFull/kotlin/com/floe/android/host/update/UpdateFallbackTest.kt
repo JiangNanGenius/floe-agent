@@ -26,6 +26,7 @@ class UpdateFallbackTest {
         override var dismissedVersion: String? = null
         override var pendingDownloadJson: String? = null
         override var pendingInstallJson: String? = null
+        override var downloadSource = UpdateDownloadSource.GITHUB
     }
     private fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256")
         .digest(bytes).joinToString("") { "%02x".format(it) }
@@ -46,7 +47,12 @@ class UpdateFallbackTest {
         exerciseFallback(recreate = false, directFull = true)
     }
 
-    private suspend fun exerciseFallback(recreate: Boolean, directFull: Boolean = false) {
+    @Test fun mirroredPatchFailureRestoresSameSourceForExplicitFullFallback() = runBlocking {
+        exerciseFallback(recreate = true, source = UpdateDownloadSource.GH_PROXY)
+    }
+
+    private suspend fun exerciseFallback(recreate: Boolean, directFull: Boolean = false,
+        source: UpdateDownloadSource = UpdateDownloadSource.GITHUB) {
         val dir = Files.createTempDirectory("floe-fallback-").toFile()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val base = dir.resolve("installed.apk").apply { writeBytes(ByteArray(900) { 7 }) }
@@ -67,10 +73,12 @@ class UpdateFallbackTest {
             "sizeBytes":300,"sha256":"${sha(patch)}"}}
         """.trimIndent().toByteArray()
         val sums = "${sha(full)}  $apkName\n${sha(patch)}  $patchName\n${sha(manifest)}  update-delta-v1.json\n".toByteArray()
+        val urls = java.util.Collections.synchronizedList(mutableListOf<String>())
         val patchOpens = AtomicInteger()
         val fullOpens = AtomicInteger()
         val transport = object : DownloadTransport {
             override fun open(url: String, rangeFrom: Long?, ifRangeEtag: String?): DownloadResponse {
+                urls += url
                 val bytes = when (url.substringAfterLast('/')) {
                     "SHA256SUMS" -> sums
                     "update-delta-v1.json" -> manifest
@@ -81,14 +89,16 @@ class UpdateFallbackTest {
                 return DownloadResponse(200, bytes.size.toLong(), null, null, null, ByteArrayInputStream(bytes))
             }
         }
-        fun asset(name: String, size: Int) = ReleaseAsset(name, size.toLong(), "https://example.test/$name")
+        val canonical = if (source == UpdateDownloadSource.GITHUB) "https://example.test/" else
+            "https://github.com/JiangNanGenius/floe-agent/releases/download/android/v0.1.0-alpha.17/"
+        fun asset(name: String, size: Int) = ReleaseAsset(name, size.toLong(), canonical + name)
         val release = AndroidRelease(
             tag = "android/v0.1.0-alpha.17", version = FloeVersion.parse("0.1.0-alpha.17")!!, summary = "",
             apk = asset(apkName, full.size), checksums = asset("SHA256SUMS", sums.size),
             delta = asset("update-delta-v1.json", manifest.size),
             assets = mapOf(patchName to asset(patchName, patch.size)),
         )
-        val store = Store()
+        val store = Store().apply { downloadSource = source }
         val restoredScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val subject = UpdateDownloader(scope, transport, store, dir.resolve("staging"), { null },
             deltaBaseProvider = InstalledBaseProvider {
@@ -126,6 +136,14 @@ class UpdateFallbackTest {
             assertEquals(1, fullOpens.get())
             assertArrayEquals(full, downloader.readyFile()!!.readBytes())
             assertEquals(sha(ByteArray(900) { 7 }), sha(base.readBytes()))
+            assertEquals(source, downloader.sourceState.value.selected)
+            if (source != UpdateDownloadSource.GITHUB) {
+                assertTrue(urls.contains(canonical + "SHA256SUMS"))
+                assertTrue(urls.contains(canonical + "update-delta-v1.json"))
+                assertTrue(urls.contains(source.assetUrl(canonical + patchName)))
+                assertTrue(urls.contains(source.assetUrl(canonical + apkName)))
+                assertFalse(urls.contains(source.assetUrl(canonical + apkName).substringBefore(canonical) + canonical + "SHA256SUMS"))
+            }
         } finally { scope.coroutineContext[Job]!!.cancelAndJoin(); restoredScope.coroutineContext[Job]!!.cancelAndJoin(); dir.deleteRecursively() }
     }
 

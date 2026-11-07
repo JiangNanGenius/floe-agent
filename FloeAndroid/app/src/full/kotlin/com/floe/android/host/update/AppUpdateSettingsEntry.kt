@@ -66,6 +66,7 @@ internal fun AppUpdateSettingsEntry() {
                     )
                 }
             })
+            SectionItem(title = { UpdateSourceSelector(controller, ui) })
             SectionItem(title = {
                 FloeText(
                     AppUpdateCopy.status(ui),
@@ -78,7 +79,7 @@ internal fun AppUpdateSettingsEntry() {
                 FloeCapsuleAction(
                     label = primaryLabel,
                     onClick = { primaryAction(controller, ui, context) },
-                    enabled = AppUpdateCopy.primaryEnabled(ui),
+                    enabled = AppUpdateCopy.primaryEnabled(ui) && !ui.sourceState.switching,
                     modifier = Modifier.padding(vertical = 2.dp),
                 )
             })

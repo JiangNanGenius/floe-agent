@@ -56,4 +56,14 @@
     <string name="app_update_notification_channel">应用更新下载</string>
     <string name="app_update_notification_downloading">正在下载更新…</string>
     <string name="app_update_cancel_pending">取消安装</string>
+    <string name="app_update_show_more">显示更多</string>
+    <string name="app_update_show_less">收起</string>
+    <string name="app_update_known_issues_show">显示已知问题</string>
+    <string name="app_update_known_issues_hide">隐藏已知问题</string>
+    <string name="app_update_sequential_confirm_note">安装可能需要多次确认：先确认应用更新，若 Linux 运行环境一同更新还需再次确认；系统也可能在继续前扫描安装包。请按顺序确认每个提示以完成安装。</string>
+    <string name="app_update_source_github">GitHub</string>
+    <string name="app_update_source_value">下载源：%1$s</string>
+    <string name="app_update_source_switching">正在切换下载源…</string>
+    <string name="app_update_source_restarted">当前连接无法续传，已从头下载。</string>
+    <string name="app_update_source_mirror">第三方镜像，仍会校验安装包。</string>
 </resources>

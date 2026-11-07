@@ -60,4 +60,14 @@
     <string name="app_update_notification_channel">App update download</string>
     <string name="app_update_notification_downloading">Downloading the update…</string>
     <string name="app_update_cancel_pending">Cancel install</string>
+    <string name="app_update_show_more">Show more</string>
+    <string name="app_update_show_less">Show less</string>
+    <string name="app_update_known_issues_show">Show known issues</string>
+    <string name="app_update_known_issues_hide">Hide known issues</string>
+    <string name="app_update_sequential_confirm_note">Installing can ask for more than one confirmation: first for the app, then a separate one for the Linux runtime when it is updated too. The system may also scan the package before continuing. Confirm each prompt in turn to finish.</string>
+    <string name="app_update_source_github">GitHub</string>
+    <string name="app_update_source_value">Download source: %1$s</string>
+    <string name="app_update_source_switching">Switching download source…</string>
+    <string name="app_update_source_restarted">This connection could not resume. Download restarted.</string>
+    <string name="app_update_source_mirror">Third-party mirror; package verification stays enabled.</string>
 </resources>

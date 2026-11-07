@@ -54,6 +54,11 @@ fun DiagnosticsSettingsPage(onOpenPreview: () -> Unit) {
         result.fold(onSuccess = { status = it }, onFailure = { failure = true })
     }
     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        // Full channel only: automatic update switch + manual check. Kept
+        // ahead of the accumulated feedback history below so the entry stays
+        // reachable without swiping past persisted reports. The Play flavour
+        // renders nothing (Play delivers updates itself).
+        com.floe.android.host.update.AppUpdateFeature.SettingsEntry()
         com.floe.android.host.reporting.DiagnosticReportingSettings()
         // The sheet's independent detail header owns the 34sp section title.
         FloeSettingsSectionCard(title = stringResource(R.string.shared_core)) {
@@ -178,9 +183,6 @@ fun DiagnosticsSettingsPage(onOpenPreview: () -> Unit) {
                 },
             )
         }
-        // Full channel only: automatic update switch + manual check. The
-        // Play flavour renders nothing (Play delivers updates itself).
-        com.floe.android.host.update.AppUpdateFeature.SettingsEntry()
         if (proofOpen) {
             LocalRuntimeProofDetailsSheet(app = app, onDismiss = { proofOpen = false })
         }
