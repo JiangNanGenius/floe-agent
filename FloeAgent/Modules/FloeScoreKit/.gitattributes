@@ -1,0 +1,3 @@
+# Preserve the exact bundled upstream license bytes.
+Sources/FloeScoreKit/Resources/Web/THIRD-PARTY-NOTICES.txt -whitespace
+Sources/FloeScoreKit/Resources/Web/*.js linguist-generated=true -whitespace

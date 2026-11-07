@@ -1,0 +1,31 @@
+Gonville font outlines in OpenSheetMusicDisplay / VexFlow
+
+Design credit: Simon Tatham, Gonville musical-symbol font.
+Original author page: https://www.chiark.greenend.org.uk/~sgtatham/gonville/
+Original licence archive: https://www.chiark.greenend.org.uk/~sgtatham/gonville/gonville-20231028.4ec6d4f-src.tar.gz
+Archive SHA-256: 44611184b7925c06d9abf78b1fcde19ddf563590cf219c60ae160cc3f0cebcef
+Archive file: gonville-20231028.4ec6d4f/LICENCE
+Original LICENCE SHA-256: b151e7a321e4b4095abca498165155823b9e3bcbfa7f33fe2486c37694ed9800
+
+Applicable selection: LicenseRef-Gonville-Unrestricted-Font for generated
+Gonville outlines. The author's exact LICENCE is retained verbatim in
+Gonville-LICENCE.original.txt. It explicitly permits use, copying, modification
+and redistribution of output font files in any form without restrictions.
+The same original file separately licenses the font-generating source code
+under MIT; that generator is not part of the Floe runtime.
+
+VexFlow 1.2.93 supplies Gonville-derived outlines together with custom and
+microtonal glyph material. Its own LICENSE (MIT) and copyright remain part
+of the dependency notices. These data are not Bravura or Petaluma font files,
+and no Bravura/OFL licence is substituted for Gonville's actual permission.
+OpenSheetMusicDisplay may mention other font names as optional API choices;
+that text is not proof those font assets are embedded.
+
+Actual installed VexFlow font table: vexflow/src/fonts/vexflow_font.js
+Font table SHA-256: e296c9278fea898522a40879044290cf7bf8bb08474d706f8688faaa32f3de6d
+All 127 glyph outline strings in that exact installed table
+are present verbatim inside opensheetmusicdisplay/build/opensheetmusicdisplay.min.js.
+OSMD 2.2.1 bundle SHA-256: 224ee5bee61d31ff3d07ade025f931a6cecd394cb54d2e39b1e7af2f0c7f1f5d
+All six custom_glyphs.js outlines and all six microtonal.js outlines are
+also present verbatim in that actual OSMD bundle. These companion font sources
+remain covered by the retained VexFlow MIT notice; no unrelated documentation/sample webfonts are shipped.

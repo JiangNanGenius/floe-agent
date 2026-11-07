@@ -1,0 +1,29 @@
+{
+  "kind": "score",
+  "scope": "Independent FloeScoreKit commands; host supplies ownership, authorization, managed export receipts and optional music playback adapter",
+  "steps": [
+    {"command":"score.project.template","arguments":{"template":"piano","bars":4}},
+    {"command":"score.project.metadata","arguments":{"title":"Floe qualification score","composer":"Floe fixture"}},
+    {"command":"score.edit.insert","arguments":{"pitch":"C4","type":"quarter","onset":"0","voice":1,"staff":1}},
+    {"command":"score.edit.chord","arguments":{"pitches":"E4,G4"}},
+    {"command":"score.edit.transpose","arguments":{"semitones":2}},
+    {"command":"score.edit.direction","arguments":{"kind":"tempo","tempo":108,"onset":"0"}},
+    {"command":"score.edit.direction","arguments":{"kind":"dynamic","text":"mf","onset":"0"}},
+    {"command":"score.edit.fill","arguments":{"allMeasures":true,"voice":1,"staff":1}},
+    {"command":"score.playback.compile","arguments":{}},
+    {"command":"score.analyze.diagnostics","arguments":{}},
+    {"command":"score.layout.settings","arguments":{"paper":"A4_P","zoom":1,"continuous":false,"measuresPerSystem":4,"margin":15,"staffSpacing":7}},
+    {"command":"score.export","arguments":{"format":"musicxml"}},
+    {"command":"score.export","arguments":{"format":"mxl"}},
+    {"command":"score.export","arguments":{"format":"midi"}},
+    {"command":"score.export","arguments":{"format":"pdf"}},
+    {"command":"document.save","arguments":{}}
+  ],
+  "optionalAudio": [
+    {"command":"score.playback.control","arguments":{"action":"start","position":0},"sideEffecting":true},
+    {"command":"score.playback.control","arguments":{"action":"pause"},"sideEffecting":true},
+    {"command":"score.playback.control","arguments":{"action":"seek","position":1},"sideEffecting":true},
+    {"command":"score.playback.control","arguments":{"action":"stop"},"sideEffecting":true}
+  ],
+  "expected": {"parts":1,"staves":2,"measures":4,"initialChordPitchesAfterTranspose":[62,66,69],"minimumExports":4,"readOnlyQueryMustReject":"score.playback.control"}
+}

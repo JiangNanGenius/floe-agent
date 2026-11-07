@@ -1,0 +1,279 @@
+{
+  "schemaVersion": 1,
+  "bundles": [
+    {
+      "name": "opensheetmusicdisplay",
+      "version": "2.2.1",
+      "entry": "build/opensheetmusicdisplay.min.js",
+      "sha256": "224ee5bee61d31ff3d07ade025f931a6cecd394cb54d2e39b1e7af2f0c7f1f5d",
+      "runtimeDependencies": [
+        {
+          "name": "vexflow",
+          "version": "1.2.93",
+          "parent": "opensheetmusicdisplay",
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "vexflow@1.2.93"
+          ],
+          "evidence": "All 127 installed font-table glyph outline strings occur verbatim in the reviewed OSMD bundle; package declaration pins VexFlow 1.2.93."
+        },
+        {
+          "name": "jszip",
+          "version": "3.10.1",
+          "parent": "opensheetmusicdisplay",
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "jszip@3.10.1"
+          ],
+          "evidence": "Embedded JSZip.version=\"3.10.1\" and Browserify module map match the nested installed JSZip distribution; not hoisted JSZip 3.10.2."
+        },
+        {
+          "name": "loglevel",
+          "version": "1.9.2",
+          "parent": "opensheetmusicdisplay",
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "loglevel@1.9.2"
+          ],
+          "evidence": "Reviewed bundle contains loglevel logger implementation and storage key. Version is the locked installed companion satisfying ^1.8.0; upstream prebundle does not report the logger version."
+        },
+        {
+          "name": "typescript-collections",
+          "version": "1.3.3",
+          "parent": "opensheetmusicdisplay",
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "typescript-collections@1.3.3"
+          ],
+          "evidence": "Reviewed bundle contains the collections implementations and OSMD imports. Version is the locked installed companion satisfying ^1.3.3."
+        },
+        {
+          "name": "lie",
+          "version": "3.3.0",
+          "parent": "jszip",
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "jszip@3.10.1",
+            "lie@3.3.0"
+          ],
+          "evidence": "JSZip Browserify embedded Promise fallback module resolves lie and includes its implementation."
+        },
+        {
+          "name": "immediate",
+          "version": "3.0.6",
+          "parent": "lie",
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "jszip@3.10.1",
+            "lie@3.3.0",
+            "immediate@3.0.6"
+          ],
+          "evidence": "Embedded lie Promise fallback contains the browser immediate microtask scheduler."
+        },
+        {
+          "name": "pako",
+          "version": "1.0.11",
+          "parent": "jszip",
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "jszip@3.10.1",
+            "pako@1.0.11"
+          ],
+          "evidence": "JSZip Browserify compression module contains pako deflate/inflate and its zlib modules, including constants and trees."
+        },
+        {
+          "name": "setimmediate",
+          "version": "1.0.5",
+          "parent": "jszip",
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "jszip@3.10.1",
+            "setimmediate@1.0.5"
+          ],
+          "evidence": "JSZip Browserify dist embeds the setImmediate polyfill used by its stream worker scheduler."
+        }
+      ],
+      "excluded": [
+        {
+          "name": "@types/vexflow",
+          "reason": "Declaration files only; no JavaScript runtime payload in the reviewed bundle."
+        },
+        {
+          "name": "readable-stream",
+          "lockedInstalledVersion": "2.3.8",
+          "reason": "JSZip Browserify module16 is only require(\"stream\") with stream:undefined; the Node readable-stream implementation and its Node-only dependency tree are absent. Module13 is JSZip's own NodejsStreamOutputAdapter, not readable-stream source."
+        },
+        {
+          "name": "gl",
+          "reason": "Optional Node headless-GL package is not part of the browser OSMD bundle."
+        }
+      ],
+      "companionChecks": [
+        {
+          "package": "vexflow",
+          "file": "src/fonts/vexflow_font.js",
+          "sha256": "e296c9278fea898522a40879044290cf7bf8bb08474d706f8688faaa32f3de6d"
+        },
+        {
+          "package": "vexflow",
+          "file": "src/fonts/custom_glyphs.js",
+          "sha256": "054c96bec2b1a9a07af9740147f95f843ef2dcdc10b48ec43ad0aaa1ce1fbeef"
+        },
+        {
+          "package": "vexflow",
+          "file": "src/fonts/microtonal.js",
+          "sha256": "6bc54ee5c4a3eb6a48e06b35beb676ac9a05050a743879e28a902342596d4cda"
+        }
+      ],
+      "components": [
+        {
+          "name": "Gonville musical-symbol outlines",
+          "version": "VexFlow 1.2.93 embedded outline set",
+          "selectedLicense": "LicenseRef-Gonville-Unrestricted-Font",
+          "source": "https://www.chiark.greenend.org.uk/~sgtatham/gonville/",
+          "noticeFiles": [
+            {
+              "name": "../Gonville-LICENCE.original.txt",
+              "sha256": "b151e7a321e4b4095abca498165155823b9e3bcbfa7f33fe2486c37694ed9800"
+            },
+            {
+              "name": "../Gonville-SOURCE-AND-CREDITS.txt",
+              "sha256": "c329601763f06a5789bd76c15274589c87714d7d537ad02ec9e059a0c6dd0b88"
+            }
+          ],
+          "evidence": "127 installed VexFlow font outline strings are present verbatim; VexFlow MIT custom/microtonal material retains its own package notice. No Bravura/OFL substitution."
+        }
+      ]
+    },
+    {
+      "name": "paper",
+      "version": "0.17.0",
+      "entry": "dist/paper-full.js",
+      "sha256": "61e0afe43129a6952fe441a418f54bff13a841bb8383957e422c01685ee1c7fb",
+      "runtimeDependencies": [],
+      "excluded": [
+        {
+          "name": "canvas/jsdom/source-map-support",
+          "reason": "Paper package browser mapping disables these Node-only paths."
+        }
+      ],
+      "components": [
+        {
+          "name": "Straps.js embedded in Paper.js",
+          "version": "embedded snapshot; no separate version encoded",
+          "selectedLicense": "MIT",
+          "source": "https://github.com/lehni/straps.js/tree/17db0716e3dd8c1ffe353b6ab994f48a451a690b",
+          "noticeFiles": [
+            {
+              "name": "straps-LICENSE.original.txt",
+              "sha256": "24d455af6e878040157f11910a6c3411bd3cc9f4112f3dab970a00269711a71c",
+              "source": "https://raw.githubusercontent.com/lehni/straps.js/17db0716e3dd8c1ffe353b6ab994f48a451a690b/LICENSE.txt"
+            },
+            {
+              "name": "paper-0.17.0-header.original.txt",
+              "sha256": "35d693a85913f1a930e366a719c31a1a3d314d7b8db259682fa7d66d477f0b36",
+              "source": "npm:paper@0.17.0/dist/paper-full.js (original header)"
+            }
+          ],
+          "evidence": "Actual Paper full bundle header credits Straps.js and its separate 2006-2020 Juerg Lehni copyright; Base inheritance implementation is embedded. There is no installed/locked standalone Straps package, so parent Paper integrity binds the source bytes."
+        },
+        {
+          "name": "Acorn embedded in Paper.js",
+          "version": "0.5.0",
+          "selectedLicense": "MIT",
+          "source": "https://github.com/acornjs/acorn/tree/0.5.0",
+          "noticeFiles": [
+            {
+              "name": "acorn-0.5.0-LICENSE.original.txt",
+              "sha256": "ac8c2d7724613151f5874fb48365c6a29ad43e8f8efa12413499625955b6c8c5",
+              "source": "https://raw.githubusercontent.com/acornjs/acorn/0.5.0/LICENSE"
+            },
+            {
+              "name": "paper-0.17.0-header.original.txt",
+              "sha256": "35d693a85913f1a930e366a719c31a1a3d314d7b8db259682fa7d66d477f0b36",
+              "source": "npm:paper@0.17.0/dist/paper-full.js (original header)"
+            }
+          ],
+          "evidence": "Actual bundled parser sets exports.version=\"0.5.0\" and the Paper header separately identifies Acorn. There is no standalone installed/locked Acorn runtime package; parent Paper integrity binds embedded bytes."
+        }
+      ]
+    },
+    {
+      "name": "@sqlite.org/sqlite-wasm",
+      "version": "3.54.1-build1",
+      "entry": "dist/index.mjs",
+      "sha256": "0dcdd860e6ec672623b13b8b8e41bb6c78be7a5df80ec553fc4f69160161c8af",
+      "runtimeDependencies": [],
+      "packageNoticeFiles": [
+        {
+          "name": "sqlite-wrapper-LICENSE.original.txt",
+          "source": "https://raw.githubusercontent.com/sqlite/sqlite-wasm/e5b104c052b1a00c146e4f8a9917c953aa03537d/LICENSE.md",
+          "sha256": "0e477752267338eb6349017ec47b3caaad78323df6a31f165b46a95d20b9811e"
+        },
+        {
+          "name": "sqlite-wrapper-frozen-README.original.txt",
+          "source": "https://raw.githubusercontent.com/sqlite/sqlite-wasm/d720c07b87731b737fac4d6bab43d460d90b1fa2/README.md",
+          "sha256": "d2ec8bfad836bdb010d5a9a20ec9adb3322dd8ffca1eaaa3005852e110b7fadb"
+        },
+        {
+          "name": "sqlite-notice-PROVENANCE.txt",
+          "source": "Floe provenance note; original declarations retained in adjacent files",
+          "sha256": "2d16f73ac9bf3290cc11cc32dfd4376e8f749df0aeeeb1c93b4dd60576d74ba6"
+        }
+      ],
+      "companionChecks": [
+        {
+          "package": "@sqlite.org/sqlite-wasm",
+          "file": "dist/sqlite3.wasm",
+          "sha256": "b8a92a19f441a90ff2339fe988fbe317c4adf3ed844096f12aee04aa72d58257"
+        }
+      ],
+      "excluded": [
+        {
+          "name": "sql.js / extension-functions.c",
+          "reason": "Removed from dependency lock and actual consumer graph; use only the selected official SQLite core distribution."
+        }
+      ],
+      "components": [
+        {
+          "name": "SQLite core and JavaScript APIs",
+          "version": "3.54.1",
+          "selectedLicense": "LicenseRef-SQLite-Public-Domain",
+          "source": "https://sqlite.org/copyright.html",
+          "noticeFiles": [
+            {
+              "name": "sqlite-3.54.1-api-header.original.txt",
+              "source": "npm:@sqlite.org/sqlite-wasm@3.54.1-build1/dist/index.mjs (original @preserve headers)",
+              "sha256": "f683e45e1165a2e0b166109d88da73a3ab83f32797f1eca47a015c979069b410"
+            },
+            {
+              "name": "sqlite-notice-PROVENANCE.txt",
+              "source": "Floe provenance note; original declarations retained in adjacent files",
+              "sha256": "2d16f73ac9bf3290cc11cc32dfd4376e8f749df0aeeeb1c93b4dd60576d74ba6"
+            }
+          ],
+          "evidence": "Actual shipped API header states version/source ID and public-domain blessing; official WASM byte hash is bound to the reviewed parent package."
+        },
+        {
+          "name": "Emscripten JavaScript glue in SQLite WASM",
+          "version": "5.0.5",
+          "selectedLicense": "MIT",
+          "source": "https://github.com/emscripten-core/emscripten/tree/5.0.5",
+          "noticeFiles": [
+            {
+              "name": "emscripten-5.0.5-LICENSE.original.txt",
+              "source": "https://raw.githubusercontent.com/emscripten-core/emscripten/5.0.5/LICENSE",
+              "sha256": "620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86"
+            },
+            {
+              "name": "sqlite-3.54.1-api-header.original.txt",
+              "source": "npm:@sqlite.org/sqlite-wasm@3.54.1-build1/dist/index.mjs (original @preserve headers)",
+              "sha256": "f683e45e1165a2e0b166109d88da73a3ab83f32797f1eca47a015c979069b410"
+            }
+          ],
+          "evidence": "Actual index.mjs @preserve header identifies Emscripten SDK 5.0.5 and MIT/NCSA terms; MIT is the selected alternative."
+        }
+      ]
+    }
+  ]
+}

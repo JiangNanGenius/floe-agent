@@ -1,0 +1,19 @@
+[package]
+name = "floe-font-compiler"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+publish = false
+
+[lib]
+name = "FloeFontCompiler"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+fontc = { version = "=1.0.0", default-features = false }
+
+[profile.release]
+opt-level = 2
+debug = 0
+lto = "thin"
+codegen-units = 8

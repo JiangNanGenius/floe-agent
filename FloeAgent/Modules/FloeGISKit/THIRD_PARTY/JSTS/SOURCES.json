@@ -1,0 +1,39 @@
+{
+  "licenseSelection": "EDL-1.0",
+  "components": [
+    "@turf/jsts@2.7.2",
+    "jsts@2.7.1"
+  ],
+  "files": [
+    {
+      "file": "LICENSE_EDLv1.txt",
+      "source": "https://raw.githubusercontent.com/bjornharrtell/jsts/2.7.1/LICENSE_EDLv1.txt",
+      "sha256": "e67a91b5489cd78292d2654f1b587fe68296e28df7c766b9b675614fbdce4fd1"
+    },
+    {
+      "file": "license.txt",
+      "source": "https://raw.githubusercontent.com/bjornharrtell/jsts/2.7.1/license.txt",
+      "sha256": "f547c81baffb14b1516e40ef2304aeff0fed0c94b84748e333ad8d8191e90d3f"
+    },
+    {
+      "file": "turf-jsts-package.json",
+      "source": "npm:@turf/jsts@2.7.2/package.json",
+      "sha256": "ff03ac5c837092d0d62013e4d929d09a49fe79037fb5160bc82ea5cb77be400b"
+    },
+    {
+      "file": "turf-jsts-README.md",
+      "source": "npm:@turf/jsts@2.7.2/README.md",
+      "sha256": "810aaa918d4709015873c19c6edc8edcd288b4b2856dfe450623f9ea13cb4221"
+    },
+    {
+      "file": "jsts-package.json",
+      "source": "npm:jsts@2.7.1/package.json",
+      "sha256": "0f247b6bf8168d39eab14415a3c24ebdd6896240ab5e7ace2d5e832f06ae9d21"
+    },
+    {
+      "file": "jsts-README.md",
+      "source": "npm:jsts@2.7.1/README.md",
+      "sha256": "f0c70d9bda482afe246f0533188d9b3b75c8e25d9ed2c789efc9f6bd93c1874f"
+    }
+  ]
+}

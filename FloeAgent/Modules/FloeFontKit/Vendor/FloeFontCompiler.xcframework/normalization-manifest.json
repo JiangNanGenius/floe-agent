@@ -1,0 +1,92 @@
+{
+  "ios-arm64-simulator": {
+    "recipe": [
+      "Rust toolchain LLVM objcopy: remove recorded __LLVM sections (Apple ld option unavailable)"
+    ],
+    "raw": {
+      "sha256": "c458f690f7f2754cadeaaa065907afb9568a9beb80be7da1443afc116aab1122",
+      "byteCount": 171238856,
+      "nativeObjectCount": 825,
+      "runtimeSectionsAndSymbolsSha256": "a3f439a5b98de34690e0c8f2e31bb9336224760a29a9560f8d99a34828aadc80",
+      "dwarfSectionBytes": 5692656,
+      "embeddedLLVMSectionBytes": 120198648,
+      "embeddedLLVMSectionNames": [
+        "__LLVM,__bitcode",
+        "__LLVM,__cmdline"
+      ],
+      "dwarfSectionsSha256": "e887d8d3e8f82dd1cda444d424302771594cf56706ef05db9c55a8cacaa359bf"
+    },
+    "consumer": {
+      "sha256": "80a418f4ad7a63cf955818765000c5d0f89356da03d41efdd537dadd2c5a486b",
+      "byteCount": 50840080,
+      "nativeObjectCount": 825,
+      "runtimeSectionsAndSymbolsSha256": "a3f439a5b98de34690e0c8f2e31bb9336224760a29a9560f8d99a34828aadc80",
+      "dwarfSectionBytes": 5692656,
+      "embeddedLLVMSectionBytes": 0,
+      "embeddedLLVMSectionNames": [],
+      "dwarfSectionsSha256": "e887d8d3e8f82dd1cda444d424302771594cf56706ef05db9c55a8cacaa359bf"
+    },
+    "runtimeSectionsPlatformAndNonSTABSymbolsPreserved": true,
+    "debugInformationPreserved": true
+  },
+  "macos-arm64": {
+    "recipe": [
+      "Rust toolchain LLVM objcopy: remove recorded __LLVM sections (Apple ld option unavailable)"
+    ],
+    "raw": {
+      "sha256": "054b466b559caf89d8c0c05ab580a4a80bf21edf9b02f31b7a7be8623dc1a6b7",
+      "byteCount": 171306328,
+      "nativeObjectCount": 827,
+      "runtimeSectionsAndSymbolsSha256": "fbb8d8889a422275caea3a7e4e6c1524b44ca4b2bf6797c4a0574c1e6a6ab2b4",
+      "dwarfSectionBytes": 5830557,
+      "embeddedLLVMSectionBytes": 120084458,
+      "embeddedLLVMSectionNames": [
+        "__LLVM,__bitcode",
+        "__LLVM,__cmdline"
+      ],
+      "dwarfSectionsSha256": "1dd151d17f1e09fdf595be74782e8458411e9cb9a5d59a493d4babaa51547a65"
+    },
+    "consumer": {
+      "sha256": "b54f9e552d1aa330b1257ee14f1113a1dc59dc1fff5d62ff9178f235d3835071",
+      "byteCount": 51021080,
+      "nativeObjectCount": 827,
+      "runtimeSectionsAndSymbolsSha256": "fbb8d8889a422275caea3a7e4e6c1524b44ca4b2bf6797c4a0574c1e6a6ab2b4",
+      "dwarfSectionBytes": 5830557,
+      "embeddedLLVMSectionBytes": 0,
+      "embeddedLLVMSectionNames": [],
+      "dwarfSectionsSha256": "1dd151d17f1e09fdf595be74782e8458411e9cb9a5d59a493d4babaa51547a65"
+    },
+    "runtimeSectionsPlatformAndNonSTABSymbolsPreserved": true,
+    "debugInformationPreserved": true
+  },
+  "ios-arm64": {
+    "recipe": [
+      "Rust toolchain LLVM objcopy: remove recorded __LLVM sections (Apple ld option unavailable)"
+    ],
+    "raw": {
+      "sha256": "74502b391340e55717da3f48a9658947664627745082c8ca01628de7d0f2a58d",
+      "byteCount": 171309416,
+      "nativeObjectCount": 825,
+      "runtimeSectionsAndSymbolsSha256": "af1ac3d8b00c3e951bed7dc957cfe42c66fa47fa016b8da82b6ceb441ed336d8",
+      "dwarfSectionBytes": 5701956,
+      "embeddedLLVMSectionBytes": 120192392,
+      "embeddedLLVMSectionNames": [
+        "__LLVM,__bitcode",
+        "__LLVM,__cmdline"
+      ],
+      "dwarfSectionsSha256": "6e59881bd5cc42a140f1253d3c849b59fd36fb96cae5a40ea8ae1c521c1a9970"
+    },
+    "consumer": {
+      "sha256": "1b6b4290b69e8c4865da3285fed2679c626058544632d4d1b59656b5ac9c841a",
+      "byteCount": 50916864,
+      "nativeObjectCount": 825,
+      "runtimeSectionsAndSymbolsSha256": "af1ac3d8b00c3e951bed7dc957cfe42c66fa47fa016b8da82b6ceb441ed336d8",
+      "dwarfSectionBytes": 5701956,
+      "embeddedLLVMSectionBytes": 0,
+      "embeddedLLVMSectionNames": [],
+      "dwarfSectionsSha256": "6e59881bd5cc42a140f1253d3c849b59fd36fb96cae5a40ea8ae1c521c1a9970"
+    },
+    "runtimeSectionsPlatformAndNonSTABSymbolsPreserved": true,
+    "debugInformationPreserved": true
+  }
+}

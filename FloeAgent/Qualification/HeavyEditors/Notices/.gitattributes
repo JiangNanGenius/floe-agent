@@ -1,0 +1,5 @@
+# These upstream originals and their assembled distribution copies retain
+# their exact whitespace; their hashes are checked by the notice inventory.
+font/originals/** -whitespace
+**/*-notices.txt -whitespace
+**/*.original.txt -whitespace

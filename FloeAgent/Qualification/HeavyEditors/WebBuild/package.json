@@ -1,0 +1,29 @@
+{
+  "name": "floe-heavy-editors-offline-build",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MPL-2.0",
+  "type": "module",
+  "description": "Pinned build inputs for bundled offline heavy-editor engines",
+  "dependencies": {
+    "ol": "10.11.0",
+    "@turf/turf": "7.4.0",
+    "proj4": "2.22.0",
+    "geotiff": "3.0.5",
+    "shpjs": "6.2.0",
+    "@mapbox/shp-write": "0.4.3",
+    "fflate": "0.8.3",
+    "opensheetmusicdisplay": "2.2.1",
+    "opentype.js": "2.0.0",
+    "fonteditor-core": "2.6.3",
+    "paper": "0.17.0",
+    "three": "0.187.0",
+    "jspdf": "4.2.1",
+    "svg2pdf.js": "2.9.0",
+    "@sqlite.org/sqlite-wasm": "3.54.1-build1"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "jsdom": "29.1.1"
+  }
+}

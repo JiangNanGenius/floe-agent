@@ -1,0 +1,15 @@
+{
+  "kind": "font",
+  "steps": [
+    {"command": "project.sample", "arguments": {}},
+    {"command": "glyph.transform", "arguments": {"glyph": "A", "dx": 5, "dy": 0, "scaleX": 1, "scaleY": 1, "rotation": 0, "selectedOnly": false}},
+    {"command": "metrics.edit", "arguments": {"glyph": "A", "advance": 620, "left": 20, "right": ""}},
+    {"command": "font.validate", "arguments": {}},
+    {"command": "font.preview", "arguments": {}},
+    {"command": "file.export", "arguments": {"format": "ttf", "instance": false, "location": "wght=550"}},
+    {"command": "file.export", "arguments": {"format": "otf", "instance": true, "location": "wght=550"}},
+    {"command": "file.export", "arguments": {"format": "woff2", "instance": false, "location": "wght=550"}},
+    {"command": "specimen.export", "arguments": {"format": "pdf", "columns": 6, "rows": 8, "points": false}},
+    {"command": "document.save", "arguments": {}}
+  ]
+}

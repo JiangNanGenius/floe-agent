@@ -1,0 +1,22 @@
+{
+  "name": "lerc",
+  "version": "3.0.0",
+  "selectedLicense": "Apache-2.0",
+  "upstreamTag": "v3.0",
+  "sourceCommit": "33910e56d2d46e402b6233492eabb6c4fe0b3c5e",
+  "decoderSource": "https://raw.githubusercontent.com/Esri/lerc/33910e56d2d46e402b6233492eabb6c4fe0b3c5e/OtherLanguages/js/LercDecode.js",
+  "exactInstalledDecoderBytesMatch": true,
+  "decoderSHA256": "20a115a2ff426372eac84e062c520d1abdc650618ce4dcca402868c36241f99c",
+  "files": [
+    {
+      "file": "LICENSE",
+      "source": "https://raw.githubusercontent.com/Esri/lerc/33910e56d2d46e402b6233492eabb6c4fe0b3c5e/LICENSE",
+      "sha256": "77a8b761727c75e2167b15bfdf61b2c0bcf8792271228bebe80779106ad00671"
+    },
+    {
+      "file": "NOTICE",
+      "source": "https://raw.githubusercontent.com/Esri/lerc/33910e56d2d46e402b6233492eabb6c4fe0b3c5e/NOTICE",
+      "sha256": "1aafa4a1157927c8a745b0856356ef32161563b4e253d02a6d3ee891dae4c21f"
+    }
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "kind": "gis",
+  "sourceHead": "a468c879578034e2dbbcdeac161d1ccc4f20d3b1",
+  "workingTreeSources": true,
+  "toolchain": {
+    "xcode": "27.2 (27B52)",
+    "swift": "6.4.2",
+    "target": "arm64-apple-ios26.0-simulator"
+  },
+  "verification": {
+    "node": {
+      "command": "node FloeAgent/Modules/FloeGISKit/Tests/run.mjs",
+      "passed": 27,
+      "failed": 0,
+      "skipped": 0
+    },
+    "iosObjectBuild": {
+      "result": "passed",
+      "jobs": 2,
+      "simulatorStarted": false,
+      "command": "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swift build --package-path FloeAgent/Modules/FloeGISKit --scratch-path <GIS-owned-internal-SSD-scratch> --triple arm64-apple-ios26.0-simulator --sdk /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk --jobs 2",
+      "reuseReason": "Swift wrapper unchanged after the successful object build; later changes are Web resources and notices. Main integration owns the next native-host build."
+    },
+    "bundle": {
+      "command": "node FloeAgent/Qualification/HeavyEditors/WebBuild/build.mjs gis",
+      "result": "passed",
+      "offline": true,
+      "noticeRecords": 99
+    },
+    "actualScreenAcceptance": "main integration pending; Node and object builds are component evidence"
+  },
+  "sha256": {
+    "Integration/README.md": "eead83fd95e1cce97d466ccccb7c338c1b9f0f8038a5fc63c7cce68d5a65bcbf",
+    "Integration/smoke-plan.json": "3fcfec5f00cc664cfa3d4ae945c842cfc008dcf0b85f9fe0d9e368e83e976274",
+    "LICENSE": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+    "Package.swift": "decd2f4eff4c9d2e5d33d961fc630aaefb1c809f2313d29ec1b13508d94fce21",
+    "README.md": "78bb5cb4139830901f2f3ee66f3442ed75ef2eee0d7c9e91bf35691a9211816d",
+    "Sources/FloeGISKit/GISWorkbench.swift": "71ff3d45177dbd54da39fea4fe915e0ead414fdd514ba12258c497c0d7bd385f",
+    "Sources/FloeGISKit/Resources/Web/THIRD-PARTY-NOTICES.txt": "5b3bfaf3674385fbc8786854c4607775744b8061e678e3de8cc3cef6a82f05a4",
+    "Sources/FloeGISKit/Resources/Web/ThirdParty/JSTS/LICENSE_EDLv1.txt": "e67a91b5489cd78292d2654f1b587fe68296e28df7c766b9b675614fbdce4fd1",
+    "Sources/FloeGISKit/Resources/Web/ThirdParty/JSTS/NOTICE.txt": "312440b81aaeeb18dc0eac21227ba67955ba95c1171a2a7d2e9daa198cabac1d",
+    "Sources/FloeGISKit/Resources/Web/ThirdParty/JSTS/SOURCES.json": "78e345b246017a3eb249d06d173457c2c159cca43c840fcf37680037b59d571c",
+    "Sources/FloeGISKit/Resources/Web/ThirdParty/JSTS/jsts-README.md": "f0c70d9bda482afe246f0533188d9b3b75c8e25d9ed2c789efc9f6bd93c1874f",
+    "Sources/FloeGISKit/Resources/Web/ThirdParty/JSTS/jsts-package.json": "0f247b6bf8168d39eab14415a3c24ebdd6896240ab5e7ace2d5e832f06ae9d21",
+    "Sources/FloeGISKit/Resources/Web/ThirdParty/JSTS/license.txt": "f547c81baffb14b1516e40ef2304aeff0fed0c94b84748e333ad8d8191e90d3f",
+    "Sources/FloeGISKit/Resources/Web/ThirdParty/JSTS/turf-jsts-README.md": "810aaa918d4709015873c19c6edc8edcd288b4b2856dfe450623f9ea13cb4221",
+    "Sources/FloeGISKit/Resources/Web/ThirdParty/JSTS/turf-jsts-package.json": "ff03ac5c837092d0d62013e4d929d09a49fe79037fb5160bc82ea5cb77be400b",
+    "Sources/FloeGISKit/Resources/Web/ThirdParty/LERC/DECODER-COPYRIGHT.txt": "88b7bfda14d887a4637b695f3f94cce6d2e2ac9d5fc7244a0039e4c6f6f7bde9",
+    "Sources/FloeGISKit/Resources/Web/ThirdParty/LERC/LICENSE": "77a8b761727c75e2167b15bfdf61b2c0bcf8792271228bebe80779106ad00671",
+    "Sources/FloeGISKit/Resources/Web/ThirdParty/LERC/NOTICE": "1aafa4a1157927c8a745b0856356ef32161563b4e253d02a6d3ee891dae4c21f",
+    "Sources/FloeGISKit/Resources/Web/ThirdParty/LERC/SOURCES.json": "f0dcb2d73bda207611509f3c2cb13a204bca86f9bc21fb5f152b333e6fb1ca51",
+    "Sources/FloeGISKit/Resources/Web/dependency-inventory.json": "95720cd00d50c7a07679515616dfa33b9df659b6eac3f144ca071927eb96b929",
+    "Sources/FloeGISKit/Resources/Web/editor.css": "175010ac4fb4798519da890342eccf2b187defa1d3cea41d8d49b50c30de3665",
+    "Sources/FloeGISKit/Resources/Web/editor.js": "e3e2a3d32fd122f910c00295386390be6ed9a49dff79f6660fdfb9565f46a0ff",
+    "Sources/FloeGISKit/Resources/Web/index.html": "1b3106ea5e0a3f7e596aa7ce255aeb0be9f1d0636b9fe1aaa64e092aeb42ef0e",
+    "Sources/FloeGISKit/Resources/Web/sql-wasm.wasm": "0dfeecda2070b36da0cd4f6afa250af9453de528a983770f85b13d5d6b667572",
+    "THIRD_PARTY/JSTS/LICENSE_EDLv1.txt": "e67a91b5489cd78292d2654f1b587fe68296e28df7c766b9b675614fbdce4fd1",
+    "THIRD_PARTY/JSTS/NOTICE.txt": "312440b81aaeeb18dc0eac21227ba67955ba95c1171a2a7d2e9daa198cabac1d",
+    "THIRD_PARTY/JSTS/SOURCES.json": "78e345b246017a3eb249d06d173457c2c159cca43c840fcf37680037b59d571c",
+    "THIRD_PARTY/JSTS/jsts-README.md": "f0c70d9bda482afe246f0533188d9b3b75c8e25d9ed2c789efc9f6bd93c1874f",
+    "THIRD_PARTY/JSTS/jsts-package.json": "0f247b6bf8168d39eab14415a3c24ebdd6896240ab5e7ace2d5e832f06ae9d21",
+    "THIRD_PARTY/JSTS/license.txt": "f547c81baffb14b1516e40ef2304aeff0fed0c94b84748e333ad8d8191e90d3f",
+    "THIRD_PARTY/JSTS/turf-jsts-README.md": "810aaa918d4709015873c19c6edc8edcd288b4b2856dfe450623f9ea13cb4221",
+    "THIRD_PARTY/JSTS/turf-jsts-package.json": "ff03ac5c837092d0d62013e4d929d09a49fe79037fb5160bc82ea5cb77be400b",
+    "THIRD_PARTY/LERC/DECODER-COPYRIGHT.txt": "88b7bfda14d887a4637b695f3f94cce6d2e2ac9d5fc7244a0039e4c6f6f7bde9",
+    "THIRD_PARTY/LERC/LICENSE": "77a8b761727c75e2167b15bfdf61b2c0bcf8792271228bebe80779106ad00671",
+    "THIRD_PARTY/LERC/NOTICE": "1aafa4a1157927c8a745b0856356ef32161563b4e253d02a6d3ee891dae4c21f",
+    "THIRD_PARTY/LERC/SOURCES.json": "f0dcb2d73bda207611509f3c2cb13a204bca86f9bc21fb5f152b333e6fb1ca51",
+    "Tests/gis.test.mjs": "7e68ea1301994980fcec6a7675226b95a5aba02aca2f6200c30a9011b8443337",
+    "Tests/run.mjs": "e8264b4903c0c62943ab4d268c03d3bafa0ec6c78bf79ef60635410f26fff90a",
+    "Web/analysis.js": "e2b0808cddf7e5d270a502bc55e69706ca2ce6d67b8463b3a67d78c125b30cc3",
+    "Web/bundle-inputs.json": "0b70d9af4228c944d890bccdc634a9063ffecb6009acbe41bf73e38bf9a27dbd",
+    "Web/formats.js": "c1399e782f22dbeee22e6a035599b65f24dfe5453c2b47395af6ce3dbca42f84",
+    "Web/main.js": "172c7b4ff165de394ff5cbc39c24353f7be66cc6c47044de5161902999b723d0",
+    "Web/model.js": "a4dfcb4ab1a8c1e0088a88c3a6648e3c60c4d4a37ff8e2ada6d439e7880a5eda",
+    "Web/symbology.js": "7e21389d328d31af81dd00858ae9da2b040f54b01e6efe947aa202626a773bc7",
+    "Web/view.js": "26d22cacaa0756af5f3383e04f1d06a307d74ab90e005dff5db8f67e151ec078"
+  }
+}

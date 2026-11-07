@@ -1,0 +1,742 @@
+{
+  "kind": "score",
+  "packages": [
+    {
+      "name": "@babel/runtime",
+      "version": "7.29.13",
+      "packagePath": "node_modules/@babel/runtime",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-v+oN26xP4YIlQsbQ/CbTH1WG5m/l/DjKKZNy/Kp3f/AFvbgt7Em/D0FeMM3O2hX0YzeN2M16W8lOpyhIkfCBcQ==",
+      "source": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.13.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "117da2af0d4ce0fe1c8e19b5cff9dcd806adf973d328d27b11d4448c4ff24f76"
+        }
+      ]
+    },
+    {
+      "name": "canvg",
+      "version": "3.0.11",
+      "packagePath": "node_modules/canvg",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-5ON+q7jCTgMp9cjpu4Jo6XbvfYwSB2Ow3kzHKfIyJfaCAOHLbdKPQqGKgfED/R5B+3TFFfe8pegYA+b423SRyA==",
+      "source": "https://registry.npmjs.org/canvg/-/canvg-3.0.11.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "86622ffc909487e6029235d31503263b796895679b0926f4a4d6f02d2623fde0"
+        }
+      ]
+    },
+    {
+      "name": "core-js",
+      "version": "3.51.0",
+      "packagePath": "node_modules/core-js",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-7bDKx/5jm5MxzsXxc93g6Z2+4ZsuT/MddrfRmTDJNAkWsYWHU8EVNEsBiIEWnMAMCHMmRfUEjkuo3jeNBOIHRw==",
+      "source": "https://registry.npmjs.org/core-js/-/core-js-3.51.0.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "b87653fff2d44426ab5cd4723cee3b1364dc8d35a0acdf098c54689543123bf8"
+        }
+      ]
+    },
+    {
+      "name": "cssesc",
+      "version": "3.0.0",
+      "packagePath": "node_modules/cssesc",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-/Tb/JcjK111nNScGob5MNtsntNM1aCNUDipB/TkwZFhyDrrE47SOx/18wF2bbjgc3ZzCSKW1T5nt5EbFoAz/Vg==",
+      "source": "https://registry.npmjs.org/cssesc/-/cssesc-3.0.0.tgz",
+      "notices": [
+        {
+          "name": "LICENSE-MIT.txt",
+          "sha256": "483acb265f182907d1caf6cff9c16c96f31325ed23792832cc5d8b12d5f88c8a"
+        }
+      ]
+    },
+    {
+      "name": "dompurify",
+      "version": "3.4.17",
+      "packagePath": "node_modules/dompurify",
+      "declaredLicense": "(MPL-2.0 OR Apache-2.0)",
+      "selectedLicense": "MPL-2.0",
+      "integrity": "sha512-B/pSlYVHQ58kqISD/yDjuJ1yfzI34m1gF4lAod2bwSRhiN4K5Cl3H8Af7hqB2PmTL911tdEudnnXn5FnhRoz0w==",
+      "source": "https://registry.npmjs.org/dompurify/-/dompurify-3.4.17.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        },
+        {
+          "name": "LICENSE-MPL",
+          "sha256": "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85"
+        }
+      ]
+    },
+    {
+      "name": "fast-png",
+      "version": "6.4.0",
+      "packagePath": "node_modules/fast-png",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-kAqZq1TlgBjZcLr5mcN6NP5Rv4V2f22z00c3g8vRrwkcqjerx7BEhPbOnWCPqaHUl2XWQBJQvOT/FQhdMT7X/Q==",
+      "source": "https://registry.npmjs.org/fast-png/-/fast-png-6.4.0.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "47ec9747cf2c470a505fcb20f3ec2ff2e60ea4febaf2e1e7041a24fc369fac3c"
+        }
+      ]
+    },
+    {
+      "name": "fflate",
+      "version": "0.8.3",
+      "packagePath": "node_modules/fflate",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==",
+      "source": "https://registry.npmjs.org/fflate/-/fflate-0.8.3.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "0a1df3a083d0c010560aa342e87959c8c1070e6fd54545741f083f22d0c8b551"
+        }
+      ]
+    },
+    {
+      "name": "font-family-papandreou",
+      "version": "0.2.0-patch2",
+      "packagePath": "node_modules/font-family-papandreou",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-l/YiRdBSH/eWv6OF3sLGkwErL+n0MqCICi9mppTZBOCL5vixWGDqCYvRcuxB2h7RGCTzaTKOHT2caHvCXQPRlw==",
+      "source": "https://registry.npmjs.org/font-family-papandreou/-/font-family-papandreou-0.2.0-patch2.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "6358b25be58f3ef5efe9705f17a02b294abe47dc607d92c1cb2d714a7def8d45"
+        }
+      ]
+    },
+    {
+      "name": "html2canvas",
+      "version": "1.4.1",
+      "packagePath": "node_modules/html2canvas",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-fPU6BHNpsyIhr8yyMpTLLxAbkaK8ArIBcmZIRiBLiDhjeqvXolaEmDGmELFuX9I4xDcaKKcJl+TKZLqruBbmWA==",
+      "source": "https://registry.npmjs.org/html2canvas/-/html2canvas-1.4.1.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "86200ce4e92d9a22c41c8647a55f7a5fddff304ff89b4d36ecc699ed8c123d2c"
+        }
+      ]
+    },
+    {
+      "name": "immediate",
+      "version": "3.0.6",
+      "packagePath": "node_modules/immediate",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-XXOFtyqDjNDAQxVfYxuF7g9Il/IbWmmlQg2MYKOH8ExIT1qg6xc4zyS3HaEEATgs1btfzxq15ciUiY7gjSXRGQ==",
+      "source": "https://registry.npmjs.org/immediate/-/immediate-3.0.6.tgz",
+      "notices": [
+        {
+          "name": "LICENSE.txt",
+          "sha256": "809e66de579fb7d92503848bbe6d1f348f4f6521a71e5d294fe7cc0c87a3b4ff"
+        }
+      ],
+      "inclusion": [
+        {
+          "mode": "prebundled-runtime",
+          "via": {
+            "name": "opensheetmusicdisplay",
+            "version": "2.2.1",
+            "packagePath": "node_modules/opensheetmusicdisplay",
+            "integrity": "sha512-2DqI2lQKKzDDoIe7yD8yNyWTofSdRbFZYTD3nGRzEo1XmTK2DJWcUXLRXZ2E5xzOt7Pd+RmSGL1quFQZRCqDMw==",
+            "source": "https://registry.npmjs.org/opensheetmusicdisplay/-/opensheetmusicdisplay-2.2.1.tgz",
+            "entry": "build/opensheetmusicdisplay.min.js",
+            "sha256": "224ee5bee61d31ff3d07ade025f931a6cecd394cb54d2e39b1e7af2f0c7f1f5d"
+          },
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "jszip@3.10.1",
+            "lie@3.3.0",
+            "immediate@3.0.6"
+          ],
+          "evidence": "Embedded lie Promise fallback contains the browser immediate microtask scheduler."
+        }
+      ]
+    },
+    {
+      "name": "iobuffer",
+      "version": "5.4.0",
+      "packagePath": "node_modules/iobuffer",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-DRebOWuqDvxunfkNJAlc3IzWIPD5xVxwUNbHr7xKB8E6aLJxIPfNX3CoMJghcFjpv6RWQsrcJbghtEwSPoJqMA==",
+      "source": "https://registry.npmjs.org/iobuffer/-/iobuffer-5.4.0.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "1c22118fd112e8c394a5ec0598d2e2dfcdc19b3e1055ac3eaccdb2522b777335"
+        }
+      ]
+    },
+    {
+      "name": "jspdf",
+      "version": "4.2.1",
+      "packagePath": "node_modules/jspdf",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-YyAXyvnmjTbR4bHQRLzex3CuINCDlQnBqoSYyjJwTP2x9jDLuKDzy7aKUl0hgx3uhcl7xzg32agn5vlie6HIlQ==",
+      "source": "https://registry.npmjs.org/jspdf/-/jspdf-4.2.1.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "dc388ec35ff463288cdde3588a36fd4ed12a45deff053243b37309acc9ef583b"
+        }
+      ]
+    },
+    {
+      "name": "jszip",
+      "version": "3.10.1",
+      "packagePath": "node_modules/opensheetmusicdisplay/node_modules/jszip",
+      "declaredLicense": "(MIT OR GPL-3.0-or-later)",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-xXDvecyTpGLrqFrvkrUSoxxfJI5AH7U8zxxtVclpsUtMCq4JQ290LY8AW5c7Ggnr/Y/oK+bQMbqK2qmtk3pN4g==",
+      "source": "https://registry.npmjs.org/jszip/-/jszip-3.10.1.tgz",
+      "notices": [
+        {
+          "name": "LICENSE.markdown",
+          "sha256": "566c953c6090b1218ca6217dd7359d45dde46581968586dc607d59a78af6a9c4"
+        }
+      ],
+      "inclusion": [
+        {
+          "mode": "prebundled-runtime",
+          "via": {
+            "name": "opensheetmusicdisplay",
+            "version": "2.2.1",
+            "packagePath": "node_modules/opensheetmusicdisplay",
+            "integrity": "sha512-2DqI2lQKKzDDoIe7yD8yNyWTofSdRbFZYTD3nGRzEo1XmTK2DJWcUXLRXZ2E5xzOt7Pd+RmSGL1quFQZRCqDMw==",
+            "source": "https://registry.npmjs.org/opensheetmusicdisplay/-/opensheetmusicdisplay-2.2.1.tgz",
+            "entry": "build/opensheetmusicdisplay.min.js",
+            "sha256": "224ee5bee61d31ff3d07ade025f931a6cecd394cb54d2e39b1e7af2f0c7f1f5d"
+          },
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "jszip@3.10.1"
+          ],
+          "evidence": "Embedded JSZip.version=\"3.10.1\" and Browserify module map match the nested installed JSZip distribution; not hoisted JSZip 3.10.2."
+        }
+      ]
+    },
+    {
+      "name": "lie",
+      "version": "3.3.0",
+      "packagePath": "node_modules/lie",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-UaiMJzeWRlEujzAuw5LokY1L5ecNQYZKfmyZ9L7wDHb/p5etKaxXhohBcrw0EYby+G/NA52vRSN4N39dxHAIwQ==",
+      "source": "https://registry.npmjs.org/lie/-/lie-3.3.0.tgz",
+      "notices": [
+        {
+          "name": "license.md",
+          "sha256": "5c81b0caa98593408b03125efa25efe622341ed87ae55561968828cd887d64a4"
+        }
+      ],
+      "inclusion": [
+        {
+          "mode": "prebundled-runtime",
+          "via": {
+            "name": "opensheetmusicdisplay",
+            "version": "2.2.1",
+            "packagePath": "node_modules/opensheetmusicdisplay",
+            "integrity": "sha512-2DqI2lQKKzDDoIe7yD8yNyWTofSdRbFZYTD3nGRzEo1XmTK2DJWcUXLRXZ2E5xzOt7Pd+RmSGL1quFQZRCqDMw==",
+            "source": "https://registry.npmjs.org/opensheetmusicdisplay/-/opensheetmusicdisplay-2.2.1.tgz",
+            "entry": "build/opensheetmusicdisplay.min.js",
+            "sha256": "224ee5bee61d31ff3d07ade025f931a6cecd394cb54d2e39b1e7af2f0c7f1f5d"
+          },
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "jszip@3.10.1",
+            "lie@3.3.0"
+          ],
+          "evidence": "JSZip Browserify embedded Promise fallback module resolves lie and includes its implementation."
+        }
+      ]
+    },
+    {
+      "name": "loglevel",
+      "version": "1.9.2",
+      "packagePath": "node_modules/loglevel",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-HgMmCqIJSAKqo68l0rS2AanEWfkxaZ5wNiEFb5ggm08lDs9Xl2KxBlX3PTcaD2chBM1gXAYf491/M2Rv8Jwayg==",
+      "source": "https://registry.npmjs.org/loglevel/-/loglevel-1.9.2.tgz",
+      "notices": [
+        {
+          "name": "LICENSE-MIT",
+          "sha256": "18e8cf5f0dbaf13d9562e93b9bef79aff2acff18fab698c2d589d2159375a1f9"
+        }
+      ],
+      "inclusion": [
+        {
+          "mode": "prebundled-runtime",
+          "via": {
+            "name": "opensheetmusicdisplay",
+            "version": "2.2.1",
+            "packagePath": "node_modules/opensheetmusicdisplay",
+            "integrity": "sha512-2DqI2lQKKzDDoIe7yD8yNyWTofSdRbFZYTD3nGRzEo1XmTK2DJWcUXLRXZ2E5xzOt7Pd+RmSGL1quFQZRCqDMw==",
+            "source": "https://registry.npmjs.org/opensheetmusicdisplay/-/opensheetmusicdisplay-2.2.1.tgz",
+            "entry": "build/opensheetmusicdisplay.min.js",
+            "sha256": "224ee5bee61d31ff3d07ade025f931a6cecd394cb54d2e39b1e7af2f0c7f1f5d"
+          },
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "loglevel@1.9.2"
+          ],
+          "evidence": "Reviewed bundle contains loglevel logger implementation and storage key. Version is the locked installed companion satisfying ^1.8.0; upstream prebundle does not report the logger version."
+        }
+      ]
+    },
+    {
+      "name": "opensheetmusicdisplay",
+      "version": "2.2.1",
+      "packagePath": "node_modules/opensheetmusicdisplay",
+      "declaredLicense": "BSD-3-Clause",
+      "selectedLicense": "BSD-3-Clause",
+      "integrity": "sha512-2DqI2lQKKzDDoIe7yD8yNyWTofSdRbFZYTD3nGRzEo1XmTK2DJWcUXLRXZ2E5xzOt7Pd+RmSGL1quFQZRCqDMw==",
+      "source": "https://registry.npmjs.org/opensheetmusicdisplay/-/opensheetmusicdisplay-2.2.1.tgz",
+      "notices": [
+        {
+          "name": "AUTHORS",
+          "sha256": "795435bcc19378d812ad878185f5f8e57642a16e6731d08c4d47c2ef1a377801"
+        },
+        {
+          "name": "LICENSE",
+          "sha256": "261655f10cf6b90bd062fbe3c7fa4dd03e0324fdfc4b53a3c7d626e3aec694a8"
+        }
+      ]
+    },
+    {
+      "name": "pako",
+      "version": "1.0.11",
+      "packagePath": "node_modules/opensheetmusicdisplay/node_modules/pako",
+      "declaredLicense": "(MIT AND Zlib)",
+      "selectedLicense": "MIT AND Zlib",
+      "integrity": "sha512-4hLB8Py4zZce5s4yd9XzopqwVv/yGNhV1Bl8NTmCq1763HeK2+EwVTv+leGeL13Dnh2wfbqowVPXCIO0z4taYw==",
+      "source": "https://registry.npmjs.org/pako/-/pako-1.0.11.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "a04665b3b2de56c66730c1f720f528175739e4104f79073614aa611da1e85539"
+        }
+      ],
+      "inclusion": [
+        {
+          "mode": "prebundled-runtime",
+          "via": {
+            "name": "opensheetmusicdisplay",
+            "version": "2.2.1",
+            "packagePath": "node_modules/opensheetmusicdisplay",
+            "integrity": "sha512-2DqI2lQKKzDDoIe7yD8yNyWTofSdRbFZYTD3nGRzEo1XmTK2DJWcUXLRXZ2E5xzOt7Pd+RmSGL1quFQZRCqDMw==",
+            "source": "https://registry.npmjs.org/opensheetmusicdisplay/-/opensheetmusicdisplay-2.2.1.tgz",
+            "entry": "build/opensheetmusicdisplay.min.js",
+            "sha256": "224ee5bee61d31ff3d07ade025f931a6cecd394cb54d2e39b1e7af2f0c7f1f5d"
+          },
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "jszip@3.10.1",
+            "pako@1.0.11"
+          ],
+          "evidence": "JSZip Browserify compression module contains pako deflate/inflate and its zlib modules, including constants and trees."
+        }
+      ]
+    },
+    {
+      "name": "pako",
+      "version": "2.2.0",
+      "packagePath": "node_modules/pako",
+      "declaredLicense": "(MIT AND Zlib)",
+      "selectedLicense": "MIT AND Zlib",
+      "integrity": "sha512-zJq6RP/5q+TO2OpFV3FHzlPnFjmkb7Nc99a5SNjJE+uu/PkpChs+NIZSSzbBoD+6kjiISXjfYdwj1ZRQ81dz/w==",
+      "source": "https://registry.npmjs.org/pako/-/pako-2.2.0.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "a04665b3b2de56c66730c1f720f528175739e4104f79073614aa611da1e85539"
+        }
+      ]
+    },
+    {
+      "name": "performance-now",
+      "version": "2.1.0",
+      "packagePath": "node_modules/performance-now",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-7EAHlyLHI56VEIdK57uwHdHKIaAGbnXPiw0yWbarQZOKaKpvUIgW0jWRVLiatnM+XXlSwsanIBH/hzGMJulMow==",
+      "source": "https://registry.npmjs.org/performance-now/-/performance-now-2.1.0.tgz",
+      "notices": [
+        {
+          "name": "license.txt",
+          "sha256": "c3af1272f30870168177e888b184c1f802e5081e75a126c794670c0b562d3783"
+        }
+      ]
+    },
+    {
+      "name": "raf",
+      "version": "3.4.1",
+      "packagePath": "node_modules/raf",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-Sq4CW4QhwOHE8ucn6J34MqtZCeWFP2aQSmrlroYgqAV1PjStIhJXxYuTgUIfkEk7zTLjmIjLmU5q+fbD1NnOJA==",
+      "source": "https://registry.npmjs.org/raf/-/raf-3.4.1.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "6b2194e178545b3dcde4a40a09b5f6c00bd9b5b695db0c826c14995c6c9b4ec5"
+        }
+      ]
+    },
+    {
+      "name": "rgbcolor",
+      "version": "1.0.1",
+      "packagePath": "node_modules/rgbcolor",
+      "declaredLicense": "MIT OR SEE LICENSE IN FEEL-FREE.md",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-9aZLIrhRaD97sgVhtJOW6ckOEh6/GnvQtdVNfdZ6s67+3/XwLS9lBcQYzEEhYVeUowN7pRzMLsyGhK2i/xvWbw==",
+      "source": "https://registry.npmjs.org/rgbcolor/-/rgbcolor-1.0.1.tgz",
+      "notices": [
+        {
+          "name": "LICENSE.md",
+          "sha256": "86045408b01f66f9319a2fe7bc7f7e115f272956ac44d2d840fc00127124a78c"
+        }
+      ]
+    },
+    {
+      "name": "setimmediate",
+      "version": "1.0.5",
+      "packagePath": "node_modules/setimmediate",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-MATJdZp8sLqDl/68LfQmbP8zKPLQNV6BIZoIgrscFDQ+RsvK/BxeDQOgyxKKoh0y/8h3BqVFnCqQ/gd+reiIXA==",
+      "source": "https://registry.npmjs.org/setimmediate/-/setimmediate-1.0.5.tgz",
+      "notices": [
+        {
+          "name": "LICENSE.txt",
+          "sha256": "c4b4ad3a5746f1f5249a6dd90396ec519264e1bb02e01e48a6522c48a3a97cb4"
+        }
+      ],
+      "inclusion": [
+        {
+          "mode": "prebundled-runtime",
+          "via": {
+            "name": "opensheetmusicdisplay",
+            "version": "2.2.1",
+            "packagePath": "node_modules/opensheetmusicdisplay",
+            "integrity": "sha512-2DqI2lQKKzDDoIe7yD8yNyWTofSdRbFZYTD3nGRzEo1XmTK2DJWcUXLRXZ2E5xzOt7Pd+RmSGL1quFQZRCqDMw==",
+            "source": "https://registry.npmjs.org/opensheetmusicdisplay/-/opensheetmusicdisplay-2.2.1.tgz",
+            "entry": "build/opensheetmusicdisplay.min.js",
+            "sha256": "224ee5bee61d31ff3d07ade025f931a6cecd394cb54d2e39b1e7af2f0c7f1f5d"
+          },
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "jszip@3.10.1",
+            "setimmediate@1.0.5"
+          ],
+          "evidence": "JSZip Browserify dist embeds the setImmediate polyfill used by its stream worker scheduler."
+        }
+      ]
+    },
+    {
+      "name": "specificity",
+      "version": "0.4.1",
+      "packagePath": "node_modules/specificity",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-1klA3Gi5PD1Wv9Q0wUoOQN1IWAuPu0D1U03ThXTr0cJ20+/iq2tHSDnK7Kk/0LXJ1ztUB2/1Os0wKmfyNgUQfg==",
+      "source": "https://registry.npmjs.org/specificity/-/specificity-0.4.1.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "b2aeda654259630ed67b54e9134623c38cfb11d26201730cdc6d311d3c7c78ed"
+        }
+      ]
+    },
+    {
+      "name": "stackblur-canvas",
+      "version": "2.7.0",
+      "packagePath": "node_modules/stackblur-canvas",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-yf7OENo23AGJhBriGx0QivY5JP6Y1HbrrDI6WLt6C5auYZXlQrheoY8hD4ibekFKz1HOfE48Ww8kMWMnJD/zcQ==",
+      "source": "https://registry.npmjs.org/stackblur-canvas/-/stackblur-canvas-2.7.0.tgz",
+      "notices": [
+        {
+          "name": "LICENSE-MIT.txt",
+          "sha256": "609e3755e6e7a048b8ca85de25233cfc4f62ec7cb9afeea603269a03b73db197"
+        }
+      ]
+    },
+    {
+      "name": "svg-pathdata",
+      "version": "6.0.3",
+      "packagePath": "node_modules/svg-pathdata",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-qsjeeq5YjBZ5eMdFuUa4ZosMLxgr5RZ+F+Y1OrDhuOCEInRMA3x74XdBtggJcj9kOeInz0WE+LgCPDkZFlBYJw==",
+      "source": "https://registry.npmjs.org/svg-pathdata/-/svg-pathdata-6.0.3.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "cd05e8e2516f46a2cd79494bbabdea76f874e8d049dbc19a76b367534a4e013e"
+        }
+      ]
+    },
+    {
+      "name": "svg2pdf.js",
+      "version": "2.9.0",
+      "packagePath": "node_modules/svg2pdf.js",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-rjxgZ4k4JlgPqAvdBPFU+GMUVIEJm7AeSGAFysKUrmbF2FhKw2pdhgcwb8CinA3Gc8o84aQMpQsGeMNzqA1YyQ==",
+      "source": "https://registry.npmjs.org/svg2pdf.js/-/svg2pdf.js-2.9.0.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "04db7fb792d065c8c9a0e3a7a8255cd36e32b263ca023cbea10daee4a45132b8"
+        }
+      ]
+    },
+    {
+      "name": "svgpath",
+      "version": "2.6.0",
+      "packagePath": "node_modules/svgpath",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-OIWR6bKzXvdXYyO4DK/UWa1VA1JeKq8E+0ug2DG98Y/vOmMpfZNj+TIG988HjfYSqtcy/hFOtZq/n/j5GSESNg==",
+      "source": "https://registry.npmjs.org/svgpath/-/svgpath-2.6.0.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "6caa5f5c4e6957535e77e3eb2a4cc8cdf9242040976faaf01dcc8c3934e2ca4f"
+        }
+      ]
+    },
+    {
+      "name": "typescript-collections",
+      "version": "1.3.3",
+      "packagePath": "node_modules/typescript-collections",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-7sI4e/bZijOzyURng88oOFZCISQPTHozfE2sUu5AviFYk5QV7fYGb6YiDl+vKjF/pICA354JImBImL9XJWUvdQ==",
+      "source": "https://registry.npmjs.org/typescript-collections/-/typescript-collections-1.3.3.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "9de040587128bd3f50f89fd637c16dc47490546a02474c7c08e41d66418e481e"
+        }
+      ],
+      "inclusion": [
+        {
+          "mode": "prebundled-runtime",
+          "via": {
+            "name": "opensheetmusicdisplay",
+            "version": "2.2.1",
+            "packagePath": "node_modules/opensheetmusicdisplay",
+            "integrity": "sha512-2DqI2lQKKzDDoIe7yD8yNyWTofSdRbFZYTD3nGRzEo1XmTK2DJWcUXLRXZ2E5xzOt7Pd+RmSGL1quFQZRCqDMw==",
+            "source": "https://registry.npmjs.org/opensheetmusicdisplay/-/opensheetmusicdisplay-2.2.1.tgz",
+            "entry": "build/opensheetmusicdisplay.min.js",
+            "sha256": "224ee5bee61d31ff3d07ade025f931a6cecd394cb54d2e39b1e7af2f0c7f1f5d"
+          },
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "typescript-collections@1.3.3"
+          ],
+          "evidence": "Reviewed bundle contains the collections implementations and OSMD imports. Version is the locked installed companion satisfying ^1.3.3."
+        }
+      ]
+    },
+    {
+      "name": "vexflow",
+      "version": "1.2.93",
+      "packagePath": "node_modules/vexflow",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-LwHQDCc257Lwju35BhyZuPYcVWu0hIUqEdM7j9+B+bq91bSelssnAG5JR8odTUtgGuwwvGwLhXw37wtmHNCS6Q==",
+      "source": "https://registry.npmjs.org/vexflow/-/vexflow-1.2.93.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "f5b8d8a302220da84066034456fef99821840affcc1fa2d3df94c3c0e81831e5"
+        }
+      ],
+      "inclusion": [
+        {
+          "mode": "prebundled-runtime",
+          "via": {
+            "name": "opensheetmusicdisplay",
+            "version": "2.2.1",
+            "packagePath": "node_modules/opensheetmusicdisplay",
+            "integrity": "sha512-2DqI2lQKKzDDoIe7yD8yNyWTofSdRbFZYTD3nGRzEo1XmTK2DJWcUXLRXZ2E5xzOt7Pd+RmSGL1quFQZRCqDMw==",
+            "source": "https://registry.npmjs.org/opensheetmusicdisplay/-/opensheetmusicdisplay-2.2.1.tgz",
+            "entry": "build/opensheetmusicdisplay.min.js",
+            "sha256": "224ee5bee61d31ff3d07ade025f931a6cecd394cb54d2e39b1e7af2f0c7f1f5d"
+          },
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "vexflow@1.2.93"
+          ],
+          "evidence": "All 127 installed font-table glyph outline strings occur verbatim in the reviewed OSMD bundle; package declaration pins VexFlow 1.2.93."
+        }
+      ]
+    },
+    {
+      "name": "Gonville musical-symbol outlines",
+      "version": "VexFlow 1.2.93 embedded outline set",
+      "component": true,
+      "selectedLicense": "LicenseRef-Gonville-Unrestricted-Font",
+      "source": "https://www.chiark.greenend.org.uk/~sgtatham/gonville/",
+      "inclusion": [
+        {
+          "mode": "prebundled-component",
+          "via": {
+            "name": "opensheetmusicdisplay",
+            "version": "2.2.1",
+            "packagePath": "node_modules/opensheetmusicdisplay",
+            "integrity": "sha512-2DqI2lQKKzDDoIe7yD8yNyWTofSdRbFZYTD3nGRzEo1XmTK2DJWcUXLRXZ2E5xzOt7Pd+RmSGL1quFQZRCqDMw==",
+            "source": "https://registry.npmjs.org/opensheetmusicdisplay/-/opensheetmusicdisplay-2.2.1.tgz",
+            "entry": "build/opensheetmusicdisplay.min.js",
+            "sha256": "224ee5bee61d31ff3d07ade025f931a6cecd394cb54d2e39b1e7af2f0c7f1f5d"
+          },
+          "evidence": "127 installed VexFlow font outline strings are present verbatim; VexFlow MIT custom/microtonal material retains its own package notice. No Bravura/OFL substitution."
+        }
+      ],
+      "notices": [
+        {
+          "name": "Notices/score/Gonville-LICENCE.original.txt",
+          "sha256": "b151e7a321e4b4095abca498165155823b9e3bcbfa7f33fe2486c37694ed9800"
+        },
+        {
+          "name": "Notices/score/Gonville-SOURCE-AND-CREDITS.txt",
+          "sha256": "c329601763f06a5789bd76c15274589c87714d7d537ad02ec9e059a0c6dd0b88"
+        }
+      ]
+    }
+  ],
+  "prebundledAudits": [
+    {
+      "name": "opensheetmusicdisplay",
+      "version": "2.2.1",
+      "packagePath": "node_modules/opensheetmusicdisplay",
+      "integrity": "sha512-2DqI2lQKKzDDoIe7yD8yNyWTofSdRbFZYTD3nGRzEo1XmTK2DJWcUXLRXZ2E5xzOt7Pd+RmSGL1quFQZRCqDMw==",
+      "source": "https://registry.npmjs.org/opensheetmusicdisplay/-/opensheetmusicdisplay-2.2.1.tgz",
+      "entry": "build/opensheetmusicdisplay.min.js",
+      "sha256": "224ee5bee61d31ff3d07ade025f931a6cecd394cb54d2e39b1e7af2f0c7f1f5d",
+      "excluded": [
+        {
+          "name": "@types/vexflow",
+          "reason": "Declaration files only; no JavaScript runtime payload in the reviewed bundle."
+        },
+        {
+          "name": "readable-stream",
+          "lockedInstalledVersion": "2.3.8",
+          "reason": "JSZip Browserify module16 is only require(\"stream\") with stream:undefined; the Node readable-stream implementation and its Node-only dependency tree are absent. Module13 is JSZip's own NodejsStreamOutputAdapter, not readable-stream source."
+        },
+        {
+          "name": "gl",
+          "reason": "Optional Node headless-GL package is not part of the browser OSMD bundle."
+        }
+      ],
+      "runtimeDependencies": [
+        {
+          "name": "vexflow",
+          "version": "1.2.93",
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "vexflow@1.2.93"
+          ],
+          "evidence": "All 127 installed font-table glyph outline strings occur verbatim in the reviewed OSMD bundle; package declaration pins VexFlow 1.2.93."
+        },
+        {
+          "name": "jszip",
+          "version": "3.10.1",
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "jszip@3.10.1"
+          ],
+          "evidence": "Embedded JSZip.version=\"3.10.1\" and Browserify module map match the nested installed JSZip distribution; not hoisted JSZip 3.10.2."
+        },
+        {
+          "name": "loglevel",
+          "version": "1.9.2",
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "loglevel@1.9.2"
+          ],
+          "evidence": "Reviewed bundle contains loglevel logger implementation and storage key. Version is the locked installed companion satisfying ^1.8.0; upstream prebundle does not report the logger version."
+        },
+        {
+          "name": "typescript-collections",
+          "version": "1.3.3",
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "typescript-collections@1.3.3"
+          ],
+          "evidence": "Reviewed bundle contains the collections implementations and OSMD imports. Version is the locked installed companion satisfying ^1.3.3."
+        },
+        {
+          "name": "lie",
+          "version": "3.3.0",
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "jszip@3.10.1",
+            "lie@3.3.0"
+          ],
+          "evidence": "JSZip Browserify embedded Promise fallback module resolves lie and includes its implementation."
+        },
+        {
+          "name": "immediate",
+          "version": "3.0.6",
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "jszip@3.10.1",
+            "lie@3.3.0",
+            "immediate@3.0.6"
+          ],
+          "evidence": "Embedded lie Promise fallback contains the browser immediate microtask scheduler."
+        },
+        {
+          "name": "pako",
+          "version": "1.0.11",
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "jszip@3.10.1",
+            "pako@1.0.11"
+          ],
+          "evidence": "JSZip Browserify compression module contains pako deflate/inflate and its zlib modules, including constants and trees."
+        },
+        {
+          "name": "setimmediate",
+          "version": "1.0.5",
+          "chain": [
+            "opensheetmusicdisplay@2.2.1",
+            "jszip@3.10.1",
+            "setimmediate@1.0.5"
+          ],
+          "evidence": "JSZip Browserify dist embeds the setImmediate polyfill used by its stream worker scheduler."
+        }
+      ]
+    }
+  ]
+}

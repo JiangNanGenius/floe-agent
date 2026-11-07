@@ -1,0 +1,1326 @@
+[
+  {
+    "source": "npm/@babel/runtime/helpers/esm/typeof.js",
+    "bytes": 366
+  },
+  {
+    "source": "npm/fflate/esm/browser.js",
+    "bytes": 90922
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/arrayWithHoles.js",
+    "bytes": 104
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/iterableToArrayLimit.js",
+    "bytes": 717
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/arrayLikeToArray.js",
+    "bytes": 195
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/unsupportedIterableToArray.js",
+    "bytes": 497
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/nonIterableRest.js",
+    "bytes": 235
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/slicedToArray.js",
+    "bytes": 424
+  },
+  {
+    "source": "npm/iobuffer/lib-esm/text.js",
+    "bytes": 265
+  },
+  {
+    "source": "npm/iobuffer/lib-esm/IOBuffer.js",
+    "bytes": 18995
+  },
+  {
+    "source": "npm/pako/dist/pako.esm.mjs",
+    "bytes": 229698
+  },
+  {
+    "source": "npm/fast-png/lib-esm/helpers/crc.js",
+    "bytes": 1210
+  },
+  {
+    "source": "npm/fast-png/lib-esm/helpers/unfilter.js",
+    "bytes": 2641
+  },
+  {
+    "source": "npm/fast-png/lib-esm/helpers/applyUnfilter.js",
+    "bytes": 1323
+  },
+  {
+    "source": "npm/fast-png/lib-esm/helpers/decodeInterlaceAdam7.js",
+    "bytes": 3109
+  },
+  {
+    "source": "npm/fast-png/lib-esm/helpers/decodeInterlaceNull.js",
+    "bytes": 2177
+  },
+  {
+    "source": "npm/fast-png/lib-esm/helpers/signature.js",
+    "bytes": 672
+  },
+  {
+    "source": "npm/fast-png/lib-esm/helpers/text.js",
+    "bytes": 1634
+  },
+  {
+    "source": "npm/fast-png/lib-esm/internalTypes.js",
+    "bytes": 566
+  },
+  {
+    "source": "npm/fast-png/lib-esm/PngDecoder.js",
+    "bytes": 18992
+  },
+  {
+    "source": "npm/fast-png/lib-esm/PngEncoder.js",
+    "bytes": 8695
+  },
+  {
+    "source": "npm/fast-png/lib-esm/types.js",
+    "bytes": 408
+  },
+  {
+    "source": "npm/fast-png/lib-esm/convertIndexedToRgb.js",
+    "bytes": 2117
+  },
+  {
+    "source": "npm/fast-png/lib-esm/index.js",
+    "bytes": 674
+  },
+  {
+    "source": "npm/html2canvas/dist/html2canvas.js",
+    "bytes": 441542
+  },
+  {
+    "source": "npm/dompurify/dist/purify.es.mjs",
+    "bytes": 85820
+  },
+  {
+    "source": "npm/core-js/internals/global-this.js",
+    "bytes": 649
+  },
+  {
+    "source": "npm/core-js/internals/fails.js",
+    "bytes": 122
+  },
+  {
+    "source": "npm/core-js/internals/descriptors.js",
+    "bytes": 323
+  },
+  {
+    "source": "npm/core-js/internals/function-bind-native.js",
+    "bytes": 349
+  },
+  {
+    "source": "npm/core-js/internals/function-call.js",
+    "bytes": 285
+  },
+  {
+    "source": "npm/core-js/internals/object-property-is-enumerable.js",
+    "bytes": 642
+  },
+  {
+    "source": "npm/core-js/internals/create-property-descriptor.js",
+    "bytes": 187
+  },
+  {
+    "source": "npm/core-js/internals/function-uncurry-this.js",
+    "bytes": 445
+  },
+  {
+    "source": "npm/core-js/internals/classof-raw.js",
+    "bytes": 242
+  },
+  {
+    "source": "npm/core-js/internals/indexed-object.js",
+    "bytes": 624
+  },
+  {
+    "source": "npm/core-js/internals/is-null-or-undefined.js",
+    "bytes": 223
+  },
+  {
+    "source": "npm/core-js/internals/require-object-coercible.js",
+    "bytes": 346
+  },
+  {
+    "source": "npm/core-js/internals/to-indexed-object.js",
+    "bytes": 299
+  },
+  {
+    "source": "npm/core-js/internals/is-callable.js",
+    "bytes": 533
+  },
+  {
+    "source": "npm/core-js/internals/is-object.js",
+    "bytes": 168
+  },
+  {
+    "source": "npm/core-js/internals/get-built-in.js",
+    "bytes": 393
+  },
+  {
+    "source": "npm/core-js/internals/object-is-prototype-of.js",
+    "bytes": 128
+  },
+  {
+    "source": "npm/core-js/internals/environment-user-agent.js",
+    "bytes": 211
+  },
+  {
+    "source": "npm/core-js/internals/environment-v8-version.js",
+    "bytes": 886
+  },
+  {
+    "source": "npm/core-js/internals/symbol-constructor-detection.js",
+    "bytes": 957
+  },
+  {
+    "source": "npm/core-js/internals/use-symbol-as-uid.js",
+    "bytes": 237
+  },
+  {
+    "source": "npm/core-js/internals/is-symbol.js",
+    "bytes": 507
+  },
+  {
+    "source": "npm/core-js/internals/try-to-string.js",
+    "bytes": 162
+  },
+  {
+    "source": "npm/core-js/internals/a-callable.js",
+    "bytes": 354
+  },
+  {
+    "source": "npm/core-js/internals/get-method.js",
+    "bytes": 334
+  },
+  {
+    "source": "npm/core-js/internals/ordinary-to-primitive.js",
+    "bytes": 723
+  },
+  {
+    "source": "npm/core-js/internals/is-pure.js",
+    "bytes": 38
+  },
+  {
+    "source": "npm/core-js/internals/define-global-property.js",
+    "bytes": 388
+  },
+  {
+    "source": "npm/core-js/internals/shared-store.js",
+    "bytes": 666
+  },
+  {
+    "source": "npm/core-js/internals/shared.js",
+    "bytes": 264
+  },
+  {
+    "source": "npm/core-js/internals/to-object.js",
+    "bytes": 285
+  },
+  {
+    "source": "npm/core-js/internals/has-own-property.js",
+    "bytes": 434
+  },
+  {
+    "source": "npm/core-js/internals/uid.js",
+    "bytes": 292
+  },
+  {
+    "source": "npm/core-js/internals/well-known-symbol.js",
+    "bytes": 804
+  },
+  {
+    "source": "npm/core-js/internals/to-primitive.js",
+    "bytes": 1019
+  },
+  {
+    "source": "npm/core-js/internals/to-property-key.js",
+    "bytes": 333
+  },
+  {
+    "source": "npm/core-js/internals/document-create-element.js",
+    "bytes": 367
+  },
+  {
+    "source": "npm/core-js/internals/ie8-dom-define.js",
+    "bytes": 477
+  },
+  {
+    "source": "npm/core-js/internals/object-get-own-property-descriptor.js",
+    "bytes": 1138
+  },
+  {
+    "source": "npm/core-js/internals/v8-prototype-define-bug.js",
+    "bytes": 459
+  },
+  {
+    "source": "npm/core-js/internals/an-object.js",
+    "bytes": 304
+  },
+  {
+    "source": "npm/core-js/internals/object-define-property.js",
+    "bytes": 1895
+  },
+  {
+    "source": "npm/core-js/internals/create-non-enumerable-property.js",
+    "bytes": 452
+  },
+  {
+    "source": "npm/core-js/internals/function-name.js",
+    "bytes": 723
+  },
+  {
+    "source": "npm/core-js/internals/inspect-source.js",
+    "bytes": 479
+  },
+  {
+    "source": "npm/core-js/internals/weak-map-basic-detection.js",
+    "bytes": 235
+  },
+  {
+    "source": "npm/core-js/internals/shared-key.js",
+    "bytes": 210
+  },
+  {
+    "source": "npm/core-js/internals/hidden-keys.js",
+    "bytes": 35
+  },
+  {
+    "source": "npm/core-js/internals/internal-state.js",
+    "bytes": 2106
+  },
+  {
+    "source": "npm/core-js/internals/make-built-in.js",
+    "bytes": 2610
+  },
+  {
+    "source": "npm/core-js/internals/define-built-in.js",
+    "bytes": 979
+  },
+  {
+    "source": "npm/core-js/internals/math-trunc.js",
+    "bytes": 284
+  },
+  {
+    "source": "npm/core-js/internals/to-integer-or-infinity.js",
+    "bytes": 350
+  },
+  {
+    "source": "npm/core-js/internals/to-absolute-index.js",
+    "bytes": 485
+  },
+  {
+    "source": "npm/core-js/internals/to-length.js",
+    "bytes": 355
+  },
+  {
+    "source": "npm/core-js/internals/length-of-array-like.js",
+    "bytes": 225
+  },
+  {
+    "source": "npm/core-js/internals/array-includes.js",
+    "bytes": 1382
+  },
+  {
+    "source": "npm/core-js/internals/object-keys-internal.js",
+    "bytes": 722
+  },
+  {
+    "source": "npm/core-js/internals/enum-bug-keys.js",
+    "bytes": 192
+  },
+  {
+    "source": "npm/core-js/internals/object-get-own-property-names.js",
+    "bytes": 494
+  },
+  {
+    "source": "npm/core-js/internals/object-get-own-property-symbols.js",
+    "bytes": 127
+  },
+  {
+    "source": "npm/core-js/internals/own-keys.js",
+    "bytes": 734
+  },
+  {
+    "source": "npm/core-js/internals/copy-constructor-properties.js",
+    "bytes": 719
+  },
+  {
+    "source": "npm/core-js/internals/is-forced.js",
+    "bytes": 634
+  },
+  {
+    "source": "npm/core-js/internals/export.js",
+    "bytes": 2718
+  },
+  {
+    "source": "npm/core-js/internals/environment.js",
+    "bytes": 877
+  },
+  {
+    "source": "npm/core-js/internals/environment-is-node.js",
+    "bytes": 111
+  },
+  {
+    "source": "npm/core-js/internals/path.js",
+    "bytes": 98
+  },
+  {
+    "source": "npm/core-js/internals/function-uncurry-this-accessor.js",
+    "bytes": 394
+  },
+  {
+    "source": "npm/core-js/internals/is-possible-prototype.js",
+    "bytes": 157
+  },
+  {
+    "source": "npm/core-js/internals/a-possible-prototype.js",
+    "bytes": 313
+  },
+  {
+    "source": "npm/core-js/internals/object-set-prototype-of.js",
+    "bytes": 1126
+  },
+  {
+    "source": "npm/core-js/internals/set-to-string-tag.js",
+    "bytes": 497
+  },
+  {
+    "source": "npm/core-js/internals/define-built-in-accessor.js",
+    "bytes": 402
+  },
+  {
+    "source": "npm/core-js/internals/set-species.js",
+    "bytes": 601
+  },
+  {
+    "source": "npm/core-js/internals/an-instance.js",
+    "bytes": 254
+  },
+  {
+    "source": "npm/core-js/internals/to-string-tag-support.js",
+    "bytes": 306
+  },
+  {
+    "source": "npm/core-js/internals/classof.js",
+    "bytes": 1094
+  },
+  {
+    "source": "npm/core-js/internals/is-constructor.js",
+    "bytes": 1796
+  },
+  {
+    "source": "npm/core-js/internals/a-constructor.js",
+    "bytes": 369
+  },
+  {
+    "source": "npm/core-js/internals/species-constructor.js",
+    "bytes": 606
+  },
+  {
+    "source": "npm/core-js/internals/function-apply.js",
+    "bytes": 432
+  },
+  {
+    "source": "npm/core-js/internals/function-uncurry-this-clause.js",
+    "bytes": 359
+  },
+  {
+    "source": "npm/core-js/internals/function-bind-context.js",
+    "bytes": 478
+  },
+  {
+    "source": "npm/core-js/internals/html.js",
+    "bytes": 130
+  },
+  {
+    "source": "npm/core-js/internals/array-slice.js",
+    "bytes": 120
+  },
+  {
+    "source": "npm/core-js/internals/validate-arguments-length.js",
+    "bytes": 181
+  },
+  {
+    "source": "npm/core-js/internals/environment-is-ios.js",
+    "bytes": 167
+  },
+  {
+    "source": "npm/core-js/internals/task.js",
+    "bytes": 3515
+  },
+  {
+    "source": "npm/core-js/internals/safe-get-built-in.js",
+    "bytes": 487
+  },
+  {
+    "source": "npm/core-js/internals/queue.js",
+    "bytes": 500
+  },
+  {
+    "source": "npm/core-js/internals/environment-is-ios-pebble.js",
+    "bytes": 165
+  },
+  {
+    "source": "npm/core-js/internals/environment-is-webos-webkit.js",
+    "bytes": 134
+  },
+  {
+    "source": "npm/core-js/internals/microtask.js",
+    "bytes": 2671
+  },
+  {
+    "source": "npm/core-js/internals/host-report-errors.js",
+    "bytes": 214
+  },
+  {
+    "source": "npm/core-js/internals/perform.js",
+    "bytes": 170
+  },
+  {
+    "source": "npm/core-js/internals/promise-native-constructor.js",
+    "bytes": 106
+  },
+  {
+    "source": "npm/core-js/internals/promise-constructor-detection.js",
+    "bytes": 2599
+  },
+  {
+    "source": "npm/core-js/internals/new-promise-capability.js",
+    "bytes": 618
+  },
+  {
+    "source": "npm/core-js/modules/es.promise.constructor.js",
+    "bytes": 9963
+  },
+  {
+    "source": "npm/core-js/internals/iterators.js",
+    "bytes": 73
+  },
+  {
+    "source": "npm/core-js/internals/is-array-iterator-method.js",
+    "bytes": 375
+  },
+  {
+    "source": "npm/core-js/internals/get-iterator-method-internal.js",
+    "bytes": 545
+  },
+  {
+    "source": "npm/core-js/internals/get-iterator-internal.js",
+    "bytes": 632
+  },
+  {
+    "source": "npm/core-js/internals/iterator-close.js",
+    "bytes": 657
+  },
+  {
+    "source": "npm/core-js/internals/iterate.js",
+    "bytes": 2764
+  },
+  {
+    "source": "npm/core-js/internals/check-correctness-of-iteration.js",
+    "bytes": 1251
+  },
+  {
+    "source": "npm/core-js/internals/promise-statics-incorrect-iteration.js",
+    "bytes": 477
+  },
+  {
+    "source": "npm/core-js/modules/es.promise.all.js",
+    "bytes": 1426
+  },
+  {
+    "source": "npm/core-js/modules/es.promise.catch.js",
+    "bytes": 1171
+  },
+  {
+    "source": "npm/core-js/modules/es.promise.race.js",
+    "bytes": 1042
+  },
+  {
+    "source": "npm/core-js/modules/es.promise.reject.js",
+    "bytes": 583
+  },
+  {
+    "source": "npm/core-js/internals/promise-resolve.js",
+    "bytes": 441
+  },
+  {
+    "source": "npm/core-js/modules/es.promise.resolve.js",
+    "bytes": 838
+  },
+  {
+    "source": "npm/core-js/modules/es.promise.js",
+    "bytes": 346
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/asyncToGenerator.js",
+    "bytes": 628
+  },
+  {
+    "source": "npm/core-js/internals/to-string.js",
+    "bytes": 259
+  },
+  {
+    "source": "npm/core-js/internals/regexp-flags.js",
+    "bytes": 562
+  },
+  {
+    "source": "npm/core-js/internals/regexp-sticky-helpers.js",
+    "bytes": 861
+  },
+  {
+    "source": "npm/core-js/internals/object-keys.js",
+    "bytes": 364
+  },
+  {
+    "source": "npm/core-js/internals/object-define-properties.js",
+    "bytes": 925
+  },
+  {
+    "source": "npm/core-js/internals/object-create.js",
+    "bytes": 3137
+  },
+  {
+    "source": "npm/core-js/internals/regexp-unsupported-dot-all.js",
+    "bytes": 376
+  },
+  {
+    "source": "npm/core-js/internals/regexp-unsupported-ncg.js",
+    "bytes": 415
+  },
+  {
+    "source": "npm/core-js/internals/regexp-exec.js",
+    "bytes": 4236
+  },
+  {
+    "source": "npm/core-js/modules/es.regexp.exec.js",
+    "bytes": 274
+  },
+  {
+    "source": "npm/core-js/internals/fix-regexp-well-known-symbol-logic.js",
+    "bytes": 2968
+  },
+  {
+    "source": "npm/core-js/internals/string-multibyte.js",
+    "bytes": 1415
+  },
+  {
+    "source": "npm/core-js/internals/advance-string-index.js",
+    "bytes": 285
+  },
+  {
+    "source": "npm/core-js/internals/regexp-flags-detection.js",
+    "bytes": 1225
+  },
+  {
+    "source": "npm/core-js/internals/regexp-get-flags.js",
+    "bytes": 653
+  },
+  {
+    "source": "npm/core-js/internals/regexp-exec-abstract.js",
+    "bytes": 700
+  },
+  {
+    "source": "npm/core-js/modules/es.string.match.js",
+    "bytes": 2150
+  },
+  {
+    "source": "npm/core-js/internals/get-substitution.js",
+    "bytes": 1637
+  },
+  {
+    "source": "npm/core-js/modules/es.string.replace.js",
+    "bytes": 5847
+  },
+  {
+    "source": "npm/core-js/internals/is-regexp.js",
+    "bytes": 451
+  },
+  {
+    "source": "npm/core-js/internals/not-a-regexp.js",
+    "bytes": 242
+  },
+  {
+    "source": "npm/core-js/internals/correct-is-regexp-logic.js",
+    "bytes": 380
+  },
+  {
+    "source": "npm/core-js/modules/es.string.starts-with.js",
+    "bytes": 1523
+  },
+  {
+    "source": "npm/core-js/internals/add-to-unscopables.js",
+    "bytes": 669
+  },
+  {
+    "source": "npm/core-js/internals/correct-prototype-getter.js",
+    "bytes": 304
+  },
+  {
+    "source": "npm/core-js/internals/object-get-prototype-of.js",
+    "bytes": 936
+  },
+  {
+    "source": "npm/core-js/internals/iterators-core.js",
+    "bytes": 1800
+  },
+  {
+    "source": "npm/core-js/internals/iterator-create-constructor.js",
+    "bytes": 779
+  },
+  {
+    "source": "npm/core-js/internals/iterator-define.js",
+    "bytes": 4515
+  },
+  {
+    "source": "npm/core-js/internals/create-iter-result-object.js",
+    "bytes": 200
+  },
+  {
+    "source": "npm/core-js/modules/es.array.iterator.js",
+    "bytes": 2607
+  },
+  {
+    "source": "npm/core-js/internals/dom-iterables.js",
+    "bytes": 767
+  },
+  {
+    "source": "npm/core-js/internals/dom-token-list-prototype.js",
+    "bytes": 437
+  },
+  {
+    "source": "npm/core-js/modules/web.dom-collections.iterator.js",
+    "bytes": 1732
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/toPrimitive.js",
+    "bytes": 441
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/toPropertyKey.js",
+    "bytes": 227
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/defineProperty.js",
+    "bytes": 286
+  },
+  {
+    "source": "npm/core-js/internals/array-reduce.js",
+    "bytes": 1512
+  },
+  {
+    "source": "npm/core-js/internals/array-method-is-strict.js",
+    "bytes": 329
+  },
+  {
+    "source": "npm/core-js/modules/es.array.reduce.js",
+    "bytes": 880
+  },
+  {
+    "source": "npm/core-js/modules/es.string.ends-with.js",
+    "bytes": 1590
+  },
+  {
+    "source": "npm/core-js/modules/es.string.split.js",
+    "bytes": 4783
+  },
+  {
+    "source": "npm/performance-now/lib/performance-now.js",
+    "bytes": 1061
+  },
+  {
+    "source": "npm/raf/index.js",
+    "bytes": 1933
+  },
+  {
+    "source": "npm/core-js/internals/whitespaces.js",
+    "bytes": 237
+  },
+  {
+    "source": "npm/core-js/internals/string-trim.js",
+    "bytes": 1201
+  },
+  {
+    "source": "npm/core-js/internals/string-trim-forced.js",
+    "bytes": 549
+  },
+  {
+    "source": "npm/core-js/modules/es.string.trim.js",
+    "bytes": 407
+  },
+  {
+    "source": "npm/rgbcolor/index.js",
+    "bytes": 9497
+  },
+  {
+    "source": "npm/core-js/modules/es.array.index-of.js",
+    "bytes": 973
+  },
+  {
+    "source": "npm/core-js/modules/es.string.includes.js",
+    "bytes": 857
+  },
+  {
+    "source": "npm/core-js/internals/is-array.js",
+    "bytes": 300
+  },
+  {
+    "source": "npm/core-js/modules/es.array.reverse.js",
+    "bytes": 672
+  },
+  {
+    "source": "npm/svg-pathdata/lib/SVGPathData.module.js",
+    "bytes": 19080
+  },
+  {
+    "source": "npm/core-js/modules/es.regexp.to-string.js",
+    "bytes": 1085
+  },
+  {
+    "source": "npm/stackblur-canvas/dist/stackblur-es.js",
+    "bytes": 19527
+  },
+  {
+    "source": "npm/canvg/lib/index.es.js",
+    "bytes": 180371
+  },
+  {
+    "source": "npm/jspdf/dist/jspdf.es.min.js",
+    "bytes": 343605
+  },
+  {
+    "source": "FloeHeavyEditorSupport/Web/runtime.js",
+    "bytes": 18930
+  },
+  {
+    "source": "FloeFontKit/Web/variation.js",
+    "bytes": 5733
+  },
+  {
+    "source": "FloeFontKit/Web/contours.js",
+    "bytes": 10383
+  },
+  {
+    "source": "FloeFontKit/Web/model.js",
+    "bytes": 44034
+  },
+  {
+    "source": "npm/paper/dist/node/browser.js",
+    "bytes": 546
+  },
+  {
+    "source": "npm/paper/dist/paper-full.js",
+    "bytes": 750680
+  },
+  {
+    "source": "FloeFontKit/Web/geometry.js",
+    "bytes": 12320
+  },
+  {
+    "source": "npm/opentype.js/dist/opentype.js",
+    "bytes": 528484
+  },
+  {
+    "source": "npm/fonteditor-core/lib/nodejs/buffer.js",
+    "bytes": 1145
+  },
+  {
+    "source": "npm/fonteditor-core/lib/common/lang.js",
+    "bytes": 6921
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/data/empty.js",
+    "bytes": 3893
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/data/default.js",
+    "bytes": 537
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/getEmptyttfObject.js",
+    "bytes": 637
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/enum/unicodeName.js",
+    "bytes": 3542
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/enum/postName.js",
+    "bytes": 4603
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/util/string.js",
+    "bytes": 5160
+  },
+  {
+    "source": "npm/fonteditor-core/lib/graphics/pathAdjust.js",
+    "bytes": 833
+  },
+  {
+    "source": "npm/fonteditor-core/lib/graphics/pathCeil.js",
+    "bytes": 676
+  },
+  {
+    "source": "npm/fonteditor-core/lib/graphics/pathIterator.js",
+    "bytes": 1886
+  },
+  {
+    "source": "npm/fonteditor-core/lib/graphics/computeBoundingBox.js",
+    "bytes": 4312
+  },
+  {
+    "source": "npm/fonteditor-core/lib/graphics/pathTransform.js",
+    "bytes": 979
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/util/transformGlyfContours.js",
+    "bytes": 2039
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/util/compound2simple.js",
+    "bytes": 593
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/util/compound2simpleglyf.js",
+    "bytes": 1496
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/util/glyfAdjust.js",
+    "bytes": 3173
+  },
+  {
+    "source": "npm/fonteditor-core/lib/graphics/reducePath.js",
+    "bytes": 1613
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/util/reduceGlyf.js",
+    "bytes": 859
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/util/optimizettf.js",
+    "bytes": 2014
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/ttf.js",
+    "bytes": 26683
+  },
+  {
+    "source": "npm/fonteditor-core/lib/common/string.js",
+    "bytes": 2553
+  },
+  {
+    "source": "npm/fonteditor-core/lib/common/I18n.js",
+    "bytes": 3696
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/i18n.js",
+    "bytes": 2334
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/error.js",
+    "bytes": 1679
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/reader.js",
+    "bytes": 9072
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/writer.js",
+    "bytes": 9298
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/woff2ttf.js",
+    "bytes": 3107
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/struct.js",
+    "bytes": 972
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/table.js",
+    "bytes": 6441
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/directory.js",
+    "bytes": 1385
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/head.js",
+    "bytes": 1125
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/maxp.js",
+    "bytes": 1284
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/util/readWindowsAllCodes.js",
+    "bytes": 4653
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/cmap/parse.js",
+    "bytes": 7328
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/cmap/write.js",
+    "bytes": 4343
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/cmap/sizeof.js",
+    "bytes": 3916
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/cmap.js",
+    "bytes": 752
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/enum/nameId.js",
+    "bytes": 789
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/enum/platform.js",
+    "bytes": 295
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/enum/encoding.js",
+    "bytes": 593
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/name.js",
+    "bytes": 4759
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/hhea.js",
+    "bytes": 1228
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/hmtx.js",
+    "bytes": 2314
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/post.js",
+    "bytes": 4714
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/OS2.js",
+    "bytes": 9856
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/cff/encoding.js",
+    "bytes": 4862
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/cff/cffStandardStrings.js",
+    "bytes": 4872
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/cff/getCFFString.js",
+    "bytes": 813
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/cff/parseCFFDict.js",
+    "bytes": 6502
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/cff/parseCFFGlyph.js",
+    "bytes": 14644
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/cff/parseCFFCharset.js",
+    "bytes": 1714
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/cff/parseCFFEncoding.js",
+    "bytes": 1121
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/CFF.js",
+    "bytes": 7258
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/GPOS.js",
+    "bytes": 813
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/kern.js",
+    "bytes": 829
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/support-otf.js",
+    "bytes": 1174
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/otfreader.js",
+    "bytes": 6196
+  },
+  {
+    "source": "npm/fonteditor-core/lib/math/bezierCubic2Q2.js",
+    "bytes": 1770
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/util/otfContours2ttfContours.js",
+    "bytes": 2059
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/otf2ttfobject.js",
+    "bytes": 3094
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/eot2ttf.js",
+    "bytes": 2547
+  },
+  {
+    "source": "npm/@xmldom/xmldom/lib/conventions.js",
+    "bytes": 7352
+  },
+  {
+    "source": "npm/@xmldom/xmldom/lib/dom.js",
+    "bytes": 79146
+  },
+  {
+    "source": "npm/@xmldom/xmldom/lib/entities.js",
+    "bytes": 44465
+  },
+  {
+    "source": "npm/@xmldom/xmldom/lib/sax.js",
+    "bytes": 20949
+  },
+  {
+    "source": "npm/@xmldom/xmldom/lib/dom-parser.js",
+    "bytes": 10312
+  },
+  {
+    "source": "npm/@xmldom/xmldom/lib/index.js",
+    "bytes": 173
+  },
+  {
+    "source": "npm/fonteditor-core/lib/common/DOMParser.js",
+    "bytes": 377
+  },
+  {
+    "source": "npm/fonteditor-core/lib/graphics/getArc.js",
+    "bytes": 6268
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/svg/parseParams.js",
+    "bytes": 635
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/svg/path2contours.js",
+    "bytes": 10357
+  },
+  {
+    "source": "npm/fonteditor-core/lib/graphics/path/circle.js",
+    "bytes": 597
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/svg/oval2contour.js",
+    "bytes": 1293
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/svg/polygon2contour.js",
+    "bytes": 814
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/svg/rect2contour.js",
+    "bytes": 718
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/svg/parseTransform.js",
+    "bytes": 948
+  },
+  {
+    "source": "npm/fonteditor-core/lib/graphics/matrix.js",
+    "bytes": 1587
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/svg/contoursTransform.js",
+    "bytes": 2356
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/svg/svgnode2contours.js",
+    "bytes": 3639
+  },
+  {
+    "source": "npm/fonteditor-core/lib/graphics/pathRotate.js",
+    "bytes": 925
+  },
+  {
+    "source": "npm/fonteditor-core/lib/graphics/pathsUtil.js",
+    "bytes": 3657
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/svg2ttfobject.js",
+    "bytes": 12404
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/loca.js",
+    "bytes": 1931
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/enum/glyFlag.js",
+    "bytes": 635
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/enum/componentFlag.js",
+    "bytes": 703
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/glyf/parse.js",
+    "bytes": 7238
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/glyf/write.js",
+    "bytes": 4876
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/glyf/sizeof.js",
+    "bytes": 5834
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/glyf.js",
+    "bytes": 3069
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/fpgm.js",
+    "bytes": 825
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/cvt.js",
+    "bytes": 816
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/prep.js",
+    "bytes": 800
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/gasp.js",
+    "bytes": 893
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/kerx.js",
+    "bytes": 822
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/table/support.js",
+    "bytes": 1645
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/ttfreader.js",
+    "bytes": 8150
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/util/checkSum.js",
+    "bytes": 2156
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/ttfwriter.js",
+    "bytes": 8747
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/ttf2eot.js",
+    "bytes": 5218
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/ttf2woff.js",
+    "bytes": 8577
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/util/contour2svg.js",
+    "bytes": 2176
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/util/contours2svg.js",
+    "bytes": 726
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/util/unicode2xml.js",
+    "bytes": 834
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/ttf2svg.js",
+    "bytes": 4674
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/ttf2symbol.js",
+    "bytes": 3421
+  },
+  {
+    "source": "npm/fonteditor-core/woff2/woff2.js",
+    "bytes": 92842
+  },
+  {
+    "source": "npm/fonteditor-core/woff2/index.js",
+    "bytes": 3009
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/ttftowoff2.js",
+    "bytes": 1385
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/woff2tottf.js",
+    "bytes": 1387
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/util/bytes2base64.js",
+    "bytes": 936
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/ttf2base64.js",
+    "bytes": 607
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/eot2base64.js",
+    "bytes": 607
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/woff2base64.js",
+    "bytes": 612
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/svg2base64.js",
+    "bytes": 672
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/woff2tobase64.js",
+    "bytes": 618
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/font.js",
+    "bytes": 13655
+  },
+  {
+    "source": "npm/fonteditor-core/lib/ttf/ttf2icon.js",
+    "bytes": 2461
+  },
+  {
+    "source": "npm/fonteditor-core/lib/main.esm.js",
+    "bytes": 5043
+  },
+  {
+    "source": "FloeFontKit/Web/ufo.js",
+    "bytes": 12176
+  },
+  {
+    "source": "FloeFontKit/Web/formats.js",
+    "bytes": 26076
+  },
+  {
+    "source": "FloeFontKit/Web/view.js",
+    "bytes": 30732
+  },
+  {
+    "source": "FloeFontKit/Web/main.js",
+    "bytes": 4866
+  }
+]

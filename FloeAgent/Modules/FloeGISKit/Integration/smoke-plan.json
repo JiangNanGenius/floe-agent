@@ -1,0 +1,35 @@
+{
+  "kind": "gis",
+  "steps": [
+    {
+      "command": "project.sample",
+      "arguments": {}
+    },
+    {
+      "command": "field.calculate",
+      "arguments": {
+        "name": "area_m2",
+        "operation": "area",
+        "source": "",
+        "operand": 1
+      }
+    },
+    {
+      "command": "file.export",
+      "arguments": {
+        "format": "gpkg",
+        "name": "GIS-smoke",
+        "crs": "EPSG:3857",
+        "all": false
+      }
+    },
+    {
+      "command": "layout.export",
+      "arguments": {
+        "format": "svg",
+        "width": 640,
+        "height": 480
+      }
+    }
+  ]
+}

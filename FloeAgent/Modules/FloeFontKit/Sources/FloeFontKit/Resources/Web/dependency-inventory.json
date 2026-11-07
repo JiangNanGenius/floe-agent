@@ -1,0 +1,396 @@
+{
+  "kind": "font",
+  "packages": [
+    {
+      "name": "@babel/runtime",
+      "version": "7.29.13",
+      "packagePath": "node_modules/@babel/runtime",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-v+oN26xP4YIlQsbQ/CbTH1WG5m/l/DjKKZNy/Kp3f/AFvbgt7Em/D0FeMM3O2hX0YzeN2M16W8lOpyhIkfCBcQ==",
+      "source": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.13.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "117da2af0d4ce0fe1c8e19b5cff9dcd806adf973d328d27b11d4448c4ff24f76"
+        }
+      ]
+    },
+    {
+      "name": "@xmldom/xmldom",
+      "version": "0.8.15",
+      "packagePath": "node_modules/@xmldom/xmldom",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-/5NV/vDALVFDXgLmfsy9TRCBlKwO2LNBFzpzvb9iIj+jR+eSc6DLYYvVOdivT/jm7MtU6TebYuRmzEOI7w40UA==",
+      "source": "https://registry.npmjs.org/@xmldom/xmldom/-/xmldom-0.8.15.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "4da724fc305d81606b245b324d4d2586916b9d248b23d82183df753ace0fdf71"
+        }
+      ]
+    },
+    {
+      "name": "canvg",
+      "version": "3.0.11",
+      "packagePath": "node_modules/canvg",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-5ON+q7jCTgMp9cjpu4Jo6XbvfYwSB2Ow3kzHKfIyJfaCAOHLbdKPQqGKgfED/R5B+3TFFfe8pegYA+b423SRyA==",
+      "source": "https://registry.npmjs.org/canvg/-/canvg-3.0.11.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "86622ffc909487e6029235d31503263b796895679b0926f4a4d6f02d2623fde0"
+        }
+      ]
+    },
+    {
+      "name": "core-js",
+      "version": "3.51.0",
+      "packagePath": "node_modules/core-js",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-7bDKx/5jm5MxzsXxc93g6Z2+4ZsuT/MddrfRmTDJNAkWsYWHU8EVNEsBiIEWnMAMCHMmRfUEjkuo3jeNBOIHRw==",
+      "source": "https://registry.npmjs.org/core-js/-/core-js-3.51.0.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "b87653fff2d44426ab5cd4723cee3b1364dc8d35a0acdf098c54689543123bf8"
+        }
+      ]
+    },
+    {
+      "name": "dompurify",
+      "version": "3.4.17",
+      "packagePath": "node_modules/dompurify",
+      "declaredLicense": "(MPL-2.0 OR Apache-2.0)",
+      "selectedLicense": "MPL-2.0",
+      "integrity": "sha512-B/pSlYVHQ58kqISD/yDjuJ1yfzI34m1gF4lAod2bwSRhiN4K5Cl3H8Af7hqB2PmTL911tdEudnnXn5FnhRoz0w==",
+      "source": "https://registry.npmjs.org/dompurify/-/dompurify-3.4.17.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        },
+        {
+          "name": "LICENSE-MPL",
+          "sha256": "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85"
+        }
+      ]
+    },
+    {
+      "name": "fast-png",
+      "version": "6.4.0",
+      "packagePath": "node_modules/fast-png",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-kAqZq1TlgBjZcLr5mcN6NP5Rv4V2f22z00c3g8vRrwkcqjerx7BEhPbOnWCPqaHUl2XWQBJQvOT/FQhdMT7X/Q==",
+      "source": "https://registry.npmjs.org/fast-png/-/fast-png-6.4.0.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "47ec9747cf2c470a505fcb20f3ec2ff2e60ea4febaf2e1e7041a24fc369fac3c"
+        }
+      ]
+    },
+    {
+      "name": "fflate",
+      "version": "0.8.3",
+      "packagePath": "node_modules/fflate",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==",
+      "source": "https://registry.npmjs.org/fflate/-/fflate-0.8.3.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "0a1df3a083d0c010560aa342e87959c8c1070e6fd54545741f083f22d0c8b551"
+        }
+      ]
+    },
+    {
+      "name": "fonteditor-core",
+      "version": "2.6.3",
+      "packagePath": "node_modules/fonteditor-core",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-YUryIKjkenjZ41E7JvM3V+02Ak4mTHDDTwBWgs9KBzypzHqLZHuua1UDRevZNTKawmnq1dbBAa70Jddl2+F4FQ==",
+      "source": "https://registry.npmjs.org/fonteditor-core/-/fonteditor-core-2.6.3.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "56da234b06e4b46e2d3ad7c83721ebc98493849972c7eeadfa5079308261f0b1"
+        }
+      ]
+    },
+    {
+      "name": "html2canvas",
+      "version": "1.4.1",
+      "packagePath": "node_modules/html2canvas",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-fPU6BHNpsyIhr8yyMpTLLxAbkaK8ArIBcmZIRiBLiDhjeqvXolaEmDGmELFuX9I4xDcaKKcJl+TKZLqruBbmWA==",
+      "source": "https://registry.npmjs.org/html2canvas/-/html2canvas-1.4.1.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "86200ce4e92d9a22c41c8647a55f7a5fddff304ff89b4d36ecc699ed8c123d2c"
+        }
+      ]
+    },
+    {
+      "name": "iobuffer",
+      "version": "5.4.0",
+      "packagePath": "node_modules/iobuffer",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-DRebOWuqDvxunfkNJAlc3IzWIPD5xVxwUNbHr7xKB8E6aLJxIPfNX3CoMJghcFjpv6RWQsrcJbghtEwSPoJqMA==",
+      "source": "https://registry.npmjs.org/iobuffer/-/iobuffer-5.4.0.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "1c22118fd112e8c394a5ec0598d2e2dfcdc19b3e1055ac3eaccdb2522b777335"
+        }
+      ]
+    },
+    {
+      "name": "jspdf",
+      "version": "4.2.1",
+      "packagePath": "node_modules/jspdf",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-YyAXyvnmjTbR4bHQRLzex3CuINCDlQnBqoSYyjJwTP2x9jDLuKDzy7aKUl0hgx3uhcl7xzg32agn5vlie6HIlQ==",
+      "source": "https://registry.npmjs.org/jspdf/-/jspdf-4.2.1.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "dc388ec35ff463288cdde3588a36fd4ed12a45deff053243b37309acc9ef583b"
+        }
+      ]
+    },
+    {
+      "name": "opentype.js",
+      "version": "2.0.0",
+      "packagePath": "node_modules/opentype.js",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-kCyjv6xdDY1W/jLWZ/L3QhhTlKUqDZMQ5+Jdlw12b3dXkKNpYBqqlMMj0YDQPShWFTMwgZI1hG14kN3XUDSg/A==",
+      "source": "https://registry.npmjs.org/opentype.js/-/opentype.js-2.0.0.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "a5b87c9bc191e7f9c06b07bd7cbbed3ed846dfdb50e859484b2c245aa1ab2e61"
+        }
+      ]
+    },
+    {
+      "name": "pako",
+      "version": "2.2.0",
+      "packagePath": "node_modules/pako",
+      "declaredLicense": "(MIT AND Zlib)",
+      "selectedLicense": "MIT AND Zlib",
+      "integrity": "sha512-zJq6RP/5q+TO2OpFV3FHzlPnFjmkb7Nc99a5SNjJE+uu/PkpChs+NIZSSzbBoD+6kjiISXjfYdwj1ZRQ81dz/w==",
+      "source": "https://registry.npmjs.org/pako/-/pako-2.2.0.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "a04665b3b2de56c66730c1f720f528175739e4104f79073614aa611da1e85539"
+        }
+      ]
+    },
+    {
+      "name": "paper",
+      "version": "0.17.0",
+      "packagePath": "node_modules/paper",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-AWHQVUNScPN/swbCg0wwb2bTerMieraol76Fpn1s+7Zw7R6mMyI0QltMkj/XOS3Jv+9785q0p4eLsYggn63ZQw==",
+      "source": "https://registry.npmjs.org/paper/-/paper-0.17.0.tgz",
+      "notices": [
+        {
+          "name": "AUTHORS.md",
+          "sha256": "f1d948e023917ec2964641cd357d7cfae2d85dc54b4afa2bec557722c490cca0"
+        },
+        {
+          "name": "LICENSE.txt",
+          "sha256": "f8833a38807922b4652421eb0cf29065400c55abd6f4832b9c3250dae87e1958"
+        }
+      ]
+    },
+    {
+      "name": "performance-now",
+      "version": "2.1.0",
+      "packagePath": "node_modules/performance-now",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-7EAHlyLHI56VEIdK57uwHdHKIaAGbnXPiw0yWbarQZOKaKpvUIgW0jWRVLiatnM+XXlSwsanIBH/hzGMJulMow==",
+      "source": "https://registry.npmjs.org/performance-now/-/performance-now-2.1.0.tgz",
+      "notices": [
+        {
+          "name": "license.txt",
+          "sha256": "c3af1272f30870168177e888b184c1f802e5081e75a126c794670c0b562d3783"
+        }
+      ]
+    },
+    {
+      "name": "raf",
+      "version": "3.4.1",
+      "packagePath": "node_modules/raf",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-Sq4CW4QhwOHE8ucn6J34MqtZCeWFP2aQSmrlroYgqAV1PjStIhJXxYuTgUIfkEk7zTLjmIjLmU5q+fbD1NnOJA==",
+      "source": "https://registry.npmjs.org/raf/-/raf-3.4.1.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "6b2194e178545b3dcde4a40a09b5f6c00bd9b5b695db0c826c14995c6c9b4ec5"
+        }
+      ]
+    },
+    {
+      "name": "rgbcolor",
+      "version": "1.0.1",
+      "packagePath": "node_modules/rgbcolor",
+      "declaredLicense": "MIT OR SEE LICENSE IN FEEL-FREE.md",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-9aZLIrhRaD97sgVhtJOW6ckOEh6/GnvQtdVNfdZ6s67+3/XwLS9lBcQYzEEhYVeUowN7pRzMLsyGhK2i/xvWbw==",
+      "source": "https://registry.npmjs.org/rgbcolor/-/rgbcolor-1.0.1.tgz",
+      "notices": [
+        {
+          "name": "LICENSE.md",
+          "sha256": "86045408b01f66f9319a2fe7bc7f7e115f272956ac44d2d840fc00127124a78c"
+        }
+      ]
+    },
+    {
+      "name": "stackblur-canvas",
+      "version": "2.7.0",
+      "packagePath": "node_modules/stackblur-canvas",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-yf7OENo23AGJhBriGx0QivY5JP6Y1HbrrDI6WLt6C5auYZXlQrheoY8hD4ibekFKz1HOfE48Ww8kMWMnJD/zcQ==",
+      "source": "https://registry.npmjs.org/stackblur-canvas/-/stackblur-canvas-2.7.0.tgz",
+      "notices": [
+        {
+          "name": "LICENSE-MIT.txt",
+          "sha256": "609e3755e6e7a048b8ca85de25233cfc4f62ec7cb9afeea603269a03b73db197"
+        }
+      ]
+    },
+    {
+      "name": "svg-pathdata",
+      "version": "6.0.3",
+      "packagePath": "node_modules/svg-pathdata",
+      "declaredLicense": "MIT",
+      "selectedLicense": "MIT",
+      "integrity": "sha512-qsjeeq5YjBZ5eMdFuUa4ZosMLxgr5RZ+F+Y1OrDhuOCEInRMA3x74XdBtggJcj9kOeInz0WE+LgCPDkZFlBYJw==",
+      "source": "https://registry.npmjs.org/svg-pathdata/-/svg-pathdata-6.0.3.tgz",
+      "notices": [
+        {
+          "name": "LICENSE",
+          "sha256": "cd05e8e2516f46a2cd79494bbabdea76f874e8d049dbc19a76b367534a4e013e"
+        }
+      ]
+    },
+    {
+      "name": "Straps.js embedded in Paper.js",
+      "version": "embedded snapshot; no separate version encoded",
+      "component": true,
+      "selectedLicense": "MIT",
+      "source": "https://github.com/lehni/straps.js/tree/17db0716e3dd8c1ffe353b6ab994f48a451a690b",
+      "inclusion": [
+        {
+          "mode": "prebundled-component",
+          "via": {
+            "name": "paper",
+            "version": "0.17.0",
+            "packagePath": "node_modules/paper",
+            "integrity": "sha512-AWHQVUNScPN/swbCg0wwb2bTerMieraol76Fpn1s+7Zw7R6mMyI0QltMkj/XOS3Jv+9785q0p4eLsYggn63ZQw==",
+            "source": "https://registry.npmjs.org/paper/-/paper-0.17.0.tgz",
+            "entry": "dist/paper-full.js",
+            "sha256": "61e0afe43129a6952fe441a418f54bff13a841bb8383957e422c01685ee1c7fb"
+          },
+          "evidence": "Actual Paper full bundle header credits Straps.js and its separate 2006-2020 Juerg Lehni copyright; Base inheritance implementation is embedded. There is no installed/locked standalone Straps package, so parent Paper integrity binds the source bytes."
+        }
+      ],
+      "notices": [
+        {
+          "name": "Notices/score/embedded/straps-LICENSE.original.txt",
+          "source": "https://raw.githubusercontent.com/lehni/straps.js/17db0716e3dd8c1ffe353b6ab994f48a451a690b/LICENSE.txt",
+          "sha256": "24d455af6e878040157f11910a6c3411bd3cc9f4112f3dab970a00269711a71c"
+        },
+        {
+          "name": "Notices/score/embedded/paper-0.17.0-header.original.txt",
+          "source": "npm:paper@0.17.0/dist/paper-full.js (original header)",
+          "sha256": "35d693a85913f1a930e366a719c31a1a3d314d7b8db259682fa7d66d477f0b36"
+        }
+      ]
+    },
+    {
+      "name": "Acorn embedded in Paper.js",
+      "version": "0.5.0",
+      "component": true,
+      "selectedLicense": "MIT",
+      "source": "https://github.com/acornjs/acorn/tree/0.5.0",
+      "inclusion": [
+        {
+          "mode": "prebundled-component",
+          "via": {
+            "name": "paper",
+            "version": "0.17.0",
+            "packagePath": "node_modules/paper",
+            "integrity": "sha512-AWHQVUNScPN/swbCg0wwb2bTerMieraol76Fpn1s+7Zw7R6mMyI0QltMkj/XOS3Jv+9785q0p4eLsYggn63ZQw==",
+            "source": "https://registry.npmjs.org/paper/-/paper-0.17.0.tgz",
+            "entry": "dist/paper-full.js",
+            "sha256": "61e0afe43129a6952fe441a418f54bff13a841bb8383957e422c01685ee1c7fb"
+          },
+          "evidence": "Actual bundled parser sets exports.version=\"0.5.0\" and the Paper header separately identifies Acorn. There is no standalone installed/locked Acorn runtime package; parent Paper integrity binds embedded bytes."
+        }
+      ],
+      "notices": [
+        {
+          "name": "Notices/score/embedded/acorn-0.5.0-LICENSE.original.txt",
+          "source": "https://raw.githubusercontent.com/acornjs/acorn/0.5.0/LICENSE",
+          "sha256": "ac8c2d7724613151f5874fb48365c6a29ad43e8f8efa12413499625955b6c8c5"
+        },
+        {
+          "name": "Notices/score/embedded/paper-0.17.0-header.original.txt",
+          "source": "npm:paper@0.17.0/dist/paper-full.js (original header)",
+          "sha256": "35d693a85913f1a930e366a719c31a1a3d314d7b8db259682fa7d66d477f0b36"
+        }
+      ]
+    },
+    {
+      "supplemental": "font-native-notices.txt",
+      "sha256": "edf9d7a986daddaab3e01bdaa82a22165d0a2cc332159d19f4d38bcf8ecd66e0"
+    },
+    {
+      "supplemental": "rust-toolchain-notices.txt",
+      "sha256": "ca1b3159714dbfe8bb42bac84304cb08f3392650c37eb1bccc9877c37f406ec1"
+    },
+    {
+      "supplemental": "woff2-notices.txt",
+      "sha256": "97a80441e6f15c93f8c8fbd02c93544d745b5f8637715eb17d1ba21533bfe67b"
+    }
+  ],
+  "prebundledAudits": [
+    {
+      "name": "paper",
+      "version": "0.17.0",
+      "packagePath": "node_modules/paper",
+      "integrity": "sha512-AWHQVUNScPN/swbCg0wwb2bTerMieraol76Fpn1s+7Zw7R6mMyI0QltMkj/XOS3Jv+9785q0p4eLsYggn63ZQw==",
+      "source": "https://registry.npmjs.org/paper/-/paper-0.17.0.tgz",
+      "entry": "dist/paper-full.js",
+      "sha256": "61e0afe43129a6952fe441a418f54bff13a841bb8383957e422c01685ee1c7fb",
+      "excluded": [
+        {
+          "name": "canvas/jsdom/source-map-support",
+          "reason": "Paper package browser mapping disables these Node-only paths."
+        }
+      ],
+      "runtimeDependencies": []
+    }
+  ]
+}

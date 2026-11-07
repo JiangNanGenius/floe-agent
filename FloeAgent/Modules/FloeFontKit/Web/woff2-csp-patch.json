@@ -1,0 +1,32 @@
+{
+  "package": "fonteditor-core",
+  "version": "2.6.3",
+  "sourceFile": "woff2/woff2.js",
+  "license": "MIT (original upstream text retained)",
+  "rawSHA256": "405d77a48e3670c772f78fd8e42b64bea0d3df5744b998bad462cd83d69fe41d",
+  "patchedSHA256": "c05e9e7be700c38cd5ea5ab12634be935220647f7814943927e35ea725071bfb",
+  "rawByteCount": 93232,
+  "patchedByteCount": 92842,
+  "functions": [
+    {
+      "name": "createNamedFunction",
+      "rawByteOffset": 27651,
+      "rawFunctionSHA256": "a95503dfa8465a8517c1b5d99e003f0b381cc7055e723205c0c7bd250cb99a6c",
+      "patchedFunctionSHA256": "e151b0e0d8a43f50338142de3546f452f580eaeeca1ba4a25e3f1beef8f7b5cc"
+    },
+    {
+      "name": "embind__requireFunction.makeDynCaller",
+      "rawByteOffset": 43828,
+      "rawFunctionSHA256": "2073f965b6bd96bf9bf6505fe612643e9615f22e3ff6d4b386aa6775244545e6",
+      "patchedFunctionSHA256": "485cf50feb8b73d6cbf24f23d190b539732cf1ded02e2e03b487cc61cfe07fee"
+    },
+    {
+      "name": "craftInvokerFunction",
+      "rawByteOffset": 49836,
+      "rawFunctionSHA256": "c3b5cdb7cca16a1c5e64153b4c4a1fe191754afcb67e3821dbeb82992761732f",
+      "patchedFunctionSHA256": "681343ff71928c8b23274a9965654a7416785e1176ae5fc12368329418edd25b"
+    }
+  ],
+  "wasmSHA256": "afda7e08349046612a019713c8f3baae52ee9d064c712919af020cd2634dddd6",
+  "wasmChanged": false
+}

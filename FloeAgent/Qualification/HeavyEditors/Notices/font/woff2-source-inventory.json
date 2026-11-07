@@ -1,0 +1,85 @@
+{
+  "npmPackage": {
+    "name": "fonteditor-core",
+    "version": "2.6.3",
+    "resolved": "https://registry.npmjs.org/fonteditor-core/-/fonteditor-core-2.6.3.tgz",
+    "integrity": "sha512-YUryIKjkenjZ41E7JvM3V+02Ak4mTHDDTwBWgs9KBzypzHqLZHuua1UDRevZNTKawmnq1dbBAa70Jddl2+F4FQ==",
+    "archiveSha256": "7010216867f2f8a0ebc6d9d76cc136beeb2c1d2e6ffe3c5c8a703a933b56b0e5",
+    "integrityVerified": true,
+    "wasmArchivePath": "package/woff2/woff2.wasm",
+    "wasmSha256": "afda7e08349046612a019713c8f3baae52ee9d064c712919af020cd2634dddd6",
+    "wasmByteCount": 727190,
+    "bundledWasmMatchesNpmPayload": true,
+    "loaderArchivePath": "package/woff2/index.js",
+    "loaderSha256": "429e07516393e2c738b8c02548d109433a17fbd1456298b0b6aa951c20ee0a15",
+    "loaderSourceReference": "https://github.com/alimilhim/woff2-wasm",
+    "packageLicenseHandledBy": "Shared npm notice collector; does not replace supplemental wasm notices"
+  },
+  "provenanceBoundary": "License reference commits and submodules were read directly. No source-to-npm-wasm build provenance or bit-for-bit source rebuild is asserted.",
+  "submoduleEvidence": [
+    {
+      "repository": "https://github.com/39ali/woff2-wasm",
+      "referenceCommit": "78c679a73d6cb40056896842121297948aaec8b8",
+      "submodulePath": "woff2",
+      "submoduleCommit": "a0d0ed7da27b708c0a4e96ad7a998bddc933c06e",
+      "treeEvidence": "https://api.github.com/repos/39ali/woff2-wasm/git/trees/78c679a73d6cb40056896842121297948aaec8b8",
+      "gitmodulesSource": "https://raw.githubusercontent.com/39ali/woff2-wasm/78c679a73d6cb40056896842121297948aaec8b8/.gitmodules",
+      "gitmodulesSha256": "802d79142708388f7965af4f93fe6341804b577b7a811cab1d9c5425656fe169"
+    },
+    {
+      "repository": "https://github.com/google/woff2",
+      "referenceCommit": "a0d0ed7da27b708c0a4e96ad7a998bddc933c06e",
+      "submodulePath": "brotli",
+      "submoduleCommit": "533843e3546cd24c8344eaa899c6b0b681c8d222",
+      "treeEvidence": "https://api.github.com/repos/google/woff2/git/trees/a0d0ed7da27b708c0a4e96ad7a998bddc933c06e",
+      "gitmodulesSource": "https://raw.githubusercontent.com/google/woff2/a0d0ed7da27b708c0a4e96ad7a998bddc933c06e/.gitmodules",
+      "gitmodulesSha256": "da34e1a4706286e3723ffcd21b81520263b48406f83a6d079f87f9441f133488"
+    }
+  ],
+  "licenseDocuments": [
+    {
+      "component": "woff2-wasm",
+      "referenceCommit": "78c679a73d6cb40056896842121297948aaec8b8",
+      "repository": "https://github.com/39ali/woff2-wasm",
+      "source": "https://raw.githubusercontent.com/39ali/woff2-wasm/78c679a73d6cb40056896842121297948aaec8b8/LICENSE",
+      "originalFile": "LICENSE",
+      "savedFile": "originals/woff2/woff2-wasm/LICENSE",
+      "sha256": "f721b0cdc2ff82937d8c291141534487ed22ee1cf579c4699adceb4e93b92989",
+      "byteCount": 1067,
+      "license": "MIT",
+      "copyright": "Copyright (c) 2019 Ali Milhim",
+      "role": "woff2-reference-source-license"
+    },
+    {
+      "component": "google-woff2",
+      "referenceCommit": "a0d0ed7da27b708c0a4e96ad7a998bddc933c06e",
+      "repository": "https://github.com/google/woff2",
+      "source": "https://raw.githubusercontent.com/google/woff2/a0d0ed7da27b708c0a4e96ad7a998bddc933c06e/LICENSE",
+      "originalFile": "LICENSE",
+      "savedFile": "originals/woff2/google-woff2/LICENSE",
+      "sha256": "d42a3e363d99da22b860ab760faa37dfa9781d74c9f3ed634d05109081616513",
+      "byteCount": 1071,
+      "license": "MIT",
+      "copyright": "Copyright (c) 2013-2017 by the WOFF2 Authors.",
+      "role": "woff2-reference-source-license"
+    },
+    {
+      "component": "google-brotli",
+      "referenceCommit": "533843e3546cd24c8344eaa899c6b0b681c8d222",
+      "repository": "https://github.com/google/brotli",
+      "source": "https://raw.githubusercontent.com/google/brotli/533843e3546cd24c8344eaa899c6b0b681c8d222/LICENSE",
+      "originalFile": "LICENSE",
+      "savedFile": "originals/woff2/google-brotli/LICENSE",
+      "sha256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94",
+      "byteCount": 1084,
+      "license": "MIT",
+      "copyright": "Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.",
+      "role": "woff2-reference-source-license"
+    }
+  ],
+  "aggregate": {
+    "file": "woff2-notices.txt",
+    "sha256": "97a80441e6f15c93f8c8fbd02c93544d745b5f8637715eb17d1ba21533bfe67b",
+    "byteCount": 4785
+  }
+}

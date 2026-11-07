@@ -1,0 +1,45 @@
+{
+  "name": "@turf/jsts",
+  "description": "A treeshaken subset of JSTS functions for use within",
+  "version": "2.7.2",
+  "main": "dist/jsts.min.js",
+  "files": [
+    "dist/"
+  ],
+  "author": "Björn Harrtell <bjorn@wololo.org>",
+  "contributors": [
+    "Denis Carriere <@DenisCarriere>",
+    "James Milner",
+    "James Beard <james@smallsaucepan.com>"
+  ],
+  "keywords": [
+    "Turf",
+    "JSTS",
+    "JavaScript",
+    "JTS",
+    "Java",
+    "Topology",
+    "Geometry"
+  ],
+  "license": "(EDL-1.0 OR EPL-1.0)",
+  "dependencies": {
+    "jsts": "2.7.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/turfjs/turf-jsts.git"
+  },
+  "scripts": {
+    "build": "rollup -c rollup.config.mjs",
+    "test": "node test/test.js | tap-nirvana"
+  },
+  "devDependencies": {
+    "@babel/preset-env": "^7.26.0",
+    "@rollup/plugin-babel": "^6.0.4",
+    "@rollup/plugin-node-resolve": "^15.3.0",
+    "@rollup/plugin-terser": "^0.4.4",
+    "rollup": "^4.26.0",
+    "tap-nirvana": "^1.1.0",
+    "tape": "^5.9.0"
+  }
+}

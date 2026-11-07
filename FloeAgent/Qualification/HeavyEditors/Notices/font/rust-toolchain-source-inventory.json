@@ -1,0 +1,401 @@
+{
+  "rustc": {
+    "release": "1.98.1",
+    "commit-hash": "48a229ceaefd4985c50990b14116b6d856af0985",
+    "commit-date": "2026-09-01",
+    "host": "aarch64-apple-darwin",
+    "LLVM version": "22.1.8"
+  },
+  "coreLibrarySelectedAlternative": "Apache-2.0 except for component-specific original terms retained in COPYRIGHT-library.html",
+  "archiveEvidence": {
+    "macos-arm64": {
+      "target": "aarch64-apple-darwin",
+      "matchingSysrootLibraries": [
+        {
+          "sysrootLibrary": "libaddr2line-79bed969f69e54c6.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "addr2line-79bed969f69e54c6.addr2line.377ec3c252d659d6-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libadler2-0bb5203eaf32e446.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "adler2-0bb5203eaf32e446.adler2.daaca33e6f7c76cf-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "liballoc-3daa19367295a846.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "alloc-3daa19367295a846.alloc.cc4db322bb1ac55d-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libcfg_if-17d31a5f5c373bf9.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "cfg_if-17d31a5f5c373bf9.cfg_if.dbfbe89c7d0b23cc-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libcompiler_builtins-51dc6f60309b0c2f.rlib",
+          "matchedObjectCount": 229,
+          "matchedObjectExample": "compiler_builtins-51dc6f60309b0c2f.compiler_builtins.1a788e71d34f9c7-cgu.000.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libcore-4a1205c3dacb37e1.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "core-4a1205c3dacb37e1.core.663bb9e1522ba5ef-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libgimli-757741385d9265ec.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "gimli-757741385d9265ec.gimli.152a7a7567452a81-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libhashbrown-e7a46a0b87cff2e7.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "hashbrown-e7a46a0b87cff2e7.hashbrown.25ec24948a800476-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "liblibc-dd3054cc665f826f.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "libc-dd3054cc665f826f.libc.a63ca91d55ebacfe-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libmemchr-80762f8d0fa6ca39.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "memchr-80762f8d0fa6ca39.memchr.664f35efd0fdddac-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libminiz_oxide-816d0fb2e9cd4f45.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "miniz_oxide-816d0fb2e9cd4f45.miniz_oxide.d6d984f9e7a3bfc7-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libobject-b14cfe590d6e1067.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "object-b14cfe590d6e1067.object.558aa43f10e364e3-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libpanic_unwind-869827fb9cf0d68e.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "panic_unwind-869827fb9cf0d68e.panic_unwind.d87e01602af865c0-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "librustc_demangle-8b283a422a84bedc.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "rustc_demangle-8b283a422a84bedc.rustc_demangle.41ecd7b68f771344-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "librustc_std_workspace_alloc-21146b8e88a1242e.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "rustc_std_workspace_alloc-21146b8e88a1242e.rustc_std_workspace_alloc.61344c8c87909d26-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "librustc_std_workspace_core-c8f303c496e8a8f4.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "rustc_std_workspace_core-c8f303c496e8a8f4.rustc_std_workspace_core.15d409aa3feeb8c0-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libstd-3f21d70fba8f3088.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "std-3f21d70fba8f3088.std.5d97c59e5e5fafcc-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libstd_detect-fdc68db09217c677.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "std_detect-fdc68db09217c677.std_detect.9a5eb0062d3017ee-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libunwind-58e461b855dc6118.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "unwind-58e461b855dc6118.unwind.b5fd6846158fc8ad-cgu.0.rcgu.o"
+        }
+      ]
+    },
+    "ios-arm64": {
+      "target": "aarch64-apple-ios",
+      "matchingSysrootLibraries": [
+        {
+          "sysrootLibrary": "libaddr2line-f8aeb75ab647c186.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "addr2line-f8aeb75ab647c186.addr2line.5460a23f460b3f75-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libadler2-1eed006d37013bfe.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "adler2-1eed006d37013bfe.adler2.2cc7b499dab890e4-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "liballoc-9b236de5ba37b474.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "alloc-9b236de5ba37b474.alloc.193d611548314fd5-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libcfg_if-0121a51ae9fa3b7e.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "cfg_if-0121a51ae9fa3b7e.cfg_if.2ca87e6950860049-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libcompiler_builtins-5681b3e446a40f9c.rlib",
+          "matchedObjectCount": 229,
+          "matchedObjectExample": "compiler_builtins-5681b3e446a40f9c.compiler_builtins.8007bb7be2a4f611-cgu.000.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libcore-403caf253face0cb.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "core-403caf253face0cb.core.e5c73cc5b199b755-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libgimli-1d8a5a401e4cd33f.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "gimli-1d8a5a401e4cd33f.gimli.ca715778bc908713-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libhashbrown-56d3ed4b0db3e1c6.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "hashbrown-56d3ed4b0db3e1c6.hashbrown.8f16c52ae385752f-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "liblibc-208963ca9efd2325.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "libc-208963ca9efd2325.libc.e23e36e442119aa2-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libmemchr-21bc1bda78823500.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "memchr-21bc1bda78823500.memchr.807fa285159c99d7-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libminiz_oxide-a2d6594d2d4e6ada.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "miniz_oxide-a2d6594d2d4e6ada.miniz_oxide.8a0f27414fd74541-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libobject-70d2eb86e7703624.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "object-70d2eb86e7703624.object.f54d9904a38916f2-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libpanic_unwind-d01c48c4ab1389dc.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "panic_unwind-d01c48c4ab1389dc.panic_unwind.f6aa32ad0c7b00ad-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "librustc_demangle-248dc7a7363af89d.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "rustc_demangle-248dc7a7363af89d.rustc_demangle.d71455f471fe55a8-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "librustc_std_workspace_alloc-29f4cbf5f1af351f.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "rustc_std_workspace_alloc-29f4cbf5f1af351f.rustc_std_workspace_alloc.84de450eda7d2fdf-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "librustc_std_workspace_core-d6b7bf7b8130480d.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "rustc_std_workspace_core-d6b7bf7b8130480d.rustc_std_workspace_core.731bb49474dba73e-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libstd-a6e7130a7711af76.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "std-a6e7130a7711af76.std.90acae4c2403c285-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libstd_detect-e1ad733e4dab5831.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "std_detect-e1ad733e4dab5831.std_detect.33157cd4e259504d-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libunwind-5e7afab0d1e8b7fc.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "unwind-5e7afab0d1e8b7fc.unwind.8585ad52c3d52175-cgu.0.rcgu.o"
+        }
+      ]
+    },
+    "ios-arm64-simulator": {
+      "target": "aarch64-apple-ios-sim",
+      "matchingSysrootLibraries": [
+        {
+          "sysrootLibrary": "libaddr2line-be1396782163a4e0.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "addr2line-be1396782163a4e0.addr2line.542e1970a25381c5-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libadler2-b9d7b9ad5e5dd7eb.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "adler2-b9d7b9ad5e5dd7eb.adler2.e9c61baa2fcce0b5-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "liballoc-a2e0b68a96a48f96.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "alloc-a2e0b68a96a48f96.alloc.a2b285b5ac368c60-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libcfg_if-d0465a2f7d657181.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "cfg_if-d0465a2f7d657181.cfg_if.66564ed32d70d580-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libcompiler_builtins-5ac55021494ba651.rlib",
+          "matchedObjectCount": 229,
+          "matchedObjectExample": "compiler_builtins-5ac55021494ba651.compiler_builtins.3c4cce1184378f9a-cgu.000.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libcore-34758c01bf3a4163.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "core-34758c01bf3a4163.core.d2267d77d071e2cb-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libgimli-54361db3b82e12eb.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "gimli-54361db3b82e12eb.gimli.afc0acab3a06dd1b-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libhashbrown-5a142b9f697d13a8.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "hashbrown-5a142b9f697d13a8.hashbrown.863d6847fc53ef1f-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "liblibc-b678323495ff69dd.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "libc-b678323495ff69dd.libc.fb681cc4fdb1abdb-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libmemchr-fe1bde768e4f0dd8.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "memchr-fe1bde768e4f0dd8.memchr.fe2c784a7c7e7c91-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libminiz_oxide-62a025655f57a953.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "miniz_oxide-62a025655f57a953.miniz_oxide.9d1fac1d494ee4ae-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libobject-fd0f569d467bbdd6.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "object-fd0f569d467bbdd6.object.7de496b215e235b6-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libpanic_unwind-bc3290df7897b819.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "panic_unwind-bc3290df7897b819.panic_unwind.cce94266a02baa4-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "librustc_demangle-1826459e2b93e4bc.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "rustc_demangle-1826459e2b93e4bc.rustc_demangle.5ec94fbb1f1d9a5f-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "librustc_std_workspace_alloc-69305d9b393444e4.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "rustc_std_workspace_alloc-69305d9b393444e4.rustc_std_workspace_alloc.5bee02045f9c23b3-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "librustc_std_workspace_core-74bab513c56396c3.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "rustc_std_workspace_core-74bab513c56396c3.rustc_std_workspace_core.917be845b7319a32-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libstd-a9253391bb68d5e2.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "std-a9253391bb68d5e2.std.43ece7f34ef0e7d2-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libstd_detect-2ab6758e6d63ff79.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "std_detect-2ab6758e6d63ff79.std_detect.b41791fdcc11cace-cgu.0.rcgu.o"
+        },
+        {
+          "sysrootLibrary": "libunwind-4cebf0fc84e5d10a.rlib",
+          "matchedObjectCount": 1,
+          "matchedObjectExample": "unwind-4cebf0fc84e5d10a.unwind.8c235bc43630d140-cgu.0.rcgu.o"
+        }
+      ]
+    }
+  },
+  "originalDocuments": [
+    {
+      "originalFile": "share/doc/rust/licenses/MIT.txt",
+      "savedFile": "originals/rust-toolchain/1.98.1/LICENSE-MIT",
+      "sha256": "b85dcd3e453d05982552c52b5fc9e0bdd6d23c6f8e844b984a88af32570b0cc0",
+      "byteCount": 1078,
+      "source": "Installed rustc 1.98.1 component documentation",
+      "upstreamCommit": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "role": "toolchain-original-license"
+    },
+    {
+      "originalFile": "share/doc/rust/licenses/Apache-2.0.txt",
+      "savedFile": "originals/rust-toolchain/1.98.1/LICENSE-APACHE",
+      "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+      "byteCount": 10280,
+      "source": "Installed rustc 1.98.1 component documentation",
+      "upstreamCommit": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "role": "toolchain-original-license"
+    },
+    {
+      "originalFile": "share/doc/rust/COPYRIGHT-library.html",
+      "savedFile": "originals/rust-toolchain/1.98.1/COPYRIGHT-library.html",
+      "sha256": "68129500b616d5838629e68f55ff3aed5e096dacf60ce9eb41bbe599a563afa6",
+      "byteCount": 1512520,
+      "source": "Installed rustc 1.98.1 component documentation",
+      "upstreamCommit": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "role": "standard-library-original-copyright"
+    },
+    {
+      "originalFile": "share/doc/rust/licenses/LLVM-exception.txt",
+      "savedFile": "originals/rust-toolchain/1.98.1/LLVM-exception.txt",
+      "sha256": "e34c58338bd89d43e709e226610d8f32b3e3c47f4ad9a99a8dc1d4ac7842488e",
+      "byteCount": 919,
+      "source": "Installed rustc 1.98.1 component documentation",
+      "upstreamCommit": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "role": "toolchain-original-license"
+    },
+    {
+      "originalFile": "share/doc/rust/licenses/BSD-2-Clause.txt",
+      "savedFile": "originals/rust-toolchain/1.98.1/BSD-2-Clause.txt",
+      "sha256": "f32fb3b417a194167cfad068223fc975ba96c5960513a10f66a3c28720aec1df",
+      "byteCount": 1267,
+      "source": "Installed rustc 1.98.1 component documentation",
+      "upstreamCommit": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "role": "toolchain-original-license"
+    },
+    {
+      "originalFile": "share/doc/rust/licenses/Unicode-3.0.txt",
+      "savedFile": "originals/rust-toolchain/1.98.1/Unicode-3.0.txt",
+      "sha256": "f5062c9a188d81dfe66b56db4182dcf9e4b17c0d9b0d311a8e20b3a1b075c443",
+      "byteCount": 1995,
+      "source": "Installed rustc 1.98.1 component documentation",
+      "upstreamCommit": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "role": "toolchain-original-license"
+    },
+    {
+      "originalFile": "share/doc/rust/licenses/NCSA.txt",
+      "savedFile": "originals/rust-toolchain/1.98.1/NCSA.txt",
+      "sha256": "39cb0234065c92b9e6cee3830cbb52b1aa289aa8fe9ba2e66730fec5cf05c630",
+      "byteCount": 1676,
+      "source": "Installed rustc 1.98.1 component documentation",
+      "upstreamCommit": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "role": "toolchain-original-license"
+    }
+  ],
+  "standardLibraryDeclaredLicenseExpressions": [
+    "(MIT OR Apache-2.0) AND Unicode-3.0",
+    "Apache-2.0 OR BSL-1.0",
+    "Apache-2.0 OR MIT",
+    "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+    "BSD-2-Clause",
+    "BSD-2-Clause AND (Apache-2.0 OR MIT)",
+    "BSD-2-Clause OR Apache-2.0 OR MIT",
+    "MIT",
+    "MIT OR Apache-2.0",
+    "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
+    "MIT/Apache-2.0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense OR MIT",
+    "Unlicense/MIT",
+    "Zlib"
+  ],
+  "scopeBoundary": "Exact sysroot rlib identities observed in the raw static archives are listed. The complete toolchain-provided standard-library attribution contains additional possible platform/build components; this inventory does not independently determine every linked source-level subcomponent. The full original notices and exceptions are retained rather than declaring all of them MIT.",
+  "aggregate": {
+    "file": "rust-toolchain-notices.txt",
+    "sha256": "ca1b3159714dbfe8bb42bac84304cb08f3392650c37eb1bccc9877c37f406ec1",
+    "byteCount": 1532391
+  }
+}

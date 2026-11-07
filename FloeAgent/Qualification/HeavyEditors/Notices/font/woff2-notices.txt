@@ -1,0 +1,93 @@
+WOFF2 WASM SUPPLEMENTAL THIRD-PARTY NOTICES
+
+The delivered wasm bytes come from the integrity-pinned fonteditor-core 2.6.3 npm archive.
+fonteditor-core MIT terms are retained by the shared npm notice collector.
+The reference source commits below establish original license texts and their submodule chain.
+They are not a claim that the npm wasm was built from those exact commits or reproduced locally.
+
+
+==============================================================================
+woff2-wasm
+Reference commit: 78c679a73d6cb40056896842121297948aaec8b8
+Source: https://raw.githubusercontent.com/39ali/woff2-wasm/78c679a73d6cb40056896842121297948aaec8b8/LICENSE
+SHA-256: f721b0cdc2ff82937d8c291141534487ed22ee1cf579c4699adceb4e93b92989
+--- BEGIN ORIGINAL TEXT ---
+MIT License
+
+Copyright (c) 2019 Ali Milhim
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--- END ORIGINAL TEXT ---
+
+==============================================================================
+google-woff2
+Reference commit: a0d0ed7da27b708c0a4e96ad7a998bddc933c06e
+Source: https://raw.githubusercontent.com/google/woff2/a0d0ed7da27b708c0a4e96ad7a998bddc933c06e/LICENSE
+SHA-256: d42a3e363d99da22b860ab760faa37dfa9781d74c9f3ed634d05109081616513
+--- BEGIN ORIGINAL TEXT ---
+Copyright (c) 2013-2017 by the WOFF2 Authors.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+--- END ORIGINAL TEXT ---
+
+==============================================================================
+google-brotli
+Reference commit: 533843e3546cd24c8344eaa899c6b0b681c8d222
+Source: https://raw.githubusercontent.com/google/brotli/533843e3546cd24c8344eaa899c6b0b681c8d222/LICENSE
+SHA-256: 3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94
+--- BEGIN ORIGINAL TEXT ---
+Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+--- END ORIGINAL TEXT ---

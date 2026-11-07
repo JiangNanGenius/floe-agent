@@ -1,0 +1,6 @@
+# Preserve the exact bundled and original upstream license bytes.
+Sources/FloeGISKit/Resources/Web/THIRD-PARTY-NOTICES.txt -whitespace
+THIRD_PARTY/** -whitespace
+Sources/FloeGISKit/Resources/Web/ThirdParty/** -whitespace
+# Generated bundles retain upstream source formatting; edit Web/ or WebBuild/.
+Sources/FloeGISKit/Resources/Web/*.js linguist-generated=true -whitespace

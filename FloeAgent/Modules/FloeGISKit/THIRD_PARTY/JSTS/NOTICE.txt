@@ -1,0 +1,10 @@
+FloeGISKit JSTS license selection
+
+@turf/jsts 2.7.2 and its jsts 2.7.1 dependency are offered under
+(EDL-1.0 OR EPL-1.0). Floe selects the EDL-1.0 branch for these components.
+The unmodified upstream LICENSE_EDLv1.txt and license.txt are retained here,
+with the installed package declarations and README notices. Their hashes and
+exact public source locations are in SOURCES.json.
+
+These components remain under their own notices and EDL terms; the Floe
+MPL-2.0 and Turf root MIT notices do not replace this notice.

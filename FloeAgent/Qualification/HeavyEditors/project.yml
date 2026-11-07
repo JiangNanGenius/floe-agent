@@ -1,0 +1,65 @@
+name: FloeHeavyEditorsQualification
+options:
+  xcodeVersion: "27.2"
+  deploymentTarget:
+    iOS: "26.0"
+    macOS: "15.0"
+packages:
+  FloeHeavyEditorSupport:
+    path: ../../Modules/FloeHeavyEditorSupport
+  FloeGISKit:
+    path: ../../Modules/FloeGISKit
+  FloeScoreKit:
+    path: ../../Modules/FloeScoreKit
+  FloeFontKit:
+    path: ../../Modules/FloeFontKit
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    ARCHS: arm64
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "0.1.0"
+targetTemplates:
+  EditorHost:
+    type: application
+    sources: [Host]
+    dependencies:
+      - package: FloeHeavyEditorSupport
+      - package: FloeGISKit
+      - package: FloeScoreKit
+      - package: FloeFontKit
+    settings:
+      base:
+        INFOPLIST_KEY_CFBundleDisplayName: Floe Editors QA
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+targets:
+  FloeHeavyEditorsQA:
+    templates: [EditorHost]
+    platform: macOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floeagent.qualification.heavyeditors.mac
+        ENABLE_APP_SANDBOX: NO
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+  FloeHeavyEditorsPadQA:
+    templates: [EditorHost]
+    platform: iOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floeagent.qualification.heavyeditors.pad
+        TARGETED_DEVICE_FAMILY: "1,2"
+        IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+schemes:
+  FloeHeavyEditorsQA:
+    build:
+      targets:
+        FloeHeavyEditorsQA: all
+  FloeHeavyEditorsPadQA:
+    build:
+      targets:
+        FloeHeavyEditorsPadQA: all

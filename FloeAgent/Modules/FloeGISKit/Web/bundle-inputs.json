@@ -1,0 +1,3170 @@
+[
+  {
+    "source": "npm/ol/ol.css",
+    "bytes": 6343
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/typeof.js",
+    "bytes": 366
+  },
+  {
+    "source": "npm/fflate/esm/browser.js",
+    "bytes": 90922
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/arrayWithHoles.js",
+    "bytes": 104
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/iterableToArrayLimit.js",
+    "bytes": 717
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/arrayLikeToArray.js",
+    "bytes": 195
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/unsupportedIterableToArray.js",
+    "bytes": 497
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/nonIterableRest.js",
+    "bytes": 235
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/slicedToArray.js",
+    "bytes": 424
+  },
+  {
+    "source": "npm/iobuffer/lib-esm/text.js",
+    "bytes": 265
+  },
+  {
+    "source": "npm/iobuffer/lib-esm/IOBuffer.js",
+    "bytes": 18995
+  },
+  {
+    "source": "npm/pako/dist/pako.esm.mjs",
+    "bytes": 229698
+  },
+  {
+    "source": "npm/fast-png/lib-esm/helpers/crc.js",
+    "bytes": 1210
+  },
+  {
+    "source": "npm/fast-png/lib-esm/helpers/unfilter.js",
+    "bytes": 2641
+  },
+  {
+    "source": "npm/fast-png/lib-esm/helpers/applyUnfilter.js",
+    "bytes": 1323
+  },
+  {
+    "source": "npm/fast-png/lib-esm/helpers/decodeInterlaceAdam7.js",
+    "bytes": 3109
+  },
+  {
+    "source": "npm/fast-png/lib-esm/helpers/decodeInterlaceNull.js",
+    "bytes": 2177
+  },
+  {
+    "source": "npm/fast-png/lib-esm/helpers/signature.js",
+    "bytes": 672
+  },
+  {
+    "source": "npm/fast-png/lib-esm/helpers/text.js",
+    "bytes": 1634
+  },
+  {
+    "source": "npm/fast-png/lib-esm/internalTypes.js",
+    "bytes": 566
+  },
+  {
+    "source": "npm/fast-png/lib-esm/PngDecoder.js",
+    "bytes": 18992
+  },
+  {
+    "source": "npm/fast-png/lib-esm/PngEncoder.js",
+    "bytes": 8695
+  },
+  {
+    "source": "npm/fast-png/lib-esm/types.js",
+    "bytes": 408
+  },
+  {
+    "source": "npm/fast-png/lib-esm/convertIndexedToRgb.js",
+    "bytes": 2117
+  },
+  {
+    "source": "npm/fast-png/lib-esm/index.js",
+    "bytes": 674
+  },
+  {
+    "source": "npm/html2canvas/dist/html2canvas.js",
+    "bytes": 441542
+  },
+  {
+    "source": "npm/dompurify/dist/purify.es.mjs",
+    "bytes": 85820
+  },
+  {
+    "source": "npm/core-js/internals/global-this.js",
+    "bytes": 649
+  },
+  {
+    "source": "npm/core-js/internals/fails.js",
+    "bytes": 122
+  },
+  {
+    "source": "npm/core-js/internals/descriptors.js",
+    "bytes": 323
+  },
+  {
+    "source": "npm/core-js/internals/function-bind-native.js",
+    "bytes": 349
+  },
+  {
+    "source": "npm/core-js/internals/function-call.js",
+    "bytes": 285
+  },
+  {
+    "source": "npm/core-js/internals/object-property-is-enumerable.js",
+    "bytes": 642
+  },
+  {
+    "source": "npm/core-js/internals/create-property-descriptor.js",
+    "bytes": 187
+  },
+  {
+    "source": "npm/core-js/internals/function-uncurry-this.js",
+    "bytes": 445
+  },
+  {
+    "source": "npm/core-js/internals/classof-raw.js",
+    "bytes": 242
+  },
+  {
+    "source": "npm/core-js/internals/indexed-object.js",
+    "bytes": 624
+  },
+  {
+    "source": "npm/core-js/internals/is-null-or-undefined.js",
+    "bytes": 223
+  },
+  {
+    "source": "npm/core-js/internals/require-object-coercible.js",
+    "bytes": 346
+  },
+  {
+    "source": "npm/core-js/internals/to-indexed-object.js",
+    "bytes": 299
+  },
+  {
+    "source": "npm/core-js/internals/is-callable.js",
+    "bytes": 533
+  },
+  {
+    "source": "npm/core-js/internals/is-object.js",
+    "bytes": 168
+  },
+  {
+    "source": "npm/core-js/internals/get-built-in.js",
+    "bytes": 393
+  },
+  {
+    "source": "npm/core-js/internals/object-is-prototype-of.js",
+    "bytes": 128
+  },
+  {
+    "source": "npm/core-js/internals/environment-user-agent.js",
+    "bytes": 211
+  },
+  {
+    "source": "npm/core-js/internals/environment-v8-version.js",
+    "bytes": 886
+  },
+  {
+    "source": "npm/core-js/internals/symbol-constructor-detection.js",
+    "bytes": 957
+  },
+  {
+    "source": "npm/core-js/internals/use-symbol-as-uid.js",
+    "bytes": 237
+  },
+  {
+    "source": "npm/core-js/internals/is-symbol.js",
+    "bytes": 507
+  },
+  {
+    "source": "npm/core-js/internals/try-to-string.js",
+    "bytes": 162
+  },
+  {
+    "source": "npm/core-js/internals/a-callable.js",
+    "bytes": 354
+  },
+  {
+    "source": "npm/core-js/internals/get-method.js",
+    "bytes": 334
+  },
+  {
+    "source": "npm/core-js/internals/ordinary-to-primitive.js",
+    "bytes": 723
+  },
+  {
+    "source": "npm/core-js/internals/is-pure.js",
+    "bytes": 38
+  },
+  {
+    "source": "npm/core-js/internals/define-global-property.js",
+    "bytes": 388
+  },
+  {
+    "source": "npm/core-js/internals/shared-store.js",
+    "bytes": 666
+  },
+  {
+    "source": "npm/core-js/internals/shared.js",
+    "bytes": 264
+  },
+  {
+    "source": "npm/core-js/internals/to-object.js",
+    "bytes": 285
+  },
+  {
+    "source": "npm/core-js/internals/has-own-property.js",
+    "bytes": 434
+  },
+  {
+    "source": "npm/core-js/internals/uid.js",
+    "bytes": 292
+  },
+  {
+    "source": "npm/core-js/internals/well-known-symbol.js",
+    "bytes": 804
+  },
+  {
+    "source": "npm/core-js/internals/to-primitive.js",
+    "bytes": 1019
+  },
+  {
+    "source": "npm/core-js/internals/to-property-key.js",
+    "bytes": 333
+  },
+  {
+    "source": "npm/core-js/internals/document-create-element.js",
+    "bytes": 367
+  },
+  {
+    "source": "npm/core-js/internals/ie8-dom-define.js",
+    "bytes": 477
+  },
+  {
+    "source": "npm/core-js/internals/object-get-own-property-descriptor.js",
+    "bytes": 1138
+  },
+  {
+    "source": "npm/core-js/internals/v8-prototype-define-bug.js",
+    "bytes": 459
+  },
+  {
+    "source": "npm/core-js/internals/an-object.js",
+    "bytes": 304
+  },
+  {
+    "source": "npm/core-js/internals/object-define-property.js",
+    "bytes": 1895
+  },
+  {
+    "source": "npm/core-js/internals/create-non-enumerable-property.js",
+    "bytes": 452
+  },
+  {
+    "source": "npm/core-js/internals/function-name.js",
+    "bytes": 723
+  },
+  {
+    "source": "npm/core-js/internals/inspect-source.js",
+    "bytes": 479
+  },
+  {
+    "source": "npm/core-js/internals/weak-map-basic-detection.js",
+    "bytes": 235
+  },
+  {
+    "source": "npm/core-js/internals/shared-key.js",
+    "bytes": 210
+  },
+  {
+    "source": "npm/core-js/internals/hidden-keys.js",
+    "bytes": 35
+  },
+  {
+    "source": "npm/core-js/internals/internal-state.js",
+    "bytes": 2106
+  },
+  {
+    "source": "npm/core-js/internals/make-built-in.js",
+    "bytes": 2610
+  },
+  {
+    "source": "npm/core-js/internals/define-built-in.js",
+    "bytes": 979
+  },
+  {
+    "source": "npm/core-js/internals/math-trunc.js",
+    "bytes": 284
+  },
+  {
+    "source": "npm/core-js/internals/to-integer-or-infinity.js",
+    "bytes": 350
+  },
+  {
+    "source": "npm/core-js/internals/to-absolute-index.js",
+    "bytes": 485
+  },
+  {
+    "source": "npm/core-js/internals/to-length.js",
+    "bytes": 355
+  },
+  {
+    "source": "npm/core-js/internals/length-of-array-like.js",
+    "bytes": 225
+  },
+  {
+    "source": "npm/core-js/internals/array-includes.js",
+    "bytes": 1382
+  },
+  {
+    "source": "npm/core-js/internals/object-keys-internal.js",
+    "bytes": 722
+  },
+  {
+    "source": "npm/core-js/internals/enum-bug-keys.js",
+    "bytes": 192
+  },
+  {
+    "source": "npm/core-js/internals/object-get-own-property-names.js",
+    "bytes": 494
+  },
+  {
+    "source": "npm/core-js/internals/object-get-own-property-symbols.js",
+    "bytes": 127
+  },
+  {
+    "source": "npm/core-js/internals/own-keys.js",
+    "bytes": 734
+  },
+  {
+    "source": "npm/core-js/internals/copy-constructor-properties.js",
+    "bytes": 719
+  },
+  {
+    "source": "npm/core-js/internals/is-forced.js",
+    "bytes": 634
+  },
+  {
+    "source": "npm/core-js/internals/export.js",
+    "bytes": 2718
+  },
+  {
+    "source": "npm/core-js/internals/environment.js",
+    "bytes": 877
+  },
+  {
+    "source": "npm/core-js/internals/environment-is-node.js",
+    "bytes": 111
+  },
+  {
+    "source": "npm/core-js/internals/path.js",
+    "bytes": 98
+  },
+  {
+    "source": "npm/core-js/internals/function-uncurry-this-accessor.js",
+    "bytes": 394
+  },
+  {
+    "source": "npm/core-js/internals/is-possible-prototype.js",
+    "bytes": 157
+  },
+  {
+    "source": "npm/core-js/internals/a-possible-prototype.js",
+    "bytes": 313
+  },
+  {
+    "source": "npm/core-js/internals/object-set-prototype-of.js",
+    "bytes": 1126
+  },
+  {
+    "source": "npm/core-js/internals/set-to-string-tag.js",
+    "bytes": 497
+  },
+  {
+    "source": "npm/core-js/internals/define-built-in-accessor.js",
+    "bytes": 402
+  },
+  {
+    "source": "npm/core-js/internals/set-species.js",
+    "bytes": 601
+  },
+  {
+    "source": "npm/core-js/internals/an-instance.js",
+    "bytes": 254
+  },
+  {
+    "source": "npm/core-js/internals/to-string-tag-support.js",
+    "bytes": 306
+  },
+  {
+    "source": "npm/core-js/internals/classof.js",
+    "bytes": 1094
+  },
+  {
+    "source": "npm/core-js/internals/is-constructor.js",
+    "bytes": 1796
+  },
+  {
+    "source": "npm/core-js/internals/a-constructor.js",
+    "bytes": 369
+  },
+  {
+    "source": "npm/core-js/internals/species-constructor.js",
+    "bytes": 606
+  },
+  {
+    "source": "npm/core-js/internals/function-apply.js",
+    "bytes": 432
+  },
+  {
+    "source": "npm/core-js/internals/function-uncurry-this-clause.js",
+    "bytes": 359
+  },
+  {
+    "source": "npm/core-js/internals/function-bind-context.js",
+    "bytes": 478
+  },
+  {
+    "source": "npm/core-js/internals/html.js",
+    "bytes": 130
+  },
+  {
+    "source": "npm/core-js/internals/array-slice.js",
+    "bytes": 120
+  },
+  {
+    "source": "npm/core-js/internals/validate-arguments-length.js",
+    "bytes": 181
+  },
+  {
+    "source": "npm/core-js/internals/environment-is-ios.js",
+    "bytes": 167
+  },
+  {
+    "source": "npm/core-js/internals/task.js",
+    "bytes": 3515
+  },
+  {
+    "source": "npm/core-js/internals/safe-get-built-in.js",
+    "bytes": 487
+  },
+  {
+    "source": "npm/core-js/internals/queue.js",
+    "bytes": 500
+  },
+  {
+    "source": "npm/core-js/internals/environment-is-ios-pebble.js",
+    "bytes": 165
+  },
+  {
+    "source": "npm/core-js/internals/environment-is-webos-webkit.js",
+    "bytes": 134
+  },
+  {
+    "source": "npm/core-js/internals/microtask.js",
+    "bytes": 2671
+  },
+  {
+    "source": "npm/core-js/internals/host-report-errors.js",
+    "bytes": 214
+  },
+  {
+    "source": "npm/core-js/internals/perform.js",
+    "bytes": 170
+  },
+  {
+    "source": "npm/core-js/internals/promise-native-constructor.js",
+    "bytes": 106
+  },
+  {
+    "source": "npm/core-js/internals/promise-constructor-detection.js",
+    "bytes": 2599
+  },
+  {
+    "source": "npm/core-js/internals/new-promise-capability.js",
+    "bytes": 618
+  },
+  {
+    "source": "npm/core-js/modules/es.promise.constructor.js",
+    "bytes": 9963
+  },
+  {
+    "source": "npm/core-js/internals/iterators.js",
+    "bytes": 73
+  },
+  {
+    "source": "npm/core-js/internals/is-array-iterator-method.js",
+    "bytes": 375
+  },
+  {
+    "source": "npm/core-js/internals/get-iterator-method-internal.js",
+    "bytes": 545
+  },
+  {
+    "source": "npm/core-js/internals/get-iterator-internal.js",
+    "bytes": 632
+  },
+  {
+    "source": "npm/core-js/internals/iterator-close.js",
+    "bytes": 657
+  },
+  {
+    "source": "npm/core-js/internals/iterate.js",
+    "bytes": 2764
+  },
+  {
+    "source": "npm/core-js/internals/check-correctness-of-iteration.js",
+    "bytes": 1251
+  },
+  {
+    "source": "npm/core-js/internals/promise-statics-incorrect-iteration.js",
+    "bytes": 477
+  },
+  {
+    "source": "npm/core-js/modules/es.promise.all.js",
+    "bytes": 1426
+  },
+  {
+    "source": "npm/core-js/modules/es.promise.catch.js",
+    "bytes": 1171
+  },
+  {
+    "source": "npm/core-js/modules/es.promise.race.js",
+    "bytes": 1042
+  },
+  {
+    "source": "npm/core-js/modules/es.promise.reject.js",
+    "bytes": 583
+  },
+  {
+    "source": "npm/core-js/internals/promise-resolve.js",
+    "bytes": 441
+  },
+  {
+    "source": "npm/core-js/modules/es.promise.resolve.js",
+    "bytes": 838
+  },
+  {
+    "source": "npm/core-js/modules/es.promise.js",
+    "bytes": 346
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/asyncToGenerator.js",
+    "bytes": 628
+  },
+  {
+    "source": "npm/core-js/internals/to-string.js",
+    "bytes": 259
+  },
+  {
+    "source": "npm/core-js/internals/regexp-flags.js",
+    "bytes": 562
+  },
+  {
+    "source": "npm/core-js/internals/regexp-sticky-helpers.js",
+    "bytes": 861
+  },
+  {
+    "source": "npm/core-js/internals/object-keys.js",
+    "bytes": 364
+  },
+  {
+    "source": "npm/core-js/internals/object-define-properties.js",
+    "bytes": 925
+  },
+  {
+    "source": "npm/core-js/internals/object-create.js",
+    "bytes": 3137
+  },
+  {
+    "source": "npm/core-js/internals/regexp-unsupported-dot-all.js",
+    "bytes": 376
+  },
+  {
+    "source": "npm/core-js/internals/regexp-unsupported-ncg.js",
+    "bytes": 415
+  },
+  {
+    "source": "npm/core-js/internals/regexp-exec.js",
+    "bytes": 4236
+  },
+  {
+    "source": "npm/core-js/modules/es.regexp.exec.js",
+    "bytes": 274
+  },
+  {
+    "source": "npm/core-js/internals/fix-regexp-well-known-symbol-logic.js",
+    "bytes": 2968
+  },
+  {
+    "source": "npm/core-js/internals/string-multibyte.js",
+    "bytes": 1415
+  },
+  {
+    "source": "npm/core-js/internals/advance-string-index.js",
+    "bytes": 285
+  },
+  {
+    "source": "npm/core-js/internals/regexp-flags-detection.js",
+    "bytes": 1225
+  },
+  {
+    "source": "npm/core-js/internals/regexp-get-flags.js",
+    "bytes": 653
+  },
+  {
+    "source": "npm/core-js/internals/regexp-exec-abstract.js",
+    "bytes": 700
+  },
+  {
+    "source": "npm/core-js/modules/es.string.match.js",
+    "bytes": 2150
+  },
+  {
+    "source": "npm/core-js/internals/get-substitution.js",
+    "bytes": 1637
+  },
+  {
+    "source": "npm/core-js/modules/es.string.replace.js",
+    "bytes": 5847
+  },
+  {
+    "source": "npm/core-js/internals/is-regexp.js",
+    "bytes": 451
+  },
+  {
+    "source": "npm/core-js/internals/not-a-regexp.js",
+    "bytes": 242
+  },
+  {
+    "source": "npm/core-js/internals/correct-is-regexp-logic.js",
+    "bytes": 380
+  },
+  {
+    "source": "npm/core-js/modules/es.string.starts-with.js",
+    "bytes": 1523
+  },
+  {
+    "source": "npm/core-js/internals/add-to-unscopables.js",
+    "bytes": 669
+  },
+  {
+    "source": "npm/core-js/internals/correct-prototype-getter.js",
+    "bytes": 304
+  },
+  {
+    "source": "npm/core-js/internals/object-get-prototype-of.js",
+    "bytes": 936
+  },
+  {
+    "source": "npm/core-js/internals/iterators-core.js",
+    "bytes": 1800
+  },
+  {
+    "source": "npm/core-js/internals/iterator-create-constructor.js",
+    "bytes": 779
+  },
+  {
+    "source": "npm/core-js/internals/iterator-define.js",
+    "bytes": 4515
+  },
+  {
+    "source": "npm/core-js/internals/create-iter-result-object.js",
+    "bytes": 200
+  },
+  {
+    "source": "npm/core-js/modules/es.array.iterator.js",
+    "bytes": 2607
+  },
+  {
+    "source": "npm/core-js/internals/dom-iterables.js",
+    "bytes": 767
+  },
+  {
+    "source": "npm/core-js/internals/dom-token-list-prototype.js",
+    "bytes": 437
+  },
+  {
+    "source": "npm/core-js/modules/web.dom-collections.iterator.js",
+    "bytes": 1732
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/toPrimitive.js",
+    "bytes": 441
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/toPropertyKey.js",
+    "bytes": 227
+  },
+  {
+    "source": "npm/@babel/runtime/helpers/esm/defineProperty.js",
+    "bytes": 286
+  },
+  {
+    "source": "npm/core-js/internals/array-reduce.js",
+    "bytes": 1512
+  },
+  {
+    "source": "npm/core-js/internals/array-method-is-strict.js",
+    "bytes": 329
+  },
+  {
+    "source": "npm/core-js/modules/es.array.reduce.js",
+    "bytes": 880
+  },
+  {
+    "source": "npm/core-js/modules/es.string.ends-with.js",
+    "bytes": 1590
+  },
+  {
+    "source": "npm/core-js/modules/es.string.split.js",
+    "bytes": 4783
+  },
+  {
+    "source": "npm/performance-now/lib/performance-now.js",
+    "bytes": 1061
+  },
+  {
+    "source": "npm/raf/index.js",
+    "bytes": 1933
+  },
+  {
+    "source": "npm/core-js/internals/whitespaces.js",
+    "bytes": 237
+  },
+  {
+    "source": "npm/core-js/internals/string-trim.js",
+    "bytes": 1201
+  },
+  {
+    "source": "npm/core-js/internals/string-trim-forced.js",
+    "bytes": 549
+  },
+  {
+    "source": "npm/core-js/modules/es.string.trim.js",
+    "bytes": 407
+  },
+  {
+    "source": "npm/rgbcolor/index.js",
+    "bytes": 9497
+  },
+  {
+    "source": "npm/core-js/modules/es.array.index-of.js",
+    "bytes": 973
+  },
+  {
+    "source": "npm/core-js/modules/es.string.includes.js",
+    "bytes": 857
+  },
+  {
+    "source": "npm/core-js/internals/is-array.js",
+    "bytes": 300
+  },
+  {
+    "source": "npm/core-js/modules/es.array.reverse.js",
+    "bytes": 672
+  },
+  {
+    "source": "npm/svg-pathdata/lib/SVGPathData.module.js",
+    "bytes": 19080
+  },
+  {
+    "source": "npm/core-js/modules/es.regexp.to-string.js",
+    "bytes": 1085
+  },
+  {
+    "source": "npm/stackblur-canvas/dist/stackblur-es.js",
+    "bytes": 19527
+  },
+  {
+    "source": "npm/canvg/lib/index.es.js",
+    "bytes": 180371
+  },
+  {
+    "source": "npm/jspdf/dist/jspdf.es.min.js",
+    "bytes": 343605
+  },
+  {
+    "source": "FloeHeavyEditorSupport/Web/runtime.js",
+    "bytes": 18930
+  },
+  {
+    "source": "npm/proj4/lib/global.js",
+    "bytes": 1209
+  },
+  {
+    "source": "npm/proj4/lib/constants/values.js",
+    "bytes": 1305
+  },
+  {
+    "source": "npm/proj4/lib/constants/PrimeMeridian.js",
+    "bytes": 799
+  },
+  {
+    "source": "npm/proj4/lib/constants/units.js",
+    "bytes": 682
+  },
+  {
+    "source": "npm/proj4/lib/match.js",
+    "bytes": 444
+  },
+  {
+    "source": "npm/proj4/lib/projString.js",
+    "bytes": 3920
+  },
+  {
+    "source": "npm/wkt-parser/PROJJSONBuilder.js",
+    "bytes": 10989
+  },
+  {
+    "source": "npm/wkt-parser/buildPROJJSON.js",
+    "bytes": 287
+  },
+  {
+    "source": "npm/wkt-parser/detectWKTVersion.js",
+    "bytes": 1017
+  },
+  {
+    "source": "npm/wkt-parser/parser.js",
+    "bytes": 3861
+  },
+  {
+    "source": "npm/wkt-parser/process.js",
+    "bytes": 2325
+  },
+  {
+    "source": "npm/wkt-parser/util.js",
+    "bytes": 904
+  },
+  {
+    "source": "npm/wkt-parser/transformPROJJSON.js",
+    "bytes": 9584
+  },
+  {
+    "source": "npm/wkt-parser/index.js",
+    "bytes": 7132
+  },
+  {
+    "source": "npm/proj4/lib/defs.js",
+    "bytes": 3405
+  },
+  {
+    "source": "npm/proj4/lib/parseCode.js",
+    "bytes": 1739
+  },
+  {
+    "source": "npm/proj4/lib/extend.js",
+    "bytes": 312
+  },
+  {
+    "source": "npm/proj4/lib/common/msfnz.js",
+    "bytes": 128
+  },
+  {
+    "source": "npm/proj4/lib/common/sign.js",
+    "bytes": 57
+  },
+  {
+    "source": "npm/proj4/lib/common/adjust_lon.js",
+    "bytes": 223
+  },
+  {
+    "source": "npm/proj4/lib/common/tsfnz.js",
+    "bytes": 251
+  },
+  {
+    "source": "npm/proj4/lib/common/phi2z.js",
+    "bytes": 484
+  },
+  {
+    "source": "npm/proj4/lib/projections/merc.js",
+    "bytes": 2599
+  },
+  {
+    "source": "npm/proj4/lib/projections/longlat.js",
+    "bytes": 320
+  },
+  {
+    "source": "npm/proj4/lib/projections.js",
+    "bytes": 1155
+  },
+  {
+    "source": "npm/proj4/lib/constants/Ellipsoid.js",
+    "bytes": 3919
+  },
+  {
+    "source": "npm/proj4/lib/deriveConstants.js",
+    "bytes": 1076
+  },
+  {
+    "source": "npm/proj4/lib/constants/Datum.js",
+    "bytes": 26395
+  },
+  {
+    "source": "npm/proj4/lib/datum.js",
+    "bytes": 1113
+  },
+  {
+    "source": "npm/proj4/lib/nadgrid.js",
+    "bytes": 11019
+  },
+  {
+    "source": "npm/proj4/lib/Proj.js",
+    "bytes": 3728
+  },
+  {
+    "source": "npm/proj4/lib/datumUtils.js",
+    "bytes": 8597
+  },
+  {
+    "source": "npm/proj4/lib/datum_transform.js",
+    "bytes": 6127
+  },
+  {
+    "source": "npm/proj4/lib/adjust_axis.js",
+    "bytes": 2117
+  },
+  {
+    "source": "npm/proj4/lib/common/toPoint.js",
+    "bytes": 299
+  },
+  {
+    "source": "npm/proj4/lib/checkSanity.js",
+    "bytes": 410
+  },
+  {
+    "source": "npm/proj4/lib/transform.js",
+    "bytes": 4047
+  },
+  {
+    "source": "npm/proj4/lib/core.js",
+    "bytes": 6355
+  },
+  {
+    "source": "npm/mgrs/mgrs.js",
+    "bytes": 20952
+  },
+  {
+    "source": "npm/proj4/lib/Point.js",
+    "bytes": 1060
+  },
+  {
+    "source": "npm/proj4/lib/common/pj_enfn.js",
+    "bytes": 611
+  },
+  {
+    "source": "npm/proj4/lib/common/pj_mlfn.js",
+    "bytes": 172
+  },
+  {
+    "source": "npm/proj4/lib/common/pj_inv_mlfn.js",
+    "bytes": 631
+  },
+  {
+    "source": "npm/proj4/lib/projections/tmerc.js",
+    "bytes": 4769
+  },
+  {
+    "source": "npm/proj4/lib/common/sinh.js",
+    "bytes": 90
+  },
+  {
+    "source": "npm/proj4/lib/common/hypot.js",
+    "bytes": 184
+  },
+  {
+    "source": "npm/proj4/lib/common/log1py.js",
+    "bytes": 111
+  },
+  {
+    "source": "npm/proj4/lib/common/asinhy.js",
+    "bytes": 189
+  },
+  {
+    "source": "npm/proj4/lib/common/gatg.js",
+    "bytes": 261
+  },
+  {
+    "source": "npm/proj4/lib/common/clens.js",
+    "bytes": 260
+  },
+  {
+    "source": "npm/proj4/lib/common/cosh.js",
+    "bytes": 90
+  },
+  {
+    "source": "npm/proj4/lib/common/clens_cmplx.js",
+    "bytes": 691
+  },
+  {
+    "source": "npm/proj4/lib/projections/etmerc.js",
+    "bytes": 5691
+  },
+  {
+    "source": "npm/proj4/lib/common/adjust_zone.js",
+    "bytes": 286
+  },
+  {
+    "source": "npm/proj4/lib/projections/utm.js",
+    "bytes": 749
+  },
+  {
+    "source": "npm/proj4/lib/common/srat.js",
+    "bytes": 94
+  },
+  {
+    "source": "npm/proj4/lib/projections/gauss.js",
+    "bytes": 1688
+  },
+  {
+    "source": "npm/proj4/lib/projections/sterea.js",
+    "bytes": 1941
+  },
+  {
+    "source": "npm/proj4/lib/projections/stere.js",
+    "bytes": 6278
+  },
+  {
+    "source": "npm/proj4/lib/projections/somerc.js",
+    "bytes": 3230
+  },
+  {
+    "source": "npm/proj4/lib/projections/omerc.js",
+    "bytes": 7499
+  },
+  {
+    "source": "npm/proj4/lib/projections/lcc.js",
+    "bytes": 4570
+  },
+  {
+    "source": "npm/proj4/lib/projections/krovak.js",
+    "bytes": 3532
+  },
+  {
+    "source": "npm/proj4/lib/common/mlfn.js",
+    "bytes": 146
+  },
+  {
+    "source": "npm/proj4/lib/common/e0fn.js",
+    "bytes": 89
+  },
+  {
+    "source": "npm/proj4/lib/common/e1fn.js",
+    "bytes": 91
+  },
+  {
+    "source": "npm/proj4/lib/common/e2fn.js",
+    "bytes": 80
+  },
+  {
+    "source": "npm/proj4/lib/common/e3fn.js",
+    "bytes": 68
+  },
+  {
+    "source": "npm/proj4/lib/common/gN.js",
+    "bytes": 109
+  },
+  {
+    "source": "npm/proj4/lib/common/adjust_lat.js",
+    "bytes": 173
+  },
+  {
+    "source": "npm/proj4/lib/common/imlfn.js",
+    "bytes": 506
+  },
+  {
+    "source": "npm/proj4/lib/projections/cass.js",
+    "bytes": 3204
+  },
+  {
+    "source": "npm/proj4/lib/common/qsfnz.js",
+    "bytes": 264
+  },
+  {
+    "source": "npm/proj4/lib/common/authset.js",
+    "bytes": 434
+  },
+  {
+    "source": "npm/proj4/lib/common/authlat.js",
+    "bytes": 168
+  },
+  {
+    "source": "npm/proj4/lib/projections/laea.js",
+    "bytes": 7587
+  },
+  {
+    "source": "npm/proj4/lib/common/asinz.js",
+    "bytes": 110
+  },
+  {
+    "source": "npm/proj4/lib/projections/aea.js",
+    "bytes": 4079
+  },
+  {
+    "source": "npm/proj4/lib/projections/gnom.js",
+    "bytes": 3019
+  },
+  {
+    "source": "npm/proj4/lib/common/iqsfnz.js",
+    "bytes": 910
+  },
+  {
+    "source": "npm/proj4/lib/projections/cea.js",
+    "bytes": 1960
+  },
+  {
+    "source": "npm/proj4/lib/projections/eqc.js",
+    "bytes": 1279
+  },
+  {
+    "source": "npm/proj4/lib/projections/poly.js",
+    "bytes": 4422
+  },
+  {
+    "source": "npm/proj4/lib/projections/nzmg.js",
+    "bytes": 6036
+  },
+  {
+    "source": "npm/proj4/lib/projections/mill.js",
+    "bytes": 1332
+  },
+  {
+    "source": "npm/proj4/lib/projections/sinu.js",
+    "bytes": 2994
+  },
+  {
+    "source": "npm/proj4/lib/projections/eck6.js",
+    "bytes": 937
+  },
+  {
+    "source": "npm/proj4/lib/projections/moll.js",
+    "bytes": 2465
+  },
+  {
+    "source": "npm/proj4/lib/projections/eqdc.js",
+    "bytes": 3717
+  },
+  {
+    "source": "npm/proj4/lib/projections/vandg.js",
+    "bytes": 3430
+  },
+  {
+    "source": "npm/proj4/lib/common/vincenty.js",
+    "bytes": 5433
+  },
+  {
+    "source": "npm/proj4/lib/projections/aeqd.js",
+    "bytes": 5333
+  },
+  {
+    "source": "npm/proj4/lib/projections/ortho.js",
+    "bytes": 2680
+  },
+  {
+    "source": "npm/proj4/lib/projections/qsc.js",
+    "bytes": 11453
+  },
+  {
+    "source": "npm/proj4/lib/projections/robin.js",
+    "bytes": 4867
+  },
+  {
+    "source": "npm/proj4/lib/projections/geocent.js",
+    "bytes": 510
+  },
+  {
+    "source": "npm/proj4/lib/projections/tpers.js",
+    "bytes": 4677
+  },
+  {
+    "source": "npm/proj4/lib/projections/geos.js",
+    "bytes": 4589
+  },
+  {
+    "source": "npm/proj4/lib/projections/eqearth.js",
+    "bytes": 4117
+  },
+  {
+    "source": "npm/proj4/lib/projections/bonne.js",
+    "bytes": 3202
+  },
+  {
+    "source": "npm/proj4/lib/projections/ob_tran.js",
+    "bytes": 10678
+  },
+  {
+    "source": "npm/proj4/projs.js",
+    "bytes": 2700
+  },
+  {
+    "source": "npm/proj4/lib/index.js",
+    "bytes": 1397
+  },
+  {
+    "source": "npm/@turf/helpers/dist/esm/index.js",
+    "bytes": 8844
+  },
+  {
+    "source": "npm/@turf/invariant/dist/esm/index.js",
+    "bytes": 3551
+  },
+  {
+    "source": "npm/@turf/bearing/dist/esm/index.js",
+    "bytes": 994
+  },
+  {
+    "source": "npm/@turf/destination/dist/esm/index.js",
+    "bytes": 1174
+  },
+  {
+    "source": "npm/@turf/distance/dist/esm/index.js",
+    "bytes": 795
+  },
+  {
+    "source": "npm/@turf/along/dist/esm/index.js",
+    "bytes": 1136
+  },
+  {
+    "source": "npm/@turf/meta/dist/esm/index.js",
+    "bytes": 22136
+  },
+  {
+    "source": "npm/@turf/area/dist/esm/index.js",
+    "bytes": 1663
+  },
+  {
+    "source": "npm/@turf/bbox/dist/esm/index.js",
+    "bytes": 670
+  },
+  {
+    "source": "npm/point-in-polygon-hao/node_modules/robust-predicates/esm/util.js",
+    "bytes": 3606
+  },
+  {
+    "source": "npm/point-in-polygon-hao/node_modules/robust-predicates/esm/orient2d.js",
+    "bytes": 5281
+  },
+  {
+    "source": "npm/point-in-polygon-hao/node_modules/robust-predicates/esm/orient3d.js",
+    "bytes": 13368
+  },
+  {
+    "source": "npm/point-in-polygon-hao/node_modules/robust-predicates/esm/incircle.js",
+    "bytes": 26758
+  },
+  {
+    "source": "npm/point-in-polygon-hao/node_modules/robust-predicates/esm/insphere.js",
+    "bytes": 23925
+  },
+  {
+    "source": "npm/point-in-polygon-hao/node_modules/robust-predicates/index.js",
+    "bytes": 233
+  },
+  {
+    "source": "npm/point-in-polygon-hao/dist/esm/index.js",
+    "bytes": 1439
+  },
+  {
+    "source": "npm/@turf/boolean-point-in-polygon/dist/esm/index.js",
+    "bytes": 1033
+  },
+  {
+    "source": "npm/@turf/boolean-point-on-line/dist/esm/index.js",
+    "bytes": 2586
+  },
+  {
+    "source": "npm/rbush/rbush.min.js",
+    "bytes": 6464
+  },
+  {
+    "source": "npm/@turf/geojson-rbush/dist/esm/index.js",
+    "bytes": 5726
+  },
+  {
+    "source": "npm/@turf/truncate/dist/esm/index.js",
+    "bytes": 1412
+  },
+  {
+    "source": "npm/@turf/line-segment/dist/esm/index.js",
+    "bytes": 1708
+  },
+  {
+    "source": "npm/tinyqueue/tinyqueue.js",
+    "bytes": 2198
+  },
+  {
+    "source": "npm/robust-predicates/esm/util.js",
+    "bytes": 3606
+  },
+  {
+    "source": "npm/robust-predicates/esm/orient2d.js",
+    "bytes": 5371
+  },
+  {
+    "source": "npm/robust-predicates/esm/orient3d.js",
+    "bytes": 14054
+  },
+  {
+    "source": "npm/robust-predicates/esm/incircle.js",
+    "bytes": 26758
+  },
+  {
+    "source": "npm/robust-predicates/esm/insphere.js",
+    "bytes": 24337
+  },
+  {
+    "source": "npm/robust-predicates/index.js",
+    "bytes": 233
+  },
+  {
+    "source": "npm/@turf/line-intersect/dist/esm/index.js",
+    "bytes": 7408
+  },
+  {
+    "source": "npm/@turf/nearest-point-on-line/dist/esm/index.js",
+    "bytes": 6216
+  },
+  {
+    "source": "npm/@turf/line-split/dist/esm/index.js",
+    "bytes": 4689
+  },
+  {
+    "source": "npm/@turf/boolean-contains/dist/esm/index.js",
+    "bytes": 11710
+  },
+  {
+    "source": "npm/@turf/polygon-to-line/dist/esm/index.js",
+    "bytes": 1549
+  },
+  {
+    "source": "npm/@turf/boolean-disjoint/dist/esm/index.js",
+    "bytes": 4527
+  },
+  {
+    "source": "npm/@turf/boolean-intersects/dist/esm/index.js",
+    "bytes": 372
+  },
+  {
+    "source": "npm/geojson-equality-ts/dist/esm/index.js",
+    "bytes": 5423
+  },
+  {
+    "source": "npm/@turf/clean-coords/dist/esm/index.js",
+    "bytes": 3026
+  },
+  {
+    "source": "npm/@turf/boolean-equal/dist/esm/index.js",
+    "bytes": 807
+  },
+  {
+    "source": "npm/@turf/boolean-crosses/dist/esm/index.js",
+    "bytes": 5027
+  },
+  {
+    "source": "npm/@turf/boolean-valid/dist/esm/index.js",
+    "bytes": 3594
+  },
+  {
+    "source": "npm/@turf/boolean-within/dist/esm/index.js",
+    "bytes": 287
+  },
+  {
+    "source": "npm/@turf/center/dist/esm/index.js",
+    "bytes": 391
+  },
+  {
+    "source": "npm/@turf/jsts/dist/jsts.min.js",
+    "bytes": 270427
+  },
+  {
+    "source": "npm/d3-array/src/ascending.js",
+    "bytes": 86
+  },
+  {
+    "source": "npm/d3-array/src/bisector.js",
+    "bytes": 1022
+  },
+  {
+    "source": "npm/d3-array/src/number.js",
+    "bytes": 458
+  },
+  {
+    "source": "npm/d3-array/src/bisect.js",
+    "bytes": 337
+  },
+  {
+    "source": "npm/d3-array/src/count.js",
+    "bytes": 424
+  },
+  {
+    "source": "npm/d3-array/src/cross.js",
+    "bytes": 872
+  },
+  {
+    "source": "npm/d3-array/src/cumsum.js",
+    "bytes": 218
+  },
+  {
+    "source": "npm/d3-array/src/descending.js",
+    "bytes": 86
+  },
+  {
+    "source": "npm/d3-array/src/variance.js",
+    "bytes": 668
+  },
+  {
+    "source": "npm/d3-array/src/deviation.js",
+    "bytes": 164
+  },
+  {
+    "source": "npm/d3-array/src/extent.js",
+    "bytes": 716
+  },
+  {
+    "source": "npm/d3-array/src/fsum.js",
+    "bytes": 1600
+  },
+  {
+    "source": "npm/internmap/src/index.js",
+    "bytes": 1577
+  },
+  {
+    "source": "npm/d3-array/src/identity.js",
+    "bytes": 43
+  },
+  {
+    "source": "npm/d3-array/src/group.js",
+    "bytes": 1322
+  },
+  {
+    "source": "npm/d3-array/src/permute.js",
+    "bytes": 89
+  },
+  {
+    "source": "npm/d3-array/src/sort.js",
+    "bytes": 747
+  },
+  {
+    "source": "npm/d3-array/src/groupSort.js",
+    "bytes": 429
+  },
+  {
+    "source": "npm/d3-array/src/array.js",
+    "bytes": 90
+  },
+  {
+    "source": "npm/d3-array/src/constant.js",
+    "bytes": 72
+  },
+  {
+    "source": "npm/d3-array/src/ticks.js",
+    "bytes": 1737
+  },
+  {
+    "source": "npm/d3-array/src/nice.js",
+    "bytes": 535
+  },
+  {
+    "source": "npm/d3-array/src/threshold/sturges.js",
+    "bytes": 130
+  },
+  {
+    "source": "npm/d3-array/src/bin.js",
+    "bytes": 3105
+  },
+  {
+    "source": "npm/d3-array/src/max.js",
+    "bytes": 502
+  },
+  {
+    "source": "npm/d3-array/src/min.js",
+    "bytes": 502
+  },
+  {
+    "source": "npm/d3-array/src/quickselect.js",
+    "bytes": 1311
+  },
+  {
+    "source": "npm/d3-array/src/quantile.js",
+    "bytes": 1038
+  },
+  {
+    "source": "npm/d3-array/src/threshold/freedmanDiaconis.js",
+    "bytes": 244
+  },
+  {
+    "source": "npm/d3-array/src/threshold/scott.js",
+    "bytes": 216
+  },
+  {
+    "source": "npm/d3-array/src/maxIndex.js",
+    "bytes": 582
+  },
+  {
+    "source": "npm/d3-array/src/mean.js",
+    "bytes": 483
+  },
+  {
+    "source": "npm/d3-array/src/median.js",
+    "bytes": 125
+  },
+  {
+    "source": "npm/d3-array/src/merge.js",
+    "bytes": 165
+  },
+  {
+    "source": "npm/d3-array/src/minIndex.js",
+    "bytes": 582
+  },
+  {
+    "source": "npm/d3-array/src/pairs.js",
+    "bytes": 307
+  },
+  {
+    "source": "npm/d3-array/src/range.js",
+    "bytes": 344
+  },
+  {
+    "source": "npm/d3-array/src/least.js",
+    "bytes": 672
+  },
+  {
+    "source": "npm/d3-array/src/leastIndex.js",
+    "bytes": 467
+  },
+  {
+    "source": "npm/d3-array/src/greatest.js",
+    "bytes": 675
+  },
+  {
+    "source": "npm/d3-array/src/greatestIndex.js",
+    "bytes": 470
+  },
+  {
+    "source": "npm/d3-array/src/scan.js",
+    "bytes": 178
+  },
+  {
+    "source": "npm/d3-array/src/shuffle.js",
+    "bytes": 329
+  },
+  {
+    "source": "npm/d3-array/src/sum.js",
+    "bytes": 362
+  },
+  {
+    "source": "npm/d3-array/src/transpose.js",
+    "bytes": 359
+  },
+  {
+    "source": "npm/d3-array/src/zip.js",
+    "bytes": 102
+  },
+  {
+    "source": "npm/d3-array/src/every.js",
+    "bytes": 265
+  },
+  {
+    "source": "npm/d3-array/src/some.js",
+    "bytes": 263
+  },
+  {
+    "source": "npm/d3-array/src/filter.js",
+    "bytes": 291
+  },
+  {
+    "source": "npm/d3-array/src/map.js",
+    "bytes": 310
+  },
+  {
+    "source": "npm/d3-array/src/reduce.js",
+    "bytes": 460
+  },
+  {
+    "source": "npm/d3-array/src/reverse.js",
+    "bytes": 183
+  },
+  {
+    "source": "npm/d3-array/src/difference.js",
+    "bytes": 206
+  },
+  {
+    "source": "npm/d3-array/src/disjoint.js",
+    "bytes": 360
+  },
+  {
+    "source": "npm/d3-array/src/set.js",
+    "bytes": 99
+  },
+  {
+    "source": "npm/d3-array/src/intersection.js",
+    "bytes": 334
+  },
+  {
+    "source": "npm/d3-array/src/superset.js",
+    "bytes": 356
+  },
+  {
+    "source": "npm/d3-array/src/subset.js",
+    "bytes": 123
+  },
+  {
+    "source": "npm/d3-array/src/union.js",
+    "bytes": 173
+  },
+  {
+    "source": "npm/d3-array/src/index.js",
+    "bytes": 2871
+  },
+  {
+    "source": "npm/d3-geo/src/math.js",
+    "bytes": 911
+  },
+  {
+    "source": "npm/d3-geo/src/noop.js",
+    "bytes": 34
+  },
+  {
+    "source": "npm/d3-geo/src/stream.js",
+    "bytes": 2303
+  },
+  {
+    "source": "npm/d3-geo/src/area.js",
+    "bytes": 2001
+  },
+  {
+    "source": "npm/d3-geo/src/cartesian.js",
+    "bytes": 932
+  },
+  {
+    "source": "npm/d3-geo/src/bounds.js",
+    "bytes": 5546
+  },
+  {
+    "source": "npm/d3-geo/src/centroid.js",
+    "bytes": 3847
+  },
+  {
+    "source": "npm/d3-geo/src/constant.js",
+    "bytes": 72
+  },
+  {
+    "source": "npm/d3-geo/src/compose.js",
+    "bytes": 250
+  },
+  {
+    "source": "npm/d3-geo/src/rotation.js",
+    "bytes": 2523
+  },
+  {
+    "source": "npm/d3-geo/src/circle.js",
+    "bytes": 2385
+  },
+  {
+    "source": "npm/d3-geo/src/clip/buffer.js",
+    "bytes": 479
+  },
+  {
+    "source": "npm/d3-geo/src/pointEqual.js",
+    "bytes": 142
+  },
+  {
+    "source": "npm/d3-geo/src/clip/rejoin.js",
+    "bytes": 2767
+  },
+  {
+    "source": "npm/d3-geo/src/polygonContains.js",
+    "bytes": 2814
+  },
+  {
+    "source": "npm/d3-geo/src/clip/index.js",
+    "bytes": 3596
+  },
+  {
+    "source": "npm/d3-geo/src/clip/antimeridian.js",
+    "bytes": 2903
+  },
+  {
+    "source": "npm/d3-geo/src/clip/circle.js",
+    "bytes": 5834
+  },
+  {
+    "source": "npm/d3-geo/src/clip/line.js",
+    "bytes": 1099
+  },
+  {
+    "source": "npm/d3-geo/src/clip/rectangle.js",
+    "bytes": 5054
+  },
+  {
+    "source": "npm/d3-geo/src/clip/extent.js",
+    "bytes": 540
+  },
+  {
+    "source": "npm/d3-geo/src/length.js",
+    "bytes": 1317
+  },
+  {
+    "source": "npm/d3-geo/src/distance.js",
+    "bytes": 232
+  },
+  {
+    "source": "npm/d3-geo/src/contains.js",
+    "bytes": 2998
+  },
+  {
+    "source": "npm/d3-geo/src/graticule.js",
+    "bytes": 3037
+  },
+  {
+    "source": "npm/d3-geo/src/interpolate.js",
+    "bytes": 914
+  },
+  {
+    "source": "npm/d3-geo/src/identity.js",
+    "bytes": 23
+  },
+  {
+    "source": "npm/d3-geo/src/path/area.js",
+    "bytes": 973
+  },
+  {
+    "source": "npm/d3-geo/src/path/bounds.js",
+    "bytes": 488
+  },
+  {
+    "source": "npm/d3-geo/src/path/centroid.js",
+    "bytes": 2036
+  },
+  {
+    "source": "npm/d3-geo/src/path/context.js",
+    "bytes": 920
+  },
+  {
+    "source": "npm/d3-geo/src/path/measure.js",
+    "bytes": 854
+  },
+  {
+    "source": "npm/d3-geo/src/path/string.js",
+    "bytes": 1316
+  },
+  {
+    "source": "npm/d3-geo/src/path/index.js",
+    "bytes": 1877
+  },
+  {
+    "source": "npm/d3-geo/src/transform.js",
+    "bytes": 701
+  },
+  {
+    "source": "npm/d3-geo/src/projection/fit.js",
+    "bytes": 1594
+  },
+  {
+    "source": "npm/d3-geo/src/projection/resample.js",
+    "bytes": 3284
+  },
+  {
+    "source": "npm/d3-geo/src/projection/index.js",
+    "bytes": 5870
+  },
+  {
+    "source": "npm/d3-geo/src/projection/conic.js",
+    "bytes": 408
+  },
+  {
+    "source": "npm/d3-geo/src/projection/cylindricalEqualArea.js",
+    "bytes": 317
+  },
+  {
+    "source": "npm/d3-geo/src/projection/conicEqualArea.js",
+    "bytes": 957
+  },
+  {
+    "source": "npm/d3-geo/src/projection/albers.js",
+    "bytes": 238
+  },
+  {
+    "source": "npm/d3-geo/src/projection/albersUsa.js",
+    "bytes": 4227
+  },
+  {
+    "source": "npm/d3-geo/src/projection/azimuthal.js",
+    "bytes": 548
+  },
+  {
+    "source": "npm/d3-geo/src/projection/azimuthalEqualArea.js",
+    "bytes": 456
+  },
+  {
+    "source": "npm/d3-geo/src/projection/azimuthalEquidistant.js",
+    "bytes": 452
+  },
+  {
+    "source": "npm/d3-geo/src/projection/mercator.js",
+    "bytes": 1557
+  },
+  {
+    "source": "npm/d3-geo/src/projection/conicConformal.js",
+    "bytes": 1099
+  },
+  {
+    "source": "npm/d3-geo/src/projection/equirectangular.js",
+    "bytes": 256
+  },
+  {
+    "source": "npm/d3-geo/src/projection/conicEquidistant.js",
+    "bytes": 855
+  },
+  {
+    "source": "npm/d3-geo/src/projection/equalEarth.js",
+    "bytes": 1024
+  },
+  {
+    "source": "npm/d3-geo/src/projection/gnomonic.js",
+    "bytes": 396
+  },
+  {
+    "source": "npm/d3-geo/src/projection/identity.js",
+    "bytes": 2780
+  },
+  {
+    "source": "npm/d3-geo/src/projection/naturalEarth1.js",
+    "bytes": 1046
+  },
+  {
+    "source": "npm/d3-geo/src/projection/orthographic.js",
+    "bytes": 385
+  },
+  {
+    "source": "npm/d3-geo/src/projection/stereographic.js",
+    "bytes": 445
+  },
+  {
+    "source": "npm/d3-geo/src/projection/transverseMercator.js",
+    "bytes": 768
+  },
+  {
+    "source": "npm/d3-geo/src/index.js",
+    "bytes": 2872
+  },
+  {
+    "source": "npm/@turf/buffer/dist/esm/index.js",
+    "bytes": 3510
+  },
+  {
+    "source": "npm/@turf/centroid/dist/esm/index.js",
+    "bytes": 489
+  },
+  {
+    "source": "npm/point-in-polygon/flat.js",
+    "bytes": 586
+  },
+  {
+    "source": "npm/point-in-polygon/nested.js",
+    "bytes": 678
+  },
+  {
+    "source": "npm/point-in-polygon/index.js",
+    "bytes": 438
+  },
+  {
+    "source": "npm/robust-predicates/umd/orient2d.min.js",
+    "bytes": 2744
+  },
+  {
+    "source": "npm/concaveman/index.js",
+    "bytes": 10679
+  },
+  {
+    "source": "npm/@turf/convex/dist/esm/index.js",
+    "bytes": 645
+  },
+  {
+    "source": "npm/bignumber.js/bignumber.mjs",
+    "bytes": 84714
+  },
+  {
+    "source": "npm/splaytree-ts/dist/esm/index.js",
+    "bytes": 17966
+  },
+  {
+    "source": "npm/polyclip-ts/dist/esm/index.js",
+    "bytes": 39981
+  },
+  {
+    "source": "npm/@turf/difference/dist/esm/index.js",
+    "bytes": 796
+  },
+  {
+    "source": "npm/@turf/flatten/dist/esm/index.js",
+    "bytes": 436
+  },
+  {
+    "source": "npm/@turf/dissolve/dist/esm/index.js",
+    "bytes": 1890
+  },
+  {
+    "source": "npm/@turf/intersect/dist/esm/index.js",
+    "bytes": 765
+  },
+  {
+    "source": "npm/@turf/kinks/dist/esm/index.js",
+    "bytes": 3141
+  },
+  {
+    "source": "npm/@turf/length/dist/esm/index.js",
+    "bytes": 462
+  },
+  {
+    "source": "npm/@turf/explode/dist/esm/index.js",
+    "bytes": 771
+  },
+  {
+    "source": "npm/@turf/clone/dist/esm/index.js",
+    "bytes": 2634
+  },
+  {
+    "source": "npm/@turf/nearest-point/dist/esm/index.js",
+    "bytes": 1860
+  },
+  {
+    "source": "npm/@turf/point-on-feature/dist/esm/index.js",
+    "bytes": 3396
+  },
+  {
+    "source": "npm/@turf/rhumb-distance/dist/esm/index.js",
+    "bytes": 1360
+  },
+  {
+    "source": "npm/@turf/point-to-line-distance/dist/esm/index.js",
+    "bytes": 2196
+  },
+  {
+    "source": "npm/@turf/simplify/dist/esm/index.js",
+    "bytes": 4848
+  },
+  {
+    "source": "npm/@turf/union/dist/esm/index.js",
+    "bytes": 726
+  },
+  {
+    "source": "npm/@turf/unkink-polygon/dist/esm/index.js",
+    "bytes": 19389
+  },
+  {
+    "source": "FloeGISKit/Web/model.js",
+    "bytes": 39454
+  },
+  {
+    "source": "npm/ol/extent/Relationship.js",
+    "bytes": 200
+  },
+  {
+    "source": "npm/ol/extent.js",
+    "bytes": 27400
+  },
+  {
+    "source": "npm/ol/util.js",
+    "bytes": 1218
+  },
+  {
+    "source": "npm/ol/ObjectEventType.js",
+    "bytes": 288
+  },
+  {
+    "source": "npm/ol/obj.js",
+    "bytes": 510
+  },
+  {
+    "source": "npm/ol/events.js",
+    "bytes": 3760
+  },
+  {
+    "source": "npm/ol/events/EventType.js",
+    "bytes": 752
+  },
+  {
+    "source": "npm/ol/Disposable.js",
+    "bytes": 540
+  },
+  {
+    "source": "npm/ol/array.js",
+    "bytes": 6522
+  },
+  {
+    "source": "npm/ol/functions.js",
+    "bytes": 1933
+  },
+  {
+    "source": "npm/ol/events/Event.js",
+    "bytes": 1498
+  },
+  {
+    "source": "npm/ol/events/Target.js",
+    "bytes": 5424
+  },
+  {
+    "source": "npm/ol/Observable.js",
+    "bytes": 5850
+  },
+  {
+    "source": "npm/ol/Object.js",
+    "bytes": 8011
+  },
+  {
+    "source": "npm/ol/console.js",
+    "bytes": 1151
+  },
+  {
+    "source": "npm/ol/math.js",
+    "bytes": 5844
+  },
+  {
+    "source": "npm/ol/string.js",
+    "bytes": 1190
+  },
+  {
+    "source": "npm/ol/coordinate.js",
+    "bytes": 14588
+  },
+  {
+    "source": "npm/ol/proj/Units.js",
+    "bytes": 1066
+  },
+  {
+    "source": "npm/ol/proj/Projection.js",
+    "bytes": 8748
+  },
+  {
+    "source": "npm/ol/proj/epsg3857.js",
+    "bytes": 3613
+  },
+  {
+    "source": "npm/ol/proj/epsg4326.js",
+    "bytes": 1748
+  },
+  {
+    "source": "npm/ol/proj/projections.js",
+    "bytes": 780
+  },
+  {
+    "source": "npm/ol/proj/transforms.js",
+    "bytes": 2205
+  },
+  {
+    "source": "npm/ol/proj/utm.js",
+    "bytes": 7269
+  },
+  {
+    "source": "npm/ol/sphere.js",
+    "bytes": 9190
+  },
+  {
+    "source": "npm/ol/proj.js",
+    "bytes": 30995
+  },
+  {
+    "source": "npm/ol/asserts.js",
+    "bytes": 257
+  },
+  {
+    "source": "npm/ol/transform.js",
+    "bytes": 9510
+  },
+  {
+    "source": "npm/ol/geom/flat/transform.js",
+    "bytes": 4028
+  },
+  {
+    "source": "npm/ol/geom/Geometry.js",
+    "bytes": 10888
+  },
+  {
+    "source": "npm/ol/geom/SimpleGeometry.js",
+    "bytes": 9405
+  },
+  {
+    "source": "npm/ol/geom/flat/deflate.js",
+    "bytes": 2594
+  },
+  {
+    "source": "npm/ol/Feature.js",
+    "bytes": 10638
+  },
+  {
+    "source": "npm/ol/geom/flat/closest.js",
+    "bytes": 8850
+  },
+  {
+    "source": "npm/ol/geom/flat/inflate.js",
+    "bytes": 2531
+  },
+  {
+    "source": "npm/ol/geom/flat/interpolate.js",
+    "bytes": 5224
+  },
+  {
+    "source": "npm/ol/geom/flat/contains.js",
+    "bytes": 3535
+  },
+  {
+    "source": "npm/ol/geom/flat/segments.js",
+    "bytes": 2044
+  },
+  {
+    "source": "npm/ol/geom/flat/intersectsextent.js",
+    "bytes": 5067
+  },
+  {
+    "source": "npm/ol/geom/flat/length.js",
+    "bytes": 1208
+  },
+  {
+    "source": "npm/ol/geom/flat/simplify.js",
+    "bytes": 14847
+  },
+  {
+    "source": "npm/ol/geom/LineString.js",
+    "bytes": 8451
+  },
+  {
+    "source": "npm/ol/geom/MultiLineString.js",
+    "bytes": 10056
+  },
+  {
+    "source": "npm/ol/geom/Point.js",
+    "bytes": 3130
+  },
+  {
+    "source": "npm/ol/geom/MultiPoint.js",
+    "bytes": 5259
+  },
+  {
+    "source": "npm/ol/geom/flat/area.js",
+    "bytes": 1635
+  },
+  {
+    "source": "npm/ol/geom/LinearRing.js",
+    "bytes": 5080
+  },
+  {
+    "source": "npm/ol/geom/flat/interiorpoint.js",
+    "bytes": 3359
+  },
+  {
+    "source": "npm/ol/geom/flat/reverse.js",
+    "bytes": 564
+  },
+  {
+    "source": "npm/ol/geom/flat/orient.js",
+    "bytes": 6347
+  },
+  {
+    "source": "npm/ol/geom/Polygon.js",
+    "bytes": 14781
+  },
+  {
+    "source": "npm/ol/geom/flat/center.js",
+    "bytes": 814
+  },
+  {
+    "source": "npm/ol/geom/MultiPolygon.js",
+    "bytes": 12635
+  },
+  {
+    "source": "npm/ol/render/Feature.js",
+    "bytes": 14437
+  },
+  {
+    "source": "npm/ol/geom/GeometryCollection.js",
+    "bytes": 9190
+  },
+  {
+    "source": "npm/ol/format/Feature.js",
+    "bytes": 15781
+  },
+  {
+    "source": "npm/ol/format/JSONFeature.js",
+    "bytes": 6085
+  },
+  {
+    "source": "npm/ol/format/GeoJSON.js",
+    "bytes": 20111
+  },
+  {
+    "source": "npm/ol/xml.js",
+    "bytes": 20051
+  },
+  {
+    "source": "npm/ol/format/XMLFeature.js",
+    "bytes": 8130
+  },
+  {
+    "source": "npm/ol/format/xsd.js",
+    "bytes": 4292
+  },
+  {
+    "source": "npm/ol/format/GPX.js",
+    "bytes": 32150
+  },
+  {
+    "source": "npm/ol/ImageState.js",
+    "bytes": 142
+  },
+  {
+    "source": "npm/ol/has.js",
+    "bytes": 2204
+  },
+  {
+    "source": "npm/ol/dom.js",
+    "bytes": 6787
+  },
+  {
+    "source": "npm/ol/color.js",
+    "bytes": 8944
+  },
+  {
+    "source": "npm/ol/Image.js",
+    "bytes": 10064
+  },
+  {
+    "source": "npm/ol/style/IconImageCache.js",
+    "bytes": 4078
+  },
+  {
+    "source": "npm/ol/style/IconImage.js",
+    "bytes": 9562
+  },
+  {
+    "source": "npm/ol/style/Fill.js",
+    "bytes": 3487
+  },
+  {
+    "source": "npm/ol/size.js",
+    "bytes": 1637
+  },
+  {
+    "source": "npm/ol/style/Image.js",
+    "bytes": 6188
+  },
+  {
+    "source": "npm/ol/style/Icon.js",
+    "bytes": 18864
+  },
+  {
+    "source": "npm/ol/style/Stroke.js",
+    "bytes": 5571
+  },
+  {
+    "source": "npm/ol/colorlike.js",
+    "bytes": 3062
+  },
+  {
+    "source": "npm/ol/css.js",
+    "bytes": 3192
+  },
+  {
+    "source": "npm/ol/render/canvas.js",
+    "bytes": 16254
+  },
+  {
+    "source": "npm/ol/style/RegularShape.js",
+    "bytes": 18887
+  },
+  {
+    "source": "npm/ol/style/Circle.js",
+    "bytes": 2385
+  },
+  {
+    "source": "npm/ol/style/Style.js",
+    "bytes": 15034
+  },
+  {
+    "source": "npm/ol/style/Text.js",
+    "bytes": 15969
+  },
+  {
+    "source": "npm/ol/format/KML.js",
+    "bytes": 98384
+  },
+  {
+    "source": "npm/ol/format/TextFeature.js",
+    "bytes": 5298
+  },
+  {
+    "source": "npm/ol/format/WKT.js",
+    "bytes": 23026
+  },
+  {
+    "source": "npm/but-unzip/index.browser.min.mjs",
+    "bytes": 755
+  },
+  {
+    "source": "npm/shpjs/lib/unzip.js",
+    "bytes": 738
+  },
+  {
+    "source": "npm/shpjs/lib/combine.js",
+    "bytes": 193
+  },
+  {
+    "source": "npm/shpjs/lib/binaryajax.js",
+    "bytes": 543
+  },
+  {
+    "source": "npm/shpjs/lib/parseShp.js",
+    "bytes": 9406
+  },
+  {
+    "source": "npm/parsedbf/decoder.js",
+    "bytes": 662
+  },
+  {
+    "source": "npm/parsedbf/index.js",
+    "bytes": 2259
+  },
+  {
+    "source": "npm/shpjs/lib/index.js",
+    "bytes": 5667
+  },
+  {
+    "source": "npm/@petamoriken/float16/src/_util/messages.mjs",
+    "bytes": 1407
+  },
+  {
+    "source": "npm/@petamoriken/float16/src/_util/primordials.mjs",
+    "bytes": 9605
+  },
+  {
+    "source": "npm/@petamoriken/float16/src/_util/arrayIterator.mjs",
+    "bytes": 2363
+  },
+  {
+    "source": "npm/@petamoriken/float16/src/_util/is.mjs",
+    "bytes": 3414
+  },
+  {
+    "source": "npm/@petamoriken/float16/src/_util/brand.mjs",
+    "bytes": 833
+  },
+  {
+    "source": "npm/@petamoriken/float16/src/_util/converter.mjs",
+    "bytes": 4612
+  },
+  {
+    "source": "npm/@petamoriken/float16/src/_util/spec.mjs",
+    "bytes": 2667
+  },
+  {
+    "source": "npm/@petamoriken/float16/src/Float16Array.mjs",
+    "bytes": 34440
+  },
+  {
+    "source": "npm/@petamoriken/float16/src/isTypedArray.mjs",
+    "bytes": 422
+  },
+  {
+    "source": "npm/@petamoriken/float16/src/DataView.mjs",
+    "bytes": 1040
+  },
+  {
+    "source": "npm/@petamoriken/float16/src/f16round.mjs",
+    "bytes": 238
+  },
+  {
+    "source": "npm/@petamoriken/float16/src/index.mjs",
+    "bytes": 307
+  },
+  {
+    "source": "npm/xml-utils/get-attribute.mjs",
+    "bytes": 789
+  },
+  {
+    "source": "npm/xml-utils/index-of-match.mjs",
+    "bytes": 213
+  },
+  {
+    "source": "npm/xml-utils/index-of-match-end.mjs",
+    "bytes": 238
+  },
+  {
+    "source": "npm/xml-utils/count-substring.mjs",
+    "bytes": 182
+  },
+  {
+    "source": "npm/xml-utils/find-tag-by-name.mjs",
+    "bytes": 2115
+  },
+  {
+    "source": "npm/xml-utils/find-tags-by-name.mjs",
+    "bytes": 645
+  },
+  {
+    "source": "npm/geotiff/dist-module/globals.js",
+    "bytes": 15906
+  },
+  {
+    "source": "npm/geotiff/dist-module/rgb.js",
+    "bytes": 4001
+  },
+  {
+    "source": "npm/geotiff/dist-module/predictor.js",
+    "bytes": 3239
+  },
+  {
+    "source": "npm/geotiff/dist-module/compression/basedecoder.js",
+    "bytes": 1493
+  },
+  {
+    "source": "npm/geotiff/dist-module/compression/raw.js",
+    "bytes": 225
+  },
+  {
+    "source": "npm/geotiff/dist-module/compression/lzw.js",
+    "bytes": 4706
+  },
+  {
+    "source": "npm/geotiff/dist-module/compression/jpeg.js",
+    "bytes": 40174
+  },
+  {
+    "source": "npm/geotiff/dist-module/compression/deflate.js",
+    "bytes": 297
+  },
+  {
+    "source": "npm/geotiff/dist-module/compression/packbits.js",
+    "bytes": 895
+  },
+  {
+    "source": "npm/lerc/LercDecode.js",
+    "bytes": 89279
+  },
+  {
+    "source": "npm/zstddec/dist/zstddec.modern.js",
+    "bytes": 76029
+  },
+  {
+    "source": "npm/geotiff/dist-module/compression/lerc.js",
+    "bytes": 1554
+  },
+  {
+    "source": "npm/zstddec/dist/zstddec-stream.modern.js",
+    "bytes": 86155
+  },
+  {
+    "source": "npm/geotiff/dist-module/compression/zstd.js",
+    "bytes": 377
+  },
+  {
+    "source": "npm/geotiff/dist-module/compression/webimage.js",
+    "bytes": 2486
+  },
+  {
+    "source": "npm/geotiff/dist-module/compression/index.js",
+    "bytes": 6705
+  },
+  {
+    "source": "npm/geotiff/dist-module/resample.js",
+    "bytes": 8923
+  },
+  {
+    "source": "npm/geotiff/dist-module/geotiffimage.js",
+    "bytes": 42410
+  },
+  {
+    "source": "npm/geotiff/dist-module/dataview64.js",
+    "bytes": 4117
+  },
+  {
+    "source": "npm/geotiff/dist-module/dataslice.js",
+    "bytes": 4618
+  },
+  {
+    "source": "npm/web-worker/src/browser/index.js",
+    "bytes": 663
+  },
+  {
+    "source": "npm/geotiff/dist-module/worker/create.js",
+    "bytes": 246108
+  },
+  {
+    "source": "npm/geotiff/dist-module/pool.js",
+    "bytes": 5950
+  },
+  {
+    "source": "npm/geotiff/dist-module/source/httputils.js",
+    "bytes": 5093
+  },
+  {
+    "source": "npm/geotiff/dist-module/source/basesource.js",
+    "bytes": 969
+  },
+  {
+    "source": "npm/quick-lru/index.js",
+    "bytes": 5881
+  },
+  {
+    "source": "npm/geotiff/dist-module/utils.js",
+    "bytes": 5253
+  },
+  {
+    "source": "npm/geotiff/dist-module/source/blockedsource.js",
+    "bytes": 10427
+  },
+  {
+    "source": "npm/geotiff/dist-module/source/client/base.js",
+    "bytes": 1138
+  },
+  {
+    "source": "npm/geotiff/dist-module/source/client/fetch.js",
+    "bytes": 1381
+  },
+  {
+    "source": "npm/geotiff/dist-module/source/client/xhr.js",
+    "bytes": 1907
+  },
+  {
+    "source": "../../(disabled):http",
+    "bytes": 0
+  },
+  {
+    "source": "../../(disabled):https",
+    "bytes": 0
+  },
+  {
+    "source": "../../(disabled):url",
+    "bytes": 0
+  },
+  {
+    "source": "npm/geotiff/dist-module/source/client/http.js",
+    "bytes": 2841
+  },
+  {
+    "source": "npm/geotiff/dist-module/source/remote.js",
+    "bytes": 8265
+  },
+  {
+    "source": "npm/geotiff/dist-module/source/arraybuffer.js",
+    "bytes": 974
+  },
+  {
+    "source": "npm/geotiff/dist-module/source/filereader.js",
+    "bytes": 1333
+  },
+  {
+    "source": "../../(disabled):fs",
+    "bytes": 0
+  },
+  {
+    "source": "npm/geotiff/dist-module/source/file.js",
+    "bytes": 2357
+  },
+  {
+    "source": "npm/geotiff/dist-module/imagefiledirectory.js",
+    "bytes": 24141
+  },
+  {
+    "source": "npm/geotiff/dist-module/geotiffwriter.js",
+    "bytes": 21342
+  },
+  {
+    "source": "npm/geotiff/dist-module/logging.js",
+    "bytes": 1388
+  },
+  {
+    "source": "npm/geotiff/dist-module/geotiff.js",
+    "bytes": 31195
+  },
+  {
+    "source": "FloeGISKit/Web/sqlite.js",
+    "bytes": 7647
+  },
+  {
+    "source": "FloeGISKit/Web/symbology.js",
+    "bytes": 3965
+  },
+  {
+    "source": "FloeGISKit/Web/formats.js",
+    "bytes": 44956
+  },
+  {
+    "source": "FloeGISKit/Web/analysis.js",
+    "bytes": 34879
+  },
+  {
+    "source": "npm/ol/CollectionEventType.js",
+    "bytes": 392
+  },
+  {
+    "source": "npm/ol/Collection.js",
+    "bytes": 7872
+  },
+  {
+    "source": "npm/ol/MapEvent.js",
+    "bytes": 838
+  },
+  {
+    "source": "npm/ol/MapBrowserEvent.js",
+    "bytes": 3559
+  },
+  {
+    "source": "npm/ol/MapBrowserEventType.js",
+    "bytes": 1506
+  },
+  {
+    "source": "npm/ol/pointer/EventType.js",
+    "bytes": 359
+  },
+  {
+    "source": "npm/ol/MapBrowserEventHandler.js",
+    "bytes": 12642
+  },
+  {
+    "source": "npm/ol/MapEventType.js",
+    "bytes": 933
+  },
+  {
+    "source": "npm/ol/MapProperty.js",
+    "bytes": 161
+  },
+  {
+    "source": "npm/ol/TileState.js",
+    "bytes": 213
+  },
+  {
+    "source": "npm/ol/structs/PriorityQueue.js",
+    "bytes": 6405
+  },
+  {
+    "source": "npm/ol/TileQueue.js",
+    "bytes": 4807
+  },
+  {
+    "source": "npm/ol/ViewHint.js",
+    "bytes": 112
+  },
+  {
+    "source": "npm/ol/ViewProperty.js",
+    "bytes": 154
+  },
+  {
+    "source": "npm/ol/centerconstraint.js",
+    "bytes": 2925
+  },
+  {
+    "source": "npm/ol/easing.js",
+    "bytes": 1223
+  },
+  {
+    "source": "npm/ol/resolutionconstraint.js",
+    "bytes": 8001
+  },
+  {
+    "source": "npm/ol/rotationconstraint.js",
+    "bytes": 1819
+  },
+  {
+    "source": "npm/ol/tilegrid/common.js",
+    "bytes": 236
+  },
+  {
+    "source": "npm/ol/View.js",
+    "bytes": 79086
+  },
+  {
+    "source": "npm/ol/control/Control.js",
+    "bytes": 4690
+  },
+  {
+    "source": "npm/ol/control/Attribution.js",
+    "bytes": 10722
+  },
+  {
+    "source": "npm/ol/control/Rotate.js",
+    "bytes": 5348
+  },
+  {
+    "source": "npm/ol/control/Zoom.js",
+    "bytes": 5054
+  },
+  {
+    "source": "npm/ol/control/defaults.js",
+    "bytes": 2118
+  },
+  {
+    "source": "npm/ol/Kinetic.js",
+    "bytes": 2899
+  },
+  {
+    "source": "npm/ol/interaction/Property.js",
+    "bytes": 110
+  },
+  {
+    "source": "npm/ol/interaction/Interaction.js",
+    "bytes": 5144
+  },
+  {
+    "source": "npm/ol/interaction/DoubleClickZoom.js",
+    "bytes": 1792
+  },
+  {
+    "source": "npm/ol/events/condition.js",
+    "bytes": 11000
+  },
+  {
+    "source": "npm/ol/interaction/Pointer.js",
+    "bytes": 6637
+  },
+  {
+    "source": "npm/ol/interaction/DragPan.js",
+    "bytes": 5888
+  },
+  {
+    "source": "npm/ol/interaction/DragRotate.js",
+    "bytes": 3318
+  },
+  {
+    "source": "npm/ol/render/Box.js",
+    "bytes": 3543
+  },
+  {
+    "source": "npm/ol/interaction/DragBox.js",
+    "bytes": 8969
+  },
+  {
+    "source": "npm/ol/interaction/DragZoom.js",
+    "bytes": 2736
+  },
+  {
+    "source": "npm/ol/events/Key.js",
+    "bytes": 172
+  },
+  {
+    "source": "npm/ol/interaction/KeyboardPan.js",
+    "bytes": 4105
+  },
+  {
+    "source": "npm/ol/interaction/KeyboardZoom.js",
+    "bytes": 3331
+  },
+  {
+    "source": "npm/ol/interaction/MouseWheelZoom.js",
+    "bytes": 8573
+  },
+  {
+    "source": "npm/ol/interaction/PinchRotate.js",
+    "bytes": 3942
+  },
+  {
+    "source": "npm/ol/interaction/PinchZoom.js",
+    "bytes": 3345
+  },
+  {
+    "source": "npm/ol/interaction/defaults.js",
+    "bytes": 5154
+  },
+  {
+    "source": "npm/ol/layer/Property.js",
+    "bytes": 319
+  },
+  {
+    "source": "npm/ol/layer/Base.js",
+    "bytes": 12369
+  },
+  {
+    "source": "npm/ol/layer/Group.js",
+    "bytes": 11814
+  },
+  {
+    "source": "npm/ol/render/EventType.js",
+    "bytes": 1606
+  },
+  {
+    "source": "npm/ol/layer/Layer.js",
+    "bytes": 17551
+  },
+  {
+    "source": "npm/ol/node_modules/quickselect/index.js",
+    "bytes": 2088
+  },
+  {
+    "source": "npm/ol/node_modules/rbush/index.js",
+    "bytes": 15116
+  },
+  {
+    "source": "npm/ol/expr/expression.js",
+    "bytes": 40549
+  },
+  {
+    "source": "npm/ol/expr/cpu.js",
+    "bytes": 22598
+  },
+  {
+    "source": "npm/ol/render/canvas/style.js",
+    "bytes": 41612
+  },
+  {
+    "source": "npm/ol/layer/BaseVector.js",
+    "bytes": 12752
+  },
+  {
+    "source": "npm/ol/render/Event.js",
+    "bytes": 1539
+  },
+  {
+    "source": "npm/ol/renderer/Map.js",
+    "bytes": 7699
+  },
+  {
+    "source": "npm/ol/renderer/Composite.js",
+    "bytes": 6938
+  },
+  {
+    "source": "npm/ol/Map.js",
+    "bytes": 69009
+  },
+  {
+    "source": "npm/ol/render/VectorContext.js",
+    "bytes": 4684
+  },
+  {
+    "source": "npm/ol/render/canvas/Instruction.js",
+    "bytes": 742
+  },
+  {
+    "source": "npm/ol/render/canvas/Builder.js",
+    "bytes": 21125
+  },
+  {
+    "source": "npm/ol/render/canvas/ImageBuilder.js",
+    "bytes": 8992
+  },
+  {
+    "source": "npm/ol/render/canvas/LineStringBuilder.js",
+    "bytes": 5585
+  },
+  {
+    "source": "npm/ol/render/canvas/PolygonBuilder.js",
+    "bytes": 10775
+  },
+  {
+    "source": "npm/ol/geom/flat/clip.js",
+    "bytes": 4148
+  },
+  {
+    "source": "npm/ol/geom/flat/linechunk.js",
+    "bytes": 1891
+  },
+  {
+    "source": "npm/ol/geom/flat/straightchunk.js",
+    "bytes": 1422
+  },
+  {
+    "source": "npm/ol/render/canvas/TextBuilder.js",
+    "bytes": 21273
+  },
+  {
+    "source": "npm/ol/render/canvas/BuilderGroup.js",
+    "bytes": 3122
+  },
+  {
+    "source": "npm/ol/geom/flat/lineoffset.js",
+    "bytes": 8890
+  },
+  {
+    "source": "npm/ol/geom/flat/textpath.js",
+    "bytes": 5950
+  },
+  {
+    "source": "npm/ol/render/canvas/ZIndexContext.js",
+    "bytes": 3920
+  },
+  {
+    "source": "npm/ol/render/canvas/Executor.js",
+    "bytes": 46731
+  },
+  {
+    "source": "npm/ol/render/canvas/ExecutorGroup.js",
+    "bytes": 17255
+  },
+  {
+    "source": "npm/ol/render/canvas/Immediate.js",
+    "bytes": 36559
+  },
+  {
+    "source": "npm/ol/render/canvas/hitdetect.js",
+    "bytes": 7439
+  },
+  {
+    "source": "npm/ol/renderer/vector.js",
+    "bytes": 15405
+  },
+  {
+    "source": "npm/ol/renderer/Layer.js",
+    "bytes": 5338
+  },
+  {
+    "source": "npm/ol/renderer/canvas/Layer.js",
+    "bytes": 15781
+  },
+  {
+    "source": "npm/ol/renderer/canvas/VectorLayer.js",
+    "bytes": 28643
+  },
+  {
+    "source": "npm/ol/layer/Vector.js",
+    "bytes": 5443
+  },
+  {
+    "source": "npm/ol/renderer/canvas/ImageLayer.js",
+    "bytes": 10228
+  },
+  {
+    "source": "npm/ol/layer/BaseImage.js",
+    "bytes": 2800
+  },
+  {
+    "source": "npm/ol/layer/Image.js",
+    "bytes": 1628
+  },
+  {
+    "source": "npm/ol/Tile.js",
+    "bytes": 6652
+  },
+  {
+    "source": "npm/ol/DataTile.js",
+    "bytes": 4876
+  },
+  {
+    "source": "npm/ol/ImageTile.js",
+    "bytes": 6325
+  },
+  {
+    "source": "npm/ol/TileRange.js",
+    "bytes": 3251
+  },
+  {
+    "source": "npm/ol/reproj.js",
+    "bytes": 16427
+  },
+  {
+    "source": "npm/ol/reproj/Triangulation.js",
+    "bytes": 16469
+  },
+  {
+    "source": "npm/ol/reproj/common.js",
+    "bytes": 184
+  },
+  {
+    "source": "npm/ol/reproj/Tile.js",
+    "bytes": 11818
+  },
+  {
+    "source": "npm/ol/structs/LRUCache.js",
+    "bytes": 6695
+  },
+  {
+    "source": "npm/ol/tilecoord.js",
+    "bytes": 2950
+  },
+  {
+    "source": "npm/ol/renderer/canvas/TileLayer.js",
+    "bytes": 36853
+  },
+  {
+    "source": "npm/ol/layer/TileProperty.js",
+    "bytes": 166
+  },
+  {
+    "source": "npm/ol/layer/BaseTile.js",
+    "bytes": 6959
+  },
+  {
+    "source": "npm/ol/layer/Tile.js",
+    "bytes": 1099
+  },
+  {
+    "source": "npm/ol/featureloader.js",
+    "bytes": 6104
+  },
+  {
+    "source": "npm/ol/loadingstrategy.js",
+    "bytes": 2267
+  },
+  {
+    "source": "npm/ol/structs/RBush.js",
+    "bytes": 5179
+  },
+  {
+    "source": "npm/ol/source/Source.js",
+    "bytes": 7104
+  },
+  {
+    "source": "npm/ol/source/VectorEventType.js",
+    "bytes": 1574
+  },
+  {
+    "source": "npm/ol/source/Vector.js",
+    "bytes": 42159
+  },
+  {
+    "source": "npm/ol/resolution.js",
+    "bytes": 330
+  },
+  {
+    "source": "npm/ol/reproj/Image.js",
+    "bytes": 6686
+  },
+  {
+    "source": "npm/ol/source/common.js",
+    "bytes": 258
+  },
+  {
+    "source": "npm/ol/source/Image.js",
+    "bytes": 11132
+  },
+  {
+    "source": "npm/ol/source/static.js",
+    "bytes": 2096
+  },
+  {
+    "source": "npm/ol/source/ImageStatic.js",
+    "bytes": 4019
+  },
+  {
+    "source": "npm/ol/tilegrid/TileGrid.js",
+    "bytes": 23238
+  },
+  {
+    "source": "npm/ol/tilegrid/WMTS.js",
+    "bytes": 8304
+  },
+  {
+    "source": "npm/ol/tilegrid.js",
+    "bytes": 6435
+  },
+  {
+    "source": "npm/ol/uri.js",
+    "bytes": 3075
+  },
+  {
+    "source": "npm/ol/tileurlfunction.js",
+    "bytes": 2878
+  },
+  {
+    "source": "npm/ol/source/Tile.js",
+    "bytes": 9353
+  },
+  {
+    "source": "npm/ol/source/TileEventType.js",
+    "bytes": 906
+  },
+  {
+    "source": "npm/ol/source/UrlTile.js",
+    "bytes": 6585
+  },
+  {
+    "source": "npm/ol/source/TileImage.js",
+    "bytes": 13562
+  },
+  {
+    "source": "npm/ol/source/XYZ.js",
+    "bytes": 5911
+  },
+  {
+    "source": "npm/ol/geom/Circle.js",
+    "bytes": 8423
+  },
+  {
+    "source": "npm/ol/interaction/tracing.js",
+    "bytes": 13677
+  },
+  {
+    "source": "npm/ol/interaction/Draw.js",
+    "bytes": 54099
+  },
+  {
+    "source": "npm/ol/interaction/Modify.js",
+    "bytes": 90632
+  },
+  {
+    "source": "npm/ol/interaction/Translate.js",
+    "bytes": 13502
+  },
+  {
+    "source": "npm/ol/events/SnapEvent.js",
+    "bytes": 1776
+  },
+  {
+    "source": "npm/ol/interaction/Snap.js",
+    "bytes": 30932
+  },
+  {
+    "source": "npm/ol/style.js",
+    "bytes": 508
+  },
+  {
+    "source": "npm/ol/proj/proj4.js",
+    "bytes": 10915
+  },
+  {
+    "source": "npm/ol/geom/flat/geodesic.js",
+    "bytes": 6501
+  },
+  {
+    "source": "npm/ol/render.js",
+    "bytes": 5511
+  },
+  {
+    "source": "npm/ol/layer/Graticule.js",
+    "bytes": 39388
+  },
+  {
+    "source": "npm/three/build/three.core.js",
+    "bytes": 1474799
+  },
+  {
+    "source": "npm/three/build/three.module.js",
+    "bytes": 658900
+  },
+  {
+    "source": "npm/three/examples/jsm/controls/OrbitControls.js",
+    "bytes": 40918
+  },
+  {
+    "source": "FloeGISKit/Web/view.js",
+    "bytes": 39821
+  },
+  {
+    "source": "FloeGISKit/Web/main.js",
+    "bytes": 2754
+  },
+  {
+    "source": "npm/@sqlite.org/sqlite-wasm/dist/index.mjs",
+    "bytes": 656872
+  },
+  {
+    "source": "npm/@sqlite.org/sqlite-wasm/dist/sqlite3.wasm",
+    "bytes": 879084
+  }
+]

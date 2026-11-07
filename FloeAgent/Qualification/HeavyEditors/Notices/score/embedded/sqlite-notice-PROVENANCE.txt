@@ -1,0 +1,25 @@
+Official SQLite WASM notice provenance
+
+Package: @sqlite.org/sqlite-wasm 3.54.1-build1
+Package declaration / frozen README: Apache-2.0 for wrapper code.
+Frozen upstream gitHead: d720c07b87731b737fac4d6bab43d460d90b1fa2
+That exact commit and npm tarball do not contain LICENSE.md.
+The complete maintainer LICENSE.md is retained from the later immutable
+commit e5b104c052b1a00c146e4f8a9917c953aa03537d, with its actual provenance;
+it is not described as a file from the frozen package commit.
+The frozen README itself explicitly states Apache 2.0.
+
+The actual index.mjs @preserve header separately identifies SQLite core
+and JavaScript API code as public domain with the original blessing, and
+its Emscripten-generated glue as MIT / University of Illinois NCSA.
+The exact Emscripten SDK version in the shipped header is 5.0.5. Floe
+selects MIT for that dual-licensed runtime and retains the full upstream
+5.0.5 LICENSE containing both alternatives. SQLite itself is not relicensed
+under the wrapper's Apache-2.0 or Floe's MPL-2.0.
+
+Core version: 3.54.1
+Source ID: 2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76
+Official WASM SHA-256: b8a92a19f441a90ff2339fe988fbe317c4adf3ed844096f12aee04aa72d58257
+No sql.js contributed extension-functions.c is part of this selected
+official distribution. The abandoned upstream sql.js artifact is not a
+consumer and must not be packaged or described as license-qualified.
