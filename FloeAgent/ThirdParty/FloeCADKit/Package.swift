@@ -14,7 +14,9 @@ let package = Package(
         .iOS(.v26)
     ],
     products: [
-        .library(name: "FloeCAD", targets: ["FloeCAD"])
+        .library(name: "FloeCAD", targets: ["FloeCAD"]),
+        // Shares the existing pinned kernel with native meshing consumers.
+        .library(name: "FloeOCCTKernel", targets: ["OCCT"])
     ],
     dependencies: [
         // Pinned to the exact revision used by upstream OpenShape3D 30b3c7c.
