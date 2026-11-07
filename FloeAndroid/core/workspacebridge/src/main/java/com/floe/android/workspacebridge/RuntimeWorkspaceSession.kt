@@ -49,6 +49,7 @@ class RuntimeWorkspaceSession(
     private val expectedProjectID: String,
     private val expectedRunID: String,
     destination: File,
+    private val atomicInputMove: (File, Int, String) -> Int,
 ) : java.io.Closeable {
 
     private val context = contextRuntime.applicationContext
@@ -126,7 +127,7 @@ class RuntimeWorkspaceSession(
         if (!stageRoot.mkdirs() || !preserveRoot.mkdirs()) {
             throw WorkspaceBridgeException("journalUnavailable")
         }
-        val ops = DefaultSwapOps()
+        val ops = DefaultSwapOps(atomicInputMove)
         val manifest = WorkspaceSyncManifest(destination.parentFile ?: throw WorkspaceBridgeException("destinationRootInvalid"),
                                             expectedProjectID, ops)
         val swap = WorkspaceImportSwap(destination, stageRoot, preserveRoot, File(journal, "swap.jsonl"),

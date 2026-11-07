@@ -11,7 +11,6 @@ android {
 }
 dependencies {
     implementation(project(":core:runtimeipc"))
-    implementation(project(":core:linuxruntime"))
     testImplementation(libs.junit)
     // Host JVM tests need an executable JSON reference; Android's local
     // test jar intentionally replaces framework methods with throwing stubs.

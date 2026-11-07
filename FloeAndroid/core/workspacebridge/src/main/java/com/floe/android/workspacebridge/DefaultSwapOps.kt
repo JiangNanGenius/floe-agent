@@ -5,7 +5,6 @@ import android.os.ParcelFileDescriptor
 import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
-import com.floe.android.linuxruntime.PosixBridge
 import java.io.File
 import java.security.MessageDigest
 
@@ -15,7 +14,9 @@ import java.security.MessageDigest
  * engine workspace and its sibling journal directory share the volume), so
  * each swap step is an atomic rename, never a copy-then-delete.
  */
-class DefaultSwapOps : WorkspaceSwapOps {
+class DefaultSwapOps(
+    private val atomicInputMove: (File, Int, String) -> Int,
+) : WorkspaceSwapOps {
     override fun kind(path: File): SwapKind = try {
         val stat = Os.lstat(path.absolutePath)
         when {
@@ -85,7 +86,7 @@ class DefaultSwapOps : WorkspaceSwapOps {
                 true
             }
         } catch (error: Exception) {
-            // A link/mkdir succeeded but its durability could not be proved.
+            // Entry creation succeeded but its durability could not be proved.
             // Keep the new entry (a live guest may already use it), fail the
             // transfer, and never misreport it as a concurrent retained file.
             if (committed) throw WorkspaceSwapException("inputCommitUncertain")
@@ -101,7 +102,7 @@ class DefaultSwapOps : WorkspaceSwapOps {
         // atomic no-replace rename instead; never expose a partial copy or
         // fall back to a rename that can overwrite a live guest creation.
         return commitNew(root, relativePath) { anchor ->
-            val result = PosixBridge.moveNewWorkspaceInput(stage.absolutePath, anchor.descriptor.fd, anchor.leaf)
+            val result = atomicInputMove(stage, anchor.descriptor.fd, anchor.leaf)
             if (result != 0) throw ErrnoException("workspace input commit", -result)
         }
     }

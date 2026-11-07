@@ -2,6 +2,7 @@
 package com.floe.android.runtime
 
 import android.content.Context
+import android.os.IBinder
 import android.os.Process
 import android.os.SystemClock
 import com.floe.android.runtimeipc.RuntimeExecutionTrace
@@ -52,6 +53,13 @@ internal class LinuxRuntimeOperations(
     private val context: Context,
     private val onOwnedWorkReleased: () -> Unit = {},
 ) : RuntimeOperations {
+    // Runtime owns the native implementation; the shared workspace bridge
+    // must not pull Linux runtime binaries/dependencies into the Play host.
+    private fun openWorkspaceSession(grant: IBinder, projectID: String, runID: String, workspace: File) =
+        RuntimeWorkspaceSession(context, grant, projectID, runID, workspace) { stage, parentFD, leaf ->
+            PosixBridge.moveNewWorkspaceInput(stage.absolutePath, parentFD, leaf)
+        }
+
     private val root = context.filesDir.canonicalFile
     private val catalog = FloeRootfsCatalog.debianBookwormAarch64PdV470
     private val revision = "debian-bookworm-" + catalog.archiveSha256.take(16)
@@ -454,7 +462,7 @@ internal class LinuxRuntimeOperations(
                     heldLease = preflightLease,
                     installID = installID,
                     openWorkspace = { projectID, runID, workspace ->
-                        val session = RuntimeWorkspaceSession(context, grant, projectID, runID, workspace)
+                        val session = openWorkspaceSession(grant, projectID, runID, workspace)
                         PreflightWorkspace(
                             importBeforeLaunch = { cancel -> session.importBeforeLaunch(cancel) },
                             exportAfterQuiescence = { cancel ->
@@ -675,7 +683,7 @@ internal class LinuxRuntimeOperations(
                 // A previous generation's export status must not be served to
                 // this new live generation.
                 exportStatuses.remove(projectID)
-                val session = RuntimeWorkspaceSession(context, workspaceGrant, projectID, runID, workspace)
+                val session = openWorkspaceSession(workspaceGrant, projectID, runID, workspace)
                 workspaceSession = session
                 preparedWorkspace = session
                 RuntimeExecutionTrace.mark(Stage.OPS_IMPORT)
@@ -690,7 +698,7 @@ internal class LinuxRuntimeOperations(
                     receipt.preservedUnsyncedCount + receipt.unchangedCount).toLong()
                 check(!isCancelled())
             } else {
-                RuntimeWorkspaceSession(context, workspaceGrant, projectID, runID, workspace).use { transfer ->
+                openWorkspaceSession(workspaceGrant, projectID, runID, workspace).use { transfer ->
                     val receipt = transfer.importNewInputs(
                         WorkspaceCancelSignal { isCancelled() })
                     check(receipt.skippedCount == 0 && receipt.conflictPaths.isEmpty()) { "newWorkspaceInputsUnavailable" }
@@ -983,7 +991,7 @@ internal class LinuxRuntimeOperations(
             if (!isReuseParticipant) {
                 preparation.invalidate(projectID)
                 exportStatuses.remove(projectID)
-                val session = RuntimeWorkspaceSession(context, workspaceGrant, projectID, runID, workspace)
+                val session = openWorkspaceSession(workspaceGrant, projectID, runID, workspace)
                 workspaceSession = session
                 preparedWorkspace = session
                 val importStart = SystemClock.elapsedRealtime()
@@ -995,7 +1003,7 @@ internal class LinuxRuntimeOperations(
                     receipt.preservedUnsyncedCount + receipt.unchangedCount).toLong()
                 check(!cancelled())
             } else {
-                RuntimeWorkspaceSession(context, workspaceGrant, projectID, runID, workspace).use { transfer ->
+                openWorkspaceSession(workspaceGrant, projectID, runID, workspace).use { transfer ->
                     val receipt = transfer.importNewInputs(
                         WorkspaceCancelSignal { cancelled() })
                     check(receipt.skippedCount == 0 && receipt.conflictPaths.isEmpty()) { "newWorkspaceInputsUnavailable" }
