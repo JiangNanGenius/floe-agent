@@ -1482,7 +1482,6 @@ internal class WorkspaceSourceHostController(
                             if (userConfirmed) service.grants.requestUserConfirmedRelease(SafUriRef(reference), flags)
                             else service.grants.requestRelease(SafUriRef(reference), flags)
                         }
-                        android.util.Log.i("FloeSourceGrant", "userConfirmed=$userConfirmed result=${release.javaClass.simpleName}")
                         val mapped = mapRelease(release)
                         mutate { it.copy(lastResult = mapped) }
                         refresh()
