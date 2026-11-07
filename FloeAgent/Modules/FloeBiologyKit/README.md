@@ -19,7 +19,7 @@ Swift 6; iOS/iPadOS 26+, core/engine on macOS 15+. No external Swift dependency 
 | Domain | Native component | Optional mature engines |
 | --- | --- | --- |
 | Sequence | FASTA/FASTQ, bounded GenBank, range/annotation editing, map, translation, six-frame ORFs, linear-gap alignment, Newick tree/layout/selection | Biopython rich records, affine alignment, genetic codes, neighbor joining, rich exports |
-| Structure | PDB/mmCIF, model/chain/atom selection, distance/contacts, coordinate projection and SceneKit ribbon built from actual Cα coordinates with deposited helix/sheet annotations | Gemmi parsing/selection, KD-tree contacts, Kabsch superposition using current edited coordinates |
+| Structure | PDB/mmCIF, model/chain/atom selection, distance/contacts, Metal-backed atom/backbone/ribbon scenes with 4× MSAA, temporal antialiasing and static jitter; continuous Cα ribbon frames with deposited helix/sheet annotations | Gemmi parsing/selection, KD-tree contacts, Kabsch superposition using current edited coordinates |
 | Microscopy | Numeric image/PGM, C/Z/T and ROI, segmentation/measurements, MRC/CCP4 physical-axis slices and bounded native isosurfaces | tifffile/Zarr bounded pyramid regions, OME calibration/series metadata, scikit-image segmentation/morphology/overlay |
 | Omics | CSV/TSV, matrix edits, gene/cell selection, heatmap, QC, normalization/log1p/gene statistics | AnnData H5AD/MTX, Scanpy PCA/Leiden/UMAP, Welch/BH comparisons and export |
 | Network | Species/reaction/rate editing, reaction map, RK4 trajectories, sweeps and Charts | SciPy solvers, libSBML import/export, libRoadRunner/CVODE general SBML with rate/assignment rules and events |

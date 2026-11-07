@@ -14,23 +14,28 @@ struct BiologyResultView:View {
             "objects":"对象数","threshold":"阈值","minimum":"最小值","maximum":"最大值","mean":"平均值","pixels":"像素数",
             "genes":"基因数","cells":"细胞数","zeroCells":"空细胞数","steps":"步数","finalTime":"结束时间","completeORFs":"完整阅读框数","clusters":"聚类数"
         ]
-        return Locale.preferredLanguages.first?.hasPrefix("zh")==true ? (map[key] ?? key):key
+        let english:[String:String]=["length":"Length","GC_percent":"GC content (%)","aminoAcids":"Amino acids","stops":"Stop codons","score":"Alignment score","identity_percent":"Identity (%)","atoms":"Atoms","polymerAtoms":"Polymer atoms","residues":"Residues","chains":"Chains","geometricGyration_A":"Geometric radius (Å)","distance_A":"Distance (Å)","contacts":"Contacts","objects":"Objects","threshold":"Threshold","minimum":"Minimum","maximum":"Maximum","mean":"Mean","pixels":"Pixels","genes":"Genes","cells":"Cells","zeroCells":"Empty cells","steps":"Steps","finalTime":"End time","completeORFs":"Complete ORFs","clusters":"Clusters"]
+        if key.hasPrefix("final_"){return biologyText("Final ","终值 · ")+String(key.dropFirst(6))}
+        return biologyText(english[key] ?? key.replacingOccurrences(of:"_",with:" "),map[key] ?? key)
     }
     private func numeric(_ value:Double)->String {String(format:"%.6g",value)}
     var body:some View {
         ScrollView {
             VStack(alignment:.leading,spacing:16) {
-                Text(BiologyLabels.method(run.method)).font(.title3.bold())
+                Text(BiologyLabels.method(run.method)).font(.title3.weight(.semibold)).padding(.bottom,4)
                 if let source,source.revision != run.assetRevision {
                     Label(biologyText("Result belongs to an earlier input revision.","结果对应较早的数据版本。"),systemImage:"clock.arrow.circlepath").foregroundStyle(.orange)
                 }
                 if let result=run.result {
+                    VStack(spacing:0) {
                     ForEach(result.metrics.keys.sorted(),id:\.self){key in
-                        LabeledContent(label(key),value:numeric(result.metrics[key]!))
+                        LabeledContent{Text(numeric(result.metrics[key]!)).foregroundStyle(.primary).fontWeight(.medium).monospacedDigit()}label:{Text(label(key))}
                             .accessibilityElement(children:.combine)
                             .accessibilityLabel(label(key)).accessibilityValue(numeric(result.metrics[key]!))
-                            .accessibilityIdentifier("biology.metric."+key)
+                            .accessibilityIdentifier("biology.metric."+key).padding(.vertical,11)
+                        if key != result.metrics.keys.sorted().last{Divider()}
                     }
+                    }.padding(.horizontal,16).biologyCanvas()
                     if result.details["textEncoding"]=="base64 PNG",let bytes=Data(base64Encoded:result.text),let image=UIImage(data:bytes) {
                         Image(uiImage:image).resizable().interpolation(.none).scaledToFit().frame(maxHeight:400)
                             .accessibilityLabel(biologyText("Measured object overlay","测量对象叠加图"))
@@ -50,7 +55,7 @@ struct BiologyResultView:View {
                             Grid(alignment:.leading,horizontalSpacing:16,verticalSpacing:8) {
                                 GridRow {
                                     Text(biologyText("Item","项目")).bold()
-                                    ForEach(Array(result.columns.enumerated()),id:\.offset){_,name in Text(name).bold().lineLimit(2)}
+                                    ForEach(Array(result.columns.enumerated()),id:\.offset){_,name in Text(label(name)).fontWeight(.semibold).lineLimit(2)}
                                 }
                                 ForEach(Array(result.rows.prefix(100).enumerated()),id:\.offset){i,row in
                                     GridRow {
@@ -58,7 +63,7 @@ struct BiologyResultView:View {
                                         ForEach(Array(row.enumerated()),id:\.offset){_,value in Text(numeric(value)).monospacedDigit()}
                                     }
                                 }
-                            }.font(.caption)
+                            }.font(.caption).padding(16).biologyCanvas()
                         }
                         if result.rows.count>100 {Text(biologyText("Showing the first 100 rows. Export includes the complete table.","显示前 100 行，导出包含完整表格。")).font(.caption).foregroundStyle(.secondary)}
                     }
@@ -72,8 +77,8 @@ struct BiologyResultView:View {
                 } else if run.isActive {ProgressView(biologyText("Calculating…","正在计算…"))}
                 else if let error=run.error {Text(error).foregroundStyle(.red)}
                 else {Text(run.status.rawValue)}
-            }.padding()
-        }.accessibilityIdentifier("biology.resultView")
+            }.padding(BiologyStyle.spacing).frame(maxWidth:880).frame(maxWidth:.infinity,alignment:.top)
+        }.background(BiologyStyle.background).accessibilityIdentifier("biology.resultView")
     }
 }
 struct BiologySequenceEditor:View {
@@ -94,18 +99,18 @@ struct BiologySequenceEditor:View {
             Form {
                 if let record {
                     Section(biologyText("Edit range · 1-based inclusive","编辑范围 · 从 1 开始的闭区间")) {
-                        TextField(biologyText("Start","起点"),value:$start,format:.number).keyboardType(.numberPad)
-                        TextField(biologyText("End","终点"),value:$end,format:.number).keyboardType(.numberPad)
+                        TextField(biologyText("Start","起点"),value:$start,format:.number).keyboardType(.numberPad).biologyNamedInput(biologyText("Start","起点"))
+                        TextField(biologyText("End","终点"),value:$end,format:.number).keyboardType(.numberPad).biologyNamedInput(biologyText("End","终点"))
                         Button(biologyText("Load range","加载范围")){load(record)}.frame(minHeight:44)
                     }
                     Section {
                         Button(biologyText("Clear replacement","清空替换内容"),role:.destructive){draft=""}.frame(minHeight:44).accessibilityIdentifier("biology.clearSequenceDraft")
-                        TextEditor(text:$draft).font(.system(.body,design:.monospaced)).frame(minHeight:240).autocorrectionDisabled().textInputAutocapitalization(.characters).accessibilityIdentifier("biology.sequenceDraft")
+                        TextEditor(text:$draft).font(.system(.body,design:.monospaced)).frame(minHeight:240).biologyInputSurface().autocorrectionDisabled().textInputAutocapitalization(.characters).accessibilityIdentifier("biology.sequenceDraft")
                     } footer:{Text(biologyText("Edit up to 20,000 symbols per range. Overlapping annotations and quality measurements are invalidated; originals are retained.","每次可编辑最多 20,000 个字符。相交注释和测量质量值会失效，原件保留。"))}
                     if let error {Text(error).foregroundStyle(.red)}
                 }
             }
-            .navigationTitle(biologyText("Edit sequence","编辑序列"))
+            .textFieldStyle(.roundedBorder).buttonStyle(BiologyControlButtonStyle()).navigationTitle(biologyText("Edit sequence","编辑序列"))
             .toolbar {
                 ToolbarItem(placement:.cancellationAction){Button(biologyText("Cancel","取消")){dismiss()}.disabled(saving)}
                 ToolbarItem(placement:.confirmationAction){Button(biologyText("Save","保存")){Task{await save()}}.disabled(saving).accessibilityIdentifier("biology.saveSequence")}
@@ -141,12 +146,12 @@ struct BiologyAnnotationEditor:View {
     var body:some View {
         NavigationStack {
             Form {
-                TextField(biologyText("Feature name","注释名称"),text:$name)
-                TextField(biologyText("Start · 1-based","起点 · 从 1 开始"),value:$start,format:.number)
-                TextField(biologyText("End · inclusive","终点 · 包含"),value:$end,format:.number)
+                TextField(biologyText("Feature name","注释名称"),text:$name).biologyNamedInput(biologyText("Feature name","注释名称"))
+                TextField(biologyText("Start · 1-based","起点 · 从 1 开始"),value:$start,format:.number).biologyNamedInput(biologyText("Start · 1-based","起点 · 从 1 开始"))
+                TextField(biologyText("End · inclusive","终点 · 包含"),value:$end,format:.number).biologyNamedInput(biologyText("End · inclusive","终点 · 包含"))
                 Toggle(biologyText("Reverse strand","反向链"),isOn:$reverse)
                 if let error {Text(error).foregroundStyle(.red)}
-            }.navigationTitle(biologyText("Add annotation","添加注释"))
+            }.textFieldStyle(.roundedBorder).buttonStyle(BiologyControlButtonStyle()).navigationTitle(biologyText("Add annotation","添加注释"))
             .toolbar {
                 ToolbarItem(placement:.cancellationAction){Button(biologyText("Cancel","取消")){dismiss()}}
                 ToolbarItem(placement:.confirmationAction){Button(biologyText("Save","保存")){Task{
@@ -172,31 +177,31 @@ struct BiologyNetworkEditor:View {
         NavigationStack {
             Form {
                 Section(biologyText("Initial amounts","初始量")) {
-                    ForEach(network.species.indices,id:\.self){i in TextField(network.species[i].id,value:$network.species[i].initialAmount,format:.number).accessibilityIdentifier("biology.species."+network.species[i].id)}
+                    ForEach(network.species.indices,id:\.self){i in TextField(network.species[i].id,value:$network.species[i].initialAmount,format:.number).accessibilityIdentifier("biology.species."+network.species[i].id).biologyNamedInput(network.species[i].id)}
                     Button(biologyText("Add species","添加物种")) {
                         var n=network.species.count+1;while network.species.contains(where:{$0.id=="S\(n)"}){n+=1}
                         network.species.append(.init(id:"S\(n)",initialAmount:0))
                     }
                 }
                 Section(biologyText("Reaction rates","反应速率")) {
-                    ForEach(network.reactions.indices,id:\.self){i in TextField(network.reactions[i].id,value:$network.reactions[i].rateConstant,format:.number).accessibilityIdentifier("biology.rate."+network.reactions[i].id)}
+                    ForEach(network.reactions.indices,id:\.self){i in TextField(network.reactions[i].id,value:$network.reactions[i].rateConstant,format:.number).accessibilityIdentifier("biology.rate."+network.reactions[i].id).biologyNamedInput(network.reactions[i].id)}
                 }
                 Section(biologyText("Units","单位")) {
-                    TextField(biologyText("Time unit","时间单位"),text:$network.timeUnit)
-                    TextField(biologyText("Amount unit","量的单位"),text:$network.amountUnit)
+                    TextField(biologyText("Time unit","时间单位"),text:$network.timeUnit).biologyNamedInput(biologyText("Time unit","时间单位"))
+                    TextField(biologyText("Amount unit","量的单位"),text:$network.amountUnit).biologyNamedInput(biologyText("Amount unit","量的单位"))
                 }
                 DisclosureGroup(biologyText("Edit complete model","编辑完整模型")) {
                     Button(biologyText("Load current model","载入当前模型")) {
                         do{let e=JSONEncoder();e.outputFormatting=[.prettyPrinted,.sortedKeys];json=String(decoding:try e.encode(network),as:UTF8.self)}catch{self.error=error.localizedDescription}
                     }
-                    TextEditor(text:$json).font(.system(.caption,design:.monospaced)).frame(minHeight:240).autocorrectionDisabled()
+                    TextEditor(text:$json).font(.system(.caption,design:.monospaced)).frame(minHeight:240).biologyInputSurface().autocorrectionDisabled()
                     Button(biologyText("Validate and apply model","校验并应用模型")) {
                         do {let value=try JSONDecoder().decode(BiochemicalNetwork.self,from:Data(json.utf8));try value.validate();network=value;error=nil}
                         catch{self.error=error.localizedDescription}
                     }
                 }
                 if let error {Text(error).foregroundStyle(.red)}
-            }.navigationTitle(biologyText("Edit network","编辑网络"))
+            }.textFieldStyle(.roundedBorder).buttonStyle(BiologyControlButtonStyle()).navigationTitle(biologyText("Edit network","编辑网络"))
             .toolbar {
                 ToolbarItem(placement:.cancellationAction){Button(biologyText("Cancel","取消")){dismiss()}}
                 ToolbarItem(placement:.confirmationAction){Button(biologyText("Save","保存")){Task{

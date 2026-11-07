@@ -68,27 +68,43 @@ public enum BiologyProteinRibbon {
         let carbonyl=Dictionary(atoms.filter{$0.name=="O"}.map{($0.residueID,$0)},uniquingKeysWith:{$1})
         var mesh=BiologyTriangleMesh()
         func point(_ a:StructureAtom)->SIMD3<Double> {SIMD3(a.x,a.y,a.z)}
-        var previousNormal=SIMD3<Double>(0,0,1)
+        // One frame per residue, shared by both adjacent segments. Using a
+        // separate fixed frame for each segment tears the ribbon at every Cα.
+        var sides:[SIMD3<Double>]=[]
+        for i in alpha.indices {
+            let p=point(alpha[i])
+            let before=i>0 && alpha[i-1].chain==alpha[i].chain && simd_length(point(alpha[i-1])-p)<5 ? point(alpha[i-1]):p
+            let after=i+1<alpha.count && alpha[i+1].chain==alpha[i].chain && simd_length(point(alpha[i+1])-p)<5 ? point(alpha[i+1]):p
+            let delta=after-before,tangent=simd_length(delta)>1e-9 ? simd_normalize(delta):SIMD3(1,0,0)
+            let continuous=i>0 && before != p
+            let guide=carbonyl[alpha[i].residueID].map{point($0)-p} ?? (continuous ? sides[i-1]:SIMD3(0,1,0))
+            var side=guide-tangent*simd_dot(guide,tangent)
+            if simd_length(side)<1e-8 {side=simd_cross(tangent,abs(tangent.z)<0.9 ? SIMD3(0,0,1):SIMD3(0,1,0))}
+            side=simd_normalize(side)
+            if continuous,simd_dot(side,sides[i-1])<0 {side = -side}
+            sides.append(side)
+        }
         for i in 0..<max(0,alpha.count-1) {
             if i%128==0 {try Task.checkCancellation()}
             let a=alpha[i],b=alpha[i+1],p1=point(a),p2=point(b)
             guard a.chain==b.chain,simd_length(p2-p1)<5,simd_length(p2-p1)>1e-9 else {continue}
             let p0=i>0 && alpha[i-1].chain==a.chain && simd_length(point(alpha[i-1])-p1)<5 ? point(alpha[i-1]):p1
             let p3=i+2<alpha.count && alpha[i+2].chain==a.chain && simd_length(point(alpha[i+2])-p2)<5 ? point(alpha[i+2]):p2
-            let tangent=simd_normalize(p2-p1)
-            var normal:SIMD3<Double>
-            if let oxygen=carbonyl[a.residueID] {normal=simd_cross(tangent,point(oxygen)-p1)}else{normal=previousNormal-tangent*simd_dot(previousNormal,tangent)}
-            if simd_length(normal)<1e-8 {normal=simd_cross(tangent,abs(tangent.z)<0.9 ? SIMD3(0,0,1):SIMD3(0,1,0))}
-            normal=simd_normalize(normal);if simd_dot(normal,previousNormal)<0{normal = -normal};previousNormal=normal
-            let side=simd_normalize(simd_cross(normal,tangent)),kind=deposited[a.chain+":"+String(a.residueNumber)] ?? 0
-            let width:Double=kind==1 ? 1.1:kind==2 ? 1.5:0.22
+            let kind=deposited[a.chain+":"+String(a.residueNumber)] ?? 0,nextKind=deposited[b.chain+":"+String(b.residueNumber)] ?? 0
+            func width(_ kind:UInt8)->Double {kind==1 ? 1.1:kind==2 ? 1.5:0.22}
             func sample(_ t:Double)->SIMD3<Double> {0.5*((2*p1)+(-p0+p2)*t+(2*p0-5*p1+4*p2-p3)*t*t+(-p0+3*p1-3*p2+p3)*t*t*t)}
+            func edge(_ t:Double)->SIMD3<Double> {
+                let derivative=0.5*((-p0+p2)+2*(2*p0-5*p1+4*p2-p3)*t+3*(-p0+3*p1-3*p2+p3)*t*t)
+                let tangent=simd_length(derivative)>1e-9 ? simd_normalize(derivative):simd_normalize(p2-p1)
+                var side=sides[i]*(1-t)+sides[i+1]*t;side-=tangent*simd_dot(side,tangent)
+                if simd_length(side)<1e-8 {side=sides[i]}
+                let size=kind==2 && nextKind != 2 ? width(kind)*(1-t)*1.5:width(kind)*(1-t)+width(nextKind)*t
+                return simd_normalize(side)*size
+            }
             for j in 0..<6 {
                 let t0=Double(j)/6,t1=Double(j+1)/6
-                let sheetEnd=kind==2 && (deposited[b.chain+":"+String(b.residueNumber)] ?? 0) != 2
-                let w0=sheetEnd ? width*(1-t0)*1.5:width,w1=sheetEnd ? width*(1-t1)*1.5:width
-                let c=sample(t0),d=sample(t1)
-                mesh.triangle(c-side*w0,c+side*w0,d+side*w1,kind:kind);mesh.triangle(c-side*w0,d+side*w1,d-side*w1,kind:kind)
+                let c=sample(t0),d=sample(t1),left=edge(t0),right=edge(t1)
+                mesh.triangle(c-left,c+left,d+right,kind:kind);mesh.triangle(c-left,d+right,d-right,kind:kind)
             }
         };return mesh
     }

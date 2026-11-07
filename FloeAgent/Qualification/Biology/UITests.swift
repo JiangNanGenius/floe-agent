@@ -81,6 +81,93 @@ import XCTest
         createExamples(app,"BiologyTools-"+String(UUID().uuidString.prefix(6)))
         try exerciseToolEdit(app)
     }
+    func testVisualWorkbenchPortraitAndLandscape() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["-AppleLanguages","(en)","-AppleLocale","en_AU"]
+        XCUIDevice.shared.orientation = .portrait;app.launch()
+        defer{app.terminate();XCUIDevice.shared.orientation = .portrait}
+        screenshot(app,"Biology-polish-library")
+        createExamples(app,"BiologyVisual-"+String(UUID().uuidString.prefix(6)))
+        select(app,"sequence");XCTAssertTrue(element(app,"biology.sequenceViewport").waitForExistence(timeout:10))
+        screenshot(app,"Biology-polish-sequence")
+        select(app,"proteinStructure")
+        let structure=element(app,"biology.structureViewport");XCTAssertTrue(structure.waitForExistence(timeout:20))
+        structure.swipeLeft();app.buttons["biology.structureFit"].tap()
+        screenshot(app,"Biology-polish-backbone")
+        app.segmentedControls["biology.structureRepresentation"].buttons["Atoms"].tap()
+        XCTAssertTrue(structure.waitForExistence(timeout:20));structure.swipeLeft()
+        screenshot(app,"Biology-polish-atoms")
+        app.segmentedControls["biology.structureRepresentation"].buttons["Ribbon"].tap()
+        let ribbon=element(app,"biology.ribbonViewport");XCTAssertTrue(ribbon.waitForExistence(timeout:20));ribbon.swipeLeft()
+        screenshot(app,"Biology-polish-ribbon")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let wide=XCTNSPredicateExpectation(predicate:NSPredicate{_,_ in app.windows.firstMatch.frame.width>app.windows.firstMatch.frame.height},object:nil)
+        XCTAssertEqual(XCTWaiter.wait(for:[wide],timeout:15),.completed)
+        app.buttons["biology.structureFit"].tap();XCTAssertTrue(ribbon.isHittable)
+        screenshot(app,"Biology-polish-ribbon-landscape")
+        XCUIDevice.shared.orientation = .portrait
+        let tall=XCTNSPredicateExpectation(predicate:NSPredicate{_,_ in app.windows.firstMatch.frame.height>app.windows.firstMatch.frame.width},object:nil)
+        XCTAssertEqual(XCTWaiter.wait(for:[tall],timeout:15),.completed)
+        select(app,"microscopyImage");XCTAssertTrue(element(app,"biology.imageViewport").waitForExistence(timeout:10))
+        screenshot(app,"Biology-polish-image")
+        select(app,"expressionMatrix");XCTAssertTrue(element(app,"biology.matrixHeatmap").waitForExistence(timeout:10))
+        screenshot(app,"Biology-polish-matrix")
+        select(app,"biochemicalNetwork");XCTAssertTrue(element(app,"biology.networkViewport").waitForExistence(timeout:10))
+        screenshot(app,"Biology-polish-network");analyze(app)
+        XCTAssertTrue(element(app,"biology.metric.final_A").exists);screenshot(app,"Biology-polish-result")
+        func chooseFormat(_ name:String){app.buttons["biology.materials"].tap();let row=element(app,"biology.assetFormat."+name);XCTAssertTrue(row.waitForExistence(timeout:10));row.tap()}
+        chooseFormat("newick");XCTAssertTrue(element(app,"biology.treeViewport").waitForExistence(timeout:10))
+        screenshot(app,"Biology-polish-tree")
+        chooseFormat("mrc");XCTAssertTrue(element(app,"biology.imageViewport").waitForExistence(timeout:15))
+        app.segmentedControls.buttons["Surface"].tap()
+        let surface=element(app,"biology.densitySurface");XCTAssertTrue(surface.waitForExistence(timeout:20));surface.swipeLeft()
+        screenshot(app,"Biology-polish-density")
+        XCTAssertEqual(app.webViews.count,0)
+    }
+    func testFramedControlsUseTheirFullHitArea() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["-AppleLanguages","(en)","-AppleLocale","en_AU"]
+        XCUIDevice.shared.orientation = .portrait;app.launch()
+        defer{app.terminate();XCUIDevice.shared.orientation = .portrait}
+        createExamples(app,"BiologyFields-"+String(UUID().uuidString.prefix(6)))
+        select(app,"sequence")
+        let record=app.buttons["biology.sequenceRecord"];XCTAssertTrue(record.waitForExistence(timeout:10))
+        XCTAssertGreaterThanOrEqual(record.frame.height,44)
+        record.coordinate(withNormalizedOffset:.init(dx:0.72,dy:0.5)).tap()
+        let second=app.buttons.matching(NSPredicate(format:"label BEGINSWITH %@", "FLOE_SYNTHETIC_B")).firstMatch
+        XCTAssertTrue(second.waitForExistence(timeout:5));second.tap()
+        screenshot(app,"Biology-framed-record-selector")
+        select(app,"expressionMatrix")
+        let gene=app.buttons["biology.geneField"],cell=app.buttons["biology.cellField"]
+        XCTAssertTrue(gene.waitForExistence(timeout:10));XCTAssertGreaterThanOrEqual(gene.frame.height,44)
+        gene.coordinate(withNormalizedOffset:.init(dx:0.72,dy:0.5)).tap()
+        XCTAssertTrue(app.buttons["GENE_C"].waitForExistence(timeout:5));app.buttons["GENE_C"].tap()
+        cell.coordinate(withNormalizedOffset:.init(dx:0.72,dy:0.5)).tap()
+        XCTAssertTrue(app.buttons["Cell_B2"].waitForExistence(timeout:5));app.buttons["Cell_B2"].tap()
+        let value=element(app,"biology.matrixSelectedValue");XCTAssertTrue(value.waitForExistence(timeout:5))
+        XCTAssertTrue(((value.value as? String) ?? value.label).contains("11"))
+        screenshot(app,"Biology-framed-matrix-selectors")
+        select(app,"proteinStructure");app.buttons["biology.analysis"].tap()
+        let form=app.collectionViews.firstMatch
+        for name in ["biology.modelField","biology.chainField","biology.environmentField","biology.methodField"] {
+            let field=app.buttons[name]
+            // Native Form creates rows as they enter its visible viewport.
+            // Scroll the actual sheet, including past the pinned Run action.
+            for _ in 0..<4 {if field.exists && field.isHittable{break};form.swipeUp()}
+            XCTAssertTrue(field.waitForExistence(timeout:5));XCTAssertTrue(field.isHittable)
+            XCTAssertGreaterThanOrEqual(field.frame.height,44)
+            if name=="biology.chainField"{screenshot(app,"Biology-framed-model-controls")}
+        }
+        let method=app.buttons["biology.methodField"]
+        method.coordinate(withNormalizedOffset:.init(dx:0.72,dy:0.5)).tap()
+        XCTAssertTrue(app.buttons["Structure geometry"].waitForExistence(timeout:5));app.buttons["Structure geometry"].tap()
+        XCTAssertEqual(method.value as? String,"Structure geometry")
+        screenshot(app,"Biology-framed-analysis-controls")
+        let run=app.buttons["biology.run"];XCTAssertTrue(run.isHittable);run.tap()
+        app.buttons["biology.closeAnalysis"].tap()
+        let show=app.buttons["biology.showResult"];XCTAssertTrue(show.waitForExistence(timeout:15));show.tap()
+        XCTAssertTrue(element(app,"biology.metric.polymerAtoms").waitForExistence(timeout:10))
+    }
     private func exerciseToolEdit(_ app:XCUIApplication) throws {
         select(app,"sequence")
         app.buttons["biology.more"].tap();app.buttons["biology.tools"].tap()

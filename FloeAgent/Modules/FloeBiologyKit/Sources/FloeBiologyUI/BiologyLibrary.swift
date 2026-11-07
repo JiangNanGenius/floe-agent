@@ -24,22 +24,22 @@ import FloeBiologyEngine
         NavigationStack {
             List {
                 Section {
-                    HStack {
-                        TextField(biologyText("Project name","项目名称"),text:$title).accessibilityIdentifier("biology.projectName")
+                    HStack(alignment:.bottom,spacing:12) {
+                        TextField(biologyText("Project name","项目名称"),text:$title).textFieldStyle(.roundedBorder).accessibilityIdentifier("biology.projectName").biologyNamedInput(biologyText("Project name","项目名称"))
                         Button(biologyText("Create","新建"),systemImage:"plus") {Task{await create(examples:false)}}
-                            .disabled(busy).frame(minWidth:60,minHeight:44).accessibilityIdentifier("biology.create")
+                            .buttonStyle(.borderedProminent).controlSize(.large).disabled(busy).frame(minWidth:60,minHeight:44).accessibilityIdentifier("biology.create")
                     }
                     Button(biologyText("Open a complete example project","打开完整示例项目"),systemImage:"play.rectangle") {Task{await create(examples:true)}}
-                        .frame(minHeight:44).disabled(busy).accessibilityIdentifier("biology.examples")
-                    Text(biologyText("Import your own data, or explore sequence, structure, image, matrix and network examples.","导入自己的数据，或体验序列、结构、图像、矩阵和网络示例。")).foregroundStyle(.secondary)
+                        .buttonStyle(BiologyControlButtonStyle()).frame(minHeight:44).disabled(busy).accessibilityIdentifier("biology.examples")
+                    Text(biologyText("Import your own data, or explore sequence, structure, image, matrix and network examples.","导入自己的数据，或体验序列、结构、图像、矩阵和网络示例。")).font(.subheadline).foregroundStyle(.secondary)
                 }
                 Section(biologyText("Projects","项目")) {
                     ForEach(projects) { p in
                         Button {route=p.id} label:{
                             HStack {
-                                Image(systemName:"folder")
+                                Image(systemName:"folder").foregroundStyle(.tint).frame(width:28)
                                 VStack(alignment:.leading,spacing:4) {
-                                    Text(p.title)
+                                    Text(p.title).foregroundStyle(.primary).font(.headline)
                                     Text("\(p.assets.count) "+biologyText("datasets","份数据")).font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer();Image(systemName:"chevron.right").foregroundStyle(.tertiary)
@@ -53,12 +53,13 @@ import FloeBiologyEngine
                 if !deleted.isEmpty {
                     Section(biologyText("Recently Deleted","最近删除")) {
                         ForEach(deleted) {p in
-                            HStack {Text(p.title);Spacer();Button(biologyText("Restore","恢复")){Task{do{_=try await service.restoreDeleted(p.id,projectID:p.projectID);try await reload()}catch{self.error=error.localizedDescription}}}.frame(minHeight:44).accessibilityIdentifier("biology.restoreDeleted."+p.projectID.uuidString)}
+                            HStack {Text(p.title);Spacer();Button(biologyText("Restore","恢复")){Task{do{_=try await service.restoreDeleted(p.id,projectID:p.projectID);try await reload()}catch{self.error=error.localizedDescription}}}.buttonStyle(BiologyControlButtonStyle()).frame(minHeight:44).accessibilityIdentifier("biology.restoreDeleted."+p.projectID.uuidString)}
                         }
                     }
                 }
                 if let error {Section{Text(error).foregroundStyle(.red)}}
             }
+            .listSectionSpacing(24)
             .navigationTitle(biologyText("Biology workbench","生物工作台"))
             .navigationDestination(item:$route) { id in BiologyWorkbench(service:service,projectID:id,onAI:onAI,onInsertInNotes:onInsertInNotes,executionOwner:executionOwner,makeTools:makeTools) }
             .task {do{try await reload()}catch{self.error=error.localizedDescription}}

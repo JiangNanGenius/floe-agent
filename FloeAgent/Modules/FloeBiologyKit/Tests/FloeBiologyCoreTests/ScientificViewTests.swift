@@ -41,4 +41,17 @@ final class BiologyScientificViewTests:XCTestCase {
         let empty=try BiologyProteinRibbon.build(structure,model:1,chain:"missing",deposited:classes);XCTAssertTrue(empty.vertices.isEmpty)
         XCTAssertTrue(mesh.vertices.allSatisfy{$0.x.isFinite && $0.y.isFinite && $0.z.isFinite})
     }
+    func testRibbonJoinsAtSharedResiduesWithoutChangingSourceCoordinates() throws {
+        let raw=try BiologySamples.data(for:.ubiquitinPDB),asset=try BiologyImporter.parse(title:"UBQ",format:"pdb",data:raw)
+        guard case .proteinStructure(let structure)=asset.payload else{return XCTFail("Structure missing")}
+        let mesh=try BiologyProteinRibbon.build(structure,model:1),alpha=structure.atoms.filter{$0.name=="CA" && !$0.hetero}
+        // Both sides of a shared residue meet. This detects the former cracks
+        // caused by independently rotating every consecutive ribbon segment.
+        for segment in 0..<alpha.count-2 {
+            let last=segment*36+30,next=(segment+1)*36
+            XCTAssertLessThan(simd_distance(mesh.vertices[last+5],mesh.vertices[next]),1e-5)
+            XCTAssertLessThan(simd_distance(mesh.vertices[last+2],mesh.vertices[next+1]),1e-5)
+        }
+        XCTAssertEqual(asset.originalData,raw)
+    }
 }

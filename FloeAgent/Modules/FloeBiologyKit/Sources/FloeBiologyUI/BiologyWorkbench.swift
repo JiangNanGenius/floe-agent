@@ -49,7 +49,7 @@ import FloeBiologySamples
                     if showResult,let run=model.run {BiologyResultView(run:run,source:model.selected)}
                     else {workspace}
                     if !model.activeRuns.isEmpty || model.run != nil {Divider();jobBar}
-                }.frame(maxWidth:.infinity,maxHeight:.infinity)
+                }.frame(maxWidth:.infinity,maxHeight:.infinity).background(BiologyStyle.background)
                 if geometry.size.width>1150 {Divider();properties.frame(width:300)}
             }
         }
@@ -65,7 +65,7 @@ import FloeBiologySamples
             if let error=model.error {
                 DisclosureGroup(biologyText("Unable to finish · details","操作未完成 · 详情")) {
                     Text(error).font(.caption).textSelection(.enabled)
-                    Button(biologyText("Dismiss","关闭")){model.error=nil}
+                    Button(biologyText("Dismiss","关闭")){model.error=nil}.buttonStyle(BiologyControlButtonStyle())
                 }.padding(10).background(.regularMaterial)
             }
         }
@@ -94,12 +94,13 @@ import FloeBiologySamples
                             .accessibilityIdentifier(a.kind == .externalDataset ? "biology.assetFormat."+a.originalFormat:"biology.asset."+a.kind.rawValue)
                     }
                 }label:{Image(systemName:"sidebar.left").frame(width:44,height:44)}
+                    .buttonStyle(BiologyControlButtonStyle(compact:true))
                     .accessibilityLabel(biologyText("Research materials","研究资料")).accessibilityIdentifier("biology.materials")
             }
             if let a=model.selected {
                 VStack(alignment:.leading,spacing:3) {
                     Text(a.title).font(.headline).lineLimit(2)
-                    Text(BiologyLabels.kind(a.kind)+" · "+biologyText("Saved","已保存")).font(.caption).foregroundStyle(.secondary)
+                    Label(BiologyLabels.kind(a.kind)+" · "+biologyText("Saved","已保存"),systemImage:"checkmark.circle").font(.caption).foregroundStyle(.secondary)
                 }
             } else {Text(biologyText("Import data or open an example","导入数据或打开示例")).foregroundStyle(.secondary)}
             Spacer()
@@ -109,7 +110,7 @@ import FloeBiologySamples
                     Text(biologyText("Data","数据")).tag(false);Text(biologyText("Result","结果")).tag(true)
                 }.pickerStyle(.segmented).frame(width:150).accessibilityIdentifier("biology.viewMode")
             }
-        }.padding(.horizontal).padding(.vertical,10)
+        }.padding(.horizontal,20).padding(.vertical,14).background(BiologyStyle.canvas)
     }
     private var materials:some View {
         List(selection:$model.selectedID) {
@@ -135,9 +136,9 @@ import FloeBiologySamples
             switch a.payload {
             case .sequence(let records):BiologySequenceView(records:records,recordIndex:$recordIndex,selectedRange:sequenceRange)
             case .proteinStructure(let s):BiologyRibbonView(asset:a,structure:s,selectedAtoms:$selectedAtoms,modelNumber:$structureModel,chain:$chain)
-            case .microscopyImage(let image):BiologyMicroscopyView(image:image,result:model.run?.result,channel:$channel,slice:$slice,frame:$frame,selectedRegion:storedSelection?["region"]?.array?.compactMap{$0.number.map(Int.init)})
+            case .microscopyImage(let image):BiologyMicroscopyView(image:image,result:model.run?.assetRevision==a.revision ? model.run?.result:nil,channel:$channel,slice:$slice,frame:$frame,selectedRegion:storedSelection?["region"]?.array?.compactMap{$0.number.map(Int.init)})
             case .expressionMatrix(let matrix):BiologyMatrixView(matrix:matrix,selection:storedSelection)
-            case .biochemicalNetwork(let network):ScrollView{BiologyNetworkView(network:network,result:model.run?.result)}
+            case .biochemicalNetwork(let network):ScrollView{BiologyNetworkView(network:network,result:model.run?.assetRevision==a.revision ? model.run?.result:nil)}
             case .externalDataset:
                 if ["newick","nwk","tree"].contains(a.originalFormat) {BiologyTreeView(data:a.originalData,selection:model.project?.selections?[a.id.uuidString]).id(a.id)}
                 else if a.fileReference==nil,["mrc","map","ccp4"].contains(a.originalFormat) {BiologyDensityView(data:a.originalData,selection:model.project?.selections?[a.id.uuidString]).id(a.id)}
@@ -196,39 +197,42 @@ import FloeBiologySamples
             if let a=model.selected {
                 Section(BiologyLabels.kind(a.kind)) {
                     if case .sequence = a.payload {
-                        Button(biologyText("Edit sequence","编辑序列"),systemImage:"pencil"){sheet = .sequence}.accessibilityIdentifier("biology.editSequence")
-                        Button(biologyText("Add annotation","添加注释"),systemImage:"tag"){sheet = .annotation}
-                        Picker(biologyText("Reading frame","阅读框"),selection:$translationFrame){ForEach([-3,-2,-1,1,2,3],id:\.self){Text(String($0)).tag($0)}}
-                        Picker(biologyText("Genetic code","遗传密码表"),selection:$geneticCode) {Text(biologyText("Standard","标准")).tag(1);Text(biologyText("Vertebrate mitochondrial","脊椎动物线粒体")).tag(2)}
+                        Button(biologyText("Edit sequence","编辑序列"),systemImage:"pencil"){sheet = .sequence}.buttonStyle(BiologyControlButtonStyle()).accessibilityIdentifier("biology.editSequence")
+                        Button(biologyText("Add annotation","添加注释"),systemImage:"tag"){sheet = .annotation}.buttonStyle(BiologyControlButtonStyle())
+                        BiologyChoiceField(title:biologyText("Reading frame","阅读框"),selection:$translationFrame,value:String(translationFrame),identifier:"biology.readingFrameField"){ForEach([-3,-2,-1,1,2,3],id:\.self){Text(String($0)).tag($0)}}
+                        BiologyChoiceField(title:biologyText("Genetic code","遗传密码表"),selection:$geneticCode,value:geneticCode==1 ? biologyText("Standard","标准"):biologyText("Vertebrate mitochondrial","脊椎动物线粒体"),identifier:"biology.geneticCodeField") {Text(biologyText("Standard","标准")).tag(1);Text(biologyText("Vertebrate mitochondrial","脊椎动物线粒体")).tag(2)}
                     }
                     if case .proteinStructure(let s)=a.payload {
-                        Picker(biologyText("Model","模型"),selection:$structureModel){ForEach(Array(Set(s.atoms.map(\.model))).sorted(),id:\.self){Text(String($0)).tag($0)}}
-                        Picker(biologyText("Chain","链"),selection:$chain) {Text(biologyText("All chains","所有链")).tag("");ForEach(Array(Set(s.atoms.map(\.chain))).sorted(),id:\.self){Text($0.isEmpty ? "∅":$0).tag($0)}}
-                        TextField(biologyText("Contact cutoff · Å","接触阈值 · Å"),value:$cutoff,format:.number)
+                        BiologyChoiceField(title:biologyText("Model","模型"),selection:$structureModel,value:String(structureModel),identifier:"biology.modelField"){ForEach(Array(Set(s.atoms.map(\.model))).sorted(),id:\.self){Text(String($0)).tag($0)}}
+                        BiologyChoiceField(title:biologyText("Chain","链"),selection:$chain,value:chain.isEmpty ? biologyText("All chains","所有链"):chain,identifier:"biology.chainField") {Text(biologyText("All chains","所有链")).tag("");ForEach(Array(Set(s.atoms.map(\.chain))).sorted(),id:\.self){Text($0.isEmpty ? "∅":$0).tag($0)}}
+                        TextField(biologyText("Contact cutoff · Å","接触阈值 · Å"),value:$cutoff,format:.number).biologyNamedInput(biologyText("Contact cutoff · Å","接触阈值 · Å"))
                         Text(biologyText("Tap two atoms in the viewport to measure their distance.","可在视图中轻点两个原子，测量它们的距离。")).font(.caption).foregroundStyle(.secondary)
                     }
                     if case .microscopyImage = a.payload {
-                        TextField(biologyText("Threshold · blank for Otsu","阈值 · 留空自动选择"),text:$threshold).keyboardType(.decimalPad).accessibilityIdentifier("biology.threshold")
+                        TextField(biologyText("Threshold · blank for Otsu","阈值 · 留空自动选择"),text:$threshold).keyboardType(.decimalPad).accessibilityIdentifier("biology.threshold").biologyNamedInput(biologyText("Threshold · blank for Otsu","阈值 · 留空自动选择"))
                     }
                     if case .biochemicalNetwork = a.payload {
-                        Button(biologyText("Edit network","编辑网络"),systemImage:"pencil"){sheet = .network}.accessibilityIdentifier("biology.editNetwork")
-                        TextField(biologyText("End time","结束时间"),value:$timeEnd,format:.number)
-                        TextField(biologyText("Maximum step","最大步长"),value:$step,format:.number)
+                        Button(biologyText("Edit network","编辑网络"),systemImage:"pencil"){sheet = .network}.buttonStyle(BiologyControlButtonStyle()).accessibilityIdentifier("biology.editNetwork")
+                        TextField(biologyText("End time","结束时间"),value:$timeEnd,format:.number).biologyNamedInput(biologyText("End time","结束时间"))
+                        TextField(biologyText("Maximum step","最大步长"),value:$step,format:.number).biologyNamedInput(biologyText("Maximum step","最大步长"))
                     }
                 }
                 Section(biologyText("Analysis","分析")) {
-                    Picker(biologyText("Execution location","执行位置"),selection:$environment){ForEach(model.methods.keys.sorted(),id:\.self){Text($0=="native.local" ? biologyText("This device","此设备"):$0).tag($0)}}
-                    Picker(biologyText("Method","方法"),selection:$selectedMethod){ForEach(model.methods[environment] ?? [],id:\.self){Text(BiologyLabels.method($0)).tag($0)}}
-                    Button(biologyText("Run analysis","运行分析"),systemImage:"play.fill"){Task{await startAnalysis()}}
-                        .buttonStyle(.borderedProminent).disabled(model.selected==nil || selectedMethod.isEmpty || model.busy).frame(minHeight:44).accessibilityIdentifier("biology.run")
+                    BiologyChoiceField(title:biologyText("Execution location","执行位置"),selection:$environment,value:environment=="native.local" ? biologyText("This device","此设备"):environment,identifier:"biology.environmentField"){ForEach(model.methods.keys.sorted(),id:\.self){Text($0=="native.local" ? biologyText("This device","此设备"):$0).tag($0)}}
+                    BiologyChoiceField(title:biologyText("Method","方法"),selection:$selectedMethod,value:BiologyLabels.method(selectedMethod),identifier:"biology.methodField"){ForEach(model.methods[environment] ?? [],id:\.self){Text(BiologyLabels.method($0)).tag($0)}}
                     DisclosureGroup(biologyText("Additional parameters","更多参数")) {
-                        TextEditor(text:$extraOptions).font(.system(.caption,design:.monospaced)).frame(height:100).autocorrectionDisabled()
+                        TextEditor(text:$extraOptions).font(.system(.caption,design:.monospaced)).frame(height:100).autocorrectionDisabled().biologyInputSurface()
                         Text(biologyText("Optional parameter object for the selected method.","可填写当前方法支持的参数对象。")).font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 if !a.warnings.isEmpty {Section(biologyText("Dataset notes","数据说明")){ForEach(Array(a.warnings.enumerated()),id:\.offset){_,s in Text(s).font(.caption)}}}
                 if !a.provenance.isEmpty {DisclosureGroup(biologyText("Source","来源")){ForEach(a.provenance.keys.sorted(),id:\.self){k in LabeledContent(k,value:a.provenance[k]!).font(.caption).textSelection(.enabled)}}}
             }
+        }.textFieldStyle(.roundedBorder)
+        .safeAreaInset(edge:.bottom){
+            Button{Task{await startAnalysis()}}label:{Label(biologyText("Run analysis","运行分析"),systemImage:"play.fill").frame(maxWidth:.infinity,minHeight:44)}
+                .buttonStyle(.borderedProminent).disabled(model.selected==nil || selectedMethod.isEmpty || model.busy).accessibilityIdentifier("biology.run")
+                .padding(16).background(BiologyStyle.canvas)
         }.onAppear{configureSelection()}
         .onChange(of:environment){_,_ in if !(model.methods[environment] ?? []).contains(selectedMethod){selectedMethod=model.methods[environment]?.first ?? ""}}
     }
@@ -241,9 +245,9 @@ import FloeBiologySamples
                 Text(runStatus(run.status)).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if run.isActive {
-                    Button {Task{await model.perform{try await model.service.cancel(model.projectID,runID:run.id)}}}label:{Text(biologyText("Stop","停止")).frame(minWidth:44,minHeight:44).contentShape(Rectangle())}.accessibilityIdentifier("biology.stop")
+                    Button(role:.destructive) {Task{await model.perform{try await model.service.cancel(model.projectID,runID:run.id)}}}label:{Text(biologyText("Stop","停止")).frame(minWidth:44,minHeight:44).contentShape(Rectangle())}.buttonStyle(BiologyControlButtonStyle()).accessibilityIdentifier("biology.stop")
                 } else {
-                    Button {showResult=true}label:{Text(biologyText("View result","查看结果")).frame(minWidth:44,minHeight:44).contentShape(Rectangle())}.accessibilityIdentifier("biology.showResult")
+                    Button {showResult=true}label:{Text(biologyText("View result","查看结果")).frame(minWidth:44,minHeight:44).contentShape(Rectangle())}.buttonStyle(BiologyControlButtonStyle()).accessibilityIdentifier("biology.showResult")
                 }
             }
         }.frame(minHeight:44).padding(.horizontal).accessibilityElement(children:.contain)
@@ -379,8 +383,8 @@ struct BiologyTextSheet:View {
     var body:some View {
         NavigationStack {
             Form {
-                if rename {TextField(biologyText("Project name","项目名称"),text:$text).focused($focused).disabled(!loaded || saving)}
-                else {TextEditor(text:$text).focused($focused).disabled(!loaded || saving).frame(minHeight:320).accessibilityIdentifier("biology.notesDraft")}
+                if rename {TextField(biologyText("Project name","项目名称"),text:$text).textFieldStyle(.roundedBorder).focused($focused).disabled(!loaded || saving)}
+                else {TextEditor(text:$text).focused($focused).disabled(!loaded || saving).frame(minHeight:320).biologyInputSurface().accessibilityIdentifier("biology.notesDraft")}
                 if !loaded || saving {ProgressView()}
                 if let error {Text(error).foregroundStyle(.red)}
             }.navigationTitle(rename ? biologyText("Rename project","重命名项目"):biologyText("Research notes","研究记录"))
@@ -423,7 +427,7 @@ struct BiologyHistorySheet:View {
                     }}.disabled(!model.activeRuns.isEmpty)
                 }
                 if let error {Text(error).foregroundStyle(.red)}
-            }.navigationTitle(biologyText("Version history","历史版本")).toolbar{ToolbarItem(placement:.confirmationAction){Button(biologyText("Done","完成")){dismiss()}}}
+            }.buttonStyle(BiologyControlButtonStyle()).navigationTitle(biologyText("Version history","历史版本")).toolbar{ToolbarItem(placement:.confirmationAction){Button(biologyText("Done","完成")){dismiss()}}}
             .task {do{revisions=try await model.service.history(model.projectID)}catch{self.error=error.localizedDescription}}
         }
     }
@@ -439,7 +443,7 @@ struct BiologyAssistantSheet:View {
         NavigationStack {
             Form {
                 if handler==nil {Text(biologyText("This qualification host has no connected model. The component accepts Floe's existing model and task services.","此验证宿主未连接模型。组件可接入 Floe 现有模型与任务服务。")).foregroundStyle(.secondary)}
-                TextField(biologyText("Ask about the selected dataset","询问选中的数据"),text:$prompt,axis:.vertical)
+                TextField(biologyText("Ask about the selected dataset","询问选中的数据"),text:$prompt,axis:.vertical).biologyNamedInput(biologyText("Question","问题"))
                 Button(biologyText("Send","发送")){Task{
                     guard let handler else{return};busy=true;defer{busy=false}
                     let context=BiologyAIContext(projectID:model.projectID,assetID:model.selectedID,assetRevision:model.selected?.revision,selectedRunID:model.run?.id)
@@ -447,7 +451,7 @@ struct BiologyAssistantSheet:View {
                 }}.disabled(handler==nil || busy || prompt.isEmpty)
                 if busy{ProgressView()}
                 if !reply.isEmpty{Text(reply).textSelection(.enabled)}
-            }.navigationTitle(biologyText("Research assistant","研究助手")).toolbar{ToolbarItem(placement:.confirmationAction){Button(biologyText("Done","完成")){dismiss()}}}
+            }.buttonStyle(BiologyControlButtonStyle()).navigationTitle(biologyText("Research assistant","研究助手")).toolbar{ToolbarItem(placement:.confirmationAction){Button(biologyText("Done","完成")){dismiss()}}}
         }
     }
 }
