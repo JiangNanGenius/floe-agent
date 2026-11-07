@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // Local-only asset origin for the CAD/3D WebView. Every request is answered
-// by this interceptor: pinned viewer bytes come from the APK asset directory,
+// by this interceptor: pinned viewer bytes come from the installed signed
+// `cadpreview` split through the hash-verified CadViewerAssets provider,
 // session bytes come from the exact immutable snapshots staged through the
 // native workspace egress. Unknown hosts/schemes get a local 403, so the page
 // can never reach the network, file://, content:// or another app's storage.
@@ -68,7 +69,12 @@ internal class C04CadWebAssetServer(
     private val context: Context,
     private val registry: C04CadAssetRegistry,
 ) {
-    private val components = com.floe.android.host.components.PreviewComponentStore.get(context)
+    private val viewerAssets = CadViewerAssets(context)
+
+    /** Bounded pre-render verification of every pinned viewer file
+     * inside the installed signed split; cached by manifest hash + version. */
+    suspend fun ensureAssetsVerified(): Boolean = viewerAssets.ensureVerified()
+    fun invalidateAssets() = viewerAssets.invalidate()
 
     fun serve(request: WebResourceRequest?): WebResourceResponse? {
         val uri = request?.url ?: return forbidden()
@@ -111,8 +117,10 @@ internal class C04CadWebAssetServer(
 
     private fun serveAsset(name: String): WebResourceResponse {
         val mime = ASSET_MIME[name] ?: return notFound()
+        // Only names pinned by the base-APK manifest are served, and only
+        // after the signed split's bytes passed the full manifest verification.
         val stream: InputStream = try {
-            components.cadFile(name)?.inputStream() ?: return notFound()
+            viewerAssets.openPinned(name) ?: return notFound()
         } catch (_: Throwable) {
             return notFound()
         }

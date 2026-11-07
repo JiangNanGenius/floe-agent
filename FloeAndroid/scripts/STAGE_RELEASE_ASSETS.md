@@ -347,3 +347,27 @@ Office-generation tests (synthetic, offline, no device/APK):
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v \
   FloeAndroid/scripts/tests/test_office_release_source.py
 ```
+
+## 11. CAD-generation releases (optional signed CAD viewer split)
+
+A release that carries the optional CAD preview component adds one step after
+the serialized producer build and the Office binding (section 10):
+
+```sh
+JAVA_HOME=/path/to/jdk python3 FloeAndroid/scripts/export-cad-component.py   --apk /path/to/cadpreview-full-release-signed.apk   --base-apk /path/to/Floe-Android-<version>-full-arm64-v8a.apk   --apksigner /path/to/apksigner --aapt2 /path/to/aapt2   --source <immutable-producer-commit>   --output /path/to/private-component-artifacts   --release-assets /path/to/upload-assets
+```
+
+The tool refuses anything but the signed `cadpreview` split of the exact base
+version and signer, requires the asset set to equal the base APK's pinned
+`assets/preview_components/cad.json` (every file byte- and digest-verified),
+refuses DEX and native libraries (asset-only, hasCode=false), writes the
+private `CAD_COMPONENT_SAVED.json` provenance record plus the public
+`Floe-CAD-Preview-<version>-full-arm64-v8a.component`, and appends the exact
+digest line to the public `SHA256SUMS`. Missing or unsigned offers can never
+be announced installed: the App verifies the release checksum before the
+system install session and reads back PackageManager state afterwards.
+
+The CAD viewer source licenses (`licenses/cad_viewer/`, base
+`assets/legal/cad-viewer/`) stay in the base source tree and the corresponding
+source archives; no extra CCS group is required beyond the existing full-tree
+producer. The base APK keeps only the small pin manifest.

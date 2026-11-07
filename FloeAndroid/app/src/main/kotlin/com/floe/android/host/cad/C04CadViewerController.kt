@@ -57,6 +57,7 @@ import kotlinx.serialization.json.put
 
 internal enum class C04CadFailure {
     OWNER,
+    COMPONENT,
     SOURCE,
     TOO_LARGE,
     INVALID,
@@ -161,7 +162,6 @@ internal class C04CadViewerController(
     private val generation = AtomicLong(0)
     private val registry = C04CadAssetRegistry()
     private val assetServer = C04CadWebAssetServer(context, registry)
-    private val previewComponents = com.floe.android.host.components.PreviewComponentStore.get(context)
     private val pendingCaptures = ConcurrentHashMap<String, CompletableDeferred<C04CadCapturePayload>>()
     private var jobs = LinkedHashSet<Job>()
     /** Capture/export jobs are Application-owned so view disposal cannot
@@ -277,6 +277,8 @@ internal class C04CadViewerController(
         val owner = failed.owner ?: return false
         return open(owner, failed.path, token, force = true, dark = dark)
     }
+
+    fun invalidateComponentAssets() = assetServer.invalidateAssets()
 
     fun close(token: Long) {
         val retired = synchronized(lock) {
@@ -633,7 +635,13 @@ internal class C04CadViewerController(
         try {
             if (!isCurrent(session)) throw SessionFailure(C04CadFailure.OWNER, "owner")
             client.handshake()
-            previewComponents.acquireCad("cad-view-${session.token}-${session.generation}") { isCurrent(session) }
+            // Viewer bytes come from the system-installed signed cadpreview
+            // split; every pinned file is streamed and hash-verified here
+            // before staging. A failed or tampered component is an honest
+            // COMPONENT failure, never a fake render error.
+            if (!assetServer.ensureAssetsVerified()) {
+                throw SessionFailure(C04CadFailure.COMPONENT, "viewerAssets")
+            }
             if (session.format == C04CadFormat.FLOECAD) {
                 runFloecadSession(session)
                 return
@@ -1468,7 +1476,6 @@ internal class C04CadViewerController(
     }
 
     private fun cleanupSession(session: Session) {
-        previewComponents.releaseCad("cad-view-${session.token}-${session.generation}")
         registry.remove(session.coreSessionID ?: "")
         val core = session.coreSessionID
         if (core != null) runCatching { client.end(core) }

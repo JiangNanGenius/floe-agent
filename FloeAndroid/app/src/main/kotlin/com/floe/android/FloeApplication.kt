@@ -51,6 +51,18 @@ class FloeApplication : Application() {
     internal val officeComponent by lazy {
         com.floe.android.host.officecomponent.OfficeComponentController(this, hostScope)
     }
+    internal val cadComponent by lazy {
+        com.floe.android.host.cadcomponent.CadComponentController(
+            this,
+            hostScope,
+            viewerInUse = {
+                (runtimeHost?.cadViewer?.state?.value
+                    ?: com.floe.android.host.cad.C04CadViewerState.Idle) !=
+                    com.floe.android.host.cad.C04CadViewerState.Idle
+            },
+            onComponentChanged = { runtimeHost?.cadViewer?.invalidateComponentAssets() },
+        )
+    }
     internal val diagnosticReporter by lazy {
         com.floe.android.host.reporting.DiagnosticReportService(this)
     }

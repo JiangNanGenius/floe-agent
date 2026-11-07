@@ -41,6 +41,8 @@ internal data class AppUpdateUiState(
     val intermediate: Boolean = false,
     val officeInstallBusy: Boolean = false,
     val reinstallsOffice: Boolean = false,
+    val cadInstallBusy: Boolean = false,
+    val reinstallsCad: Boolean = false,
 )
 
 /**
@@ -125,8 +127,14 @@ internal class AppUpdateController private constructor(
     private val mutable = MutableStateFlow(build())
     val ui: StateFlow<AppUpdateUiState> = mutable.asStateFlow()
     init {
+        val app = context.applicationContext as? com.floe.android.FloeApplication
         scope.launch {
-            (context.applicationContext as? com.floe.android.FloeApplication)?.officeComponent?.state?.collect {
+            app?.officeComponent?.state?.collect {
+                refresh()
+            }
+        }
+        scope.launch {
+            app?.cadComponent?.state?.collect {
                 refresh()
             }
         }
@@ -229,7 +237,13 @@ internal class AppUpdateController private constructor(
     }
 
     fun installNow(force: Boolean) {
-        if (context.getSharedPreferences("office_component_install", Context.MODE_PRIVATE).contains("session")) {
+        // Both sides of the busy gate: a base install never starts while an
+        // optional-component session owns the PackageInstaller, and the
+        // component backends symmetrically refuse while a base install is
+        // pending (SharedPrefsUpdateStore.pendingInstallJson).
+        if (context.getSharedPreferences("office_component_install", Context.MODE_PRIVATE).contains("session") ||
+            context.getSharedPreferences("cad_component_install", Context.MODE_PRIVATE).contains("session")
+        ) {
             refresh()
             return
         }
@@ -379,8 +393,14 @@ internal class AppUpdateController private constructor(
             blockingKinds = if (installBlocking) install.blockingKinds else emptySet(),
             pendingSystemIntent = intent,
             pendingInstall = PendingInstall.fromJson(store.pendingInstallJson) != null,
-            officeInstallBusy = context.getSharedPreferences("office_component_install", Context.MODE_PRIVATE).contains("session"),
+            officeInstallBusy = (context.applicationContext as? com.floe.android.FloeApplication)
+                ?.officeComponent?.state?.value?.working == true ||
+                context.getSharedPreferences("office_component_install", Context.MODE_PRIVATE).contains("session"),
             reinstallsOffice = com.floe.android.host.officecomponent.OfficeComponentController.installed(context),
+            cadInstallBusy = (context.applicationContext as? com.floe.android.FloeApplication)
+                ?.cadComponent?.state?.value?.working == true ||
+                context.getSharedPreferences("cad_component_install", Context.MODE_PRIVATE).contains("session"),
+            reinstallsCad = com.floe.android.host.cadcomponent.CadComponentController.installed(context),
             knownIssues = downloadRelease?.knownIssues
                 ?: DownloadMeta.fromJson(store.pendingDownloadJson)?.knownIssues.orEmpty(),
             intermediate = downloadRelease?.intermediate

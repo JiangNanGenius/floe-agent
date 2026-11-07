@@ -23,6 +23,13 @@ internal data class ApkIdentity(
     val versionName: String = "",
 )
 
+/** Exactly the App's declared optional preview splits. Referenced (not
+ * re-typed) so the update gate can never drift from the components. */
+internal val OPTIONAL_COMPONENT_MODULES = listOf(
+    com.floe.android.host.officecomponent.OfficeComponentController.MODULE,
+    com.floe.android.host.cadcomponent.CadComponentController.MODULE,
+)
+
 internal enum class ApkRejection {
     NOT_AN_APK,
     PACKAGE_MISMATCH,
@@ -83,11 +90,15 @@ internal class ApkIdentityReader(private val context: Context) {
         File(context.applicationInfo.sourceDir)
     }.getOrNull()
 
-    /** Optional Office data is outside the exact base-APK delta. Any other
-     * split layout still refuses the monolithic-base reconstruction path. */
+    /** Optional preview components are outside the exact base-APK delta.
+     * Any other split layout still refuses the monolithic-base reconstruction
+     * path. The recognized set is exactly the App's declared optional splits —
+     * never an arbitrary prefix. */
     fun hasNonOptionalSplits(): Boolean = runCatching {
-        context.applicationInfo.splitNames.orEmpty().any {
-            it != "officepreview" && !it.startsWith("officepreview.config.")
+        context.applicationInfo.splitNames.orEmpty().any { split ->
+            OPTIONAL_COMPONENT_MODULES.none { module ->
+                split == module || split.startsWith("$module.config.")
+            }
         }
     }.getOrDefault(true)
 

@@ -54,7 +54,7 @@ private fun StorageSettingsDestination(host: StorageSettingsHost, onDismiss: () 
                 FloeCapsuleAction(stringResource(R.string.storage_refresh), host::refresh, enabled = !state.busy)
                 if (state.busy) FloeActivityIndicator()
             }
-            com.floe.android.host.components.PreviewComponentSettings()
+            com.floe.android.host.cadcomponent.CadComponentSettings()
             com.floe.android.host.officecomponent.OfficeComponentSettings()
             com.floe.android.host.linux.LinuxSoftwareSettings()
             FloeSettingsSectionCard(stringResource(R.string.storage_usage)) {

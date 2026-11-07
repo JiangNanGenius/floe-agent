@@ -212,9 +212,15 @@ private fun ProgressContent(controller: AppUpdateController, ui: AppUpdateUiStat
 private fun ReadyContent(controller: AppUpdateController, ui: AppUpdateUiState) {
     val state = ui.download as AppDownloadState.Ready
     KnownIssuesContent(ui.knownIssues, ui.intermediate)
+    // A full base install replaces every split: an installed optional
+    // preview component is removed with the update and reinstalls on demand
+    // afterwards. The notice says exactly that; nothing claims availability
+    // that the committed package no longer contains.
     if (ui.reinstallsOffice) FloeText(stringResource(R.string.app_update_office_reinstall),
         style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
-    if (ui.officeInstallBusy) FloeText(stringResource(R.string.app_update_component_busy),
+    if (ui.reinstallsCad) FloeText(stringResource(R.string.app_update_cad_reinstall),
+        style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+    if (ui.officeInstallBusy || ui.cadInstallBusy) FloeText(stringResource(R.string.app_update_component_busy),
         style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
     FloeText(
         stringResource(R.string.app_update_ready),
@@ -241,7 +247,7 @@ private fun ReadyContent(controller: AppUpdateController, ui: AppUpdateUiState) 
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         FloeCapsuleAction(
             label = stringResource(R.string.app_update_install),
-            enabled = !ui.officeInstallBusy,
+            enabled = !(ui.officeInstallBusy || ui.cadInstallBusy),
             onClick = { controller.installNow(force = false) },
             tint = Floe.colors.accent,
         )

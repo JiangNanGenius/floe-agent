@@ -58,6 +58,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.floe.android.FloeApplication
 import com.floe.android.R
 import com.floe.android.WorkspaceDocumentHeader
 import com.floe.android.WorkspaceDocumentRequest
@@ -76,6 +77,8 @@ import com.floe.android.design.FloeText
 import com.floe.android.design.FloeToolbar
 import com.floe.android.design.FloeToolbarIconButton
 import com.floe.android.design.FloeUnavailableView
+import com.floe.android.host.cadcomponent.CadComponentController
+import com.floe.android.host.cadcomponent.CadComponentInstallSheet
 import com.floe.android.host.Owner
 import java.text.NumberFormat
 import java.util.Locale
@@ -93,6 +96,13 @@ internal fun C04CadViewerDestination(
 ) {
     val state by controller.state.collectAsState()
     val context = LocalContext.current
+    val cadComponent = (context.applicationContext as FloeApplication).cadComponent
+    val componentState by cadComponent.state.collectAsState()
+    // Same admission rule as the Office preview: PackageManager read-back plus
+    // no in-flight remove/confirm phase. Until then the heavy viewer bytes are
+    // simply absent, so the surface must not pretend to prepare the document.
+    val componentReady = componentState.phase == "installed" &&
+        CadComponentController.installed(context)
     var detailsVisible by rememberSaveable(request.token) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val dark = Floe.colors.readingSurface.luminance() < 0.5f
@@ -106,10 +116,16 @@ internal fun C04CadViewerDestination(
         }
     }
     val suggestedCaptureName = cadCaptureName(request.fileName)
-    LaunchedEffect(
-        request.token, request.path, owner.nativeEpoch, owner.hostGeneration, dark,
-    ) {
-        controller.open(owner, request.path, request.token, dark = dark)
+    if (componentReady) {
+        LaunchedEffect(
+            request.token, request.path, owner.nativeEpoch, owner.hostGeneration, dark,
+        ) {
+            controller.open(owner, request.path, request.token, dark = dark)
+        }
+    } else {
+        // First use: the signed component installs on demand (progress,
+        // cancel and system confirmation live in the shared component UI).
+        LaunchedEffect(request.token) { cadComponent.requestInstall() }
     }
     DisposableEffect(request.token) {
         onDispose {
@@ -133,7 +149,7 @@ internal fun C04CadViewerDestination(
         )
         FloeDivider()
         Box(Modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
-            if (current !is C04CadViewerState.Failed) {
+            if (componentReady && current !is C04CadViewerState.Failed) {
                 key(request.token) { C04CadViewerSurface(controller, request.token) }
             }
             when (current) {
@@ -166,6 +182,15 @@ internal fun C04CadViewerDestination(
                 )
             }
         }
+    }
+    if (!componentReady) {
+        // The document is untouched until the component is installed; cancel
+        // simply leaves the viewer, retry re-enters the same honest phases.
+        CadComponentInstallSheet(
+            visible = true,
+            onRetry = { cadComponent.requestInstall() },
+            onCancel = onBackToFiles,
+        )
     }
     if (detailsVisible) {
         C04CadDetailsSheet(
@@ -485,6 +510,7 @@ private fun FailureOverlay(
 ) {
     val bodyRes = when (state.failure) {
         C04CadFailure.OWNER -> R.string.workspace_document_cad_failed_owner
+        C04CadFailure.COMPONENT -> R.string.workspace_document_cad_failed_component
         C04CadFailure.SOURCE -> R.string.workspace_document_cad_failed_source
         C04CadFailure.TOO_LARGE -> R.string.workspace_document_cad_failed_too_large
         C04CadFailure.INVALID -> R.string.workspace_document_cad_failed_invalid

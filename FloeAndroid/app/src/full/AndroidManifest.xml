@@ -13,6 +13,10 @@
         <receiver android:name="com.floe.android.host.officecomponent.OfficeComponentStopReceiver" android:exported="false" />
         <service android:name="com.floe.android.host.officecomponent.OfficeComponentDownloadService"
             android:exported="false" android:foregroundServiceType="dataSync" android:stopWithTask="false" />
+        <receiver android:name="com.floe.android.host.cadcomponent.CadComponentInstallReceiver" android:exported="false" />
+        <receiver android:name="com.floe.android.host.cadcomponent.CadComponentStopReceiver" android:exported="false" />
+        <service android:name="com.floe.android.host.cadcomponent.CadComponentDownloadService"
+            android:exported="false" android:foregroundServiceType="dataSync" android:stopWithTask="false" />
         <receiver android:name="com.floe.android.host.deviceaccess.PhoneAutomationReceiver" android:exported="false" />
         <!-- C06 Full-only root capture foreground owner. It is absent from the
              Play source set; the main host starts it only when the Full root

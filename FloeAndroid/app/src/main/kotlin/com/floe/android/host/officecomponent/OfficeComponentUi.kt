@@ -23,6 +23,7 @@ internal fun OfficeComponentSettings() {
     val app = context.applicationContext as? FloeApplication ?: return
     val service = app.officeComponent
     val state by service.state.collectAsState()
+    OfficeComponentSystemConfirmation(service)
     LaunchedEffect(service) { service.refresh() }
     FloeSettingsSectionCard(title = stringResource(R.string.office_module_title)) {
         if (state.phase == "installed") {
@@ -31,13 +32,19 @@ internal fun OfficeComponentSettings() {
             FloeSectionRow(title = { FloeText(stringResource(R.string.preview_components_offline)) })
             FloeActionRow(stringResource(R.string.preview_components_uninstall), service::requestUninstall,
                 enabled = state.removable)
-        } else if (state.phase in setOf("downloading", "installing", "removing", "remove_pending")) {
+        } else if (state.phase in setOf("downloading", "cancelling", "clearing", "installing", "removing", "remove_pending")) {
             FloeSectionRow(title = { ComponentProgress(state) })
-            if (state.phase != "remove_pending") FloeActionRow(stringResource(R.string.cancel), service::cancel)
+            if (state.phase !in setOf("remove_pending", "cancelling", "clearing")) FloeActionRow(stringResource(R.string.cancel), service::cancel)
         } else {
             FloeSectionRow(title = { FloeText(stringResource(R.string.preview_components_on_demand)) })
             if (state.failure != null) FloeSectionRow(title = { FloeText(stringResource(R.string.preview_components_failed)) })
             FloeActionRow(stringResource(R.string.preview_components_install), service::requestInstall)
+        }
+        if (state.cachedBytes > 0) {
+            FloeValueRow(stringResource(R.string.preview_components_download_cache),
+                Formatter.formatFileSize(context, state.cachedBytes))
+            FloeActionRow(stringResource(R.string.preview_components_clear_cache),
+                service::requestClearCache, enabled = !state.working)
         }
     }
 }
@@ -69,6 +76,8 @@ private fun ComponentProgress(state: OfficeComponentState) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         FloeText(stringResource(when (state.phase) {
             "downloading" -> R.string.office_component_downloading
+            "cancelling" -> R.string.preview_components_cancelling
+            "clearing" -> R.string.preview_components_clearing
             "installing" -> R.string.office_component_installing
             "permission", "confirm", "play_confirm" -> R.string.office_component_confirmation
             "removing", "remove_pending" -> R.string.office_component_removing

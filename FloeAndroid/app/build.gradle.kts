@@ -380,8 +380,10 @@ android {
                 ?: error("Release key password environment variable ${floeReleaseKeyEnvName} is not set")
         }
     }
-    // CAD viewer bytes are immutable, hash-pinned optional data installed on
-    // first preview. Keep source assets for provenance without packing them.
+    // CAD viewer bytes are immutable, hash-pinned optional data that ships
+    // only in the signed :cadpreview on-demand split (first-use install,
+    // offline afterwards). This guard stays so the payload can never be
+    // accidentally packed back into the base APK.
     androidResources.ignoreAssetsPatterns += listOf(
         "!.svn", "!.git", "!.ds_store", "!*.scc", ".*", "<dir>_*", "!CVS",
         "!thumbs.db", "!picasa.ini", "!*~", "<dir>cad_viewer",
@@ -397,7 +399,7 @@ android {
         ndk { abiFilters += "arm64-v8a" }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
-    dynamicFeatures += setOf(":officepreview")
+    dynamicFeatures += setOf(":officepreview", ":cadpreview")
     flavorDimensions += "distribution"
     productFlavors {
         create("full") { dimension = "distribution"; applicationIdSuffix = ".full" }

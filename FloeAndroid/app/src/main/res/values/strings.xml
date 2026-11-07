@@ -628,6 +628,12 @@
     <string name="app_update_known_issues">Known issues</string>
     <string name="app_update_intermediate_notice">Intermediate test version. Some features may be incomplete.</string>
     <string name="app_update_issues_not_listed">This release does not provide a separate known-issues list. Review its release notes before installing.</string>
+    <string name="cad_module_title">CAD preview</string>
+    <string name="cad_component_downloading">Downloading the CAD preview component\u2026</string>
+    <string name="cad_component_installing">Installing the CAD preview component\u2026</string>
+    <string name="cad_component_confirmation">Continue in the system window to finish installing the component.</string>
+    <string name="cad_component_removing">Removal requested. The system may finish it after the app restarts.</string>
+    <string name="workspace_document_cad_failed_component">The CAD preview component is unavailable or failed verification. Reinstall it from Storage settings, then retry.</string>
     <string name="office_module_title">Office preview</string>
     <string name="preview_components_cad_size">Installed package size</string>
     <string name="office_component_downloading">Downloading the Office preview component…</string>
@@ -636,6 +642,8 @@
     <string name="office_component_removing">Removal requested. The system may finish it after the app restarts.</string>
     <string name="office_component_continue">Continue</string>
     <string name="app_update_office_reinstall">Office preview may need to be downloaded again after updating. Your documents are kept.</string>
+    <string name="app_update_cad_reinstall">CAD preview may need to be downloaded again after updating. Your documents are kept.</string>
+    <string name="cad_legacy_cache">Legacy preview cache (previous version)</string>
     <string name="app_update_component_busy">Finish or cancel the component installation before updating the app.</string>
     <string name="linux_software_title">Linux software</string>
     <string name="linux_software_size_hint">Package sizes are estimates. Shared dependencies remain in the environment total.</string>
@@ -652,4 +660,6 @@
     <string name="external_edit_linux">Use a Linux desktop application</string>
     <string name="workspace_document_cad_units_unspecified">Not specified</string>
     <string name="workspace_document_cad_more_actions">More actions</string>
+    <string name="preview_components_download_cache">Downloaded component cache</string>
+    <string name="preview_components_clearing">Clearing download cache…</string>
 </resources>

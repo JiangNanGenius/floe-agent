@@ -668,6 +668,16 @@ internal class AppUpdateInstaller(
      * [PackageInstaller.Session.commit] hands ownership to the system.
      */
     private fun commit(request: PendingInstallRequest) {
+        synchronized(com.floe.android.host.optionalsplit.PackageInstallAdmission.lock) {
+            if (com.floe.android.host.optionalsplit.PackageInstallAdmission.optionalSessions(context).isNotEmpty()) {
+                mutable.value = AppInstallState.Failed(InstallFailure.SYSTEM, "component-install-pending")
+                return
+            }
+            commitAdmitted(request)
+        }
+    }
+
+    private fun commitAdmitted(request: PendingInstallRequest) {
         val apk = request.apk
         val candidate = reader.read(apk)
         if (candidate == null || reader.rejectionFor(apk) != null) {
@@ -893,12 +903,14 @@ internal class AppUpdateInstaller(
     }
 
     private fun abandonOrphanSessions() {
-        runCatching {
+        synchronized(com.floe.android.host.optionalsplit.PackageInstallAdmission.lock) { runCatching {
+            val optional = com.floe.android.host.optionalsplit.PackageInstallAdmission.optionalSessions(context)
             val packageInstaller = context.packageManager.packageInstaller
             packageInstaller.mySessions
+                .filterNot { it.sessionId in optional }
                 .filter { it.appPackageName == context.packageName || it.appLabel?.toString() == INSTALL_LABEL }
                 .forEach { packageInstaller.abandonSession(it.sessionId) }
-        }
+        } }
     }
 
     /**

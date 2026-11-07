@@ -31,6 +31,7 @@ internal class GitHubAndroidReleaseFeed(
     private val connectTimeoutMs: Int = 20_000,
     private val readTimeoutMs: Int = 30_000,
     private val maxPageBytes: Long = 2L * 1024L * 1024L,
+    private val onConnection: (HttpURLConnection) -> Unit = {},
 ) : ReleaseFeed {
 
     private val base = "https://api.github.com/repos/$owner/$repo/releases"
@@ -52,6 +53,7 @@ internal class GitHubAndroidReleaseFeed(
             connection.setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
             // GitHub requires a User-Agent; this identifies the app only.
             connection.setRequestProperty("User-Agent", "floe-android-update")
+            onConnection(connection)
             val code = connection.responseCode
             if (code == HttpURLConnection.HTTP_FORBIDDEN || code == 429) {
                 if (connection.getHeaderField("X-RateLimit-Remaining") == "0" || code == 429) {
@@ -106,6 +108,7 @@ internal interface DownloadTransport {
 internal class HttpsDownloadTransport(
     private val connectTimeoutMs: Int = 30_000,
     private val readTimeoutMs: Int = 60_000,
+    private val onConnection: (HttpURLConnection) -> Unit = {},
 ) : DownloadTransport {
 
     override fun open(url: String, rangeFrom: Long?, ifRangeEtag: String?): DownloadResponse {
@@ -127,6 +130,7 @@ internal class HttpsDownloadTransport(
                 connection.setRequestProperty("Range", "bytes=$rangeFrom-")
                 if (!ifRangeEtag.isNullOrEmpty()) connection.setRequestProperty("If-Range", ifRangeEtag)
             }
+            onConnection(connection)
             val code = connection.responseCode
             if (code != HttpURLConnection.HTTP_OK && code != 206) {
                 throw IOException("http-$code")

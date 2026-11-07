@@ -10,18 +10,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-internal data class OfficeComponentState(val phase: String = "missing", val bytes: Long = 0,
-    val totalBytes: Long = 0, val failure: String? = null, val pendingIntent: Intent? = null,
-    val removable: Boolean = true, val installedBytes: Long = 0)
+// One state shape serves every optional preview component; the Office
+// name is kept so the verified Office UI/controller contract is unchanged.
+internal typealias OfficeComponentState =
+    com.floe.android.host.optionalsplit.OptionalComponentState
 
-internal interface OfficeComponentBackend {
-    fun install()
-    fun uninstall()
-    fun cancel()
-    fun onForeground(activity: Activity)
-    fun onInstallResult(intent: Intent) = Unit
-    fun confirm(activity: Activity) { onForeground(activity) }
-}
+// One backend contract serves every optional preview component; channel
+// distributions bind it to the Full/Play installers.
+internal typealias OfficeComponentBackend =
+    com.floe.android.host.optionalsplit.OptionalComponentBackend
 
 /** App-owned install state. PackageManager read-back, not a download callback,
  * is the only source of the installed flag. Both channels use one module identity. */
@@ -31,10 +28,14 @@ internal class OfficeComponentController(private val context: Context, scope: Co
     private val backend = OfficeComponentDistribution.create(context, scope,
         ::update, ::refresh, ::canRemove)
     fun requestInstall() {
-        if (state.value.phase in setOf("downloading", "installing", "confirm", "removing")) return
+        if (state.value.working) return
         if (installed(context)) { refresh(); return }
         backend.install()
     }
+    fun requestClearCache() {
+        if (canRemove()) backend.clearCache()
+    }
+
     fun cancel() { backend.cancel() }
     fun onInstallResult(intent: Intent) { backend.onInstallResult(intent) }
     fun confirm(activity: Activity) { backend.confirm(activity) }
@@ -50,11 +51,11 @@ internal class OfficeComponentController(private val context: Context, scope: Co
     }
     fun refresh() {
         if (installed(context)) {
-            if (state.value.phase in setOf("removing", "remove_pending", "confirm", "installing")) return
+            if (state.value.working) return
             val info = context.packageManager.getApplicationInfo(context.packageName, 0)
             val splitBytes = info.splitSourceDirs.orEmpty().filter { it.substringAfterLast('/').contains(MODULE) }
                 .sumOf { java.io.File(it).length() }
-            update(OfficeComponentState("installed", removable = canRemove(), installedBytes = splitBytes))
+            update(OfficeComponentState("installed", removable = canRemove(), installedBytes = splitBytes, cachedBytes = backend.cacheBytes()))
         } else if (state.value.phase == "installed") update(OfficeComponentState())
     }
     private fun update(value: OfficeComponentState) { mutable.value = value }

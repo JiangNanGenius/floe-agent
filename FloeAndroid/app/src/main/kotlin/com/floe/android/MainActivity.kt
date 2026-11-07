@@ -52,6 +52,7 @@ class MainActivity : ComponentActivity() {
         (application as FloeApplication).onPlatformActivityResumed(this)
         (application as FloeApplication).runtimeHost?.externalEdits?.onForeground()
         (application as FloeApplication).officeComponent.onForeground(this)
+        (application as FloeApplication).cadComponent.onForeground(this)
     }
     override fun onPause() {
         (application as FloeApplication).onPlatformActivityPaused()
