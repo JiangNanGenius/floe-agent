@@ -200,7 +200,7 @@ class SafGrantGatewayTest {
         assertTrue(gateway.requestRelease(selected, setOf(SafAccessFlag.READ)) is ReleaseResult.NotOwned)
         val result = gateway.requestUserConfirmedRelease(selected, setOf(SafAccessFlag.READ, SafAccessFlag.WRITE))
         assertTrue(result is ReleaseResult.Released)
-        assertNull(fake.persisted[selected.uriString])
+        assertFalse(fake.backend.persistedGrants().any { it.uri == selected })
         assertNotNull(fake.persisted[other.uriString])
         assertTrue(gateway.ownedGrantUris().isEmpty())
         assertTrue(fake.takeLog.isEmpty())
