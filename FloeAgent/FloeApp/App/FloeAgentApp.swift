@@ -1323,23 +1323,29 @@ struct RootView: View {
             let drawerProgress = 1 - abs(interactiveOffset / drawerWidth)
             ZStack(alignment: .leading) {
                 contentColumn
+                    // Allocate space outside the destination's own navigation
+                    // bar. A floating leading button covered its Back/Cancel
+                    // item and long titles on compact screens.
+                    .safeAreaInset(edge: .top, spacing: 0) {
+                        HStack(spacing: 0) {
+                            Button { withAnimation(.snappy) { isPhoneSidebarOpen = true } } label: {
+                                Image(systemName: "sidebar.left").frame(width: 44, height: 44)
+                            }
+                            .opacity(drawerProgress == 0 ? 1 : 0)
+                            .allowsHitTesting(drawerProgress == 0)
+                            .accessibilityHidden(drawerProgress != 0)
+                            .accessibilityLabel("app.floe_agent_app.open_task_list")
+                            .accessibilityIdentifier("phone.sidebar.open")
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 8)
+                        .frame(height: 44)
+                        .background(.bar)
+                    }
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .scaleEffect(1 - drawerProgress * 0.025, anchor: .trailing)
                     .offset(x: drawerProgress * 18)
                     .clipShape(.rect(cornerRadius: drawerProgress * 22))
-                    .overlay(alignment: .topLeading) {
-                        if drawerProgress == 0 {
-                            Button { withAnimation(.snappy) { isPhoneSidebarOpen = true } } label: {
-                                Image(systemName: "sidebar.left")
-                                    .frame(width: 44, height: 44)
-                                    .background(.regularMaterial, in: Circle())
-                            }
-                            .padding(.leading, 8)
-                            .padding(.top, 4)
-                            .accessibilityLabel("app.floe_agent_app.open_task_list")
-                            .accessibilityIdentifier("phone.sidebar.open")
-                        }
-                    }
 
                 if drawerProgress > 0 {
                     Color.black.opacity(0.22 * drawerProgress)

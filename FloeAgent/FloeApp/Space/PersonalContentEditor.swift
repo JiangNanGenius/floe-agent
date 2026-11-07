@@ -16,6 +16,7 @@ struct PersonalContentEditor: View {
     let record: PersonalContentRecord
     @Environment(\.dismiss) private var dismiss
     @Environment(\.isPresented) private var isPresented
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @EnvironmentObject private var environment: AppEnvironment
     @State private var fileUsage: PersonalLibraryUsageLease?
     @State private var content: LoadedContent?
@@ -86,7 +87,9 @@ struct PersonalContentEditor: View {
             // Only dismissal releases its ownership; state deinit is a fallback.
             if !isPresented { fileUsage?.release(); fileUsage = nil }
         }
-        .environment(\.cadWorkbenchTransientlyCovered, showingAssistant || childWork != nil || sourceNote != nil || printPreparation != nil)
+        .environment(\.cadWorkbenchTransientlyCovered,
+                     (showingAssistant && horizontalSizeClass != .regular)
+                     || childWork != nil || sourceNote != nil || printPreparation != nil)
         .sheet(item: $printPreparation, onDismiss: { refreshEditor() }) { request in
             PrintPreparationSheet(request: request)
         }
@@ -95,14 +98,21 @@ struct PersonalContentEditor: View {
             Button(IDELanguageRunText.t("好", "OK")) { printPreparationError = nil }
         } message: { Text(printPreparationError ?? "") }
         .onChange(of: record.id) { _, _ in
+            showingAssistant = false
             printPreparation = nil; chemistryNotesRequest = nil; chemistryEpoch = UUID()
             cadImportRequest = nil; importedCADRecord = nil
         }
         .sheet(item: $chemistryNotesRequest, onDismiss: { refreshEditor() }) { request in
             NotesChemistryReturnSheet(recordID: request.recordID, projectID: request.projectID, objectID: request.objectID)
         }
-        .sheet(isPresented: $showingAssistant, onDismiss: { refreshEditor() }) {
-            StudioAssistantView(record: record)
+        .inspector(isPresented: Binding(get: { showingAssistant && record.kind != .meeting },
+                                        set: { if record.kind != .meeting { showingAssistant = $0 } })) {
+            StudioAssistantView(record: record, onClose: { showingAssistant = false })
+                .id(record.id)
+                .inspectorColumnWidth(min: 320, ideal: 420, max: 520)
+        }
+        .onChange(of: showingAssistant) { _, visible in
+            if !visible, record.kind != .meeting { refreshEditor() }
         }
         .sheet(item: $childWork, onDismiss: { refreshEditor() }) { value in
             PersonalContentEditor(record: value)
@@ -148,7 +158,7 @@ struct PersonalContentEditor: View {
                     case .music(let session):
                         MusicEditorView(session: session, onAssistant: { showingAssistant = true })
                     case .meeting(let session):
-                        MeetingProjectView(session: session)
+                        MeetingProjectView(session: session, record: record, assistantRequested: $showingAssistant)
                     case .chemistry(let session):
                         chemistrySurface(session)
                     case .text(let document):
@@ -194,7 +204,9 @@ struct PersonalContentEditor: View {
                 }
                 if content != nil {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button(IDELanguageRunText.t("作品助手", "Work assistant"), systemImage: "sparkles") {
+                        Button(record.kind == .meeting
+                               ? IDELanguageRunText.t("会议助手", "Meeting assistant")
+                               : IDELanguageRunText.t("作品助手", "Work assistant"), systemImage: "sparkles") {
                             showingAssistant = true
                         }.accessibilityIdentifier("space.editor.assistant")
                     }

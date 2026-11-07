@@ -14,37 +14,55 @@ public struct VirtualMachineWorkbenchView:View {
     @State private var smooth = true
     @State private var revision = UUID()
     @State private var exported:URL?
+    @State private var hasSavedResult = false
+    private let directory:URL
     private let initialFile:URL?
+    private let embedded:Bool
+    @State private var didLoadInitialFile = false
+    @State private var lastInitialFile:URL?
     private let autoCalculate:Bool
     private let autoPlay:Bool
-    public init(project:VirtualMachineProject,directory:URL,cellArtifact:CellSimulationArtifact? = nil,initialFile:URL? = nil,autoCalculate:Bool = false,autoPlay:Bool = false) {
+    public init(project:VirtualMachineProject,directory:URL,cellArtifact:CellSimulationArtifact? = nil,initialFile:URL? = nil,autoCalculate:Bool = false,autoPlay:Bool = false,embedded:Bool = false) {
         _model = State(initialValue:VirtualMachineModel(project:project,directory:directory,cellArtifact:cellArtifact))
-        self.initialFile = initialFile;self.autoCalculate = autoCalculate;self.autoPlay = autoPlay
+        self.directory = directory;self.initialFile = initialFile;self.autoCalculate = autoCalculate;self.autoPlay = autoPlay;self.embedded = embedded
     }
     public var body:some View {
+        Group {
+            if embedded { workbenchContent }
+            else { NavigationStack { workbenchContent } }
+        }
+    }
+    private var workbenchContent:some View {
         @Bindable var model = model
-        NavigationStack {
+        return Group {
             VStack(spacing:0) {
-                Picker(L("虚拟主轴页面","Virtual spindle page"),selection:$tab) {
-                    Text(L("三维回放","3D replay")).tag(0);Text(L("驱动估算","Drive estimate")).tag(1);Text(L("设置","Setup")).tag(2)
-                }.pickerStyle(.segmented).padding()
-                if tab == 0 { replay }
-                else if tab == 1 { drives }
-                else { setup }
+                if hasSavedResult && model.artifact == nil {
+                    HStack {
+                        Label(L("已有保存结果","Saved results available"),systemImage:"archivebox")
+                        Spacer()
+                        Button(L("打开已保存结果","Open saved results")) { model.reopen();tab = 0;refreshSavedResultPresence() }
+                            .buttonStyle(.bordered).accessibilityIdentifier("virtual.savedResult.open")
+                    }.font(.callout).padding(.horizontal,16).padding(.vertical,8).disabled(model.busy)
+                }
+                GeometryReader { geometry in
+                    if geometry.size.width >= 1_000 { wideContent(width:geometry.size.width) }
+                    else { compactContent }
+                }.accessibilityIdentifier("virtual.workspace")
                 if model.busy { ProgressView(value:model.progress).padding(.horizontal) }
-                if !model.notice.isEmpty { Text(model.notice).font(.callout).padding(8) }
+                if !model.notice.isEmpty { Text(displayNotice).font(.callout).padding(8) }
             }
-            .navigationTitle(L("虚拟主轴","Virtual spindles"))
+            .navigationTitle(L("虚拟机床配置","Virtual machine setup"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement:.cancellationAction) { Button(L("完成","Done")) { model.cancel();dismiss() } }
+                ToolbarItem(placement:.confirmationAction) { Button(L("完成","Done")) { model.cancel();dismiss() }.accessibilityIdentifier("virtual.done") }
                 ToolbarItemGroup(placement:.primaryAction) {
                     if model.busy { Button(L("取消","Cancel")) { model.cancel() } }
-                    else { Button(L("计算","Calculate"),systemImage:"play.fill") { model.calculate() }.accessibilityIdentifier("virtual.calculate") }
+                    else { Button(L("计算","Calculate")) { model.calculate() }.accessibilityIdentifier("virtual.calculate") }
                     Menu {
                         Button(L("完整配置","Complete setup")) { editing = true }
                         Button(L("加载","Load"),systemImage:"folder") { importing = true }
-                        Button(L("保存结果","Save result")) { model.save() }.disabled(model.artifact == nil)
-                        Button(L("重新打开","Reopen")) { model.reopen() }
+                        Button(L("保存结果","Save result")) { model.save();refreshSavedResultPresence() }.disabled(model.artifact == nil)
+                        Button(L("重新打开","Reopen")) { model.reopen();refreshSavedResultPresence() }
                         Button(L("导出设置","Export setup")) { export(input:true) }
                         Button(L("导出结果","Export result")) { export(input:false) }.disabled(model.artifact == nil)
                     } label: { Image(systemName:"ellipsis.circle").frame(width:44,height:44) }.disabled(model.busy)
@@ -54,13 +72,46 @@ public struct VirtualMachineWorkbenchView:View {
             .fileImporter(isPresented:$importing,allowedContentTypes:[.json,.data]) { result in
                 switch result { case .success(let url):model.load(url);case .failure(let error):model.report(error) }
             }
-            .task { if let initialFile { model.load(initialFile) } else if autoCalculate && model.artifact == nil { model.calculate() } }
+            .task(id:initialFile) {
+                if !didLoadInitialFile || lastInitialFile != initialFile {
+                    didLoadInitialFile = true;lastInitialFile = initialFile
+                    if let initialFile { model.load(initialFile) } else if autoCalculate && model.artifact == nil { model.calculate() }
+                }
+                refreshSavedResultPresence()
+            }
             .onChange(of:model.project) { _,_ in
                 if model.busy || (model.artifact != nil && model.artifact?.inputSHA256 != (try? ResearchArchive.digest(model.project))) { model.invalidate() }
             }
             .onChange(of:model.artifact?.inputSHA256) { _,value in revision = UUID();if value != nil && autoPlay { model.play() } }
             .onChange(of:model.speed) { _,_ in model.stop() }
-            .onDisappear { model.cancel() }
+        }
+        .onDisappear { if !editing && !importing { model.cancel() } }
+    }
+    private func refreshSavedResultPresence() {
+        let values = try? directory.appendingPathComponent("latest.floetwin").resourceValues(forKeys:[.isRegularFileKey,.isSymbolicLinkKey,.fileSizeKey])
+        hasSavedResult = values?.isRegularFile == true && values?.isSymbolicLink != true && (values?.fileSize ?? 0) > 0
+    }
+    private var compactContent:some View {
+        VStack(spacing:0) {
+            Picker(L("虚拟机床页面","Virtual machine page"),selection:$tab) {
+                Text(L("三维回放","3D replay")).tag(0);Text(L("驱动估算","Drive estimate")).tag(1);Text(L("设置","Setup")).tag(2)
+            }.pickerStyle(.segmented).padding().accessibilityIdentifier("virtual.pages")
+            if tab == 0 { replay } else if tab == 1 { drives } else { setup }
+        }
+    }
+    private func wideContent(width:CGFloat)->some View {
+        HStack(spacing:0) {
+            VStack(spacing:0) {
+                Text(L("设置","Setup")).font(.headline).frame(maxWidth:.infinity,alignment:.leading).padding(.horizontal,20).padding(.vertical,12)
+                setup
+            }.frame(width:min(420,width*0.38))
+            Divider()
+            VStack(spacing:0) {
+                Picker(L("虚拟机床页面","Virtual machine page"),selection:Binding(get:{ tab == 1 ? 1 : 0 },set:{ tab = $0 })) {
+                    Text(L("三维回放","3D replay")).tag(0);Text(L("驱动估算","Drive estimate")).tag(1)
+                }.pickerStyle(.segmented).padding().accessibilityIdentifier("virtual.pages")
+                if tab == 1 { drives } else { replay }
+            }.frame(maxWidth:.infinity,maxHeight:.infinity)
         }
     }
     private var replay:some View {
@@ -88,7 +139,7 @@ public struct VirtualMachineWorkbenchView:View {
                     if let snapshot = model.snapshot {
                         ForEach(snapshot.spindles) { spindle in
                             HStack {
-                                Text(model.project.cell.cell.spindles.first(where:{ $0.id == spindle.id })?.name ?? spindle.id)
+                                Text(spindleName(spindle.id))
                                 Spacer();Text(modeName(spindle.mode));Text(String(format:"%.0f rpm",spindle.rpm ?? 0)).monospacedDigit()
                                 Text(String(format:"%.1f°",spindle.wrappedPhaseDegrees)).monospacedDigit()
                             }.font(.callout)
@@ -114,11 +165,11 @@ public struct VirtualMachineWorkbenchView:View {
                     } else { Text(L("此时刻尚未检查。","This time has not been checked.")).foregroundStyle(.secondary) }
                     DisclosureGroup(L("回放与形体范围","Replay and geometry scope")) { ForEach(scene.warnings,id:\.self) { Text($0).font(.caption) } }
                 } else {
-                    ContentUnavailableView(L("准备虚拟主轴","Prepare virtual spindles"),systemImage:"rotate.3d",description:Text(L("计算后可查看主轴、卡盘、工件和刀具的命令回放。","Calculate to replay commanded spindle, chuck, workpiece and tool poses."))).frame(minHeight:360)
+                    ContentUnavailableView(L("准备虚拟机床","Prepare virtual machine"),systemImage:"rotate.3d",description:Text(L("计算后可查看主轴、卡盘、工件和刀具的命令回放。","Calculate to replay commanded spindle, chuck, workpiece and tool poses."))).frame(minHeight:360)
                 }
                 diagnostics
             }.padding()
-        }
+        }.accessibilityIdentifier("virtual.replay")
     }
     private var drives:some View {
         List {
@@ -145,7 +196,7 @@ public struct VirtualMachineWorkbenchView:View {
                 }
             } else { Text(L("尚无驱动估算。可在设置中加入显式参数。","No drive estimate yet. Add explicit parameters in Setup.")) }
             diagnostics
-        }
+        }.accessibilityIdentifier("virtual.drives")
     }
     private var setup:some View {
         @Bindable var model = model
@@ -177,16 +228,34 @@ public struct VirtualMachineWorkbenchView:View {
             } }
             Section { Button(L("完整配置与低频参数","Complete setup and uncommon parameters")) { editing = true }
                 Text(L("这里的形体和驱动参数是研究输入，请按实际设备填写。","Geometry and drive parameters here are research inputs. Enter your actual equipment data.")).font(.caption).foregroundStyle(.secondary) }
-        }.disabled(model.busy)
+        }.disabled(model.busy).accessibilityIdentifier("virtual.settings")
     }
     @ViewBuilder private var diagnostics:some View {
         if let exported { ShareLink(item:exported) { Label(L("分享导出文件","Share exported file"),systemImage:"square.and.arrow.up") } }
         if !model.diagnostic.isEmpty { DisclosureGroup(L("问题详情","Problem details")) { Text(model.diagnostic).font(.caption).textSelection(.enabled) } }
     }
-    private func number(_ title:String,value:Binding<Double>)->some View { TextField(title,value:value,format:.number).keyboardType(.numbersAndPunctuation).frame(minHeight:44) }
+    private func number(_ title:String,value:Binding<Double>)->some View {
+        LabeledContent {
+            TextField(title,value:value,format:.number)
+                .keyboardType(.numbersAndPunctuation).multilineTextAlignment(.trailing)
+                .frame(maxWidth:120).accessibilityLabel(title)
+        } label: { Text(title) }
+        .frame(minHeight:44)
+    }
     private func quantity(_ title:String,_ value:Double,_ unit:String)->some View { LabeledContent(title,value:String(format:"%.5g %@",value,unit)) }
     private func export(input:Bool) { do { exported = try model.export(input:input) } catch { model.report(error) } }
-    private func spindleName(_ id:String)->String { model.project.cell.cell.spindles.first(where:{ $0.id == id })?.name ?? L("主轴","Spindle") }
+    private func spindleName(_ id:String)->String {
+        guard let spindle = model.project.cell.cell.spindles.first(where:{ $0.id == id }) else { return L("主轴","Spindle") }
+        return ManufacturingDisplayNames.spindle(name:spindle.name,id:spindle.id)
+    }
+    private var displayNotice:String {
+        switch model.notice {
+        case "虚拟主轴已准备好", "Virtual spindles are ready": L("虚拟机床已准备好","Virtual machine is ready")
+        case "已保存虚拟主轴研究", "Virtual spindle study saved": L("已保存虚拟机床配置","Virtual machine setup saved")
+        case "虚拟主轴研究已打开", "Virtual spindle study opened": L("虚拟机床配置已打开","Virtual machine setup opened")
+        default: model.notice
+        }
+    }
     private func modeName(_ mode:CellMachineState.SpindleState.Mode)->String { switch mode { case .stopped:L("停转","Stopped");case .rpm:L("旋转","Rotating");case .cIndex:L("C轴定位","C index") } }
     private func verdictName(_ verdict:VirtualPoseCollision.Verdict)->String { switch verdict { case .clear:L("所查形体在此姿态无干涉","Queried bodies are clear at this pose");case .interference:L("此姿态存在形体干涉","Bodies interfere at this pose");case .unresolved:L("此姿态有未决查询或包络命中","This pose has unresolved queries or envelope hits");case .uncovered:L("此姿态没有有效查询覆盖","This pose has no effective query coverage") } }
 }

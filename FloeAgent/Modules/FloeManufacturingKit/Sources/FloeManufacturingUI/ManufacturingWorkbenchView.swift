@@ -8,6 +8,11 @@ public struct ManufacturingWorkbenchView: View {
     @State private var model: ManufacturingModel
     @State private var importFile = false
     @State private var editor: EditorSheet?
+    @State private var stockDraft:ManufacturingStockDraft?
+    @State private var stockPresentationID:UUID?
+    @State private var preferredCompactColumn:NavigationSplitViewColumn = .sidebar
+    @State private var columnVisibility:NavigationSplitViewVisibility = .automatic
+    @State private var visibilityBeforeResearch:NavigationSplitViewVisibility?
     @State private var exportItem: ExportItem?
     @State private var playing = false
     @State private var viewportRevision = UUID()
@@ -32,7 +37,7 @@ public struct ManufacturingWorkbenchView: View {
     }
     public var body: some View {
         @Bindable var model = model
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility:$columnVisibility,preferredCompactColumn:$preferredCompactColumn) {
             Form {
                 Section(L("加工设置","Machining setup")) {
                     Text(model.study.name).font(.headline)
@@ -41,7 +46,7 @@ public struct ManufacturingWorkbenchView: View {
                     } label: {
                         LabeledContent(L("机床与坐标系","Machine and coordinates"),value:model.study.machineSetup.map { machineName($0.kind) } ?? L("选择机床","Select machine"))
                     }.accessibilityIdentifier("study.machine")
-                    Button(L("毛坯与装夹","Stock and fixtures"),systemImage:"cube") { editor = .stock }.accessibilityIdentifier("study.stock")
+                    Button(L("毛坯与装夹","Stock and fixtures"),systemImage:"cube") { openStockEditor() }.accessibilityIdentifier("study.stock")
                     if model.study.turning.enabled || model.study.machineSetup?.kind == .lathe || model.study.machineSetup?.kind == .turnMill {
                         Button(L("车削型线","Turning profile"),systemImage:"point.topleft.down.to.point.bottomright.curvepath") { editor = .profile }.accessibilityIdentifier("study.profile")
                         Button(L("车削工序与刀片","Turning operations and insert"),systemImage:"wrench.and.screwdriver") { editor = .turningSetup }.accessibilityIdentifier("study.turningSetup")
@@ -96,8 +101,10 @@ public struct ManufacturingWorkbenchView: View {
                 } }
             }
             .navigationTitle(L("切削加工","Machining"))
+            .accessibilityIdentifier("manufacturing.sidebar")
             .disabled(model.isBusy)
         } detail: {
+            NavigationStack {
             VStack(spacing:0) {
                 ZStack(alignment:.topLeading) {
                     StockViewport(study:model.study,inputRevision:viewportRevision,artifact:model.artifact,replay:model.replay,showPaths:model.showPaths,showFixtures:model.showFixtures,smoothStock:model.smoothStock,showAssembly:model.showAssembly,showReference:model.showReference)
@@ -118,9 +125,13 @@ public struct ManufacturingWorkbenchView: View {
             .navigationTitle(L("加工预览","Machining preview"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if editor?.isResearch != true {
                 if let onAssistant {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button(L("作品助手", "Work assistant"), systemImage: "sparkles", action: onAssistant)
+                        Button(L("作品助手", "Work assistant"), systemImage: "sparkles") {
+                            if let stockDraft,let stockPresentationID { hideStockEditor(stockDraft.id,presentationID:stockPresentationID) }
+                            onAssistant()
+                        }
                             .accessibilityIdentifier("space.editor.assistant")
                     }
                 }
@@ -155,7 +166,7 @@ public struct ManufacturingWorkbenchView: View {
                         Button(L("生成 G-code","Generate G-code"),systemImage:"curlybraces") { editor = .ncPost }.disabled(model.artifact == nil || model.isBusy).accessibilityIdentifier("study.gcode")
                         Button(L("打开 G-code 轨迹","Open G-code trajectory"),systemImage:"point.topleft.down.to.point.bottomright.curvepath") { ncRequest = .init(file:nil) }.accessibilityIdentifier("study.nc")
                         Button(L("机床与坐标系","Machine and coordinates")) { editor = .machine }.disabled(model.isBusy)
-                        Button(L("毛坯与装夹","Stock and fixtures")) { editor = .stock }.disabled(model.isBusy)
+                        Button(L("毛坯与装夹","Stock and fixtures")) { openStockEditor() }.disabled(model.isBusy)
                         Button(L("刀具总成","Tool assembly"),systemImage:"wrench.and.screwdriver") { editor = .assembly }.disabled(model.isBusy).accessibilityIdentifier("study.assembly")
                         Button(L("保存结果","Save result"),systemImage:"square.and.arrow.down") { model.save() }.disabled(model.artifact == nil || model.isBusy).accessibilityIdentifier("study.save")
                         Button(L("重新打开","Reopen"),systemImage:"arrow.clockwise") { model.reopen() }.disabled(model.isBusy).accessibilityIdentifier("study.reopen")
@@ -166,6 +177,41 @@ public struct ManufacturingWorkbenchView: View {
                         Button(L("导出刀路","Export toolpath")) { export(stl:false) }.disabled(model.artifact == nil || model.isBusy).accessibilityIdentifier("study.exportPath")
                     } label: { Image(systemName:"ellipsis.circle").frame(width:44,height:44) }.accessibilityIdentifier("study.menu")
                 }
+                }
+            }
+            .navigationDestination(item:researchEditor) { item in
+                switch item {
+                case .cell: ManufacturingCellWorkbenchView(project:.demonstration(),directory:model.directory.appendingPathComponent("cell"),initialFile:researchFile,embedded:true)
+                case .virtual: VirtualMachineWorkbenchView(project:.demonstration(),directory:model.directory.appendingPathComponent("virtual"),initialFile:researchFile,embedded:true)
+                case .engineering: EngineeringWorkbenchView(directory:model.directory.appendingPathComponent("engineering"),initialFile:researchFile,embedded:true)
+                default: EmptyView()
+                }
+            }
+            }
+        }
+        .inspector(isPresented:stockEditorPresented) {
+            if let stockDraft,let presentationID = stockPresentationID {
+                ManufacturingStockEditor(session:stockDraft,isBusy:model.isBusy || checkingSource,isCurrentPresentation:{ isCurrentStockPresentation(stockDraft.id,presentationID:presentationID) },onHide:{ hideStockEditor(stockDraft.id,presentationID:presentationID) },onClose:{ finishStockEditor(stockDraft.id,presentationID:presentationID) }) { edited,expectedFingerprint in
+                    guard isCurrentStockPresentation(stockDraft.id,presentationID:presentationID) else { throw ManufacturingError.stale }
+                    guard !model.isBusy,!checkingSource else { throw StockEditorCommitError.busy }
+                    try model.replaceStudy(edited,expectedFingerprint:expectedFingerprint)
+                }
+                .id(presentationID)
+                .inspectorColumnWidth(min:340,ideal:400,max:480)
+                .accessibilityIdentifier("stock.inspector")
+            }
+        }
+        .onChange(of:editor) { previous,route in
+            if editor != .stock { stockPresentationID = nil }
+            if route?.isResearch == true {
+                if previous?.isResearch != true { visibilityBeforeResearch = columnVisibility }
+                // A research page uses the feature's available width. Keeping
+                // the machining form beside it defeats its wide workbench.
+                columnVisibility = .detailOnly
+                preferredCompactColumn = .detail
+            } else if previous?.isResearch == true {
+                columnVisibility = visibilityBeforeResearch ?? .automatic
+                visibilityBeforeResearch = nil
             }
         }
         .onChange(of:model.study) { _,_ in
@@ -178,7 +224,7 @@ public struct ManufacturingWorkbenchView: View {
         .fileImporter(isPresented:$importFile,allowedContentTypes:[.json,.data]) { outcome in
             switch outcome { case .success(let url): loadDocument(url); case .failure(let error): model.report(error) }
         }
-        .sheet(item:$editor,onDismiss:{ if let pendingNC { ncRequest = .init(file:pendingNC);self.pendingNC=nil } }) { item in
+        .sheet(item:parameterEditor,onDismiss:{ if let pendingNC { ncRequest = .init(file:pendingNC);self.pendingNC=nil } }) { item in
             switch item {
             case .machine: MachineSetupEditor(study:model.study) { edited in model.invalidate(); model.study = edited }
             case .ncPost:
@@ -186,7 +232,7 @@ public struct ManufacturingWorkbenchView: View {
                     CAMNCPostView(study:model.study,artifact:artifact,directory:model.directory.appendingPathComponent("nc")) { url in pendingNC=url;editor=nil }
                 }
             case .cam: CAMEditor(study:model.study,directory:model.directory) { edited in model.invalidate(); model.study = edited }
-            case .stock: ManufacturingStockEditor(study:model.study) { edited in model.invalidate(); model.study = edited }
+            case .stock: EmptyView() // Owned by the stock inspector.
             case .turningSetup: TurningSetupEditor(study:model.study) { edited in model.invalidate(); model.study = edited }
             case .profile: ProfileEditor(study:model.study) { edited in model.invalidate(); model.study = edited }
             case .motion: MotionEditor(study:model.study) { edited in model.invalidate(); model.study = edited }
@@ -194,9 +240,7 @@ public struct ManufacturingWorkbenchView: View {
             case .assembly: ToolAssemblyEditor(study:model.study) { edited in model.invalidate(); model.study = edited }
             case .cutting: TurningCuttingEditor(study:model.study) { edited in model.invalidate(); model.study = edited }
             case .assessment: ProcessAssessmentEditor(study:model.study) { edited in model.invalidate(); model.study = edited }
-            case .cell: ManufacturingCellWorkbenchView(project:.demonstration(),directory:model.directory.appendingPathComponent("cell"),initialFile:researchFile)
-            case .virtual: VirtualMachineWorkbenchView(project:.demonstration(),directory:model.directory.appendingPathComponent("virtual"),initialFile:researchFile)
-            case .engineering: EngineeringWorkbenchView(directory:model.directory.appendingPathComponent("engineering"),initialFile:researchFile)
+            case .cell,.virtual,.engineering: EmptyView() // Owned by the detail navigation destination.
             }
         }
         .fullScreenCover(item:$camPreview) { request in
@@ -240,6 +284,46 @@ public struct ManufacturingWorkbenchView: View {
         guard let artifact = model.artifact,!model.isBusy else { return }
         playing = false;camPreview = .init(source:.study(model.study,artifact),operationID:operationID)
     }
+    // One editor route remains authoritative. Professional pages push in the
+    // detail stack; small parameter forms retain their existing sheet. A late
+    // dismissal/pop cannot clear a different route.
+    private var parameterEditor:Binding<EditorSheet?> {
+        let presented = editor?.isResearch == true || editor == .stock ? nil : editor
+        return Binding(get:{ editor?.isResearch == true || editor == .stock ? nil : editor },set:{ value in
+            if let value { editor = value } else if editor == presented { editor = nil }
+        })
+    }
+    private var researchEditor:Binding<EditorSheet?> {
+        let presented = editor?.isResearch == true ? editor : nil
+        return Binding(get:{ editor?.isResearch == true ? editor : nil },set:{ value in
+            if let value { editor = value } else if editor == presented { editor = nil }
+        })
+    }
+    private var stockEditorPresented:Binding<Bool> {
+        let sessionID = stockDraft?.id,presentationID = stockPresentationID
+        return Binding(get:{
+            guard let sessionID,let presentationID else { return false }
+            return isCurrentStockPresentation(sessionID,presentationID:presentationID)
+        },set:{ presented in
+            if !presented,let sessionID,let presentationID { hideStockEditor(sessionID,presentationID:presentationID) }
+        })
+    }
+    private func isCurrentStockPresentation(_ sessionID:UUID,presentationID:UUID)->Bool {
+        editor == .stock && stockDraft?.id == sessionID && stockPresentationID == presentationID
+    }
+    private func openStockEditor() {
+        guard editor != .stock,!model.isBusy,!checkingSource else { return }
+        if stockDraft == nil { stockDraft = ManufacturingStockDraft(study:model.study) }
+        stockPresentationID = UUID();editor = .stock
+    }
+    private func hideStockEditor(_ sessionID:UUID,presentationID:UUID) {
+        guard isCurrentStockPresentation(sessionID,presentationID:presentationID) else { return }
+        stockPresentationID = nil;editor = nil
+    }
+    private func finishStockEditor(_ sessionID:UUID,presentationID:UUID) {
+        guard isCurrentStockPresentation(sessionID,presentationID:presentationID) else { return }
+        stockPresentationID = nil;editor = nil;stockDraft = nil
+    }
     private func operationRow(_ id:String,name:String,editor sheet:EditorSheet)->some View {
         Button {
             if model.artifact != nil { openSimulation(operationID:id) } else { editor = sheet }
@@ -258,7 +342,7 @@ public struct ManufacturingWorkbenchView: View {
                         number(L("半径","Radius"),value:$model.study.stock.radiusMM)
                         number(L("长度","Length"),value:Binding(get:{ model.study.stock.zMaxMM-model.study.stock.zMinMM },set:{ model.study.stock.zMaxMM = model.study.stock.zMinMM+$0 }))
                     }
-                    Button(L("形状、边界与预算","Shape, bounds and budgets")) { editor = .stock }.accessibilityIdentifier("study.stock")
+                    Button(L("形状、边界与预算","Shape, bounds and budgets")) { openStockEditor() }.accessibilityIdentifier("study.stock")
                     Picker(L("分辨率","Resolution"),selection:$model.study.stock.resolutionMM) {
                         ForEach([0.5,1.0,2.0],id:\.self) { Text($0,format:.number).tag($0) }
                     }
@@ -494,7 +578,11 @@ public struct ManufacturingWorkbenchView: View {
 }
 
 private struct NCWorkbenchRequest:Identifiable { let id=UUID();let file:URL? }
-private enum EditorSheet: String, Identifiable { case profile,motion,parameters,assembly,cutting,cam,stock,machine,turningSetup,assessment,cell,engineering,virtual,ncPost; var id: String { rawValue } }
+private enum EditorSheet: String, Identifiable, Hashable {
+    case profile,motion,parameters,assembly,cutting,cam,stock,machine,turningSetup,assessment,cell,engineering,virtual,ncPost
+    var id:String { rawValue }
+    var isResearch:Bool { switch self { case .cell,.engineering,.virtual:true;default:false } }
+}
 struct ExportItem: Identifiable { var id = UUID(); var url: URL }
 struct ShareFile: UIViewControllerRepresentable {
     var url: URL

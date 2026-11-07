@@ -117,6 +117,7 @@ private struct ToolboxConnectionPage: View {
     let onExport: (Data) -> Void
     @EnvironmentObject private var environment: AppEnvironment
     @State private var setup = ToolboxConnectionSetup()
+    @State private var attemptedConnection = false
     @State private var assistant: ToolboxConnection?
     @State private var peripherals: [BluetoothSerialPeripheral] = []
     @State private var selectedPeripheral: UUID?
@@ -187,8 +188,11 @@ private struct ToolboxConnectionPage: View {
                 } else {
                     TextField([ToolboxTool.http, .webSocket].contains(tool) ? "URL" : IDELanguageRunText.t("地址或主机名", "Address or hostname"), text: $setup.address)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("toolbox.address")
+                    inputError(.address)
                     if ![ToolboxTool.http, .webSocket].contains(tool) {
                         TextField(IDELanguageRunText.t("端口", "Port"), text: $setup.port).keyboardType(.numberPad)
+                            .accessibilityIdentifier("toolbox.port")
+                        inputError(.port)
                         if tool == .mqtt || setup.serial.connection == .tcp { Toggle("TLS", isOn: $setup.useTLS) }
                     }
                 }
@@ -199,8 +203,13 @@ private struct ToolboxConnectionPage: View {
                     TextField(IDELanguageRunText.t("用户名（可选）", "Username (optional)"), text: $setup.username).textInputAutocapitalization(.never)
                     SecureField(IDELanguageRunText.t("密码（可选）", "Password (optional)"), text: $setup.password)
                 }
-                if let error = center.failures[tool] { Text(error).foregroundStyle(.secondary) }
+                if inputIssues.isEmpty, let error = center.failures[tool] {
+                    Label(error, systemImage: "exclamationmark.circle.fill").foregroundStyle(.red)
+                        .accessibilityIdentifier("toolbox.connection.error")
+                }
                 Button(IDELanguageRunText.t("连接", "Connect")) {
+                    attemptedConnection = true
+                    guard setup.inputIssues(for: tool).isEmpty else { return }
                     var value = setup
                     if let selectedPeripheral {
                         value.bluetooth = BluetoothSerialEndpoint(peripheralID: selectedPeripheral, serviceUUID: serviceUUID,
@@ -215,6 +224,16 @@ private struct ToolboxConnectionPage: View {
             }
         }
         .onChange(of: setup.serial.connection) { _, value in if value != .tcp { setup.useTLS = false } }
+    }
+    private var inputIssues: [ToolboxConnectionInputIssue] {
+        attemptedConnection ? setup.inputIssues(for: tool) : []
+    }
+    @ViewBuilder private func inputError(_ field: ToolboxConnectionInputIssue.Field) -> some View {
+        if let issue = inputIssues.first(where: { $0.field == field }) {
+            Label(issue.localizedDescription, systemImage: "exclamationmark.circle.fill")
+                .font(.callout).foregroundStyle(.red)
+                .accessibilityIdentifier("toolbox." + field.rawValue + ".error")
+        }
     }
     @ViewBuilder private func workbench(_ owner: ToolboxConnection) -> some View {
         if let model = owner.httpModel { HTTPWorkbenchView(model: model, onSave: onSave, onExport: onExport) }

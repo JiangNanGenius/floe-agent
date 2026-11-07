@@ -6602,8 +6602,8 @@ struct WorkspaceCanvasView: View {
 
     @ViewBuilder private var canvasDetailWithModules: some View {
         if let kitStore, let record = personalRecord ?? moduleSession?.record {
-            // Toolbar preferences belong inside this split's detail column.
-            // An outer modifier has no navigation owner and drops its menu.
+            // Host actions render inside the original detail More menu. The
+            // modifier retains its services/sheets without another toolbar item.
             canvasDetail.modifier(CanvasModuleTools(record: record, store: kitStore, providedSession: moduleSession))
         } else { canvasDetail }
     }
@@ -6993,6 +6993,7 @@ struct WorkspaceCanvasView: View {
         // legacy scene nodes stay readable/read-only and migrate on first
         // edit; nothing here creates a second editor or parallel node path.
         Menu {
+            Section(IDELanguageRunText.t("画布与编辑", "Canvas and editing")) {
             Toggle("workspace.workspace_canvas_view.sync_this_canvas", isOn: Binding(
                 get: { store.project.sync.isEnabled },
                 set: { store.setSyncEnabled($0) }
@@ -7124,15 +7125,21 @@ struct WorkspaceCanvasView: View {
                     selectedStrokeIDs.removeAll()
                 }
             }
-            Menu("files.export") {
-                Button("workspace.workspace_canvas_view.editable_floe_canvas_package") { prepareExport(.package) }
-                Button("workspace.workspace_canvas_view.canvas_json_without_assets") { prepareExport(.json) }
-                Button("workspace.workspace_canvas_view.png_image") { prepareExport(.png) }
-                Button("PDF") { prepareExport(.pdf) }
+            }
+            CanvasModuleActionMenuItems()
+            CanvasModuleExportMenu {
+                Menu("files.export") {
+                    Button("workspace.workspace_canvas_view.editable_floe_canvas_package") { prepareExport(.package) }
+                    Button("workspace.workspace_canvas_view.canvas_json_without_assets") { prepareExport(.json) }
+                    Button("workspace.workspace_canvas_view.png_image") { prepareExport(.png) }
+                    Button("PDF") { prepareExport(.pdf) }
+                }
             }
         } label: {
             Image(systemName: "ellipsis.circle")
         }
+        .accessibilityLabel("workspace.workspace_canvas_view.more")
+        .accessibilityIdentifier("canvas.more")
     }
 
     private func createNode(_ factory: (CGPoint) -> UUID) {

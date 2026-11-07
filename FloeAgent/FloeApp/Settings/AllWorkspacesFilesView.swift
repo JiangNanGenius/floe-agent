@@ -87,6 +87,7 @@ struct AllWorkspacesFilesView: View {
                         }
                     } icon: { Image(systemName: workspace.kind == .project ? "folder" : "bubble.left") }
                 }
+                .accessibilityIdentifier("files.workspace." + workspace.id.uuidString)
             }
             if visible.isEmpty { ContentUnavailableView("settings.all_workspaces_files_view.no_matching_workspaces", systemImage: "folder") }
         }

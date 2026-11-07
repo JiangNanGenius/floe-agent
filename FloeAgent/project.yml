@@ -285,6 +285,9 @@ targets:
           - org.floeagent.ios.media-processing
           - org.floeagent.ios.continued.*
         FloeAPNsEnvironment: $(FLOE_APNS_ENVIRONMENT)
+        FloePushServiceBaseURL: https://www.floe-agent.com/api/v1/push
+        FloePushTestFlightURL: https://testflight.apple.com/join/nz6qeT2J
+        FloePushAppStoreURL: https://apps.apple.com/app/id6801209053
         UIBackgroundModes:
           - remote-notification
           - fetch
@@ -521,8 +524,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.8.4"
-        CURRENT_PROJECT_VERSION: "324"
+        MARKETING_VERSION: "1.8.5"
+        CURRENT_PROJECT_VERSION: "325"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -605,8 +608,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.4"
-        CURRENT_PROJECT_VERSION: "324"
+        MARKETING_VERSION: "1.8.5"
+        CURRENT_PROJECT_VERSION: "325"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -656,8 +659,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.4"
-        CURRENT_PROJECT_VERSION: "324"
+        MARKETING_VERSION: "1.8.5"
+        CURRENT_PROJECT_VERSION: "325"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -700,8 +703,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.4"
-        CURRENT_PROJECT_VERSION: "324"
+        MARKETING_VERSION: "1.8.5"
+        CURRENT_PROJECT_VERSION: "325"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -753,8 +756,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.4"
-        CURRENT_PROJECT_VERSION: "324"
+        MARKETING_VERSION: "1.8.5"
+        CURRENT_PROJECT_VERSION: "325"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -1658,6 +1661,12 @@ targets:
       - path: Tests/FloeAppTests/StudioRegisteredWorkflowTests.swift
       - path: Tests/FloeAppTests/StudioMusicChemistryContractTests.swift
       - path: Tests/FloeAppTests/StudioMachiningContractTests.swift
+      - path: Tests/FloeAppTests/CellSavedResultPresentationTests.swift
+      - path: Tests/FloeAppTests/APNsIntegrationContractTests.swift
+      - path: Tests/FloeAppTests/APNsHTTPContractTests.swift
+      - path: Tests/FloeAppTests/APNsEnrollmentContractTests.swift
+      - path: Tests/FloeAppTests/APNsNativeKeyLifecycleTests.swift
+      - path: Tests/FloeAppTests/StudioMeetingNotesContractTests.swift
       - path: Tests/FloeAppTests/StudioMediaContractTests.swift
       - path: Tests/FloeAppTests/StudioMediaImportAudioContractTests.swift
       - path: Tests/FloeAppTests/StudioCADRenameSaveContractTests.swift
@@ -1685,6 +1694,7 @@ targets:
       - path: Tests/FloeAgentRuntimeTests/DependencyWaitTests.swift
       - path: Tests/FloeAppTests/NativeToolboxIntegrationTests.swift
       - path: Tests/FloeAppTests/OrdinaryToolboxSessionTests.swift
+      - path: Tests/FloeAppTests/ToolboxConnectionInputTests.swift
       - path: Tests/FloeAppTests/SpaceEditorPresentationTests.swift
       - path: Tests/FloeAppTests/WorkspaceDeletionOwnerTests.swift
       - path: Tests/FloeWorkspaceTests/WorkspaceDeletionCASTests.swift
@@ -1700,6 +1710,8 @@ targets:
         product: FloePrintCore
       - package: FloeManufacturingKit
         product: FloeManufacturingCore
+      - package: FloeManufacturingKit
+        product: FloeManufacturingUI
       - package: FloeMusicKit
         product: FloeMusicCore
       - package: FloeMusicNative

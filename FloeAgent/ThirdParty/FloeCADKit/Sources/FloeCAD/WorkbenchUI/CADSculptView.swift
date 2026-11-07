@@ -6,7 +6,7 @@ struct CADSculptPanel:View {
     @Bindable var viewModel:EditorViewModel
     let selectedBodyIDs:[UUID]
     @Binding var allowMeshConversion:Bool
-    @Environment(\.dismiss) private var dismiss
+    let onClose:() -> Void
     @State private var choice:UUID?
     @State private var busy=false
     @State private var failure:String?
@@ -121,7 +121,7 @@ struct CADSculptPanel:View {
             guard viewModel.sculptEditingBody==BodyID(raw:raw) else {
                 failure=t("sourceChanged","The selected body changed. Choose it again.");return
             }
-            dismiss()
+            onClose()
         }
     }
 }

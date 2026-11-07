@@ -1,6 +1,6 @@
 # Privacy Policy · 隐私政策
 
-**Effective date / 生效日期：2026-10-16**
+**Effective date / 生效日期：2026-11-07**
 
 This page describes Floe Agent for iOS/iPadOS and its data flows. The English text comes first, followed by the Chinese version. The two language versions are intended to say the same thing; if they differ, please treat the specific wording with caution and contact us.
 
@@ -59,6 +59,7 @@ Floe Agent can connect to other services only when you enable, configure, or dir
 - **GitHub integration:** if you sign in to GitHub, the app talks directly to GitHub using an OAuth token stored in the Keychain, for source-control and Actions features you invoke.
 - **Downloaded models:** on-device MLX models and speech models are downloaded from Hugging Face over HTTPS, at your request, with pinned revisions and integrity checks. The catalogs of available skills and models are fetched from the project's public GitHub repository. Downloads mean that Hugging Face or GitHub receive the connection information their servers normally see, such as your IP address.
 - **Media processing:** on-device media tools (transcoding, OCR, image processing) run locally; generative image/video features call the cloud provider you configure.
+- **Optional push notifications:** Push is off by default. To register and deliver pushes after you enable it in Settings, Floe's push service stores a random installation identifier, an encrypted device notification token, registration-verification records, app version/channel, notification and background-refresh settings, and whether eligible scheduled work exists. These device-linked records support background refresh and optional version reminders; they are not used for advertising or cross-app tracking. Push registration does not send task or conversation content. Installation proofs are checked during enrollment; raw App Store verification proofs and Apple-account identifiers are not retained. Turning push off stops local processing and syncs revocation when online. Necessary revocation and verification records are retained to prevent late registrations from becoming active again. Background delivery remains controlled by iOS.
 
 The agent performs actions on your behalf within the permissions you grant; imported documents, web pages, and tool output are treated as content, never as permission to access new accounts or services.
 
@@ -159,6 +160,7 @@ Floe Agent **没有 Floe 账号体系**，也无需注册。应用不要求你�
 - **GitHub 集成：**登录 GitHub 后，应用使用保存在钥匙串中的 OAuth 令牌直接与 GitHub 通信，用于你主动使用的源码管理与 Actions 功能。
 - **模型下载：**设备本地 MLX 模型与语音模型在你主动操作时通过 HTTPS 从 Hugging Face 下载，版本固定并经过完整性校验。可用技能与模型目录从项目的公开 GitHub 仓库获取。下载时，Hugging Face 或 GitHub 的服务器会看到其通常记录的连接信息（如 IP 地址）。
 - **媒体处理：**转码、OCR、图像处理等媒体工具在本地运行；生成式图像/视频功能会调用你配置的云端服务商。
+- **可选推送通知：**推送默认关闭。你在设置中开启后，Floe 推送服务为登记和投递保存随机安装标识、加密的设备推送令牌、登记验证记录、应用版本与渠道、通知和后台刷新设置，以及是否存在有效计划工作的资格信息。这些记录关联本设备安装，用于后台刷新和可单独开启的版本提醒，不用于广告或跨应用追踪。推送登记不发送任务或对话正文。登记时会核验安装证明，不保留原始 App Store 验证凭证或 Apple 账号标识。关闭后本机停止处理推送，并在联网时同步撤销登记；必要的撤销和验证记录会保留，以防迟到的旧登记重新生效。实际后台投递由 iOS 决定。
 
 代理在你授予的权限内代表你执行操作；导入的文档、网页和工具输出只被视为内容，绝不构成登录新账号或新服务的授权。
 

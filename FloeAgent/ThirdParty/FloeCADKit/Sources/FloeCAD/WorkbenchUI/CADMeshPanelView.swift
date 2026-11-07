@@ -17,6 +17,7 @@ import SwiftUI
 struct CADMeshPanelView: View {
     let document: FloeCADDocument
     @Bindable var viewModel: EditorViewModel
+    let onStartSculpting: () -> Void
     @State private var selected: Set<UUID> = []
     @State private var outcome: [String: Any] = [:]
     @State private var busy = false
@@ -73,7 +74,8 @@ struct CADMeshPanelView: View {
                                                    selectedIDs.count),
                        tint: selectedIDs.count >= 1 ? .green : .secondary)
 
-            CADSculptPanel(document:document,viewModel:viewModel,selectedBodyIDs:selectedIDs,allowMeshConversion:$allowMeshDowngrade)
+            CADSculptPanel(document:document,viewModel:viewModel,selectedBodyIDs:selectedIDs,
+                allowMeshConversion:$allowMeshDowngrade,onClose:onStartSculpting)
 
             CADHybridModelingPanel(document:document,viewModel:viewModel,selectedBodyIDs:selectedIDs)
 

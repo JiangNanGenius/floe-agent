@@ -12,70 +12,138 @@ public struct ManufacturingCellWorkbenchView:View {
     @State private var selectedStep:Sheet?
     @State private var exported:URL?
     @State private var camPreview:CAMPreviewRequest?
+    @State private var confirmingSavedOpen = false
+    @State private var pendingSavedOpen:CellWorkbenchModel.SavedOpenRequest?
     private let directory:URL
     private let initialFile:URL?
+    private let embedded:Bool
+    @State private var didLoadInitialFile = false
+    @State private var lastInitialFile:URL?
     private enum Sheet:Identifiable {
         case step(String),complete
         var id:String { switch self { case .step(let id):"step:"+id;case .complete:"complete" } }
     }
-    public init(project:ManufacturingCellProject,directory:URL,initialFile:URL? = nil) { self.directory = directory;self.initialFile = initialFile;_model = State(initialValue:CellWorkbenchModel(project:project,directory:directory)) }
+    public init(project:ManufacturingCellProject,directory:URL,initialFile:URL? = nil,embedded:Bool = false) { self.directory = directory;self.initialFile = initialFile;self.embedded = embedded;_model = State(initialValue:CellWorkbenchModel(project:project,directory:directory)) }
     public var body:some View {
+        Group {
+            if embedded { workbenchContent }
+            else { NavigationStack { workbenchContent } }
+        }
+    }
+    private var workbenchContent:some View {
         @Bindable var model = model
-        NavigationStack {
-            VStack(spacing:0) {
-                Picker(L("制造单元页面","Manufacturing cell page"),selection:$tab) {
-                    Text(L("设置","Setup")).tag(0); Text(L("通道与排程","Channels and schedule")).tag(1); Text(L("结果","Results")).tag(2)
-                }.pickerStyle(.segmented).padding()
-                if tab == 0 { setup }
-                else if tab == 1 { schedule }
-                else { results }
-                if model.busy { ProgressView(value:model.progress).padding(.horizontal) }
-                if !model.notice.isEmpty { Text(model.notice).font(.callout).padding(8) }
+        return Group {
+            GeometryReader { geometry in
+                VStack(spacing:0) {
+                    if geometry.size.width >= 1_000 {
+                        HStack(spacing:0) {
+                            setup.frame(width:min(420,geometry.size.width * 0.34))
+                            Divider()
+                            VStack(spacing:0) {
+                                Picker(L("制造单元页面","Manufacturing cell page"),selection:Binding(get:{ tab == 2 ? 2:1 },set:{ tab = $0 })) {
+                                    Text(L("通道与排程","Channels and schedule")).tag(1);Text(L("结果","Results")).tag(2)
+                                }.pickerStyle(.segmented).padding()
+                                if tab == 2 { results } else { savedResultPrompt;schedule }
+                            }
+                        }
+                    } else {
+                        Picker(L("制造单元页面","Manufacturing cell page"),selection:$tab) {
+                            Text(L("设置","Setup")).tag(0);Text(L("通道与排程","Channels and schedule")).tag(1);Text(L("结果","Results")).tag(2)
+                        }.pickerStyle(.segmented).padding()
+                        if tab == 0 { savedResultPrompt;setup }
+                        else if tab == 1 { savedResultPrompt;schedule }
+                        else { results }
+                    }
+                    if model.busy {
+                        if model.openingSavedResult { ProgressView().padding(8) }
+                        else { ProgressView(value:model.progress).padding(.horizontal) }
+                    }
+                    if !model.notice.isEmpty { Text(model.notice).font(.callout).padding(8) }
+                }
             }
             .navigationTitle(L("多主轴与多刀塔","Spindles and turrets"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement:.cancellationAction) { Button(L("完成","Done")) { model.cancel(); dismiss() } }
+                ToolbarItem(placement:.confirmationAction) { Button(L("完成","Done")) { model.cancel();dismiss() }.accessibilityIdentifier("cell.done") }
                 ToolbarItemGroup(placement:.primaryAction) {
                     if let artifact = model.artifact {
                         Button(L("加工仿真","Simulate machining"),systemImage:"play.rectangle") { camPreview = .init(source:.cell(.init(cell:model.project),artifact)) }.accessibilityIdentifier("cell.simulate")
                     }
                     if model.busy { Button(L("取消","Cancel")) { model.cancel() } }
-                    else { Button(L("计算","Calculate"),systemImage:"play.fill") { model.calculate() }.accessibilityIdentifier("cell.calculate") }
+                    else {
+                        Button { model.calculate();tab = 2 } label: {
+                            HStack(spacing:6) {
+                                Image(systemName:"play.fill")
+                                Text(model.artifact == nil ? L("计算","Calculate"):L("重新计算","Recalculate"))
+                            }
+                        }.accessibilityIdentifier("cell.calculate")
+                    }
                     Menu {
                         Button(L("加载","Load"),systemImage:"folder") { importing = true }
                         Button(L("完整配置","Complete setup")) { selectedStep = .complete }
                         Button(L("保存结果","Save result")) { model.save() }.disabled(model.artifact == nil)
-                        Button(L("重新打开","Reopen")) { model.reopen() }
+                        Button(L("打开已保存结果","Open saved result"),systemImage:"folder") { requestSavedOpen() }
                         Button(L("导出配置","Export setup")) { export(input:true) }
                         Button(L("导出排程与刀路","Export schedule and paths")) { export(input:false) }.disabled(model.artifact == nil)
                     } label: { Image(systemName:"ellipsis.circle").frame(width:44,height:44) }.disabled(model.busy)
                 }
             }
+            .confirmationDialog(L("打开已保存结果？","Open saved result?"),isPresented:$confirmingSavedOpen,titleVisibility:.visible) {
+                Button(L("打开已保存结果","Open saved result"),role:.destructive) {
+                    if let request = pendingSavedOpen { model.reopen(request);tab = 2 }
+                    pendingSavedOpen = nil
+                }
+                Button(L("取消","Cancel"),role:.cancel) { pendingSavedOpen = nil }
+            } message: { Text(L("当前未保存的配置和结果将被替换。","This replaces the current unsaved setup and result.")) }
             .fileImporter(isPresented:$importing,allowedContentTypes:[.json,.data]) { outcome in
                 switch outcome { case .success(let url):model.load(url);case .failure(let error):model.report(error) }
             }
             .sheet(item:$selectedStep) { item in
                 switch item {
                 case .complete:
-                    ResearchSetupEditor(value:model.project,validate:{ try $0.validate() }) { value in model.invalidate();model.project = value }
+                    ResearchSetupEditor(value:model.project,validate:{ try $0.validate() }) { value in model.project = value }
                 case .step(let id):
                     if let index = model.project.cell.steps.firstIndex(where:{ $0.id == id }) {
                         CellStepEditor(step:model.project.cell.steps[index],cell:model.project.cell,directory:directory) { step in
-                            model.invalidate(); model.project.cell.steps[index] = step
+                            model.project.cell.steps[index] = step
                         }
                     }
                 }
             }
-            .task(id:initialFile) { if let initialFile { model.load(initialFile) } }
+            .task(id:initialFile) {
+                model.refreshSavedResultAvailability()
+                if !didLoadInitialFile || lastInitialFile != initialFile {
+                    didLoadInitialFile = true;lastInitialFile = initialFile
+                    if let initialFile { model.load(initialFile) }
+                }
+            }
             .fullScreenCover(item:$camPreview) { request in CAMSimulationWorkbenchView(source:request.source,directory:directory.appendingPathComponent("preview")) }
         }
+        .onDisappear { if camPreview == nil && selectedStep == nil && !importing { model.cancel() } }
+    }
+    @ViewBuilder private var savedResultPrompt:some View {
+        if model.artifact == nil, model.savedResultAvailability == .available || model.savedResultAvailability == .unavailable {
+            VStack(alignment:.leading,spacing:8) {
+                Text(model.savedResultAvailability == .unavailable
+                    ? L("保存的结果暂不可用，可重试打开。","The saved result is unavailable. Try opening it again.")
+                    : L("可打开已保存的制造单元，无需重新计算。","Open the saved manufacturing cell without recalculating.")).font(.callout)
+                Button(L("打开已保存结果","Open saved result"),systemImage:"folder") { requestSavedOpen() }
+                    .accessibilityIdentifier("cell.openSavedResult").disabled(model.busy)
+            }.frame(maxWidth:.infinity,alignment:.leading).padding(.horizontal).padding(.bottom,8)
+        }
+    }
+    private func requestSavedOpen() {
+        guard !model.busy else { return }
+        let request = model.savedOpenRequest()
+        if model.hasUnsavedChanges { pendingSavedOpen = request;confirmingSavedOpen = true }
+        else { model.reopen(request);tab = 2 }
     }
     private var setup:some View {
         @Bindable var model = model
         return Form {
             Section { TextField(L("名称","Name"),text:$model.project.cell.name) }
             ForEach(model.project.cell.spindles.indices,id:\.self) { i in
-                Section(model.project.cell.spindles[i].name) {
+                Section(ManufacturingDisplayNames.spindle(name:model.project.cell.spindles[i].name,id:model.project.cell.spindles[i].id)) {
                     number(L("最高转速 · rpm","Maximum speed · rpm"),value:$model.project.cell.spindles[i].maxRPM)
                     number(L("卡盘开口 · mm","Chuck opening · mm"),value:$model.project.cell.spindles[i].chuck.openingDiameterMM)
                     number(L("卡盘最大开口 · mm","Maximum chuck opening · mm"),value:$model.project.cell.spindles[i].chuck.maxOpeningDiameterMM)
@@ -102,9 +170,7 @@ public struct ManufacturingCellWorkbenchView:View {
                 LabeledContent(L("显式查询","Explicit checks"),value:"\(model.project.machineChecks.count)")
                 Text(L("几何、轴链与低频配置随完整配置文件保存；没有提供运动查询的工序会明确标为未覆盖。","Geometry, axis chains and uncommon settings are saved in the complete setup file. Operations without motion queries remain explicitly uncovered.")).font(.caption).foregroundStyle(.secondary)
             }
-        }.disabled(model.busy).onChange(of:model.project) { _,_ in
-            if model.busy || (model.artifact != nil && model.artifact?.inputSHA256 != (try? ResearchArchive.digest(model.project))) { model.invalidate() }
-        }
+        }.disabled(model.busy)
     }
     private var schedule:some View {
         List {
@@ -136,7 +202,7 @@ public struct ManufacturingCellWorkbenchView:View {
                 }
                 Section {
                     Button(L("加工仿真","Simulate machining"),systemImage:"play.rectangle") { camPreview = .init(source:.cell(.init(cell:model.project),artifact)) }
-                    NavigationLink(L("机床模型与驱动设置","Machine geometry and drive setup")) { VirtualMachineWorkbenchView(project:.init(cell:model.project),directory:directory.appendingPathComponent("virtual"),cellArtifact:artifact,autoCalculate:true) }
+                    NavigationLink(L("机床模型与驱动设置","Machine geometry and drive setup")) { VirtualMachineWorkbenchView(project:.init(cell:model.project),directory:directory.appendingPathComponent("virtual"),cellArtifact:artifact,autoCalculate:true,embedded:true) }
                 }
                 Section(L("剩余材料","Remaining material")) {
                     ForEach(artifact.finalStock.keys.sorted(),id:\.self) { key in
@@ -176,6 +242,19 @@ public struct ManufacturingCellWorkbenchView:View {
                         Text(artifact.machineFeedback[i].result.scope).font(.caption)
                         ForEach(artifact.machineFeedback[i].result.warnings,id:\.self) { Text($0).font(.caption) }
                     }
+                }
+            } else if model.savedResultAvailability == .available || model.savedResultAvailability == .unavailable {
+                ContentUnavailableView {
+                    Label(model.savedResultAvailability == .unavailable
+                        ? L("保存的结果暂不可用","Saved result unavailable")
+                        : L("已保存结果尚未打开","Saved result is not open"),systemImage:"doc.badge.clock")
+                } description: {
+                    Text(model.savedResultAvailability == .unavailable
+                        ? L("可重试打开，或在问题详情中查看原因。","Try opening it again, or see Problem details.")
+                        : L("打开后可查看已保存的排程和剩余材料，无需重新计算。","Open the saved schedule and remaining material without recalculating."))
+                } actions: {
+                    Button(L("打开已保存结果","Open saved result"),systemImage:"folder") { requestSavedOpen() }
+                        .accessibilityIdentifier("cell.openSavedResult").disabled(model.busy)
                 }
             } else { ContentUnavailableView(L("尚无结果","No results yet"),systemImage:"gearshape.2",description:Text(L("完成设置后计算。","Calculate after completing the setup."))) }
             if let exported { ShareLink(item:exported) { Label(L("分享导出文件","Share exported file"),systemImage:"square.and.arrow.up") } }

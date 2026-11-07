@@ -43,6 +43,7 @@ public enum ToolAliasTable {
         "pdf": ["pdf"],
         "cad": ["cad", "dwg", "dxf", "drawing", "图纸", "图纸助手", "工程图", "二维图", "cad drawing", "建筑", "墙体", "房间"],
         "office": ["markdown", "rtf", "富文本", "格式转换", "互转", "office", "word", "excel", "powerpoint", "ppt", "幻灯片", "演示文稿", "表格", "工作簿", "文档"],
+        "studio": ["studio", "current work", "native work", "作品", "作品助手", "当前会议", "会议笔记", "会议", "meeting", "meeting notes", "cad", "加工", "制造单元", "多主轴", "多刀塔", "machining", "multi-spindle", "multi-turret"],
         "http": ["http", "接口", "api", "rest", "请求", "网页接口"],
         "network": ["network", "网络", "ping", "dns", "http", "端口", "traceroute"],
         "toolbox": ["websocket", "mqtt", "broker", "通信捕获", "收发记录", "套接字"],

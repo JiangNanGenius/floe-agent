@@ -94,6 +94,12 @@
 	<string>https://www.floe-agent.com/ios-bridge</string>
 	<key>FloeMacBridgeDownloadURL</key>
 	<string>https://www.floe-agent.com/bridge</string>
+	<key>FloePushAppStoreURL</key>
+	<string>https://apps.apple.com/app/id6801209053</string>
+	<key>FloePushServiceBaseURL</key>
+	<string>https://www.floe-agent.com/api/v1/push</string>
+	<key>FloePushTestFlightURL</key>
+	<string>https://testflight.apple.com/join/nz6qeT2J</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>

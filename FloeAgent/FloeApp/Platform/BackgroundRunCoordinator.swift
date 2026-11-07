@@ -1172,6 +1172,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
         reconcileLocationAssist()
         reconcileTaskLiveActivity(reason: "runStart")
+        reconcileAPNsWorkEligibility()
     }
 
     /// A user-started Canvas image request is also a long provider workload.
@@ -1259,6 +1260,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // per-token activity never reaches the Live Activity owner.
         if wasAwaitingUserAttention {
             reconcileTaskLiveActivity(reason: "resumed")
+            reconcileAPNsWorkEligibility()
         }
     }
 
@@ -1290,6 +1292,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         guard active.pendingApprovalToolName != toolName else { return }
         active.pendingApprovalToolName = toolName
         activeRuns[runID] = active
+        reconcileAPNsWorkEligibility()
         if surfacedRunID == runID {
             environment.backgroundVideoService.update(progress: active.presentation())
         }
@@ -1312,6 +1315,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if requestID != nil { active.isAwaitingUserAttention = true }
         else if previouslyWaiting { active.isAwaitingUserAttention = false }
         activeRuns[runID] = active
+        reconcileAPNsWorkEligibility()
         if requestID != nil {
             environment.pipAudioService.handleTaskEvent(.needsInput, runID: runID)
         }
@@ -1390,6 +1394,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // percentages never reach this).
         if wasAwaitingUserAttention {
             Task { [weak self] in await self?.workSession.refreshIfLive() }
+            reconcileAPNsWorkEligibility()
         }
     }
 
@@ -1439,6 +1444,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
         reconcileLocationAssist()
         reconcileTaskLiveActivity(reason: "suspended")
+        reconcileAPNsWorkEligibility()
         // The central suspension transition puts the run into
         // waiting-for-the-user: re-derive a live session's counts/waitReason
         // immediately (armed/idle records stay untouched by refreshIfLive).
@@ -3756,6 +3762,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         environment.backgroundVideoService.updateEffectiveScenePhase(pipPhase)
         guard effective != effectiveScenePhase else { return }
         effectiveScenePhase = effective
+        environment.apnsCenter.applicationStateChanged(isForeground: effective == .active)
         if effective == .active { Task { [weak self] in await self?.environment.apnsCenter.reconcile() } }
         visualSurfacePolicy.recordSceneTransition()
         persistVisualSurfacePolicy()
@@ -4572,17 +4579,80 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         let workspaces = SQLiteWorkspaceStore(database: environment.database)
         var enabled = false
         for schedule in schedules where schedule.isEnabled {
+            try Task.checkCancellation()
+            if schedule.cadence != .afterSuccess && schedule.nextExpectedAt == nil { continue }
+            if schedule.cadence == .afterSuccess && schedule.upstreamRunID == nil { continue }
             if let owner = schedule.originConversationID {
                 guard let conversation = try await environment.conversationStore.conversation(id: owner), conversation.purpose == .ordinary else { continue }
             }
             if let workspaceID = schedule.workspaceID, try await workspaces.workspace(id: workspaceID) == nil { continue }
             if let environmentID = schedule.environmentID, await environment.environmentRegistry.record(id: environmentID) == nil { continue }
-            if let upstream = schedule.upstreamRunID, try await environment.runStore.run(id: upstream) == nil { continue }
+            if schedule.cadence == .afterSuccess {
+                guard let upstreamID = schedule.upstreamRunID,
+                      let upstream = try await environment.runStore.run(id: upstreamID) else { continue }
+                let key = "upstream:\(upstreamID.uuidString)"
+                let occurrenceID = TaskScheduleOccurrence.stableID(scheduleID: schedule.id, dedupeKey: key)
+                let armed = try await store.occurrence(id: occurrenceID)
+                if let armed {
+                    // This condition fires once for THIS concrete successful
+                    // upstream run. Claimed/running work is considered below
+                    // through its real owner; completed/failed history cannot
+                    // re-arm merely because the plan remains enabled.
+                    guard upstream.state == "completed", armed.scheduleID == schedule.id,
+                          armed.dedupeKey == key, armed.state == .pending else { continue }
+                } else {
+                    // An already terminal upstream cannot emit a future
+                    // success. A successful-but-unarmed row is not invented
+                    // here; the existing settlement bridge owns enqueueing.
+                    guard upstream.endedAt == nil,
+                          ["preparing", "streaming", "executingTool", "compacting", "verifying",
+                           "waitingApproval", "waitingUserQuestion", "checkpointed", "paused"].contains(upstream.state) else { continue }
+                }
+            } else if let upstream = schedule.upstreamRunID,
+                      try await environment.runStore.run(id: upstream) == nil { continue }
             enabled = true; break
         }
-        let counts = try await workSessionCounts()
-        return .init(hasEnabledSchedule: enabled,
-            hasProgressableExecution: counts.liveRuns > 0 || counts.runningJobs > 0 || counts.queuedJobs > 0)
+        // Session counters include ordinary manual chats and jobs. Push
+        // eligibility is narrower: a REAL automatic scheduled occurrence
+        // must still own an ordinary, progressable run. Pausing/deleting the
+        // future plan does not revoke an already launched run's ownership.
+        let jobs = try await BackgroundJobStore(database: environment.database).activeJobs()
+        let candidateIDs = Set(activeRuns.keys).union(jobs.map(\.runID))
+        var progressable = false
+        for runID in candidateIDs {
+            try Task.checkCancellation()
+            guard let run = try await environment.runStore.run(id: runID),
+                  run.endedAt == nil,
+                  ["preparing", "streaming", "executingTool", "compacting", "verifying"].contains(run.state),
+                  let occurrence = try await store.occurrence(runID: runID),
+                  occurrence.isAutomatic, occurrence.state == .running,
+                  occurrence.runID == runID, occurrence.conversationID == run.conversationID,
+                  let conversation = try await environment.conversationStore.conversation(id: run.conversationID),
+                  conversation.purpose == .ordinary else { continue }
+            // Re-read the live owner AFTER the awaited durable reads: a
+            // question/approval/Stop arriving meanwhile fences this sample.
+            if let live = activeRuns[runID] {
+                guard live.publishesContent, live.conversationID == run.conversationID,
+                      live.pendingApprovalToolName == nil, live.pendingQuestionRequestID == nil,
+                      !live.isAwaitingUserAttention else { continue }
+            } else {
+                guard jobs.contains(where: {
+                    $0.runID == runID && $0.conversationID == run.conversationID
+                        && ($0.state == .queued || $0.state == .running)
+                }) else { continue }
+            }
+            progressable = true
+            break
+        }
+        try Task.checkCancellation()
+        return .init(hasEnabledSchedule: enabled, hasProgressableExecution: progressable)
+    }
+
+    /// Converges registration on actual lifecycle changes, never on every
+    /// token/percentage. Default-off push starts no work or permission flow.
+    private func reconcileAPNsWorkEligibility() {
+        guard environment.apnsCenter.preferences.enabled else { return }
+        Task { [weak self] in await self?.environment.apnsCenter.reconcile() }
     }
 
     func performPushRefresh(_ request: APNsWakeRequest) async -> APNsWakeOutcome {
@@ -5915,10 +5985,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         let enqueued = (try? await store.recordRunCompletion(
             runID: runID, succeeded: succeeded, cancelled: cancelled,
             summary: message, at: Date())) ?? []
-        guard !enqueued.isEmpty else { return }
-        // An upstream success fired after-success schedules: run the same
-        // pass so they start now rather than waiting for the next wakeup.
-        await runDueSchedules()
+        if !enqueued.isEmpty {
+            // An upstream success fired after-success schedules: run the same
+            // pass so they start now rather than waiting for the next wakeup.
+            await runDueSchedules()
+        }
+        // A terminal one-shot without downstream work must also withdraw its
+        // eligibility. The old early return left the server's last true lease.
+        await environment.apnsCenter.reconcile()
     }
 
     /// The system's completion-handler selector, implemented directly.

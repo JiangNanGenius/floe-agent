@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import Foundation
+import Darwin
+import FloeTools
 import FloeCAD
 import FloeManufacturingCore
 import FloeManufacturingUI
@@ -112,6 +114,17 @@ private struct CADManufacturingHandoffError: LocalizedError {
               fresh.source.contentSHA256 == model.study.source.contentSHA256 else { throw ManufacturingError.stale }
     }
 
+    /// The resolved personal-work owner and file-use lease are supplied by the
+    /// coordinator. This reads only the cell archive, never a default example.
+    static func savedCellInspection(cadURL:URL, projectDirectory:URL, ownerID:UUID,
+                                    cancellation:CancellationToken) async throws -> CADManufacturingCellInspection {
+        let operation = Task.detached(priority:.userInitiated) {
+            try CADSavedManufacturingCellReader.inspect(cadURL:cadURL,projectDirectory:projectDirectory,
+                                                       ownerID:ownerID,cancellation:cancellation)
+        }
+        return try await withTaskCancellationHandler(operation:{ try await operation.value },onCancel:{ operation.cancel() })
+    }
+
     private static func captureCAD(_ document: FloeCADDocument, ownerID: UUID?, existingSourceID: String? = nil) async throws -> ManufacturingStudy {
         guard !document.isClosed else { throw ManufacturingError.stale }
         let revision = document.revision, changes = document.exchangeChangeCount, content = document.contentSHA256
@@ -160,6 +173,135 @@ private struct CADManufacturingHandoffError: LocalizedError {
         try Task.checkCancellation()
         guard !document.isClosed, document.revision == revision, document.exchangeChangeCount == changes, document.contentSHA256 == content else { throw ManufacturingError.stale }
         return result
+    }
+}
+
+/// A cell is an independent saved program in this CAD work's companion. Its
+/// schedule/material results do not imply the ordinary CAM study was computed
+/// or that the cell program uses the current CAD geometry.
+struct CADManufacturingCellInspection:Codable,Sendable {
+    enum Status:String,Codable,Sendable { case none, saved }
+    struct RemainingWorkpiece:Codable,Sendable {
+        let workpieceID:String
+        let remainingVolumeMM3:Double
+    }
+    struct SavedResult:Codable,Sendable {
+        let cellProjectID:UUID
+        let name:String
+        let inputSHA256:String
+        let archiveSHA256:String
+        let archiveByteCount:Int
+        let scheduleTotalSeconds:Double
+        let computedOperationCount:Int
+        let transferRecordCount:Int
+        let remainingWorkpieces:[RemainingWorkpiece]
+        let calculationElapsedSeconds:Double
+    }
+    let family:String
+    let ownerCADProjectID:UUID
+    let status:Status
+    let savedResult:SavedResult?
+}
+
+/// Descriptor-relative reads prevent a replaced cell path or symbolic link
+/// from selecting another work. The service's existing shared storage lease
+/// also fences supported CAD/companion transfers during validation.
+private enum CADSavedManufacturingCellReader {
+    static func inspect(cadURL:URL,projectDirectory:URL,ownerID:UUID,
+                        cancellation:CancellationToken) throws -> CADManufacturingCellInspection {
+        func checkCancellation() throws { try Task.checkCancellation(); try cancellation.throwIfCancelled() }
+        func none() throws -> CADManufacturingCellInspection {
+            try checkCancellation()
+            return .init(family:"manufacturingCell",ownerCADProjectID:ownerID,status:.none,savedResult:nil)
+        }
+        try checkCancellation()
+        let root = Darwin.open(projectDirectory.path,O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        guard root >= 0 else { throw ManufacturingError.stale }
+        defer { Darwin.close(root) }
+        let rootIdentity = try status(root,directory:true)
+        guard let manufacturing = try openDirectory(root,"Manufacturing") else { return try none() }
+        defer { Darwin.close(manufacturing) }
+        let manufacturingIdentity = try status(manufacturing,directory:true)
+        guard let cell = try openDirectory(manufacturing,"cell") else { return try none() }
+        defer { Darwin.close(cell) }
+        let cellIdentity = try status(cell,directory:true)
+        let file = openat(cell,"latest.floecell",O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        if file < 0, errno == ENOENT { return try none() }
+        guard file >= 0 else { throw ManufacturingError.archive("Saved manufacturing cell cannot be opened without following links") }
+        defer { Darwin.close(file) }
+        let before = try status(file,directory:false)
+        guard before.st_size >= 0, before.st_size <= ResearchArchive.byteLimit else {
+            throw ManufacturingError.archive("Saved manufacturing cell exceeds the inspection byte budget")
+        }
+        let directory = projectDirectory.appendingPathComponent("Manufacturing",isDirectory:true)
+        let storageLease = try CADMachiningCompanion.storageLease(cadURL:cadURL,directory:directory)
+        defer { withExtendedLifetime(storageLease) {} }
+        let generation = try CADMachiningCompanion.locationGeneration(directory:directory)
+        var bytes = Data(); bytes.reserveCapacity(Int(before.st_size))
+        var buffer = [UInt8](repeating:0,count:64 * 1_024)
+        while true {
+            try checkCancellation()
+            let count = buffer.withUnsafeMutableBytes { Darwin.read(file,$0.baseAddress!,$0.count) }
+            if count < 0, errno == EINTR { continue }
+            guard count >= 0 else { throw ManufacturingError.archive("Saved manufacturing cell could not be read") }
+            if count == 0 { break }
+            guard bytes.count <= ResearchArchive.byteLimit - count else {
+                throw ManufacturingError.archive("Saved manufacturing cell grew beyond the inspection byte budget")
+            }
+            bytes.append(contentsOf:buffer.prefix(count))
+        }
+        try verify()
+        let (project,artifact) = try ManufacturingCellArchive.open(data:bytes)
+        try checkCancellation()
+        let result = CADManufacturingCellInspection.SavedResult(cellProjectID:project.id,name:project.cell.name,
+            inputSHA256:artifact.inputSHA256,archiveSHA256:ManufacturingStudy.digest(bytes),archiveByteCount:bytes.count,
+            scheduleTotalSeconds:artifact.schedule.totalSeconds,computedOperationCount:artifact.jobs.count,
+            transferRecordCount:artifact.schedule.transfers.count,
+            remainingWorkpieces:artifact.finalStock.keys.sorted().map {
+                .init(workpieceID:$0,remainingVolumeMM3:artifact.finalStock[$0]!.remainingMM3)
+            },calculationElapsedSeconds:artifact.elapsedSeconds)
+        try verify()
+        return .init(family:"manufacturingCell",ownerCADProjectID:ownerID,status:.saved,savedResult:result)
+
+        func verify() throws {
+            try checkCancellation()
+            let after = try status(file,directory:false)
+            guard sameFile(before,after), bytes.count == after.st_size,
+                  sameFile(after,try namedStatus(cell,"latest.floecell")),
+                  sameIdentity(rootIdentity,try namedStatus(AT_FDCWD,projectDirectory.path)),
+                  sameIdentity(manufacturingIdentity,try namedStatus(root,"Manufacturing")),
+                  sameIdentity(cellIdentity,try namedStatus(manufacturing,"cell")),
+                  try CADMachiningCompanion.locationGeneration(directory:directory) == generation else {
+                throw ManufacturingError.stale
+            }
+        }
+    }
+    private static func openDirectory(_ parent:Int32,_ name:String) throws -> Int32? {
+        let descriptor = openat(parent,name,O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        if descriptor < 0, errno == ENOENT { return nil }
+        guard descriptor >= 0 else { throw ManufacturingError.archive("Saved manufacturing cell directory is not a regular owned directory") }
+        return descriptor
+    }
+    private static func status(_ descriptor:Int32,directory:Bool) throws -> stat {
+        var value = stat()
+        guard fstat(descriptor,&value) == 0,
+              value.st_mode & S_IFMT == (directory ? S_IFDIR:S_IFREG) else {
+            throw ManufacturingError.archive("Saved manufacturing cell source has an invalid file type")
+        }
+        return value
+    }
+    private static func namedStatus(_ parent:Int32,_ name:String) throws -> stat {
+        var value = stat()
+        guard fstatat(parent,name,&value,AT_SYMLINK_NOFOLLOW) == 0 else { throw ManufacturingError.stale }
+        return value
+    }
+    private static func sameIdentity(_ a:stat,_ b:stat) -> Bool {
+        a.st_dev == b.st_dev && a.st_ino == b.st_ino && (a.st_mode & S_IFMT) == (b.st_mode & S_IFMT)
+    }
+    private static func sameFile(_ a:stat,_ b:stat) -> Bool {
+        sameIdentity(a,b) && a.st_size == b.st_size &&
+        a.st_mtimespec.tv_sec == b.st_mtimespec.tv_sec && a.st_mtimespec.tv_nsec == b.st_mtimespec.tv_nsec &&
+        a.st_ctimespec.tv_sec == b.st_ctimespec.tv_sec && a.st_ctimespec.tv_nsec == b.st_ctimespec.tv_nsec
     }
 }
 #endif

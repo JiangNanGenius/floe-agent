@@ -12,31 +12,77 @@ public struct EngineeringWorkbenchView:View {
     @State private var exported:URL?
     @State private var tab = 0
     @State private var setupSheet:SetupSheet?
+    @State private var hasSavedResult = false
+    @FocusState private var nameFocused:Bool
+    @State private var nameInputSourceID = UUID()
+    @State private var editingInputSources:Set<UUID> = []
     private enum SetupSheet:String,Identifiable { case complete;var id:String { rawValue } }
     private let initialFile:URL?
-    public init(directory:URL,initialFile:URL? = nil) { self.initialFile = initialFile;_model = State(initialValue:EngineeringWorkbenchModel(directory:directory)) }
+    private let embedded:Bool
+    @State private var didLoadInitialFile = false
+    @State private var lastInitialFile:URL?
+    public init(directory:URL,initialFile:URL? = nil,embedded:Bool = false) { self.initialFile = initialFile;self.embedded = embedded;_model = State(initialValue:EngineeringWorkbenchModel(directory:directory)) }
     public var body:some View {
-        NavigationStack {
+        Group {
+            if embedded { workbenchContent }
+            else { NavigationStack { workbenchContent } }
+        }
+    }
+    private var workbenchContent:some View {
+        Group {
             VStack(spacing:0) {
-                Picker(L("分析页面","Analysis page"),selection:$tab) { Text(L("设置","Setup")).tag(0);Text(L("结果","Results")).tag(1) }.pickerStyle(.segmented).padding()
-                if tab == 0 { settings } else { results }
+                if hasSavedResult && model.artifact == nil {
+                    HStack {
+                        Label(L("已有保存结果","Saved results available"),systemImage:"archivebox")
+                        Spacer()
+                        Button(L("打开已保存结果","Open saved results")) { model.reopen();tab = 1;refreshSavedResultPresence() }
+                            .buttonStyle(.bordered).accessibilityIdentifier("engineering.savedResult.open")
+                    }.font(.callout).padding(.horizontal,16).padding(.vertical,8).disabled(model.busy)
+                }
+                GeometryReader { geometry in
+                    if geometry.size.width >= 1_000 { wideContent(width:geometry.size.width) }
+                    else { compactContent }
+                    #if DEBUG
+                    if EngineeringLayoutObservation.enabled {
+                        EngineeringLayoutObservation(phase:"workspace",geometrySize:geometry.size,
+                            geometryFrame:geometry.frame(in:.global),geometryInsets:geometry.safeAreaInsets,
+                            nameFocused:nameFocused,editingInputCount:editingInputSources.count,
+                            busy:model.busy,hasArtifact:model.artifact != nil,embedded:embedded,tab:tab)
+                            .frame(width:0,height:0).accessibilityHidden(true)
+                    }
+                    #endif
+                }.accessibilityIdentifier("engineering.workspace")
                 if model.busy { ProgressView(L("正在求解","Solving")).padding() }
                 if !model.notice.isEmpty { Text(model.notice).font(.callout).padding(8) }
             }
+            #if DEBUG
+            .background {
+                if EngineeringLayoutObservation.enabled {
+                    GeometryReader { geometry in
+                        EngineeringLayoutObservation(phase:"root",geometrySize:geometry.size,
+                            geometryFrame:geometry.frame(in:.global),geometryInsets:geometry.safeAreaInsets,
+                            nameFocused:nameFocused,editingInputCount:editingInputSources.count,
+                            busy:model.busy,hasArtifact:model.artifact != nil,embedded:embedded,tab:tab)
+                            .frame(width:0,height:0).accessibilityHidden(true)
+                    }
+                }
+            }
+            #endif
             .navigationTitle(L("材料与工程分析","Materials and engineering analysis"))
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement:.cancellationAction) { Button(L("完成","Done")) { model.cancel();dismiss() } }
+                ToolbarItem(placement:.confirmationAction) { Button(L("完成","Done")) { model.cancel();dismiss() }.accessibilityIdentifier("engineering.done") }
                 ToolbarItemGroup(placement:.primaryAction) {
                     if model.busy { Button(L("取消","Cancel")) { model.cancel() } }
-                    else { Button(L("求解","Solve"),systemImage:"play.fill") { model.calculate();tab = 1 }.accessibilityIdentifier("engineering.solve") }
+                    else { Button(L("计算","Calculate")) { model.calculate();tab = 1 }.accessibilityIdentifier("engineering.solve") }
                     Menu {
                         Button(L("加载配置或结果","Load setup or result")) { importing = true }
                         Button(L("完整配置","Complete setup")) { setupSheet = .complete }
-                        Button(L("保存结果","Save result")) { model.save() }.disabled(model.artifact == nil)
-                        Button(L("重新打开","Reopen")) { model.reopen() }
+                        Button(L("保存结果","Save result")) { model.save();refreshSavedResultPresence() }.disabled(model.artifact == nil)
+                        Button(L("重新打开","Reopen")) { model.reopen();refreshSavedResultPresence() }
                         Button(L("导出配置","Export setup")) { export(input:true) }
                         Button(L("导出结果","Export result")) { export(input:false) }.disabled(model.artifact == nil)
-                    } label: { Image(systemName:"ellipsis.circle").frame(width:44,height:44) }.disabled(model.busy)
+                    } label: { Image(systemName:"ellipsis.circle").frame(width:44,height:44) }.disabled(model.busy).accessibilityIdentifier("engineering.file")
                 }
             }
             .fileImporter(isPresented:$importing,allowedContentTypes:[.json,.data]) { result in
@@ -45,14 +91,69 @@ public struct EngineeringWorkbenchView:View {
             .sheet(item:$setupSheet) { _ in
                 ResearchSetupEditor(value:model.project,validate:{ try $0.validate() }) { value in model.invalidate();model.project = value }
             }
-            .task(id:initialFile) { if let initialFile { model.load(initialFile) } }
+            .task(id:initialFile) {
+                if !didLoadInitialFile || lastInitialFile != initialFile {
+                    didLoadInitialFile = true;lastInitialFile = initialFile
+                    if let initialFile { model.load(initialFile) }
+                }
+                refreshSavedResultPresence()
+            }
+        }
+        // This workbench's real fields own its keyboard region; an input in
+        // a covered CAD/library page must not shorten a read-only result view.
+        .ignoresSafeArea(.keyboard,edges:nameFocused || !editingInputSources.isEmpty ? [] : .bottom)
+        .onPreferenceChange(EngineeringInputSourcesKey.self) { sources in
+            if editingInputSources != sources { editingInputSources = sources }
+        }
+        .onDisappear { if setupSheet == nil && !importing { model.cancel() } }
+    }
+    private func refreshSavedResultPresence() {
+        let values = try? model.directory.appendingPathComponent("latest.floeanalysis").resourceValues(forKeys:[.isRegularFileKey,.isSymbolicLinkKey,.fileSizeKey])
+        hasSavedResult = values?.isRegularFile == true && values?.isSymbolicLink != true && (values?.fileSize ?? 0) > 0
+    }
+    private var compactContent:some View {
+        VStack(spacing:0) {
+            Picker(L("分析页面","Analysis page"),selection:$tab) { Text(L("设置","Setup")).tag(0);Text(L("结果","Results")).tag(1) }
+                .pickerStyle(.segmented).padding().accessibilityIdentifier("engineering.pages")
+            if tab == 0 { settings } else { results }
+        }
+    }
+    private func wideContent(width:CGFloat)->some View {
+        HStack(spacing:0) {
+            VStack(spacing:0) {
+                Text(L("设置","Setup")).font(.headline).frame(maxWidth:.infinity,alignment:.leading).padding(.horizontal,20).padding(.vertical,12)
+                settings
+            }.frame(width:min(420,width*0.38))
+            Divider()
+            VStack(spacing:0) {
+                Text(L("结果","Results")).font(.headline).frame(maxWidth:.infinity,alignment:.leading).padding(.horizontal,20).padding(.vertical,12)
+                results
+            }.frame(maxWidth:.infinity,maxHeight:.infinity)
         }
     }
     private var settings:some View {
         Form {
             Section(L("分析","Analysis")) {
-                TextField(L("名称","Name"),text:Binding(get:{ model.project.name },set:{ value in model.invalidate();model.project.name = value }))
-                HStack { Button(L("静力示例","Static example")) { model.select(thermal:false) };Spacer();Button(L("导热示例","Thermal example")) { model.select(thermal:true) } }
+                TextField(L("名称","Name"),text:Binding(get:{ model.project.name },set:{ value in
+                    guard value != model.project.name else { return }
+                    model.invalidate();model.project.name = value
+                }))
+                    .focused($nameFocused)
+                    .preference(key:EngineeringInputSourcesKey.self,value:nameFocused ? [nameInputSourceID] : [])
+                    .accessibilityIdentifier("engineering.name")
+                LabeledContent(L("分析类型","Analysis type")) {
+                    Text(analysisTitle).accessibilityIdentifier("engineering.analysis.kind")
+                }
+                HStack {
+                    // Keep the two example actions independent inside this Form row.
+                    Button { model.select(thermal:false) } label: {
+                        Text(L("静力示例","Static example")).frame(minHeight:44).contentShape(.rect)
+                    }.buttonStyle(.borderless).accessibilityIdentifier("engineering.example.static")
+                    Spacer()
+                    Button { model.select(thermal:true) } label: {
+                        Text(L("导热示例","Thermal example")).frame(minHeight:44).contentShape(.rect)
+                    }.buttonStyle(.borderless).accessibilityIdentifier("engineering.example.thermal")
+                }
             }
             materialFields
             switch model.project.analysis {
@@ -67,7 +168,13 @@ public struct EngineeringWorkbenchView:View {
             Section {
                 Text(L("导入带四面体体网格的配置可分析自己的工件。表面 STL 不会自动变成体网格。","Import a setup with a tetrahedral volume mesh to analyze your own part. A surface STL is not automatically converted into a volume mesh.")).font(.caption).foregroundStyle(.secondary)
             }
-        }.disabled(model.busy)
+        }.disabled(model.busy).accessibilityIdentifier("engineering.settings")
+    }
+    private var analysisTitle:String {
+        switch model.project.analysis {
+        case .structural:L("线弹性静力","Linear static")
+        case .thermal:L("稳态导热","Steady conduction")
+        }
     }
     private var material:EngineeringMaterial {
         switch model.project.analysis { case .structural(let input):input.material;case .thermal(let input):input.material }
@@ -170,14 +277,42 @@ public struct EngineeringWorkbenchView:View {
             } else { ContentUnavailableView(L("尚无分析结果","No analysis results yet"),systemImage:"function",description:Text(L("设置材料、载荷与边界条件后求解。","Set the material, loads and boundary conditions, then solve."))) }
             if let exported { ShareLink(item:exported) { Label(L("分享导出文件","Share exported file"),systemImage:"square.and.arrow.up") } }
             if !model.diagnostic.isEmpty { DisclosureGroup(L("问题详情","Problem details")) { Text(model.diagnostic).font(.caption).textSelection(.enabled) } }
-        }
+        }.accessibilityIdentifier("engineering.results")
     }
     private func meshSummary(nodes:Int,elements:Int)->some View { LabeledContent(L("节点 / 四面体","Nodes / tetrahedra"),value:"\(nodes) / \(elements)") }
     private func scalar(_ title:String,value:Double,set:@escaping @MainActor @Sendable (Double)->Void)->some View {
-        HStack { Text(title);Spacer();TextField(title,value:Binding(get:{ value },set:set),format:.number).keyboardType(.numbersAndPunctuation).multilineTextAlignment(.trailing).frame(maxWidth:140) }.frame(minHeight:44)
+        HStack { Text(title);Spacer();EngineeringNumberInput(title:title,number:value,update:set).multilineTextAlignment(.trailing).frame(maxWidth:140) }.frame(minHeight:44)
     }
     private func quantity(_ title:String,_ value:Double,_ unit:String)->some View { LabeledContent(title,value:String(format:"%.6g %@",value,unit)) }
     private func export(input:Bool) { do { exported = try model.export(input:input);tab = 1 } catch { model.report(error) } }
+}
+
+private struct EngineeringInputSourcesKey:PreferenceKey {
+    static let defaultValue:Set<UUID> = []
+    static func reduce(value:inout Set<UUID>,nextValue:()->Set<UUID>) { value.formUnion(nextValue()) }
+}
+
+/// Each mounted numeric input, including repeated scalar labels and vector
+/// components, has its own stable focus owner. IDs are never made in body.
+private struct EngineeringNumberInput:View {
+    var title:String
+    var number:Double
+    var update:@MainActor @Sendable (Double)->Void
+    var rounded = false
+    @State private var inputSourceID = UUID()
+    @FocusState private var isEditing:Bool
+    @ViewBuilder var body:some View {
+        if rounded { field.textFieldStyle(.roundedBorder) } else { field }
+    }
+    private var field:some View {
+        TextField(title,value:Binding(get:{ number },set:{ value in
+            guard value != number else { return }
+            update(value)
+        }),format:.number)
+            .keyboardType(.numbersAndPunctuation).focused($isEditing)
+            .preference(key:EngineeringInputSourcesKey.self,value:isEditing ? [inputSourceID] : [])
+            .accessibilityLabel(title)
+    }
 }
 
 private struct EngineeringVectorField:View {
@@ -191,7 +326,7 @@ private struct EngineeringVectorField:View {
         }.frame(minHeight:44)
     }
     private func field(_ title:String,_ number:Double,_ set:@escaping @MainActor @Sendable (Double)->Void)->some View {
-        TextField(title,value:Binding(get:{ number },set:set),format:.number).keyboardType(.numbersAndPunctuation).textFieldStyle(.roundedBorder).accessibilityLabel(title)
+        EngineeringNumberInput(title:title,number:number,update:set,rounded:true)
     }
 }
 #endif

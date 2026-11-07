@@ -3,6 +3,8 @@
 import Foundation
 import FloeTools
 
+enum APNsEnrollmentDeliveryResult: Sendable, Equatable { case registered, pending, ignored }
+
 enum APNsInstallChannel: String, Codable, Sendable { case testFlight, appStore, development, unknown }
 enum APNsSigningEnvironment: String, Codable, Sendable { case development, production, unknown }
 enum APNsVisibleAuthorization: String, Codable, Sendable { case notDetermined, denied, authorized, provisional, ephemeral, unknown
@@ -113,6 +115,10 @@ struct APNsPersistentState: Codable, Sendable {
     var preferences = APNsPreferences()
     var receipt: APNsRegistrationReceipt?
     var registrationFingerprint: String?
+    /// True only after the service requested fresh OS token proof. Optional
+    /// preserves the on-disk schema of already saved installations.
+    var tokenRenewalPending: Bool?
+    var nextRegistrationAttemptAt: Date?
     var seen: [APNsSeenDelivery] = []
     var lastReceivedAt: Date?
     var lastWakeOutcome: APNsWakeOutcome?
@@ -128,6 +134,7 @@ struct APNsStatus: Codable, Sendable {
     var serverConnected: Bool
     var channel: APNsInstallChannel
     var lastServerAcceptedAt: Date?
+    var nextRegistrationAttemptAt: Date?
     var lastReceivedAt: Date?
     var lastWakeOutcome: APNsWakeOutcome?
     var syncState: String
@@ -142,8 +149,33 @@ protocol APNsReleaseResolving: Sendable {
     func release(id: String, channel: APNsInstallChannel) async throws -> APNsReleaseRecord
 }
 
+protocol APNsReleaseHistoryResolving: APNsReleaseResolving {
+    /// Formerly public release notes only. Never an installability receipt.
+    func releaseHistory(id: String, channel: APNsInstallChannel) async throws -> APNsReleaseRecord
+}
+
+/// Only a recognized status/code pair may change the local registration
+/// lifecycle. A generic 401/409 never authorizes proof or identity reset.
+enum APNsRemoteFailure: String, Codable, Sendable {
+    case invalidAuthorization, enrollmentProofRequired, enrollmentProofExpired, enrollmentProofUsed, enrollmentProofMismatch
+    case tokenNeedsRenewal, staleRevision, revisionConflict, challengePending
+    case unknownAppAttestKey, appAttestAssertionRequired
+    case invalidAppProof, channelProofMismatch, unsupportedInstallChannel
+
+    var status: Int {
+        switch self {
+        case .invalidAuthorization, .enrollmentProofRequired, .enrollmentProofExpired, .enrollmentProofUsed, .enrollmentProofMismatch: 401
+        case .tokenNeedsRenewal, .staleRevision, .revisionConflict, .challengePending,
+             .unknownAppAttestKey, .appAttestAssertionRequired: 409
+        case .invalidAppProof, .channelProofMismatch, .unsupportedInstallChannel: 422
+        }
+    }
+}
+
 enum APNsServiceError: Error, LocalizedError, Sendable {
     case invalidPayload, stalePayload, disabled, duplicate, unavailable, unconfigured, storage, protocolViolation, http(Int)
+    case remote(APNsRemoteFailure)
+    case enrollmentPending, foregroundRequired, attestationUnavailable, rateLimited(until: Date), enrollmentDeferred(until: Date)
     var errorDescription: String? {
         switch self {
         case .invalidPayload, .stalePayload: APNsText.t("这条通知已失效。", "This notification is no longer valid.")
@@ -152,6 +184,14 @@ enum APNsServiceError: Error, LocalizedError, Sendable {
         case .unconfigured: APNsText.t("推送服务尚未连接。", "The push service is not connected yet.")
         case .storage: APNsText.t("无法读取推送设置，请重试。", "Unable to read push settings. Try again.")
         case .protocolViolation: APNsText.t("未能确认服务登记，请重试。", "Service registration could not be confirmed. Try again.")
+        case .enrollmentPending, .enrollmentDeferred: APNsText.t("设备登记尚未确认，保持 App 打开后重试。", "Device registration is pending. Keep the app open and try again.")
+        case .foregroundRequired: APNsText.t("打开 App 后可完成设备登记。", "Open the app to finish device registration.")
+        case .attestationUnavailable: APNsText.t("此安装暂不能完成设备验证。", "Device verification is not available for this installation yet.")
+        case .rateLimited: APNsText.t("服务暂时繁忙，请稍后重试。", "The service is busy. Try again later.")
+        case .remote(.tokenNeedsRenewal): APNsText.t("设备登记需要更新，正在等待系统确认。", "Device registration needs updating. Waiting for system confirmation.")
+        case .remote(.invalidAppProof), .remote(.channelProofMismatch), .remote(.unsupportedInstallChannel):
+            APNsText.t("此安装暂不能连接推送服务。", "This installation cannot connect to the push service yet.")
+        case .remote: APNsText.t("未能确认服务登记，请重试。", "Service registration could not be confirmed. Try again.")
         case .http, .unavailable: APNsText.t("暂时无法连接，请稍后重试。", "Unable to connect. Try again later.")
         }
     }

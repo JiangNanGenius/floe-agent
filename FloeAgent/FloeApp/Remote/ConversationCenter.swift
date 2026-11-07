@@ -4140,6 +4140,15 @@ final class ConversationCenter: ObservableObject {
                 notesContext = "Selected Notes context could not be loaded. Do not guess document contents or permissions; report the unavailable context if the request depends on it."
             }
         }
+        let studioContext: String?
+        do {
+            studioContext = try await environment.studioCoordinator.workRuntimeContext(
+                conversationID: conversationID, runID: runID, temporary: isTemporary,
+                availableToolNames: allowedToolNames)
+        } catch {
+            FloeLogger(category: .persistence).warning("studioContextUnavailable conversation=\(conversationID)")
+            studioContext = nil
+        }
         // Temporary runs get NO credential-argument normalizer. For ordinary
         // runs the normalizer converts raw model-provided credential
         // arguments into durable handles before approval, audit or
@@ -4242,6 +4251,7 @@ final class ConversationCenter: ObservableObject {
                 skillInstructions: [
                     skills.instructions,
                     authoringInstructions,
+                    studioContext,
                     notesContext,
                     runSurface == .ordinary || isTemporary
                         ? AppleCapabilityPreferences.skillInstructions() : nil

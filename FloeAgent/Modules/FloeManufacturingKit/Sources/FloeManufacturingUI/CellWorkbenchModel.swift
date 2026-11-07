@@ -5,7 +5,22 @@ import Observation
 import FloeManufacturingCore
 
 @MainActor @Observable final class CellWorkbenchModel {
-    var project:ManufacturingCellProject
+    var project:ManufacturingCellProject {
+        didSet { if !installingProject, project != oldValue { invalidate() } }
+    }
+    struct SavedOpenRequest {
+        fileprivate let generation:UUID
+        fileprivate let project:ManufacturingCellProject
+    }
+    enum SavedResultAvailability:Equatable { case unchecked, missing, available, unavailable }
+    private(set) var savedResultAvailability:SavedResultAvailability = .unchecked
+    private(set) var openingSavedResult = false
+    private var cleanProject:ManufacturingCellProject
+    private var hasUnsavedResult = false
+    private var installingProject = false
+    private var progressBeforeOpen = 0.0
+    private let archiveLoader:@Sendable (CellWorkbenchLoadSource) async throws -> CellWorkbenchLoadedDocument
+    var hasUnsavedChanges:Bool { project != cleanProject || hasUnsavedResult }
     private(set) var artifact:CellSimulationArtifact?
     private(set) var busy = false
     private(set) var progress = 0.0
@@ -15,10 +30,18 @@ import FloeManufacturingCore
     private let service = CellManufacturingService()
     private var generation = UUID()
     private var work:Task<Void,Never>?
-    init(project:ManufacturingCellProject,directory:URL) { self.project = project; self.directory = directory }
+    init(project:ManufacturingCellProject,directory:URL,
+         archiveLoader:@escaping @Sendable (CellWorkbenchLoadSource) async throws -> CellWorkbenchLoadedDocument = CellWorkbenchArchiveReader.load) {
+        self.project = project;self.cleanProject = project;self.directory = directory;self.archiveLoader = archiveLoader
+    }
+    func refreshSavedResultAvailability() {
+        do { savedResultAvailability = try CellWorkbenchArchiveReader.hasSavedFile(in:directory) ? .available:.missing }
+        catch { savedResultAvailability = .unavailable;report(error) }
+    }
+    func savedOpenRequest() -> SavedOpenRequest { .init(generation:generation,project:project) }
     func invalidate() {
         generation = UUID(); work?.cancel(); work = nil
-        artifact = nil; busy = false; progress = 0; notice = ""; diagnostic = ""
+        artifact = nil;busy = false;openingSavedResult = false;hasUnsavedResult = false;progress = 0;notice = "";diagnostic = ""
     }
     func calculate() {
         guard !busy else { return }
@@ -34,7 +57,7 @@ import FloeManufacturingCore
                 }
                 guard let self,self.generation == token,!Task.isCancelled,
                       value.inputSHA256 == (try ResearchArchive.digest(self.project)) else { return }
-                self.artifact = value; self.busy = false; self.progress = 1; self.work = nil
+                self.artifact = value;self.hasUnsavedResult = true;self.busy = false;self.progress = 1;self.work = nil
                 self.notice = L("计算完成","Calculation completed")
             } catch {
                 guard let self,self.generation == token else { return }
@@ -44,27 +67,58 @@ import FloeManufacturingCore
             }
         }
     }
-    func cancel() { guard busy else { return }; generation = UUID(); work?.cancel(); work = nil; busy = false; artifact = nil; notice = L("已取消","Cancelled") }
+    func cancel() {
+        guard busy else { return }
+        generation = UUID();work?.cancel();work = nil;busy = false
+        if openingSavedResult { progress = progressBeforeOpen }
+        else { artifact = nil;hasUnsavedResult = false }
+        openingSavedResult = false;notice = L("已取消","Cancelled")
+    }
     func save() {
         do {
-            guard let artifact else { return }
+            guard !busy,let artifact else { return }
             try ManufacturingCellArchive.save(project:project,artifact:artifact,to:directory.appendingPathComponent("latest.floecell"))
+            cleanProject = project;hasUnsavedResult = false;savedResultAvailability = .available
             notice = L("已保存制造单元","Manufacturing cell saved")
         } catch { report(error) }
     }
-    func reopen() { load(directory.appendingPathComponent("latest.floecell")) }
-    func load(_ url:URL) {
-        let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
-        do {
-            if url.pathExtension.lowercased() == "json" {
-                let value = try ResearchArchive.openInput(url,as:ManufacturingCellProject.self); try value.validate()
-                invalidate(); project = value
-            } else {
-                let (input,result) = try ManufacturingCellArchive.open(url)
-                invalidate(); project = input; artifact = result; progress = 1
+    @discardableResult func reopen(_ request:SavedOpenRequest? = nil) -> Task<Void,Never>? {
+        guard !busy else { return nil }
+        if let request, request.generation != generation || request.project != project {
+            report(ManufacturingError.stale);return nil
+        }
+        return load(directory.appendingPathComponent("latest.floecell"))
+    }
+    /// A read installs only at the same editor generation. Keep the current
+    /// program/result until successful validation, including on cancel/failure.
+    @discardableResult func load(_ url:URL) -> Task<Void,Never>? {
+        guard !busy else { return nil }
+        generation = UUID();let token = generation,input = project,loader = archiveLoader
+        let isSaved = url.standardizedFileURL == directory.appendingPathComponent("latest.floecell").standardizedFileURL
+        let source = CellWorkbenchLoadSource(url:url,savedDirectory:isSaved ? directory:nil)
+        progressBeforeOpen = progress;openingSavedResult = true;busy = true;diagnostic = ""
+        notice = L("正在打开制造单元…","Opening manufacturing cell…")
+        let task = Task { [weak self] in
+            do {
+                let loaded = try await loader(source)
+                try Task.checkCancellation()
+                guard let self,self.generation == token,self.project == input else { return }
+                self.installingProject = true;self.project = loaded.project;self.installingProject = false
+                self.artifact = loaded.artifact;self.hasUnsavedResult = loaded.artifact != nil && !isSaved
+                if isSaved { self.cleanProject = loaded.project;self.savedResultAvailability = .available }
+                self.progress = loaded.artifact == nil ? 0:1
+                self.busy = false;self.openingSavedResult = false;self.work = nil
+                self.notice = L("制造单元已打开","Manufacturing cell opened")
+            } catch {
+                guard let self,self.generation == token else { return }
+                self.busy = false;self.openingSavedResult = false;self.work = nil;self.progress = self.progressBeforeOpen
+                if error is CancellationError { self.notice = L("已取消","Cancelled") }
+                else { self.report(error) }
+                self.refreshSavedResultAvailability()
+                if isSaved, !(error is CancellationError), self.savedResultAvailability == .available { self.savedResultAvailability = .unavailable }
             }
-            notice = L("制造单元已加载","Manufacturing cell loaded")
-        } catch { report(error) }
+        }
+        work = task;return task
     }
     func export(input:Bool) throws -> URL {
         let url = directory.appendingPathComponent(input ? "manufacturing-cell-input.json" : "manufacturing-cell-result.json")

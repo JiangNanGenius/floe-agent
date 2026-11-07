@@ -224,6 +224,10 @@ public enum ManufacturingCellArchive {
     public static func open(_ url:URL) throws -> (ManufacturingCellProject,CellSimulationArtifact) {
         try ResearchArchive.open(url,input:ManufacturingCellProject.self,output:CellSimulationArtifact.self,family:.manufacturingCell) { try $1.validate(for:$0) }
     }
+    /// Same family, version, digest and material-chain checks as URL reopening.
+    public static func open(data:Data) throws -> (ManufacturingCellProject,CellSimulationArtifact) {
+        try ResearchArchive.open(data:data,input:ManufacturingCellProject.self,output:CellSimulationArtifact.self,family:.manufacturingCell) { try $1.validate(for:$0) }
+    }
     public static func neutralExport(_ artifact:CellSimulationArtifact) throws -> Data {
         struct Export:Encodable {
             var formatVersion = 1

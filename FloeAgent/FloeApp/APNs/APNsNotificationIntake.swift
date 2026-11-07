@@ -11,6 +11,24 @@ nonisolated enum APNsNotificationIntake {
                            completion: @escaping (UIBackgroundFetchResult) -> Void) -> Bool {
         guard userInfo["floe"] != nil else { return false }
         let once = APNsFetchCompletion(completion)
+        if let challenge = try? APNsEnrollmentChallengeDecoder.decode(userInfo: userInfo) {
+            let deadline = Date().addingTimeInterval(20)
+            let operation = Task { @MainActor in
+                guard let value = center() else { once.finish(.failed); return }
+                let result = await value.receiveEnrollmentChallenge(challenge, deadline: deadline)
+                switch result {
+                case .registered: once.finish(.newData)
+                case .ignored: once.finish(.noData)
+                case .pending: once.finish(.failed)
+                }
+            }
+            Task { @MainActor in
+                do { try await Task.sleep(for: .seconds(25)) } catch { return }
+                once.finish(.failed); operation.cancel()
+                center()?.expireEnrollmentDelivery(eventID: challenge.eventID)
+            }
+            return true
+        }
         guard let payload = try? APNsPayloadDecoder.decode(userInfo: userInfo) else { once.finish(.noData); return true }
         let operation = Task { @MainActor in
             guard let value = center() else { once.finish(.failed); return }
@@ -32,6 +50,10 @@ nonisolated enum APNsNotificationIntake {
     /// duplicate system banner alongside the native release-notes sheet.
     static func foreground(userInfo: [AnyHashable: Any], center: @escaping Center) -> Bool {
         guard userInfo["floe"] != nil else { return false }
+        if let challenge = try? APNsEnrollmentChallengeDecoder.decode(userInfo: userInfo) {
+            Task { @MainActor in center()?.receiveEnrollmentChallenge(challenge) }
+            return true
+        }
         guard let payload = try? APNsPayloadDecoder.decode(userInfo: userInfo) else { return true }
         Task { @MainActor in _ = await center()?.receive(payload: payload, source: .foreground) }
         return true

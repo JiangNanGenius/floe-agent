@@ -550,6 +550,10 @@ struct FloeCADEditorView: View {
     @State private var isCanvasActionRunning = false
     /// Floe workbench tools (assembly / drawings / ShapeScript / mesh) sheet.
     @State private var showWorkbenchTools = false
+    @State private var pendingWorkbenchDestination: (destination: CADWorkbenchDestination, owner: ObjectIdentifier)?
+    @State private var showBuildingWorkspace = false
+    @State private var showMeshInspector = false
+    @Environment(\.cadBuildingWorkspaceActive) private var buildingWorkspaceActive
     /// User-named design versions (E34) sheet.
     @State private var showVersions = false
     /// E31-R3: the units prompt's prepared probe plus the manual import
@@ -618,6 +622,7 @@ struct FloeCADEditorView: View {
     }
     @State private var importRequest: ImportRequest = .stl
     @State private var showImporter = false
+    @State private var lastManualImportRequest: ImportRequest?
     @State private var showScreenshotOptions = false
     @State private var showShellOptions = false
     /// Insert Image (plan §B10): Photos picker + image file importer.
@@ -1649,7 +1654,7 @@ struct FloeCADEditorView: View {
     /// Viewport + floating chrome + toolbar; the presentation modifiers
     /// (importers, exporters, sheets, alerts) attach in `editorContent`.
     /// Split keeps each expression type-checkable in reasonable time.
-    private func viewportChrome(_ viewModel: EditorViewModel) -> AnyView {
+    private func viewportChrome(_ viewModel: EditorViewModel, paletteContentFrame: CGRect) -> AnyView {
         // Bound metadata depth to avoid the device opening crash in 311.
         // These stable stages preserve every modifier and its original order.
         let sketchSurface = AnyView(
@@ -1815,22 +1820,33 @@ struct FloeCADEditorView: View {
                 }
             }
             // Keep palette flyouts above the panels they temporarily overlap.
-            .overlay(alignment: settings.paletteOnRight ? .trailing : .leading) {
-                ToolPaletteView(viewModel: viewModel)
-                    // The column itself (flyouts are overlays, outside it).
-                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
-                        paletteFrame = $0
+            .overlay {
+                GeometryReader { viewportGeometry in
+                    // The Metal surface is full bleed. Its floating controls
+                    // must fit the real content area below the host navigation
+                    // and this editor's inline bars, rather than that surface.
+                    if let insets = CADToolPaletteLayout.contentInsets(
+                        viewportFrame: viewportGeometry.frame(in: .global),
+                        contentFrame: paletteContentFrame
+                    ) {
+                        ToolPaletteView(viewModel: viewModel)
+                            // Only the column is measured; flyouts stay overlays.
+                            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                                paletteFrame = $0
+                            }
+                            .padding(.leading, insets.leading)
+                            .padding(.trailing, insets.trailing)
+                            // Interface side (spec §17), including open panels.
+                            .padding(settings.paletteOnRight ? .trailing : .leading,
+                                     (settings.paletteOnRight ? showItemsPanel : viewModel.showHistoryPanel)
+                                     ? 318 : 14)
+                            .padding(.top, insets.top + 8)
+                            // Preserve measured bottom-control overlap avoidance.
+                            .padding(.bottom, insets.bottom + paletteBottomInset)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity,
+                                   alignment: settings.paletteOnRight ? .trailing : .leading)
                     }
-                    // Interface side (spec §17): palette flips to the right
-                    // for left-handed sketching.
-                    .padding(settings.paletteOnRight ? .trailing : .leading,
-                             (settings.paletteOnRight ? showItemsPanel : viewModel.showHistoryPanel)
-                             ? 318 : 14)
-                    // Use the full side height beside centred panels. Wide
-                    // input bars still reserve their measured overlap so the
-                    // last tools remain tappable in compact layouts.
-                    .padding(.top, 8)
-                    .padding(.bottom, paletteBottomInset)
+                }
             }
             .overlay(alignment: .bottomLeading) {
                 // Variables panel (Phase D, Task B3). Anchored bottom-leading so
@@ -2469,13 +2485,16 @@ struct FloeCADEditorView: View {
                 }
             }
         )
-        return AnyView(toolbarSurface
+        let toolsSurface = AnyView(toolbarSurface
             .sheet(isPresented: $showSettings) {
                 CADQuickSettingsSheet()
             }
-            .sheet(isPresented: $showWorkbenchTools) {
+            .sheet(isPresented: $showWorkbenchTools, onDismiss: finishWorkbenchDestination) {
                 CADWorkbenchToolsPanel(document: document, viewModel: viewModel,
-                                       canvasActions: canvasActions)
+                                       canvasActions: canvasActions,
+                                       buildingWorkspaceActive: buildingWorkspaceActive,
+                                       onOpenBuilding: { requestWorkbenchDestination(.building) },
+                                       onOpenMesh: { requestWorkbenchDestination(.mesh) })
                     .presentationDetents([.large])
                     .presentationBackgroundInteraction(.disabled)
             }
@@ -2484,6 +2503,35 @@ struct FloeCADEditorView: View {
                     .presentationDetents([.medium, .large])
             }
         )
+        return AnyView(toolsSurface
+            .navigationDestination(isPresented: $showBuildingWorkspace) {
+                CADBuildingEditorPage(document: document)
+            }
+            .inspector(isPresented: $showMeshInspector) {
+                CADMeshInspectorContent(document: document, viewModel: viewModel,
+                    onClose: { showMeshInspector = false })
+                    .inspectorColumnWidth(min: 300, ideal: 360, max: 440)
+            }
+        )
+    }
+
+    private func requestWorkbenchDestination(_ destination: CADWorkbenchDestination) {
+        guard !document.isClosed else { return }
+        pendingWorkbenchDestination = (destination, ObjectIdentifier(document))
+        showWorkbenchTools = false
+    }
+
+    private func finishWorkbenchDestination() {
+        guard let pending = pendingWorkbenchDestination else { return }
+        pendingWorkbenchDestination = nil
+        guard pending.owner == ObjectIdentifier(document), !document.isClosed else { return }
+        switch pending.destination {
+        case .building:
+            guard !buildingWorkspaceActive else { return }
+            showMeshInspector = false
+            showBuildingWorkspace = true
+        case .mesh: showMeshInspector = true
+        }
     }
 
     /// Compact-width toolbar: the CAD tools entry stays a DIRECT 44pt button
@@ -2693,20 +2741,29 @@ struct FloeCADEditorView: View {
     private func handleImport(
         _ result: Result<[URL], Error>, viewModel: EditorViewModel
     ) {
-        guard case .success(let urls) = result, !urls.isEmpty else {
-            viewModel.errorMessage = "Import failed — please try again."
+        let urls: [URL]
+        switch result {
+        case .success(let selected): urls = selected
+        case .failure(let error):
+            let cocoa = error as NSError
+            guard !(cocoa.domain == NSCocoaErrorDomain && cocoa.code == NSUserCancelledError) else { return }
+            lastManualImportRequest = importRequest
+            viewModel.manualImportProblem = error.localizedDescription
             return
         }
+        guard !urls.isEmpty else { return }
         if importRequest == .mesh {
             beginMeshGroupImport(urls: urls, viewModel: viewModel)
         } else if urls.count == 1, let url = urls.first {
             beginImport(from: url, request: importRequest, viewModel: viewModel)
         } else {
-            viewModel.errorMessage = FloeCADStrings.text("cad.import.oneSource", "Select one source file for this import.")
+            lastManualImportRequest = importRequest
+            viewModel.manualImportProblem = FloeCADStrings.text("cad.import.oneSource", "Select one source file for this import.")
         }
     }
 
     private func beginMeshGroupImport(urls: [URL], viewModel: EditorViewModel) {
+        lastManualImportRequest = .mesh
         importTask?.cancel()
         importTask = Task { @MainActor in
             let operation = viewModel.beginManualImportOperation()
@@ -2716,10 +2773,10 @@ struct FloeCADEditorView: View {
             switch result {
             case .failure(.cancelled): return
             case .failure(.unreadable(let detail)):
-                viewModel.errorMessage = FloeCADStrings.format("cad.import.groupReadFailed", "Couldn't read the file group: %@", detail)
+                viewModel.manualImportProblem = FloeCADStrings.format("cad.import.groupReadFailed", "Couldn't read the file group: %@", detail)
             case .success(let group):
                 if let prepared = await viewModel.probeMeshOffMainWithOperation(
-                    data: group.primary.data, fileName: group.primary.fileName, siblings: group.resources) {
+                    data: group.primary.data, fileName: group.primary.fileName, siblings: group.resources, inlineErrors: true) {
                     pendingMeshImport = PendingManualMeshImport(probe: prepared.probe, operation: prepared.operation)
                 }
             }
@@ -2737,6 +2794,7 @@ struct FloeCADEditorView: View {
     /// grant: nothing here widens file access for an agent path.
     private func beginImport(from url: URL, request: ImportRequest,
                              viewModel: EditorViewModel) {
+        lastManualImportRequest = request
         importTask?.cancel()
         importTask = Task { @MainActor in
             let operation = viewModel.beginManualImportOperation()
@@ -2751,7 +2809,7 @@ struct FloeCADEditorView: View {
                 // Keep the image wording the image importer had before these
                 // entries were merged — "file" would be a small step backwards
                 // for that entry.
-                viewModel.errorMessage = request == .image
+                viewModel.manualImportProblem = request == .image
                     ? "Couldn't read the selected image."
                     : "Couldn't read the selected file."
             case .success(let source):
@@ -2762,13 +2820,13 @@ struct FloeCADEditorView: View {
                     // shared budget and the prompt applies the SAME parsed
                     // parts, never a second parse.
                     if let prepared = await viewModel.probeMeshOffMainWithOperation(
-                        data: source.data, fileName: source.fileName) {
+                        data: source.data, fileName: source.fileName, inlineErrors: true) {
                         pendingMeshImport = PendingManualMeshImport(
                             probe: prepared.probe, operation: prepared.operation)
                     }
                 case .dxf:
                     guard let decoder = document.drawingSketchDecoder else {
-                        viewModel.errorMessage = FloeCADStrings.text("cad.import.drawingUnavailable", "The drawing importer is unavailable in this host.")
+                        viewModel.manualImportProblem = FloeCADStrings.text("cad.import.drawingUnavailable", "The drawing importer is unavailable in this host.")
                         return
                     }
                     do {
@@ -2777,14 +2835,14 @@ struct FloeCADEditorView: View {
                         try document.queueDrawingTransfer(prepared)
                     } catch {
                         guard viewModel.isCurrentManualImport(operation) else { return }
-                        viewModel.errorMessage = error.localizedDescription
+                        viewModel.manualImportProblem = error.localizedDescription
                     }
                 case .step:
                     _ = await viewModel.importExactOffMain(
-                        data: source.data, fileName: source.fileName, format: "step")
+                        data: source.data, fileName: source.fileName, format: "step", inlineErrors: true)
                 case .iges:
                     _ = await viewModel.importExactOffMain(
-                        data: source.data, fileName: source.fileName, format: "iges")
+                        data: source.data, fileName: source.fileName, format: "iges", inlineErrors: true)
                 case .image:
                     viewModel.beginInsertImage(data: source.data)
                 }
@@ -2806,7 +2864,12 @@ struct FloeCADEditorView: View {
         // Bound metadata depth to avoid the device opening crash in 311.
         // These stable stages preserve every modifier and its original order.
         let importedSurface = AnyView(
-        viewportChrome(viewModel)
+        GeometryReader { contentGeometry in
+            // This parent keeps the host's safe-area proposal. Measuring here,
+            // downstream of the insets below, also reserves the compact strip
+            // and status bar without changing the full-bleed viewport itself.
+            viewportChrome(viewModel, paletteContentFrame: contentGeometry.frame(in: .global))
+        }
             // Compact widths get an IN-CONTENT control strip: the system
             // navigation bar collapses whole toolbar groups into an
             // unlabelled overflow on an iPhone, so the essential controls
@@ -2817,7 +2880,18 @@ struct FloeCADEditorView: View {
                     compactControlStrip(viewModel)
                 }
             }
-            .safeAreaInset(edge: .bottom) { canvasActionStatusBar }
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 0) {
+                    canvasActionStatusBar
+                    if let problem = viewModel.manualImportProblem {
+                        CADImportProblemBar(message: problem, onChooseFile: {
+                            guard !document.isClosed else { return }
+                            importRequest = lastManualImportRequest ?? importRequest
+                            showImporter = true
+                        }, onClose: { viewModel.manualImportProblem = nil })
+                    }
+                }
+            }
             // ONE importer for every Import-menu entry (see `ImportRequest`).
             .fileImporter(
                 isPresented: $showImporter,
@@ -2849,7 +2923,7 @@ struct FloeCADEditorView: View {
                     importTask?.cancel()
                     importTask = Task { @MainActor in
                         await viewModel.importMeshProbe(pending.probe, unit: unit,
-                                                        operation: pending.operation)
+                                                        operation: pending.operation, inlineErrors: true)
                     }
                 }
             }
@@ -2903,7 +2977,8 @@ struct FloeCADEditorView: View {
                     if let data = try? await item.loadTransferable(type: Data.self) {
                         viewModel.beginInsertImage(data: data)
                     } else {
-                        viewModel.errorMessage = "Couldn't read the selected image."
+                        lastManualImportRequest = .image
+                        viewModel.manualImportProblem = "Couldn't read the selected image."
                     }
                 }
             }

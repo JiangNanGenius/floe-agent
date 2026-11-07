@@ -15,6 +15,33 @@ nonisolated enum ToolboxHostConnectionError: Error, LocalizedError {
     var errorDescription: String? { IDELanguageRunText.t("USB 驱动宿主尚未启用，当前不能连接 USB 设备。请选择其他连接方式。", "The USB driver host is not enabled. Choose another connection type.") }
 }
 
+nonisolated enum ToolboxConnectionInputIssue: Error, LocalizedError, Equatable, Sendable {
+    enum Field: String, Sendable { case address, port }
+    case addressRequired, webSocketURLRequired, invalidWebSocketURL, invalidHost, portRequired, invalidPort
+    var field: Field {
+        switch self {
+        case .portRequired, .invalidPort: .port
+        default: .address
+        }
+    }
+    var errorDescription: String? {
+        switch self {
+        case .addressRequired:
+            IDELanguageRunText.t("请输入服务器主机名或 IP 地址。", "Enter the server hostname or IP address.")
+        case .webSocketURLRequired:
+            IDELanguageRunText.t("请输入 WebSocket 地址（ws:// 或 wss://）。", "Enter a WebSocket address starting with ws:// or wss://.")
+        case .invalidWebSocketURL:
+            IDELanguageRunText.t("请输入完整的 ws:// 或 wss:// 地址；端口须为 1–65535，地址中不能包含用户名、密码或 # 片段。", "Enter a complete ws:// or wss:// address. Ports must be 1–65535; remove any username, password or # fragment.")
+        case .invalidHost:
+            IDELanguageRunText.t("请输入主机名或 IP 地址，端口请填在下方。", "Enter a hostname or IP address, with its port in the field below.")
+        case .portRequired:
+            IDELanguageRunText.t("请输入端口（1–65535）。", "Enter a port from 1 to 65535.")
+        case .invalidPort:
+            IDELanguageRunText.t("端口须为 1–65535 的整数。", "The port must be an integer from 1 to 65535.")
+        }
+    }
+}
+
 nonisolated struct ToolboxConnectionSetup: Sendable {
     var usbVendorID = ""
     var usbProductID = ""
@@ -28,6 +55,36 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
     var username = ""
     var password = ""
     var networkTimeoutSeconds: TimeInterval = 30
+
+    /// The form and actual service share field validation. No connection,
+    /// journal or persisted capture is created for these input errors.
+    func inputIssues(for tool: ToolboxTool) -> [ToolboxConnectionInputIssue] {
+        switch tool {
+        case .webSocket:
+            guard !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [.webSocketURLRequired] }
+            guard let url = URL(string: address), let host = url.host,
+                  !host.isEmpty, host.utf8.count <= 253, url.fragment == nil,
+                  url.port.map({ (1...65535).contains($0) }) ?? true,
+                  (try? SerialEndpoint(title: "WebSocket", transport: .webSocket,
+                    wireProtocol: .webSocketMessage, host: address)) != nil else { return [.invalidWebSocketURL] }
+            return []
+        case .mqtt:
+            var issues: [ToolboxConnectionInputIssue] = []
+            if address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                issues.append(.addressRequired)
+            } else if (try? SerialEndpoint(title: "MQTT", transport: .tcp, wireProtocol: .mqtt5,
+                                           host: address, port: 1)) == nil {
+                // Reuse the transport's host grammar; validate the actual port separately.
+                issues.append(.invalidHost)
+            }
+            if port.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { issues.append(.portRequired) }
+            else if !port.utf8.allSatisfy({ (48...57).contains($0) }) || UInt16(port).map({ $0 > 0 }) != true {
+                issues.append(.invalidPort)
+            }
+            return issues
+        default: return []
+        }
+    }
 }
 
 /// Models, the sole receive pump and cancellation belong to this service
@@ -56,6 +113,7 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
     }
     static func open(tool: ToolboxTool, setup: ToolboxConnectionSetup, environment: AppEnvironment,
                      workbenchModels: Bool = true) async throws -> ToolboxConnection {
+        if let issue = setup.inputIssues(for: tool).first { throw issue }
         let lease = SessionLease(ownerID: UUID())
         let root = try PersonalContentLibrary.applicationRoot().deletingLastPathComponent().appendingPathComponent("Toolbox", isDirectory: true)
         let repository = ToolboxCaptureStore(database: environment.database, exportRoot: root.appendingPathComponent("Exports"))

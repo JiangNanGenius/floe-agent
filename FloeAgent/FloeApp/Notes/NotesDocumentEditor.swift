@@ -10,6 +10,10 @@ struct NotesDocumentEditor: View {
     let session: NotesSession
     let document: NoteDocument
     let embedded: Bool
+    let onAssistant: (() -> Void)?
+    let compactEmbeddedChrome: Bool
+    @State private var showsCompactTools = false
+    private var hidesEmbeddedChrome: Bool { embedded && compactEmbeddedChrome }
     @AppStorage("notes.editor.headerCollapsed") private var headerCollapsed = false
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -103,10 +107,13 @@ struct NotesDocumentEditor: View {
     /// animation crossing the width threshold cannot churn column<->sheet.
     @State private var assistantInlineActive = false
     private typealias InkTool = NotesInkTool
-    init(session: NotesSession, document: NoteDocument, embedded: Bool = false) {
+    init(session: NotesSession, document: NoteDocument, embedded: Bool = false, compactEmbeddedChrome: Bool = false,
+         onAssistant: (() -> Void)? = nil) {
         self.session = session
         self.document = document
         self.embedded = embedded
+        self.compactEmbeddedChrome = compactEmbeddedChrome
+        self.onAssistant = onAssistant
         let restored = session.editorState(for: document.id)
         _pageID = State(initialValue: restored.pageID)
         _tool = State(initialValue: restored.tool.flatMap(InkTool.init(rawValue:)) ?? .pen)
@@ -230,6 +237,36 @@ struct NotesDocumentEditor: View {
                 assistantInlineActive = decision.sideBySideActive
             }
         }
+        .overlay(alignment: .topTrailing) {
+            if hidesEmbeddedChrome {
+                Group {
+                    if showsCompactTools {
+                        // Keep the original sheet actions on their existing
+                        // presenter; this temporary tool card adds no modal.
+                        VStack(spacing: 0) {
+                            HStack {
+                                Text(IDELanguageRunText.t("笔记工具", "Note tools")).font(.headline)
+                                Spacer()
+                                Button(IDELanguageRunText.t("完成", "Done")) { showsCompactTools = false }
+                                    .frame(minWidth: 44, minHeight: 44)
+                            }.padding(.horizontal, 12)
+                            header
+                            writingTools
+                        }.frame(minWidth: 260, idealWidth: 520, maxWidth: 600)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                            .shadow(radius: 6)
+                    } else {
+                        Button { showsCompactTools = true } label: {
+                            Image(systemName: "pencil.tip.crop.circle").frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(.bordered).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                        .accessibilityLabel(IDELanguageRunText.t("笔记工具", "Note tools"))
+                        .accessibilityIdentifier("notes.compact.tools")
+                    }
+                }.padding(6)
+            }
+        }
+        .onChange(of: hidesEmbeddedChrome) { _, hidden in if !hidden { showsCompactTools = false } }
     }
 
     /// The assistant owns its conversation through the store binding, so the
@@ -245,7 +282,7 @@ struct NotesDocumentEditor: View {
                 proposalBanner
                 Divider()
             }
-            if (embedded || !headerCollapsed), document.kind != .office {
+            if !hidesEmbeddedChrome, (embedded || !headerCollapsed), document.kind != .office {
                 header
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
                 Divider()
@@ -279,8 +316,7 @@ struct NotesDocumentEditor: View {
                    images: mapImages, onSelection: { selectedMapNodeID = $0 },
                    onTopicActions: { mapTopicActions = $0 }) }
             } else if let page {
-                writingTools
-                Divider()
+                if !hidesEmbeddedChrome { writingTools; Divider() }
                 if loadedPageID == page.id {
                     NotePencilView(page: page, drawing: drawing, drawingGeneration: canvasGeneration,
                                    onDrawingAdopted: { adopted, generation in
@@ -377,7 +413,7 @@ struct NotesDocumentEditor: View {
             if let mapWindow, document.kind != .mindMap,
                document.linkedMindMaps?.contains(where: { $0.id == mapWindow.id }) == true {
                 NotesMindMapWindow(parentSession: session, parentID: document.id, link: mapWindow, close: { self.mapWindow = nil }, onAssistant: { linkedMapAssistant = $0 })
-                    .padding(.top, headerHeight).padding(8)
+                    .padding(.top, hidesEmbeddedChrome ? 0 : headerHeight).padding(8)
             }
         }
         .sheet(item: $linkedMapAssistant) { map in
@@ -821,7 +857,9 @@ struct NotesDocumentEditor: View {
                 Button("notes.notes_linked_mind_maps.undo", systemImage: "arrow.uturn.backward") { session.undo() }
                     .labelStyle(.iconOnly).frame(width: 44, height: 44)
                     .disabled(!session.canUndo || session.pendingWrites > 0)
-                Button("notes.notes_linked_mind_maps.floe_assistant", systemImage: FloeTheme.assistantSymbol) { showAssistant.toggle() }
+                Button("notes.notes_linked_mind_maps.floe_assistant", systemImage: FloeTheme.assistantSymbol) {
+                    if let onAssistant { onAssistant() } else { showAssistant.toggle() }
+                }
                     .labelStyle(.iconOnly).frame(width: 44, height: 44)
                     .accessibilityIdentifier("notes.assistant")
                 Menu {

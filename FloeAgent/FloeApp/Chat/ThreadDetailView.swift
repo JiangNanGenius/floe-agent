@@ -18,6 +18,14 @@ import FloeSecurity
 import FloeAgentRuntime
 import FloeCore
 
+private struct ThreadNavigationTitle: ViewModifier {
+    let title: String
+    let enabled: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        if enabled { content.navigationTitle(title) } else { content }
+    }
+}
+
 private struct ThreadScrollMetrics: Equatable {
     let offset: Double
     let height: Double
@@ -68,6 +76,7 @@ struct ThreadDetailView: View {
     @EnvironmentObject private var designEntryState: DesignEntryStateCenter
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.continuousVoiceWindowID) private var voiceWindowID
     @Environment(\.continuousVoiceActive) private var continuousVoiceActive
     @StateObject private var automaticRead = ChatAutomaticReadController()
@@ -115,12 +124,14 @@ struct ThreadDetailView: View {
     private let onSaveToNotes: ((String) -> Void)?
     private let embedded: Bool
     private let documentAssistant: Bool
+    private let ownsNavigationTitle: Bool
     private let onInputConsumed: (UUID) -> Void
 
-    init(conversationID: UUID, center: ConversationCenter, composerInput: ThreadComposerInput? = nil, embedded: Bool = false, documentAssistant: Bool = false, onSaveToNotes: ((String) -> Void)? = nil, onInputConsumed: @escaping (UUID) -> Void = { _ in }) {
+    init(conversationID: UUID, center: ConversationCenter, composerInput: ThreadComposerInput? = nil, embedded: Bool = false, documentAssistant: Bool = false, ownsNavigationTitle: Bool = true, onSaveToNotes: ((String) -> Void)? = nil, onInputConsumed: @escaping (UUID) -> Void = { _ in }) {
         self.composerInput = composerInput
         self.embedded = embedded
         self.documentAssistant = documentAssistant
+        self.ownsNavigationTitle = ownsNavigationTitle
         self.onSaveToNotes = onSaveToNotes
         self.onInputConsumed = onInputConsumed
         let model = ThreadDetailViewModel(conversationID: conversationID, center: center)
@@ -145,6 +156,15 @@ struct ThreadDetailView: View {
                 // The temporary state lives in the compact top-header entry
                 // (badge + action menu). There is deliberately no persistent
                 // banner: the ordinary chat layout is reused unchanged.
+                if horizontalSizeClass == .compact, !embedded,
+                   viewModel.selectedRunWaitingForJobs || viewModel.liveStateName != nil {
+                    HStack {
+                        runStateReadout.lineLimit(2)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 4)
+                    .background(.bar)
+                }
                 if let checklist = viewModel.taskChecklist {
                     checklistStatus(checklist)
                 }
@@ -218,7 +238,7 @@ struct ThreadDetailView: View {
             .environment(\.composerHeightBudget, proxy.size.height)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: viewModel.compactionStatus)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: viewModel.canContinue)
-            .navigationTitle(viewModel.taskTitle.isEmpty ? String(localized: "thread.title") : viewModel.taskTitle)
+            .modifier(ThreadNavigationTitle(title: viewModel.taskTitle.isEmpty ? String(localized: "thread.title") : viewModel.taskTitle, enabled: ownsNavigationTitle))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { if !embedded { stateToolbar } }
             .task {
@@ -604,6 +624,7 @@ struct ThreadDetailView: View {
                     .padding()
                     .animation(viewModel.isRunning && !reduceMotion ? .easeOut(duration: 0.22) : nil, value: viewModel.timelineIDs)
                 }
+                .accessibilityIdentifier("thread.messages.viewport")
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
                 .onScrollPhaseChange { old, phase in
                     if phase == .interacting, old != .interacting {
@@ -934,7 +955,7 @@ struct ThreadDetailView: View {
         // creative tasks stay conversation-first until a REAL artifact.
         let entry = designEntryState.presentation(for: viewModel.conversationID)
         if entry == .openWorkbench || entry == .viewArtifactEntry {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: horizontalSizeClass == .compact ? .secondaryAction : .topBarTrailing) {
                 Button {
                     guard let target = DesignLaunchBindingStore.load(
                         conversationID: viewModel.conversationID)?.target else { return }
@@ -1055,23 +1076,27 @@ struct ThreadDetailView: View {
                 .accessibilityLabel("action.retry")
             }
         }
-        ToolbarItem(placement: .topBarTrailing) {
-            if viewModel.selectedRunWaitingForJobs {
-                // A run parked for outstanding background jobs is WAITING, not
-                // finished: the durable `checkpointed` reason says so.
-                Text(ChatBilingualCatalog.localized(
-                    key: "state.waiting_for_background_work",
-                    en: "Waiting for background work", zh: "等待后台作业"))
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(FloeTheme.pending)
-                    .accessibilityIdentifier("thread.run_state.awaitingDependency")
-            } else if let state = viewModel.liveStateName {
-                Text(RunStateLocalizer.title(for: state))
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(RunStateLocalizer.color(for: state))
-                    .accessibilityLabel(Text(RunStateLocalizer.title(for: state)))
-                    .accessibilityIdentifier("thread.run_state.\(state)")
-            }
+        if horizontalSizeClass != .compact {
+            ToolbarItem(placement: .topBarTrailing) { runStateReadout }
+        }
+    }
+
+    @ViewBuilder private var runStateReadout: some View {
+        if viewModel.selectedRunWaitingForJobs {
+            // A run parked for outstanding background jobs is WAITING, not
+            // finished: the durable `checkpointed` reason says so.
+            Text(ChatBilingualCatalog.localized(
+                key: "state.waiting_for_background_work",
+                en: "Waiting for background work", zh: "等待后台作业"))
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(FloeTheme.pending)
+                .accessibilityIdentifier("thread.run_state.awaitingDependency")
+        } else if let state = viewModel.liveStateName {
+            Text(RunStateLocalizer.title(for: state))
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(RunStateLocalizer.color(for: state))
+                .accessibilityLabel(Text(RunStateLocalizer.title(for: state)))
+                .accessibilityIdentifier("thread.run_state.\(state)")
         }
     }
 

@@ -77,6 +77,9 @@ struct APNsSettingsView: View {
             Section(APNsText.t("连接", "Connection")) {
                 LabeledContent(APNsText.t("设备登记", "Device registration"), value: center.status().deviceRegistered ? APNsText.t("已收到登记回执", "Registration received") : APNsText.t("尚未确认", "Unconfirmed"))
                 LabeledContent(APNsText.t("服务登记", "Service registration"), value: center.status().serverConnected ? APNsText.t("已确认", "Confirmed") : APNsText.t("尚未连接", "Not connected"))
+                if let date = center.status().nextRegistrationAttemptAt, date > Date() {
+                    LabeledContent(APNsText.t("下次可重试", "Retry available")) { Text(date, style: .relative) }
+                }
                 if let date = center.status().lastServerAcceptedAt {
                     LabeledContent(APNsText.t("服务最近接受登记", "Last accepted registration")) { Text(date, style: .relative) }
                 }
@@ -134,7 +137,10 @@ struct APNsReleaseNotesView: View {
                     Label("\(release.version) (\(release.build)) · \(APNsText.channel(release.channel))", systemImage: "app.badge")
                         .foregroundStyle(.secondary)
                     Text(release.notes).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
-                    if installed {
+                    if !release.isInstallable {
+                        Label(APNsText.t("此版本当前不可安装", "This version is no longer available to install"), systemImage: "info.circle")
+                            .foregroundStyle(.secondary)
+                    } else if installed {
                         Label(APNsText.t("已是此版本或更新版本", "This version or a newer one is installed"), systemImage: "checkmark.circle")
                     } else {
                         Button(release.channel == .testFlight ? APNsText.t("打开 TestFlight", "Open TestFlight") : APNsText.t("打开 App Store", "Open App Store")) {

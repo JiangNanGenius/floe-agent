@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import SwiftUI
+import UIKit
 import FloePrintCore
 import UniformTypeIdentifiers
 
 struct PrintProjectView: View {
     @Bindable var session: PrintProjectSession
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var importing = false
     @State private var stage: Stage = .prepare
     @State private var inspector: Inspector = .process
@@ -21,11 +23,16 @@ struct PrintProjectView: View {
     @State private var viewReset = 0
     @State private var exportConfiguration: URL?
     @FocusState private var focusedSetting: String?
+    @State private var inspectorViewport = CGSize.zero
+    @State private var inspectorKeyboardRevision: UInt64 = 0
     enum Stage: String, CaseIterable { case prepare, preview, export }
     enum Inspector: String, CaseIterable { case process, support, material, model }
     enum ObjectTool: String, CaseIterable { case select, move, rotate, scale }
     private var disabled: Bool { session.isBusy || session.isEditing }
     private var plateName: String { session.plates.first(where: { $0.id == session.document.plateID })?.name ?? text("打印盘", "Plate") }
+    private var inspectorScrollRequest: PrintInspectorScrollRequest {
+        .init(owner: session.id, field: focusedSetting, viewport: inspectorViewport, keyboardRevision: inspectorKeyboardRevision)
+    }
     private func text(_ zh: String, _ en: String) -> String { IDELanguageRunText.t(zh, en) }
 
     var body: some View {
@@ -112,17 +119,53 @@ struct PrintProjectView: View {
     }
 
     private var header: some View {
+        Group {
+            if horizontalSizeClass == .compact { compactHeader }
+            else {
+                ViewThatFits(in: .horizontal) {
+                    wideHeader
+                    compactHeader
+                }
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .accessibilityIdentifier("printing.header")
+    }
+    private var wideHeader: some View {
+        HStack(spacing: 12) {
+            headerIdentity
+            Spacer(minLength: 4)
+            methodPicker.frame(width: 176)
+            headerActions
+        }
+    }
+    private var compactHeader: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 12) {
+                headerIdentity
+                Spacer(minLength: 4)
+                headerActions
+            }
+            methodPicker
+        }
+    }
+    private var headerIdentity: some View {
         HStack(spacing: 12) {
             Image(systemName: "printer").font(.title3).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(text("打印工作台", "Print workbench")).font(.headline)
                 Text(session.hasUnsavedSettings ? text("设置尚未保存", "Unsaved settings") : text("项目已保存", "Project saved")).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 4)
-            Picker(text("打印方式", "Printing method"), selection: Binding(get: { session.preset }, set: { session.changePreset($0); stage = .prepare })) {
-                Text("FDM").tag(PrintPreset.genericMarlinPLA)
-                Text(text("光固化", "Resin")).tag(PrintPreset.genericCTBV3)
-            }.pickerStyle(.segmented).frame(maxWidth: 176).disabled(disabled)
+            }.lineLimit(1)
+        }.frame(minWidth: 140, alignment: .leading)
+    }
+    private var methodPicker: some View {
+        Picker(text("打印方式", "Printing method"), selection: Binding(get: { session.preset }, set: { session.changePreset($0); stage = .prepare })) {
+            Text("FDM").tag(PrintPreset.genericMarlinPLA)
+            Text(text("光固化", "Resin")).tag(PrintPreset.genericCTBV3)
+        }.pickerStyle(.segmented).frame(minHeight: 44).disabled(disabled).accessibilityIdentifier("printing.method")
+    }
+    private var headerActions: some View {
+        HStack(spacing: 4) {
             Button { showingAssistant.toggle() } label: { Image(systemName: "sparkles").frame(width: 44, height: 44) }
                 .accessibilityLabel(text("打印助手", "Print assistant"))
             Menu {
@@ -132,7 +175,7 @@ struct PrintProjectView: View {
                 Button(text("重做", "Redo"), systemImage: "arrow.uturn.forward") { Task { await session.redo() } }.disabled(!session.canRedo)
             } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
             .accessibilityLabel(text("项目菜单", "Project menu"))
-        }.padding(.horizontal, 14).padding(.vertical, 8)
+        }
     }
     private var commandBar: some View {
         ViewThatFits(in: .horizontal) {
@@ -308,13 +351,21 @@ struct PrintProjectView: View {
                 Spacer(minLength: 12)
             }.padding(14)
         }.frame(maxHeight: .infinity, alignment: .top).background(Color(uiColor: .systemBackground)).clipped()
-            .onChange(of: focusedSetting) { _, field in
-                if let field { proxy.scrollTo(field, anchor: .center) }
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { viewport in
+                inspectorViewport = viewport
             }
-            .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in
-                // Focus arrives before the keyboard's final viewport. Repeat
-                // against the actual resized scroll view, preserving field ID.
-                if let field = focusedSetting { proxy.scrollTo(field, anchor: .center) }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidChangeFrameNotification)) { note in
+                guard focusedSetting != nil,
+                      (note.userInfo?[UIResponder.keyboardIsLocalUserInfoKey] as? Bool) != false else { return }
+                // A keyboard can change its scroll inset after reporting the
+                // same viewport size (for example after native numeric input).
+                inspectorKeyboardRevision &+= 1
+            }
+            .background {
+                PrintInspectorLayoutCompletion(request: inspectorScrollRequest) { completed in
+                    guard completed == inspectorScrollRequest, let field = completed.field else { return }
+                    proxy.scrollTo(field, anchor: .center)
+                }.allowsHitTesting(false).accessibilityHidden(true)
             }
         }
     }
@@ -464,6 +515,59 @@ struct PrintProjectView: View {
     }
     private func numericSlider(_ title: String, key: String, default fallback: Double, range: ClosedRange<Double>, percent: Bool = false) -> some View {
         VStack(spacing: 6) { HStack { Text(title); Spacer(); Text(percent ? (session.processSettings[key] ?? fallback).formatted(.percent.precision(.fractionLength(0))) : (session.processSettings[key] ?? fallback).formatted()).monospacedDigit().foregroundStyle(.secondary) }.font(.subheadline); Slider(value: setting(key, fallback), in: range).accessibilityLabel(title) }
+    }
+}
+private struct PrintInspectorScrollRequest: Equatable, Sendable {
+    let owner: UUID
+    let field: String?
+    let viewport: CGSize
+    let keyboardRevision: UInt64
+}
+
+/// Pure layout observation: no accessibility element, input, value or host
+/// management. Deliver after this normal native layout call stack completes.
+private struct PrintInspectorLayoutCompletion: UIViewRepresentable {
+    let request: PrintInspectorScrollRequest
+    let ready: @MainActor (PrintInspectorScrollRequest) -> Void
+    func makeUIView(context: Context) -> Probe { Probe() }
+    func updateUIView(_ view: Probe, context: Context) { view.update(request, ready: ready) }
+    static func dismantleUIView(_ view: Probe, coordinator: ()) { view.stop() }
+
+    @MainActor final class Probe: UIView {
+        private var request: PrintInspectorScrollRequest?
+        private var ready: (@MainActor (PrintInspectorScrollRequest) -> Void)?
+        private var generation: UInt64 = 0
+        private var scheduled: UInt64?
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false; isAccessibilityElement = false; accessibilityElementsHidden = true
+        }
+        required init?(coder: NSCoder) { nil }
+        func update(_ request: PrintInspectorScrollRequest, ready: @escaping @MainActor (PrintInspectorScrollRequest) -> Void) {
+            self.ready = ready
+            if self.request != request { self.request = request; generation &+= 1; scheduled = nil }
+            setNeedsLayout()
+        }
+        func stop() { generation &+= 1; request = nil; ready = nil }
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            guard let request, request.field != nil, let window,
+                  window.isKeyWindow, window.windowScene?.activationState == .foregroundActive,
+                  request.viewport.width.isFinite, request.viewport.height.isFinite,
+                  request.viewport.width > 0, request.viewport.height > 0 else { return }
+            let pixel = 1 / max(1, traitCollection.displayScale)
+            guard abs(bounds.width - request.viewport.width) <= pixel,
+                  abs(bounds.height - request.viewport.height) <= pixel, scheduled != generation else { return }
+            let token = generation, boundsAtLayout = bounds, windowBoundsAtLayout = window.bounds
+            scheduled = token
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, self.generation == token else { return }
+                guard let window, self.window === window, window.isKeyWindow,
+                      self.request == request, self.bounds == boundsAtLayout,
+                      window.bounds == windowBoundsAtLayout else { self.scheduled = nil; return }
+                self.ready?(request)
+            }
+        }
     }
 }
 private extension Double { func clamped(to range: ClosedRange<Double>) -> Double { min(range.upperBound, max(range.lowerBound, self)) } }

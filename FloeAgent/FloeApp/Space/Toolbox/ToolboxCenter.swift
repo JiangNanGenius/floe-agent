@@ -35,6 +35,10 @@ import FloeToolboxWorkbenches
     init(environment: AppEnvironment) { self.environment = environment; taskSessions = ToolboxTaskSessions(environment: environment) }
     func connect(_ tool: ToolboxTool, setup: ToolboxConnectionSetup) {
         guard let environment else { return }
+        if let issue = setup.inputIssues(for: tool).first {
+            failures[tool] = issue.localizedDescription
+            return
+        }
         operations.removeValue(forKey: tool)?.cancel()
         let previous = connections.removeValue(forKey: tool)
         previous?.invalidate()
@@ -51,7 +55,11 @@ import FloeToolboxWorkbenches
             } catch {
                 guard let self, self.generations[tool] == generation else { return }
                 if !(error is CancellationError) {
-                    self.failures[tool] = (error as? ToolboxHostConnectionError)?.errorDescription ?? IDELanguageRunText.t("连接未完成，请检查地址、设备和权限。", "Unable to connect. Check the address, device and permissions.")
+                    self.failures[tool] = (error as? ToolboxConnectionInputIssue)?.errorDescription
+                        ?? (error as? ToolboxHostConnectionError)?.errorDescription
+                        ?? ([ToolboxTool.webSocket, .mqtt].contains(tool)
+                            ? IDELanguageRunText.t("未能连接，请检查服务器、网络或连接设置后重试。", "Unable to connect. Check the server, network or connection settings, then retry.")
+                            : IDELanguageRunText.t("连接未完成，请检查地址、设备和权限。", "Unable to connect. Check the address, device and permissions."))
                 }
             }
             guard let self, self.generations[tool] == generation else { return }

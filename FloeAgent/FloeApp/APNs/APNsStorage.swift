@@ -29,12 +29,18 @@ struct APNsStateStore: Sendable {
     }
 }
 
-struct APNsCredentialVault: Sendable {
+protocol APNsCredentials: Sendable {
+    func secret(installationID: UUID, create: Bool) throws -> Data?
+    func token(installationID: UUID) throws -> Data?
+    func saveToken(_ token: Data, installationID: UUID) throws
+}
+
+struct APNsCredentialVault: APNsCredentials {
     private let vault = KeychainStore(service: "org.floeagent.ios.push-installation",
-        synchronizable: false, accessibility: .whenUnlockedThisDeviceOnly)
+        synchronizable: false, accessibility: .afterFirstUnlockThisDeviceOnly)
     func secret(installationID: UUID, create: Bool) throws -> Data? {
         let account = installationID.uuidString.lowercased() + "/credential"
-        do { return try vault.read(account: account) }
+        do { return try vault.readMigratingAccessibility(account: account) }
         catch KeychainStoreError.itemNotFound {
             guard create else { return nil }
             var bytes = Data(count: 32)
@@ -45,7 +51,7 @@ struct APNsCredentialVault: Sendable {
         }
     }
     func token(installationID: UUID) throws -> Data? {
-        do { return try vault.read(account: installationID.uuidString.lowercased() + "/token") }
+        do { return try vault.readMigratingAccessibility(account: installationID.uuidString.lowercased() + "/token") }
         catch KeychainStoreError.itemNotFound { return nil }
     }
     func saveToken(_ token: Data, installationID: UUID) throws {

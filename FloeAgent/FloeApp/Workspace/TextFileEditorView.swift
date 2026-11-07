@@ -28,6 +28,7 @@ struct TextFileEditorView: View {
     var onDirtyChange: (Bool) -> Void = { _ in }
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var text = ""
@@ -123,13 +124,14 @@ struct TextFileEditorView: View {
                 }
             }
             if let language = codeLanguage {
-                ToolbarItemGroup(placement: .topBarLeading) {
+                ToolbarItemGroup(placement: horizontalSizeClass == .compact ? .bottomBar : .topBarLeading) {
                     Button {
                         showsFind.toggle()
                     } label: {
                         Label("workspace.text_file_editor_view.find_and_replace", systemImage: "magnifyingglass")
                     }
                     .keyboardShortcut("f", modifiers: .command)
+                    .labelStyle(.iconOnly).frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                     Menu {
                         ForEach(codeSymbols(language), id: \.offset) { symbol in
                             Button(symbol.label) { select(offset: symbol.offset) }
@@ -138,19 +140,21 @@ struct TextFileEditorView: View {
                         Label("workspace.text_file_editor_view.symbols", systemImage: "list.bullet.indent")
                     }
                     .disabled(codeSymbols(language).isEmpty)
+                    .labelStyle(.iconOnly).frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                     Button {
                         editorCommand.send(.undo)
                     } label: {
                         Label("notes.notes_linked_mind_maps.undo", systemImage: "arrow.uturn.backward")
-                    }
+                    }.labelStyle(.iconOnly).frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                     Button {
                         editorCommand.send(.redo)
                     } label: {
                         Label("composer.editor.redo", systemImage: "arrow.uturn.forward")
-                    }
+                    }.labelStyle(.iconOnly).frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                     if language.runnableToolName != nil {
                         if isRunning {
                             Button("action.stop") { runCancellation?.cancel() }
+                                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                         }
                         Button {
                             Task { await run(language) }
@@ -158,6 +162,7 @@ struct TextFileEditorView: View {
                             if isRunning { ProgressView() } else { Label("workspace.text_file_editor_view.run", systemImage: "play.fill") }
                         }
                         .disabled(isRunning || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .labelStyle(.iconOnly).frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                     }
                 }
             }

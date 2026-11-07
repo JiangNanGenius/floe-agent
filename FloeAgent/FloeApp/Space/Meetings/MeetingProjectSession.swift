@@ -65,8 +65,13 @@ import FloeTools
         if let data = try? Data(contentsOf: root.appendingPathComponent("analysis-sessions.json")), data.count <= 1_024 * 1_024,
            let map = try? JSONDecoder().decode([UUID: UUID].self, from: data) { analysisSessions = map }
     }
-    static func open(id: UUID, directory: URL, environment: AppEnvironment) async throws -> MeetingProjectSession {
-        if let value = sessions[id] { return value }
+    static func open(id: UUID, directory: URL, environment: AppEnvironment,
+                     createNotebookIfMissing: Bool = true) async throws -> MeetingProjectSession {
+        let directory = directory.standardizedFileURL.resolvingSymlinksInPath()
+        if let value = sessions[id] {
+            guard value.root == directory, value.meeting.id.rawValue == id else { throw PersonalContentError.changedDocument }
+            return value
+        }
         let file = directory.appendingPathComponent("meeting.sqlite")
         guard FileManager.default.fileExists(atPath: file.path) else { throw PersonalContentError.invalidProject }
         let service = MeetingService(database: try MeetingDatabase(path: file.path))
@@ -81,7 +86,9 @@ import FloeTools
             Task { @MainActor in await value?.receiveCaptureEvent(event) }
         }
         await value.refresh()
-        await value.loadNotebook()
+        // A tool inspection must not create a replacement notebook or link.
+        // The native meeting UI retains its existing first-open creation path.
+        if createNotebookIfMissing { await value.loadNotebook() }
         return value
     }
     static func prepareForDeletion(id: UUID) async {

@@ -26,9 +26,13 @@ struct FilePreviewView: View {
     var conversationID: UUID? = nil
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var router: AppRouter
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     /// Called when the user adds this file to the conversation context.
     var onAddToContext: (() -> Void)? = nil
     var onDeleted: (() -> Void)? = nil
+    /// Optional captured source scope for a preview hosted by another editor.
+    /// Ordinary browser entries keep their existing current-workspace behavior.
+    var expectedDeletionScope: WorkspaceFileActionScope? = nil
     /// Disabled when the preview is already hosted inside WorkspaceIDEView.
     var allowsIDEExpansion = true
     /// Disabled when the preview is already hosted INSIDE the design
@@ -1034,24 +1038,96 @@ struct FilePreviewView: View {
         }
     }
 
+    private var hasCompactPreviewActions: Bool {
+        (isHTML && content != nil) || isTextual
+        || (allowsDesignPage && center.currentWorkspace != nil && center.fileService != nil
+            && !center.isCloudWorkspacePath(displayedPath) && !center.isNetworkWorkspacePath(displayedPath))
+    }
+
+    @ViewBuilder
+    private var previewSaveImageAction: some View {
+        if WorkspaceFileType.isImage(displayedPath), let imageURL = binaryPreviewURL {
+            SaveImageToPhotosButton(imageURL: imageURL, validateRead: {
+                if remotePreview.url == imageURL { return }
+                guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
+                let resolved = try service.guardResolver.resolve(displayedPath)
+                guard resolved.standardizedFileURL == imageURL.standardizedFileURL else {
+                    throw CocoaError(.fileReadNoPermission)
+                }
+                try service.guardResolver.assertReadableSize(resolved)
+            }).frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+        }
+    }
+
+    @ViewBuilder
+    private var previewReadActions: some View {
+        if isHTML, content != nil {
+            Button {
+                startWebPreview()
+            } label: {
+                Label("workspace.file_preview_view.preview_website", systemImage: "safari")
+            }
+            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+            .accessibilityIdentifier("file.preview.html")
+        }
+        // Reading mode for text documents: the same original file opened
+        // read-only with bounded windows. The edit entries above/below are
+        // unchanged, and an over-limit file that the bounded preview
+        // cannot show is still readable here.
+        if isTextual {
+            Button {
+                isReadingModePresented = true
+            } label: {
+                Label(
+                    OfficeInkText.t("阅读模式", "Reading Mode"),
+                    systemImage: "book"
+                )
+            }
+            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+            .accessibilityLabel(OfficeInkText.t("阅读模式", "Reading Mode"))
+            .accessibilityIdentifier("file.preview.readingMode")
+        }
+    }
+
+    @ViewBuilder
+    private var previewDesignAction: some View {
+        // T6 design entrance for a real workspace file. Only shown when
+        // the file is addressable through the live workspace authority;
+        // cloud/network stubs are read-only copies without a design owner.
+        // With a conversation context the design page opens for the same
+        // task; without one, a genuine ordinary task bound to this file
+        // starts through the conversational entry (no old form).
+        if allowsDesignPage,
+           let workspace = center.currentWorkspace,
+           center.fileService != nil,
+           !center.isCloudWorkspacePath(displayedPath),
+           !center.isNetworkWorkspacePath(displayedPath) {
+            Button {
+                let target = DesignOwnerTargets.file(
+                    workspaceID: workspace.id, relativePath: displayedPath)
+                if engineeringConversationID != nil {
+                    designTarget = target
+                } else {
+                    fileDesignTarget = target
+                }
+            } label: {
+                Label("design.owner.open", systemImage: "square.on.square.dashed")
+            }
+            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+            .accessibilityLabel("design.owner.open")
+            .accessibilityIdentifier("file.preview.design")
+        }
+    }
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
-            if WorkspaceFileType.isImage(displayedPath), let imageURL = binaryPreviewURL {
-                SaveImageToPhotosButton(imageURL: imageURL, validateRead: {
-                    if remotePreview.url == imageURL { return }
-                    guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
-                    let resolved = try service.guardResolver.resolve(displayedPath)
-                    guard resolved.standardizedFileURL == imageURL.standardizedFileURL else {
-                        throw CocoaError(.fileReadNoPermission)
-                    }
-                    try service.guardResolver.assertReadableSize(resolved)
-                })
-            }
+            previewSaveImageAction
             if engineeringPackage != nil {
                 Button { isEngineeringFullScreen = true } label: {
                     Label("engineering.fullscreen", systemImage: "arrow.up.left.and.arrow.down.right")
                 }
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityIdentifier("file.preview.engineering.fullscreen")
             }
             if WorkspaceFileType.isMedia(displayedPath),
@@ -1062,6 +1138,7 @@ struct FilePreviewView: View {
                         mediaEditorSource = try service.guardResolver.resolve(displayedPath)
                     } catch { previewError = error.localizedDescription }
                 } label: { Label("media.media_editor_view.media_workbench", systemImage: "film.stack") }
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                 .accessibilityIdentifier("file.preview.mediaEditor")
             }
             if imageEditAvailability?.isEditable == true {
@@ -1077,32 +1154,7 @@ struct FilePreviewView: View {
                 .accessibilityLabel(OfficeInkText.t("编辑图片", "Edit Image"))
                 .accessibilityIdentifier("file.preview.imageEdit")
             }
-            if isHTML, content != nil {
-                Button {
-                    startWebPreview()
-                } label: {
-                    Label("workspace.file_preview_view.preview_website", systemImage: "safari")
-                }
-                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityIdentifier("file.preview.html")
-            }
-            // Reading mode for text documents: the same original file opened
-            // read-only with bounded windows. The edit entries above/below are
-            // unchanged, and an over-limit file that the bounded preview
-            // cannot show is still readable here.
-            if isTextual {
-                Button {
-                    isReadingModePresented = true
-                } label: {
-                    Label(
-                        OfficeInkText.t("阅读模式", "Reading Mode"),
-                        systemImage: "book"
-                    )
-                }
-                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityLabel(OfficeInkText.t("阅读模式", "Reading Mode"))
-                .accessibilityIdentifier("file.preview.readingMode")
-            }
+            if horizontalSizeClass != .compact { previewReadActions }
             // Explicit share of the *current* file: the visible document is
             // resolved through the guard (local) or snapshotted (cloud/network)
             // and never re-decoded as text.
@@ -1115,32 +1167,7 @@ struct FilePreviewView: View {
             .disabled(isPreparingShare || center.fileService == nil)
             .accessibilityLabel("file.preview.share")
             .accessibilityIdentifier("file.preview.share")
-            // T6 design entrance for a real workspace file. Only shown when
-            // the file is addressable through the live workspace authority;
-            // cloud/network stubs are read-only copies without a design owner.
-            // With a conversation context the design page opens for the same
-            // task; without one, a genuine ordinary task bound to this file
-            // starts through the conversational entry (no old form).
-            if allowsDesignPage,
-               let workspace = center.currentWorkspace,
-               center.fileService != nil,
-               !center.isCloudWorkspacePath(displayedPath),
-               !center.isNetworkWorkspacePath(displayedPath) {
-                Button {
-                    let target = DesignOwnerTargets.file(
-                        workspaceID: workspace.id, relativePath: displayedPath)
-                    if engineeringConversationID != nil {
-                        designTarget = target
-                    } else {
-                        fileDesignTarget = target
-                    }
-                } label: {
-                    Label("design.owner.open", systemImage: "square.on.square.dashed")
-                }
-                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-                .accessibilityLabel("design.owner.open")
-                .accessibilityIdentifier("file.preview.design")
-            }
+            if horizontalSizeClass != .compact { previewDesignAction }
             if allowsIDEExpansion,
                WorkspaceFileRouter.allowsCodeEditor(displayedPath),
                content != nil,
@@ -1183,6 +1210,11 @@ struct FilePreviewView: View {
             // Low-frequency actions live behind More instead of occupying a
             // permanent toolbar badge.
             Menu {
+                if horizontalSizeClass == .compact, hasCompactPreviewActions {
+                    previewReadActions
+                    previewDesignAction
+                    Divider()
+                }
                 // The parent's callback is bound to the file this preview was
                 // opened for. After a restore it would add the damaged
                 // package, so it stays available only for the original file.
@@ -1217,7 +1249,8 @@ struct FilePreviewView: View {
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel("file.preview.more")
             .accessibilityIdentifier("file.preview.more")
-            .disabled(deletingFile || (onDeleted == nil && !canPreparePrint && (onAddToContext == nil || isPresentingRecoveredCopy)
+            .disabled(deletingFile || ((horizontalSizeClass != .compact || !hasCompactPreviewActions)
+                      && onDeleted == nil && !canPreparePrint && (onAddToContext == nil || isPresentingRecoveredCopy)
                       && (isTextual || nativeOfficeURL != nil || !quickLookAvailable)))
         }
     }
@@ -1231,7 +1264,16 @@ struct FilePreviewView: View {
         let generation = UUID(); deletionGeneration = generation
         let path = displayedPath
         do {
-            let scope = try WorkspaceFileActionScope(center: center)
+            let scope: WorkspaceFileActionScope
+            if let expectedDeletionScope {
+                // Recovery may display a newly created copy. A captured design
+                // handoff can delete only the original source it was opened for.
+                guard path == relativePath else { throw WorkspaceFileDeletionError.changed }
+                try expectedDeletionScope.validate(center)
+                scope = expectedDeletionScope
+            } else {
+                scope = try WorkspaceFileActionScope(center: center)
+            }
             let request = try await WorkspaceFileDeletion.prepare(path: path, scope: scope, center: center)
             guard generation == deletionGeneration, displayedPath == path else { throw WorkspaceFileDeletionError.changed }
             deletionRequest = request

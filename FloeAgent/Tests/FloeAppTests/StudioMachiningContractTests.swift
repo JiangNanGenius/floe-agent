@@ -8,6 +8,9 @@ import FloeTools
 import FloeCAD
 import FloeManufacturingCore
 import FloePrintCore
+import FloeAgentRuntime
+import FloeSecurity
+import FloeTestSupport
 @testable import FloeApp
 
 /// Registered App runners, genuine CAD solids, and their existing durable
@@ -171,6 +174,161 @@ import FloePrintCore
             #expect(try Data(contentsOf:archive) == archiveBytes)
         }
     }
+    /// A real multi-spindle archive is produced once by the existing engine.
+    /// Readback must return these bytes and measurements, not calculate again.
+    private func saveCell(in directory:URL) throws -> (ManufacturingCellProject,CellSimulationArtifact,URL) {
+        var project = ManufacturingCellProject.demonstration()
+        project.cell.name = "Saved multi-spindle contract \(UUID().uuidString.prefix(8))"
+        var artifact = try CellManufacturingEngine().compute(project)
+        artifact.elapsedSeconds = 867.5309 // Valid stored metadata; recalculation cannot preserve this marker.
+        let file = directory.appendingPathComponent("cell/latest.floecell")
+        try ManufacturingCellArchive.save(project:project,artifact:artifact,to:file)
+        return (project,artifact,file)
+    }
+    private func cell(_ page:[String:Any]) throws -> CADManufacturingCellInspection {
+        try JSONDecoder().decode(CADManufacturingCellInspection.self,
+            from:JSONSerialization.data(withJSONObject:try #require(page["manufacturingCell"] as? [String:Any])))
+    }
+    @Test func savedManufacturingCellIsSeparateFromOrdinaryCAMAndVisibleToBothAuthorizedChats() async throws {
+        try await withContexts { owner,other in
+            var context = owner
+            let environment = FloeAgentApp.liveEnvironment
+            let id = try await createCAD(context),library = try await PersonalContentService.shared.library()
+            let location = try await library.resolve(id),directory = location.url.appendingPathComponent("Manufacturing")
+            let document = try await PersonalCADSessions.open(id:id,directory:location.url)
+            try await addBox(document,min:[-2,-2],max:[2,2],height:2)
+            let before = try await inspect(id,context)
+            context.toolCallID = "prepare-empty-ordinary-cam"
+            _ = try await invoke("studio.machining",["projectID":id.uuidString,"action":"prepare","expectedRevision":before.revision],context)
+            let (project,artifact,file) = try saveCell(in:directory)
+            let archive = try Data(contentsOf:file),draft = try Data(contentsOf:directory.appendingPathComponent("draft.json"))
+            let cadRevision = document.revision,cadContent = document.contentSHA256
+            context.approvalGrantID = nil
+            let page = try json(try await invoke("studio.machining",["projectID":id.uuidString,"action":"inspect","limit":1],context))
+            #expect((page["contentJSON"] as? String)?.count == 1 && page["nextOffset"] != nil)
+            let observation = try cell(page),saved = try #require(observation.savedResult)
+            #expect(observation.status == .saved && observation.family == "manufacturingCell" && observation.ownerCADProjectID == id)
+            #expect(saved.cellProjectID == project.id && saved.name == project.cell.name)
+            #expect(saved.archiveSHA256 == ManufacturingStudy.digest(archive) && saved.archiveByteCount == archive.count)
+            #expect(saved.inputSHA256 == artifact.inputSHA256 && saved.calculationElapsedSeconds == 867.5309)
+            #expect(saved.scheduleTotalSeconds == artifact.schedule.totalSeconds)
+            #expect(saved.computedOperationCount == artifact.jobs.count && saved.transferRecordCount == artifact.schedule.transfers.count)
+            #expect(saved.remainingWorkpieces.count == artifact.finalStock.count)
+            for stock in saved.remainingWorkpieces { #expect(stock.remainingVolumeMM3 == artifact.finalStock[stock.workpieceID]?.remainingMM3) }
+            let complete = try await inspect(id,context),main = try #require(complete.state["machining"] as? [String:Any])
+            let ordinary = try study(complete)
+            #expect(ordinary.cam?.operations.isEmpty == true && ordinary.cam?.tools.isEmpty == true)
+            #expect(main["hasSavedResult"] as? Bool == false,"A saved cell cannot masquerade as a computed ordinary CAM study")
+            let nested = try JSONDecoder().decode(CADManufacturingCellInspection.self,
+                from:JSONSerialization.data(withJSONObject:try #require(main["manufacturingCell"] as? [String:Any])))
+            #expect(nested.savedResult?.archiveSHA256 == saved.archiveSHA256)
+            await expectForeignDenial("studio.machining",["projectID":id.uuidString,"action":"inspect"],other)
+
+            // The actual work assistant and the original ordinary chat share
+            // their existing binding service, not a model-supplied path.
+            let assistant = try await environment.studioCoordinator.assistant(for:location.record)
+            let assistantRun = UUID(),now = Date()
+            try await environment.runStore.saveRun(.init(id:assistantRun,conversationID:assistant,state:"executing",goal:"Read saved cell",startedAt:now))
+            var assistantContext = ToolContext(runID:assistantRun,toolCallID:"read-cell-from-work-assistant",allowedToolNames:StudioCoordinator.names,
+                cancellation:CancellationToken(),conversationID:assistant)
+            assistantContext.frozenEffectiveCatalogNames = StudioCoordinator.names
+            do {
+                let assistantPage = try json(try await invoke("studio.machining",["projectID":id.uuidString,"action":"inspect","limit":1],assistantContext))
+                #expect(try cell(assistantPage).savedResult?.archiveSHA256 == saved.archiveSHA256)
+                try await environment.conversationStore.deleteConversation(id:assistant)
+            } catch { try? await environment.conversationStore.deleteConversation(id:assistant);throw error }
+            #expect(try Data(contentsOf:file) == archive && Data(contentsOf:directory.appendingPathComponent("draft.json")) == draft)
+            #expect(document.revision == cadRevision && document.contentSHA256 == cadContent)
+
+            // Real discovery, dispatch, capture and subsequent provider input.
+            // Only provider transport is scripted, never the native result.
+            let runner = try #require(ToolRunnerRegistry.shared.runner(named:"studio.machining"))
+            let observed = AsyncLock<ToolExecutionOutput?>(nil),registry = ToolRunnerRegistry()
+            registry.register(AnyAgentTool(descriptor:runner.descriptor,run:{ args,ctx in
+                let result = try await runner.run(args,ctx)
+                observed.withLock { $0 = result };return result
+            },validateArguments:runner.validateArguments,preflightSubmission:runner.preflightSubmission,routing:ToolEnvironmentRouting()))
+            let discovery = try TestFixtures.toolCall(id:"find-saved-cell",toolName:"tools.search",arguments:#"{"query":"多主轴 多刀塔 制造单元"}"#)
+            let call = try TestFixtures.toolCall(id:"inspect-saved-cell",toolName:"studio.machining",
+                arguments:String(decoding:JSONSerialization.data(withJSONObject:["projectID":id.uuidString,"action":"inspect","limit":12000]),as:UTF8.self))
+            let adapter = MockAdapter(),provider = TestFixtures.localhostProvider(),checkpoints = MockCheckpointStore()
+            adapter.script = [
+                [.toolRequest(discovery),.completed(.init(stopReason:.toolUse))],
+                [.toolRequest(call),.completed(.init(stopReason:.toolUse))],
+                [.textDelta(.init(text:"Saved manufacturing-cell measurements received.")),.completed(.init(stopReason:.endTurn))]
+            ]
+            let captures = FileManager.default.temporaryDirectory.appendingPathComponent("cell-readback-captures-\(UUID())")
+            defer { try? FileManager.default.removeItem(at:captures) }
+            let runtime = FloeAgentRuntime(configuration:.init(conversationID:try #require(context.conversationID),provider:provider,
+                model:TestFixtures.testModel(providerID:provider.id),allowedToolNames:["studio.machining"],maxToolSteps:4,
+                serviceStorePaths:await library.typedServiceStorePaths(),toolResultCaptureRoot:captures),
+                adapter:adapter,policy:HumanApprovalPolicy(),executor:CatalogToolExecutor(runners:registry),checkpointStore:checkpoints,runID:context.runID)
+            try await runtime.start(goal:"Read the already saved 多主轴 多刀塔 制造单元 result. Do not calculate or edit.")
+            #expect(await runtime.state.name == "completed")
+            #expect(adapter.requests.count == 3)
+            let searched = try #require(adapter.requests.dropFirst().first?.toolResults.first { $0.callID == discovery.id }?.output)
+            #expect(searched.contains("studio.machining") || searched.contains("studio_machining"))
+            let output = try #require(observed.withLock { $0 }),full = output.capturedOutput ?? output.summary
+            #expect(!output.capturedOutputTruncated && output.fullOutputSHA256 == FloeDigest.sha256Hex(Data(full.utf8)))
+            let wire = try #require(adapter.requests.last?.toolResults.first { $0.callID == call.id }?.output)
+            #expect(wire.contains("trustedSourceID") && wire.hasSuffix(full),"The next provider request receives the real complete JSON")
+            let delivered = try cell(try #require(JSONSerialization.jsonObject(with:Data(full.utf8)) as? [String:Any]))
+            #expect(delivered.savedResult?.archiveSHA256 == saved.archiveSHA256)
+            #expect(delivered.savedResult?.remainingWorkpieces.last?.remainingVolumeMM3 == saved.remainingWorkpieces.last?.remainingVolumeMM3)
+            #expect(checkpoints.saved.flatMap(\.pendingToolResults).contains { $0.callID == call.id && $0.status == .ok })
+            #expect(try Data(contentsOf:file) == archive && Data(contentsOf:directory.appendingPathComponent("draft.json")) == draft)
+        }
+    }
+    @Test func missingTamperedLinkedAndCancelledSavedCellsNeverBecomeDemoResults() async throws {
+        try await withContexts { owner,other in
+            var context = owner
+            let id = try await createCAD(context),library = try await PersonalContentService.shared.library()
+            let location = try await library.resolve(id),directory = location.url.appendingPathComponent("Manufacturing")
+            context.approvalGrantID = nil
+            let missing = try cell(try json(try await invoke("studio.machining",["projectID":id.uuidString,"action":"inspect","limit":1],context)))
+            #expect(missing.status == .none && missing.savedResult == nil)
+            #expect(!FileManager.default.fileExists(atPath:directory.path),"A missing result creates neither directories nor a demonstration")
+            let (_,artifact,file) = try saveCell(in:directory),original = try Data(contentsOf:file)
+            var envelope = try #require(JSONSerialization.jsonObject(with:original) as? [String:Any])
+            var output = try #require(envelope["output"] as? [String:Any]),schedule = try #require(output["schedule"] as? [String:Any])
+            schedule["totalSeconds"] = -1;output["schedule"] = schedule;envelope["output"] = output
+            let tampered = try JSONSerialization.data(withJSONObject:envelope,options:.sortedKeys)
+            try tampered.write(to:file,options:.atomic)
+            do { _ = try await invoke("studio.machining",["projectID":id.uuidString,"action":"inspect"],context);Issue.record("Tampered cell returned a result or silently fell back to ordinary CAM") }
+            catch ManufacturingError.archive {}
+            #expect(try Data(contentsOf:file) == tampered)
+            // Recomputing the envelope digest must not bypass the existing
+            // artifact/scheduler validator in the new Data entry point.
+            var invalidArtifact = artifact
+            invalidArtifact.schedule.totalSeconds += 1
+            envelope["output"] = try JSONSerialization.jsonObject(with:ManufacturingStudy.encoder.encode(invalidArtifact))
+            envelope["outputSHA256"] = try ResearchArchive.digest(invalidArtifact)
+            let invalidChain = try JSONSerialization.data(withJSONObject:envelope,options:.sortedKeys)
+            try invalidChain.write(to:file,options:.atomic)
+            do { _ = try await invoke("studio.machining",["projectID":id.uuidString,"action":"inspect"],context);Issue.record("A digest-valid invalid cell schedule bypassed artifact validation") }
+            catch ManufacturingError.archive {}
+            #expect(try Data(contentsOf:file) == invalidChain)
+            var wrongFamily = try #require(JSONSerialization.jsonObject(with:original) as? [String:Any])
+            wrongFamily["family"] = "engineeringAnalysis"
+            do { _ = try ManufacturingCellArchive.open(data:JSONSerialization.data(withJSONObject:wrongFamily));Issue.record("A different research family was accepted as a cell") }
+            catch ManufacturingError.archive {}
+            await expectForeignDenial("studio.machining",["projectID":id.uuidString,"action":"inspect"],other)
+            try original.write(to:file,options:.atomic)
+            let outside = location.url.appendingPathComponent("original-cell-recovery.floecell")
+            try FileManager.default.moveItem(at:file,to:outside)
+            try FileManager.default.createSymbolicLink(at:file,withDestinationURL:outside)
+            do { _ = try await invoke("studio.machining",["projectID":id.uuidString,"action":"inspect"],context);Issue.record("A linked cell escaped the descriptor-bound source") }
+            catch ManufacturingError.archive {}
+            #expect(try Data(contentsOf:outside) == original)
+            try FileManager.default.removeItem(at:file)
+            try FileManager.default.moveItem(at:outside,to:file)
+            context.cancellation.cancel()
+            do { _ = try await invoke("studio.machining",["projectID":id.uuidString,"action":"inspect"],context);Issue.record("A cancelled inspect returned data") }
+            catch FloeError.cancelled {}
+            #expect(try Data(contentsOf:file) == original)
+        }
+    }
+
     @Test func approvedPrintPreparationReplaysItsEditedChildAndKeepsOtherTasksOut() async throws {
         try await withContexts { owner,other in
             var context = owner

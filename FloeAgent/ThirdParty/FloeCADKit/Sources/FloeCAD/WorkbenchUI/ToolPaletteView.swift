@@ -10,6 +10,30 @@
 
 import SwiftUI
 
+/// Converts the unignored parent's global content bounds into padding for the
+/// full-bleed viewport's palette overlay. Invalid/transient measurements must
+/// not place interactive controls under the parent navigation bar.
+enum CADToolPaletteLayout {
+    static func contentInsets(viewportFrame: CGRect, contentFrame: CGRect) -> EdgeInsets? {
+        guard isUsable(viewportFrame), isUsable(contentFrame) else { return nil }
+        let visible = viewportFrame.intersection(contentFrame)
+        guard isUsable(visible) else { return nil }
+        return EdgeInsets(
+            top: visible.minY - viewportFrame.minY,
+            leading: visible.minX - viewportFrame.minX,
+            bottom: viewportFrame.maxY - visible.maxY,
+            trailing: viewportFrame.maxX - visible.maxX
+        )
+    }
+
+    private static func isUsable(_ frame: CGRect) -> Bool {
+        frame.origin.x.isFinite && frame.origin.y.isFinite
+            && frame.width.isFinite && frame.height.isFinite
+            && frame.width > 0 && frame.height > 0
+            && frame.maxX.isFinite && frame.maxY.isFinite
+    }
+}
+
 // MARK: - Palette model (view-layer only; values captured at build time)
 
 private enum ToolMenu { case constrain, dimension, insert, mirror }
@@ -79,6 +103,9 @@ struct ToolPaletteView: View {
             }
             .accessibilityIdentifier("ToolPalette")
         }
+        // The vertical-scroll fallback is still a narrow tool rail; it must
+        // not expand across the viewport when the available height shrinks.
+        .fixedSize(horizontal: true, vertical: false)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
         .shadow(color: .black.opacity(0.15), radius: 10, y: 3)
         .coordinateSpace(name: "palette")

@@ -211,10 +211,13 @@ final class AppEnvironment: ObservableObject {
     private let skillDependencyPrepareLinux: LinuxPreparationHandler
     lazy var localTerminals = LocalTerminalStore(sessions: shellSessionCenter)
     /// A payload only requests the existing reconciled finite background pass.
+    private lazy var apnsService = APNsFirstPartyService()
     lazy var apnsCenter = APNsCenter(
         signingEnvironment: APNsSigningEnvironment(rawValue:
             Bundle.main.object(forInfoDictionaryKey: "FloeAPNsEnvironment") as? String ?? "") ?? .unknown,
-        transport: nil, releaseLookup: nil,
+        transport: apnsService.transport, releaseLookup: apnsService.transport,
+        testFlightURL: apnsService.testFlightURL, appStoreURL: apnsService.appStoreURL,
+        platform: apnsService.platform, enrollment: apnsService.enrollment,
         eligibility: { [weak self] in
             guard let self else { throw APNsServiceError.unavailable }
             return try await self.backgroundRunCoordinator.pushEligibilitySnapshot()

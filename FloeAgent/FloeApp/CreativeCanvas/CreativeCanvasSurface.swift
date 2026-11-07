@@ -11,9 +11,42 @@ import FloeCanvasIntegration
 import FloeCanvasTemplates
 import FloeCanvasTemplatesUI
 
+private struct CanvasModuleMenus: Sendable {
+    let actions: @MainActor @Sendable () -> AnyView
+    let exports: @MainActor @Sendable () -> AnyView
+}
+private struct CanvasModuleMenusKey: EnvironmentKey {
+    static let defaultValue: CanvasModuleMenus? = nil
+}
+private extension EnvironmentValues {
+    var canvasModuleMenus: CanvasModuleMenus? {
+        get { self[CanvasModuleMenusKey.self] }
+        set { self[CanvasModuleMenusKey.self] = newValue }
+    }
+}
+
+/// Reads the host menu at the descendant render site, so the old editor keeps
+/// its own model/selection/undo while the modifier keeps its service actions.
+struct CanvasModuleActionMenuItems: View {
+    @Environment(\.canvasModuleMenus) private var menus
+    var body: some View {
+        if let menus {
+            Section(IDELanguageRunText.t("素材与流程", "Media and workflow")) { menus.actions() }
+        }
+    }
+}
+struct CanvasModuleExportMenu<Legacy: View>: View {
+    @Environment(\.canvasModuleMenus) private var menus
+    let legacy: Legacy
+    init(@ViewBuilder legacy: () -> Legacy) { self.legacy = legacy() }
+    var body: some View {
+        if let menus { menus.exports() } else { legacy }
+    }
+}
+
 /// New components add tools to the original canvas; they never own a second
 /// board, selection, gesture system or top-level editor.
-struct CanvasModuleTools: ViewModifier {
+@MainActor struct CanvasModuleTools: ViewModifier {
     let record: PersonalContentRecord
     @ObservedObject var store: CanvasEditorStore
     let providedSession: CanvasHostSession?
@@ -42,55 +75,9 @@ struct CanvasModuleTools: ViewModifier {
                     else { await export(format == "pdf" ? .pdf : format == "png" ? .png : .floecanvaslab) }
                 }
             }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button(IDELanguageRunText.t("导入素材", "Import media"), systemImage: "square.and.arrow.down") { importing = true }
-                        Button(IDELanguageRunText.t("引用资料或作品", "Link a source or work"), systemImage: "link") { sheet = .sources }
-                        Divider()
-                        Button(IDELanguageRunText.t("加入场景与流程", "Add a scenario or workflow"), systemImage: "square.grid.2x2") { sheet = .templates }
-                        Button(IDELanguageRunText.t("从目标生成初稿", "Draft from a goal"), systemImage: "sparkles.rectangle.stack") { sheet = .goal }
-                        Button(IDELanguageRunText.t("存为我的流程", "Save as my workflow"), systemImage: "square.and.arrow.up.on.square") { sheet = .saveTemplate }
-                        Menu(IDELanguageRunText.t("添加流程步骤", "Add workflow step"), systemImage: "point.3.connected.trianglepath.dotted") {
-                            ForEach(FlowNodeKind.allCases, id: \.self) { kind in
-                                Button(flowTitle(kind)) { Task { await insertStep(kind) } }
-                            }
-                        }
-                        if !store.page.flowGraphs.isEmpty {
-                            Divider()
-                            Menu(IDELanguageRunText.t("流程", "Workflow"), systemImage: "point.3.connected.trianglepath.dotted") {
-                                ForEach(Array(store.page.flowGraphs.enumerated()), id: \.element.id) { index, graph in
-                                    Button(IDELanguageRunText.t("流程 ", "Workflow ") + String(index + 1)) {
-                                        store.selectFlowGraph(graph.id)
-                                        NotificationCenter.default.post(name: .floeCanvasFrameworkFlowRequested, object: nil,
-                                            userInfo: ["canvasID": record.id, "pageID": store.selectedPageID, "graphID": graph.id])
-                                    }
-                                }
-                                Button(IDELanguageRunText.t("编辑流程定义", "Edit workflow definition")) { sheet = .flowDefinition }
-                                Button(IDELanguageRunText.t("运行流程", "Run workflow")) {
-                                    Task { _ = await store.startFlowRun(); sheet = .flow }
-                                }
-                            }
-                        }
-                        Divider()
-                        Menu(IDELanguageRunText.t("导出", "Export"), systemImage: "square.and.arrow.up") {
-                            ForEach(CanvasExchangeFormat.allCases, id: \.self) { format in
-                                Button(exportTitle(format)) { Task { await export(format) } }
-                            }
-                        }
-                        if let open = store.services.openAssistant {
-                            Divider()
-                            Button(IDELanguageRunText.t("询问选区", "Ask about selection"), systemImage: "bubble.left.and.text.bubble.right") {
-                                let request = CanvasAssistantRequest(context: .init(canvasID: record.id,
-                                    pageID: store.selectedPageID, revision: store.revision), selectedNodeIDs: Array(store.selection), instruction: "")
-                                Task { do { try await open(request) } catch { diagnostic = error.localizedDescription } }
-                            }
-                        }
-                    } label: { Label(IDELanguageRunText.t("画布", "Canvas"), systemImage: "ellipsis.circle") }
-                    .disabled(busy || store.isMutating)
-                    .accessibilityIdentifier("canvas.host.actions")
-                }
-            }
+            .environment(\.canvasModuleMenus, CanvasModuleMenus(
+                actions: { AnyView(moduleActionItems) },
+                exports: { AnyView(moduleExportMenu) }))
             .sheet(item: $sheet) { value in
                 switch value {
                 case .templates:
@@ -149,6 +136,62 @@ struct CanvasModuleTools: ViewModifier {
                 Button(IDELanguageRunText.t("好", "OK")) { diagnostic = nil }
             } message: { Text(diagnostic ?? "") }
             .overlay(alignment: .bottomLeading) { if busy { ProgressView().padding().background(.regularMaterial, in: Capsule()).padding() } }
+    }
+
+    private var moduleActionItems: some View {
+        Group {
+            Button(IDELanguageRunText.t("导入素材", "Import media"), systemImage: "square.and.arrow.down") { importing = true }
+            Button(IDELanguageRunText.t("引用资料或作品", "Link a source or work"), systemImage: "link") { sheet = .sources }
+            Divider()
+            Button(IDELanguageRunText.t("加入场景与流程", "Add a scenario or workflow"), systemImage: "square.grid.2x2") { sheet = .templates }
+            Button(IDELanguageRunText.t("从目标生成初稿", "Draft from a goal"), systemImage: "sparkles.rectangle.stack") { sheet = .goal }
+            Button(IDELanguageRunText.t("存为我的流程", "Save as my workflow"), systemImage: "square.and.arrow.up.on.square") { sheet = .saveTemplate }
+            Menu(IDELanguageRunText.t("添加流程步骤", "Add workflow step"), systemImage: "point.3.connected.trianglepath.dotted") {
+                ForEach(FlowNodeKind.allCases, id: \.self) { kind in
+                    Button(flowTitle(kind)) { Task { await insertStep(kind) } }
+                }
+            }
+            if !store.page.flowGraphs.isEmpty {
+                Divider()
+                Menu(IDELanguageRunText.t("流程", "Workflow"), systemImage: "point.3.connected.trianglepath.dotted") {
+                    ForEach(Array(store.page.flowGraphs.enumerated()), id: \.element.id) { index, graph in
+                        Button(IDELanguageRunText.t("流程 ", "Workflow ") + String(index + 1)) {
+                            store.selectFlowGraph(graph.id)
+                            NotificationCenter.default.post(name: .floeCanvasFrameworkFlowRequested, object: nil,
+                                userInfo: ["canvasID": record.id, "pageID": store.selectedPageID, "graphID": graph.id])
+                        }
+                    }
+                    Button(IDELanguageRunText.t("编辑流程定义", "Edit workflow definition")) { sheet = .flowDefinition }
+                    Button(IDELanguageRunText.t("运行流程", "Run workflow")) {
+                        Task { _ = await store.startFlowRun(); sheet = .flow }
+                    }
+                }
+            }
+            if let open = store.services.openAssistant {
+                Divider()
+                Button(IDELanguageRunText.t("询问选区", "Ask about selection"), systemImage: "bubble.left.and.text.bubble.right") {
+                    let request = CanvasAssistantRequest(context: .init(canvasID: record.id,
+                        pageID: store.selectedPageID, revision: store.revision), selectedNodeIDs: Array(store.selection), instruction: "")
+                    Task { do { try await open(request) } catch { diagnostic = error.localizedDescription } }
+                }
+            }
+        }
+        .disabled(busy || store.isMutating)
+    }
+
+    private var moduleExportMenu: some View {
+        Menu(IDELanguageRunText.t("导出", "Export"), systemImage: "square.and.arrow.up") {
+            ForEach(CanvasExchangeFormat.allCases, id: \.self) { format in
+                Button(exportTitle(format)) {
+                    Task { await store.refreshFromHost(); await export(format) }
+                }
+            }
+            Button("workspace.workspace_canvas_view.canvas_json_without_assets") {
+                Task { await store.refreshFromHost(); await exportSnapshot() }
+            }
+        }
+        .disabled(busy || store.isMutating)
+        .accessibilityIdentifier("canvas.export")
     }
 
     @MainActor private func session() async throws -> CanvasHostSession {

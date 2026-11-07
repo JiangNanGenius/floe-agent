@@ -335,6 +335,9 @@ struct CADWorkbenchToolsPanel: View {
     @Bindable var viewModel: EditorViewModel
     /// Host-injected Canvas actions; nil in standalone/qualification hosts.
     var canvasActions: CADCanvasActions? = nil
+    var buildingWorkspaceActive = false
+    let onOpenBuilding: () -> Void
+    let onOpenMesh: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var mode = 0
     @State private var isCanvasActionRunning = false
@@ -366,15 +369,13 @@ struct CADWorkbenchToolsPanel: View {
                             .navigationTitle(FloeCADStrings.text("cad.rig.title","Rig and shape keys"))
                     } label: { Label(FloeCADStrings.text("cad.rig.title","Rig and shape keys"),systemImage:"figure.stand").frame(maxWidth:.infinity,minHeight:44,alignment:.leading) }
                     .accessibilityIdentifier("CADRigOpen")
-                    NavigationLink {
-                        FloeBuildingWorkbenchView(document: document)
-                            .navigationTitle(FloeCADStrings.text("cad.building.defaultName", "Building"))
-                            .navigationBarTitleDisplayMode(.inline)
-                    } label: {
-                        Label(FloeCADStrings.text("cad.building.defaultName", "Building"), systemImage: "building.2")
-                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    if !buildingWorkspaceActive {
+                        Button(action: onOpenBuilding) {
+                            Label(FloeCADStrings.text("cad.building.defaultName", "Building"), systemImage: "building.2")
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }
+                        .accessibilityIdentifier("CADBuildingOpen")
                     }
-                    .accessibilityIdentifier("CADBuildingOpen")
                     Picker("", selection: $mode) {
                         Text(FloeCADStrings.label("cad.workbench.panel.assembly", "Assembly")).tag(0)
                         Text(FloeCADStrings.label("cad.workbench.panel.drawing", "Drawings")).tag(1)
@@ -384,6 +385,7 @@ struct CADWorkbenchToolsPanel: View {
                     }
                     .pickerStyle(.segmented)
                     .frame(maxWidth: .infinity)
+                    .onChange(of: mode) { _, value in if value == 3 { onOpenMesh() } }
                     if canvasActions != nil {
                         canvasSection
                     }
@@ -391,7 +393,11 @@ struct CADWorkbenchToolsPanel: View {
                     case 0: CADAssemblyPanelView(document: document, viewModel: viewModel)
                     case 1: CADDrawingPanelView(document: document, viewModel: viewModel)
                     case 2: CADScriptPanelView(document: document)
-                    case 3: CADMeshPanelView(document: document, viewModel: viewModel)
+                    case 3:
+                        Button(action: onOpenMesh) {
+                            Label(FloeCADStrings.text("cad.workbench.panel.mesh", "Mesh"), systemImage: "sidebar.right")
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }.accessibilityIdentifier("CADMeshInspectorOpen")
                     default: CADMechanicalPanel(document: document, viewModel: viewModel)
                     }
                 }

@@ -246,6 +246,8 @@ struct ThreadComposerView: View {
     /// launchpad's bottom `safeAreaInset` band — that may answer content
     /// changes from a cached sizing pass without a finite proposal.
     @State private var composerFieldHostWidth: CGFloat?
+    @State private var inlineInputIsEditing = false
+    @State private var inputFocusSourceID = UUID()
     /// Conversation whose draft produced the latest accepted overflow
     /// report. A delayed layout callback from a previous conversation must
     /// not reveal (or hide) the control of the conversation on screen now.
@@ -311,6 +313,13 @@ struct ThreadComposerView: View {
             inputRow
             contextRow
         }
+        // Preferences flow only through this mounted view's ancestors. A
+        // host can distinguish its real composer input from another window
+        // or a covered page without changing responder, caret or draft state.
+        .preference(key: NativeComposerEditingSourcesKey.self,
+                    value: inlineInputIsEditing && !isFullEditorPresented
+                        && !voiceInput.state.hasSession && voiceInput.state != .requestingPermission
+                        ? [inputFocusSourceID] : [])
         .background(FloeTheme.chromeMaterial, in: RoundedRectangle(cornerRadius: documentAssistant ? 0 : 22, style: .continuous))
         .overlay {
             if !documentAssistant {
@@ -589,6 +598,7 @@ struct ThreadComposerView: View {
             }
         }
         .onDisappear {
+            inlineInputIsEditing = false
             voiceInput.stop()
             // Leaving the composer discards any still-draining transcript:
             // the draft this session belonged to is no longer on screen.
@@ -971,6 +981,7 @@ struct ThreadComposerView: View {
                         isInlineFieldExpandable = overflowing
                     }
                 },
+                onEditingChange: { inlineInputIsEditing = $0 },
                 onReturn: { onSend() }
             )
             .padding(.vertical, 8)

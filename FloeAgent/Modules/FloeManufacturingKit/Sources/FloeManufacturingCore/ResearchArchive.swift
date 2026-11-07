@@ -26,7 +26,13 @@ public enum ResearchArchive {
     }
     public static func open<Input:Codable,Output:Codable>(_ url:URL,input:Input.Type,output:Output.Type,family:Family,
                                                         validate:(Input,Output)throws->Void) throws -> (Input,Output) {
-        let data = try read(url)
+        try open(data:read(url),input:input,output:output,family:family,validate:validate)
+    }
+    /// Validates the same envelope from an already bounded, stable source
+    /// snapshot. Callers retain their own file identity and ownership fences.
+    public static func open<Input:Codable,Output:Codable>(data:Data,input:Input.Type,output:Output.Type,family:Family,
+                                                        validate:(Input,Output)throws->Void) throws -> (Input,Output) {
+        guard data.count <= byteLimit else { throw ManufacturingError.archive("research document byte budget") }
         let envelope = try JSONDecoder().decode(Envelope<Input,Output>.self,from:data)
         guard envelope.formatVersion == 1, envelope.family == family,
               envelope.inputSHA256 == (try digest(envelope.input)),

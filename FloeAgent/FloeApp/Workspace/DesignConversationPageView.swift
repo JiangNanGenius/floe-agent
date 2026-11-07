@@ -308,7 +308,11 @@ struct DesignConversationPageView: View {
                 // zero-width clipping instead of conditional removal keeps
                 // the composer draft, scroll and selection alive.
                 DesignPreviewWorkbench(
-                    model: model, presentation: presentation, target: target)
+                    model: model, presentation: presentation, target: target,
+                    onSourceDeleted: { deletedTarget in
+                        guard deletedTarget == target else { return }
+                        dismiss()
+                    })
                     .frame(width: previewWidth)
                     .clipped()
                     .allowsHitTesting(previewWidth > 0)
@@ -419,8 +423,19 @@ private struct DesignPreviewWorkbench: View {
     @ObservedObject var model: DesignOwnerWorkflowModel
     @ObservedObject var presentation: DesignPagePresentationState
     let target: DesignTarget
+    let onSourceDeleted: (DesignTarget) -> Void
     @EnvironmentObject private var environment: AppEnvironment
-    @State private var showsEditorHandoff = false
+    @State private var editorHandoff: EditorHandoff?
+    @State private var deletedHandoff: EditorHandoff?
+    @State private var editorHandoffError: String?
+
+    /// Capture the page's source and its actual workspace before presenting.
+    /// A later workspace selection must never retarget the deletion action.
+    private struct EditorHandoff: Identifiable {
+        let id = UUID()
+        let target: DesignTarget
+        let scope: WorkspaceFileActionScope
+    }
 
     /// Families whose professional editing surface is the app's EXISTING
     /// FilePreviewView host (native CAD workbench, Office editor, image
@@ -439,8 +454,9 @@ private struct DesignPreviewWorkbench: View {
     var body: some View {
         VStack(spacing: 0) {
             lensBar
-            if let error = model.errorMessage {
+            if let error = editorHandoffError ?? model.errorMessage {
                 DesignPageErrorBanner(message: error) {
+                    editorHandoffError = nil
                     model.dismissError()
                 }
             }
@@ -459,16 +475,22 @@ private struct DesignPreviewWorkbench: View {
             }
             presentation.pruneWebViews(keeping: Set(ids.compactMap { $0 }))
         }
-        .sheet(isPresented: $showsEditorHandoff) {
+        .sheet(item: $editorHandoff, onDismiss: finishEditorHandoff) { handoff in
             // The SAME professional surface the Files/IDE entries use, over
             // the SAME workspace file identity. FilePreviewView reports an
             // honest error when the workspace is not mounted (a truthful
             // session state, never a fake preview).
             NavigationStack {
                 FilePreviewView(
-                    relativePath: target.sourceID,
+                    relativePath: handoff.target.sourceID,
                     center: environment.workspaceCenter,
                     conversationID: conversationIDForHandoff,
+                    onDeleted: {
+                        guard editorHandoff?.id == handoff.id, target == handoff.target else { return }
+                        deletedHandoff = handoff
+                        editorHandoff = nil
+                    },
+                    expectedDeletionScope: handoff.scope,
                     allowsIDEExpansion: false,
                     // The page already owns this design target: the nested
                     // handoff must never re-present the same page on top of
@@ -477,7 +499,8 @@ private struct DesignPreviewWorkbench: View {
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("action.done") {
-                            showsEditorHandoff = false
+                            guard editorHandoff?.id == handoff.id else { return }
+                            editorHandoff = nil
                         }
                         .accessibilityIdentifier("design.page.editorHandoffDone")
                     }
@@ -485,6 +508,29 @@ private struct DesignPreviewWorkbench: View {
             }
             .accessibilityIdentifier("design.page.editorHandoff")
         }
+    }
+
+    private func beginEditorHandoff() {
+        guard editorHandoff == nil, deletedHandoff == nil,
+              presentation.selectedCandidateID == nil else { return }
+        do {
+            let scope = try WorkspaceFileActionScope(center: environment.workspaceCenter)
+            guard target.kind == .fileDocument, !target.sourceID.isEmpty,
+                  UUID(uuidString: target.ownerID) == scope.workspaceID else {
+                throw WorkspaceFileDeletionError.changed
+            }
+            editorHandoffError = nil
+            editorHandoff = EditorHandoff(target: target, scope: scope)
+        } catch { editorHandoffError = error.localizedDescription }
+    }
+
+    private func finishEditorHandoff() {
+        guard let deleted = deletedHandoff else { return }
+        deletedHandoff = nil
+        // Dismiss the owning page only after its child sheet has closed.
+        // The task and retained design revisions keep their existing lifecycle.
+        guard editorHandoff == nil, target == deleted.target else { return }
+        onSourceDeleted(deleted.target)
     }
 
     private var conversationIDForHandoff: UUID? {
@@ -507,7 +553,7 @@ private struct DesignPreviewWorkbench: View {
                         .accessibilityIdentifier("design.page.candidateImmutable")
                 } else {
                     Button {
-                        showsEditorHandoff = true
+                        beginEditorHandoff()
                     } label: {
                         Label("design.page.openInEditor", systemImage: "rectangle.and.pencil.and.ellipsis")
                             .font(.caption.weight(.medium))

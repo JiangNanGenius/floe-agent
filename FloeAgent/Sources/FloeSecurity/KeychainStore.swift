@@ -17,12 +17,15 @@ extension KeychainStore: KeychainProbeStore {}
 
 /// Keychain protection class requested for a stored item.
 public enum KeychainAccessibility: Sendable, Hashable {
-    /// Historical default: readable after first unlock and eligible for
-    /// iCloud Keychain when the item itself is marked synchronizable.
+    /// Historical default: readable while unlocked and eligible for iCloud
+    /// Keychain when the item itself is marked synchronizable.
     case whenUnlocked
     /// Device-bound item: never migrates to another device or a backup.
     /// Used for skill connection credentials (for example iOS Bridge pairing).
     case whenUnlockedThisDeviceOnly
+    /// Device-bound background-service credential. Unavailable until the
+    /// first unlock after restart, then readable while the device is locked.
+    case afterFirstUnlockThisDeviceOnly
 }
 
 /// Errors specific to secret storage.
@@ -84,6 +87,29 @@ public struct KeychainStore: Sendable {
         }
     }
 
+    /// Keeps the SAME service/account/bytes while migrating only its
+    /// protection class. A locked legacy item fails normally; no new secret
+    /// or less restricted fallback is created. Existing read() is unchanged.
+    public func readMigratingAccessibility(account: String) throws -> Data {
+        let bytes = try read(account: account)
+        var query = baseQuery(account: account, includeAccessible: false)
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess else { throw Self.error(for: status, operation: "attributes") }
+        guard let attributes = result as? [String: Any],
+              let current = attributes[kSecAttrAccessible as String] as? String else {
+            throw KeychainStoreError.unexpectedStatus("attributes: missing protection class")
+        }
+        if current != (accessibilityValue as String) {
+            let updateStatus = SecItemUpdate(baseQuery(account: account, includeAccessible: false) as CFDictionary,
+                [kSecAttrAccessible as String: accessibilityValue] as CFDictionary)
+            guard updateStatus == errSecSuccess else { throw Self.error(for: updateStatus, operation: "migrate protection class") }
+        }
+        return bytes
+    }
+
     public func read(account: String) throws -> Data {
         var query = baseQuery(account: account, includeAccessible: false)
         query[kSecReturnData as String] = true
@@ -117,6 +143,7 @@ public struct KeychainStore: Sendable {
         switch accessibility {
         case .whenUnlocked: kSecAttrAccessibleWhenUnlocked
         case .whenUnlockedThisDeviceOnly: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        case .afterFirstUnlockThisDeviceOnly: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         }
     }
 
@@ -145,6 +172,8 @@ public struct KeychainStore: Sendable {
     public func store(account: String, secret: Data) throws {
         KeychainStubStorage.shared.store(service: service, account: account, secret: secret)
     }
+
+    public func readMigratingAccessibility(account: String) throws -> Data { try read(account: account) }
 
     public func read(account: String) throws -> Data {
         guard let data = KeychainStubStorage.shared.read(service: service, account: account) else {
