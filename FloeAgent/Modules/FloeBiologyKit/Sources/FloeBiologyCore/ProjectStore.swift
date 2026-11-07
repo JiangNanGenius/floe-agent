@@ -115,6 +115,24 @@ public actor BiologyProjectStore {
             }
         }
     }
+    /// Trusted host transaction only. A native document reservation may bind
+    /// its already allocated identity without changing model-call identities.
+    /// Existing originals (including deleted/recoverable ones) are never reused.
+    public func createBound(id:UUID,title:String) throws -> BiologyProject {
+        try locked {
+            let trash=root.appendingPathComponent("Trash")
+            let prefix=id.uuidString.lowercased()
+            let legacy=try fm.contentsOfDirectory(at:trash,includingPropertiesForKeys:nil)
+                .contains{$0.lastPathComponent==prefix+".json" || $0.lastPathComponent.hasPrefix(prefix+"-")}
+            guard !legacy,!fm.fileExists(atPath:try directory(id).path) else {
+                throw BiologyError.invalid("This reserved project identity already exists. Keep the existing original.")
+            }
+            var project=BiologyProject(title:title)
+            project.id=id;project.revision=1
+            try commit(project)
+            return project
+        }
+    }
     public func create(title:String,identity:BiologyMutationIdentity? = nil,contents:BiologyProject? = nil) throws -> BiologyProject {
         try locked {
             var p=contents ?? BiologyProject(title:title);p.id=UUID()

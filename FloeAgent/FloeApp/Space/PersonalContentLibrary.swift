@@ -5,7 +5,7 @@ import CryptoKit
 /// The personal library organizes durable originals. It never changes a task's
 /// workspace, execution environment, or the native editor's commit authority.
 enum PersonalContentKind: String, Codable, CaseIterable, Hashable, Sendable {
-    case canvas, diagram, image, drawing, video, music, meeting, chemistry
+    case canvas, diagram, image, drawing, video, music, meeting, chemistry, biology
     case cad2D, cad3D, printing, manufacturing, document
 }
 
@@ -77,7 +77,7 @@ actor PersonalContentLibrary {
         return name
     }
 
-    private func confined(_ url: URL) throws -> URL {
+    func confined(_ url: URL) throws -> URL {
         let base = root.resolvingSymlinksInPath().standardizedFileURL.path
         let value = url.resolvingSymlinksInPath().standardizedFileURL
         guard value.path == base || value.path.hasPrefix(base + "/") else {

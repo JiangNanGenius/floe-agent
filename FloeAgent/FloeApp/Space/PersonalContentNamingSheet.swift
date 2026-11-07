@@ -32,6 +32,7 @@ struct PersonalContentNamingSheet: View {
     let request: PersonalContentCreationRequest
     let onCreated: (PersonalContentRecord) -> Void
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var environment: AppEnvironment
     @State private var title: String
     @State private var creating = false
     @State private var diagnostic: String?
@@ -96,6 +97,7 @@ struct PersonalContentNamingSheet: View {
                 let record: PersonalContentRecord
                 switch request.target {
                 case .work(let kind):
+                    if kind == .biology { _ = try await environment.biologyComposition.host() }
                     record = try await PersonalContentService.shared.create(kind: kind, title: name, folders: request.folders)
                 case .document(let format):
                     record = try await PersonalContentService.shared.createDocument(format: format, title: name, folders: request.folders)

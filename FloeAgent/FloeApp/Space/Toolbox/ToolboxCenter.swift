@@ -16,21 +16,39 @@ import FloeToolboxWorkbenches
         ToolboxModbusReadAction.name, ToolboxModbusWriteAction.name,
         ToolboxMQTTPublishAction.name, ToolboxMQTTSubscriptionAction.name,
         ToolboxHTTPReadAction.name, ToolboxHTTPWriteAction.name,
-        ToolboxWebSocketSendAction.name, ToolboxWebSocketReceiveAction.name, ToolboxSessionTool.name]
+        ToolboxWebSocketSendAction.name, ToolboxWebSocketReceiveAction.name, ToolboxSessionTool.name, ToolboxNetworkObserveTool.name]
     @Published private(set) var connections: [ToolboxTool: ToolboxConnection] = [:]
     @Published private(set) var connecting: Set<ToolboxTool> = []
     @Published private(set) var failures: [ToolboxTool: String] = [:]
+    @Published private(set) var failureDetails: [ToolboxTool: String] = [:]
     private weak var environment: AppEnvironment?
     let taskSessions: ToolboxTaskSessions
     let files = ToolboxFileAccess()
+    let history = ToolboxHistoryStore.shared
     lazy var checksum = ChecksumWorkbenchModel(selectFile: { [weak self] in try await self?.files.checksumFile() })
     private var operations: [ToolboxTool: Task<Void, Never>] = [:]
     private var generations: [ToolboxTool: UUID] = [:]
+    private var historyAttempts: [ToolboxTool: UUID] = [:]
     private var assistants: [UUID: UUID] = [:]
     private var terminalOwners: [UUID: ToolboxTerminalSession] = [:]
     private var preparingAssistants: [UUID: Task<UUID, Error>] = [:]
     private var conversationOwners: [UUID: UUID] = [:]
     private var frozen: [UUID: (conversation: UUID, host: ToolboxAIHostContext)] = [:]
+    private var usbStorage: ToolboxUSBDevices?
+    var usbDevices: ToolboxUSBDevices {
+        if let usbStorage { return usbStorage }
+        let value = ToolboxUSBDevices(); usbStorage = value; return value
+    }
+    func refreshUSBDevices() {
+        failures[.serialAssistant] = nil; failureDetails[.serialAssistant] = nil
+        usbDevices.refresh()
+    }
+    func resetUSBDevices() { usbStorage?.reset() }
+    func reportUSBFailure(_ error: Error) {
+        let failure = ToolboxUSBFailure.from(error)
+        failures[.serialAssistant] = failure.errorDescription
+        failureDetails[.serialAssistant] = failure.details
+    }
 
     init(environment: AppEnvironment) { self.environment = environment; taskSessions = ToolboxTaskSessions(environment: environment) }
     func connect(_ tool: ToolboxTool, setup: ToolboxConnectionSetup) {
@@ -40,26 +58,37 @@ import FloeToolboxWorkbenches
             return
         }
         operations.removeValue(forKey: tool)?.cancel()
+        history.finish(historyAttempts.removeValue(forKey: tool), outcome: .cancelled)
         let previous = connections.removeValue(forKey: tool)
         previous?.invalidate()
         let generation = UUID(); generations[tool] = generation
-        connecting.insert(tool); failures[tool] = nil
+        historyAttempts[tool] = history.begin(.connection(tool: tool, setup: setup), attemptID: generation)
+        connecting.insert(tool); failures[tool] = nil; failureDetails[tool] = nil
         operations[tool] = Task { [weak self] in
             await previous?.close()
             do {
-                let connection = try await ToolboxConnection.open(tool: tool, setup: setup, environment: environment)
+                let connection = try await ToolboxConnection.open(tool: tool, setup: setup, environment: environment,
+                    onUSBFailure: { [weak self] failure in
+                        guard let self, self.generations[tool] == generation else { return }
+                        self.reportUSBFailure(failure)
+                        self.disconnectNow(tool)
+                    })
                 guard let self, self.generations[tool] == generation, !Task.isCancelled else {
                     await connection.close(); return
                 }
                 self.connections[tool] = connection
+                self.history.finish(generation, outcome: .ready)
             } catch {
                 guard let self, self.generations[tool] == generation else { return }
+                self.history.finish(generation, outcome: error is CancellationError ? .cancelled : .failed)
                 if !(error is CancellationError) {
+                    if tool == .serialAssistant, setup.serial.connection == .usb { self.reportUSBFailure(error) }
+                    else {
                     self.failures[tool] = (error as? ToolboxConnectionInputIssue)?.errorDescription
-                        ?? (error as? ToolboxHostConnectionError)?.errorDescription
                         ?? ([ToolboxTool.webSocket, .mqtt].contains(tool)
                             ? IDELanguageRunText.t("未能连接，请检查服务器、网络或连接设置后重试。", "Unable to connect. Check the server, network or connection settings, then retry.")
                             : IDELanguageRunText.t("连接未完成，请检查地址、设备和权限。", "Unable to connect. Check the address, device and permissions."))
+                    }
                 }
             }
             guard let self, self.generations[tool] == generation else { return }
@@ -67,9 +96,11 @@ import FloeToolboxWorkbenches
         }
     }
     @discardableResult func disconnectNow(_ tool: ToolboxTool) -> Task<Void, Never> {
+        history.finish(historyAttempts.removeValue(forKey: tool), outcome: .cancelled)
         generations[tool] = UUID()
         operations.removeValue(forKey: tool)?.cancel()
         connecting.remove(tool)
+        if tool == .serialAssistant { resetUSBDevices() }
         let connection = connections.removeValue(forKey: tool)
         connection?.invalidate()
         if let connection {
@@ -83,6 +114,7 @@ import FloeToolboxWorkbenches
     }
     func leaveNow() {
         checksum.cancel(); files.finish(.success(nil))
+        resetUSBDevices() // Includes a discovery that has not opened a connection.
         for tool in Set(connections.keys).union(operations.keys) { disconnectNow(tool) }
     }
     func assistant(for connection: ToolboxConnection) async throws -> UUID {
@@ -170,25 +202,29 @@ import FloeToolboxWorkbenches
         frozen = frozen.filter { $0.value.host.lease != terminal.lease }
     }
     func freeze(runID: UUID, conversationID: UUID) async throws -> Set<String> {
+        let observationNames: Set<String>
+        if let environment, try await environment.conversationStore.conversation(id: conversationID)?.purpose == .ordinary {
+            observationNames = [ToolboxNetworkObserveTool.name]
+        } else { observationNames = [] }
         if let terminal = terminalOwners[conversationID] {
             guard terminal.active else { throw ToolboxError.staleSession }
             if let binding = frozen[runID] {
                 guard binding.conversation == conversationID, binding.host.lease == terminal.lease else { throw ToolboxError.staleSession }
-                return binding.host.availableToolNames
+                return binding.host.availableToolNames.union(observationNames)
             }
             guard frozen.count < 128 else { throw ToolboxError.limit("active toolbox runs") }
             let host = try terminal.frozenHost(runID: runID)
             frozen[runID] = (conversationID, host)
-            return host.availableToolNames
+            return host.availableToolNames.union(observationNames)
         }
         guard let ownerID = conversationOwners[conversationID],
               let connection = connections.values.first(where: { $0.id == ownerID }), connection.active else {
             guard let environment, try await environment.conversationStore.conversation(id: conversationID)?.purpose == .ordinary else { return [] }
-            return ToolboxTaskSessions.toolNames
+            return ToolboxTaskSessions.toolNames.union(observationNames)
         }
         if let binding = frozen[runID] {
             guard binding.conversation == conversationID, binding.host.lease == connection.lease else { throw ToolboxError.staleSession }
-            return binding.host.availableToolNames
+            return binding.host.availableToolNames.union(observationNames)
         }
         if frozen.count >= 16, let environment {
             for id in Array(frozen.keys) {
@@ -199,7 +235,7 @@ import FloeToolboxWorkbenches
         guard frozen.count < 128 else { throw ToolboxError.limit("active toolbox runs") }
         let host = try connection.frozenHost(runID: runID)
         frozen[runID] = (conversationID, host)
-        return host.availableToolNames
+        return host.availableToolNames.union(observationNames)
     }
     func resolve(_ context: ToolContext) async throws -> ToolboxAIHostContext {
         if frozen[context.runID] == nil { return try await taskSessions.resolve(context) }
@@ -214,6 +250,11 @@ import FloeToolboxWorkbenches
         return binding.host
     }
     func register() {
+        FloeTools.ToolCatalog.register(ToolboxNetworkObserveTool.self)
+        ToolRunnerRegistry.shared.register(ToolboxNetworkObserveTool(observe: { [weak self] input, context in
+            guard let environment = self?.environment else { throw ToolboxError.staleSession }
+            return try await ToolboxNativeNetworkObservation.observe(input, environment: environment, context: context)
+        }))
         FloeTools.ToolCatalog.register(ToolboxSessionTool.self)
         ToolRunnerRegistry.shared.register(ToolboxSessionTool(service: taskSessions))
         NativeToolboxTools.register(in: .shared, enabledNames: Self.toolNames, resolve: { [weak self] context in

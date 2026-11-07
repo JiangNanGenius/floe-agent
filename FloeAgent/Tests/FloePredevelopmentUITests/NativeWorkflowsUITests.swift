@@ -1360,7 +1360,7 @@ import XCTest
         app.buttons["space.new"].tap()
         XCTAssertTrue(app.buttons["化学工程"].firstMatch.waitForExistence(timeout: 10))
         app.buttons["化学工程"].firstMatch.tap()
-        confirmWorkCreation(appendTitle: "-QA")
+        confirmWorkCreation(appendTitle: " QA-N10-" + UUID().uuidString.prefix(8))
         XCTAssertTrue(app.buttons["新建结构绘图"].firstMatch.waitForExistence(timeout: 20))
         XCTAssertTrue(app.buttons["属性与方法"].firstMatch.exists)
         XCTAssertTrue(app.buttons["历史版本"].firstMatch.exists)
@@ -1372,6 +1372,20 @@ import XCTest
         XCTAssertTrue(app.buttons["chemistry.environment.start"].exists)
         capture("Chemistry actual execution environment panel")
         app.buttons["chemistry.environment.done"].tap()
+        app.buttons["新建结构绘图"].firstMatch.tap()
+        XCTAssertTrue(app.otherElements["chemistry.nativeCanvas"].firstMatch.waitForExistence(timeout: 20))
+        let eraser = app.buttons["chemistry.drawing.eraser"].firstMatch
+        XCTAssertTrue(eraser.waitForExistence(timeout: 10))
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: eraser)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+        eraser.tap()
+        let finger = app.descendants(matching: .any)["chemistry.drawing.fingerDrawing"].firstMatch
+        XCTAssertTrue(finger.waitForExistence(timeout: 5)); XCTAssertTrue(finger.isHittable)
+        let drewWithFinger = app.staticTexts["手指绘图"].exists
+        finger.tap()
+        XCTAssertTrue(app.staticTexts[drewWithFinger ? "手指平移" : "手指绘图"].waitForExistence(timeout: 5))
+        finger.tap()
+        capture("Chemistry native eraser and explicit touch drawing control")
         closeEditor()
     }
     private func openAndCheckMeeting() {
@@ -1497,6 +1511,83 @@ import XCTest
         XCTAssertTrue(select.isHittable, "The original canvas tools return after text editing.")
         closeEditor()
         XCUIDevice.shared.orientation = .portrait
+    }
+    func test2DCADOffersPlanarNavigationAndDrawingInputControls() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        openFiles()
+        app.buttons["space.new"].tap()
+        app.buttons["space.new.cad"].tap()
+        app.buttons["二维 CAD"].firstMatch.tap()
+        confirmWorkCreation(appendTitle: " QA-N17-" + UUID().uuidString.prefix(8))
+        XCTAssertTrue(app.descendants(matching: .any)["CAD2DDraftingBar"].firstMatch.waitForExistence(timeout: 30))
+        XCTAssertTrue(app.buttons["CADFingerDrawingToggle"].firstMatch.exists)
+        let views = app.buttons["ViewsMenu"].firstMatch
+        XCTAssertTrue(views.waitForExistence(timeout: 10)); XCTAssertTrue(views.isHittable); views.tap()
+        let plane = app.buttons["CAD2DDrawingPlane"].firstMatch
+        XCTAssertTrue(plane.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Front"].exists)
+        XCTAssertFalse(app.buttons["Right"].exists)
+        XCTAssertFalse(app.switches["Orthographic"].exists)
+        plane.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["CAD2DDraftingBar"].firstMatch.exists)
+        capture("2D CAD uses the drawing plane and keeps its editing controls")
+        closeEditor()
+    }
+
+    func testNextRoundSpaceBiologyAndFileSelectionUseTheExistingWorkspace() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        openFiles()
+        app.segmentedControls["space.sections"].buttons["概览"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["space.quickEntries"].firstMatch.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["space.workbenches"].firstMatch.exists)
+        capture("Space horizontal quick access and grouped workbenches")
+        app.segmentedControls["space.sections"].buttons["文件"].tap()
+        XCTAssertTrue(app.buttons["space.viewOptions"].waitForExistence(timeout: 10))
+        app.buttons["space.new"].tap()
+        let biology = app.buttons["生物工程"].firstMatch
+        XCTAssertTrue(biology.waitForExistence(timeout: 10)); biology.tap()
+        let title = app.textFields["space.creation.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        let originalTitle = title.value as? String ?? ""
+        let suffix = " QA-N02-" + UUID().uuidString.prefix(8)
+        let createdTitle = originalTitle + suffix
+        confirmWorkCreation(appendTitle: suffix)
+        XCTAssertTrue(app.descendants(matching: .any)["biology.personalEditor"].firstMatch.waitForExistence(timeout: 25))
+        for id in ["biology.add", "biology.analysis", "biology.export", "biology.more"] {
+            XCTAssertTrue(app.buttons[id].firstMatch.exists)
+        }
+        app.buttons["biology.add"].firstMatch.tap()
+        let sample = app.buttons["序列比较 · 合成示例"].firstMatch
+        XCTAssertTrue(sample.waitForExistence(timeout: 10)); sample.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["biology.sequenceViewport"].firstMatch.waitForExistence(timeout: 20))
+        app.buttons["biology.analysis"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["biology.run"].firstMatch.waitForExistence(timeout: 10))
+        capture("Actual Biology original with sequence data and analysis controls")
+        closeEditor()
+        // The default name sort can put this record outside the lazy list's
+        // loaded rows. Search the unique fixture through the actual Files UI.
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 10)); search.tap(); search.typeText(suffix)
+        // The native file button combines its title and subtitle for AX.
+        let row = app.buttons.matching(NSPredicate(format:
+            "identifier BEGINSWITH %@ AND label CONTAINS %@ AND NOT label BEGINSWITH %@",
+            "space.file.", createdTitle, "更多操作：")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 15)); row.press(forDuration: 1)
+        let select = app.buttons["选择"].firstMatch
+        XCTAssertTrue(select.waitForExistence(timeout: 10)); select.tap()
+        let remove = app.buttons["space.files.batchDelete"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 10)); XCTAssertTrue(remove.isEnabled)
+        XCTAssertTrue(app.buttons["space.files.selectAll"].exists)
+        XCTAssertTrue(app.buttons["space.files.cancelSelection"].exists)
+        capture("Files long press selection and batch actions")
+        // Only this newly created, uniquely titled fixture is removed.
+        remove.tap()
+        XCTAssertTrue(app.staticTexts["将所选项目移到最近删除？"].firstMatch.waitForExistence(timeout: 10))
+        app.buttons["删除"].firstMatch.tap()
+        XCTAssertTrue(row.waitForNonExistence(timeout: 15))
+        app.buttons["space.more"].tap()
+        XCTAssertTrue(app.buttons["导入…"].firstMatch.waitForExistence(timeout: 10))
+        capture("Import lives in the Files More menu")
     }
     func testMediaAndDraftingPagesOpenWithTheirTools() {
         XCUIDevice.shared.orientation = .landscapeLeft

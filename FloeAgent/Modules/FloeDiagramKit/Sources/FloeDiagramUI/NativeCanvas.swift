@@ -7,14 +7,35 @@ import FloeDiagramCore
 import FloeDiagramLayout
 import FloeDiagramExchange
 
+/// `pencilOnly` would also reject mouse/trackpad drawing. Filter physical
+/// sources on the existing PencilKit recognizer instead, leaving pan/select alone.
+enum DiagramDrawingInputPolicy {
+    static let preferenceKey = "diagram.fingerDrawing.enabled"
+    @MainActor static func apply(to canvas: PKCanvasView, fingerDrawing: Bool) {
+        if canvas.drawingPolicy != .anyInput { canvas.drawingPolicy = .anyInput }
+        var types = [UITouch.TouchType.pencil, .indirect, .indirectPointer]
+        if fingerDrawing { types.append(.direct) }
+        let allowed = types.map { NSNumber(value: $0.rawValue) }
+        if canvas.drawingGestureRecognizer.allowedTouchTypes != allowed {
+            canvas.drawingGestureRecognizer.allowedTouchTypes = allowed
+        }
+    }
+}
+
 struct DiagramCanvas: UIViewRepresentable {
     let model: DiagramEditorModel
+    var fingerDrawing = false
     @Environment(\.colorScheme) private var colorScheme
-    func makeUIView(context: Context) -> DiagramCanvasView { DiagramCanvasView(model: model) }
+    func makeUIView(context: Context) -> DiagramCanvasView {
+        let view = DiagramCanvasView(model: model)
+        DiagramDrawingInputPolicy.apply(to: view.inkView, fingerDrawing: fingerDrawing)
+        return view
+    }
     func updateUIView(_ view: DiagramCanvasView, context: Context) {
         // Explicit Observation reads make native drawing updates follow SwiftUI's dependency tracking.
         _ = model.scene?.generation; _ = model.selection; _ = model.selectedEdge; _ = model.tool
         _ = model.fitRequest; _ = model.centerRequest; _ = model.zoomRequest; _ = model.assetBytes; _ = model.editingElementID
+        DiagramDrawingInputPolicy.apply(to: view.inkView, fingerDrawing: fingerDrawing)
         view.synchronize()
         view.renderer.appearance = colorScheme == .dark ? .dark : .light
         view.setNeedsDisplay()
@@ -64,7 +85,8 @@ struct DiagramCanvas: UIViewRepresentable {
         for gesture in [tap, double, pan, pinch, long] { gesture.delegate = self; addGestureRecognizer(gesture) }
         addInteraction(UIContextMenuInteraction(delegate: self)); addInteraction(UIPointerInteraction(delegate: nil))
         inkView.backgroundColor = .clear; inkView.isOpaque = false; inkView.isScrollEnabled = false
-        inkView.drawingPolicy = .anyInput; inkView.tool = PKInkingTool(.pen, color: .label, width: 2.5); inkView.delegate = self
+        DiagramDrawingInputPolicy.apply(to: inkView, fingerDrawing: false)
+        inkView.tool = PKInkingTool(.pen, color: .label, width: 2.5); inkView.delegate = self
         inkView.accessibilityLabel = DL("手写批注", "Ink annotation"); addSubview(inkView); inkView.isHidden = true
         toolPicker.addObserver(inkView)
     }

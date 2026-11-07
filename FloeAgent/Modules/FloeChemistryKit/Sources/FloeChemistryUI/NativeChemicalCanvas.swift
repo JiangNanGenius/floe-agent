@@ -231,7 +231,6 @@ struct NativeChemicalCanvas:UIViewRepresentable {
     private var isPanning = false
     private var beginViewport = ChemicalViewport()
     private var pencilActive = false
-    private var fingerPreferenceApplied = false
     private var canvasPan:UIPanGestureRecognizer!
     override init(frame:CGRect) {
         super.init(frame:frame);isMultipleTouchEnabled = true;isExclusiveTouch = true;contentMode = .redraw
@@ -259,7 +258,6 @@ struct NativeChemicalCanvas:UIViewRepresentable {
     @objc private func claimCanvasDrag(_ gesture:UIPanGestureRecognizer) {}
     func update(_ value:NativeDrawingSession,dark:Bool,highContrast:Bool) {
         session = value;self.dark = dark;self.highContrast = highContrast
-        if !fingerPreferenceApplied {value.drawWithFinger = !UIPencilInteraction.prefersPencilOnlyDrawing;fingerPreferenceApplied = true}
         if fitToken != value.fitToken {fitToken = value.fitToken;viewport.fit(value.document,size:bounds.size)}
         updateAccessibility();setNeedsDisplay()
     }

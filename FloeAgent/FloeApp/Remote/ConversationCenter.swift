@@ -3748,6 +3748,7 @@ final class ConversationCenter: ObservableObject {
             runExecutionEnvironmentID = nil
         }
 
+        await environment.biologyComposition.prepare()
         let catalogExecutor = CatalogToolExecutor()
         let availableDescriptors = catalogExecutor.allDescriptors
         let skills: SkillsCenter.RuntimeSelection
@@ -4003,6 +4004,7 @@ final class ConversationCenter: ObservableObject {
         // inside the store but never mint authority, and a missing key or an
         // invalid project id fails closed.
         var serviceStorePaths = environment.workbenchCenter.typedServiceStorePaths
+        serviceStorePaths.merge(environment.biologyComposition.typedServiceStorePaths) { _, native in native }
         // The real instance supplies its container, including custom/migrated
         // roots and works created later in this same run. No model path or
         // organizational folder is treated as ownership.
@@ -4021,6 +4023,17 @@ final class ConversationCenter: ObservableObject {
         // the durable truth without capturing the app environment.
         let runDependencyStore = SQLiteRunDependencyStore(database: environment.database)
         let jobServiceForRun = environment.backgroundJobService
+        // Metadata only: the callback runs after the durable run has been
+        // prepared. Biology refreshes its actual project grants each turn;
+        // this context carries no execution or mutation authority.
+        let biologyToolNames = BiologyHostServices.names
+        let biologyCatalogContext = ToolContext(runID: runID,
+            scope: runExecutionBinding?.target.remoteHostID.map(ToolScope.host) ?? .local,
+            allowedToolNames: allowedToolNames, workspaceRootURL: runWorkspaceRoot,
+            cancellation: CancellationToken(),
+            environmentID: runExecutionEnvironmentID,
+            executionBindingGeneration: runExecutionBinding?.generation,
+            conversationID: conversationID, temporaryReadOnly: isTemporary)
         let configuration = FloeAgentRuntime.Configuration(
             conversationID: conversationID,
             provider: provider,
@@ -4102,7 +4115,12 @@ final class ConversationCenter: ObservableObject {
             },
             userQuestionRecovery: environment.userQuestions.coordinator,
             currentToolAvailability: { [weak environment] in
-                await environment?.iosBridgeDiscoverableToolNames() ?? []
+                guard let environment else { return [] }
+                var names = await environment.iosBridgeDiscoverableToolNames()
+                let biology = await environment.biologyComposition.discoverableToolNames(for: biologyCatalogContext)
+                names.subtract(biologyToolNames)
+                names.formUnion(biology)
+                return names
             }
         )
         await environment.subagentRunnerRegistry.register(

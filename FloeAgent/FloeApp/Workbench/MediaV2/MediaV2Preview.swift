@@ -6,6 +6,7 @@ import FloeWorkbench
 
 struct MediaV2Preview: View {
     @Bindable var session: MediaV2Session
+    @AppStorage(MediaDrawingInputPolicy.preferenceKey) private var fingerDrawing = false
     @State private var points: [ImageFreehandStroke.Point] = []
     @State private var originalLayer: MediaPreparedLayer?
     var body: some View {
@@ -28,7 +29,9 @@ struct MediaV2Preview: View {
                 .scaleEffect(session.zoom)
                 .overlay { Rectangle().stroke(Color.secondary.opacity(0.25), lineWidth: 1) }
             }.clipped()
-        }.accessibilityIdentifier("media.v2.canvas")
+        }
+        .onChange(of: session.tool) { _, _ in points = []; originalLayer = nil }
+        .accessibilityIdentifier("media.v2.canvas")
     }
     private var checkerboard: some View {
         SwiftUI.Canvas { context, size in
@@ -66,7 +69,21 @@ struct MediaV2Preview: View {
             }
         }
         .contentShape(Rectangle())
-        .gesture(DragGesture(minimumDistance: 3).onChanged { value in
+        // UIKit owns ink: a parent SwiftUI drag/tap recognizer would cancel
+        // its real Pencil touch sequence even if its callback returned early.
+        .overlay {
+            if MediaDrawingInputPolicy.isStrokeTool(session.tool) {
+                WorkbenchPressureSurface(fingerDrawing: fingerDrawing, onChanged: { point, _ in
+                    points.append(normalized(point, size: size))
+                    if points.count > 10_000 { points.removeSubrange(1..<100) }
+                }, onEnded: {
+                    defer { points = []; originalLayer = nil }
+                    guard !points.isEmpty, MediaDrawingInputPolicy.isStrokeTool(session.tool) else { return }
+                    submitToolPoints()
+                }, onCancelled: { points = []; originalLayer = nil })
+            }
+        }
+        .gesture(MediaDrawingInputPolicy.isStrokeTool(session.tool) ? nil : DragGesture(minimumDistance: 3).onChanged { value in
             guard session.tool != "image.polygon" else { return }
             if points.isEmpty { originalLayer = session.selectedLayer; points.append(normalized(value.startLocation, size: size)) }
             points.append(normalized(value.location, size: size))
@@ -80,16 +97,10 @@ struct MediaV2Preview: View {
                 transform.centerY += Double(value.translation.height / size.height)
                 session.submit([.updateLayerTransform(id: layer.id, expectedRevision: layer.revision, transform: transform)])
             } else {
-                var input = MediaV2ToolInput(); input.expectedRevision = session.document.revision; input.number = session.brushWidth; input.color = session.colorHex
-                let tool = session.tool == "image.feather" ? "image.rectangle" : session.tool
-                input.points = ["image.rectangle", "image.ellipse", "image.crop"].contains(tool) ? [points.first!, points.last!] : points
-                input.flag = session.tool == "image.eraser" ? session.eraserRestores : nil
-                if tool == "image.crop" { input.property = "canvas" }
-                else if ["image.rectangle", "image.ellipse", "image.lasso"].contains(tool) { input.property = session.selectionMode.rawValue }
-                Task { do { _ = try await session.performTool(tool, input: input) } catch { session.diagnostic = error.localizedDescription } }
+                submitToolPoints()
             }
         })
-        .simultaneousGesture(SpatialTapGesture().onEnded { value in
+        .simultaneousGesture(MediaDrawingInputPolicy.isStrokeTool(session.tool) ? nil : SpatialTapGesture().onEnded { value in
             if session.tool == "image.polygon" {
                 if session.polygonPoints.count < 2048 { session.polygonPoints.append(normalized(value.location, size: size)) }
             } else if session.tool == "image.eyedropper" {
@@ -97,6 +108,16 @@ struct MediaV2Preview: View {
                 Task { do { _ = try await session.performTool("image.eyedropper", input: input) } catch { session.diagnostic = error.localizedDescription } }
             }
         })
+    }
+    private func submitToolPoints() {
+        guard let first = points.first, let last = points.last else { return }
+        var input = MediaV2ToolInput(); input.expectedRevision = session.document.revision; input.number = session.brushWidth; input.color = session.colorHex
+        let tool = session.tool == "image.feather" ? "image.rectangle" : session.tool
+        input.points = ["image.rectangle", "image.ellipse", "image.crop"].contains(tool) ? [first, last] : points
+        input.flag = session.tool == "image.eraser" ? session.eraserRestores : nil
+        if tool == "image.crop" { input.property = "canvas" }
+        else if ["image.rectangle", "image.ellipse", "image.lasso"].contains(tool) { input.property = session.selectionMode.rawValue }
+        Task { do { _ = try await session.performTool(tool, input: input) } catch { session.diagnostic = error.localizedDescription } }
     }
     private func normalized(_ point: CGPoint, size: CGSize) -> ImageFreehandStroke.Point {
         .init(x: min(1, max(0, Double(point.x / max(1, size.width)))), y: min(1, max(0, Double(point.y / max(1, size.height)))))
@@ -190,7 +211,10 @@ private struct MediaV2TimelineClip: View {
     private var color: Color { track.kind == .audio ? .green : track.kind == .caption ? .purple : .blue }
     var body: some View {
         HStack(spacing: 5) {
-            Image(systemName: track.kind == .audio ? "waveform" : track.kind == .caption ? "captions.bubble" : "film")
+            PersonalEditorAssetPreview(sourceID: "clip:\(session.id):\(session.document.revision):\(clip.id)",
+                title: clip.captionText ?? WorkbenchText.t("片段", "Clip"), opensQuickPreview: false) { pixels in
+                try await PersonalEditorPreviewRequests.mediaClip(session: session, track: track, clip: clip, pixels: pixels)
+            }.frame(width: min(52, max(20, CGFloat(clip.timelineRange.durationSeconds) * scale * 0.3)), height: 30).allowsHitTesting(false)
             Text(clip.captionText ?? session.document.asset(clip.assetID ?? UUID())?.originalName ?? WorkbenchText.t("片段", "Clip")).lineLimit(1)
             Spacer(minLength: 0)
         }.font(.caption2).padding(.horizontal, 7).frame(width: max(44, CGFloat(clip.timelineRange.durationSeconds) * scale), height: 42)

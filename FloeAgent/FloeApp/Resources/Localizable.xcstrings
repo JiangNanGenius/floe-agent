@@ -1,6 +1,23 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "cad.ui.tool.fingerDrawing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Touch drawing"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "触屏绘图"
+          }
+        }
+      }
+    },
     "cad.sculpt.allowConversion": {
       "extractionState": "manual",
       "localizations": {
@@ -145040,6 +145057,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "无法导入图纸。请重新打开作品后再试。"
+          }
+        }
+      }
+    },
+    "cad.ui.view.drawingPlane": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drawing plane"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "绘图平面"
           }
         }
       }

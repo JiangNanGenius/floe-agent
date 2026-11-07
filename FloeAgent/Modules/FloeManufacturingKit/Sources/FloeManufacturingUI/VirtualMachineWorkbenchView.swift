@@ -22,8 +22,8 @@ public struct VirtualMachineWorkbenchView:View {
     @State private var lastInitialFile:URL?
     private let autoCalculate:Bool
     private let autoPlay:Bool
-    public init(project:VirtualMachineProject,directory:URL,cellArtifact:CellSimulationArtifact? = nil,initialFile:URL? = nil,autoCalculate:Bool = false,autoPlay:Bool = false,embedded:Bool = false) {
-        _model = State(initialValue:VirtualMachineModel(project:project,directory:directory,cellArtifact:cellArtifact))
+    public init(project:VirtualMachineProject,directory:URL,cellArtifact:CellSimulationArtifact? = nil,initialFile:URL? = nil,autoCalculate:Bool = false,autoPlay:Bool = false,embedded:Bool = false,sessions:ManufacturingResearchSessions? = nil) {
+        _model = State(initialValue:sessions?.virtual(project:project,cellArtifact:cellArtifact) ?? VirtualMachineModel(project:project,directory:directory,cellArtifact:cellArtifact))
         self.directory = directory;self.initialFile = initialFile;self.autoCalculate = autoCalculate;self.autoPlay = autoPlay;self.embedded = embedded
     }
     public var body:some View {
@@ -54,7 +54,7 @@ public struct VirtualMachineWorkbenchView:View {
             .navigationTitle(L("虚拟机床配置","Virtual machine setup"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement:.confirmationAction) { Button(L("完成","Done")) { model.cancel();dismiss() }.accessibilityIdentifier("virtual.done") }
+                ToolbarItem(placement:.confirmationAction) { Button(L("完成","Done")) { dismiss() }.accessibilityIdentifier("virtual.done") }
                 ToolbarItemGroup(placement:.primaryAction) {
                     if model.busy { Button(L("取消","Cancel")) { model.cancel() } }
                     else { Button(L("计算","Calculate")) { model.calculate() }.accessibilityIdentifier("virtual.calculate") }
@@ -85,7 +85,7 @@ public struct VirtualMachineWorkbenchView:View {
             .onChange(of:model.artifact?.inputSHA256) { _,value in revision = UUID();if value != nil && autoPlay { model.play() } }
             .onChange(of:model.speed) { _,_ in model.stop() }
         }
-        .onDisappear { if !editing && !importing { model.cancel() } }
+        .onDisappear { model.stop() } // Visual playback stops; the accepted service calculation remains owned.
     }
     private func refreshSavedResultPresence() {
         let values = try? directory.appendingPathComponent("latest.floetwin").resourceValues(forKeys:[.isRegularFileKey,.isSymbolicLinkKey,.fileSizeKey])

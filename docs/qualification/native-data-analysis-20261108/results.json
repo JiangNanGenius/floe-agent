@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-08",
+  "baseSource": "60f803afae967905529cbb01e0c8229ae0b92cdb",
+  "sourceState": "shared main working tree; listed hashes identify the checked source",
+  "toolchain": {
+    "xcode": "27.2",
+    "build": "27B52",
+    "swift": "6.4.2"
+  },
+  "sourceSHA256": {
+    "FloeAgent/Sources/FloeExecution/ScientificDataAnalysis.swift": "9f74a8c625bb9634f42dddce0919725cfe76bf053896b8ae815e894b65d8a9d3",
+    "FloeAgent/Sources/FloeExecution/Tools/NativeDataAnalysisTool.swift": "4547d30ba3757471b081b2243e5b4b910fb6499a25200423ac19cc53945d7423",
+    "FloeAgent/Sources/FloeExecution/ExecutionToolRegistration.swift": "8258c4adb7b62a160d1d623f197ad404f0f6d8191a261ccb0870f21856c7316d",
+    "FloeAgent/Tests/FloeExecutionTests/ScientificDataAnalysisTests.swift": "b9b1a8be524db87793ca6bd14702c5bce3903bd588118f354b4aa2b1ba896e58",
+    "FloeAgent/Tests/FloeAgentRuntimeTests/NativeDataAnalysisDiscoveryTests.swift": "d8432f062a3639c24f76fcfe5efa23b82efca557307495dc5d448366b6d7f69d",
+    "FloeAgent/Qualification/ScientificAnalysis/Package.swift": "e4bbef9991a36feadd0733746799898902c581c05d79cce7e12fdf3370c76221"
+  },
+  "numericalTests": {
+    "result": "passed",
+    "count": 18,
+    "platform": "arm64 macOS",
+    "package": "FloeAgent/Qualification/ScientificAnalysis",
+    "testSourceFlag": "FLOE_SCIENTIFIC_CORE_ONLY",
+    "command": "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --package-path FloeAgent/Qualification/ScientificAnalysis --scratch-path <task-scratch> --jobs 6"
+  },
+  "toolObjectCompilation": {
+    "result": "passed",
+    "target": "arm64-apple-ios26.0-simulator",
+    "mode": "Swift 6 whole-module emit-object; actual compiled FloeCore and FloeTools, no stubs",
+    "object": {
+      "sha256": "624711d7957ea4dbdb522986be07e32f24b1d26c0aeba041f43358f4414d8dfb",
+      "bytes": 321984,
+      "format": "Mach-O 64-bit object arm64"
+    }
+  },
+  "registration": "descriptor and runner both added in registerExecutionTools; mainline owner added data discovery synonyms",
+  "notVerifiedByThisQualification": [
+    "Full App runtime or real model invocation",
+    "Parent-package tool invocation and temporary-chat policy test",
+    "Runtime discovery tests",
+    "Physical device",
+    "New installer or publication"
+  ],
+  "originalFailure": "The first isolated tool-object command omitted the existing CFloeExtentShim module map. The corrected command used the actual generated module map; no code or test assertion was weakened.",
+  "simulator": "No device booted or used by this task."
+}

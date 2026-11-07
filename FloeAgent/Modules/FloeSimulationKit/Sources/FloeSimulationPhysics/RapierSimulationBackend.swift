@@ -15,7 +15,10 @@ public struct RapierSimulationBackend: SimulationBackend {
     }
     public func validate(_ request: SimulationRequest) throws {
         try request.validate()
-        try request.study.configuration(as: PhysicsSimulationConfiguration.self).validate(budget: request.budget)
+        let configuration = try request.study.configuration(as: PhysicsSimulationConfiguration.self)
+        try configuration.validate(budget:request.budget)
+        guard configuration.bodies.allSatisfy({ $0.sourceGeometrySHA256.map { $0 == request.source.contentSHA256 } ?? true }),
+              configuration.softBodies.allSatisfy({ $0.sourceGeometrySHA256.map { $0 == request.source.contentSHA256 } ?? true }) else { throw SimulationError.invalidInput("The source Mesh changed. Rebuild its collision or deformation binding before running.") }
         guard descriptor.isAvailable else { throw SimulationError.backendUnavailable(descriptor.unavailableReason ?? descriptor.id) }
         guard descriptor.supportedStudies.contains(request.study.kind) else { throw SimulationError.unsupported(request.study.kind.rawValue) }
     }
@@ -43,6 +46,10 @@ public struct RapierSimulationBackend: SimulationBackend {
         let bodyIDs = configuration.bodies.map(\.id), softIDs = configuration.softBodies.map(\.id)
         var diagnostics = ["bodyIDs":bodyIDs.map(\.uuidString).joined(separator: ","), "seed":String(output.seed), "stepSeconds":String(configuration.time.stepSeconds)]
         diagnostics["bodySourceObjectIDs"] = String(decoding:try JSONEncoder().encode(configuration.bodies.map(\.sourceObjectID)),as:UTF8.self)
+        diagnostics["softSourceObjectIDs"] = String(decoding:try JSONEncoder().encode(Dictionary(uniqueKeysWithValues:configuration.softBodies.map { ($0.id.uuidString,$0.sourceObjectID) })),as:UTF8.self)
+        for body in configuration.softBodies {
+            if let mapping = body.sourceVertexToParticle { diagnostics["soft/"+body.id.uuidString+"/sourceVertexToParticle"] = String(decoding:try JSONEncoder().encode(mapping),as:UTF8.self) }
+        }
         guard output.softTopology.map(\.id) == softIDs else { throw SimulationError.solverFailure("Soft-body topology identities do not match the scene.") }
         for topology in output.softTopology { diagnostics["soft/"+topology.id.uuidString+"/triangles"] = String(data:try JSONEncoder().encode(topology.triangles),encoding:.utf8) }
         let frames = try output.frames.enumerated().map { index, frame -> SimulationResultFrame in

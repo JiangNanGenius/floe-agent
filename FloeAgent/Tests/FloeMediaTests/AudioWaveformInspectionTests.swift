@@ -237,5 +237,46 @@ struct AudioWaveformInspectionTests {
             _ = try await AudioWaveformInspector().inspectAuthorizedSource(at:file,sourceReference:reference,expectedSHA256:expected,context:context(root,temporary:true)) { }
         }
     }
+
+    @Test("Native previews share exact PCM measurement without inventing a tool context")
+    func nativePreviewUsesTheActualSampleRateAndOpaqueSource() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at:root) }
+        let file = root.appendingPathComponent("preview.caf")
+        try write([left,right],to:file,rate:16_000)
+        let digest = try FloeDigest.sha256Hex(ofFileAt:file)
+        let report = try await AudioWaveformInspector().inspectNativePreview(at:file,
+            sourceReference:"preview/owned-asset/revision-2",expectedSHA256:digest,bins:4,cancellation:CancellationToken()) { }
+        #expect(report.source.kind == "nativePreview" && report.source.environmentID == nil)
+        #expect(report.source.path == "preview/owned-asset/revision-2" && !report.source.path.contains(root.path))
+        #expect(report.source.sampleRate == 16_000 && report.source.channelCount == 2)
+        #expect(report.channels[1].peakAbsolute == 1.25 && report.source.contentSHA256 == digest)
+    }
+
+    private actor PreviewBinding {
+        private var validations = 0
+        func validate() throws {
+            validations += 1
+            if validations > 1 { throw FloeError.unauthorized }
+        }
+    }
+
+    @Test("Revoked UI source and cancellation cannot return a preview or modify the source")
+    func nativePreviewRechecksBindingAndCancellation() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at:root) }
+        let file = root.appendingPathComponent("preview.caf")
+        try write([left],to:file)
+        let digest = try FloeDigest.sha256Hex(ofFileAt:file)
+        let binding = PreviewBinding()
+        await #expect(throws:FloeError.unauthorized) {
+            _ = try await AudioWaveformInspector().inspectNativePreview(at:file,sourceReference:"preview/owned-asset",
+                cancellation:CancellationToken()) { try await binding.validate() }
+        }
+        let token = CancellationToken(); token.cancel()
+        await #expect(throws:FloeError.self) {
+            _ = try await AudioWaveformInspector().inspectNativePreview(at:file,sourceReference:"preview/owned-asset",
+                cancellation:token) { }
+        }
+        #expect(try FloeDigest.sha256Hex(ofFileAt:file) == digest)
+    }
 }
 #endif

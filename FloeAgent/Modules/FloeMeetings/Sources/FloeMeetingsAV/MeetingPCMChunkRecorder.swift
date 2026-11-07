@@ -105,7 +105,10 @@ public actor MeetingPCMChunkRecorder {
             let file = directory.appendingPathComponent(String(format: "%06d.m4a", chunkIndex))
             chunk = try AVAudioFile(forWriting: file, settings: [
                 AVFormatIDKey: Int(kAudioFormatMPEG4AAC), AVSampleRateKey: frame.sampleRate,
-                AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 64_000
+                // Let the encoder choose a supported rate for the actual
+                // source. A fixed 64 kbps is rejected for some mono routes,
+                // including the valid 16 kHz input used by live recovery.
+                AVNumberOfChannelsKey: 1
             ], commonFormat: .pcmFormatFloat32, interleaved: false)
         }
         try original?.write(from: buffer); try chunk?.write(from: buffer)

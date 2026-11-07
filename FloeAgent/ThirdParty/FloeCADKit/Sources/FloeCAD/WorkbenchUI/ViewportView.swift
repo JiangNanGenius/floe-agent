@@ -25,9 +25,10 @@ struct ViewportView: UIViewRepresentable {
     /// Nil frames against the whole viewport.
     var paletteFrame: CGRect? = nil
     var paletteOnRight = false
+    var draftingOnly = false
 
     func makeCoordinator() -> ViewportCoordinator {
-        ViewportCoordinator(viewModel: viewModel)
+        ViewportCoordinator(viewModel: viewModel, draftingOnly: draftingOnly)
     }
 
     func makeUIView(context: Context) -> MTKView {
@@ -48,6 +49,7 @@ struct ViewportView: UIViewRepresentable {
         #if DEBUG
         context.coordinator.projectionQualificationUpdatedView = view
         #endif
+        context.coordinator.setDraftingOnly(draftingOnly)
         context.coordinator.updateViewport(to: view)
         context.coordinator.sceneDidChange()
         context.coordinator.setPalette(frame: paletteFrame, onRight: paletteOnRight)
@@ -110,10 +112,13 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     private var paletteFrame: CGRect?
     private var paletteOnRight = false
     private var safeArea = ViewportSafeArea()
+    private(set) var draftingOnly: Bool
 
-    init(viewModel: EditorViewModel) {
+    init(viewModel: EditorViewModel, draftingOnly: Bool = false) {
         self.viewModel = viewModel
+        self.draftingOnly = draftingOnly
         super.init()
+        gestures.planarNavigation = draftingOnly
         // A coordinator created while another live viewport owns the shared
         // bindings is a re-presentation of that viewport (the fullscreen
         // cover); remember it so a dismantle can hand the camera back. (T7W)
@@ -193,6 +198,7 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     /// Install this coordinator's renderer as the one shared viewport the
     /// camera commands and offscreen captures go through. (T7W)
     private func bindSharedViewport() {
+        viewModel.planarNavigationOnly = draftingOnly
         guard let renderer else { return }
         viewModel.cameraControl = self
         viewModel.thumbnailProvider = { renderer.makeThumbnailPNG() }
@@ -248,7 +254,8 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
         // (gestures and animated flights both move the camera).
         gestures.cameraChanged = { [weak self] in self?.cameraDidMove() }
         cameraAnimator?.cameraChanged = { [weak self] in self?.cameraDidMove() }
-        renderer.camera.projection = viewModel.orthographicEnabled
+        renderer.showsOrientationCube = !draftingOnly
+        renderer.camera.projection = (draftingOnly || viewModel.orthographicEnabled)
             ? .orthographic
             : .perspective(fovY: TurntableCamera.defaultFovY)
 
@@ -295,6 +302,18 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     func updateViewport(to view: MTKView) {
         guard self.view !== view else { return }
         attach(to: view)
+    }
+
+    func setDraftingOnly(_ value: Bool) {
+        guard draftingOnly != value else { return }
+        draftingOnly = value; gestures.planarNavigation = value
+        renderer?.showsOrientationCube = !value
+        if viewModel.cameraControl === self { viewModel.planarNavigationOnly = value }
+        if value {
+            cubeOrbitActive = false
+            numericEditorBlockedCubeDrag = false
+            moveCameraHeadOn(to: viewModel.activeSketch?.plane ?? .worldXY)
+        }
     }
 
     private func install(_ renderer: Renderer, in view: MTKView) {
@@ -379,9 +398,15 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     private var pivotDragGrab = SIMD3<Float>.zero
     private var pivotDragNormal = SIMD3<Float>(0, 0, 1)
 
-    func gestureTapped(at point: CGPoint) {
+    func gestureTapped(at point: CGPoint) { handleViewportTap(at: point, source: nil) }
+
+    func gestureTapped(at point: CGPoint, source: CADViewportInputSource) {
+        handleViewportTap(at: point, source: source)
+    }
+
+    private func handleViewportTap(at point: CGPoint, source: CADViewportInputSource?) {
         // Orientation cube first: taps on it never reach the model.
-        if let renderer, let view,
+        if !draftingOnly, let renderer, let view,
            let pose = OrientationCube.hitPose(
                at: point, camera: renderer.camera, viewSize: view.bounds.size
            ) {
@@ -390,7 +415,7 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
         }
         if viewModel.sculptEditingBody != nil { return }
         if viewModel.isPickingSymmetryAxis, let ray = ray(at: point) {
-            viewModel.handle(.tap(ray: ray))
+            viewModel.handle(.tap(ray: ray), source: source)
             sceneDidChange()
             return
         }
@@ -434,7 +459,7 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
             }
         }
         guard let ray = ray(at: point) else { return }
-        viewModel.handle(.tap(ray: ray))
+        viewModel.handle(.tap(ray: ray), source: source)
     }
 
     /// Project a gizmo-local offset to screen (local → world → screen), the
@@ -587,14 +612,20 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     private var sculptPressure:Double=1
     private var sculptDragID:UUID?
     func gestureDragBegan(at point:CGPoint,isPencil:Bool,pressure:Double,gestureID:UUID) -> Bool {
+        gestureDragBegan(at: point, source: isPencil ? .pencil : .finger, pressure: pressure, gestureID: gestureID)
+    }
+    func gestureDragBegan(at point:CGPoint,source:CADViewportInputSource,pressure:Double,gestureID:UUID) -> Bool {
         sculptPressure=pressure
-        return gestureDragBegan(at:point,isPencil:isPencil,gestureID:gestureID)
+        return gestureDragBegan(at:point,source:source,gestureID:gestureID)
     }
     func gestureDragPressureChanged(_ pressure:Double,gestureID:UUID) {
         guard viewportDragID==gestureID else { return };sculptPressure=pressure
     }
     func gestureDragBegan(at point: CGPoint, isPencil: Bool, gestureID: UUID) -> Bool {
-        let claimed = gestureDragBegan(at: point, isPencil: isPencil)
+        gestureDragBegan(at: point, source: isPencil ? .pencil : .finger, gestureID: gestureID)
+    }
+    func gestureDragBegan(at point: CGPoint, source: CADViewportInputSource, gestureID: UUID) -> Bool {
+        let claimed = gestureDragBegan(at: point, source: source)
         viewportDragID = claimed ? gestureID : nil
         return claimed
     }
@@ -628,18 +659,21 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     }
 
     func gestureDragBegan(at point: CGPoint, isPencil: Bool) -> Bool {
+        gestureDragBegan(at: point, source: isPencil ? .pencil : .finger)
+    }
+    func gestureDragBegan(at point: CGPoint, source: CADViewportInputSource) -> Bool {
         sculptDragID=nil
         sketchDragGestureID = nil
         dragStartPoint = point
         pullActive = false
-        if isPencil { viewModel.sawApplePencil = true }
+        if source == .pencil { viewModel.sawApplePencil = true }
 
         // Orientation cube = universal orbit control (spec §7.2): a drag that
         // STARTS on the cube orbits the camera in drawing modes, so the user can
         // always reorient even when a tool owns the rest of the viewport. (A
         // tap on the cube still snaps to that standard view — taps and drags
         // are separate gestures.)
-        if let view, OrientationCube.rect(in: view.bounds.size).contains(point) {
+        if !draftingOnly, let view, OrientationCube.rect(in: view.bounds.size).contains(point) {
             // Native numeric entry blocks cube dragging without committing or
             // dismissing its draft. Claim the gesture so it cannot fall through
             // to canvas orbit or drawing; restore normal cube input on release.
@@ -654,7 +688,7 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
 
         guard let ray = ray(at: point) else { return false }
         if viewModel.sculptEditingBody != nil {
-            if !isPencil && viewModel.sawApplePencil { return false }
+            guard source.editsDrawing(fingerDrawingEnabled: viewModel.fingerDrawingEnabled) else { return false }
             let claimed=viewModel.beginSculptStroke(ray:ray,pressure:sculptPressure)
             sculptDragID=claimed ? viewModel.sculptDraft?.id:nil
             return claimed
@@ -687,12 +721,10 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
             return true
         }
 
-        // Sketch mode: the Pencil draws, the finger navigates (Shapr3D). Once a
-        // Pencil has been used this session, a FINGER drag orbits instead of
-        // drawing — so you can reframe the sketch mid-stroke without switching
-        // tools. Finger-only users (no Pencil seen) keep drawing with a finger.
+        // Sketching always accepts Pencil and pointer. Finger routing is an
+        // explicit preference, independent of previous Pencil interactions.
         if viewModel.mode.isSketching {
-            if !isPencil && viewModel.sawApplePencil {
+            if !source.editsDrawing(fingerDrawingEnabled: viewModel.fingerDrawingEnabled) {
                 return false // let the finger orbit the camera
             }
             let claimed = viewModel.beginSketchStroke(ray: ray)
@@ -1106,7 +1138,8 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
         if let bounds = renderer.scene.worldBounds {
             target.fit(boundsMin: bounds.min, boundsMax: bounds.max, aspect: fitAspect)
         } else {
-            target = TurntableCamera()
+            if draftingOnly { target.target = .zero; target.distance = 12 }
+            else { target = TurntableCamera() }
         }
         cameraAnimator?.animate(to: target)
     }
@@ -1173,12 +1206,13 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
 
     func animateToStandardView(_ standard: StandardView) {
         guard let renderer else { return }
+        guard !draftingOnly else { moveCameraHeadOn(to: viewModel.activeSketch?.plane ?? .worldXY); return }
         cameraAnimator?.animate(to: standard.applied(to: renderer.camera), duration: 0.4)
     }
 
     func setProjection(orthographic: Bool) {
         guard let renderer else { return }
-        renderer.camera.projection = orthographic
+        renderer.camera.projection = (draftingOnly || orthographic)
             ? .orthographic
             : .perspective(fovY: TurntableCamera.defaultFovY)
         view?.setNeedsDisplay()
@@ -1258,6 +1292,9 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
         target.azimuth = (abs(normal.x) + abs(normal.z)) > 1e-5 ? atan2(normal.x, normal.z) : 0
         target.target = originF
         target.distance = max(renderer.camera.distance, 14)
-        cameraAnimator?.animate(to: target, duration: 0.4)
+        if draftingOnly {
+            target.projection = .orthographic
+            cameraAnimator?.setImmediately(to: target)
+        } else { cameraAnimator?.animate(to: target, duration: 0.4) }
     }
 }

@@ -75,8 +75,35 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
         if uses[id]?.isEmpty == true { uses.removeValue(forKey: id) }
     }
 
+    /// Both native Biology storage and its organizational wrapper are changed
+    /// under the library's existing exclusion boundary. The callback receives
+    /// a verified current record, never a model-provided native path.
+    static func withBiologyLifecycle<T: Sendable>(projectID: UUID, includingDeleted: Bool = false,
+        operation: @escaping @MainActor @Sendable (PersonalContentRecord, URL, PersonalContentLibrary) async throws -> T) async throws -> T {
+        try begin(projectID); defer { active.remove(projectID) }
+        guard uses[projectID]?.isEmpty != false else { throw PersonalFileActionError.closeFirst }
+        let library = try await PersonalContentService.shared.library()
+        let record: PersonalContentRecord
+        if includingDeleted {
+            guard let item = try await library.records(includingDeleted: true).first(where: { $0.id == projectID }) else {
+                throw PersonalContentError.missingDocument
+            }
+            record = item
+        } else { record = try await library.resolve(projectID).record }
+        guard record.kind == .biology else { throw PersonalContentError.invalidProject }
+        let root = await library.root
+        let directory = try await library.confined(root.appendingPathComponent(record.relativePath))
+        guard !folderBarriers.values.contains(where: {
+            directory.path == $0.path || directory.path.hasPrefix($0.path + "/")
+        }) else { throw PersonalFileActionError.busy }
+        try BiologyOriginalBinding.verify(id: projectID, directory: directory)
+        try Task.checkCancellation()
+        return try await operation(record, directory, library)
+    }
+
     static func delete(_ selection: PersonalContentRecord, environment: AppEnvironment?,
-                       library suppliedLibrary: PersonalContentLibrary? = nil) async throws {
+                       library suppliedLibrary: PersonalContentLibrary? = nil,
+                       validateSource: @MainActor @Sendable () async throws -> Void = {}) async throws {
         try begin(selection.id); defer { active.remove(selection.id) }
         guard uses[selection.id]?.isEmpty != false else { throw PersonalFileActionError.closeFirst }
         let library: PersonalContentLibrary
@@ -84,9 +111,15 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
         let value = try await library.resolve(selection.id)
         guard value.record.relativePath == selection.relativePath, value.record.kind == selection.kind,
               value.record.modifiedAt == selection.modifiedAt else { throw PersonalFileActionError.changed }
+        try await validateSource()
         try await prepareForDeletion(value.record, directory: value.url, environment: environment)
+        try await validateSource()
         try Task.checkCancellation()
-        try await library.softDelete(selection)
+        if selection.kind == .biology {
+            guard let environment else { throw PersonalContentError.storageUnavailable }
+            let lifecycle = try await environment.biologyComposition.libraryLifecycle()
+            _ = try await lifecycle.deleteUnderHeldBarrier(record: value.record, directory: value.url, library: library)
+        } else { try await library.softDelete(selection) }
         changed(selection.id)
     }
 
@@ -110,8 +143,80 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
             try await prepareForDeletion(record, directory: root.appendingPathComponent(record.relativePath), environment: environment)
         }
         try Task.checkCancellation()
-        try await library.softDeleteFolder(selection, expectedProjectIDs: ids)
+        let biology = members.filter { $0.kind == .biology && $0.deletedAt == nil }
+        if !biology.isEmpty {
+            guard let environment else { throw PersonalContentError.storageUnavailable }
+            let lifecycle = try await environment.biologyComposition.libraryLifecycle()
+            _ = try await lifecycle.withNativeLifecycleUnderHeldBarrier(selections: biology.map {
+                .init(record: $0, directory: root.appendingPathComponent($0.relativePath))
+            }, restoring: false, library: library) {
+                try await library.softDeleteFolder(selection, expectedProjectIDs: ids)
+            }
+        } else { try await library.softDeleteFolder(selection, expectedProjectIDs: ids) }
         changed(UUID())
+    }
+
+    static func restore(_ entry: PersonalLibraryTrashEntry, environment: AppEnvironment?,
+                        library suppliedLibrary: PersonalContentLibrary? = nil,
+                        validateSource: @escaping @MainActor @Sendable () async throws -> Void = {}) async throws {
+        let library: PersonalContentLibrary
+        if let suppliedLibrary { library = suppliedLibrary } else { library = try await PersonalContentService.shared.library() }
+        guard try await library.recentlyDeleted().contains(entry) else { throw PersonalFileActionError.changed }
+        let root = await library.root
+        let directory = try await library.confined(root.appendingPathComponent(entry.relativePath))
+        let components = try PersonalLibraryTrashStore.components(entry.relativePath)
+        let members = try await library.records(includingDeleted: true).filter {
+            entry.kind == .folder ? $0.folders.starts(with: components) : $0.id == entry.projectID
+        }
+        let ids = Set(members.map(\.id))
+        guard active.isDisjoint(with: ids), ids.allSatisfy({ uses[$0]?.isEmpty != false }),
+              !folderBarriers.values.contains(where: { directory.path == $0.path || directory.path.hasPrefix($0.path + "/") || $0.path.hasPrefix(directory.path + "/") }) else {
+            throw PersonalFileActionError.busy
+        }
+        active.formUnion(ids)
+        let barrier = UUID(); folderBarriers[barrier] = directory
+        defer { active.subtract(ids); folderBarriers.removeValue(forKey: barrier) }
+        try await validateSource(); try Task.checkCancellation()
+        let biology = members.filter { $0.kind == .biology }
+        if !biology.isEmpty {
+            guard let environment else { throw PersonalContentError.storageUnavailable }
+            let lifecycle = try await environment.biologyComposition.libraryLifecycle()
+            try await lifecycle.withNativeLifecycleUnderHeldBarrier(selections: biology.map {
+                .init(record: $0, directory: root.appendingPathComponent($0.relativePath))
+            }, restoring: true, library: library) {
+                try await validateSource(); try Task.checkCancellation()
+                try await library.restore(entry.id)
+            }
+        } else {
+            try await validateSource(); try Task.checkCancellation()
+            try await library.restore(entry.id)
+        }
+        changed(entry.projectID ?? entry.id)
+    }
+
+    /// Batch deletion reuses the same guarded per-item operations instead of a
+    /// fused path: revision/active-document/task/sidecar checks stay identical
+    /// to single deletion. Failures never abort the remaining items and never
+    /// hide them; undeleted originals stay visible for the user to handle.
+    static func deleteBatch(_ items: [PersonalLibrarySelectionItem], environment: AppEnvironment?,
+                            library: PersonalContentLibrary? = nil) async -> PersonalLibraryBatchDeleteResult {
+        var result = PersonalLibraryBatchDeleteResult()
+        // Defense in depth: the selection model already deduplicated; redo it
+        // here so no caller can double-visit an absorbed descendant.
+        for item in PersonalLibrarySelectionModel.deduplicated(items) {
+            do {
+                try Task.checkCancellation()
+                switch item {
+                case .work(let record): try await delete(record, environment: environment, library: library)
+                case .folder(let folder): try await deleteFolder(folder, environment: environment, library: library)
+                }
+                result.deleted.append(item)
+            } catch {
+                result.failed.append(.init(item: item, message: error.localizedDescription))
+            }
+        }
+        if !result.deleted.isEmpty { changed(UUID()) }
+        return result
     }
 
     private static func prepareForDeletion(_ record: PersonalContentRecord, directory: URL, environment: AppEnvironment?) async throws {
@@ -128,6 +233,7 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
         case .chemistry:
             guard let environment else { throw PersonalContentError.storageUnavailable }
             try await ChemistryProjectSession.prepareForLibraryDeletion(id: record.id, directory: directory, environment: environment)
+        case .biology: break // The same held barrier wraps native stop/trash and the atomic Library commit above.
         case .canvas: try await CanvasHostSessions.shared.requireIdleForDeletion(canvasID: record.id, directory: directory)
         case .diagram: break // The editor/AI usage lease owns all diagram writes.
         }
@@ -137,7 +243,7 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
     }
     static func supports(_ action: PersonalFileAction, kind: PersonalContentKind) -> Bool {
         switch action {
-        case .move: [.document, .cad2D, .cad3D].contains(kind)
+        case .move: [.document, .cad2D, .cad3D, .biology].contains(kind)
         case .duplicate: [.document, .printing].contains(kind)
         case .share: [.document, .diagram, .printing].contains(kind)
         }
@@ -155,6 +261,9 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
         let library = try await PersonalContentService.shared.library(), source = try await library.resolve(selection.id)
         guard source.record.relativePath == selection.relativePath, source.record.kind == selection.kind else { throw PersonalFileActionError.changed }
         switch source.record.kind {
+        case .biology:
+            guard uses[selection.id]?.isEmpty != false else { throw PersonalFileActionError.closeFirst }
+            try BiologyOriginalBinding.verify(id: selection.id, directory: source.url)
         case .document:
             try PersonalTextDocument.requireClosedForFileAction(projectID: selection.id)
             try PersonalOfficeDocument.requireClosedForFileAction(projectID: selection.id)

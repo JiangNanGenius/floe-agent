@@ -18,11 +18,40 @@ private struct CADManufacturingHandoffError: LocalizedError {
 @MainActor enum ManufacturingSessions {
     private static var models: [UUID: ManufacturingModel] = [:]
     static func requireIdleForDeletion(id: UUID) throws {
-        guard models[id]?.isBusy != true else { throw PersonalFileActionError.busy }
+        guard models[id]?.isBusy != true,models[id]?.hasActiveResearchWork != true else { throw PersonalFileActionError.busy }
     }
 
     private static var cadModels: [URL: ManufacturingModel] = [:]
     private static var cadGenerations: [URL: Data] = [:]
+    private final class ResearchOwner {
+        weak var document:FloeCADDocument?
+        let generation:Data
+        let sessions:ManufacturingResearchSessions
+        init(document:FloeCADDocument,generation:Data,sessions:ManufacturingResearchSessions) {
+            self.document = document;self.generation = generation;self.sessions = sessions
+        }
+    }
+    private static var researchOwners:[URL:ResearchOwner] = [:]
+    static func researchSessions(document:FloeCADDocument,directory:URL,ownerID:UUID) throws -> ManufacturingResearchSessions {
+        let key = directory.standardizedFileURL,owner = "cad:"+ownerID.uuidString.lowercased()
+        guard !document.isClosed else { throw ManufacturingError.stale }
+        let generation = try CADMachiningCompanion.locationGeneration(directory:key)
+        if let existing = researchOwners[key] {
+            if existing.document === document,existing.generation == generation {
+                try existing.sessions.requireOwner(directory:key,documentID:owner);return existing.sessions
+            }
+            guard existing.document == nil || existing.document?.isClosed == true else { throw ManufacturingError.stale }
+            existing.sessions.release();researchOwners[key] = nil
+        }
+        let sessions = ManufacturingResearchSessions(directory:key,ownerDocumentID:owner)
+        sessions.storageLeaseProvider = { [weak document] in
+            guard let document,!document.isClosed,
+                  try CADMachiningCompanion.locationGeneration(directory:key) == generation else { throw ManufacturingError.stale }
+            return try CADMachiningCompanion.storageLease(cadURL:document.url,directory:key)
+        }
+        researchOwners[key] = .init(document:document,generation:generation,sessions:sessions)
+        return sessions
+    }
     private static var openingCAD: Set<URL> = []
     static func open(id: UUID, directory: URL) -> ManufacturingModel {
         if let value = models[id] { return value }
@@ -40,14 +69,16 @@ private struct CADManufacturingHandoffError: LocalizedError {
         defer { openingCAD.remove(key) }
         let initial = try await captureCAD(document, ownerID: ownerID)
         let value = ManufacturingModel(directory: key, initialStudy: initial)
-        try installStorageLease(value, cadURL: document.url)
+        try installStorageLease(value, document:document)
         cadModels[key] = value
         return value
     }
 
     static func prepareForCADMove(directory: URL) throws {
         let key = directory.standardizedFileURL
-        guard !openingCAD.contains(key), cadModels[key]?.isBusy != true else { throw PersonalFileActionError.busy }
+        guard !openingCAD.contains(key), cadModels[key]?.isBusy != true,
+              cadModels[key]?.hasActiveResearchWork != true,researchOwners[key]?.sessions.isBusy != true else { throw PersonalFileActionError.busy }
+        researchOwners.removeValue(forKey:key)?.sessions.release()
         cadModels.removeValue(forKey: key)
         cadGenerations.removeValue(forKey:key)
     }
@@ -62,6 +93,7 @@ private struct CADManufacturingHandoffError: LocalizedError {
                 cadModels.removeValue(forKey:key); cadGenerations.removeValue(forKey:key)
             } else {
             if let ownerID, value.study.source.documentID != "cad:" + ownerID.uuidString.lowercased() { throw ManufacturingError.stale }
+            try installStorageLease(value,document:document)
             return value
             }
         }
@@ -81,16 +113,22 @@ private struct CADManufacturingHandoffError: LocalizedError {
             guard initial.source.documentID.hasPrefix("cad:") else { throw ManufacturingError.stale }
         }
         let value = ManufacturingModel(directory: key, initialStudy: initial)
-        try installStorageLease(value, cadURL: document.url)
+        try installStorageLease(value, document:document)
         cadModels[key] = value
         return value
     }
 
-    private static func installStorageLease(_ model:ManufacturingModel,cadURL:URL) throws {
+    private static func installStorageLease(_ model:ManufacturingModel,document:FloeCADDocument) throws {
+        let cadURL = document.url
         let directory = model.directory
         let generation = try CADMachiningCompanion.locationGeneration(directory:directory)
         cadGenerations[directory.standardizedFileURL] = generation
-        model.storageLeaseProvider = {
+        if model.study.source.documentID.hasPrefix("cad:"),
+           let ownerID = UUID(uuidString:String(model.study.source.documentID.dropFirst(4))) {
+            try model.attachResearchSessions(researchSessions(document:document,directory:directory,ownerID:ownerID))
+        }
+        model.storageLeaseProvider = { [weak document] in
+            guard let document,!document.isClosed,document.url == cadURL else { throw ManufacturingError.stale }
             let lease = try CADMachiningCompanion.storageLease(cadURL:cadURL,directory:directory)
             guard try CADMachiningCompanion.locationGeneration(directory:directory) == generation else { throw ManufacturingError.stale }
             return lease
@@ -207,13 +245,28 @@ struct CADManufacturingCellInspection:Codable,Sendable {
 /// from selecting another work. The service's existing shared storage lease
 /// also fences supported CAD/companion transfers during validation.
 private enum CADSavedManufacturingCellReader {
-    static func inspect(cadURL:URL,projectDirectory:URL,ownerID:UUID,
-                        cancellation:CancellationToken) throws -> CADManufacturingCellInspection {
-        func checkCancellation() throws { try Task.checkCancellation(); try cancellation.throwIfCancelled() }
-        func none() throws -> CADManufacturingCellInspection {
-            try checkCancellation()
-            return .init(family:"manufacturingCell",ownerCADProjectID:ownerID,status:.none,savedResult:nil)
+    static func inspect(cadURL:URL,projectDirectory:URL,ownerID:UUID,cancellation:CancellationToken) throws -> CADManufacturingCellInspection {
+        try CADSavedManufacturingResearchReader.withData(family:.manufacturingCell,cadURL:cadURL,projectDirectory:projectDirectory,cancellation:cancellation) { bytes in
+            guard let bytes else { return .init(family:"manufacturingCell",ownerCADProjectID:ownerID,status:.none,savedResult:nil) }
+            let (project,artifact) = try ManufacturingCellArchive.open(data:bytes)
+            let result = CADManufacturingCellInspection.SavedResult(cellProjectID:project.id,name:project.cell.name,
+                inputSHA256:artifact.inputSHA256,archiveSHA256:ManufacturingStudy.digest(bytes),archiveByteCount:bytes.count,
+                scheduleTotalSeconds:artifact.schedule.totalSeconds,computedOperationCount:artifact.jobs.count,
+                transferRecordCount:artifact.schedule.transfers.count,
+                remainingWorkpieces:artifact.finalStock.keys.sorted().map { .init(workpieceID:$0,remainingVolumeMM3:artifact.finalStock[$0]!.remainingMM3) },
+                calculationElapsedSeconds:artifact.elapsedSeconds)
+            return .init(family:"manufacturingCell",ownerCADProjectID:ownerID,status:.saved,savedResult:result)
         }
+    }
+}
+
+enum CADSavedManufacturingResearchReader {
+    static func withData<Value>(family:ManufacturingResearchFamily,isDraft:Bool = false,cadURL:URL,projectDirectory:URL,
+                                cancellation:CancellationToken,body:(Data?) throws -> Value) throws -> Value {
+        let leaf = isDraft ? "draft.json":family.fileName
+        let limit = isDraft ? 2 * 1_024 * 1_024:ResearchArchive.byteLimit
+        func checkCancellation() throws { try Task.checkCancellation();try cancellation.throwIfCancelled() }
+        func none() throws -> Value { try checkCancellation();return try body(nil) }
         try checkCancellation()
         let root = Darwin.open(projectDirectory.path,O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
         guard root >= 0 else { throw ManufacturingError.stale }
@@ -222,16 +275,16 @@ private enum CADSavedManufacturingCellReader {
         guard let manufacturing = try openDirectory(root,"Manufacturing") else { return try none() }
         defer { Darwin.close(manufacturing) }
         let manufacturingIdentity = try status(manufacturing,directory:true)
-        guard let cell = try openDirectory(manufacturing,"cell") else { return try none() }
+        guard let cell = try openDirectory(manufacturing,family.directoryName) else { return try none() }
         defer { Darwin.close(cell) }
         let cellIdentity = try status(cell,directory:true)
-        let file = openat(cell,"latest.floecell",O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        let file = openat(cell,leaf,O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
         if file < 0, errno == ENOENT { return try none() }
-        guard file >= 0 else { throw ManufacturingError.archive("Saved manufacturing cell cannot be opened without following links") }
+        guard file >= 0 else { throw ManufacturingError.archive("Saved manufacturing research cannot be opened without following links") }
         defer { Darwin.close(file) }
         let before = try status(file,directory:false)
-        guard before.st_size >= 0, before.st_size <= ResearchArchive.byteLimit else {
-            throw ManufacturingError.archive("Saved manufacturing cell exceeds the inspection byte budget")
+        guard before.st_size >= 0, before.st_size <= limit else {
+            throw ManufacturingError.archive("Saved manufacturing research exceeds the inspection byte budget")
         }
         let directory = projectDirectory.appendingPathComponent("Manufacturing",isDirectory:true)
         let storageLease = try CADMachiningCompanion.storageLease(cadURL:cadURL,directory:directory)
@@ -243,34 +296,26 @@ private enum CADSavedManufacturingCellReader {
             try checkCancellation()
             let count = buffer.withUnsafeMutableBytes { Darwin.read(file,$0.baseAddress!,$0.count) }
             if count < 0, errno == EINTR { continue }
-            guard count >= 0 else { throw ManufacturingError.archive("Saved manufacturing cell could not be read") }
+            guard count >= 0 else { throw ManufacturingError.archive("Saved manufacturing research could not be read") }
             if count == 0 { break }
-            guard bytes.count <= ResearchArchive.byteLimit - count else {
-                throw ManufacturingError.archive("Saved manufacturing cell grew beyond the inspection byte budget")
+            guard bytes.count <= limit - count else {
+                throw ManufacturingError.archive("Saved manufacturing research grew beyond the inspection byte budget")
             }
             bytes.append(contentsOf:buffer.prefix(count))
         }
         try verify()
-        let (project,artifact) = try ManufacturingCellArchive.open(data:bytes)
-        try checkCancellation()
-        let result = CADManufacturingCellInspection.SavedResult(cellProjectID:project.id,name:project.cell.name,
-            inputSHA256:artifact.inputSHA256,archiveSHA256:ManufacturingStudy.digest(bytes),archiveByteCount:bytes.count,
-            scheduleTotalSeconds:artifact.schedule.totalSeconds,computedOperationCount:artifact.jobs.count,
-            transferRecordCount:artifact.schedule.transfers.count,
-            remainingWorkpieces:artifact.finalStock.keys.sorted().map {
-                .init(workpieceID:$0,remainingVolumeMM3:artifact.finalStock[$0]!.remainingMM3)
-            },calculationElapsedSeconds:artifact.elapsedSeconds)
+        let result = try body(bytes)
         try verify()
-        return .init(family:"manufacturingCell",ownerCADProjectID:ownerID,status:.saved,savedResult:result)
+        return result
 
         func verify() throws {
             try checkCancellation()
             let after = try status(file,directory:false)
             guard sameFile(before,after), bytes.count == after.st_size,
-                  sameFile(after,try namedStatus(cell,"latest.floecell")),
+                  sameFile(after,try namedStatus(cell,leaf)),
                   sameIdentity(rootIdentity,try namedStatus(AT_FDCWD,projectDirectory.path)),
                   sameIdentity(manufacturingIdentity,try namedStatus(root,"Manufacturing")),
-                  sameIdentity(cellIdentity,try namedStatus(manufacturing,"cell")),
+                  sameIdentity(cellIdentity,try namedStatus(manufacturing,family.directoryName)),
                   try CADMachiningCompanion.locationGeneration(directory:directory) == generation else {
                 throw ManufacturingError.stale
             }
@@ -279,14 +324,14 @@ private enum CADSavedManufacturingCellReader {
     private static func openDirectory(_ parent:Int32,_ name:String) throws -> Int32? {
         let descriptor = openat(parent,name,O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
         if descriptor < 0, errno == ENOENT { return nil }
-        guard descriptor >= 0 else { throw ManufacturingError.archive("Saved manufacturing cell directory is not a regular owned directory") }
+        guard descriptor >= 0 else { throw ManufacturingError.archive("Saved manufacturing research directory is not a regular owned directory") }
         return descriptor
     }
     private static func status(_ descriptor:Int32,directory:Bool) throws -> stat {
         var value = stat()
         guard fstat(descriptor,&value) == 0,
               value.st_mode & S_IFMT == (directory ? S_IFDIR:S_IFREG) else {
-            throw ManufacturingError.archive("Saved manufacturing cell source has an invalid file type")
+            throw ManufacturingError.archive("Saved manufacturing research source has an invalid file type")
         }
         return value
     }

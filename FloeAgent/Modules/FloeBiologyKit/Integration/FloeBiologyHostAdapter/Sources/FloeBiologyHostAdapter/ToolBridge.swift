@@ -17,6 +17,7 @@ public actor BiologyExecutionContexts {
     private var calls:[String:Entry]=[:]
     private var runs:[UUID:Entry]=[:]
     private var native:[BiologyExecutionOwner:Entry]=[:]
+    public init() {}
     private func key(_ owner:BiologyExecutionOwner,_ call:String)->String {owner.taskID.uuidString+":"+owner.hostRunID.uuidString+":"+call}
     func remember(_ context:ToolContext,binding:RuntimeAuthorityBinding?) throws {
         guard let task=context.conversationID,let call=context.toolCallID,!call.isEmpty else {throw BiologyError.unavailable("Biology execution requires the real task, run and provider call identity.")}
@@ -37,6 +38,12 @@ public actor BiologyExecutionContexts {
         guard let task=context.conversationID,!context.temporaryReadOnly,!context.publicWebOnly,!context.cancellation.isCancelled,context.environmentID==context.environment?.id else {throw BiologyError.unavailable("A live resolved task is required for this workbench operation.")}
         guard native.count<128 else {throw BiologyError.unavailable("Too many pending native calculations.")}
         let owner=BiologyExecutionOwner(taskID:task,hostRunID:context.runID);native[owner]=Entry(context:context,binding:binding);return owner
+    }
+    /// Only an unconsumed native launch can be abandoned. A bound worker keeps
+    /// its exact context until the real execution service retires that run.
+    @discardableResult public func discardNative(_ owner:BiologyExecutionOwner) -> Bool {
+        guard !runs.values.contains(where:{$0.context.conversationID==owner.taskID && $0.context.runID==owner.hostRunID}) else {return false}
+        return native.removeValue(forKey:owner) != nil
     }
     func entry(_ runID:UUID) throws -> Entry {guard let value=runs[runID] else {throw BiologyError.unavailable("Scientific execution context expired.")};return value}
     func forget(_ runID:UUID) {runs.removeValue(forKey:runID)}
@@ -75,7 +82,7 @@ public final class BiologyToolBridge:Sendable {
         if !item.isReadOnly {risks.insert(.writesFiles)}
         if ["biology.deleteProject","biology.update"].contains(item.name){risks.insert(.deletesFiles)}
         if item.name=="biology.analyze" {risks.insert(.executesLocalCode)}
-        return .init(name:item.name,toolDescription:item.description,parametersJSON:String(decoding:try BiologyCoding.encode(item.parameters),as:UTF8.self),riskLabels:risks,isSideEffecting:!item.isReadOnly,effect:item.isReadOnly ? .readOnly:.mutating)
+        return .init(name:item.name,toolDescription:item.description,parametersJSON:String(decoding:try BiologyCoding.encode(item.parameters),as:UTF8.self),riskLabels:risks,isSideEffecting:!item.isReadOnly,effect:item.isReadOnly ? .readOnly:.mutating,executionBoundary:.mainRunOnly)
     }
     private func execute(_ item:BiologyToolDescriptor,data:Data,context:ToolContext) async throws -> ToolExecutionOutput {
         guard !context.temporaryReadOnly,!context.publicWebOnly,context.allowedToolNames?.contains(item.name) != false,context.frozenEffectiveCatalogNames?.contains(item.name) != false,let taskID=context.conversationID,let callID=context.toolCallID else {throw BiologyError.unavailable("Biology tools are outside this task's capability ceiling.")}

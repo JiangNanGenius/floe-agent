@@ -27,7 +27,16 @@ targets:
   SimulationNativeCodeChecks:
     type: bundle.unit-test
     platform: iOS
-    sources: [NativeCodeChecks.swift, CADIdentityCodeChecks.swift, Fixtures]
+    sources:
+      - NativeCodeChecks.swift
+      - CADIdentityCodeChecks.swift
+      - MeshAnimationCodeChecks.swift
+      - Fixtures
+      - path: ../../FloeApp/Workspace/CADSimulationDisplay.swift
+      - path: ../../FloeApp/Workspace/CADSimulationColliderDisplay.swift
+      - path: ../../FloeApp/Workspace/CADSimulationVideoExporter.swift
+      - path: ../../FloeApp/Workspace/CADSimulationAnimationBridge.swift
+      - path: ../../FloeApp/Workspace/CADSimulationAnimationExport.swift
     dependencies:
       - target: SimulationNativeCodeHost
       - package: FloeSimulationKit
@@ -38,11 +47,18 @@ targets:
         product: FloeSimulationGeometry
       - package: FloeSimulationKit
         product: FloeSimulationFields
+      - package: FloeSimulationKit
+        product: FloeSimulationPhysics
+      - package: FloeSimulationKit
+        product: FloeSimulationAnimation
+      - package: FloeSimulationKit
+        product: FloeSimulationUI
       - package: FloeCADKit
         product: FloeCAD
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.simulation.native-tests
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) FLOE_SIMULATION_DATA_QUALIFICATION
         SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/Fixtures/SimulationFixtures.h
         HEADER_SEARCH_PATHS: $(inherited) "$(SRCROOT)/../../ThirdParty/FloeCADKit/Vendor/OCCT.xcframework/ios-arm64/Headers"
         CLANG_CXX_LANGUAGE_STANDARD: c++17

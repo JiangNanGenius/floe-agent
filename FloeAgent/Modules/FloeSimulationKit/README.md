@@ -8,8 +8,8 @@
 | --- | --- |
 | Core | SI 单位接口、几何与研究修订、网格、区域材料、时间/频率、预算、结果场及原生后端合同 |
 | Geometry | Netgen 6.2.2507 原生网格；iOS 复用 OCCT 7.8.1 读取 B-rep，支持带标签封闭三角曲面、空腔、多区域、局部尺寸与精确体单元面引用；macOS arm64 为曲面路径 |
-| Physics | Rapier 0.36.1 原生 C ABI；刚体、基本体/凸包/静态三角碰撞、关节和驱动、运动学关键帧、规则绳索/布料/体柔体；粒子发射、种子、寿命、阻力及均匀/吸引/涡旋力场 |
-| Animation | 关键帧层、FK、双骨骼 IK、物理绑定、相机同播、Morph、缓存插值、可取消的运动烘焙与运动数据导出 |
+| Physics | Rapier 0.36.1 原生 C ABI；刚体、基本体/凸包/三角曲面/动态凸分解碰撞、关节和驱动、运动学关键帧、规则绳索/布料/体柔体及任意 Mesh 柔体；粒子发射、种子、寿命、阻力及均匀/吸引/涡旋力场 |
+| Animation | 关键帧层、FK、双骨骼 IK、真实加权蒙皮与 Morph、布娃娃碰撞体/关节生成、相机姿态/镜头同播、物理缓存插值与烘焙；JSON、带贴图/蒙皮/形变通道的 GLB 和原生 MP4 导出 |
 | Engineering | 复用现有 tet4 静力与稳态热，显式转换 mm/N/MPa/°C 与 SI；梁壳/铺层、模态/屈曲、非线性/接触、瞬态热/热应力的配置和高级驱动入口 |
 | Fields | MFEM 4.8 CPU 串行静电与复数压力声学；其余流体/电磁/射频配置与驱动入口；精确界面映射、载荷伴随转移及分区迭代合同 |
 | Runtime | 分析与网格服务持有任务、停止请求与实际停止分离、修订围栏、共享网格/复材失效、工作区 CAS、分块结果及校验和、原子保存、索引/分页/CSV、带任务授权的工具命令 |
@@ -18,9 +18,9 @@
 
 当前实际可运行的计算后端是 `floe.tet4`、`floe.rapier`、`floe.particles`、`floe.fields.mfem`，以及独立的 Netgen 网格服务。MFEM 当前只声明静电和压力声学，使用 tet4 体网格、1–3 阶 H1 有限元。高级结构、CFD、磁场、射频和耦合驱动仍返回明确不可用状态，执行能力及参数模板发现只返回实际已链接的种类。
 
-实际 App 已接入 CAD 工具栏和 Space CAD 原件：`CADSimulationEntry` 打开同一项目会话，`CADSimulationSessions` 捕获当前可见零件，结果复用 CAD Metal 渲染器，`studio.simulation` 注册到现有任务工具链。UI 和 AI 共享配置、保存、计算、取消、结果与动画 JSON 导出；不改写 CAD 原件、撤销栈或装配姿态。
+实际 App 已接入 CAD 工具栏和 Space CAD 原件：`CADSimulationEntry` 打开同一项目会话，`CADSimulationSessions` 捕获当前可见零件，结果复用 CAD Metal 渲染器，`studio.simulation` 注册到现有任务工具链。UI 和 AI 共享配置、保存、计算、取消、结果及 JSON/GLB/MP4 动画导出；不改写 CAD 原件、撤销栈或装配姿态。
 
-待完成的计算工作包括 FEBio/Chrono、谱分析与热扩展、SU2、低频磁场、Palace 串行射频、ozz 接入及完整多场求解。骨骼/FK/IK 当前输出姿态数据，蒙皮渲染、现有 CAD 动画资产与视频导出尚未接合。独立组件检查、App 对象编译和定向代码检查各自记录，不能替代完整界面或真机验收。
+待完成的计算工作包括 FEBio/Chrono、谱分析与热扩展、SU2、低频磁场、Palace 串行射频、ozz 接入及完整多场求解。当前 Mesh 蒙皮/形变播放已接 Metal 视口，并可显式导入 CAD 已有骨骼与当前动画片段；导出文件按项目保存、校验并可在项目移动后回读。独立组件检查、App 对象编译和定向代码检查各自记录，不能替代完整界面或真机验收。
 
 App 的单个无放置变换实体使用原始 B-rep；多零件、已放置零件采用带零件/面标签的当前封闭曲面，并在边界转换为 SI。来源几何改变后清除旧网格绑定、取消旧计算；关闭项目合并并发关闭请求、保存待提交设置并等待原生任务停止，文件整理守卫覆盖源文件与仿真伴随目录。
 
@@ -74,3 +74,14 @@ swift test --scratch-path "$HOME/Library/Caches/CodexBuild/FloeSimulation/0dd039
 App 已按以上协议接合；其注册工具为 `studio.simulation`。先调用 `definitions` 获取普通 JSON schema，再读取 `simulation.objects` 的名称/身份、`simulation.templates`、`simulation.read` 与网格信息。动画配置使用 `simulation.animation.read/put`，预览/烘焙/取消与 UI 共用模型和保存代次。项目关闭时停止任务，面板关闭时保存设置并结束观察，计算服务仍由项目会话持有。
 
 独立 iPad 宿主位于 [Qualification/Simulation](../../Qualification/Simulation/README.md)。其线框用于组件检查；实际 App 继续使用原有 Metal 渲染器。
+
+
+## Mesh 与动画使用
+
+在 CAD 的「仿真与动画」中，当前可见 Mesh 是唯一几何来源。闭合动态 Mesh 使用凸分解碰撞；固定或运动学物体可用原始三角面。开放 Mesh 可以作为布料，保持体积的柔体必须闭合。转换时会焊接重复位置并保留到源顶点的映射，不改写源模型。
+
+动画页可以导入已有骨骼/片段、给当前 Mesh 建立初始蒙皮、编辑顶点 Morph，或生成可编辑的布娃娃研究。运行该研究后关联物理结果，再预览、播放和烘焙。关联时按缓存时长缩放已有关键帧，骨骼绑定继续指向同一物理刚体。
+
+导出可选运动数据 JSON、三维动画 GLB 或 MP4。GLB 保留宿主材质与内嵌贴图，包含对象/骨骼/蒙皮/Morph 与软体顶点缓存；镜头变化使用标准 `KHR_animation_pointer`。MP4 使用现有 Metal 渲染器和项目持有的取消任务。绳索无三角曲面时使用 MP4；动态凸分解上限为 50,000 个三角形，GLB 默认预算 128 MiB，MP4 最高 60 fps。超过预算明确返回错误，不用虚假成功文件替代。
+
+AI 先读取 `definitions` 与 `simulation.objects`；新增动画命令可导入已有动画、建立 Mesh 碰撞或蒙皮、写入 Morph、生成布娃娃、关联物理结果、选择导出格式、列出并读取历史导出。所有写入仍校验项目、任务、来源与 `expectedGeneration`，共享原有授权与 CAS。烘焙回执同时返回 `url` 和当前 `generation`；首次加载物理结果可能保存其索引并推进版本，下一次写入须使用回执版本或重新读取工作区。

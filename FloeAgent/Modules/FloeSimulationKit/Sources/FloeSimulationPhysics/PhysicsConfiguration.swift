@@ -2,7 +2,7 @@ import Foundation
 import FloeSimulationCore
 
 public enum SimulationBodyMotion: String, Codable, Sendable, CaseIterable { case fixed, dynamic, kinematic }
-public enum SimulationColliderKind: String, Codable, Sendable, CaseIterable { case sphere, box, capsule, convexHull, triangleMesh }
+public enum SimulationColliderKind: String, Codable, Sendable, CaseIterable { case sphere, box, capsule, convexHull, triangleMesh, convexDecomposition }
 public struct SimulationCollider: Codable, Equatable, Sendable {
     public var kind: SimulationColliderKind = .box
     public var halfExtents = SimulationVector3(0.5,0.5,0.5)
@@ -38,6 +38,7 @@ public struct SimulationPhysicsBody: Codable, Equatable, Sendable, Identifiable 
     public var lifetimeSeconds: Double?
     public var collider = SimulationCollider()
     public var kinematicKeys: [SimulationKinematicKey] = []
+    public var sourceGeometrySHA256: String?
     public init(id: UUID = UUID(), sourceObjectID: String) { self.id = id; self.sourceObjectID = sourceObjectID }
 }
 public enum SimulationPhysicsJointKind: String, Codable, Sendable, CaseIterable { case fixed, spherical, revolute, prismatic, spring }
@@ -57,7 +58,7 @@ public struct SimulationPhysicsJoint: Codable, Equatable, Sendable, Identifiable
     public var damping = 1.0
     public init(id: UUID = UUID(), kind: SimulationPhysicsJointKind, firstBody: UUID, secondBody: UUID) { self.id = id; self.kind = kind; self.firstBody = firstBody; self.secondBody = secondBody }
 }
-public enum SimulationSoftBodyKind: String, Codable, Sendable, CaseIterable { case rope, cloth, volume }
+public enum SimulationSoftBodyKind: String, Codable, Sendable, CaseIterable { case rope, cloth, volume, mesh }
 public struct SimulationPhysicsSoftBody: Codable, Equatable, Sendable, Identifiable {
     public var id: UUID
     public var sourceObjectID: String
@@ -76,10 +77,18 @@ public struct SimulationPhysicsSoftBody: Codable, Equatable, Sendable, Identifia
     public var linearDamping = 0.1
     public var friction = 0.5
     public var selfCollision = false
+    /// Optional additions keep previously saved regular-lattice scenes readable.
+    public var meshVertices: [SimulationVector3]?
+    public var meshTriangles: [[UInt32]]?
+    public var sourceVertexToParticle: [UInt32]?
+    public var shapeMatching: Bool?
+    public var preserveVolume: Bool?
+    public var sourceGeometrySHA256: String?
     public init(id: UUID = UUID(), sourceObjectID: String, kind: SimulationSoftBodyKind) { self.id = id; self.sourceObjectID = sourceObjectID; self.kind = kind }
     public var particleCount: Int {
+        if kind == .mesh { return meshVertices?.count ?? 0 }
         guard dimensions.count == 3, dimensions.allSatisfy({ $0 >= 2 && $0 <= 256 }) else { return 0 }
-        switch kind { case .rope: return dimensions[0]; case .cloth: return dimensions[0] * dimensions[1]; case .volume: return dimensions[0] * dimensions[1] * dimensions[2] }
+        switch kind { case .rope: return dimensions[0]; case .cloth: return dimensions[0] * dimensions[1]; case .volume: return dimensions[0] * dimensions[1] * dimensions[2]; case .mesh: return 0 }
     }
 }
 public struct PhysicsSimulationConfiguration: Codable, Equatable, Sendable {
@@ -112,11 +121,12 @@ public struct PhysicsSimulationConfiguration: Codable, Equatable, Sendable {
             case .sphere: guard shape.radius.isFinite, shape.radius > 0 else { throw SimulationError.invalidInput("Set a positive sphere radius.") }
             case .box: guard shape.halfExtents.isFinite, min(shape.halfExtents.x,shape.halfExtents.y,shape.halfExtents.z) > 0 else { throw SimulationError.invalidInput("Set positive box extents.") }
             case .capsule: guard shape.radius.isFinite, shape.radius > 0, shape.halfHeight.isFinite, shape.halfHeight > 0 else { throw SimulationError.invalidInput("Set positive capsule dimensions.") }
-            case .convexHull, .triangleMesh:
-                guard shape.vertices.count >= 4, shape.vertices.count <= budget.maximumNodes, shape.vertices.allSatisfy(\.isFinite) else { throw SimulationError.invalidInput("Invalid collider vertices.") }
-                if shape.kind == .triangleMesh {
-                    guard body.motion != .dynamic, !shape.triangles.isEmpty, shape.triangles.count <= budget.maximumElements,
-                          shape.triangles.allSatisfy({ $0.count == 3 && Set($0).count == 3 && $0.allSatisfy({ Int($0) < shape.vertices.count }) }) else { throw SimulationError.invalidInput("Triangle colliders require a fixed/kinematic body and valid triangles. Use convex shapes for dynamics.") }
+            case .convexHull, .triangleMesh, .convexDecomposition:
+                guard shape.vertices.count >= (shape.kind == .triangleMesh ? 3:4), shape.vertices.count <= budget.maximumNodes, shape.vertices.allSatisfy(\.isFinite) else { throw SimulationError.invalidInput("Invalid collider vertices.") }
+                if shape.kind != .convexHull {
+                    guard shape.kind != .triangleMesh || body.motion != .dynamic else { throw SimulationError.invalidInput("Use convex decomposition for a dynamic Mesh, or choose a fixed/kinematic triangle collider.") }
+                    try SimulationPhysicsMesh.validate(vertices:shape.vertices,triangles:shape.triangles,budget:budget,requireClosed:shape.kind == .convexDecomposition)
+                    if shape.kind == .convexDecomposition, shape.triangles.count > 50_000 { throw SimulationError.resourceLimit("Simplify the collision mesh to 50,000 triangles or use a fixed triangle collider.") }
                 }
             }
             guard body.kinematicKeys.isEmpty || body.motion == .kinematic else { throw SimulationError.invalidInput("Kinematic keys require a kinematic body.") }
@@ -138,6 +148,13 @@ public struct PhysicsSimulationConfiguration: Codable, Equatable, Sendable {
             guard soft.particleCount > 0, soft.particleCount <= budget.maximumNodes, soft.origin.isFinite, soft.end.isFinite, soft.du.isFinite, soft.dv.isFinite, soft.halfExtents.isFinite,
                   [soft.particleMassKg,soft.particleRadiusMeters,soft.naturalFrequencyHz].allSatisfy({ $0.isFinite && $0 > 0 }),
                   [soft.dampingRatio,soft.linearDamping,soft.friction].allSatisfy({ $0.isFinite && $0 >= 0 }), soft.pinnedIndices.allSatisfy({ Int($0) < soft.particleCount }) else { throw SimulationError.invalidInput("Invalid soft-body lattice, material or pinned particles.") }
+            if soft.kind == .mesh {
+                let vertices = soft.meshVertices ?? [], triangles = soft.meshTriangles ?? []
+                try SimulationPhysicsMesh.validate(vertices:vertices,triangles:triangles,budget:budget,requireClosed:soft.preserveVolume == true)
+                if let mapping = soft.sourceVertexToParticle {
+                    guard !mapping.isEmpty, mapping.count <= budget.maximumNodes, mapping.allSatisfy({ Int($0) < vertices.count }) else { throw SimulationError.invalidInput("The source Mesh vertex mapping is invalid.") }
+                }
+            }
             particles += soft.particleCount
         }
         guard particles <= budget.maximumNodes else { throw SimulationError.resourceLimit("Soft-body particles exceed the node budget.") }

@@ -22,7 +22,7 @@ actor MeetingSharedPCMBackend: MeetingCaptureBackend {
         epoch += 1; let generation = epoch
         self.session = session; self.sink = sink
         let channel = AsyncStream<MeetingPCMFrame>.makeStream(bufferingPolicy: .bufferingOldest(64))
-        let writer = try MeetingPCMChunkRecorder(configuration: configuration, session: session)
+        let writer = try MeetingPCMChunkRecorder(configuration: configuration, session: session, chunkSeconds: 5)
         self.writer = writer
         let tap = MeetingPCMStreamTap(continuation: channel.continuation) { [weak self] reason in
             Task { await self?.fail(reason, generation: generation) }

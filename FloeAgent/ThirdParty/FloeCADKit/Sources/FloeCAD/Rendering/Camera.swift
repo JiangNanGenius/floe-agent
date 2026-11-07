@@ -96,6 +96,11 @@ nonisolated struct TurntableCamera: Sendable, Equatable {
 
     // MARK: - Navigation
 
+    mutating func navigateDrag(deltaPixels: CGSize, viewportSize: CGSize, planar: Bool) {
+        if planar { pan(deltaPixels: deltaPixels, viewportSize: viewportSize) }
+        else { orbit(deltaPixels: deltaPixels, viewportSize: viewportSize) }
+    }
+
     mutating func orbit(deltaPixels: CGSize, viewportSize: CGSize) {
         guard viewportSize.width > 0, viewportSize.height > 0 else { return }
         let sensitivity: Float = 2 * .pi / Float(min(viewportSize.width, viewportSize.height))

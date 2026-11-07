@@ -13,6 +13,10 @@ import FloeBiologySamples
     private let onInsertInNotes:BiologyNotesHandler?
     private let executionOwner:(@MainActor @Sendable (UUID,UUID) async throws -> BiologyExecutionOwner)?
     private let makeTools:(@MainActor @Sendable (UUID) async throws -> BiologyToolSession)?
+    private let onRunAnalysis:BiologyNativeAnalysisHandler?
+    private let onImportFile:BiologyNativeFileImportHandler?
+    private let onAuthorizeFile:BiologyNativeFileAuthorizationHandler?
+    private let scientificEnvironmentID:String?
     @State private var sheet:Panel?
     @State private var showingAnalysis=false
     private enum AnalysisInput:Hashable{case extra,cutoff,threshold,timeEnd,step}
@@ -40,8 +44,8 @@ import FloeBiologySamples
     @State private var extraOptions=""
     @State private var showResult=false
     private enum Panel:String,Identifiable {case sequence,annotation,network,history,notes,assistant,rename,tools;var id:String{rawValue}}
-    public init(service:BiologyService,projectID:UUID,onAI:BiologyAIHandler? = nil,onInsertInNotes:BiologyNotesHandler? = nil,executionOwner:(@MainActor @Sendable (UUID,UUID) async throws -> BiologyExecutionOwner)? = nil,makeTools:(@MainActor @Sendable (UUID) async throws -> BiologyToolSession)? = nil) {
-        _model=State(initialValue:BiologyWorkbenchModel(service:service,projectID:projectID));self.onAI=onAI;self.onInsertInNotes=onInsertInNotes;self.executionOwner=executionOwner;self.makeTools=makeTools
+    public init(service:BiologyService,projectID:UUID,onAI:BiologyAIHandler? = nil,onInsertInNotes:BiologyNotesHandler? = nil,executionOwner:(@MainActor @Sendable (UUID,UUID) async throws -> BiologyExecutionOwner)? = nil,makeTools:(@MainActor @Sendable (UUID) async throws -> BiologyToolSession)? = nil,onRunAnalysis:BiologyNativeAnalysisHandler? = nil,onImportFile:BiologyNativeFileImportHandler? = nil,onAuthorizeFile:BiologyNativeFileAuthorizationHandler? = nil,scientificEnvironmentID:String? = nil) {
+        _model=State(initialValue:BiologyWorkbenchModel(service:service,projectID:projectID));self.onAI=onAI;self.onInsertInNotes=onInsertInNotes;self.executionOwner=executionOwner;self.makeTools=makeTools;self.onRunAnalysis=onRunAnalysis;self.onImportFile=onImportFile;self.onAuthorizeFile=onAuthorizeFile;self.scientificEnvironmentID=scientificEnvironmentID
     }
     public var body:some View {
         GeometryReader { geometry in
@@ -87,7 +91,7 @@ import FloeBiologySamples
                 await model.refresh();configureSelection();applyStoredSelection()
             }
         }
-        .onChange(of:model.methods){_,_ in configureSelection()}
+        .onChange(of:offeredMethods){_,_ in configureSelection()}
     }
     private func header(compact:Bool)->some View {
         HStack {
@@ -146,7 +150,7 @@ import FloeBiologySamples
             case .externalDataset:
                 if ["newick","nwk","tree"].contains(a.originalFormat) {BiologyTreeView(data:a.originalData,selection:model.project?.selections?[a.id.uuidString]).id(a.id)}
                 else if a.fileReference==nil,["mrc","map","ccp4"].contains(a.originalFormat) {BiologyDensityView(data:a.originalData,selection:model.project?.selections?[a.id.uuidString]).id(a.id)}
-                else if ["tif","tiff"].contains(a.originalFormat) {BiologyLargeImageView(model:model,asset:a,executionOwner:executionOwner).id(a.id)}
+                else if ["tif","tiff"].contains(a.originalFormat) {BiologyLargeImageView(model:model,asset:a,executionOwner:executionOwner,onRunAnalysis:onRunAnalysis,scientificEnvironmentID:scientificEnvironmentID).id(a.id)}
                 else {ContentUnavailableView(biologyText("Original dataset saved","原始数据已保存"),systemImage:"doc.badge.gearshape",description:Text(biologyText("Choose a configured scientific importer in Analysis.","请在分析中选择已配置的科学数据读取方法。")))}
             }
         } else {ContentUnavailableView(biologyText("Start with a dataset","从一份数据开始"),systemImage:"square.and.arrow.down",description:Text(biologyText("Import a file, or choose an offline example from +.","导入文件，或从加号菜单选择离线示例。")))}
@@ -195,6 +199,14 @@ import FloeBiologySamples
                     Button(biologyText("Redo","重做"),systemImage:"arrow.uturn.forward"){Task{await model.redoEdit()}}.disabled(!model.canRedo || model.busy).accessibilityIdentifier("biology.redo")
                 }
                 if let a=model.selected {
+                    if a.fileReference != nil,let onAuthorizeFile {
+                        Button(biologyText("Use in task environment","用于任务计算环境"),systemImage:"externaldrive.badge.plus") {
+                            Task{await model.perform {
+                                let created=try await onAuthorizeFile(model.projectID,a.id,a.revision)
+                                model.selectedID=created.id;model.selectedRunID=nil;showResult=false
+                            }}
+                        }.accessibilityIdentifier("biology.authorizeFile")
+                    }
                     Section(biologyText("Edit data","编辑数据")) {
                         if case .sequence = a.payload {
                             Button(biologyText("Edit sequence","编辑序列"),systemImage:"pencil"){sheet = .sequence}.accessibilityIdentifier("biology.editSequence")
@@ -226,8 +238,8 @@ import FloeBiologySamples
                 VStack(alignment:.leading,spacing:12) {
                     if let a=model.selected {
                         Label(a.title,systemImage:BiologyLabels.icon(a.kind)).font(.subheadline.weight(.medium)).lineLimit(1).padding(.vertical,4)
-                        BiologyChoiceField(title:biologyText("Method","方法"),selection:$selectedMethod,value:BiologyLabels.method(selectedMethod),identifier:"biology.methodField",compact:true){ForEach(model.methods[environment] ?? [],id:\.self){Text(BiologyLabels.method($0)).tag($0)}}
-                        BiologyChoiceField(title:biologyText("Execution location","执行位置"),selection:$environment,value:environmentTitle(environment),identifier:"biology.environmentField",compact:true){ForEach(model.methods.keys.sorted(),id:\.self){Text(environmentTitle($0)).tag($0)}}
+                        BiologyChoiceField(title:biologyText("Method","方法"),selection:$selectedMethod,value:BiologyLabels.method(selectedMethod),identifier:"biology.methodField",compact:true){ForEach(offeredMethods[environment] ?? [],id:\.self){Text(BiologyLabels.method($0)).tag($0)}}
+                        BiologyChoiceField(title:biologyText("Execution location","执行位置"),selection:$environment,value:environmentTitle(environment),identifier:"biology.environmentField",compact:true){ForEach(offeredMethods.keys.sorted(),id:\.self){Text(environmentTitle($0)).tag($0)}}
                         Divider()
                         analysisParameters(a)
                         DisclosureGroup(biologyText("Additional parameters","更多参数")) {
@@ -260,11 +272,20 @@ import FloeBiologySamples
         .toolbar{ToolbarItemGroup(placement:.keyboard){Spacer();Button(biologyText("Finish editing","完成输入")){analysisInput=nil}.accessibilityIdentifier("biology.finishAnalysisEditing")}}
         .onAppear{configureSelection()}
         .onDisappear{analysisInput=nil}
-        .onChange(of:environment){_,_ in if !(model.methods[environment] ?? []).contains(selectedMethod){selectedMethod=model.methods[environment]?.first ?? ""}}
+        .onChange(of:environment){_,_ in if !(offeredMethods[environment] ?? []).contains(selectedMethod){selectedMethod=offeredMethods[environment]?.first ?? ""}}
+    }
+    private var offeredMethods:[String:[String]] {
+        var values=model.methods
+        if onRunAnalysis != nil,let scientificEnvironmentID,let selected=model.selected {
+            let candidates=BiologyService.optionalScientificMethods(for:selected)
+            if !candidates.isEmpty {values[scientificEnvironmentID]=Array(Set((values[scientificEnvironmentID] ?? [])+candidates)).sorted()}
+        }
+        return values
     }
     private func environmentTitle(_ id:String)->String {
         if id=="native.local"{return biologyText("This device","此设备")}
-        let index=model.methods.keys.filter{$0 != "native.local"}.sorted().firstIndex(of:id).map{$0+1} ?? 1
+        if id==scientificEnvironmentID{return biologyText("Task environment · checked on Run","任务环境 · 运行时检查")}
+        let index=offeredMethods.keys.filter{$0 != "native.local"}.sorted().firstIndex(of:id).map{$0+1} ?? 1
         return biologyText("Compute environment ","计算环境 ")+String(index)
     }
     private func supports(_ parameter:String)->Bool {BiologyMethodCatalog.schema(selectedMethod)["properties"]?.object?[parameter] != nil}
@@ -336,10 +357,10 @@ import FloeBiologySamples
         }
         if case .microscopyImage(let image)=model.selected?.payload {channel=min(channel,image.channels-1);slice=min(slice,image.slices-1);frame=min(frame,image.frames-1)}
         if case .sequence(let records)=model.selected?.payload {recordIndex=min(recordIndex,records.count-1)}
-        if !model.methods.keys.contains(environment){environment=model.methods.keys.sorted().first ?? "native.local"}
-        if !(model.methods[environment] ?? []).contains(selectedMethod) {
+        if !offeredMethods.keys.contains(environment){environment=offeredMethods.keys.sorted().first ?? "native.local"}
+        if !(offeredMethods[environment] ?? []).contains(selectedMethod) {
             let preferred:[BiologyAssetKind:String]=[.sequence:"sequence.stats",.proteinStructure:"structure.geometry",.microscopyImage:"image.segment",.expressionMatrix:"matrix.qc",.biochemicalNetwork:"network.simulate"]
-            let list=model.methods[environment] ?? []
+            let list=offeredMethods[environment] ?? []
             selectedMethod=model.selected.flatMap{preferred[$0.kind]}.flatMap{list.contains($0) ? $0:nil} ?? list.first ?? ""
         }
     }
@@ -378,6 +399,17 @@ import FloeBiologySamples
                 let extra=try JSONDecoder().decode(JSONValue.self,from:Data(extraOptions.utf8))
                 guard let object=extra.object else {throw BiologyError.invalid(biologyText("Additional parameters must be an object.","更多参数需要是对象。"))}
                 options.merge(object){_,new in new}
+            }
+            if let onRunAnalysis,let selected=model.selected {
+                model.busy=true;defer{model.busy=false}
+                let intent=BiologyNativeAnalysisIntent(projectID:model.projectID,assetID:selected.id,
+                    assetRevision:selected.revision,method:selectedMethod,options:.object(options),environmentID:environment)
+                let run=try await onRunAnalysis(intent)
+                await model.refresh()
+                guard model.selectedID==selected.id,
+                      model.project?.runs.contains(where:{$0.id==run.id && $0.assetID==selected.id && $0.assetRevision==selected.revision})==true else{return}
+                model.selectedRunID=run.id;model.error=nil;showResult=true
+                return
             }
             let owner:BiologyExecutionOwner?
             if environment != "native.local",let a=model.selected {
@@ -422,6 +454,17 @@ import FloeBiologySamples
                 let access=url.startAccessingSecurityScopedResource();defer{if access{url.stopAccessingSecurityScopedResource()}}
                 let values=try url.resourceValues(forKeys:[.fileSizeKey,.isRegularFileKey,.isSymbolicLinkKey])
                 guard values.isRegularFile==true,values.isSymbolicLink != true,let size=values.fileSize else {throw BiologyError.invalid(biologyText("Choose a regular data file.","请选择普通数据文件。"))}
+                if let onImportFile {
+                    let imported=try await onImportFile(model.projectID,url)
+                    switch imported {
+                    case .asset(let projectID,let assetID):
+                        guard projectID==model.projectID else{throw BiologyError.invalid(biologyText("The imported dataset belongs to a different project.","导入的数据不属于当前项目。"))}
+                        model.selectedID=assetID;model.selectedRunID=nil;showResult=false
+                    case .project:
+                        model.notice=biologyText("Project imported. Open it from the project list.","项目已导入，可从项目列表打开。")
+                    }
+                    continue
+                }
                 if url.lastPathComponent.lowercased().hasSuffix(".biology.json") {
                     guard size<=BiologyProjectStore.maximumProjectBytes else {throw BiologyError.invalid(biologyText("This project is too large to import.","这个项目超过导入大小限制。"))}
                     let data=try Data(contentsOf:url)

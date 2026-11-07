@@ -273,7 +273,7 @@ enum NotesAssistantToolCatalog {
         "workspace.inspectFileMetadata", "workspace.createFile", "workspace.writeFile",
         "workspace.applyPatch", "workspace.createDirectory", "workspace.moveFile",
         "document.pdf.inspect", "document.pdf.render", "document.office.inspect",
-        "image.ocr", "image.inspect",
+        "image.ocr", "image.inspect", "audio.inspect",
         "exec.shell",
         "conversation.search", "conversation.read", "conversation.list",
         "checklist.readPlan", "checklist.updatePlan", "memory.recall",

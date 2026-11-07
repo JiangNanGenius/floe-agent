@@ -30,6 +30,9 @@ packages:
     revision: 1e2a163736dfa5a198e637ae44c114e1c6d5cc2d
   FloeAgentPackages:
     path: .  # Local Swift package (root Package.swift)
+  SwiftCrypto:
+    # Same immutable 3.15.1 source, with one Crypto/Extras runtime product.
+    path: ThirdParty/swift-crypto
   FloeCanvasKit:
     path: Modules/FloeCanvasKit
   FloeCanvasTemplates:
@@ -48,12 +51,18 @@ packages:
     path: Modules/FloeInteractiveContent
   FloeManufacturingKit:
     path: Modules/FloeManufacturingKit
+  FloeSimulationKit:
+    path: Modules/FloeSimulationKit
   FloePrintKit:
     path: Modules/FloePrintKit
   FloeMediaExchange:
     path: Modules/FloeMediaExchange
   FloeChemistryKit:
     path: Modules/FloeChemistryKit
+  FloeBiologyKit:
+    path: Modules/FloeBiologyKit
+  FloeBiologyHostAdapter:
+    path: Modules/FloeBiologyKit/Integration/FloeBiologyHostAdapter
   FloeToolbox:
     path: Modules/FloeToolbox
   ZLImageEditor:
@@ -323,6 +332,8 @@ targets:
         com.apple.security.application-groups:
           - group.org.floeagent.ios
     dependencies:
+      - package: SwiftCrypto
+        product: Crypto
       - package: FloeCanvasKit
         product: FloeCanvasCore
       - package: FloeCanvasKit
@@ -361,6 +372,18 @@ targets:
         product: FloeManufacturingUI
       - package: FloeManufacturingKit
         product: FloeManufacturingCore
+      - package: FloeSimulationKit
+        product: FloeSimulationCore
+      - package: FloeSimulationKit
+        product: FloeSimulationRuntime
+      - package: FloeSimulationKit
+        product: FloeSimulationGeometry
+      - package: FloeSimulationKit
+        product: FloeSimulationPhysics
+      - package: FloeSimulationKit
+        product: FloeSimulationAnimation
+      - package: FloeSimulationKit
+        product: FloeSimulationUI
       - package: FloePrintKit
         product: FloePrintCore
       - package: FloeMediaExchange
@@ -391,6 +414,16 @@ targets:
         product: FloeToolboxFileTransports
       - package: FloeToolbox
         product: FloeToolboxWorkbenches
+      - package: FloeToolbox
+        product: FloeToolboxUSB
+      - package: FloeBiologyKit
+        product: FloeBiologyCore
+      - package: FloeBiologyKit
+        product: FloeBiologyEngine
+      - package: FloeBiologyKit
+        product: FloeBiologyUI
+      - package: FloeBiologyHostAdapter
+        product: FloeBiologyHostAdapter
       - package: FloeAgentPackages
         product: FloeToolboxSSH
       - package: FloeAgentPackages
@@ -1644,6 +1677,32 @@ targets:
       Debug: Vendor/Office/native-host.xcconfig
       Release: Vendor/Office/native-host.xcconfig
     sources:
+      - path: Tests/FloeAppTests/AppQualificationEnvironment.swift
+      - path: Tests/FloeAppTests/ToolboxUSBAppIntegrationTests.swift
+      - path: Tests/FloeAppTests/ToolboxUSBTransportTests.swift
+      - path: Tests/FloeAppTests/ToolboxHistoryAndSerialTests.swift
+      - path: Tests/FloeAppTests/ToolboxNativeNetworkObservationTests.swift
+      - path: Tests/FloeAppTests/BiologyHostIntegrationTests.swift
+      - path: Tests/FloeAppTests/StudioNativeSelectionContractTests.swift
+      - path: Tests/FloeAppTests/StudioNativeResultContractTests.swift
+      - path: Tests/FloeAppTests/StudioMusicFileImportContractTests.swift
+      - path: Tests/FloeAppTests/StudioNativeLibraryContractTests.swift
+      - path: Tests/FloeAppTests/StudioCrossDomainAudioObservationTests.swift
+      - path: Tests/FloeAppTests/StudioCADNativeOperationTests.swift
+      - path: Tests/FloeAppTests/ManufacturingResearchSessionTests.swift
+      - path: Tests/FloeAppTests/StudioManufacturingResearchContractTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CAD2DNavigationTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADTapDrawingInputTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADTextureDrawingInputTests.swift
+      - path: Tests/FloeAppTests/MediaDrawingInputTests.swift
+      - path: Tests/FloeAppTests/DiagramDrawingInputTests.swift
+      - path: Tests/FloeAppTests/SpaceLibraryBatchTests.swift
+      - path: Tests/FloeAppTests/PersonalContentPreviewTests.swift
+      - path: Tests/FloeAppTests/PersonalContentBiologyPreviewTests.swift
+      - path: Tests/FloeAgentRuntimeTests/WorkbenchToolDiscoveryTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADDrawingInputPolicyTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSculptPressureRouteTests.swift
+      - path: Tests/FloeAppTests/CADSimulationIntegrationTests.swift
       - path: Tests/FloeAppTests/FloeNoteIntentsIntegrationTests.swift
       - path: Tests/FloeAppTests/NativePrintingIntegrationTests.swift
       - path: Tests/FloeAppTests/PredevelopmentClosureTests.swift
@@ -1706,6 +1765,22 @@ targets:
       - path: Tests/FloeCoreTests/FloeAppEntryRouteTests.swift
     dependencies:
       - target: FloeAgent
+      - package: FloeSimulationKit
+        product: FloeSimulationCore
+      - package: FloeDiagramKit
+        product: FloeDiagramUI
+      - package: FloeSimulationKit
+        product: FloeSimulationRuntime
+      - package: FloeSimulationKit
+        product: FloeSimulationGeometry
+      - package: FloeSimulationKit
+        product: FloeSimulationFields
+      - package: FloeSimulationKit
+        product: FloeSimulationPhysics
+      - package: FloeSimulationKit
+        product: FloeSimulationAnimation
+      - package: FloeSimulationKit
+        product: FloeSimulationUI
       - package: FloePrintKit
         product: FloePrintCore
       - package: FloeManufacturingKit
@@ -1735,7 +1810,17 @@ targets:
       - package: FloeToolbox
         product: FloeToolboxDiagnostics
       - package: FloeToolbox
+        product: FloeToolboxUI
+      - package: FloeToolbox
         product: FloeToolboxWorkbenches
+      - package: FloeToolbox
+        product: FloeToolboxUSB
+      - package: FloeBiologyKit
+        product: FloeBiologyCore
+      - package: FloeBiologyKit
+        product: FloeBiologyEngine
+      - package: FloeBiologyHostAdapter
+        product: FloeBiologyHostAdapter
       - package: FloeInteractiveContent
         product: FloeInteractiveContentCore
       - package: GRDB
@@ -1789,6 +1874,17 @@ schemes:
     test:
       targets:
         - FloePredevelopmentTests
+  # Keep focused unit and UI qualification on one shared package build graph.
+  FloeIntegrationAcceptance:
+    build:
+      targets:
+        FloeAgent: all
+        FloePredevelopmentTests: [test]
+        FloePredevelopmentUITests: [test]
+    test:
+      targets:
+        - FloePredevelopmentTests
+        - FloePredevelopmentUITests
   FloeAgent:
     build:
       targets:

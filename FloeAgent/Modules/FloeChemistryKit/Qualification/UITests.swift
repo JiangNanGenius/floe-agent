@@ -59,9 +59,10 @@ import XCTest
         let canvas = app.otherElements["chemistry.nativeCanvas"].firstMatch
         XCTAssertTrue(canvas.waitForExistence(timeout: 20))
         XCTAssertEqual(app.webViews.count, 0)
-        app.buttons["Drawing options"].tap()
-        let finger = app.switches["Draw with finger"]
-        if finger.exists && (finger.value as? String) == "0" { finger.tap() }
+        let finger = app.buttons["chemistry.drawing.fingerDrawing"]
+        XCTAssertTrue(finger.waitForExistence(timeout: 5))
+        if app.staticTexts["Finger pans"].exists { finger.tap() }
+        XCTAssertTrue(app.staticTexts["Finger draws"].exists)
         app.staticTexts["Untitled molecule"].firstMatch.tap()
         app.buttons["Benzene template"].tap()
         canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.48, dy: 0.45)).tap()
@@ -101,9 +102,9 @@ import XCTest
         XCTAssertTrue(app.buttons["Periodic table"].isHittable)
         XCTAssertTrue(app.buttons["Element I"].isHittable)
         let landscape = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); landscape.name = "Native-Pencil-canvas-dark-landscape"; landscape.lifetime = .keepAlways; add(landscape)
-        let touchMode = app.buttons["Finger draws"]
+        let touchMode = app.buttons["chemistry.drawing.fingerDrawing"]
         XCTAssertTrue(touchMode.exists);touchMode.tap()
-        XCTAssertTrue(app.buttons["Finger pans"].exists);app.buttons["Finger pans"].tap()
+        XCTAssertTrue(app.staticTexts["Finger pans"].exists);touchMode.tap()
         XCUIDevice.shared.orientation = .portrait
         app.terminate();app.launchArguments += ["--chemistry-qa-high-contrast"];app.launch()
         let highContrastProject = app.buttons.matching(NSPredicate(format:"label CONTAINS %@",token)).firstMatch

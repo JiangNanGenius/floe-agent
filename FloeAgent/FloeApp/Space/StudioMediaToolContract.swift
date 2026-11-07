@@ -15,7 +15,7 @@ enum StudioMediaToolContract {
         guard var object = value as? [String: Any] else {
             throw FloeError.validationFailed("inputJSON must be one JSON object, not an array.")
         }
-        let allowed: Set<String> = ["objectID", "objectIDs", "expectedRevision", "number", "secondary",
+        let allowed: Set<String> = ["objectID", "objectIDs", "expectedRevision", "selectionFence", "number", "secondary",
                                     "start", "duration", "text", "color", "property", "flag", "points", "captionStyle"]
         let unknown = Set(object.keys).subtracting(allowed).sorted()
         guard unknown.isEmpty else {

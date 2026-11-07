@@ -153,7 +153,7 @@ struct ToolPaletteView: View {
     }
 
     private var sketchEntries: [PaletteEntry] {
-        drawItems.map(PaletteEntry.item)
+        [.item(fingerDrawingItem)] + drawItems.map(PaletteEntry.item)
         // Offset Edge sits with the sketch tools, matching the manual's order
         // (…Polygon, Offset Edge, …). Sketch-only: there is nothing to offset
         // from outside a sketch, so it is absent from the body-mode group.
@@ -165,6 +165,12 @@ struct ToolPaletteView: View {
            .item(constructItem),
            .item(detachItem),
            .item(deleteItem)]
+    }
+
+    private var fingerDrawingItem: ToolItem {
+        ToolItem(id: "FingerDrawing", label: FloeCADStrings.text("cad.ui.tool.fingerDrawing", "Touch drawing"),
+                 icon: "hand.point.up.left", active: viewModel.fingerDrawingEnabled,
+                 accessibilityID: "CADFingerDrawingToggle", run: { viewModel.fingerDrawingEnabled.toggle() })
     }
 
     private var currentGroups: [ToolGroup] {

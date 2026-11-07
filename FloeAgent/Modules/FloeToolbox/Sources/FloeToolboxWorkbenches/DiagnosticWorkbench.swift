@@ -24,6 +24,10 @@ public struct DiagnosticRequestSnapshot: Sendable {
     public let ports: String
     public let recordType: DNSRecordType
     public let serviceType: String
+    public init(id: UUID, tool: ToolboxTool, target: String, ports: String, recordType: DNSRecordType, serviceType: String) {
+        self.id = id; self.tool = tool; self.target = target; self.ports = ports
+        self.recordType = recordType; self.serviceType = serviceType
+    }
     public var description: String {
         switch tool {
         case .dns: String(describing:recordType).uppercased() + " · " + target
@@ -34,6 +38,7 @@ public struct DiagnosticRequestSnapshot: Sendable {
         }
     }
 }
+public enum DiagnosticRequestState: Sendable { case running, completed, failed, cancelled }
 @MainActor public final class DiagnosticWorkbenchModel: ObservableObject {
     @Published public var target = ""
     @Published public var ports = "22, 80, 443"
@@ -48,11 +53,14 @@ public struct DiagnosticRequestSnapshot: Sendable {
     public let tool: ToolboxTool
     private let service: any DiagnosticWorkbenchService
     private let mayReadWiFiIdentity: Bool
+    private let onRequestState: (@MainActor @Sendable (DiagnosticRequestSnapshot, DiagnosticRequestState) -> Void)?
     private var operation: Task<Void,Never>?
     private var generation = UUID()
-    public init(tool: ToolboxTool,service: any DiagnosticWorkbenchService,mayReadWiFiIdentity: Bool = false) throws {
+    public init(tool: ToolboxTool,service: any DiagnosticWorkbenchService,mayReadWiFiIdentity: Bool = false,
+                onRequestState: (@MainActor @Sendable (DiagnosticRequestSnapshot, DiagnosticRequestState) -> Void)? = nil) throws {
         guard [.ping,.traceroute,.dns,.port,.lan,.wifi].contains(tool) else { throw DiagnosticError.invalid("diagnostic view") }
         self.tool = tool; self.service = service; self.mayReadWiFiIdentity = mayReadWiFiIdentity
+        self.onRequestState = onRequestState
     }
     @discardableResult public func run() -> Task<Void,Never>? {
         guard !running else { return nil }
@@ -62,6 +70,7 @@ public struct DiagnosticRequestSnapshot: Sendable {
         // path. Previous successes are never implicitly reused as current data.
         generation = frozen.id; request = frozen; rows = []; failure = nil
         cancelled = false; failed = false; running = true
+        onRequestState?(frozen, .running)
         let run = frozen.id, target = frozen.target, ports = frozen.ports, type = frozen.recordType, discoveryType = frozen.serviceType
         operation = Task { [weak self] in
             guard let self else { return }
@@ -94,8 +103,12 @@ public struct DiagnosticRequestSnapshot: Sendable {
                 default: throw DiagnosticError.invalid("diagnostic")
                 }
                 guard generation == run else { return }
-                guard !Task.isCancelled else { rows = []; running = false; operation = nil; cancelled = true; return }
+                guard !Task.isCancelled else {
+                    rows = []; running = false; operation = nil; cancelled = true
+                    onRequestState?(frozen, .cancelled); return
+                }
                 rows = results; running = false; operation = nil
+                onRequestState?(frozen, .completed)
             } catch {
                 guard generation == run else { return }
                 rows = []; running = false; operation = nil
@@ -104,6 +117,7 @@ public struct DiagnosticRequestSnapshot: Sendable {
                 } else {
                     failure = (error as? DiagnosticError) ?? .system(String(reflecting:error)); failed = true
                 }
+                onRequestState?(frozen, cancelled ? .cancelled : .failed)
             }
         }
         return operation
@@ -111,14 +125,18 @@ public struct DiagnosticRequestSnapshot: Sendable {
     public func cancel() {
         let wasRunning = running
         generation = UUID(); operation?.cancel(); operation = nil; running = false
-        if wasRunning { rows = []; failure = nil; failed = false; cancelled = true }
+        if wasRunning {
+            rows = []; failure = nil; failed = false; cancelled = true
+            if let request { onRequestState?(request, .cancelled) }
+        }
     }
     public func close() async { cancel(); await service.stop() }
 }
 public struct DiagnosticWorkbenchView: View {
     @ObservedObject private var model: DiagnosticWorkbenchModel
     @Environment(\.locale) private var locale
-    public init(model: DiagnosticWorkbenchModel) { self.model = model }
+    private let history: AnyView?
+    public init(model: DiagnosticWorkbenchModel, history: AnyView? = nil) { self.model = model; self.history = history }
     private var title: String {
         switch model.tool {
         case .ping: "Ping"
@@ -166,6 +184,7 @@ public struct DiagnosticWorkbenchView: View {
                 ForEach(model.rows) { row in LabeledContent(row.title) { Text(display(row)).textSelection(.enabled) } }
                 if model.tool == .wifi { Text(workbenchText("未取得的信息显示为 —。","Unavailable information is shown as —.",locale)).font(.caption).foregroundStyle(.secondary) }
             }
+            if let history { history }
         }.navigationTitle(title)
     }
     private func failureMessage(_ error: DiagnosticError) -> String {

@@ -8,9 +8,9 @@ extension MeetingProjectSession {
         let internalSessions = Set(liveTranscription?.chunks.compactMap(\.analysisSessionID) ?? [])
         return recordings.filter { !internalSessions.contains($0.id) }
     }
-    func configureLiveTranscription() {
+    func configureLiveTranscription(resumeUnfinished: Bool = false) {
         liveTranscription?.configure(enabled: intelligence.liveTranscription != false,
-            serviceID: intelligence.transcriptionServiceID)
+            serviceID: intelligence.transcriptionServiceID, resumeUnfinished: resumeUnfinished)
     }
     func receiveCaptureEvent(_ event: CaptureEvent) async {
         switch event {
@@ -71,7 +71,7 @@ extension MeetingProjectSession {
         rollingSummaryTask?.cancel(); rollingSummaryTask = nil; isUpdatingMinutes = false
         summaryTimer?.cancel(); summaryTimer = nil
         if isRecording { await stopRecording() }
-        summaryTimer?.cancel(); summaryTimer = nil; liveTranscription?.cancel()
+        summaryTimer?.cancel(); summaryTimer = nil; await liveTranscription?.cancelAndWait()
     }
 }
 #endif

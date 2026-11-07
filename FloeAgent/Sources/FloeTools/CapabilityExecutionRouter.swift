@@ -106,6 +106,7 @@ public enum CapabilityExecutionRouter {
         ("cad.", .general, "native Rust/acadrust WASM CAD engine"),
         ("notes.", .general, "native Notes workspace"),
         ("studio.", .general, "native personal creation services"),
+        ("biology.", .general, "native biology services; scientific jobs use the task execution environment"),
         ("toolbox.", .general, "native task-bound communication service"),
         ("browser.", .general, "in-app native browser surface"),
         ("vnc.", .general, "native VNC client"),

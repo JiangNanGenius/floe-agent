@@ -31,6 +31,7 @@ struct PersonalContentEditor: View {
     @State private var importedCADRecord: PersonalContentRecord?
     @State private var chemistryNotesRequest: ChemistryNotesRequest?
     @State private var chemistryEpoch = UUID()
+    @StateObject private var biologyNotesReturn = BiologyNotesReturn()
 
     private struct ChemistryNotesRequest: Identifiable {
         let id = UUID()
@@ -48,6 +49,7 @@ struct PersonalContentEditor: View {
         case music(MusicProjectSession)
         case meeting(MeetingProjectSession)
         case chemistry(ChemistryProjectSession)
+        case biology(BiologyProjectSession)
         case text(PersonalTextDocument)
         case office(PersonalOfficeDocument)
         case media(URL)
@@ -80,7 +82,11 @@ struct PersonalContentEditor: View {
         .task { await load() }
         .interactiveDismissDisabled()
         .onChange(of: isPresented) { _, presented in
-            if !presented { fileUsage?.release(); fileUsage = nil }
+            if !presented {
+                biologyNotesReturn.cancel()
+                if case .biology(let session) = content { Task { await session.close() } }
+                fileUsage?.release(); fileUsage = nil
+            }
         }
         .onDisappear {
             // An internal full-screen preview still covers a presented editor.
@@ -98,12 +104,17 @@ struct PersonalContentEditor: View {
             Button(IDELanguageRunText.t("好", "OK")) { printPreparationError = nil }
         } message: { Text(printPreparationError ?? "") }
         .onChange(of: record.id) { _, _ in
+            biologyNotesReturn.cancel()
             showingAssistant = false
             printPreparation = nil; chemistryNotesRequest = nil; chemistryEpoch = UUID()
             cadImportRequest = nil; importedCADRecord = nil
         }
         .sheet(item: $chemistryNotesRequest, onDismiss: { refreshEditor() }) { request in
             NotesChemistryReturnSheet(recordID: request.recordID, projectID: request.projectID, objectID: request.objectID)
+        }
+        .sheet(item: Binding(get: { biologyNotesReturn.request }, set: { if $0 == nil { biologyNotesReturn.cancel() } }),
+               onDismiss: { biologyNotesReturn.cancel(); refreshEditor() }) { request in
+            BiologyNotesReturnSheet(request: request) { result in biologyNotesReturn.finish(id: request.id, result: result) }
         }
         .inspector(isPresented: Binding(get: { showingAssistant && record.kind != .meeting },
                                         set: { if record.kind != .meeting { showingAssistant = $0 } })) {
@@ -161,6 +172,10 @@ struct PersonalContentEditor: View {
                         MeetingProjectView(session: session, record: record, assistantRequested: $showingAssistant)
                     case .chemistry(let session):
                         chemistrySurface(session)
+                    case .biology(let session):
+                        BiologyEditorSurface(session: session, onInsertIntoNotes: { [returns = biologyNotesReturn] payload in
+                            try await returns.insert(payload, host: session.host)
+                        })
                     case .text(let document):
                         PersonalTextDocumentView(document: document)
                     case .office:
@@ -204,7 +219,7 @@ struct PersonalContentEditor: View {
                         }.accessibilityIdentifier("space.editor.openInCAD")
                     }
                 }
-                if content != nil {
+                if content != nil, record.kind != .biology {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button(record.kind == .meeting
                                ? IDELanguageRunText.t("会议助手", "Meeting assistant")
@@ -299,6 +314,10 @@ struct PersonalContentEditor: View {
                 let session = try await ChemistryProjectSession.open(id: record.id, directory: value.url, environment: environment)
                 guard chemistryEpoch == epoch else { throw CancellationError() }
                 content = .chemistry(session)
+            case .biology:
+                let host = try await environment.biologyComposition.host()
+                try BiologyOriginalBinding.verify(id: record.id, directory: value.url)
+                content = .biology(try await BiologyProjectSession.open(id: record.id, directory: value.url, host: host))
             case .meeting:
                 content = .meeting(try await MeetingProjectSession.open(id: record.id, directory: value.url.appendingPathComponent("Meeting"), environment: environment))
             default:
@@ -319,6 +338,7 @@ struct PersonalContentEditor: View {
             Task { await store.refreshFromHost() }
         case .meeting(let session): Task { await session.refresh() }
         case .chemistry(let session): Task { await session.refreshFromHost() }
+        case .biology(let session): Task { try? await session.refreshFromHost() }
         default: break // These process-owned sessions are already observed.
         }
     }
@@ -330,6 +350,9 @@ struct PersonalContentEditor: View {
         switch content {
         case .text(let document): guard await document.close() else { return }
         case .chemistry(let session): guard await session.flushForClose() else { return }
+        case .biology(let session):
+            guard await session.flushForClose() else { return }
+            await session.close()
         case .cad(let document):
             do { try await CADSimulationSessions.close(document:document) }
             catch { self.error = error.localizedDescription; return }

@@ -122,7 +122,13 @@ extension MeetingProjectSession {
     func updateIntelligence(_ change: (inout MeetingIntelligenceState) -> Void) {
         let previous = intelligence
         change(&intelligence)
-        do { try saveIntelligence(); configureLiveTranscription(); synchronizeSummaryTimer() }
+        do {
+            try saveIntelligence()
+            let resume = intelligence.liveTranscription != false &&
+                (previous.liveTranscription == false || previous.transcriptionServiceID != intelligence.transcriptionServiceID)
+            configureLiveTranscription(resumeUnfinished: resume)
+            synchronizeSummaryTimer()
+        }
         catch { intelligence = previous; diagnostic = error.localizedDescription }
     }
 

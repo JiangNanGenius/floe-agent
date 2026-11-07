@@ -17,6 +17,14 @@ import FloeCAD
 actor PersonalContentService {
     static let shared = PersonalContentService()
     private let storage: Result<PersonalContentLibrary, Error>
+    private var biologyHost: BiologyHostServices?
+
+    func configureBiology(_ host: BiologyHostServices) { biologyHost = host }
+
+    func configuredBiology() throws -> BiologyHostServices {
+        guard let biologyHost else { throw PersonalContentError.storageUnavailable }
+        return biologyHost
+    }
 
     init(root: URL? = nil) {
         storage = Result { PersonalContentLibrary(root: try root ?? PersonalContentLibrary.applicationRoot()) }
@@ -86,6 +94,10 @@ actor PersonalContentService {
                 _ = try await repository.save(document: document, expectedRevision: nil, fence: nil)
             case .chemistry:
                 try await ChemistryHostFactory.create(id: id, title: title, directory: directory)
+            case .biology:
+                let host = try await self.configuredBiology()
+                try await host.createReserved(id: id, title: title)
+                try BiologyOriginalBinding(projectID: id).write(to: directory)
             case .meeting:
                 let destination = directory.appendingPathComponent("Meeting")
                 try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
@@ -121,6 +133,10 @@ actor PersonalContentService {
             guard document.projectID == record.id else { throw PersonalContentError.invalidProject }
         case .chemistry:
             _ = try await ChemistryHostFactory.verifiedStore(id: record.id, directory: location.url)
+        case .biology:
+            try BiologyOriginalBinding.verify(id: record.id, directory: location.url)
+            let project = try await configuredBiology().store.load(record.id)
+            guard project.id == record.id else { throw PersonalContentError.invalidProject }
         case .meeting:
             let file = location.url.appendingPathComponent("Meeting/meeting.sqlite")
             guard FileManager.default.fileExists(atPath: file.path) else { throw PersonalContentError.invalidProject }
@@ -188,6 +204,7 @@ extension PersonalContentKind {
         case .music: IDELanguageRunText.t("音乐", "Music")
         case .meeting: IDELanguageRunText.t("会议", "Meeting")
         case .chemistry: IDELanguageRunText.t("化学工程", "Chemistry project")
+        case .biology: IDELanguageRunText.t("生物工程", "Biology project")
         case .cad2D: IDELanguageRunText.t("二维设计", "2D design")
         case .cad3D: IDELanguageRunText.t("三维设计", "3D design")
         case .printing: IDELanguageRunText.t("3D 打印", "3D printing")
@@ -205,6 +222,7 @@ extension PersonalContentKind {
         case .music: "pianokeys"
         case .meeting: "waveform.and.mic"
         case .chemistry: "atom"
+        case .biology: "microbe"
         case .cad2D: "ruler"
         case .cad3D: "cube.transparent"
         case .printing: "printer"
@@ -214,6 +232,6 @@ extension PersonalContentKind {
     }
     // Printing and machining are created from CAD's Manufacturing workspace.
     // Keep their record kinds readable for existing projects and results.
-    static var creationKinds: [Self] { [.canvas, .diagram, .music, .meeting, .chemistry, .document, .drawing, .image, .video, .cad2D, .cad3D] }
+    static var creationKinds: [Self] { [.canvas, .diagram, .music, .meeting, .chemistry, .biology, .document, .drawing, .image, .video, .cad2D, .cad3D] }
 }
 #endif

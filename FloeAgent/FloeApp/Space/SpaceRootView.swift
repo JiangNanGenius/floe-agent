@@ -37,6 +37,8 @@ struct SpaceRootView: View {
     @AppStorage("space.personalFiles.showGrid") private var showingGrid = false
     @State private var fileKind: PersonalFileFilter = .all
     @State private var sortByName = true
+    @State private var selection = PersonalLibrarySelectionModel()
+    @State private var confirmingBatchDelete = false
     @State private var fileActionRequest: PersonalFileActionRequest?
     @State private var fileActionEditor: PersonalContentRecord?
     @State private var shareArtifact: PersonalShareArtifact?
@@ -132,6 +134,7 @@ struct SpaceRootView: View {
         }
 #endif
         .onChange(of: section) { old, new in
+            selection.cancel()
             if pendingLibraryOpen?.section != new { pendingLibraryOpen = nil }
             if presentedLibraryOpen?.section != new { presentedLibraryOpen = nil }
             if old == .toolbox { environment.leaveToolboxSurface() }
@@ -140,8 +143,16 @@ struct SpaceRootView: View {
             }
         }
         .onChange(of: folders) { _, new in
+            // The directory scope changed; the previous selection can no
+            // longer describe the visible results.
+            selection.cancel()
             if pendingLibraryOpen?.folders != new { pendingLibraryOpen = nil }
             if presentedLibraryOpen?.folders != new { presentedLibraryOpen = nil }
+        }
+        .onChange(of: query) { _, _ in
+            // Search results replace the visible scope. Never carry a hidden
+            // selection into a new result set.
+            if selection.isSelecting { selection.cancel() }
         }
         .onReceive(environment.documentIntakeCenter.$noteOpenRequest) { request in
             if request?.sceneID == sceneID { section = .notes }
@@ -169,6 +180,18 @@ struct SpaceRootView: View {
             } message: { selection in
                 Text(selection.message)
             }
+        .confirmationDialog(IDELanguageRunText.t("将所选项目移到最近删除？", "Move the selected items to Recently Deleted?"),
+            isPresented: $confirmingBatchDelete,
+            titleVisibility: .visible) {
+            Button(IDELanguageRunText.t("删除", "Delete"), role: .destructive) {
+                confirmingBatchDelete = false
+                Task { await deleteSelection() }
+            }.accessibilityIdentifier("space.files.batchDelete.confirm")
+            Button(IDELanguageRunText.t("取消", "Cancel"), role: .cancel) { confirmingBatchDelete = false }
+        } message: {
+            Text(IDELanguageRunText.t("所选项目可以在“最近删除”中恢复；未能删除的项目会保留在列表中。",
+                "Selected items can be restored from Recently Deleted; items that cannot be deleted stay in the list."))
+        }
         .sheet(item: $fileActionRequest, onDismiss: {
             if let record = fileActionEditor { fileActionEditor = nil; presentWork(record) }
             Task { await refresh() }
@@ -227,7 +250,14 @@ struct SpaceRootView: View {
                     do {
                         let name = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !name.isEmpty, name.count <= 160 else { throw PersonalContentError.invalidName }
-                        try await PersonalContentService.shared.library().markChanged(value.id, title: name)
+                        if value.kind == .biology {
+                            let lifecycle = try await environment.biologyComposition.libraryLifecycle()
+                            try await PersonalLibraryFileActions.withBiologyLifecycle(projectID: value.id) { record, directory, library in
+                                try await lifecycle.renameUnderHeldBarrier(record: record, directory: directory, library: library, title: name)
+                            }
+                        } else {
+                            try await PersonalContentService.shared.library().markChanged(value.id, title: name)
+                        }
                         await refresh()
                     } catch { notice = error.localizedDescription }
                 }
@@ -327,10 +357,130 @@ struct SpaceRootView: View {
         .accessibilityIdentifier("space.library")
     }
 
+    /// Overview directory actions. Quick entries and workbench groups reuse the
+    /// same creation routes as the Files toolbar; nothing here moves originals
+    /// or turns the directory into content categories.
+    private enum OverviewQuickAction: Identifiable {
+        case newNote
+        case create(PersonalContentCreationRequest.Target)
+        var id: String {
+            switch self {
+            case .newNote: "newNote"
+            case .create(let target):
+                switch target {
+                case .work(let kind): "work." + kind.rawValue
+                case .document(let format): "document." + format.rawValue
+                }
+            }
+        }
+    }
+    private struct OverviewEntry: Identifiable {
+        let title: String
+        let systemImage: String
+        let action: OverviewQuickAction
+        var id: String { action.id }
+    }
+    private struct OverviewGroup: Identifiable {
+        let id: String
+        let title: String
+        let entries: [OverviewEntry]
+    }
+    private func overviewEntry(_ title: String, _ systemImage: String, _ action: OverviewQuickAction) -> OverviewEntry {
+        OverviewEntry(title: title, systemImage: systemImage, action: action)
+    }
+    private var overviewQuickEntries: [OverviewEntry] {
+        let kind = PersonalContentKind.self
+        return [
+            overviewEntry(IDELanguageRunText.t("手记", "Notes"), "book.pages", .newNote),
+            overviewEntry(PersonalOfficeFormat.word.title, PersonalOfficeFormat.word.systemImage, .create(.document(.word))),
+            overviewEntry(IDELanguageRunText.t("绘画／图片", "Drawing / image"), kind.drawing.systemImage, .create(.work(.drawing))),
+            overviewEntry(kind.video.title, kind.video.systemImage, .create(.work(.video))),
+            overviewEntry(kind.music.title, kind.music.systemImage, .create(.work(.music))),
+            overviewEntry(kind.cad2D.title, kind.cad2D.systemImage, .create(.work(.cad2D))),
+            overviewEntry(kind.cad3D.title, kind.cad3D.systemImage, .create(.work(.cad3D))),
+            overviewEntry(kind.chemistry.title, kind.chemistry.systemImage, .create(.work(.chemistry))),
+            overviewEntry(kind.diagram.title, kind.diagram.systemImage, .create(.work(.diagram)))
+        ]
+    }
+    /// Grouping mirrors the existing New menu's workbench relationships.
+    private var overviewGroups: [OverviewGroup] {
+        let kind = PersonalContentKind.self
+        return [
+            OverviewGroup(id: "documents", title: IDELanguageRunText.t("文档", "Documents"), entries: [
+                overviewEntry(PersonalOfficeFormat.word.title, PersonalOfficeFormat.word.systemImage, .create(.document(.word))),
+                overviewEntry(PersonalOfficeFormat.workbook.title, PersonalOfficeFormat.workbook.systemImage, .create(.document(.workbook))),
+                overviewEntry(PersonalOfficeFormat.presentation.title, PersonalOfficeFormat.presentation.systemImage, .create(.document(.presentation))),
+                overviewEntry(PersonalOfficeFormat.plainText.title, PersonalOfficeFormat.plainText.systemImage, .create(.document(.plainText)))
+            ]),
+            OverviewGroup(id: "media", title: IDELanguageRunText.t("绘画与媒体", "Drawing & media"), entries: [
+                overviewEntry(IDELanguageRunText.t("绘画／图片", "Drawing / image"), kind.drawing.systemImage, .create(.work(.drawing))),
+                overviewEntry(kind.video.title, kind.video.systemImage, .create(.work(.video))),
+                overviewEntry(kind.music.title, kind.music.systemImage, .create(.work(.music)))
+            ]),
+            OverviewGroup(id: "design", title: IDELanguageRunText.t("设计与工程", "Design & engineering"), entries: [
+                overviewEntry(kind.cad2D.title, kind.cad2D.systemImage, .create(.work(.cad2D))),
+                overviewEntry(kind.cad3D.title, kind.cad3D.systemImage, .create(.work(.cad3D))),
+                overviewEntry(kind.diagram.title, kind.diagram.systemImage, .create(.work(.diagram)))
+            ]),
+            OverviewGroup(id: "science", title: IDELanguageRunText.t("科学", "Science"), entries: [
+                overviewEntry(kind.chemistry.title, kind.chemistry.systemImage, .create(.work(.chemistry))),
+                overviewEntry(kind.biology.title, kind.biology.systemImage, .create(.work(.biology)))
+            ]),
+            OverviewGroup(id: "collaboration", title: IDELanguageRunText.t("协作", "Collaboration"), entries: [
+                overviewEntry(IDELanguageRunText.t("手记", "Notes"), "book.pages", .newNote)
+            ])
+        ]
+    }
+    private func runOverviewEntry(_ action: OverviewQuickAction) {
+        searchFocused = false
+        switch action {
+        case .newNote:
+            newTitle = IDELanguageRunText.t("未命名手记", "Untitled note"); newNote = true
+        case .create(let target):
+            requestCreation(target)
+        }
+    }
+    private func overviewQuickEntryButton(_ entry: OverviewEntry) -> some View {
+        Button { runOverviewEntry(entry.action) } label: {
+            VStack(spacing: 6) {
+                Image(systemName: entry.systemImage).font(.title2).foregroundStyle(.tint)
+                    .frame(width: 52, height: 52)
+                    .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 12))
+                Text(entry.title).font(.caption).foregroundStyle(.primary).lineLimit(1)
+            }.frame(width: 76)
+        }.buttonStyle(.plain)
+        .accessibilityIdentifier("space.quick." + entry.id)
+    }
+    private func overviewGroupCard(_ group: OverviewGroup) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(group.title).font(.headline).padding(.bottom, 4)
+            ForEach(group.entries) { entry in
+                Button { runOverviewEntry(entry.action) } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: entry.systemImage).foregroundStyle(.tint).frame(width: 24)
+                        Text(entry.title).foregroundStyle(.primary).lineLimit(1)
+                        Spacer(minLength: 4)
+                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                    }.frame(maxWidth: .infinity, minHeight: 40).contentShape(.rect)
+                }.buttonStyle(.plain)
+                .accessibilityIdentifier("space.group." + group.id + "." + entry.id)
+            }
+        }.padding(14)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 12))
+    }
+
     private func overview(wide: Bool) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 28) {
                 if busy { ProgressView(IDELanguageRunText.t("正在保存", "Saving")) }
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(IDELanguageRunText.t("常用入口", "Quick access")).font(.title3.weight(.semibold))
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(overviewQuickEntries) { overviewQuickEntryButton($0) }
+                        }.padding(.horizontal, 2)
+                    }
+                }.accessibilityIdentifier("space.quickEntries")
                 let pinned = matchingRecords.filter(\.isPinned)
                 let favoriteNotes = notes.filter {
                     $0.isFavorite && (query.isEmpty || $0.title.localizedStandardContains(query))
@@ -344,6 +494,16 @@ struct SpaceRootView: View {
                         }
                     }.accessibilityIdentifier("space.pinned")
                 }
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(IDELanguageRunText.t("工作台", "Workbenches")).font(.title3.weight(.semibold))
+                    if wide {
+                        LazyVGrid(columns: [.init(.flexible(), alignment: .top), .init(.flexible(), alignment: .top)], alignment: .leading, spacing: 14) {
+                            ForEach(overviewGroups) { overviewGroupCard($0) }
+                        }
+                    } else {
+                        ForEach(overviewGroups) { overviewGroupCard($0) }
+                    }
+                }.accessibilityIdentifier("space.workbenches")
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text(IDELanguageRunText.t("继续使用", "Continue working")).font(.title3.weight(.semibold))
@@ -412,23 +572,35 @@ struct SpaceRootView: View {
 
     private func folderRow(_ folder: PersonalLibraryFolder) -> some View {
         HStack(spacing: 8) {
-            Button { folders = folder.components; Task { await refresh() } } label: {
+            Button {
+                if filesSelecting { selection.toggle(.folder(folder)) }
+                else { folders = folder.components; Task { await refresh() } }
+            } label: {
                 HStack(spacing: 12) {
+                    if filesSelecting { selectionCheckmark(for: .folder(folder)) }
                     Image(systemName: "folder.fill").foregroundStyle(.tint)
                     Text(folder.name).foregroundStyle(.primary).lineLimit(1)
                     Spacer(minLength: 8)
-                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                    if !filesSelecting { Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary) }
                 }.frame(maxWidth: .infinity, minHeight: 44).contentShape(.rect)
             }.buttonStyle(.plain).accessibilityIdentifier("space.folder." + folder.name)
-            Menu {
-                folderActions(folder)
-            } label: {
-                Image(systemName: "ellipsis").frame(width: 44, height: 44).contentShape(.rect)
-            }.buttonStyle(.borderless).accessibilityLabel(IDELanguageRunText.t("文件夹操作", "Folder actions"))
-                .accessibilityIdentifier("space.folder.menu." + folder.relativePath)
+            if !filesSelecting {
+                Menu {
+                    folderActions(folder)
+                } label: {
+                    Image(systemName: "ellipsis").frame(width: 44, height: 44).contentShape(.rect)
+                }.buttonStyle(.borderless).accessibilityLabel(IDELanguageRunText.t("文件夹操作", "Folder actions"))
+                    .accessibilityIdentifier("space.folder.menu." + folder.relativePath)
+            }
         }.contextMenu { folderActions(folder) }
     }
     @ViewBuilder private func folderActions(_ folder: PersonalLibraryFolder) -> some View {
+        if section == .files {
+            Button(IDELanguageRunText.t("选择", "Select"), systemImage: "checkmark.circle") {
+                searchFocused = false
+                selection.begin(with: .folder(folder))
+            }.disabled(busy).accessibilityIdentifier("space.folder.select")
+        }
         Button(role: .destructive) { deletion = .folder(folder) } label: {
             Label(IDELanguageRunText.t("删除", "Delete"), systemImage: "trash")
         }.disabled(busy).accessibilityIdentifier("space.folder.delete")
@@ -464,8 +636,35 @@ struct SpaceRootView: View {
         .accessibilityIdentifier("space.folderPath")
     }
 
+    /// The visible rows of the Files page define the whole selection scope:
+    /// folders only appear outside search with the type filter on, and the
+    /// works are the current directory contents or the current search hits.
+    private var visibleSelectionItems: [PersonalLibrarySelectionItem] {
+        guard section == .files else { return [] }
+        let folderItems = query.isEmpty && fileKind == .all
+            ? childFolders.map(PersonalLibrarySelectionItem.folder) : []
+        return folderItems + matchingRecords.map(PersonalLibrarySelectionItem.work)
+    }
+
+    @ViewBuilder private var selectionToolbarContent: some View {
+        Button(IDELanguageRunText.t("全选", "Select All")) { selection.selectAll(visibleSelectionItems) }
+            .disabled(busy).accessibilityIdentifier("space.files.selectAll")
+        Text("\(selection.effectiveSelection().count)")
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("space.files.selectionCount")
+        Button(IDELanguageRunText.t("取消", "Cancel")) { selection.cancel() }
+            .disabled(busy).accessibilityIdentifier("space.files.cancelSelection")
+        Button(IDELanguageRunText.t("删除", "Delete"), role: .destructive) {
+            confirmingBatchDelete = true
+        }.disabled(busy || selection.effectiveSelection().isEmpty)
+            .accessibilityIdentifier("space.files.batchDelete")
+    }
+
     @ToolbarContentBuilder private var libraryToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
+            if section == .files, selection.isSelecting {
+                selectionToolbarContent
+            } else {
             if section == .files { Menu {
                 Picker(IDELanguageRunText.t("显示方式", "View"), selection: $showingGrid) {
                     Label(IDELanguageRunText.t("缩略图", "Thumbnails"), systemImage: "square.grid.2x2").tag(true)
@@ -521,14 +720,19 @@ struct SpaceRootView: View {
                 Button(PersonalContentKind.chemistry.title, systemImage: PersonalContentKind.chemistry.systemImage) {
                     requestCreation(.work(.chemistry))
                 }
+                Button(PersonalContentKind.biology.title, systemImage: PersonalContentKind.biology.systemImage) {
+                    requestCreation(.work(.biology))
+                }.accessibilityIdentifier("space.create.biology")
                 Button(IDELanguageRunText.t("手记", "Notes"), systemImage: "book.pages") {
                     newTitle = IDELanguageRunText.t("未命名手记", "Untitled note"); newNote = true
                 }
             } label: { Label(IDELanguageRunText.t("新建", "New"), systemImage: "plus") }
             .accessibilityIdentifier("space.new")
-            Button(IDELanguageRunText.t("导入", "Import"), systemImage: "square.and.arrow.down") { importing = true }
-                .accessibilityIdentifier("space.import")
             Menu {
+                // Import lives here (not as a standalone arrow) and keeps the
+                // existing flow: one original copied into the current folder.
+                Button(IDELanguageRunText.t("导入…", "Import…"), systemImage: "square.and.arrow.down") { importing = true }
+                    .accessibilityIdentifier("space.import")
                 Button(IDELanguageRunText.t("最近删除", "Recently Deleted"), systemImage: "trash") { showingRecentlyDeleted = true }
                     .accessibilityIdentifier("space.files.recentlyDeleted")
                 Divider()
@@ -543,13 +747,27 @@ struct SpaceRootView: View {
                 } label: { Label(IDELanguageRunText.t("归档聊天文件", "Archived chat files"), systemImage: "archivebox") }
             } label: { Label(IDELanguageRunText.t("更多", "More"), systemImage: "ellipsis") }
                 .accessibilityIdentifier("space.more")
+            }
         }
+    }
+
+    private var filesSelecting: Bool { section == .files && selection.isSelecting }
+
+    private func selectionCheckmark(for item: PersonalLibrarySelectionItem) -> some View {
+        let checked = selection.isSelected(item)
+        return Image(systemName: checked ? "checkmark.circle.fill" : "circle")
+            .imageScale(.large)
+            .foregroundStyle(checked ? Color.accentColor : Color.secondary)
+            .accessibilityLabel(checked ? IDELanguageRunText.t("已选中", "Selected") : IDELanguageRunText.t("未选中", "Not selected"))
     }
 
     private func workRow(_ record: PersonalContentRecord, wide: Bool, openedAt: Date? = nil) -> some View {
         HStack(spacing: 12) {
-            Button { presentWork(record) } label: {
+            Button {
+                if filesSelecting { selection.toggle(.work(record)) } else { presentWork(record) }
+            } label: {
                 HStack(spacing: 12) {
+                    if filesSelecting { selectionCheckmark(for: .work(record)) }
                     Image(systemName: record.kind.systemImage).font(.body).frame(width: 28).foregroundStyle(.tint)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(record.title).foregroundStyle(.primary).lineLimit(1)
@@ -579,7 +797,7 @@ struct SpaceRootView: View {
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 .contentShape(.rect)
             }.buttonStyle(.plain)
-            fileMenu(record)
+            if !filesSelecting { fileMenu(record) }
         }
         .listRowInsets(.init(top: 0, leading: 16, bottom: 0, trailing: 16))
         .contextMenu { workActions(record) }
@@ -588,11 +806,18 @@ struct SpaceRootView: View {
 
     private func workCard(_ record: PersonalContentRecord) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Button { presentWork(record) } label: {
+            Button {
+                if filesSelecting { selection.toggle(.work(record)) } else { presentWork(record) }
+            } label: {
                 PersonalLibraryCover(record: record).frame(height: 104)
+                    .overlay(alignment: .bottomTrailing) {
+                        if filesSelecting { selectionCheckmark(for: .work(record)).padding(8) }
+                    }
             }.buttonStyle(.plain)
             HStack(alignment: .top, spacing: 6) {
-                Button { presentWork(record) } label: {
+                Button {
+                    if filesSelecting { selection.toggle(.work(record)) } else { presentWork(record) }
+                } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(record.title).font(.callout.weight(.medium)).foregroundStyle(.primary).lineLimit(2)
                         Text(record.kind.title).font(.caption).foregroundStyle(.secondary)
@@ -600,7 +825,7 @@ struct SpaceRootView: View {
                 }.buttonStyle(.plain)
                 if record.isPinned { Image(systemName: "pin.fill").font(.caption).foregroundStyle(.secondary) }
                 if record.needsRecovery { Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange) }
-                fileMenu(record)
+                if !filesSelecting { fileMenu(record) }
             }
         }.frame(maxWidth: .infinity, alignment: .leading).contextMenu { workActions(record) }
     }
@@ -612,6 +837,12 @@ struct SpaceRootView: View {
     }
 
     @ViewBuilder private func workActions(_ record: PersonalContentRecord) -> some View {
+            if section == .files {
+                Button(IDELanguageRunText.t("选择", "Select"), systemImage: "checkmark.circle") {
+                    searchFocused = false
+                    selection.begin(with: .work(record))
+                }.disabled(busy).accessibilityIdentifier("space.files.select")
+            }
             Button(IDELanguageRunText.t("移动", "Move"), systemImage: "folder") {
                 fileActionRequest = .init(record: record, action: .move)
             }.disabled(busy).accessibilityIdentifier("space.files.move")
@@ -734,6 +965,27 @@ struct SpaceRootView: View {
             await refresh()
         } catch { notice = error.localizedDescription }
     }
+    /// Batch delete keeps every guard of the single-item operations. Partial
+    /// failure is reported with the survivors still listed; cancel never
+    /// drops an original before its own deletion ran.
+    @MainActor private func deleteSelection() async {
+        guard !busy else { return }
+        let items = selection.effectiveSelection()
+        guard !items.isEmpty else { selection.cancel(); return }
+        let sourceFolders = folders, sourceQuery = query, sourceKind = fileKind
+        busy = true; defer { busy = false }
+        let result = await PersonalLibraryFileActions.deleteBatch(items, environment: environment)
+        selection.cancel()
+        await refresh()
+        if !result.failed.isEmpty {
+            if section == .files, folders == sourceFolders, query == sourceQuery, fileKind == sourceKind {
+                let failedIDs = Set(result.failed.map { $0.item.id })
+                selection.begin()
+                selection.selectAll(visibleSelectionItems.filter { failedIDs.contains($0.id) })
+            }
+            notice = result.summary + "\n" + result.failureDetail
+        }
+    }
     @MainActor private func requestCreation(_ target: PersonalContentCreationRequest.Target) {
         searchFocused = false
         createdAfterNaming = nil
@@ -757,40 +1009,6 @@ struct SpaceRootView: View {
             folders = destination; section = .files
             await refresh()
         } catch { notice = error.localizedDescription }
-    }
-}
-
-/// Shows original text when available; unsaved or binary works retain a plain
-/// type cover rather than fabricated artwork or a screenshot of another file.
-private struct PersonalLibraryCover: View {
-    let record: PersonalContentRecord
-    @State private var excerpt: String?
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 10).fill(Color(uiColor: .secondarySystemGroupedBackground))
-            if let excerpt, !excerpt.isEmpty {
-                Text(excerpt).font(.system(size: 11)).foregroundStyle(.secondary)
-                    .multilineTextAlignment(.leading).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(15)
-            } else {
-                Image(systemName: record.kind.systemImage).font(.system(size: 36, weight: .light))
-                    .foregroundStyle(.tint).frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }.frame(maxWidth: .infinity).clipShape(.rect(cornerRadius: 10))
-            .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(Color.primary.opacity(0.09), lineWidth: 1) }
-            .accessibilityHidden(true)
-            .task(id: record.modifiedAt) {
-                excerpt = nil
-                guard record.kind == .document,
-                      let url = try? await PersonalContentService.shared.originalFile(record.id),
-                      ["txt", "md", "markdown", "csv", "json"].contains(url.pathExtension.lowercased()) else { return }
-                let text = await Task.detached(priority: .utility) {
-                    guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-                          size <= 128 * 1024, let data = try? Data(contentsOf: url) else { return String?.none }
-                    return String(data: data, encoding: .utf8).map { String($0.prefix(1400)) }
-                }.value
-                guard !Task.isCancelled else { return }
-                excerpt = text
-            }
     }
 }
 #endif

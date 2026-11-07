@@ -21,7 +21,7 @@ public struct EngineeringWorkbenchView:View {
     private let embedded:Bool
     @State private var didLoadInitialFile = false
     @State private var lastInitialFile:URL?
-    public init(directory:URL,initialFile:URL? = nil,embedded:Bool = false) { self.initialFile = initialFile;self.embedded = embedded;_model = State(initialValue:EngineeringWorkbenchModel(directory:directory)) }
+    public init(directory:URL,initialFile:URL? = nil,embedded:Bool = false,sessions:ManufacturingResearchSessions? = nil) { self.initialFile = initialFile;self.embedded = embedded;_model = State(initialValue:sessions?.engineering() ?? EngineeringWorkbenchModel(directory:directory)) }
     public var body:some View {
         Group {
             if embedded { workbenchContent }
@@ -71,7 +71,7 @@ public struct EngineeringWorkbenchView:View {
             .navigationTitle(L("材料与工程分析","Materials and engineering analysis"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement:.confirmationAction) { Button(L("完成","Done")) { model.cancel();dismiss() }.accessibilityIdentifier("engineering.done") }
+                ToolbarItem(placement:.confirmationAction) { Button(L("完成","Done")) { dismiss() }.accessibilityIdentifier("engineering.done") }
                 ToolbarItemGroup(placement:.primaryAction) {
                     if model.busy { Button(L("取消","Cancel")) { model.cancel() } }
                     else { Button(L("计算","Calculate")) { model.calculate();tab = 1 }.accessibilityIdentifier("engineering.solve") }
@@ -105,7 +105,7 @@ public struct EngineeringWorkbenchView:View {
         .onPreferenceChange(EngineeringInputSourcesKey.self) { sources in
             if editingInputSources != sources { editingInputSources = sources }
         }
-        .onDisappear { if setupSheet == nil && !importing { model.cancel() } }
+        // The parent service owns accepted calculations; disappearing is not Cancel.
     }
     private func refreshSavedResultPresence() {
         let values = try? model.directory.appendingPathComponent("latest.floeanalysis").resourceValues(forKeys:[.isRegularFileKey,.isSymbolicLinkKey,.fileSizeKey])

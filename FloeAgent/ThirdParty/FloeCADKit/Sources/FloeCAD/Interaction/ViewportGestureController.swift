@@ -3,32 +3,69 @@
 //  openshape3d
 //
 //  Owns all viewport gesture recognizers and routes them. Navigation rules
-//  (Shapr3D conventions):
+//  (Shapr3D conventions, unified input rule plan N11):
 //  - Two-finger pan and pinch ALWAYS navigate, in every mode.
-//  - One-finger (finger, not Pencil) drag: mode-dependent; orbit by default.
-//  - Pencil never orbits — it draws (sketch mode) or precision-selects.
-//    Pencil drags reach the delegate (sketch strokes, pulls); if unclaimed
-//    they do nothing rather than falling back to orbit.
+//  - One-finger drag (finger, not Pencil): mode-dependent; orbit by default,
+//    edit only while the explicit finger-drawing switch is on.
+//  - Pencil and mouse/trackpad pointer edit with the selected tool (sketch
+//    strokes, pulls); unclaimed Pencil drags do nothing rather than orbiting,
+//    while an unclaimed pointer drag orbits like a finger.
 //
 
 import Foundation
 import UIKit
 import MetalKit
 
+/// The physical source of a viewport drag (plan N11). The old `isPencil`
+/// bool could not express the three-way split the unified input rule needs:
+/// Apple Pencil and mouse/trackpad pointers edit with the selected tool,
+/// while a finger navigates unless the explicit finger-drawing switch is on.
+/// Classified once from `UITouch.type` at touch-down and carried unchanged
+/// through the whole delivery path. SDK (UIKit UITouch.h): `indirect` is an
+/// indirect touch not on a screen (a trackpad surface drag); `indirectPointer`
+/// (iOS 13.4+) is a button-based indirect device such as a mouse.
+enum CADViewportInputSource: Equatable {
+    case pencil
+    case finger
+    /// Mouse or trackpad — a precision pointer, not a finger.
+    case pointer
+
+    init(_ touchType: UITouch.TouchType) {
+        switch touchType {
+        case .pencil: self = .pencil
+        case .indirect, .indirectPointer: self = .pointer
+        default: self = .finger
+        }
+    }
+    func editsDrawing(fingerDrawingEnabled: Bool) -> Bool {
+        self != .finger || fingerDrawingEnabled
+    }
+}
+
 @MainActor
 protocol ViewportGestureDelegate: AnyObject {
     func gestureTapped(at point: CGPoint)
+    /// Physical-source-aware tap. Legacy/synthetic delegate entry remains available.
+    func gestureTapped(at point: CGPoint, source: CADViewportInputSource)
     func gestureDoubleTapped(at point: CGPoint)
     /// Offered the one-finger drag at `.began`. Return true to claim it
     /// (gizmo drag, sketch stroke); false lets the camera orbit. `isPencil`
     /// distinguishes an Apple Pencil stroke from a finger so sketch mode can
     /// route drawing to the Pencil and navigation to the finger (Shapr3D).
+    /// Kept for existing conformers — new code should use the `source` variant
+    /// below, which also recognises mouse/trackpad pointers.
     func gestureDragBegan(at point: CGPoint, isPencil: Bool) -> Bool
+    /// Source-aware drag offer (plan N11): Pencil and pointer edit with the
+    /// selected tool; a finger edits only while the explicit finger-drawing
+    /// switch is on and otherwise navigates.
+    func gestureDragBegan(at point: CGPoint, source: CADViewportInputSource) -> Bool
     func gestureDragChanged(at point: CGPoint)
     func gestureDragEnded(at point: CGPoint)
     func gestureDragCancelled(at point: CGPoint)
     func gestureDragBegan(at point: CGPoint, isPencil: Bool, gestureID: UUID) -> Bool
+    func gestureDragBegan(at point: CGPoint, source: CADViewportInputSource, gestureID: UUID) -> Bool
     func gestureDragBegan(at point:CGPoint,isPencil:Bool,pressure:Double,gestureID:UUID) -> Bool
+    func gestureDragBegan(at point:CGPoint,source:CADViewportInputSource,pressure:Double,gestureID:UUID) -> Bool
     func gestureDragPressureChanged(_ pressure:Double,gestureID:UUID)
     func gestureDragChanged(at point: CGPoint, gestureID: UUID)
     func gestureDragEnded(at point: CGPoint, gestureID: UUID)
@@ -44,11 +81,23 @@ protocol ViewportGestureDelegate: AnyObject {
 }
 
 extension ViewportGestureDelegate {
+    func gestureTapped(at point: CGPoint, source: CADViewportInputSource) { gestureTapped(at: point) }
     func gestureDragBegan(at point:CGPoint,isPencil:Bool,pressure:Double,gestureID:UUID) -> Bool { gestureDragBegan(at:point,isPencil:isPencil,gestureID:gestureID) }
+    func gestureDragBegan(at point: CGPoint, source: CADViewportInputSource, pressure: Double, gestureID: UUID) -> Bool {
+        gestureDragBegan(at: point, isPencil: source == .pencil, pressure: pressure, gestureID: gestureID)
+    }
     func gestureDragPressureChanged(_ pressure:Double,gestureID:UUID) {}
     func gestureDragCancelled(at point: CGPoint) { gestureDragEnded(at: point) }
     func gestureDragBegan(at point: CGPoint, isPencil: Bool, gestureID: UUID) -> Bool {
         gestureDragBegan(at: point, isPencil: isPencil)
+    }
+    func gestureDragBegan(at point: CGPoint, source: CADViewportInputSource, gestureID: UUID) -> Bool {
+        gestureDragBegan(at: point, isPencil: source == .pencil, gestureID: gestureID)
+    }
+    // Legacy bool entry maps onto the unified source: only the Pencil was
+    // ever distinguishable here, so a non-Pencil legacy caller meant finger.
+    func gestureDragBegan(at point: CGPoint, source: CADViewportInputSource) -> Bool {
+        gestureDragBegan(at: point, isPencil: source == .pencil)
     }
     func gestureDragChanged(at point: CGPoint, gestureID: UUID) { gestureDragChanged(at: point) }
     func gestureDragEnded(at point: CGPoint, gestureID: UUID) { gestureDragEnded(at: point) }
@@ -72,6 +121,7 @@ final class ViewportGestureController: NSObject {
     weak var view: MTKView?
     weak var renderer: Renderer?
     weak var delegate: ViewportGestureDelegate?
+    var planarNavigation = false
 
     /// Fired whenever a navigation gesture moved the camera (orbit/pan/zoom).
     var cameraChanged: (() -> Void)?
@@ -79,8 +129,12 @@ final class ViewportGestureController: NSObject {
     private var lastPanLocation: CGPoint = .zero
     private var lastTwoFingerLocation: CGPoint = .zero
     private weak var orbitRecognizer: UIPanGestureRecognizer?
-    /// Set in shouldReceive: the one-finger drag is being driven by the Pencil.
-    private var orbitTouchIsPencil = false
+    private weak var tapRecognizer: UITapGestureRecognizer?
+    private var tapTouchSource: CADViewportInputSource = .finger
+    /// Set in shouldReceive: the physical source of the one-finger drag,
+    /// classified from `UITouch.type` at touch-down and carried unchanged
+    /// through delivery (plan N11).
+    private var orbitTouchSource: CADViewportInputSource = .finger
     /// Where the one-finger touch actually LANDED, captured in shouldReceive
     /// before the pan recognizer has moved its threshold. See `handleOrbit`.
     private var orbitTouchDown: CGPoint?
@@ -99,7 +153,8 @@ final class ViewportGestureController: NSObject {
         interactiveDepth = 0
         orbitTouchDown = nil
         orbitTouchDownPressure=nil
-        orbitTouchIsPencil = false
+        orbitTouchSource = .finger
+        tapTouchSource = .finger
         ownedRecognizers.removeAll()
         pencilInteraction = nil
         self.view = view
@@ -108,9 +163,16 @@ final class ViewportGestureController: NSObject {
         let orbit = ViewportPressurePan(target: self, action: #selector(handleOrbit(_:)))
         orbit.minimumNumberOfTouches = 1
         orbit.maximumNumberOfTouches = 1
+        // direct = finger, pencil = Apple Pencil, indirect = trackpad surface
+        // drag, indirectPointer = mouse (UIKit UITouch.h). Without the two
+        // indirect types a mouse/trackpad click-drag never reached the
+        // viewport at all — the unified input rule (plan N11) requires the
+        // pointer to edit with the selected tool exactly like the Pencil.
         orbit.allowedTouchTypes = [
             NSNumber(value: UITouch.TouchType.direct.rawValue),
             NSNumber(value: UITouch.TouchType.pencil.rawValue),
+            NSNumber(value: UITouch.TouchType.indirect.rawValue),
+            NSNumber(value: UITouch.TouchType.indirectPointer.rawValue),
         ]
         orbit.delegate = self
         orbitRecognizer = orbit
@@ -131,6 +193,10 @@ final class ViewportGestureController: NSObject {
         view.addGestureRecognizer(doubleTap)
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        tap.allowedTouchTypes = [UITouch.TouchType.direct, .pencil, .indirect, .indirectPointer]
+            .map { NSNumber(value: $0.rawValue) }
+        tap.delegate = self
+        tapRecognizer = tap
         tap.require(toFail: doubleTap)
         view.addGestureRecognizer(tap)
 
@@ -192,12 +258,18 @@ final class ViewportGestureController: NSObject {
     /// The actual recognizer and component input tests share this delivery
     /// path. Every delivery carries the identity acquired at touch begin.
     @discardableResult
-    func claimDrag(at point: CGPoint, isPencil: Bool,pressure:Double=1) -> Bool {
+    func claimDrag(at point: CGPoint, source: CADViewportInputSource, pressure: Double = 1) -> Bool {
         if claimedDragID != nil { finishClaimedDrag(at: point, cancelled: true) }
         let id = UUID()
-        guard delegate?.gestureDragBegan(at: point, isPencil: isPencil,pressure:pressure, gestureID: id) == true else { return false }
+        guard delegate?.gestureDragBegan(at: point, source: source, pressure: pressure, gestureID: id) == true else { return false }
         claimedDragID = id
         return true
+    }
+    /// Legacy bool entry kept for existing component tests; a non-Pencil
+    /// legacy drag meant a finger.
+    @discardableResult
+    func claimDrag(at point: CGPoint, isPencil: Bool, pressure: Double = 1) -> Bool {
+        claimDrag(at: point, source: isPencil ? .pencil : .finger, pressure: pressure)
     }
     func changeClaimedDrag(at point: CGPoint,pressure:Double=1) {
         if let id = claimedDragID { delegate?.gestureDragPressureChanged(pressure,gestureID:id);delegate?.gestureDragChanged(at: point, gestureID: id) }
@@ -233,9 +305,10 @@ final class ViewportGestureController: NSObject {
             let start = orbitTouchDown
                 ?? CGPoint(x: location.x - translation.x, y: location.y - translation.y)
             let startPressure=orbitTouchDownPressure ?? (gesture as? ViewportPressurePan)?.normalizedPressure ?? 1
+            let startSource = orbitTouchSource
             orbitTouchDown = nil;orbitTouchDownPressure=nil
             lastPanLocation = start
-            claimDrag(at: start, isPencil: orbitTouchIsPencil,pressure:startPressure)
+            claimDrag(at: start, source: startSource, pressure: startPressure)
             if dragClaimed, start != location {
                 changeClaimedDrag(at: location,pressure:(gesture as? ViewportPressurePan)?.normalizedPressure ?? 1)
                 redraw()
@@ -244,16 +317,19 @@ final class ViewportGestureController: NSObject {
             if dragClaimed {
                 changeClaimedDrag(at: location,pressure:(gesture as? ViewportPressurePan)?.normalizedPressure ?? 1)
                 redraw()
-            } else if orbitTouchIsPencil {
+            } else if orbitTouchSource == .pencil {
                 // Pencil never orbits (spec §7.1) — unclaimed pencil drags
                 // are dropped instead of moving the camera.
             } else {
+                // Unclaimed finger AND mouse/trackpad pointer drags orbit.
+                // Claimed pointer drags already edit with the selected tool
+                // (plan N11); navigation remains the default for empty space.
                 let delta = CGSize(
                     width: location.x - lastPanLocation.x,
                     height: location.y - lastPanLocation.y
                 )
                 lastPanLocation = location
-                renderer.camera.orbit(deltaPixels: delta, viewportSize: view.bounds.size)
+                renderer.camera.navigateDrag(deltaPixels: delta, viewportSize: view.bounds.size, planar: planarNavigation)
                 redraw()
                 cameraChanged?()
             }
@@ -310,7 +386,12 @@ final class ViewportGestureController: NSObject {
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         guard let view else { return }
-        delegate?.gestureTapped(at: gesture.location(in: view))
+        deliverTap(at: gesture.location(in: view), source: tapTouchSource)
+    }
+
+    /// One dispatch path for the recognizer's already-classified physical source.
+    func deliverTap(at point: CGPoint, source: CADViewportInputSource) {
+        delegate?.gestureTapped(at: point, source: source)
     }
 
     @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
@@ -351,8 +432,11 @@ extension ViewportGestureController: UIGestureRecognizerDelegate {
     func gestureRecognizer(
         _ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch
     ) -> Bool {
+        if gestureRecognizer === tapRecognizer {
+            tapTouchSource = CADViewportInputSource(touch.type)
+        }
         if gestureRecognizer === orbitRecognizer {
-            orbitTouchIsPencil = touch.type == .pencil
+            orbitTouchSource = CADViewportInputSource(touch.type)
             orbitTouchDownPressure=touch.type == .pencil && touch.maximumPossibleForce>0
                 ? min(1,max(0,Double(touch.force/touch.maximumPossibleForce))):1
             if let view { orbitTouchDown = touch.location(in: view) }

@@ -51,7 +51,8 @@ nonisolated enum NotesChemistryError: Error, LocalizedError {
     static func openWork(_ reference: NoteWorkReference) async throws -> PersonalContentRecord {
         try reference.validate()
         let location = try await PersonalContentService.shared.library().resolve(reference.workID)
-        guard location.record.kind.rawValue == reference.kind, reference.kind == "chemistry" else { throw NotesChemistryError.changed }
+        guard location.record.kind.rawValue == reference.kind,
+              ["chemistry", "biology"].contains(reference.kind) else { throw NotesChemistryError.changed }
         return location.record
     }
     static func canExportImage(_ object: ChemicalObject) -> Bool {

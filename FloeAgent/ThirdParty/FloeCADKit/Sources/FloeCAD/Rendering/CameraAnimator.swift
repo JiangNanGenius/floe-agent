@@ -39,6 +39,13 @@ final class CameraAnimator {
         self.view = view
     }
 
+    func setImmediately(to camera: TurntableCamera) {
+        displayLink?.invalidate(); displayLink = nil
+        start = nil; target = nil
+        renderer?.camera = camera
+        view?.setNeedsDisplay(); cameraChanged?()
+    }
+
     func animate(to camera: TurntableCamera, duration: CFTimeInterval = 0.35) {
         guard let renderer else { return }
         displayLink?.invalidate()

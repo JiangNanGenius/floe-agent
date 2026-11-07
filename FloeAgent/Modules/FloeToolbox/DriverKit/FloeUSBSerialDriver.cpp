@@ -4,7 +4,7 @@
 #include "../Sources/FloeToolboxUSBWire/include/FloeUSBWire.h"
 #include <DriverKit/OSData.h>
 #include <USBDriverKit/IOUSBHostDevice.h>
-#include <stdlib.h>
+#include <USBDriverKit/USBDriverKitDefs.h>
 #include <string.h>
 struct FloeUSBSerialDriver_IVars {
     FloeUSBSerialBackend *backend;
@@ -53,7 +53,9 @@ kern_return_t IMPL(FloeUSBSerialDriver,Start) {
             if (status==kIOReturnSuccess) { IOLockLock(ivars->lock); ivars->info=info; ivars->interface=interface; interface->retain(); ivars->active=true; IOLockUnlock(ivars->lock); }
         }
     }
-    if (deviceDescriptor) ::free((void *)deviceDescriptor); if (device) device->release(); if (configuration) ::free((void *)configuration);
+    if (deviceDescriptor) IOUSBHostFreeDescriptor(deviceDescriptor);
+    if (device) device->release();
+    if (configuration) IOUSBHostFreeDescriptor(configuration);
     if (status==kIOReturnSuccess) status=RegisterService();
     if (status!=kIOReturnSuccess) { ivars->backend->detach(); interface->Close(this,0); IOLockLock(ivars->lock); ivars->active=false; if (ivars->interface) { ivars->interface->release(); ivars->interface=nullptr; } IOLockUnlock(ivars->lock); }
     return status;

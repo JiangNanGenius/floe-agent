@@ -17,6 +17,15 @@ import UIKit
                     command(chemistryText("Undo", "撤销"),"arrow.uturn.backward",disabled:!session.canUndo) {session.undo()}.keyboardShortcut("z",modifiers:.command)
                     command(chemistryText("Redo", "重做"),"arrow.uturn.forward",disabled:!session.canRedo) {session.redo()}.keyboardShortcut("z",modifiers:[.command,.shift])
                     Divider().frame(height:24)
+                    Button { session.choose(.erase) } label: {
+                        Label(chemistryText("Eraser", "橡皮擦"),systemImage:"eraser")
+                            .padding(.horizontal,8).frame(minHeight:44)
+                            .background(session.tool == .erase ? Color.accentColor.opacity(0.15) : .clear,in:RoundedRectangle(cornerRadius:8))
+                    }.buttonStyle(.plain).disabled(!session.loaded).accessibilityIdentifier("chemistry.drawing.eraser")
+                    #if os(iOS)
+                    Toggle(chemistryText("Touch drawing", "触屏绘图"),isOn:Binding(get:{session.drawWithFinger},set:{session.drawWithFinger = $0}))
+                        .toggleStyle(.button).frame(minHeight:44).accessibilityIdentifier("chemistry.drawing.fingerDrawing")
+                    #endif
                     Menu {
                         ForEach(ChemicalBondStyle.allCases,id:\.self) { style in Button(style.title){session.bondStyle = style;session.choose(.bond)} }
                     } label: {Label(session.bondStyle.title,systemImage:"line.diagonal").frame(minHeight:44)}.padding(.horizontal,8)
@@ -34,9 +43,6 @@ import UIKit
                         .labelStyle(.iconOnly).help(chemistryText("Paste a structure", "粘贴结构"))
                         .disabled(!session.loaded)
                     Menu {
-                        #if os(iOS)
-                        Toggle(chemistryText("Draw with finger", "手指绘图"),isOn:Binding(get:{session.drawWithFinger},set:{session.drawWithFinger = $0}))
-                        #endif
                         Button(chemistryText("Clear drawing", "清空绘图"),role:.destructive){session.commit {$0 = try ChemicalDrawing2D()}}.disabled(!session.loaded)
                     } label:{Image(systemName:"ellipsis.circle").frame(width:44,height:44)}.accessibilityLabel(chemistryText("Drawing options", "绘图选项"))
                 }.font(.subheadline).padding(.horizontal,8)
@@ -73,8 +79,8 @@ import UIKit
                 Spacer()
                 if session.warning != nil {Button {showDetails = true} label:{Label(chemistryText("Details", "详情"),systemImage:"exclamationmark.triangle")}}
                 #if os(iOS)
-                Button(session.drawWithFinger ? chemistryText("Finger draws", "手指绘图") : chemistryText("Finger pans", "手指平移")) {session.drawWithFinger.toggle()}
-                    .buttonStyle(.plain).foregroundStyle(.secondary).frame(minHeight:44)
+                Text(session.drawWithFinger ? chemistryText("Finger draws", "手指绘图") : chemistryText("Finger pans", "手指平移"))
+                    .foregroundStyle(.secondary).frame(minHeight:44)
                 #endif
             }.font(.caption).padding(.horizontal,12).frame(minHeight:44)
         }
@@ -92,7 +98,7 @@ import UIKit
         VStack(spacing:0) {
             ScrollView(.vertical) {
                 LazyVGrid(columns:Array(repeating:GridItem(.fixed(44),spacing:2),count:columns),spacing:2) {
-                    ForEach([ChemicalDrawTool.bond,.atom,.select,.erase,.chargePlus,.chargeMinus,.arrow,.reactionPlus,.text],id:\.self) {tool in toolButton(tool)}
+                    ForEach([ChemicalDrawTool.bond,.atom,.select,.chargePlus,.chargeMinus,.arrow,.reactionPlus,.text],id:\.self) {tool in toolButton(tool)}
                 }.padding(4)
             }.scrollIndicatorsFlash(onAppear:true)
             Divider();toolButton(.pan).padding(.vertical,2)

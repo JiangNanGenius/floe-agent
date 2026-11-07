@@ -17,6 +17,12 @@ struct MeetingLiveChunk: Codable, Identifiable {
     var language: String?
     var serviceID: String?
     var error: String?
+    var busyRetries: Int?
+}
+
+struct MeetingChunkTranscript: Sendable {
+    let segments: [TimedSpeechSegment]
+    let language: String?
 }
 
 /// Disk-backed work queue owned by the meeting service/session, not a View.
@@ -25,19 +31,49 @@ struct MeetingLiveChunk: Codable, Identifiable {
     let meetingID: MeetingID
     let root: URL
     private let service: MeetingService
-    private let audio: AssistantAudioService
+    typealias TranscribeChunk = @MainActor @Sendable (URL, String?) async throws -> MeetingChunkTranscript
+    private let transcribeChunk: TranscribeChunk
+    private let retryDelay: @Sendable (Int) async throws -> Void
     private let onChange: @MainActor @Sendable () async -> Void
     private(set) var chunks: [MeetingLiveChunk] = []
     private(set) var isWorking = false
+    private(set) var waitingForService = false
+    private(set) var requiresRetry = false
+    private(set) var enabled = true
     var diagnostic: String?
     private var worker: Task<Void, Never>?
     private var generation = UUID()
     private var selectedServiceID: String?
-    private var enabled = true
 
-    init(meetingID: MeetingID, root: URL, service: MeetingService, audio: AssistantAudioService,
-         onChange: @escaping @MainActor @Sendable () async -> Void) throws {
-        self.meetingID = meetingID; self.root = root; self.service = service; self.audio = audio; self.onChange = onChange
+    convenience init(meetingID: MeetingID, root: URL, service: MeetingService, audio: AssistantAudioService,
+                     onChange: @escaping @MainActor @Sendable () async -> Void) throws {
+        try self.init(meetingID: meetingID, root: root, service: service, transcribeChunk: { file, serviceID in
+            await audio.refreshAvailability()
+            let route: String
+            if let serviceID, !serviceID.isEmpty { route = serviceID }
+            else {
+                guard audio.services.contains(where: { $0.id == AssistantAudioService.ID.transcriptionEnhanced && $0.ready }) else {
+                    throw MeetingError.captureBackendFailed(IDELanguageRunText.t("录音已保存。请在会议设置中选择转写服务，再重试未完成片段。", "The recording is saved. Choose a transcription service in meeting settings, then retry unfinished chunks."))
+                }
+                route = AssistantAudioService.ID.transcriptionEnhanced
+            }
+            do {
+                let result = try await audio.transcribe(fileURL: file, language: .automatic, serviceID: route, requiresTiming: true)
+                return MeetingChunkTranscript(segments: result.segments, language: result.language)
+            } catch AssistantAudioError.noSpeechRecognized {
+                // Silence is a completed observation, not a broken recording.
+                return MeetingChunkTranscript(segments: [], language: nil)
+            }
+        }, onChange: onChange)
+    }
+
+    init(meetingID: MeetingID, root: URL, service: MeetingService,
+         transcribeChunk: @escaping TranscribeChunk,
+         retryDelay: @escaping @Sendable (Int) async throws -> Void = { attempt in
+             try await Task.sleep(for: .seconds(1 << (attempt - 1)))
+         }, onChange: @escaping @MainActor @Sendable () async -> Void) throws {
+        self.meetingID = meetingID; self.root = root; self.service = service
+        self.transcribeChunk = transcribeChunk; self.retryDelay = retryDelay; self.onChange = onChange
         let file = root.appendingPathComponent("live-chunks.json")
         if FileManager.default.fileExists(atPath: file.path) {
             let data = try Data(contentsOf: file)
@@ -47,13 +83,19 @@ struct MeetingLiveChunk: Codable, Identifiable {
                 chunks[index].state = .unconfirmed
                 chunks[index].error = IDELanguageRunText.t("上次转写结果尚未确认，可检查后重试。", "The previous transcription is unconfirmed. Check it before retrying.")
             }
+            requiresRetry = chunks.contains { [.failed, .unconfirmed].contains($0.state) }
         }
     }
-    func configure(enabled: Bool, serviceID: String?) {
+    var pendingCount: Int { chunks.filter { [.pending, .transcribing, .decoded].contains($0.state) }.count }
+    var unfinishedCount: Int { chunks.filter { $0.state != .complete }.count }
+    var failedCount: Int { chunks.filter { [.failed, .unconfirmed].contains($0.state) }.count }
+
+    func configure(enabled: Bool, serviceID: String?, resumeUnfinished: Bool = false) {
         self.enabled = enabled; selectedServiceID = serviceID
         // Opening/reconstructing an editor only restores configuration.
         // New native chunks or an explicit Retry own execution intent.
         if !enabled { cancel() }
+        else if resumeUnfinished { retryUnfinished() }
     }
     func enqueue(session: CaptureSessionID, file: URL, range: MediaTimeRange) {
         do {
@@ -71,28 +113,40 @@ struct MeetingLiveChunk: Codable, Identifiable {
         chunks.first(where: { $0.analysisSessionID == analysis })?.originalSessionID
     }
     func retryUnfinished() {
+        guard worker == nil else { return }
         for index in chunks.indices where [.failed, .unconfirmed].contains(chunks[index].state) {
             chunks[index].state = chunks[index].decoded == nil ? .pending : .decoded
             chunks[index].error = nil
+            chunks[index].busyRetries = nil
         }
-        do { try save(); enabled = true; startWorker() } catch { diagnostic = error.localizedDescription }
+        do {
+            try save(); enabled = true; requiresRetry = false; diagnostic = nil; startWorker()
+        } catch { requiresRetry = true; diagnostic = error.localizedDescription }
     }
     func cancel() {
         enabled = false
-        generation = UUID(); worker?.cancel(); worker = nil; isWorking = false
+        generation = UUID(); worker?.cancel(); worker = nil; isWorking = false; waitingForService = false
         for index in chunks.indices where chunks[index].state == .transcribing {
             chunks[index].state = .unconfirmed
             chunks[index].error = IDELanguageRunText.t("转写已停止，原录音与片段已保留。", "Transcription stopped. The recording and chunks were preserved.")
         }
         try? save()
     }
+    func cancelAndWait() async {
+        let previous = worker
+        cancel()
+        await previous?.value
+    }
+    func waitUntilIdle() async { await worker?.value }
     private func startWorker() {
-        guard enabled, worker == nil, chunks.contains(where: { [.pending, .decoded].contains($0.state) }) else { return }
+        guard enabled, !requiresRetry, worker == nil, chunks.contains(where: { [.pending, .decoded].contains($0.state) }) else { return }
         generation = UUID(); let epoch = generation
         isWorking = true
         worker = Task { [weak self] in
             guard let self else { return }
-            defer { if self.generation == epoch { self.worker = nil; self.isWorking = false } }
+            defer {
+                if self.generation == epoch { self.worker = nil; self.isWorking = false; self.waitingForService = false }
+            }
             while !Task.isCancelled, self.generation == epoch,
                   let index = self.chunks.firstIndex(where: { [.pending, .decoded].contains($0.state) }) {
                 let id = self.chunks[index].id
@@ -102,7 +156,27 @@ struct MeetingLiveChunk: Codable, Identifiable {
                 } catch is CancellationError { return }
                 catch {
                     guard self.generation == epoch, let failed = self.chunks.firstIndex(where: { $0.id == id }) else { return }
+                    if (error as? AssistantAudioError) == .transcriptionBusy,
+                       (self.chunks[failed].busyRetries ?? 0) < 3 {
+                        let attempt = (self.chunks[failed].busyRetries ?? 0) + 1
+                        self.chunks[failed].busyRetries = attempt
+                        self.chunks[failed].state = .pending
+                        self.waitingForService = true
+                        do {
+                            try self.save()
+                            await self.onChange()
+                            try await self.retryDelay(attempt)
+                            try self.check(epoch)
+                            self.waitingForService = false
+                            continue
+                        } catch is CancellationError { return }
+                        catch {
+                            self.requiresRetry = true; self.diagnostic = error.localizedDescription
+                            return
+                        }
+                    }
                     self.chunks[failed].state = .failed; self.chunks[failed].error = error.localizedDescription
+                    self.requiresRetry = true
                     self.diagnostic = error.localizedDescription; try? self.save()
                     await self.onChange()
                     // Retain the rest on disk. Missing configuration/busy
@@ -126,17 +200,10 @@ struct MeetingLiveChunk: Codable, Identifiable {
             chunks[index].analysisSessionID = imported; try save()
         }
         if chunks[index].decoded == nil {
-            await audio.refreshAvailability(); try check(epoch)
-            let route: String
-            if let selectedServiceID, !selectedServiceID.isEmpty { route = selectedServiceID }
-            else {
-                guard audio.services.contains(where: { $0.id == AssistantAudioService.ID.transcriptionEnhanced && $0.ready }) else {
-                    throw MeetingError.captureBackendFailed(IDELanguageRunText.t("录音已保存。请在会议设置中选择转写服务，再重试未完成片段。", "The recording is saved. Choose a transcription service in meeting settings, then retry unfinished chunks."))
-                }
-                route = AssistantAudioService.ID.transcriptionEnhanced
-            }
-            chunks[index].state = .transcribing; chunks[index].serviceID = route; try save()
-            let result = try await audio.transcribe(fileURL: file, language: .automatic, serviceID: route, requiresTiming: true)
+            chunks[index].state = .transcribing
+            chunks[index].serviceID = selectedServiceID ?? AssistantAudioService.ID.transcriptionEnhanced
+            try save()
+            let result = try await transcribeChunk(file, selectedServiceID)
             try check(epoch); index = chunks.firstIndex(where: { $0.id == id })!
             chunks[index].decoded = result.segments; chunks[index].language = result.language
             chunks[index].state = .decoded; try save() // Persist real provider output BEFORE committing segments.
@@ -157,6 +224,7 @@ struct MeetingLiveChunk: Codable, Identifiable {
         }
         try check(epoch); index = chunks.firstIndex(where: { $0.id == id })!
         chunks[index].state = .complete; chunks[index].error = nil; try save()
+        diagnostic = nil
     }
     private func check(_ epoch: UUID) throws {
         try Task.checkCancellation()

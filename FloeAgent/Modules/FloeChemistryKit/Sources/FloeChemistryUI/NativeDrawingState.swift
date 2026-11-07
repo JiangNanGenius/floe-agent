@@ -32,7 +32,9 @@ enum ChemicalBondStyle: String,CaseIterable { case single, double, triple, wedge
     var ringSize = 6
     var aromaticRing = true
     var rectangleSelection = false
-    var drawWithFinger = true
+    var drawWithFinger = UserDefaults.standard.bool(forKey: "floe.chemistry.fingerDrawing.enabled") {
+        didSet { UserDefaults.standard.set(drawWithFinger, forKey: "floe.chemistry.fingerDrawing.enabled") }
+    }
     var fitToken = UUID()
     var loaded = false
     var warning: String?

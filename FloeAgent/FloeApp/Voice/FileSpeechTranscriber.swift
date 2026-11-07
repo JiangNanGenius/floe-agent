@@ -104,6 +104,10 @@ actor FileSpeechTranscriber {
             lease = try await SpeechRecognitionRuntime.live.acquireForTimedTranscription()
         } catch is CancellationError {
             throw CancellationError()
+        } catch SpeechRecognitionRuntime.Failure.busy where !allowAppleFallback {
+            // A meeting can wait for the current decoder without reporting a
+            // missing model or switching to a recognizer the user did not pick.
+            throw WhisperModelStore.Failure.busy
         } catch {
             try Task.checkCancellation()
         }

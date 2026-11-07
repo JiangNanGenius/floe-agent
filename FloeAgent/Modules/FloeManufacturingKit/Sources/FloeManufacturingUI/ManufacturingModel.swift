@@ -24,7 +24,24 @@ func L(_ zh: String, _ en: String) -> String { Locale.preferredLanguages.first?.
     public let directory: URL
     /// The host supplies its existing file-owner lease. The manufacturing
     /// component has no workspace filesystem or environment-selection policy.
-    public var storageLeaseProvider: (@MainActor () throws -> AnyObject)?
+    public var storageLeaseProvider: (@MainActor () throws -> AnyObject)? {
+        didSet { researchStorage?.storageLeaseProvider = storageLeaseProvider }
+    }
+    @ObservationIgnored private var researchStorage:ManufacturingResearchSessions?
+    public var researchSessions:ManufacturingResearchSessions {
+        if let researchStorage { return researchStorage }
+        let value = ManufacturingResearchSessions(directory:directory,ownerDocumentID:study.source.documentID)
+        value.storageLeaseProvider = storageLeaseProvider;researchStorage = value;return value
+    }
+    public func attachResearchSessions(_ value:ManufacturingResearchSessions) throws {
+        try value.requireOwner(directory:directory,documentID:study.source.documentID)
+        if let existing = researchStorage,existing !== value {
+            guard !existing.isBusy else { throw ManufacturingError.stale }
+            existing.release()
+        }
+        researchStorage = value;value.storageLeaseProvider = storageLeaseProvider
+    }
+    public var hasActiveResearchWork:Bool { researchStorage?.isBusy == true }
     private let service: ManufacturingService
     private var generation = UUID()
     private var calculation: Task<Void,Never>?

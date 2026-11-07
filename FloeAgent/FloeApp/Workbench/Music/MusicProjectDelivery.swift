@@ -12,7 +12,9 @@ struct MusicAssetLibrary: View {
             Section(WorkbenchText.t("工程素材", "Project assets")) {
                 ForEach(session.document.assets) { asset in
                     HStack {
-                        Image(systemName: asset.kind == .midiFile ? "music.note.list" : "waveform")
+                        PersonalEditorAssetPreview(sourceID: "music:\(session.id):\(session.document.revision):\(asset.id.rawValue):\(asset.sourceRevision)", title: asset.name) { pixels in
+                            try await PersonalEditorPreviewRequests.musicAsset(session: session, asset: asset, pixels: pixels)
+                        }.frame(width: 76, height: 52).accessibilityIdentifier("music.asset.preview.\(asset.id.rawValue)")
                         VStack(alignment: .leading) {
                             Text(asset.name).lineLimit(1)
                             Text(MusicWorkbenchFormat.time(Double(asset.durationSamples.value) / Double(session.document.tempoMap.sampleRate))).font(.caption2).foregroundStyle(.secondary)
@@ -24,6 +26,19 @@ struct MusicAssetLibrary: View {
                     }
                 }
                 Button(action: onImport) { Label(WorkbenchText.t("导入音频或 MIDI", "Import audio or MIDI"), systemImage: "square.and.arrow.down").frame(minHeight: 44) }.accessibilityIdentifier("music.import")
+            }
+            let midiClips = session.document.tracks.flatMap(\.clips).filter { if case .midi = $0.body { true } else { false } }
+            if !midiClips.isEmpty {
+                Section(WorkbenchText.t("MIDI 片段预览", "MIDI clip previews")) {
+                    ForEach(midiClips) { clip in
+                        HStack(spacing: 10) {
+                            PersonalEditorAssetPreview(sourceID: "midi-clip:\(session.id):\(session.document.revision):\(clip.id.rawValue)", title: clip.name) { pixels in
+                                try await PersonalEditorPreviewRequests.musicClip(session: session, clip: clip, pixels: pixels)
+                            }.frame(width: 96, height: 60).accessibilityIdentifier("music.clip.preview.\(clip.id.rawValue)")
+                            Text(clip.name.isEmpty ? WorkbenchText.t("MIDI 片段", "MIDI clip") : clip.name).lineLimit(2)
+                        }
+                    }
+                }
             }
             Section(WorkbenchText.t("乐器", "Instruments")) {
                 Button(action: onInstrument) { Label(WorkbenchText.t("添加合成器轨", "Add synthesizer track"), systemImage: "pianokeys").frame(minHeight: 44) }

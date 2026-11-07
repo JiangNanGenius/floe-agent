@@ -154,6 +154,8 @@ enum AssistantAudioError: Error, LocalizedError, Equatable {
     case temporaryWriteRefused
     case timedOutputUnavailable
     case transcriptionUnavailable
+    case transcriptionBusy
+    case noSpeechRecognized
     case transcriptionFailed
     case synthesisFailed
 
@@ -191,6 +193,10 @@ enum AssistantAudioError: Error, LocalizedError, Equatable {
             return "The service returned no segment timing, so SRT/VTT output is unavailable."
         case .transcriptionUnavailable:
             return "The selected transcription service is not ready."
+        case .transcriptionBusy:
+            return IDELanguageRunText.t("转写服务正在处理其他音频，请稍后重试。", "The transcription service is processing other audio. Try again shortly.")
+        case .noSpeechRecognized:
+            return IDELanguageRunText.t("这段音频没有识别到语音。", "No speech was recognized in this audio.")
         case .transcriptionFailed:
             return "Transcription failed."
         case .synthesisFailed:
@@ -497,6 +503,10 @@ final class AssistantAudioService: ObservableObject {
                     progress: progress)
             } catch is CancellationError {
                 throw CancellationError()
+            } catch WhisperModelStore.Failure.busy {
+                throw AssistantAudioError.transcriptionBusy
+            } catch FileSpeechError.empty {
+                throw AssistantAudioError.noSpeechRecognized
             } catch {
                 throw AssistantAudioError.transcriptionFailed
             }
@@ -517,6 +527,10 @@ final class AssistantAudioService: ObservableObject {
                     progress: progress)
             } catch is CancellationError {
                 throw CancellationError()
+            } catch WhisperModelStore.Failure.busy {
+                throw AssistantAudioError.transcriptionBusy
+            } catch FileSpeechError.empty {
+                throw AssistantAudioError.noSpeechRecognized
             } catch {
                 throw AssistantAudioError.transcriptionFailed
             }

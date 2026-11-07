@@ -15,6 +15,17 @@ public struct SimulationSourceObject: Identifiable, Codable, Equatable, Sendable
     public init(id: String, name: String, restTransform: SimulationAnimationTransform) { self.id = id; self.name = name; self.restTransform = restTransform }
 }
 
+public struct SimulationAnimationExportRequest:Sendable {
+    public var format:SimulationAnimationExportFormat
+    public var graph:SimulationAnimationGraph
+    public var bake:SimulationAnimationBake
+    public var physics:SimulationResult?
+    public var physicsConfiguration:PhysicsSimulationConfiguration
+    public var outputURL:URL
+    public var progress:SimulationProgressHandler
+}
+public typealias SimulationAnimationExportHandler = @Sendable (SimulationAnimationExportRequest) async throws -> Void
+
 @MainActor @Observable public final class SimulationWorkbenchModel {
     public private(set) var document: SimulationWorkspaceDocument
     public var selectedStudyID: UUID? {
@@ -36,6 +47,12 @@ public struct SimulationSourceObject: Identifiable, Codable, Equatable, Sendable
     public private(set) var isClosed = false
     public private(set) var sourceAvailable = true
     public private(set) var sourceObjects: [SimulationSourceObject] = []
+    public private(set) var sourceMeshes: [SimulationSourceMesh] = []
+    public private(set) var sourceAnimationGraph:SimulationAnimationGraph?
+    public private(set) var sourceAnimationMessage:String?
+    public internal(set) var preparingSourceMesh = false
+    @ObservationIgnored var sourceMeshTask: Task<SimulationPhysicsMesh,any Error>?
+    @ObservationIgnored var sourceBindingTask: Task<SimulationAnimationMeshBinding,any Error>?
     public private(set) var animationPreviewRevision: UInt64 = 0
     public var displaysAnimation = false
     public var animationTimeSeconds = 0.0
@@ -43,7 +60,13 @@ public struct SimulationSourceObject: Identifiable, Codable, Equatable, Sendable
     public private(set) var baking = false
     public private(set) var bakeProgress: SimulationProgress?
     public private(set) var bakeCancelling = false
+    public var animationExportFormat:SimulationAnimationExportFormat = .motionJSON
+    public var animationFramesPerSecond = 30
+    public private(set) var savedAnimationExports:[SimulationSavedAnimationExport] = []
+    @ObservationIgnored public var animationExportHandler:SimulationAnimationExportHandler?
+    public var availableAnimationExportFormats:[SimulationAnimationExportFormat] { animationExportHandler == nil ? [.motionJSON]:SimulationAnimationExportFormat.allCases }
     private var bakeTask: Task<SimulationAnimationBake, any Error>?
+    private var animationExportTask:Task<Void,any Error>?
     private var closingTask: Task<Void,Never>?
     private var bakeEndWaiters: [CheckedContinuation<Void,Never>] = []
     @ObservationIgnored private var particleSceneCache: (UUID,UInt64,PhysicsSimulationConfiguration)?
@@ -86,6 +109,7 @@ public struct SimulationSourceObject: Identifiable, Codable, Equatable, Sendable
     }
     /// Called synchronously by the live CAD owner before awaiting a new snapshot.
     public func invalidateLiveSource() {
+        sourceMeshTask?.cancel(); sourceBindingTask?.cancel()
         sourceAvailable = false; result = nil; animationPose = nil; exportURL = nil; cancelBake()
         Task { await coordinator.cancelAll(); for job in await meshing?.snapshots() ?? [] where !job.status.isTerminal { await meshing?.cancel(job.id) } }
     }
@@ -97,6 +121,18 @@ public struct SimulationSourceObject: Identifiable, Codable, Equatable, Sendable
         guard !isClosed, objects.count <= 256, Set(objects.map(\.id)).count == objects.count else { return }
         sourceObjects = objects
     }
+    public func setSourceMeshes(_ meshes:[SimulationSourceMesh]) {
+        guard !isClosed, meshes.count <= 256 else { return }; sourceMeshes = meshes
+    }
+    public func setSourceAnimationGraph(_ graph:SimulationAnimationGraph?,message:String? = nil) {
+        guard !isClosed, graph == nil || graph?.source == document.source else { return }
+        sourceAnimationGraph = graph; sourceAnimationMessage = message
+    }
+    public func importSourceAnimation() {
+        guard let graph = sourceAnimationGraph, graph.source == document.source else { return }
+        writeAnimationGraph(graph); clearError()
+    }
+    func recordSourceError(_ error:any Error) { errorDetails = error.localizedDescription }
     public var currentFrame: SimulationResultFrame? { result.flatMap { $0.frames.indices.contains(frameIndex) ? $0.frames[frameIndex] : $0.frames.first } }
     public var currentField: SimulationResultField? { currentFrame.flatMap { frame in frame.fields.first { $0.id == selectedFieldID } ?? frame.fields.first } }
     public var engineering: EngineeringSimulationConfiguration { (try? selectedStudy?.configuration(as:EngineeringSimulationConfiguration.self)) ?? .init() }
@@ -127,32 +163,75 @@ public struct SimulationSourceObject: Identifiable, Codable, Equatable, Sendable
         do { let graph = animationGraph; guard graph.source == document.source else { throw SimulationError.staleSource }; animationPose = try SimulationAnimationEvaluator.evaluate(graph,timeSeconds:animationTimeSeconds,physics:graph.physicsResultID == nil ? nil : result); errorDetails = nil }
         catch { animationPose = nil; errorDetails = error.localizedDescription }
     }
-    public func bakeAnimation() async {
+    public func bakeAnimation(format:SimulationAnimationExportFormat = .motionJSON,framesPerSecond:Int = 30) async {
         guard !baking, !isClosed, sourceAvailable else { return }; baking = true; bakeCancelling = false
         exportURL = nil; errorDetails = nil
         defer {
-            baking = false; bakeTask = nil; bakeCancelling = false
+            baking = false; bakeTask = nil; animationExportTask = nil; bakeCancelling = false
             let waiting = bakeEndWaiters; bakeEndWaiters = []; for waiter in waiting { waiter.resume() }
         }
+        guard (1...240).contains(framesPerSecond), format != .mp4 || framesPerSecond <= 60 else { errorDetails = simulationText("Choose a valid frame rate (video: up to 60 fps).","选择有效帧率，视频最高支持 60 fps。"); return }
         if hasUnsavedChanges, !(await save()) { return }
         guard sourceAvailable, !isClosed else { return }
         let capturedGeneration = await workspace.snapshot().generation
         let graph = animationGraph, physics = graph.physicsResultID == nil ? nil : result
+        let physicsConfiguration = self.physics
+        let attachmentID = UUID()
         do {
             let progress: SimulationProgressHandler = { [weak self] value in await self?.recordBakeProgress(value) }
-            let task = Task.detached { try await SimulationAnimationBaker.bake(graph,physics:physics,progress:progress) }
+            let task = Task.detached { try await SimulationAnimationBaker.bake(graph,physics:physics,framesPerSecond:framesPerSecond,progress:progress) }
             bakeTask = task
             let bake = try await task.value
             guard !isClosed, sourceAvailable, !bakeCancelling, document.source == graph.source, animationGraph == graph,
                   await workspace.snapshot().generation == capturedGeneration else { throw SimulationError.staleSource }
-            let url = try await archive.saveAttachment(bake,id:UUID(),fileExtension:"animation.json")
+            let staged = try await archive.beginAnimationExport(id:attachmentID,format:format)
+            if format == .motionJSON {
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                let data = try encoder.encode(bake)
+                guard data.count <= 256_000_000 else { throw SimulationError.resourceLimit("Reduce the animation export size.") }
+                try data.write(to:staged,options:.atomic)
+            } else {
+                guard let handler = animationExportHandler else { throw SimulationError.backendUnavailable("The host has not connected this animation export format.") }
+                let request = SimulationAnimationExportRequest(format:format,graph:graph,bake:bake,physics:physics,physicsConfiguration:physicsConfiguration,outputURL:staged,progress:progress)
+                let exporter = Task { try await handler(request) }; animationExportTask = exporter
+                try await withTaskCancellationHandler { try await exporter.value } onCancel: { exporter.cancel() }
+            }
+            guard !isClosed, sourceAvailable, !bakeCancelling, document.source == graph.source, animationGraph == graph,
+                  await workspace.snapshot().generation == capturedGeneration else { throw SimulationError.staleSource }
+            let frameCount = format == .mp4 ? Int(ceil(graph.durationSeconds*Double(framesPerSecond))):bake.frames.count
+            let record = try await archive.commitAnimationExport(id:attachmentID,format:format,source:graph.source,graphSHA256:bake.graphSHA256,physicsResultID:bake.physicsResultID,framesPerSecond:framesPerSecond,frameCount:frameCount,durationSeconds:graph.durationSeconds)
             guard !isClosed, sourceAvailable, document.source == graph.source, animationGraph == graph,
                   await workspace.snapshot().generation == capturedGeneration else { throw SimulationError.staleSource }
-            exportURL = url
-        } catch is CancellationError { return } catch { errorDetails = error.localizedDescription }
+            exportURL = try await archive.animationExportURL(id:record.id,source:document.source)
+            savedAnimationExports = try await archive.savedAnimationExports(source:document.source)
+        } catch is CancellationError { /* The service still drains and removes its staging below. */ }
+        catch { errorDetails = error.localizedDescription }
+        try? await archive.discardAnimationExport(id:attachmentID)
     }
-    public func cancelBake() { guard baking else { return }; bakeCancelling = true; bakeTask?.cancel() }
+    public func cancelBake() { guard baking else { return }; bakeCancelling = true; bakeTask?.cancel(); animationExportTask?.cancel() }
     private func recordBakeProgress(_ progress: SimulationProgress) { bakeProgress = progress }
+    public func shareAnimationExport(_ id:UUID) async {
+        do { exportURL = try await archive.animationExportURL(id:id,source:document.source); errorDetails = nil }
+        catch { errorDetails = error.localizedDescription }
+    }
+    public func attachCurrentPhysicsCache() {
+        guard let result, result.source == document.source,
+              ["floe.rapier","floe.particles"].contains(result.backend.id), let duration = result.frames.last?.timeSeconds else { return }
+        var graph = animationGraph
+        guard graph.durationSeconds.isFinite,graph.durationSeconds>0,duration.isFinite,duration>0 else { return }
+        do { try graph.fitDuration(to:duration) }
+        catch { recordSourceError(error); return }
+        graph.physicsResultID = result.id
+        animationTimeSeconds = min(animationTimeSeconds,duration)
+        let ids = (result.diagnostics["bodyIDs"] ?? "").split(separator:",").compactMap { UUID(uuidString:String($0)) }
+        graph.physicsBindings.removeAll { !ids.contains($0.bodyID) }
+        let sources = result.diagnostics["bodySourceObjectIDs"].flatMap { try? JSONDecoder().decode([String].self,from:Data($0.utf8)) }
+        for (index,id) in ids.enumerated() {
+            let target = sources.flatMap { $0.indices.contains(index) ? $0[index]:nil } ?? id.uuidString.lowercased()
+            if !graph.physicsBindings.contains(where: { $0.targetID == target || $0.bodyID == id }) { graph.physicsBindings.append(.init(targetID:target,bodyID:id)) }
+        }
+        writeAnimationGraph(graph)
+    }
 
     public func createStudy(_ kind: SimulationStudyKind) {
         var study = SimulationStudy(name:kind.simulationDisplayName,kind:kind)
@@ -276,17 +355,19 @@ public struct SimulationSourceObject: Identifiable, Codable, Equatable, Sendable
     public func close() async {
         if let closingTask { await closingTask.value; return }
         guard !isClosed else { return }
-        isClosed = true; cancelBake()
+        isClosed = true; cancelBake(); sourceMeshTask?.cancel(); sourceBindingTask?.cancel()
         let task = Task { @MainActor in
             await workspace.close(); await coordinator.close(); await meshing?.close()
             for await values in await coordinator.updates() { if values.allSatisfy({ $0.status.isTerminal }) { break } }
             if let meshing { for await values in await meshing.updates() { if values.allSatisfy({ $0.status.isTerminal }) { break } } }
             if baking { await withCheckedContinuation { bakeEndWaiters.append($0) } }
+            _ = try? await sourceMeshTask?.value; _ = try? await sourceBindingTask?.value
         }
         closingTask = task; await task.value; closingTask = nil
     }
     public func loadSavedResults() async throws {
         savedResults = try await archive.savedResults().filter { $0.source.projectID == document.source.projectID && $0.source.documentID == document.source.documentID }
+        savedAnimationExports = try await archive.savedAnimationExports(source:document.source)
     }
     public func showSavedResult(_ summary: SimulationSavedResult) async {
         guard document.studies.contains(where:{ $0.id == summary.studyID }) else { return }

@@ -4,6 +4,16 @@ import SwiftUI
 import MetalKit
 import simd
 
+public nonisolated struct CADSimulationCamera: Sendable {
+    public var positionMeters:SIMD3<Double>
+    public var rotation:SIMD4<Double>
+    public var verticalFOVDegrees:Double
+    public var orthographicHeightMeters:Double?
+    public init(positionMeters:SIMD3<Double>,rotation:SIMD4<Double>,verticalFOVDegrees:Double = 60,orthographicHeightMeters:Double? = nil) {
+        self.positionMeters = positionMeters; self.rotation = rotation; self.verticalFOVDegrees = verticalFOVDegrees; self.orthographicHeightMeters = orthographicHeightMeters
+    }
+}
+
 /// Analysis display values only. No editor, selection, undo or saved placement.
 public nonisolated struct CADSimulationDisplay: Sendable {
     public nonisolated struct Surface: Sendable {
@@ -18,7 +28,8 @@ public nonisolated struct CADSimulationDisplay: Sendable {
     public var revision: UInt64
     public var surfaces: [Surface]
     public var legend: String?
-    public init(id: UUID, revision: UInt64, surfaces: [Surface], legend: String? = nil) { self.id = id; self.revision = revision; self.surfaces = surfaces; self.legend = legend }
+    public var camera:CADSimulationCamera?
+    public init(id: UUID, revision: UInt64, surfaces: [Surface], legend: String? = nil,camera:CADSimulationCamera? = nil) { self.id = id; self.revision = revision; self.surfaces = surfaces; self.legend = legend; self.camera = camera }
 }
 
 /// Reuses the CAD Metal renderer and shaders, with an independent display-only camera.
@@ -65,27 +76,10 @@ private struct SurfaceView: UIViewRepresentable {
             guard let renderer, let view, identity != display.id || revision != display.revision else { return }
             let needsFit = identity != display.id
             identity = display.id; revision = display.revision
-            var scene = ViewportScene(); scene.showsGrid = false
-            var lo = SIMD3<Float>(repeating: .infinity), hi = SIMD3<Float>(repeating: -.infinity)
-            for surface in display.surfaces {
-                guard !surface.positionsMM.isEmpty, surface.positionsMM.count <= 900_000,
-                      surface.indices.count <= 900_000, surface.indices.count.isMultiple(of: 3),
-                      surface.positionsMM.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.z.isFinite }),
-                      surface.indices.allSatisfy({ Int($0) < surface.positionsMM.count }) else { continue }
-                var normals = Array(repeating: SIMD3<Float>.zero, count: surface.positionsMM.count)
-                for i in stride(from: 0, to: surface.indices.count, by: 3) {
-                    let a = Int(surface.indices[i]), b = Int(surface.indices[i+1]), c = Int(surface.indices[i+2])
-                    let n = simd_cross(surface.positionsMM[b]-surface.positionsMM[a],surface.positionsMM[c]-surface.positionsMM[a])
-                    normals[a] += n; normals[b] += n; normals[c] += n
-                }
-                normals = normals.map { simd_length_squared($0) > 1e-20 ? simd_normalize($0) : SIMD3(0,1,0) }
-                for p in surface.positionsMM { lo = simd_min(lo,p); hi = simd_max(hi,p) }
-                let mesh = RenderMesh(positions: surface.positionsMM, normals: normals, indices: surface.indices)
-                scene.bodies.append(.init(id: BodyID(), renderMesh: mesh, edges: nil, meshRevision: display.revision,
-                    modelMatrix: matrix_identity_float4x4, baseColor: surface.color, material: nil))
-            }
-            renderer.scene = scene
-            if needsFit, lo.x.isFinite { renderer.camera.fit(boundsMin: lo, boundsMax: hi, aspect: Float(max(1,view.bounds.width)/max(1,view.bounds.height))) }
+            guard let snapshot = try? CADSimulationRenderScene.make(display) else { return }
+            renderer.scene = snapshot.scene
+            if needsFit, snapshot.lo.x.isFinite { renderer.camera.fit(boundsMin:snapshot.lo,boundsMax:snapshot.hi,aspect:Float(max(1,view.bounds.width)/max(1,view.bounds.height))) }
+            if let camera = display.camera { try? CADSimulationRenderScene.applyCamera(camera,to:&renderer.camera) }
             view.setNeedsDisplay()
         }
         @objc func pan(_ gesture: UIPanGestureRecognizer) {

@@ -50,6 +50,7 @@ let package = Package(
         // solver. Swift never sees OCCT C++ headers.
         .target(
             name: "OCCTShim",
+            dependencies: ["OCCT"],
             path: "Sources/OCCTShim",
             publicHeadersPath: "include",
             cxxSettings: [

@@ -10,6 +10,7 @@ import UIKit
 
 struct WorkbenchImagePreview: View {
     @ObservedObject var center: WorkbenchCenter
+    @AppStorage(MediaDrawingInputPolicy.preferenceKey) private var fingerDrawing = false
 
     @State private var dragTranslation: CGSize = .zero
     @State private var liveScale: Double?
@@ -100,6 +101,7 @@ struct WorkbenchImagePreview: View {
                 // space (aspect-fit letterboxing) before use.
                 if isInkTool {
                     WorkbenchPressureSurface(
+                        fingerDrawing: fingerDrawing,
                         onChanged: { localPoint, pressure in
                             let point = CGPoint(x: display.minX + localPoint.x,
                                                 y: display.minY + localPoint.y)
@@ -155,6 +157,13 @@ struct WorkbenchImagePreview: View {
                 isEnabled: !isInkTool,
                 action: { location in handleTap(at: location, display: display) }))
         }
+        .overlay(alignment: .topLeading) {
+            if isInkTool {
+                MediaFingerDrawingToggle().padding(.horizontal, 10)
+                    .background(.regularMaterial, in: Capsule()).padding(8)
+            }
+        }
+        .onChange(of: center.imageTool) { _, _ in inkBuilder.cancel() }
         .accessibilityIdentifier("workbench.preview.image")
     }
 
@@ -537,10 +546,11 @@ enum WorkbenchPreviewColor {
 }
 
 #if canImport(UIKit)
-/// Captures Pencil/finger touches with `force` for brush/eraser strokes. The
+/// Captures allowed drawing sources with `force` for brush/eraser strokes. The
 /// pressure is 0 for fingers/unsupported input, and the model never
 /// synthesizes pressure where none was measured.
 struct WorkbenchPressureSurface: UIViewRepresentable {
+    var fingerDrawing = false
     var onChanged: (CGPoint, Double) -> Void
     var onEnded: () -> Void
     var onCancelled: () -> Void
@@ -549,6 +559,7 @@ struct WorkbenchPressureSurface: UIViewRepresentable {
         let view = PressureTouchView()
         view.backgroundColor = .clear
         view.isMultipleTouchEnabled = false
+        view.configure(fingerDrawing: fingerDrawing)
         view.onChanged = onChanged
         view.onEnded = onEnded
         view.onCancelled = onCancelled
@@ -556,6 +567,7 @@ struct WorkbenchPressureSurface: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: PressureTouchView, context: Context) {
+        uiView.configure(fingerDrawing: fingerDrawing)
         uiView.onChanged = onChanged
         uiView.onEnded = onEnded
         uiView.onCancelled = onCancelled
@@ -566,18 +578,26 @@ struct WorkbenchPressureSurface: UIViewRepresentable {
         var onEnded: (() -> Void)?
         var onCancelled: (() -> Void)?
         private var activeTouch: UITouch?
-        private var hasMoved = false
+        private var fingerDrawing = false
+        private var input = MediaStrokeInputGate()
+
+        func configure(fingerDrawing: Bool) {
+            self.fingerDrawing = fingerDrawing
+            // No SwiftUI callback during updateUIView. The next native event
+            // discards a revoked stroke instead of committing stale samples.
+            input.update(fingerDrawing: fingerDrawing)
+        }
 
         override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-            guard let touch = touches.first else { return }
+            guard activeTouch == nil, let touch = touches.first,
+                  input.begin(touch.type, fingerDrawing: fingerDrawing) else { return }
             activeTouch = touch
-            hasMoved = false
             onChanged?(touch.location(in: self), normalizedForce(touch))
         }
 
         override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-            guard let touch = touches.first, touch === activeTouch else { return }
-            hasMoved = true
+            guard let touch = activeTouch, touches.contains(touch) else { return }
+            guard input.permitsSamples(fingerDrawing: fingerDrawing) else { cancelActiveStroke(); return }
             // Coalesced touches give the full Pencil sample rate.
             if let coalesced = event?.coalescedTouches(for: touch), !coalesced.isEmpty {
                 for sample in coalesced {
@@ -589,11 +609,8 @@ struct WorkbenchPressureSurface: UIViewRepresentable {
         }
 
         override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-            guard let touch = touches.first ?? activeTouch else {
-                activeTouch = nil
-                onEnded?()
-                return
-            }
+            guard let touch = activeTouch, touches.contains(touch) else { return }
+            guard input.permitsSamples(fingerDrawing: fingerDrawing) else { cancelActiveStroke(); return }
             // Emit the FINAL location before committing: without it every
             // stroke stopped at the second-to-last sample (CUA regression).
             if let coalesced = event?.coalescedTouches(for: touch), !coalesced.isEmpty {
@@ -603,11 +620,17 @@ struct WorkbenchPressureSurface: UIViewRepresentable {
             }
             onChanged?(touch.location(in: self), normalizedForce(touch))
             activeTouch = nil
-            onEnded?()
+            if input.finish(fingerDrawing: fingerDrawing) { onEnded?() }
         }
 
         override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+            guard let touch = activeTouch, touches.contains(touch) else { return }
+            cancelActiveStroke()
+        }
+
+        private func cancelActiveStroke() {
             activeTouch = nil
+            input.cancel()
             // Explicit discard semantics: a cancelled touch never commits.
             onCancelled?()
         }

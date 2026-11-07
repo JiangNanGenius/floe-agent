@@ -99,20 +99,46 @@ public enum OrdinaryDocumentActionProfile {
         arguments: [String: Any]
     ) -> OrdinaryDocumentActionRole? {
         switch toolName {
+        case "toolbox.session":
+            // The registered status branch checks the existing task/run and
+            // reads its receipt before any connection or authority mutation.
+            return Set(arguments.keys) == ["action"] && arguments["action"] as? String == "status" ? .readOnly : nil
         case "audio.inspect":
             guard let path = arguments["path"] as? String, !path.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,
                   Set(arguments.keys).isSubset(of:["path","startSeconds","endSeconds","bins"]) else { return nil }
             return .readOnly
         case "studio.list":
             return arguments.isEmpty ? .readOnly:nil
+        case "studio.library":
+            guard let action = arguments["action"] as? String else { return nil }
+            if ["list", "recentlyDeleted"].contains(action), Set(arguments.keys).isSubset(of: ["action", "offset", "limit"]) { return .readOnly }
+            if action == "detail", Set(arguments.keys) == ["action", "projectID"],
+               let id = arguments["projectID"] as? String, UUID(uuidString: id) != nil { return .readOnly }
+            // delete/restore/unknown stay on the existing approval policy.
+            return nil
         case "studio.run":
             guard let id = arguments["projectID"] as? String, UUID(uuidString:id) != nil,
                   Set(arguments.keys).isSubset(of:["projectID","action","inputJSON"]) else { return nil }
-            return arguments["action"] as? String == "inspectAudio" ? .readOnly:nil
+            return ["inspectAudio", "inspectFrame"].contains(arguments["action"] as? String ?? "") ? .readOnly:nil
         case "studio.machining":
-            guard let id = arguments["projectID"] as? String, UUID(uuidString:id) != nil,
-                  Set(arguments.keys).isSubset(of:["projectID","action","expectedRevision","studyJSON","title","offset","limit"]) else { return nil }
-            return arguments["action"] as? String == "inspect" ? .readOnly:nil
+            guard let id = arguments["projectID"] as? String,UUID(uuidString:id) != nil,let action = arguments["action"] as? String else { return nil }
+            if action == "inspect" {
+                return Set(arguments.keys).isSubset(of:["projectID","action","expectedRevision","studyJSON","title","offset","limit"]) ? .readOnly:nil
+            }
+            guard ["research.inspect","research.status","research.cancel","research.openSaved"].contains(action),
+                  Set(arguments.keys).isSubset(of:["projectID","action","expectedRevision","researchJSON"]),
+                  let json = arguments["researchJSON"] as? String,json.utf8.count <= 2_097_152,
+                  let request = try? JSONSerialization.jsonObject(with:Data(json.utf8)) as? [String:Any],
+                  Set(request.keys).isSubset(of:["family","expectedFingerprint","operationID","content","offset","limit"]),
+                  let family = request["family"] as? String,["manufacturingCell","virtualMachine","engineeringAnalysis"].contains(family) else { return nil }
+            if action == "research.inspect" || action == "research.status" { return request["operationID"] == nil ? .readOnly:nil }
+            guard let fingerprint = request["expectedFingerprint"] as? String,!fingerprint.isEmpty,
+                  let revision = arguments["expectedRevision"] as? String,!revision.isEmpty else { return nil }
+            if action == "research.cancel" { guard let id = request["operationID"] as? String,UUID(uuidString:id) != nil else { return nil } }
+            else if request["operationID"] != nil { return nil }
+            // Cancellation and opening a saved program alter only internal
+            // worker/editor state; they cannot prove a saved original edit.
+            return .draftOnly
         case "studio.simulation":
             guard let id = arguments["projectID"] as? String, UUID(uuidString:id) != nil,
                   Set(arguments.keys).isSubset(of:["projectID","command","inputJSON"]),
@@ -121,7 +147,7 @@ public enum OrdinaryDocumentActionProfile {
                 guard let text = value as? String, text.utf8.count <= 524_288,
                       (try? JSONSerialization.jsonObject(with:Data(text.utf8))) is [String:Any] else { return nil }
             }
-            return ["definitions","simulation.read","simulation.objects","simulation.capabilities","simulation.templates","simulation.study.read","simulation.materials","simulation.mesh.info","simulation.jobs","simulation.mesh.jobs","simulation.results","simulation.result.info","simulation.result.field","simulation.animation.read","simulation.animation.status"].contains(command) ? .readOnly:nil
+            return ["definitions","simulation.read","simulation.objects","simulation.capabilities","simulation.templates","simulation.study.read","simulation.materials","simulation.mesh.info","simulation.jobs","simulation.mesh.jobs","simulation.results","simulation.result.info","simulation.result.field","simulation.animation.read","simulation.animation.status","simulation.animation.exports","simulation.animation.source","simulation.animation.export.read"].contains(command) ? .readOnly:nil
         case "studio.chemistry":
             guard let id = arguments["projectID"] as? String, UUID(uuidString:id) != nil,
                   Set(arguments.keys).isSubset(of:["projectID","action","inputJSON"]) else { return nil }

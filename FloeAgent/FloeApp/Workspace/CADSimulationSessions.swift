@@ -7,6 +7,7 @@ import FloeSimulationCore
 import FloeSimulationUI
 import FloeSimulationRuntime
 import FloeSimulationPhysics
+import FloeSimulationAnimation
 
 /// One service-owned simulation per actual CAD original. Panels and Studio borrow it.
 @MainActor enum CADSimulationSessions {
@@ -30,6 +31,12 @@ import FloeSimulationPhysics
             guard !closing, !document.isClosed, source == expected,
                   document.exchangeChangeCount == geometry.changeCount else { throw SimulationError.staleSource }
         }
+        func exportAnimation(_ request:SimulationAnimationExportRequest) async throws {
+            try requireCurrent(request.graph.source)
+            let captured = geometry
+            try await CADSimulationAnimationExport.write(request,document:document,geometry:captured)
+            try requireCurrent(request.graph.source)
+        }
         func snapshot(_ expected: SimulationSourceRef) throws -> SimulationGeometrySnapshot {
             try requireCurrent(expected)
             return try CADSimulationSourceBridge.snapshot(geometry, source: expected)
@@ -48,6 +55,11 @@ import FloeSimulationPhysics
             _ = await model.refreshSource(source)
         }
         func setObjectNames() {
+            do { model.setSourceAnimationGraph(try CADSimulationAnimationBridge.graph(document.simulationAnimationSource(),source:source)) }
+            catch { model.setSourceAnimationGraph(nil,message:error.localizedDescription) }
+            model.setSourceMeshes(geometry.bodies.map {
+                .init(id:$0.id.uuidString.lowercased(),positionsMeters:$0.positionsMM.map { .init($0[0]*0.001,$0[1]*0.001,$0[2]*0.001) },indices:$0.indices)
+            })
             model.setSourceObjects(geometry.bodies.map { body in
                 let count = Double(max(1,body.positionsMM.count))
                 let center = body.positionsMM.reduce(SimulationVector3.zero) { $0+SimulationVector3($1[0]*0.001/count,$1[1]*0.001/count,$1[2]*0.001/count) }
@@ -105,6 +117,10 @@ import FloeSimulationPhysics
                     })
                 try entry.requireCurrent(source)
                 entry.setObjectNames()
+                entry.model.animationExportHandler = { [weak entry] request in
+                    guard let entry else { throw SimulationError.staleSource }
+                    try await entry.exportAnimation(request)
+                }
                 entry.observer = document.observeSimulationSource { [weak entry] closed in
                     guard let entry else { return }
                     entry.model.invalidateLiveSource()
@@ -207,11 +223,9 @@ nonisolated enum CADSimulationSourceBridge {
         var scene = PhysicsSimulationConfiguration()
         for source in geometry.bodies {
             let positions = source.positionsMM.map { SimulationVector3($0[0]*0.001,$0[1]*0.001,$0[2]*0.001) }
-            guard !positions.isEmpty, positions.count <= 100_000 else { throw SimulationError.resourceLimit("Simplify this CAD part before using its convex collider.") }
-            let center = positions.reduce(.zero,+) / Double(positions.count)
-            var body = SimulationPhysicsBody(id:source.id,sourceObjectID:source.id.uuidString.lowercased())
-            body.translation = center; body.collider.kind = .convexHull
-            body.collider.vertices = Array(Set(positions.map { $0-center })).sorted { a,b in a.x != b.x ? a.x < b.x : a.y != b.y ? a.y < b.y : a.z < b.z }
+            let mesh = try SimulationPhysicsMesh(vertices:positions,indices:source.indices)
+            var body = try mesh.rigidBody(id:source.id,sourceObjectID:source.id.uuidString.lowercased(),motion:mesh.isClosed ? .dynamic:.fixed)
+            body.sourceGeometrySHA256 = geometry.contentSHA256
             scene.bodies.append(body)
         }
         return scene

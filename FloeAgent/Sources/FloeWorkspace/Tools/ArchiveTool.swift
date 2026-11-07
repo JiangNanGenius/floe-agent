@@ -77,7 +77,7 @@ public struct WorkspaceArchiveTool: AgentTool {
         "source": {"type": "string", "description": "Workspace-relative source: file/directory to pack (create) or archive to read (extract/list)"},
         "destinationDir": {"type": "string", "description": "New output directory, only for extracting zip/tar/7z/rar/tar.gz/tar.bz2/tar.xz containers"},
         "destinationFile": {"type": "string", "description": "New output file, for create or for decompressing gzip/bzip2/xz"},
-        "format": {"type": "string", "enum": ["zip", "tar", "tgz", "tbz2", "txz", "gz", "bz2", "xz", "7z", "rar"], "description": "Archive format; defaults to the destination/source extension"},
+        "format": {"type": "string", "enum": ["zip", "tar", "tgz", "tbz2", "txz", "gz", "bz2", "xz", "7z", "rar"], "description": "Archive format; defaults to the destination/source extension"}
       },
       "required": ["action", "source"],
       "additionalProperties": false

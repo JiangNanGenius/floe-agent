@@ -49,9 +49,15 @@ public actor BiologyService {
         backends.mapValues { backend in backend.methods.filter { kind == nil || Self.methodKind($0)==kind }.sorted() }
     }
     public func capabilities(for asset:BiologyAsset) -> [String:[String]] {
-        guard asset.kind == .externalDataset else {return capabilities(kind:asset.kind)}
-        // Opaque files are accepted only by actual format-aware importers. A
-        // backend advertising an unrelated method cannot make them usable.
+        backends.mapValues{$0.methods.filter{Self.acceptsMethod($0,for:asset)}.sorted()}
+    }
+    /// Offered methods are schema candidates, not evidence of installed
+    /// engines. The selected task's real probe still runs on Execute.
+    public nonisolated static func optionalScientificMethods(for asset:BiologyAsset) -> [String] {
+        BiologyEditCatalog.scientificMethods.filter{acceptsMethod($0,for:asset)}.sorted()
+    }
+    private nonisolated static func acceptsMethod(_ method:String,for asset:BiologyAsset) -> Bool {
+        guard asset.kind == .externalDataset else{return methodKind(method)==asset.kind}
         let allowed:Set<String>
         switch asset.originalFormat {
         case "h5ad","mtx":allowed=Set(["omics.import","omics.qc","omics.normalize","omics.pca","omics.cluster","omics.embedding","omics.diffexp","omics.export"])
@@ -61,7 +67,7 @@ public actor BiologyService {
         case "mrc","map","ccp4":allowed=asset.fileReference==nil ? ["volume.statistics","volume.slice","volume.isosurface"]:[]
         default:allowed=[]
         }
-        return backends.mapValues{$0.methods.intersection(allowed).sorted()}
+        return allowed.contains(method)
     }
     public nonisolated static func methodKind(_ method:String) -> BiologyAssetKind? {
         switch method.components(separatedBy:".").first {
@@ -76,6 +82,9 @@ public actor BiologyService {
     }
     public func projects() async throws -> [BiologyProject] { try await permit(.list);return try await store.list() }
     public func create(title:String,identity:BiologyMutationIdentity? = nil) async throws -> BiologyProject { try await permit(.create);return try await store.create(title:title,identity:identity) }
+    /// Native host reservations are not a model/tool argument. The ordinary
+    /// tool create path retains its deterministic operation identity unchanged.
+    public func createBound(id:UUID,title:String) async throws -> BiologyProject { try await permit(.create);return try await store.createBound(id:id,title:title) }
     public func project(_ id:UUID) async throws -> BiologyProject { try await permit(.read,id);return try await store.load(id) }
     public func rename(_ id:UUID,title:String,expectedRevision:UInt64) async throws {
         try await permit(.edit,id);_=try await store.update(id,expectedRevision:expectedRevision){$0.title=title}

@@ -287,6 +287,7 @@ struct MeetingProjectView: View {
                 HStack { Text(t("逐字稿", "Transcript")).font(.headline); Spacer()
                     Toggle(t("双语", "Bilingual"), isOn: $bilingual).fixedSize().font(.caption)
                 }
+                liveTranscriptionStatus
                 if bilingual {
                     Button(t("翻译未处理的段落", "Translate new segments"), systemImage: "character.bubble") { session.analyze("translate") }
                         .disabled(session.isAnalyzing || session.transcript.isEmpty)
@@ -316,6 +317,39 @@ struct MeetingProjectView: View {
                 }
             }.padding(16)
         }.accessibilityIdentifier("meeting.transcript")
+    }
+    private var liveTranscriptionText: String {
+        guard let live = session.liveTranscription else { return t("转写准备中", "Preparing transcription") }
+        if !live.enabled { return session.isRecording ? t("转写已暂停，录音继续", "Transcription paused; recording continues") : t("转写已暂停", "Transcription paused") }
+        if live.requiresRetry { return t("录音已保留，待重试 \(live.unfinishedCount) 段", "Recording saved; \(live.unfinishedCount) chunks need retrying") }
+        if live.waitingForService { return t("正在等待转写服务，录音继续保留", "Waiting for transcription; audio is being saved") }
+        if live.isWorking { return t("正在转写 · 等待 \(live.pendingCount) 段", "Transcribing · \(live.pendingCount) chunks pending") }
+        if session.isRecording { return t("正在收集下一段录音", "Collecting the next audio chunk") }
+        return t("已转写 \(live.chunks.filter { $0.state == .complete }.count) 段", "\(live.chunks.filter { $0.state == .complete }.count) chunks transcribed")
+    }
+    @ViewBuilder private var liveTranscriptionStatus: some View {
+        if let live = session.liveTranscription {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    if live.isWorking { ProgressView().controlSize(.small) }
+                    Text(liveTranscriptionText).font(.subheadline).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("meeting.transcription.status")
+                    Spacer(minLength: 0)
+                }
+                if live.requiresRetry || (!live.enabled && live.unfinishedCount > 0) {
+                    HStack {
+                        Button(t("重试转写", "Retry transcription")) {
+                            session.diagnostic = nil
+                            if session.intelligence.liveTranscription == false {
+                                session.updateIntelligence { $0.liveTranscription = true }
+                            } else { live.retryUnfinished() }
+                        }.disabled(live.isWorking).frame(minHeight: 44)
+                            .accessibilityIdentifier("meeting.transcription.retry")
+                        Button(t("转写设置", "Transcription settings")) { settings = true }.frame(minHeight: 44)
+                    }
+                }
+            }
+        }
     }
     private var highlightsPanel: some View {
         ScrollView {
@@ -383,7 +417,12 @@ struct MeetingProjectView: View {
             Divider()
             ScrollView(.horizontal) {
                 HStack(spacing: 14) {
-                    Label(session.isRecording ? t("录音中", "Recording") : session.isPaused ? t("已暂停", "Paused") : t("准备录音", "Ready to record"), systemImage: session.isRecording ? "record.circle.fill" : "mic")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label(session.isRecording ? t("录音中", "Recording") : session.isPaused ? t("已暂停", "Paused") : t("准备录音", "Ready to record"), systemImage: session.isRecording ? "record.circle.fill" : "mic")
+                        if session.isRecording || (session.liveTranscription?.unfinishedCount ?? 0) > 0 {
+                            Text(liveTranscriptionText).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
                         .foregroundStyle(session.isRecording ? Color.red : Color.secondary)
                     if session.liveTranscription?.isWorking == true { Label(t("转写中", "Transcribing"), systemImage: "text.bubble").font(.caption) }
                     Button(t("素材", "Media"), systemImage: "waveform") { recordings = true }

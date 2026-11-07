@@ -270,6 +270,9 @@ final class EditorViewModel {
     /// An explicitly opened drafting entrance can precede the Metal viewport
     /// binding. Consume its requested plane when the real camera attaches.
     var draftingPlaneOnViewportBind: SketchPlane?
+    /// Bound by the visible workbench, rather than inferred from whether a
+    /// 3D editor happens to be editing a sketch.
+    var planarNavigationOnly = false
     weak var cameraControl: (any ViewportCameraControl)? {
         didSet {
             guard let plane = draftingPlaneOnViewportBind, let cameraControl else { return }
@@ -506,10 +509,12 @@ final class EditorViewModel {
     /// 2026-09-14).
     var litGizmoPart: GizmoPart? { gizmoHighlight ?? axisEntryPart ?? angleEntryPart }
 
-    /// Set once an Apple Pencil has drawn this session. After that, a FINGER
-    /// drag in sketch mode navigates (orbits) instead of drawing — the Shapr3D
-    /// split where the Pencil creates and the finger manipulates the view. It
-    /// stays false for finger-only users, who keep drawing with a finger.
+    /// Input preference is explicit and independent of document/undo state.
+    /// Pencil use never changes mouse or finger routing implicitly.
+    var fingerDrawingEnabled = UserDefaults.standard.bool(forKey: "floe.cad.fingerDrawing.enabled") {
+        didSet { UserDefaults.standard.set(fingerDrawingEnabled, forKey: "floe.cad.fingerDrawing.enabled") }
+    }
+    /// Observational compatibility for existing Pencil interactions only.
     var sawApplePencil = false
 
     /// True while the Move tool is armed on a SELECTED FACE: the move gizmo is
@@ -8146,14 +8151,14 @@ final class EditorViewModel {
 
     // MARK: - Viewport events
 
-    func handle(_ event: ViewportEvent) {
+    func handle(_ event: ViewportEvent, source: CADViewportInputSource? = nil) {
         // A real viewport pick replaces the History target, even if it hits
         // the same output body. Never leak a previous datum/feature identity.
         selectedHistoryFeatureIDs.removeAll()
         selectedPlaneID = nil
         switch event {
         case .tap(let ray):
-            handleTap(ray: ray)
+            handleTap(ray: ray, source: source)
         case .doubleTap(let ray):
             handleDoubleTap(ray: ray)
         }
@@ -8180,6 +8185,7 @@ final class EditorViewModel {
     static let lookAtSketchThresholdDegrees: Double = 10
 
     func applyStandardView(_ view: StandardView) {
+        guard !planarNavigationOnly else { lookAtSketch(); return }
         // Shapr3D (observed 2026-09-13, seven trials): a named view that is
         // not the active sketch's head-on view or its underside ends the
         // sketch — Front, Right and the oblique home view all did; Top and
@@ -8194,8 +8200,8 @@ final class EditorViewModel {
     }
 
     func setOrthographic(_ enabled: Bool) {
-        orthographicEnabled = enabled
-        cameraControl?.setProjection(orthographic: enabled)
+        orthographicEnabled = planarNavigationOnly || enabled
+        cameraControl?.setProjection(orthographic: orthographicEnabled)
     }
 
     /// Re-aim the camera head-on at the active sketch plane.
@@ -8408,7 +8414,7 @@ final class EditorViewModel {
         persistViewOverlaySection()
     }
 
-    private func handleTap(ray: Ray) {
+    private func handleTap(ray: Ray, source: CADViewportInputSource?) {
         if polygonCageEditingBody != nil, polygonCageShowControl {
             if activePolygonCage != nil { handlePolygonCageTap(ray: ray); return }
             endPolygonCageEditing()
@@ -8467,7 +8473,8 @@ final class EditorViewModel {
         case .pickingSketchPlane(let tool):
             handlePlanePick(ray: ray, tool: tool)
         case .sketching(_, let tool):
-            handleSketchTap(ray: ray, tool: tool)
+            handleSketchTap(ray: ray, tool: tool,
+                drawingInputAllowed: source?.editsDrawing(fingerDrawingEnabled: fingerDrawingEnabled) ?? true)
         case .measuring:
             handleMeasureTap(ray: ray)
         case .pickingSectionPlane:
@@ -13040,7 +13047,7 @@ final class EditorViewModel {
     /// Tap while sketching: Trim cuts the span under the tap; Offset picks the
     /// entities to offset; other tools toggle entity selection, or finalize/
     /// clear pending state on empty space.
-    private func handleSketchTap(ray: Ray, tool: SketchTool?) {
+    private func handleSketchTap(ray: Ray, tool: SketchTool?, drawingInputAllowed: Bool = true) {
         if isPickingSymmetryAxis {
             if let raw = rawSketchPoint(from: ray), let sketch = activeSketch,
                let hit = SketchHitTester.nearestEntity(to: raw, in: sketch.entities.filter {
@@ -13054,6 +13061,21 @@ final class EditorViewModel {
         // place a point or trim geometry underneath the editor.
         if editingDimension != nil {
             finishDimensionEditOnClickAway()
+            return
+        }
+        // Only tap-built drawing is gated. Finger taps still select existing
+        // geometry without placing/continuing a point or finalizing an arc.
+        // Trim/offset/project, text/symbol placement, numeric click-away and
+        // axis picks keep their existing explicit non-drawing actions.
+        let tapCreatesDrawing = tool == .rect || (
+            pendingSymbolID == nil && tool != .trim && tool != .offset && tool != .text && tool != .project
+            && (tool == .line || tool == .arc || pendingArc != nil))
+        if !drawingInputAllowed, tapCreatesDrawing {
+            guard let sketch = activeSketch, let raw = rawSketchPoint(from: ray) else { return }
+            if !selectSketchGeometryTap(at: raw, in: sketch) {
+                selectedSketchEntityIDs.removeAll()
+                selectedSketchPoints.removeAll()
+            }
             return
         }
         if tool == .rect {

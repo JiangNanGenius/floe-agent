@@ -113,6 +113,7 @@ private struct ToolboxExportArtifact: Identifiable {
 private struct ToolboxConnectionPage: View {
     let tool: ToolboxTool
     @ObservedObject var center: ToolboxCenter
+    @ObservedObject private var usbDevices: ToolboxUSBDevices
     let onSave: (URL) -> Void
     let onExport: (Data) -> Void
     @EnvironmentObject private var environment: AppEnvironment
@@ -127,10 +128,15 @@ private struct ToolboxConnectionPage: View {
     @State private var scanning = false
     @State private var scanFailed = false
     @State private var packetFailure: String?
+    @State private var confirmingConfiguration = false
+    @MainActor init(tool: ToolboxTool, center: ToolboxCenter, onSave: @escaping (URL) -> Void, onExport: @escaping (Data) -> Void) {
+        self.tool = tool; self.center = center; self.onSave = onSave; self.onExport = onExport
+        _usbDevices = ObservedObject(wrappedValue: center.usbDevices)
+    }
     var body: some View {
         Group {
             if let owner = center.connections[tool], owner.active {
-                workbench(owner)
+                connectedWorkbench(owner)
                     .toolbar {
                         Button(IDELanguageRunText.t("助手", "Assistant"), systemImage: "sparkles") { assistant = owner }
                             .accessibilityIdentifier("toolbox.assistant")
@@ -147,11 +153,17 @@ private struct ToolboxConnectionPage: View {
                                 }
                             }
                         }
-                        Button(IDELanguageRunText.t("断开", "Disconnect"), systemImage: "xmark.circle") { Task { await center.disconnect(tool) } }
+                        if tool != .serialAssistant {
+                            Button(IDELanguageRunText.t("断开", "Disconnect"), systemImage: "xmark.circle") { center.disconnectNow(tool) }
+                        }
                     }
             } else { connectionForm }
         }
         .sheet(item: $assistant) { ToolboxAssistantView(connection: $0) }
+        .confirmationDialog(IDELanguageRunText.t("断开后修改连接设置？", "Disconnect to change connection settings?"), isPresented: $confirmingConfiguration, titleVisibility: .visible) {
+            Button(IDELanguageRunText.t("断开并配置", "Disconnect and configure")) { center.disconnectNow(tool) }
+            Button(IDELanguageRunText.t("取消", "Cancel"), role: .cancel) { }
+        }
         .alert(IDELanguageRunText.t("抓包导入", "Packet import"), isPresented: Binding(get: { packetFailure != nil }, set: { if !$0 { packetFailure = nil } })) {
             Button(IDELanguageRunText.t("好", "OK"), role: .cancel) { packetFailure = nil }
         } message: { Text(packetFailure ?? "") }
@@ -159,7 +171,14 @@ private struct ToolboxConnectionPage: View {
     private var connectionForm: some View {
         Form {
             if tool == .serialAssistant {
-                Section { SerialAssistantSetupView(configuration: $setup.serial, connected: false) }
+                Section {
+                    Label(center.connecting.contains(tool) ? IDELanguageRunText.t("正在连接", "Connecting") : IDELanguageRunText.t("未连接", "Disconnected"),
+                        systemImage: center.connecting.contains(tool) ? "arrow.triangle.2.circlepath" : "cable.connector")
+                        .accessibilityIdentifier("toolbox.serial.connectionStatus")
+                }
+                Section { SerialAssistantSetupView(configuration: $setup.serial, connected: false,
+                    allowsUSB: ToolboxConnection.includesUSBSerialDriver) }
+                    .disabled(center.connecting.contains(tool))
             }
             Section(IDELanguageRunText.t("连接", "Connection")) {
                 if tool == .serialAssistant, setup.serial.connection == .bluetooth {
@@ -181,10 +200,8 @@ private struct ToolboxConnectionPage: View {
                     TextField(IDELanguageRunText.t("写入特征 UUID", "Write characteristic UUID"), text: $writeUUID)
                     TextField(IDELanguageRunText.t("通知特征 UUID（可选）", "Notify characteristic UUID (optional)"), text: $notifyUUID)
                 } else if tool == .serialAssistant, setup.serial.connection == .usb {
-                    TextField("USB Vendor ID · HEX", text: $setup.usbVendorID).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    TextField("USB Product ID · HEX", text: $setup.usbProductID).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    TextField(IDELanguageRunText.t("波特率", "Baud rate"), text: $setup.usbBaud).keyboardType(.numberPad)
-                    Text(IDELanguageRunText.t("USB 需要受支持的 iPad、驱动与应用授权。当前候选尚未连接 USB 驱动宿主，可先使用 TCP、UDP 或蓝牙。", "USB needs a supported iPad, driver and app authorization. This candidate has no USB driver host connected; use TCP, UDP or Bluetooth in the meantime.")).font(.caption).foregroundStyle(.secondary)
+                    ToolboxUSBSetupView(devices: usbDevices, setup: $setup,
+                        busy: center.connecting.contains(tool), find: center.refreshUSBDevices)
                 } else {
                     TextField([ToolboxTool.http, .webSocket].contains(tool) ? "URL" : IDELanguageRunText.t("地址或主机名", "Address or hostname"), text: $setup.address)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("toolbox.address")
@@ -207,6 +224,9 @@ private struct ToolboxConnectionPage: View {
                     Label(error, systemImage: "exclamationmark.circle.fill").foregroundStyle(.red)
                         .accessibilityIdentifier("toolbox.connection.error")
                 }
+                if let details = center.failureDetails[tool] {
+                    DisclosureGroup(IDELanguageRunText.t("详情", "Details")) { Text(details).font(.caption.monospaced()).textSelection(.enabled) }
+                }
                 Button(IDELanguageRunText.t("连接", "Connect")) {
                     attemptedConnection = true
                     guard setup.inputIssues(for: tool).isEmpty else { return }
@@ -215,15 +235,29 @@ private struct ToolboxConnectionPage: View {
                         value.bluetooth = BluetoothSerialEndpoint(peripheralID: selectedPeripheral, serviceUUID: serviceUUID,
                             writeCharacteristicUUID: writeUUID, notifyCharacteristicUUID: notifyUUID.isEmpty ? nil : notifyUUID)
                     }
-                    center.connect(tool, setup: value); setup.password = ""
-                }.disabled(center.connecting.contains(tool))
+                    do {
+                        if tool == .serialAssistant, value.serial.connection == .usb {
+                            value.usbRequest = try usbDevices.request(settings: value.usbSettings())
+                        }
+                        center.connect(tool, setup: value); setup.password = ""
+                    } catch { center.reportUSBFailure(error) }
+                }.disabled(center.connecting.contains(tool) || (tool == .serialAssistant && setup.serial.connection == .usb && !usbDevices.canConnect))
                     .accessibilityIdentifier("toolbox.connect")
                 if center.connecting.contains(tool) {
                     HStack { ProgressView(); Button(IDELanguageRunText.t("取消", "Cancel")) { Task { await center.disconnect(tool) } } }
                 }
             }
+            ToolboxHistorySection(tool: tool, history: center.history, busy: center.connecting.contains(tool)) { configuration in
+                guard let restored = configuration.connectionSetup() else { return }
+                setup = restored; attemptedConnection = false; selectedPeripheral = nil
+                peripherals = []; serviceUUID = ""; writeUUID = ""; notifyUUID = ""
+                center.resetUSBDevices()
+            }
         }
-        .onChange(of: setup.serial.connection) { _, value in if value != .tcp { setup.useTLS = false } }
+        .onChange(of: setup.serial.connection) { _, value in
+            if value != .tcp { setup.useTLS = false }
+            if value != .usb { center.resetUSBDevices() }
+        }
     }
     private var inputIssues: [ToolboxConnectionInputIssue] {
         attemptedConnection ? setup.inputIssues(for: tool) : []
@@ -234,6 +268,27 @@ private struct ToolboxConnectionPage: View {
                 .font(.callout).foregroundStyle(.red)
                 .accessibilityIdentifier("toolbox." + field.rawValue + ".error")
         }
+    }
+    @ViewBuilder private func connectedWorkbench(_ owner: ToolboxConnection) -> some View {
+        if tool == .serialAssistant {
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label(IDELanguageRunText.t("已连接", "Connected"), systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .accessibilityIdentifier("toolbox.serial.connectionStatus")
+                        if let endpoint = owner.serial?.endpoint { Text(endpoint.title).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+                    }
+                    Spacer()
+                    Button(IDELanguageRunText.t("连接设置", "Connection settings"), systemImage: "slider.horizontal.3") { confirmingConfiguration = true }
+                        .accessibilityIdentifier("toolbox.serial.configure")
+                    Button(IDELanguageRunText.t("断开", "Disconnect")) { center.disconnectNow(tool) }
+                        .accessibilityIdentifier("toolbox.serial.disconnect")
+                }.padding(.horizontal).padding(.vertical, 8)
+                Divider()
+                workbench(owner)
+            }
+        } else { workbench(owner) }
     }
     @ViewBuilder private func workbench(_ owner: ToolboxConnection) -> some View {
         if let model = owner.httpModel { HTTPWorkbenchView(model: model, onSave: onSave, onExport: onExport) }
@@ -251,10 +306,23 @@ private struct ToolboxDiagnosticPage: View {
     @State private var failed = false
     var body: some View {
         Group {
-            if let model { DiagnosticWorkbenchView(model: model) }
+            if let model {
+                DiagnosticWorkbenchView(model: model, history: AnyView(ToolboxDiagnosticHistory(model: model, history: center.history)))
+            }
             else if failed { ContentUnavailableView(IDELanguageRunText.t("暂时无法打开", "Unable to open"), systemImage: "network.slash") }
             else { ProgressView() }
         }.task { do { model = try center.model(for: tool) } catch { failed = true } }
+    }
+}
+
+private struct ToolboxDiagnosticHistory: View {
+    @ObservedObject var model: DiagnosticWorkbenchModel
+    @ObservedObject var history: ToolboxHistoryStore
+    var body: some View {
+        ToolboxHistorySection(tool: model.tool, history: history, runsImmediately: true, busy: model.running) { configuration in
+            guard !model.running else { return }
+            configuration.apply(to: model); model.run()
+        }
     }
 }
 
@@ -264,6 +332,7 @@ private struct ToolboxRoamingPage: View {
     let onExport: (Data) -> Void
     @State private var target = ""
     @State private var targetWasEdited = false
+    @State private var showingHistory = false
     var body: some View {
         VStack(spacing: 0) {
             ToolboxWiFiIdentityPanel(center: center).padding()
@@ -292,7 +361,19 @@ private struct ToolboxRoamingPage: View {
                         .accessibilityIdentifier("toolbox.roaming.start")
                     if center.tracing { ProgressView() }
                     if center.failed { Text(IDELanguageRunText.t("未能开始，请检查目标与权限。", "Unable to start. Check the target and permissions.")) }
+                    historySection
                 }
+            }
+        }
+        .toolbar {
+            if center.roaming != nil {
+                Button(IDELanguageRunText.t("历史记录", "History"), systemImage: "clock.arrow.circlepath") { showingHistory = true }
+            }
+        }
+        .sheet(isPresented: $showingHistory) {
+            NavigationStack {
+                Form { historySection }.navigationTitle(IDELanguageRunText.t("漫游追踪历史", "Roaming history"))
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button(IDELanguageRunText.t("完成", "Done")) { showingHistory = false } } }
             }
         }
         .task { await refresh() }
@@ -300,6 +381,13 @@ private struct ToolboxRoamingPage: View {
             if !targetWasEdited, let gateway { target = gateway }
         }
         .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await refresh() } } }
+    }
+    private var historySection: some View {
+        ToolboxHistorySection(tool: .roaming, history: center.history, runsImmediately: true, busy: center.tracing) { configuration in
+            guard !center.tracing else { return }
+            target = configuration.target; targetWasEdited = true; showingHistory = false
+            center.startTrace(target: configuration.target, interval: configuration.interval)
+        }
     }
     private func refresh() async {
         await center.refreshNetworkInfo()

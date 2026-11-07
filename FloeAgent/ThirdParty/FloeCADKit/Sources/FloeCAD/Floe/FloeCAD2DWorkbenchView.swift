@@ -21,6 +21,7 @@ public extension FloeCADDocument {
     @MainActor func activate2DWorkspace() {
         guard !isClosed else { return }
         let model = viewModel()
+        model.planarNavigationOnly = true
         if session.document.sketches.isEmpty, !isReadOnly {
             let sketch = Sketch(name: FloeCADStrings.text("cad.sketch", "Sketch"), plane: .worldXY)
             session.perform(AddSketchCommand(sketch: sketch, title: FloeCADStrings.text("cad.sketch", "Sketch")))

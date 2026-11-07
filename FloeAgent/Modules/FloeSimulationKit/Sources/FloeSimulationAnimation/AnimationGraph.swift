@@ -57,6 +57,16 @@ public struct SimulationMorphTrack: Codable, Equatable, Sendable {
     public var weights: [[Double]]
     public init(targetID: String, timesSeconds: [Double], weights: [[Double]]) { self.targetID = targetID; self.timesSeconds = timesSeconds; self.weights = weights }
 }
+public struct SimulationAnimationCameraProjection:Codable,Equatable,Sendable {
+    public var verticalFOVDegrees:Double
+    public var orthographicHeightMeters:Double?
+    public init(verticalFOVDegrees:Double = 60,orthographicHeightMeters:Double? = nil) { self.verticalFOVDegrees = verticalFOVDegrees; self.orthographicHeightMeters = orthographicHeightMeters }
+}
+public struct SimulationAnimationCameraKey:Codable,Equatable,Sendable {
+    public var timeSeconds:Double
+    public var projection:SimulationAnimationCameraProjection
+    public init(timeSeconds:Double,projection:SimulationAnimationCameraProjection) { self.timeSeconds = timeSeconds; self.projection = projection }
+}
 public struct SimulationAnimationGraph: Codable, Equatable, Sendable {
     public var source: SimulationSourceRef
     public var durationSeconds: Double
@@ -66,8 +76,29 @@ public struct SimulationAnimationGraph: Codable, Equatable, Sendable {
     public var morphTracks: [SimulationMorphTrack]
     public var physicsResultID: UUID?
     public var physicsBindings: [SimulationAnimationPhysicsBinding]
+    public var meshBindings: [SimulationAnimationMeshBinding]?
+    public var cameraKeys:[SimulationAnimationCameraKey]?
     public init(source: SimulationSourceRef, durationSeconds: Double = 1, layers: [SimulationAnimationLayer] = [], bones: [SimulationAnimationBone] = [], ikChains: [SimulationAnimationIKChain] = [], morphTracks: [SimulationMorphTrack] = [], physicsResultID: UUID? = nil, physicsBindings: [SimulationAnimationPhysicsBinding] = []) {
         self.source = source; self.durationSeconds = durationSeconds; self.layers = layers; self.bones = bones; self.ikChains = ikChains; self.morphTracks = morphTracks; self.physicsResultID = physicsResultID; self.physicsBindings = physicsBindings
+    }
+    /// Fits every authored clock to the actual cache endpoint, including
+    /// sub-ulp differences from accumulated physics timesteps.
+    public mutating func fitDuration(to duration:Double) throws {
+        try validate()
+        guard duration.isFinite,duration>0,duration<=600 else { throw SimulationError.invalidInput("Choose a positive animation duration of at most ten minutes.") }
+        let originalDuration = durationSeconds
+        func time(_ value:Double) -> Double {
+            if value == originalDuration { return duration }
+            return min(duration,max(0,(value/originalDuration)*duration))
+        }
+        var fitted = self
+        for layer in fitted.layers.indices { for track in fitted.layers[layer].tracks.indices {
+            for key in fitted.layers[layer].tracks[track].keys.indices { fitted.layers[layer].tracks[track].keys[key].timeSeconds = time(fitted.layers[layer].tracks[track].keys[key].timeSeconds) }
+        } }
+        for index in fitted.morphTracks.indices { fitted.morphTracks[index].timesSeconds = fitted.morphTracks[index].timesSeconds.map(time) }
+        fitted.cameraKeys = fitted.cameraKeys?.map { var key = $0; key.timeSeconds = time(key.timeSeconds); return key }
+        fitted.durationSeconds = duration
+        try fitted.validate(); self = fitted
     }
     public func validate() throws {
         try source.validate()
@@ -80,6 +111,10 @@ public struct SimulationAnimationGraph: Codable, Equatable, Sendable {
         for bone in bones {
             guard !bone.id.isEmpty, transformIsValid(bone.restLocal), bone.parentID.map({ visited.contains($0) }) ?? true else { throw SimulationError.invalidInput("Bones must have valid transforms and follow their parent in hierarchy order.") }
             visited.insert(bone.id)
+        }
+        if let meshBindings {
+            guard meshBindings.count <= 256, Set(meshBindings.map(\.sourceObjectID)).count == meshBindings.count else { throw SimulationError.invalidInput("Duplicate or over-budget animated Mesh bindings.") }
+            for binding in meshBindings { try binding.validate(boneIDs:visited) }
         }
         var keys = 0
         for layer in layers {
@@ -100,6 +135,15 @@ public struct SimulationAnimationGraph: Codable, Equatable, Sendable {
                   zip(morph.timesSeconds,morph.timesSeconds.dropFirst()).allSatisfy({ $0 < $1 }), let count = morph.weights.first?.count, count > 0,
                   morph.weights.allSatisfy({ $0.count == count && $0.allSatisfy(\.isFinite) }) else { throw SimulationError.invalidInput("Invalid Morph time or weight array.") }
         }
+        if let cameraKeys {
+            guard cameraKeys.count <= 1_000_000, !cameraKeys.isEmpty,
+                  zip(cameraKeys,cameraKeys.dropFirst()).allSatisfy({ $0.timeSeconds < $1.timeSeconds }),
+                  cameraKeys.allSatisfy({ key in
+                      key.timeSeconds.isFinite && (0...durationSeconds).contains(key.timeSeconds) && key.projection.verticalFOVDegrees.isFinite && (5...170).contains(key.projection.verticalFOVDegrees)
+                        && (key.projection.orthographicHeightMeters.map { $0.isFinite && $0 > 0 } ?? true)
+                        && (key.projection.orthographicHeightMeters == nil) == (cameraKeys[0].projection.orthographicHeightMeters == nil)
+                  }) else { throw SimulationError.invalidInput("Use ordered camera keys with a consistent projection and valid lens settings.") }
+        }
     }
 }
 
@@ -111,4 +155,5 @@ public struct SimulationAnimationPose: Codable, Equatable, Sendable {
     public var morphWeights: [String: [Double]]
     public var softVertices: [String: [SimulationVector3]]
     public var hiddenObjects: Set<String>
+    public var cameraProjection:SimulationAnimationCameraProjection? = nil
 }

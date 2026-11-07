@@ -32,6 +32,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var didMarkFirstDraw = false
     #endif
     private let orientationCubeRenderer = OrientationCubeRenderer()
+    var showsOrientationCube = true
     private var viewportSize = CGSize(width: 1, height: 1)
 
     /// Sketch stroke weight, in DRAWABLE PIXELS (`viewportSize` is the drawable,
@@ -153,13 +154,15 @@ final class Renderer: NSObject, MTKViewDelegate {
                 // is still populated for the geometric grab hit-test.
                 // Orientation cube (spec §7.2), always on. Layout math is in
                 // points so its NDC placement matches tap hit-testing.
-                orientationCubeRenderer.prepare(device: context.device)
-                orientationCubeRenderer.draw(
+                if showsOrientationCube {
+                    orientationCubeRenderer.prepare(device: context.device)
+                    orientationCubeRenderer.draw(
                     encoder: overlayEncoder,
                     pipelines: context.pipelines,
                     camera: camera,
-                    viewSize: view.bounds.size
-                )
+                        viewSize: view.bounds.size
+                    )
+                }
                 overlayEncoder.endEncoding()
             }
         }

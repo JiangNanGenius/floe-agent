@@ -1,12 +1,23 @@
 import SwiftUI
 import FloeSimulationCore
 import FloeSimulationAnimation
+import FloeSimulationRuntime
 
 struct SimulationAnimationSettingsView: View {
     @Bindable var model: SimulationWorkbenchModel
+    @State private var pinRagdollRoot = false
     private var graph: Binding<SimulationAnimationGraph> { .init(get:{ model.animationGraph },set:{ model.writeAnimationGraph($0) }) }
     var body: some View {
         Form {
+            if model.sourceAnimationGraph != nil || model.sourceAnimationMessage != nil {
+                Section(simulationText("Existing model animation","模型已有动画")) {
+                    if let message = model.sourceAnimationMessage { Text(message).foregroundStyle(.secondary) }
+                    if model.sourceAnimationGraph != nil {
+                        Button(simulationText("Import rig and active clip","导入骨骼与当前片段")) { model.importSourceAnimation() }
+                            .disabled(model.baking).accessibilityIdentifier("simulation.animation.import")
+                    }
+                }
+            }
             Section(simulationText("Animation","动画")) {
                 SimulationNumberField(label:simulationText("Duration","时长"),value:graph.durationSeconds,unit:"s")
                 Button(simulationText("Preview pose","预览姿态")) { model.previewAnimation() }
@@ -70,8 +81,27 @@ struct SimulationAnimationSettingsView: View {
                     model.writeAnimationGraph(value)
                 }.disabled(model.animationGraph.bones.count < 3)
             }
+            Section(simulationText("Ragdoll","布娃娃")) {
+                Toggle(simulationText("Pin root","固定根骨骼"),isOn:$pinRagdollRoot)
+                Button(simulationText("Generate bodies and joints","生成碰撞体与关节")) { model.createRagdoll(pinRoot:pinRagdollRoot) }
+                    .disabled(model.animationGraph.bones.isEmpty || model.baking)
+                Text(simulationText("Run the generated study, then attach its physics result to animate the skin.","运行生成的研究，再关联物理结果以驱动蒙皮。"))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section(simulationText("Mesh skin and Morph","网格蒙皮与形态")) {
+                ForEach(model.sourceObjects) { object in
+                    Button(simulationText("Bind ","绑定 ")+object.name) { Task { await model.bindSourceMesh(object.id) } }
+                        .disabled(model.animationGraph.bones.isEmpty || model.preparingSourceMesh)
+                    SimulationMeshMorphEditor(model:model,object:object)
+                }
+                ForEach(model.animationGraph.meshBindings ?? [],id:\.sourceObjectID) { binding in
+                    LabeledContent(model.sourceObjects.first { $0.id == binding.sourceObjectID }?.name ?? binding.sourceObjectID,
+                                   value:"\(binding.skin.count) · \(binding.morphs.count)")
+                }
+                if model.preparingSourceMesh { ProgressView() }
+            }
             Section(simulationText("Physics blend","物理混合")) {
-                Button(simulationText("Attach current physics cache","关联当前物理缓存")) { if let result = model.result { var value = model.animationGraph; value.physicsResultID = result.id; model.writeAnimationGraph(value) } }.disabled(model.result?.backend.id != "floe.rapier" && model.result?.backend.id != "floe.particles")
+                Button(simulationText("Attach current physics cache","关联当前物理缓存")) { model.attachCurrentPhysicsCache() }.disabled(model.result?.backend.id != "floe.rapier" && model.result?.backend.id != "floe.particles")
                 ForEach(model.animationGraph.physicsBindings.indices,id:\.self) { index in
                     TextField(simulationText("Target","目标"),text:graph.physicsBindings[index].targetID)
                     SimulationChoicePicker(title:simulationText("Control","控制方式"),selection:graph.physicsBindings[index].control)
@@ -82,13 +112,60 @@ struct SimulationAnimationSettingsView: View {
                     for body in model.physics.bodies where !value.physicsBindings.contains(where:{ $0.targetID == body.sourceObjectID }) { value.physicsBindings.append(.init(targetID:body.sourceObjectID,bodyID:body.id)) }
                     model.writeAnimationGraph(value)
                 }.disabled(model.animationGraph.physicsResultID == nil)
-                Button(simulationText("Bake and export motion","烘焙并导出运动")) { Task { await model.bakeAnimation() } }.disabled(model.baking).accessibilityIdentifier("simulation.bake")
+            }
+            Section(simulationText("Export animation","导出动画")) {
+                Picker(simulationText("Format","格式"),selection:$model.animationExportFormat) {
+                    ForEach(model.availableAnimationExportFormats,id:\.self) { value in Text(value.simulationTitle).tag(value) }
+                }
+                Picker(simulationText("Frame rate","帧率"),selection:$model.animationFramesPerSecond) {
+                    ForEach([24,30,60],id:\.self) { Text("\($0) fps").tag($0) }
+                }
+                Button(simulationText("Bake and export","烘焙并导出")) { Task { await model.bakeAnimation(format:model.animationExportFormat,framesPerSecond:model.animationFramesPerSecond) } }
+                    .disabled(model.baking).accessibilityIdentifier("simulation.bake")
                 if model.baking {
                     ProgressView(value:model.bakeProgress?.fraction)
                     Button(model.bakeCancelling ? simulationText("Stopping","正在停止") : simulationText("Stop baking","停止烘焙")) { model.cancelBake() }.disabled(model.bakeCancelling)
                 }
-                if let url = model.exportURL { ShareLink(item:url) { Label(simulationText("Share motion","共享运动"),systemImage:"square.and.arrow.up") } }
+                if let url = model.exportURL { ShareLink(item:url) { Label(simulationText("Share export","共享导出文件"),systemImage:"square.and.arrow.up") } }
             }
+            if !model.savedAnimationExports.isEmpty {
+                Section(simulationText("Saved exports","已保存导出")) {
+                    ForEach(model.savedAnimationExports) { record in
+                        Button { Task { await model.shareAnimationExport(record.id) } } label: {
+                            LabeledContent(record.format.simulationTitle,value:"\(record.frameCount) · \(record.framesPerSecond) fps")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private extension SimulationAnimationExportFormat {
+    var simulationTitle:String {
+        switch self { case .motionJSON: simulationText("Motion data (JSON)","运动数据 (JSON)")
+        case .glb: simulationText("3D animation (GLB)","三维动画 (GLB)")
+        case .mp4: simulationText("Video (MP4)","视频 (MP4)") }
+    }
+}
+
+private struct SimulationMeshMorphEditor:View {
+    @Bindable var model:SimulationWorkbenchModel
+    var object:SimulationSourceObject
+    @State private var name = "Morph 1"
+    @State private var vertex = 0
+    @State private var offset = SimulationVector3.zero
+    @State private var startWeight = 0.0
+    @State private var endWeight = 1.0
+    var body:some View {
+        DisclosureGroup(simulationText("Edit vertex Morph","编辑顶点形变")) {
+            TextField(simulationText("Name","名称"),text:$name)
+            Stepper("\(simulationText("Vertex","顶点")) \(vertex)",value:$vertex,in:0...max(0,(model.sourceMeshes.first { $0.id == object.id }?.positionsMeters.count ?? 1)-1))
+            SimulationVectorFields(title:simulationText("Offset","偏移"),value:$offset,unit:"m")
+            SimulationNumberField(label:simulationText("Start weight","起始权重"),value:$startWeight)
+            SimulationNumberField(label:simulationText("End weight","结束权重"),value:$endWeight)
+            Button(simulationText("Apply Morph","应用形变")) { model.setMeshMorph(objectID:object.id,name:name,vertexIndex:vertex,offset:offset,startWeight:startWeight,endWeight:endWeight) }
+                .disabled(model.baking)
         }
     }
 }

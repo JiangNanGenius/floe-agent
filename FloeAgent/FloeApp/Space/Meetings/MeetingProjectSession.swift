@@ -118,7 +118,9 @@ import FloeTools
         defer { changingCapture = false }
         do {
             stopPlayback()
-            guard await AVAudioApplication.requestRecordPermission() else { throw PersonalContentError.storageUnavailable }
+            guard await AVAudioApplication.requestRecordPermission() else {
+                throw MeetingError.captureBackendFailed(IDELanguageRunText.t("请在系统设置中允许 Floe 使用麦克风，再开始录音。", "Allow Floe to use the microphone in system settings, then start recording."))
+            }
             try audio.acquireRecording(); audioHeld = true
             configureLiveTranscription()
             let directory = root.appendingPathComponent("Recordings")

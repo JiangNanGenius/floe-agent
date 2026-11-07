@@ -72,7 +72,7 @@ struct NotePencilView: UIViewRepresentable {
         // The page backdrop owns paper/PDF pixels; PencilKit only draws the ink above it.
         canvas.backgroundColor = .clear
         canvas.isOpaque = false
-        canvas.drawingPolicy = fingerDrawing ? .anyInput : .pencilOnly
+        NativeDrawingInputPolicy.apply(to: canvas, fingerDrawing: fingerDrawing)
         canvas.maximumSupportedContentVersion = .latest
         canvas.tool = tool
         canvas.delegate = context.coordinator
@@ -110,8 +110,7 @@ struct NotePencilView: UIViewRepresentable {
         if canvas.drawingGestureRecognizer.isEnabled == regionSelection {
             canvas.drawingGestureRecognizer.isEnabled = !regionSelection
         }
-        let policy: PKCanvasViewDrawingPolicy = fingerDrawing ? .anyInput : .pencilOnly
-        if canvas.drawingPolicy != policy { canvas.drawingPolicy = policy }
+        NativeDrawingInputPolicy.apply(to: canvas, fingerDrawing: fingerDrawing)
         coordinator.applyToolIfChanged(tool, to: canvas)
         #if compiler(>=6.4)
         if #available(iOS 27.0, *) {

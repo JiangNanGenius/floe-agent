@@ -69,6 +69,8 @@ import FloeBiologyEngine
     let model:BiologyWorkbenchModel
     let asset:BiologyAsset
     let executionOwner:(@MainActor @Sendable (UUID,UUID) async throws -> BiologyExecutionOwner)?
+    let onRunAnalysis:BiologyNativeAnalysisHandler?
+    let scientificEnvironmentID:String?
     @State private var environment=""
     @State private var series=0
     @State private var level=0
@@ -80,42 +82,69 @@ import FloeBiologyEngine
     @State private var size=512
     @State private var image:MicroscopyImage?
     @State private var busy=false
+    @State private var regionGeneration=UUID()
+    @State private var regionTask:Task<Void,Never>?
     @State private var error:String?
-    private var environments:[String] {model.methods.keys.filter{model.methods[$0]?.contains("micro.tile")==true}.sorted()}
+    private var environments:[String] {
+        var values=Set(model.methods.keys.filter{model.methods[$0]?.contains("micro.tile")==true})
+        if onRunAnalysis != nil,let scientificEnvironmentID{values.insert(scientificEnvironmentID)}
+        return values.sorted()
+    }
+    private func environmentTitle(_ id:String)->String {
+        id==scientificEnvironmentID ? biologyText("Task environment · checked on Run","任务环境 · 运行时检查"):id
+    }
     private var selection:JSONValue? {model.project?.selections?[asset.id.uuidString]}
     private var savedTile:BiologyRun? {model.project?.runs.last(where:{$0.assetID==asset.id && $0.assetRevision==asset.revision && $0.method=="micro.tile" && $0.status == .succeeded})}
     var body:some View {
         VStack {
             Form {
-                if !environments.isEmpty {BiologyChoiceField(title:biologyText("Compute environment","计算环境"),selection:$environment,value:environment){ForEach(environments,id:\.self){Text($0).tag($0)}}}
+                if !environments.isEmpty {BiologyChoiceField(title:biologyText("Compute environment","计算环境"),selection:$environment,value:environmentTitle(environment)){ForEach(environments,id:\.self){Text(environmentTitle($0)).tag($0)}}}
                 HStack {Stepper(biologyText("Series ","序列 ")+String(series+1),value:$series,in:0...1024);Stepper(biologyText("Level ","层级 ")+String(level),value:$level,in:0...64)}
                 HStack {Stepper("C \(channel+1)",value:$channel,in:0...31);Stepper("Z \(slice+1)",value:$slice,in:0...511);Stepper("T \(frame+1)",value:$frame,in:0...511)}
                 HStack {TextField("X",value:$x,format:.number).biologyNamedInput("X");TextField("Y",value:$y,format:.number).biologyNamedInput("Y");BiologyChoiceField(title:biologyText("Tile size","图块大小"),selection:$size,value:String(size)){ForEach([128,256,512,1024],id:\.self){Text(String($0)).tag($0)}}}
-                Button(biologyText("Read region","读取区域")){Task{await read()}}.buttonStyle(BiologyPrimaryButtonStyle()).disabled(busy || environment.isEmpty || executionOwner==nil)
-                if environment.isEmpty || executionOwner==nil {Text(biologyText("Connect a compute environment to read this image. The original is saved.","接通计算环境后即可读取图像，原件已保存。")).foregroundStyle(.secondary)}
+                Button(biologyText("Read region","读取区域")){
+                    let generation=UUID();regionGeneration=generation;regionTask?.cancel()
+                    regionTask=Task{await read(generation:generation)}
+                }.buttonStyle(BiologyPrimaryButtonStyle()).disabled(busy || environment.isEmpty || (executionOwner==nil && onRunAnalysis==nil))
+                if environment.isEmpty || (executionOwner==nil && onRunAnalysis==nil) {Text(biologyText("Connect a compute environment to read this image. The original is saved.","接通计算环境后即可读取图像，原件已保存。")).foregroundStyle(.secondary)}
                 if let error {Text(error).font(.caption).textSelection(.enabled)}
             }.frame(maxHeight:300)
             if busy {ProgressView().frame(maxWidth:.infinity,maxHeight:.infinity)}
             else if let image {BiologyMicroscopyView(image:image,result:nil,channel:.constant(0),slice:.constant(0),frame:.constant(0))}
             else {ContentUnavailableView(biologyText("Choose an image region","选择图像区域"),systemImage:"viewfinder")}
         }.task{environment=environments.first ?? "";applySelection();showSavedTile()}
+        .onDisappear{regionTask?.cancel();regionTask=nil;regionGeneration=UUID()}
+        .onChange(of:asset.revision){_,_ in regionTask?.cancel();regionTask=nil;regionGeneration=UUID();busy=false;image=nil;showSavedTile()}
         .onChange(of:selection){_,_ in applySelection()}
         .onChange(of:savedTile?.id){_,_ in showSavedTile()}
         .onChange(of:environments){_,names in if !names.contains(environment){environment=names.first ?? ""}}
     }
     private func applySelection(){guard let selected=selection else{return};series=Int(selected["series"]?.number ?? 0);level=Int(selected["level"]?.number ?? 0);channel=Int(selected["channel"]?.number ?? 0);slice=Int(selected["slice"]?.number ?? 0);frame=Int(selected["frame"]?.number ?? 0);if let region=selected["region"]?.array,region.count==4{x=Int(region[0].number ?? 0);y=Int(region[1].number ?? 0);size=min(1024,Int(region[2].number ?? 512))}}
     private func showSavedTile(){guard let text=savedTile?.result?.text else{return};do{let decoded=try JSONDecoder().decode(MicroscopyImage.self,from:Data(text.utf8));try decoded.validate();image=decoded}catch{self.error=error.localizedDescription}}
-    private func read() async {
-        guard let executionOwner else{return};busy=true;defer{busy=false};error=nil
+    private func read(generation:UUID) async {
+        guard executionOwner != nil || onRunAnalysis != nil else{return}
+        busy=true;defer{if regionGeneration==generation{busy=false}};error=nil
         do {
-            let owner=try await executionOwner(model.projectID,asset.id)
             let options:JSONValue = .object(["series":.number(Double(series)),"level":.number(Double(level)),"channel":.number(Double(channel)),"slice":.number(Double(slice)),"frame":.number(Double(frame)),"region":.array([x,y,size,size].map{.number(Double($0))})])
-            let run=try await model.service.start(model.projectID,assetID:asset.id,expectedAssetRevision:asset.revision,method:"micro.tile",options:options,environmentID:environment,owner:owner)
+            let run:BiologyRun
+            if let onRunAnalysis {
+                run=try await onRunAnalysis(.init(projectID:model.projectID,assetID:asset.id,assetRevision:asset.revision,
+                    method:"micro.tile",options:options,environmentID:environment,source:.imageRegion))
+            }else{
+                guard let executionOwner else{return}
+                let owner=try await executionOwner(model.projectID,asset.id)
+                run=try await model.service.start(model.projectID,assetID:asset.id,expectedAssetRevision:asset.revision,method:"micro.tile",options:options,environmentID:environment,owner:owner)
+            }
+            try Task.checkCancellation()
+            guard regionGeneration==generation else{return}
             let completed=try await model.service.wait(model.projectID,runID:run.id)
+            try Task.checkCancellation()
+            guard regionGeneration==generation else{return}
             guard completed.status == .succeeded,let text=completed.result?.text else {throw BiologyError.unavailable(completed.error ?? "Image region was not read.")}
             let decoded=try JSONDecoder().decode(MicroscopyImage.self,from:Data(text.utf8));try decoded.validate();image=decoded
             await model.refresh()
-        }catch{self.error=error.localizedDescription}
+        }catch is CancellationError{}
+        catch{if regionGeneration==generation{self.error=error.localizedDescription}}
     }
 }
 #endif

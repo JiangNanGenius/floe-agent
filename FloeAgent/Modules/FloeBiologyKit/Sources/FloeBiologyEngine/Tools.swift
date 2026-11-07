@@ -2,6 +2,10 @@
 import Foundation
 import FloeBiologyCore
 
+/// A native host can keep this console on its ordinary registry/approval path.
+/// The default remains the standalone component's local implementation.
+public typealias BiologyHostToolInvocation = @Sendable (String,JSONValue,String?) async throws -> JSONValue
+
 public struct BiologyToolDescriptor: Codable, Sendable {
     public var name:String
     public var description:String
@@ -16,8 +20,9 @@ public actor BiologyToolSession {
     private let canCreate:Bool
     let readOnly:Bool
     private let isCancelled:@Sendable ()->Bool
-    public init(service:BiologyService,authorizedProjectIDs:Set<UUID>,owner:BiologyExecutionOwner,canCreate:Bool = false,readOnly:Bool=false,isCancelled:@escaping @Sendable ()->Bool = {false}) {
-        self.service=service;projects=authorizedProjectIDs;self.owner=owner;self.canCreate=canCreate && !readOnly;self.readOnly=readOnly;self.isCancelled=isCancelled
+    private let hostInvocation:BiologyHostToolInvocation?
+    public init(service:BiologyService,authorizedProjectIDs:Set<UUID>,owner:BiologyExecutionOwner,canCreate:Bool = false,readOnly:Bool=false,isCancelled:@escaping @Sendable ()->Bool = {false},hostInvocation:BiologyHostToolInvocation? = nil) {
+        self.service=service;projects=authorizedProjectIDs;self.owner=owner;self.canCreate=canCreate && !readOnly;self.readOnly=readOnly;self.isCancelled=isCancelled;self.hostInvocation=hostInvocation
     }
     public func descriptors() -> [BiologyToolDescriptor] {
         var list=[
@@ -77,6 +82,23 @@ public actor BiologyToolSession {
         try BiologyToolSchemas.validate(arguments,against:descriptor.parameters)
         try Task.checkCancellation()
         if isCancelled(){throw CancellationError()}
+        if let hostInvocation {
+            for key in ["projectID","sourceProjectID"] {
+                if let raw=arguments[key]?.string {
+                    guard let id=UUID(uuidString:raw),projects.contains(id) else {
+                        throw BiologyError.unavailable("This project is outside the task's authorized scope.")
+                    }
+                }
+            }
+            guard let requestID,!requestID.isEmpty,requestID.utf8.count<=1024 else {
+                throw BiologyError.invalid("The host tool request needs its stable call identity.")
+            }
+            let result=try await hostInvocation(name,arguments,requestID)
+            try Task.checkCancellation()
+            if isCancelled(){throw CancellationError()}
+            if canCreate,["biology.create","biology.importProject"].contains(name),let id=result["id"]?.string.flatMap(UUID.init(uuidString:)) {projects.insert(id)}
+            return result
+        }
         let identity=BiologyMutationIdentity(owner:owner,requestID:requestID ?? UUID().uuidString,argumentDigest:BiologyProjectStore.digest(try BiologyCoding.encode(JSONValue.object(["tool":.string(name),"arguments":arguments]))))
         if name=="biology.create" {
             guard canCreate,let title=arguments["title"]?.string else {throw BiologyError.unavailable("This session cannot create projects.")}

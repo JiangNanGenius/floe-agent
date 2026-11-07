@@ -1654,6 +1654,20 @@ struct FloeCADEditorView: View {
     /// Viewport + floating chrome + toolbar; the presentation modifiers
     /// (importers, exporters, sheets, alerts) attach in `editorContent`.
     /// Split keeps each expression type-checkable in reasonable time.
+    @ViewBuilder private func cameraOrientationCommands(_ viewModel: EditorViewModel) -> some View {
+        if draftingOnly {
+            Button(FloeCADStrings.text("cad.ui.view.drawingPlane", "Drawing plane")) { viewModel.lookAtSketch() }
+                .accessibilityIdentifier("CAD2DDrawingPlane")
+        } else {
+            ForEach(StandardView.allCases) { standard in
+                Button(standard.rawValue) { viewModel.applyStandardView(standard) }
+            }
+            Divider()
+            Toggle("Orthographic", isOn: Binding(
+                get: { viewModel.orthographicEnabled }, set: { viewModel.setOrthographic($0) }))
+        }
+    }
+
     private func viewportChrome(_ viewModel: EditorViewModel, paletteContentFrame: CGRect) -> AnyView {
         // Bound metadata depth to avoid the device opening crash in 311.
         // These stable stages preserve every modifier and its original order.
@@ -1662,7 +1676,7 @@ struct FloeCADEditorView: View {
         // frames, and the view centres, in the strip it leaves visible.
         ViewportView(viewModel: viewModel,
                      paletteFrame: horizontalSizeClass == .compact ? paletteFrame : nil,
-                     paletteOnRight: settings.paletteOnRight)
+                     paletteOnRight: settings.paletteOnRight, draftingOnly: draftingOnly)
             // Stable surface identity for the native face-picker route. This
             // is an identifier only; the Metal view and its gestures are
             // unchanged.
@@ -2307,17 +2321,7 @@ struct FloeCADEditorView: View {
                     // Views popover (spec §7.3): standard views + projection,
                     // plus Display modes / Isolate / Section (spec §16).
                     Menu {
-                        ForEach(StandardView.allCases.filter { !draftingOnly || $0 == .top || $0 == .bottom }) { standard in
-                            Button(standard.rawValue) {
-                                viewModel.applyStandardView(standard)
-                            }
-                        }
-                        Divider()
-                        Toggle("Orthographic", isOn: Binding(
-                            get: { viewModel.orthographicEnabled },
-                            set: { viewModel.setOrthographic($0) }
-                        ))
-                        .disabled(draftingOnly)
+                        cameraOrientationCommands(viewModel)
                         Divider()
                         // Display modes (spec §16.4); the submenu label names
                         // the active shader.
@@ -2567,17 +2571,7 @@ struct FloeCADEditorView: View {
             }
             .accessibilityIdentifier("CADCompactSettingsButton")
             Menu {
-                ForEach(StandardView.allCases.filter { !draftingOnly || $0 == .top || $0 == .bottom }) { standard in
-                    Button(standard.rawValue) {
-                        viewModel.applyStandardView(standard)
-                    }
-                }
-                Divider()
-                Toggle("Orthographic", isOn: Binding(
-                    get: { viewModel.orthographicEnabled },
-                    set: { viewModel.setOrthographic($0) }
-                ))
-                .disabled(draftingOnly)
+                cameraOrientationCommands(viewModel)
                 Divider()
                 Menu {
                     Picker("Display", selection: Binding(

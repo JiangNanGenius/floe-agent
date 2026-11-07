@@ -9,11 +9,7 @@ import FloeToolboxClients
 import FloeToolboxHost
 import FloeToolboxUI
 import FloeToolboxWorkbenches
-
-nonisolated enum ToolboxHostConnectionError: Error, LocalizedError {
-    case usbHostUnavailable
-    var errorDescription: String? { IDELanguageRunText.t("USB 驱动宿主尚未启用，当前不能连接 USB 设备。请选择其他连接方式。", "The USB driver host is not enabled. Choose another connection type.") }
-}
+import FloeToolboxUSB
 
 nonisolated enum ToolboxConnectionInputIssue: Error, LocalizedError, Equatable, Sendable {
     enum Field: String, Sendable { case address, port }
@@ -43,9 +39,11 @@ nonisolated enum ToolboxConnectionInputIssue: Error, LocalizedError, Equatable, 
 }
 
 nonisolated struct ToolboxConnectionSetup: Sendable {
-    var usbVendorID = ""
-    var usbProductID = ""
     var usbBaud = "115200"
+    var usbDataBits: UInt8 = 8
+    var usbStopBits: UInt8 = 1
+    var usbParity: UInt8 = 0
+    var usbRequest: ToolboxUSBOpenRequest?
     var address = ""
     var port = ""
     var useTLS = false
@@ -85,6 +83,13 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
         default: return []
         }
     }
+
+    func usbSettings() throws -> USBSerialSettings {
+        guard let baud = UInt32(usbBaud.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let parity = USBSerialSettings.Parity(rawValue: usbParity) else { throw ToolboxUSBFailure.invalidSettings }
+        do { return try USBSerialSettings(baud: baud, dataBits: usbDataBits, stopBits: usbStopBits, parity: parity) }
+        catch { throw ToolboxUSBFailure.invalidSettings }
+    }
 }
 
 /// Models, the sole receive pump and cancellation belong to this service
@@ -108,12 +113,29 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
     private var receiver: SerialReceiveService?
     private var transport: (any SerialConnection)?
 
+    static var includesUSBSerialDriver: Bool {
+        if case .bundledUnverified = USBDriverPackage.inspect(in: Bundle.main.bundleURL) { return true }
+        return false
+    }
+
     private init(tool: ToolboxTool, lease: SessionLease, journal: CaptureJournal, redactor: CaptureRedactor) {
         id = lease.ownerID; self.tool = tool; self.lease = lease; self.journal = journal; self.redactor = redactor
     }
     static func open(tool: ToolboxTool, setup: ToolboxConnectionSetup, environment: AppEnvironment,
-                     workbenchModels: Bool = true) async throws -> ToolboxConnection {
+                     workbenchModels: Bool = true,
+                     onUSBFailure: (@MainActor @Sendable (ToolboxUSBFailure) -> Void)? = nil) async throws -> ToolboxConnection {
+        // USB serial is deferred from this candidate until its distribution
+        // permission is granted and the driver is included in an App build.
+        if tool == .serialAssistant, setup.serial.connection == .usb {
+            guard includesUSBSerialDriver else {
+                throw ClientError.unsupported
+            }
+        }
         if let issue = setup.inputIssues(for: tool).first { throw issue }
+        if tool == .serialAssistant, setup.serial.connection == .usb {
+            guard let request = setup.usbRequest else { throw ToolboxUSBFailure.chooseDevice }
+            try request.validate()
+        }
         let lease = SessionLease(ownerID: UUID())
         let root = try PersonalContentLibrary.applicationRoot().deletingLastPathComponent().appendingPathComponent("Toolbox", isDirectory: true)
         let repository = ToolboxCaptureStore(database: environment.database, exportRoot: root.appendingPathComponent("Exports"))
@@ -167,11 +189,27 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
                     password: setup.password.isEmpty ? nil : Data(setup.password.utf8), timeout: min(setup.networkTimeoutSeconds, 15))
                 if workbenchModels { owner.mqttModel = MQTTWorkbenchModel(client: client, journal: journal, provider: provider) }
             case .serialAssistant:
-                if setup.serial.connection == .usb { throw ToolboxHostConnectionError.usbHostUnavailable }
                 let wire = try setup.serial.wireProtocol()
                 let endpoint: SerialEndpoint
                 let connection: any SerialConnection
-                if setup.serial.connection == .bluetooth {
+                if setup.serial.connection == .usb {
+                    guard let request = setup.usbRequest else { throw ToolboxUSBFailure.chooseDevice }
+                    let usb = try await request.open()
+                    let adapter = ToolboxUSBTransport(connection: usb, failed: { [weak owner] failure in
+                        await MainActor.run {
+                            guard let owner, owner.active else { return }
+                            owner.invalidate(); onUSBFailure?(failure)
+                        }
+                        await owner?.close()
+                    })
+                    owner.transport = adapter // Own immediately, including later DB/session failure.
+                    connection = adapter
+                    endpoint = try SerialEndpoint(title: request.title, transport: .usb, wireProtocol: wire,
+                        usbVendorID: request.device.vendorID, usbProductID: request.device.productID)
+                    try await repository.describe(captureID: lease.sessionID, ownerID: lease.ownerID,
+                        title: request.title, kind: tool.rawValue)
+                    try await journal.append([CaptureEvent(bytes: Data(), direction: .observation, notes: [request.captureDescription])])
+                } else if setup.serial.connection == .bluetooth {
                     guard let bluetooth = setup.bluetooth else { throw ClientError.invalidConfiguration }
                     endpoint = try SerialEndpoint(title: "Bluetooth", transport: .bluetooth, wireProtocol: wire,
                         peripheralID: bluetooth.peripheralID, serviceUUID: bluetooth.serviceUUID,
@@ -187,13 +225,14 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
                 }
                 owner.transport = connection
                 try setup.serial.validate(endpoint: endpoint)
-                let session = try SerialSession(lease: lease, endpoint: endpoint, journal: journal, connection: connection, redactor: redactor, authorize: authorize)
+                let session = try SerialSession(lease: lease, endpoint: endpoint, journal: journal, connection: connection, redactor: redactor,
+                    maximumExchangeBytes: setup.serial.connection == .usb ? 65_536 : 256 * 1024, authorize: authorize)
                 owner.serial = session
                 if setup.serial.protocolType == .modbus {
                     let client = try ModbusClient(session: session)
                     owner.modbus = client
-                    owner.modbusModel = ModbusWorkbenchModel(client: client, journal: journal, provider: provider)
-                } else {
+                    if workbenchModels { owner.modbusModel = ModbusWorkbenchModel(client: client, journal: journal, provider: provider) }
+                } else if workbenchModels {
                     let model = SerialPanelModel(session: session, journal: journal, provider: provider)
                     owner.serialModel = model
                     let receiver = SerialReceiveService(session: session, updated: { [weak model] in await model?.refresh() })
@@ -208,6 +247,7 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
     }
     func invalidate() {
         active = false
+        serialModel?.invalidate()
         httpModel?.capture.cancelAnalysis()
         webSocketModel?.capture.cancelAnalysis()
         mqttModel?.capture.cancelAnalysis()

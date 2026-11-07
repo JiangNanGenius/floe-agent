@@ -167,6 +167,9 @@ public enum TypedMutationContract {
     /// it is a service container extent, never a fabricated record path.
     /// Existing internal authorization/index bookkeeping remains internalState.
     public static let nativeStudioLibraryStoreKey = "nativeStudioLibrary"
+    /// App-owned native Biology originals, assets and lifecycle journals.
+    /// This is injected by the concrete host, never accepted from arguments.
+    public static let nativeBiologyStoreKey = "nativeBiology"
 
     public static func nativeStudioContainerPath(serviceStorePaths:[String:String]) -> String? {
         guard let path = serviceStorePaths[nativeStudioLibraryStoreKey], (path as NSString).isAbsolutePath,
@@ -201,7 +204,7 @@ public enum TypedMutationContract {
     /// Every other typed family fully bounds its write set and drops the
     /// wildcard for narrow file keys.
     public static func keepsWorkspaceBounding(_ toolName: String) -> Bool {
-        toolName == "media.project"
+        toolName == "media.project" || ["biology.analyze", "biology.job", "biology.export"].contains(toolName)
     }
 
     // MARK: - Contract table
@@ -216,6 +219,16 @@ public enum TypedMutationContract {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         switch toolName {
+        case "biology.create", "biology.importProject", "biology.import", "biology.edit", "biology.analyze",
+             "biology.job", "biology.derive", "biology.export", "biology.update", "biology.select",
+             "biology.stop", "biology.restore", "biology.deleteProject", "biology.restoreDeleted":
+            var stores: [TypedOutputSpec] = [.init(argument: "projectID", role: .sourceWrite,
+                whenAbsent: .required, storeKey: nativeBiologyStoreKey)]
+            if ["biology.create", "biology.importProject", "biology.deleteProject", "biology.restoreDeleted"].contains(toolName) {
+                stores.append(.init(argument: "projectID", role: .sourceWrite,
+                    whenAbsent: .required, storeKey: nativeStudioLibraryStoreKey))
+            }
+            return stores
         case "studio.create", "studio.edit", "studio.run", "studio.media", "studio.chemistry", "studio.machining", "studio.simulation":
             return nativeStudioSpecs(toolName:toolName,arguments:arguments)
         case "document.pdf.edit":
@@ -485,7 +498,7 @@ public enum TypedMutationContract {
         let role: TypedMutableRole
         if toolName == "studio.create" {
             guard keys(["kind","title","format"]), let kind = arguments["kind"] as? String,
-                  ["canvas","diagram","image","drawing","video","music","meeting","chemistry","document","cad2D","cad3D"].contains(kind),
+                  ["canvas","diagram","image","drawing","video","music","meeting","chemistry","biology","document","cad2D","cad3D"].contains(kind),
                   let title = arguments["title"] as? String, (1...160).contains(title.count) else { return [] }
             if let format = arguments["format"], !(format is NSNull) {
                 guard kind == "document", let name = format as? String, ["docx","xlsx","pptx","md"].contains(name) else { return [] }
@@ -515,13 +528,26 @@ public enum TypedMutationContract {
                 guard keys(["projectID","action","inputJSON"]), let action = arguments["action"] as? String,
                       ["calculate","cancel","apply","export"].contains(action), inputIsNative() else { return [] }
             case "studio.machining":
-                guard keys(["projectID","action","expectedRevision","studyJSON","title","offset","limit"]),
-                      let action = arguments["action"] as? String,
-                      ["prepare","configure","calculate","exportSTL","exportToolpath","preparePrint"].contains(action),
-                      text("expectedRevision",4096) != nil else { return [] }
+                guard let action = arguments["action"] as? String,text("expectedRevision",4096) != nil else { return [] }
+                if ["research.configure","research.calculate","research.cancel","research.save","research.openSaved"].contains(action) {
+                    guard keys(["projectID","action","expectedRevision","researchJSON"]),let json = text("researchJSON",2_097_152),
+                          let request = try? JSONSerialization.jsonObject(with:Data(json.utf8)) as? [String:Any],
+                          Set(request.keys).isSubset(of:["family","expectedFingerprint","inputJSON","operationID","content","offset","limit"]),
+                          let family = request["family"] as? String,["manufacturingCell","virtualMachine","engineeringAnalysis"].contains(family),
+                          let fingerprint = request["expectedFingerprint"] as? String,!fingerprint.isEmpty,fingerprint.utf8.count <= 4096 else { return [] }
+                    if action == "research.configure" {
+                        guard let input = request["inputJSON"] as? String,input.utf8.count <= 2_097_152,
+                              (try? JSONSerialization.jsonObject(with:Data(input.utf8))) is [String:Any],request["operationID"] == nil else { return [] }
+                    } else if request["inputJSON"] != nil { return [] }
+                    if action == "research.cancel" { guard let id = request["operationID"] as? String,UUID(uuidString:id) != nil else { return [] } }
+                    else if request["operationID"] != nil { return [] }
+                } else {
+                    guard keys(["projectID","action","expectedRevision","studyJSON","title","offset","limit"]),
+                          ["prepare","configure","calculate","exportSTL","exportToolpath","preparePrint"].contains(action) else { return [] }
+                }
             case "studio.simulation":
                 guard keys(["projectID","command","inputJSON"]), let command = arguments["command"] as? String,
-                      ["simulation.study.put","simulation.material.put","simulation.run","simulation.mesh.generate","simulation.cancel","simulation.mesh.cancel","simulation.export","simulation.animation.put","simulation.animation.preview","simulation.animation.bake","simulation.animation.cancel"].contains(command) else { return [] }
+                      ["simulation.study.put","simulation.material.put","simulation.run","simulation.mesh.generate","simulation.cancel","simulation.mesh.cancel","simulation.export","simulation.animation.put","simulation.animation.preview","simulation.animation.bake","simulation.animation.cancel","simulation.animation.mesh.bind","simulation.animation.mesh.use","simulation.animation.morph.put","simulation.animation.ragdoll","simulation.animation.source.import","simulation.animation.physics.attach"].contains(command) else { return [] }
                 if let value = arguments["inputJSON"], !(value is NSNull) {
                     guard let text = value as? String, text.utf8.count <= 524_288,
                           (try? JSONSerialization.jsonObject(with:Data(text.utf8))) is [String:Any] else { return [] }

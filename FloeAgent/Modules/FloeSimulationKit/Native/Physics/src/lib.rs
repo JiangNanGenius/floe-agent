@@ -1,4 +1,5 @@
 use rapier3d_f64::prelude::*;
+use rapier3d_f64::parry::transformation::vhacd::VHACDParameters;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, ffi::{c_char,c_void}, panic::{catch_unwind,AssertUnwindSafe}};
 
@@ -23,7 +24,7 @@ struct Body {id:String,#[serde(rename="sourceObjectID")] source_object_id:String
 struct Joint {kind:String,first_body:String,second_body:String,first_anchor:V,second_anchor:V,axis:V,limits:Vec<f64>,motor_velocity:f64,motor_force:f64,rest_length_meters:f64,stiffness:f64,damping:f64}
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase")]
-struct Soft {id:String,#[serde(rename="sourceObjectID")] source_object_id:String,kind:String,origin:V,end:V,du:V,dv:V,half_extents:V,dimensions:[usize;3],pinned_indices:Vec<u32>,particle_mass_kg:f64,particle_radius_meters:f64,natural_frequency_hz:f64,damping_ratio:f64,linear_damping:f64,friction:f64,self_collision:bool}
+struct Soft {id:String,#[serde(rename="sourceObjectID")] source_object_id:String,kind:String,origin:V,end:V,du:V,dv:V,half_extents:V,dimensions:[usize;3],pinned_indices:Vec<u32>,particle_mass_kg:f64,particle_radius_meters:f64,natural_frequency_hz:f64,damping_ratio:f64,linear_damping:f64,friction:f64,self_collision:bool,mesh_vertices:Option<Vec<V>>,mesh_triangles:Option<Vec<[u32;3]>>,shape_matching:Option<bool>,preserve_volume:Option<bool>}
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase")]
 struct Time {duration_seconds:f64,step_seconds:f64,output_interval_seconds:f64}
@@ -60,7 +61,7 @@ fn buffer(bytes:Vec<u8>,status:i32)->FloePhysicsBuffer {
 fn error(message:&str,status:i32)->FloePhysicsBuffer { buffer(serde_json::to_vec(&serde_json::json!({"error":message})).unwrap_or_default(),status) }
 
 #[no_mangle]
-pub extern "C" fn floe_physics_version()->*const c_char { b"rapier3d-f64/0.36.1/floe-abi2\0".as_ptr().cast() }
+pub extern "C" fn floe_physics_version()->*const c_char { b"rapier3d-f64/0.36.1/floe-abi3\0".as_ptr().cast() }
 
 /// The caller retains input bytes until return. Output must be freed exactly once.
 #[no_mangle]
@@ -85,6 +86,7 @@ fn run(bytes:&[u8],budget:usize,cancelled:Cancel,progress:Progress,context:*mut 
     let mut world=PhysicsWorld::new(); world.gravity=scene.gravity.vector();
     let mut rigid=Vec::new(); let mut by_id=HashMap::new();
     for (index,body) in scene.bodies.iter().enumerate() {
+        if cancelled.map_or(false,|f|f(context)!=0) {return Err("cancelled".into());}
         if by_id.contains_key(&body.id) || body.mass_kg<=0.0 || body.friction<0.0 || !(0.0..=1.0).contains(&body.restitution) || body.source_object_id.is_empty() { return Err("Invalid rigid-body identity or material".into()); }
         let builder=match body.motion.as_str() {"fixed"=>RigidBodyBuilder::fixed(),"dynamic"=>RigidBodyBuilder::dynamic(),"kinematic"=>RigidBodyBuilder::kinematic_position_based(),_=>return Err("Unknown body motion".into())};
         if body.activation_time_seconds<0.0 || body.activation_time_seconds>time.duration_seconds || body.lifetime_seconds.map_or(false,|l|l<=0.0) {return Err("Invalid body activation or lifetime".into());}
@@ -95,8 +97,15 @@ fn run(bytes:&[u8],budget:usize,cancelled:Cancel,progress:Progress,context:*mut 
             "box" if shape.half_extents.x>0.0 && shape.half_extents.y>0.0 && shape.half_extents.z>0.0=>ColliderBuilder::cuboid(shape.half_extents.x,shape.half_extents.y,shape.half_extents.z),
             "capsule" if shape.radius>0.0 && shape.half_height>0.0=>ColliderBuilder::capsule_y(shape.half_height,shape.radius),
             "convexHull" if shape.vertices.len()>=4 && shape.vertices.len()<=200_000=>ColliderBuilder::convex_hull(&shape.vertices.iter().map(|p|p.vector()).collect::<Vec<_>>()).ok_or("Degenerate convex hull")?,
+            "convexDecomposition" if shape.vertices.len()>=4 && shape.vertices.len()<=200_000 && !shape.triangles.is_empty() && shape.triangles.len()<=50_000=>{
+                validate_mesh(&shape.vertices,&shape.triangles)?;
+                let params=VHACDParameters {resolution:64,max_convex_hulls:64,concavity:0.0025,..Default::default()};
+                let result=ColliderBuilder::convex_decomposition_with_params(&shape.vertices.iter().map(|p|p.vector()).collect::<Vec<_>>(),&shape.triangles,&params);
+                if cancelled.map_or(false,|f|f(context)!=0) {return Err("cancelled".into());}
+                result
+            },
             "triangleMesh" if body.motion!="dynamic" && shape.vertices.len()<=200_000 && shape.triangles.len()<=1_000_000=>{
-                if shape.triangles.iter().flatten().any(|i|*i as usize>=shape.vertices.len()) {return Err("Invalid triangle connectivity".into());}
+                validate_mesh(&shape.vertices,&shape.triangles)?;
                 ColliderBuilder::trimesh(shape.vertices.iter().map(|p|p.vector()).collect(),shape.triangles.clone()).map_err(|e|e.to_string())?
             },
             _=>return Err("Invalid or unsupported collision shape".into())
@@ -134,14 +143,22 @@ fn run(bytes:&[u8],budget:usize,cancelled:Cancel,progress:Progress,context:*mut 
     }
     let mut soft_handles=Vec::new(); let mut particle_count=0usize;
     for soft in &scene.soft_bodies {
-        if soft.dimensions.iter().any(|n|*n<2 || *n>256) || soft.particle_mass_kg<=0.0 || soft.particle_radius_meters<=0.0 || soft.natural_frequency_hz<=0.0 || soft.damping_ratio<0.0 || soft.source_object_id.is_empty() {return Err("Invalid soft-body material or lattice".into());}
+        if cancelled.map_or(false,|f|f(context)!=0) {return Err("cancelled".into());}
+        if (soft.kind!="mesh" && soft.dimensions.iter().any(|n|*n<2 || *n>256)) || soft.particle_mass_kg<=0.0 || soft.particle_radius_meters<=0.0 || soft.natural_frequency_hz<=0.0 || soft.damping_ratio<0.0 || soft.source_object_id.is_empty() {return Err("Invalid soft-body material or lattice".into());}
         let n=soft.dimensions;
-        let expected=match soft.kind.as_str() {"rope"=>n[0],"cloth"=>n[0]*n[1],"volume"=>n[0]*n[1]*n[2],_=>return Err("Unknown soft-body model".into())};
+        let expected=match soft.kind.as_str() {"rope"=>n[0],"cloth"=>n[0]*n[1],"volume"=>n[0]*n[1]*n[2],"mesh"=>soft.mesh_vertices.as_ref().map_or(0,|v|v.len()),_=>return Err("Unknown soft-body model".into())};
         if expected>200_000-particle_count {return Err("Soft-body node budget exceeded before allocation".into());}
         let builder=match soft.kind.as_str() {
             "rope"=>SoftBodyBuilder::rope(soft.origin.vector(),soft.end.vector(),n[0]),
             "cloth"=>SoftBodyBuilder::cloth(soft.origin.vector(),soft.du.vector(),soft.dv.vector(),n[0],n[1]),
             "volume"=>SoftBodyBuilder::cuboid(soft.origin.vector(),soft.half_extents.vector(),n[0],n[1],n[2]),
+            "mesh"=>{
+                let vertices=soft.mesh_vertices.as_ref().ok_or("Missing soft Mesh vertices")?;
+                let triangles=soft.mesh_triangles.as_ref().ok_or("Missing soft Mesh triangles")?;
+                validate_mesh(vertices,triangles)?;
+                SoftBodyBuilder::trimesh(vertices.iter().map(|p|p.vector()).collect(),triangles.clone()).ok_or("Invalid soft Mesh")?
+                    .shape_matching(soft.shape_matching.unwrap_or(false)).volume_preservation(soft.preserve_volume.unwrap_or(false))
+            },
             _=>return Err("Unknown soft-body model".into())
         };
         let count=builder.particle_positions().len(); particle_count+=count;
@@ -205,5 +222,15 @@ fn run(bytes:&[u8],budget:usize,cancelled:Cancel,progress:Progress,context:*mut 
         world.integration_parameters.dt=dt; world.step(); t=target;
         if step%16==0 || step+1==steps {if let Some(report)=progress {report(context,step+1,steps);}}
     }
-    Ok(Output{version:"rapier3d-f64/0.36.1/floe-abi2".into(),seed:scene.seed,soft_topology,frames})
+    Ok(Output{version:"rapier3d-f64/0.36.1/floe-abi3".into(),seed:scene.seed,soft_topology,frames})
+}
+
+fn validate_mesh(vertices:&[V],triangles:&[[u32;3]])->Result<(),String> {
+    if vertices.len()<3 || vertices.len()>200_000 || triangles.is_empty() || triangles.len()>1_000_000 || vertices.iter().any(|p|![p.x,p.y,p.z].iter().all(|v|v.is_finite())) {return Err("Invalid Mesh geometry or budget".into());}
+    for triangle in triangles {
+        if triangle.iter().any(|i|*i as usize>=vertices.len()) {return Err("Invalid Mesh triangle index".into());}
+        let a=vertices[triangle[0] as usize].vector();let b=vertices[triangle[1] as usize].vector();let c=vertices[triangle[2] as usize].vector();
+        if (b-a).cross(c-a).length_squared()<=1e-36 {return Err("Degenerate Mesh triangle".into());}
+    }
+    Ok(())
 }

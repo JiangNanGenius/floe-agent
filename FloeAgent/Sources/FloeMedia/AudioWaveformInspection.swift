@@ -142,7 +142,8 @@ public actor AudioWaveformInspector {
         }
         let (url, relative) = try Self.resolve(path, context:context)
         return try inspectResolved(url:url,sourceReference:relative,sourceKind:"taskWorkspace",expectedSHA256:nil,
-            startSeconds:startSeconds,endSeconds:endSeconds,requestedBins:requestedBins,context:context) {
+            startSeconds:startSeconds,endSeconds:endSeconds,requestedBins:requestedBins,
+            cancellation:context.cancellation,environmentID:context.environmentID) {
                 let (current, currentRelative) = try Self.resolve(path,context:context)
                 guard current == url, currentRelative == relative else { throw AudioWaveformInspectionError.sourceChanged }
             }
@@ -169,7 +170,8 @@ public actor AudioWaveformInspector {
         try Self.checkCancellation(context.cancellation)
         let canonical = url.resolvingSymlinksInPath().standardizedFileURL
         let report = try inspectResolved(url:canonical,sourceReference:sourceReference,sourceKind:"authorizedNativeSource",
-            expectedSHA256:expectedSHA256,startSeconds:startSeconds,endSeconds:endSeconds,requestedBins:bins,context:context) {
+            expectedSHA256:expectedSHA256,startSeconds:startSeconds,endSeconds:endSeconds,requestedBins:bins,
+            cancellation:context.cancellation,environmentID:context.environmentID) {
                 guard url.resolvingSymlinksInPath().standardizedFileURL == canonical else { throw AudioWaveformInspectionError.sourceChanged }
             }
         try await validateSource()
@@ -181,10 +183,41 @@ public actor AudioWaveformInspector {
         return report
     }
 
+    /// Trusted native UI only. The caller retains its actual document/file
+    /// lease and rechecks that binding in validateSource. No model tool is
+    /// registered for this entry and no synthetic execution context is made.
+    /// Model callers still use the ownership-checked entry points above.
+    public func inspectNativePreview(at url:URL,sourceReference:String,expectedSHA256:String? = nil,
+        startSeconds:Double? = nil,endSeconds:Double? = nil,bins:Int? = nil,cancellation:CancellationToken,
+        validateSource:@Sendable () async throws -> Void) async throws -> AudioWaveformInspection {
+        try Self.validate(startSeconds:startSeconds,endSeconds:endSeconds,bins:bins)
+        try Self.checkCancellation(cancellation)
+        guard url.isFileURL, !sourceReference.isEmpty, sourceReference.utf8.count <= 1024,
+              !sourceReference.hasPrefix("/"), !sourceReference.contains("file://"), !sourceReference.contains("\0"),
+              expectedSHA256.map({ $0.range(of:"^[a-f0-9]{64}$",options:.regularExpression) != nil }) ?? true else {
+            throw AudioWaveformInspectionError.invalidInput("An opaque native source reference and a valid optional SHA256 are required.")
+        }
+        try await validateSource()
+        try Self.checkCancellation(cancellation)
+        let canonical = url.resolvingSymlinksInPath().standardizedFileURL
+        let report = try inspectResolved(url:canonical,sourceReference:sourceReference,sourceKind:"nativePreview",
+            expectedSHA256:expectedSHA256,startSeconds:startSeconds,endSeconds:endSeconds,requestedBins:bins,
+            cancellation:cancellation,environmentID:nil) {
+                guard url.resolvingSymlinksInPath().standardizedFileURL == canonical else { throw AudioWaveformInspectionError.sourceChanged }
+            }
+        try await validateSource()
+        try Self.checkCancellation(cancellation)
+        let latest = try AudioWaveformSourceSnapshot.capture(url:canonical,cancellation:cancellation)
+        guard latest.sha256 == report.source.contentSHA256, latest.stamp.resourceIdentity == report.source.resourceIdentity else {
+            throw AudioWaveformInspectionError.sourceChanged
+        }
+        return report
+    }
+
     private func inspectResolved(url:URL,sourceReference:String,sourceKind:String,expectedSHA256:String?,
-        startSeconds:Double?,endSeconds:Double?,requestedBins:Int?,context:ToolContext,
+        startSeconds:Double?,endSeconds:Double?,requestedBins:Int?,cancellation:CancellationToken,environmentID:String?,
         validateLocation:() throws -> Void) throws -> AudioWaveformInspection {
-        let original = try AudioWaveformSourceSnapshot.capture(url:url,cancellation:context.cancellation)
+        let original = try AudioWaveformSourceSnapshot.capture(url:url,cancellation:cancellation)
         if let expectedSHA256, original.sha256 != expectedSHA256 { throw AudioWaveformInspectionError.sourceChanged }
         try validateLocation()
         let file = try AVAudioFile(forReading:url,commonFormat:.pcmFormatFloat32,interleaved:false)
@@ -222,7 +255,7 @@ public actor AudioWaveformInspector {
         file.framePosition = lower
         var bin = 0
         while file.framePosition < upper {
-            try Self.checkCancellation(context.cancellation)
+            try Self.checkCancellation(cancellation)
             let offset = file.framePosition
             try file.read(into:buffer,frameCount:AVAudioFrameCount(min(8192,upper-offset)))
             guard buffer.frameLength > 0, let pcm = buffer.floatChannelData,
@@ -239,12 +272,12 @@ public actor AudioWaveformInspector {
                 }
             }
         }
-        try Self.checkCancellation(context.cancellation)
+        try Self.checkCancellation(cancellation)
         try validateLocation()
-        try original.validate(url:url,cancellation:context.cancellation)
+        try original.validate(url:url,cancellation:cancellation)
         let channels = accumulators.enumerated().map { $0.element.result(index:$0.offset,frames:frameCount,ranges:ranges) }
         let report = AudioWaveformInspection(source:.init(kind:sourceKind,path:sourceReference,contentSHA256:original.sha256,
-            byteCount:original.stamp.bytes,resourceIdentity:original.stamp.resourceIdentity,environmentID:context.environmentID,
+            byteCount:original.stamp.bytes,resourceIdentity:original.stamp.resourceIdentity,environmentID:environmentID,
             sampleRate:rate,channelCount:count,frameCount:file.length,durationSeconds:duration),
             window:.init(requestedStartSeconds:start,requestedEndSeconds:endSeconds,effectiveEndSeconds:end,
                 startFrame:lower,endFrame:upper,startSeconds:Double(lower)/rate,endSeconds:Double(upper)/rate,

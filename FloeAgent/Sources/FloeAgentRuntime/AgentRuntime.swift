@@ -4537,6 +4537,7 @@ public actor FloeAgentRuntime {
                     // existing family authority mirrors remain unchanged.
                     serviceStorePaths: configuration.serviceStorePaths.filter {
                         $0.key == TypedMutationContract.nativeStudioLibraryStoreKey
+                            || $0.key == TypedMutationContract.nativeBiologyStoreKey
                     }
                 ),
                 toolName: call.toolName,

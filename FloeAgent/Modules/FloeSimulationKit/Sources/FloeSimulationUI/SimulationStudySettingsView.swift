@@ -16,6 +16,16 @@ struct SimulationStudySettingsView: View {
             }
             switch kind {
             case .rigidBody,.skeletalPhysics,.cloth,.rope,.softBody:
+                Section(simulationText("Model Meshes","模型网格")) {
+                    ForEach(model.sourceObjects) { object in
+                        Menu(object.name) {
+                            Button(simulationText("Use as rigid body / rebuild collider","用作刚体／更新碰撞体")) { Task { await model.useSourceMesh(object.id) } }
+                            Button(simulationText("Use as cloth","用作布料")) { Task { await model.useSourceMesh(object.id,asSoftBody:true) } }
+                            Button(simulationText("Use as soft volume","用作体柔体")) { Task { await model.useSourceMesh(object.id,asSoftBody:true,preserveVolume:true) } }
+                        }.disabled(model.preparingSourceMesh)
+                    }
+                    if model.preparingSourceMesh { ProgressView() }
+                }
                 PhysicsSettings(configuration:Binding(get:{ model.physics },set:{ model.writeConfiguration($0) }),names:Dictionary(uniqueKeysWithValues:model.sourceObjects.map { ($0.id,$0.name) }))
             case .structuralStatic,.beamShell,.laminate,.modal,.buckling,.nonlinearContact,.thermalSteady,.thermalTransient,.thermalStress:
                 EngineeringSettings(configuration:Binding(get:{ model.engineering },set:{ model.writeConfiguration($0) }),kind:kind,mesh:model.activeMesh,results:model.savedResults)
@@ -113,6 +123,7 @@ private struct PhysicsSettings: View {
                     else { TextField(simulationText("Name","名称"),text:$body.sourceObjectID) }
                     SimulationChoicePicker(title:simulationText("Motion","运动模式"),selection:$body.motion)
                     SimulationChoicePicker(title:simulationText("Collider","碰撞形体"),selection:$body.collider.kind)
+                    if body.collider.kind == .convexDecomposition { Text(simulationText("Convex pieces approximate the Mesh while retaining its concavities.","分块近似 Mesh 的凹形碰撞。" )).font(.caption).foregroundStyle(.secondary) }
                     SimulationVectorFields(title:simulationText("Position","位置"),value:$body.translation,unit:"m")
                     SimulationVectorFields(title:simulationText("Velocity","速度"),value:$body.velocity,unit:"m/s")
                     SimulationVectorFields(title:simulationText("Angular velocity","角速度"),value:$body.angularVelocity,unit:"rad/s")
@@ -164,12 +175,18 @@ private struct PhysicsSettings: View {
             ForEach($configuration.softBodies) { $soft in
                 DisclosureGroup(soft.sourceObjectID) {
                     SimulationChoicePicker(title:simulationText("Type","类型"),selection:$soft.kind)
+                    if soft.kind == .mesh {
+                        LabeledContent(simulationText("Mesh vertices / triangles","网格顶点／三角面"),value:"\(soft.meshVertices?.count ?? 0) / \(soft.meshTriangles?.count ?? 0)")
+                        Toggle(simulationText("Preserve shape","保持形状"),isOn:Binding(get:{ soft.shapeMatching ?? false },set:{ soft.shapeMatching = $0 }))
+                        Toggle(simulationText("Preserve volume","保持体积"),isOn:Binding(get:{ soft.preserveVolume ?? false },set:{ soft.preserveVolume = $0 }))
+                    } else {
                     SimulationVectorFields(title:simulationText("Origin","原点"),value:$soft.origin,unit:"m")
                     SimulationVectorFields(title:simulationText("End","终点"),value:$soft.end,unit:"m")
                     SimulationVectorFields(title:simulationText("First lattice direction","网格方向一"),value:$soft.du,unit:"m")
                     SimulationVectorFields(title:simulationText("Second lattice direction","网格方向二"),value:$soft.dv,unit:"m")
                     SimulationVectorFields(title:simulationText("Half extents","半尺寸"),value:$soft.halfExtents,unit:"m")
                     ForEach(0..<min(3,soft.dimensions.count),id:\.self) { axis in Stepper("\(axis+1): \(soft.dimensions[axis])",value:$soft.dimensions[axis],in:2...64) }
+                    }
                     TextField(simulationText("Pinned point indices","固定点编号"),text:Binding(get:{ soft.pinnedIndices.map(String.init).joined(separator:",") },set:{ soft.pinnedIndices = $0.split(separator:",").compactMap { UInt32($0.trimmingCharacters(in:.whitespaces)) } }))
                     SimulationNumberField(label:simulationText("Particle mass","质点质量"),value:$soft.particleMassKg,unit:"kg")
                     SimulationNumberField(label:simulationText("Thickness radius","厚度半径"),value:$soft.particleRadiusMeters,unit:"m")
@@ -447,7 +464,7 @@ private struct SimulationMaterialSettings: View {
 
 func simulationOption(_ raw: String) -> String {
     let words: [String:(String,String)] = [
-        "fixed":("Fixed","固定"),"dynamic":("Dynamic","动力学"),"kinematic":("Kinematic","运动学"),"sphere":("Sphere","球"),"box":("Box","立方体"),"capsule":("Capsule","胶囊"),"convexHull":("Convex hull","凸包"),"triangleMesh":("Static surface","静态曲面"),
+        "fixed":("Fixed","固定"),"dynamic":("Dynamic","动力学"),"kinematic":("Kinematic","运动学"),"sphere":("Sphere","球"),"box":("Box","立方体"),"capsule":("Capsule","胶囊"),"convexHull":("Convex hull","凸包"),"triangleMesh":("Triangle Mesh","三角网格"),"convexDecomposition":("Concave Mesh (convex parts)","凹形网格（凸分块）"),"mesh":("Source Mesh","源模型网格"),
         "spherical":("Ball joint","球铰"),"revolute":("Hinge","铰链"),"prismatic":("Slider","滑块"),"spring":("Spring","弹簧"),"rope":("Rope","绳索"),"cloth":("Cloth","布料"),"volume":("Volume","体柔体"),
         "linearIsotropic":("Linear isotropic","各向同性线弹性"),"orthotropic":("Orthotropic","正交各向异性"),"j2Plasticity":("J2 plasticity","J2 塑性"),"neoHookean":("Neo-Hookean","Neo-Hookean 超弹性"),
         "incompressible":("Incompressible","不可压缩"),"compressible":("Compressible","可压缩"),"laminar":("Laminar","层流"),"spalartAllmaras":("SA","SA"),"sst":("SST","SST"),"velocityInlet":("Velocity inlet","速度入口"),"pressureOutlet":("Pressure outlet","压力出口"),"wall":("Wall","壁面"),"symmetry":("Symmetry","对称"),"farField":("Far field","远场"),

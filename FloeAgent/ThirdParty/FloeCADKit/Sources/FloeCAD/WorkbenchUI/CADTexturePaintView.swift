@@ -85,17 +85,20 @@ struct CADTexturePaintView:View {
     init(document:FloeCADDocument,bodyID:BodyID) { _model=State(initialValue:CADTexturePaintModel(document:document,bodyID:bodyID)) }
     private func text(_ suffix:String,_ fallback:String)->String { FloeCADStrings.text("cad.paint."+suffix,fallback) }
     var body:some View {
+        @Bindable var editor = model.document.viewModel()
         NavigationStack {
             Form {
                 if let state=model.snapshot,let image=model.image {
                     Section(text("surface","Paint on the surface")) {
                         if state.mesh.triangleCount<=10000 {
-                            CADTexturePaintCanvas(mesh:state.mesh,image:image,yaw:model.yaw,pitch:model.pitch,enabled:!model.busy && model.canEdit,onStroke:model.stroke)
+                            CADTexturePaintCanvas(mesh:state.mesh,image:image,yaw:model.yaw,pitch:model.pitch,enabled:!model.busy && model.canEdit,fingerDrawingEnabled:editor.fingerDrawingEnabled,onStroke:model.stroke)
                                 .frame(height:310)
                                 .accessibilityElement(children:.ignore)
                                 .accessibilityLabel(text("title","Texture painting"))
                                 .accessibilityIdentifier("CADTexturePaintCanvas")
                         } else { Text(text("previewBudget","The painting preview supports up to 10,000 triangles. Simplify a copy first.")) }
+                        Toggle(FloeCADStrings.text("cad.ui.tool.fingerDrawing", "Touch drawing"), isOn: $editor.fingerDrawingEnabled)
+                            .accessibilityIdentifier("CADTexturePaintFingerDrawingToggle")
                         Text(text("strokeHelp","Draw on the surface. Each stroke is one undoable edit. The brush stays inside the touched UV island."))
                             .font(.footnote).foregroundStyle(.secondary)
                         Slider(value:$model.yaw,in:(-.pi)...(.pi)) { Text(text("turn","Turn")) }.accessibilityLabel(text("turn","Turn"))
@@ -166,6 +169,7 @@ private struct CADTexturePaintCanvas:View {
     let yaw:Double
     let pitch:Double
     let enabled:Bool
+    let fingerDrawingEnabled:Bool
     let onStroke:([CADTexturePaintHit])->Void
     @State private var hits:[CADTexturePaintHit]=[]
     @State private var trail:[CGPoint]=[]
@@ -212,12 +216,131 @@ private struct CADTexturePaintCanvas:View {
                 if let first=trail.first { var path=Path();path.move(to:first);for p in trail.dropFirst(){path.addLine(to:p)};context.stroke(path,with:.color(.accentColor),lineWidth:2) }
             }
             .background(.quaternary.opacity(0.3)).clipped().contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance:0).onChanged { value in
-                guard enabled,hits.count<128 else { return }
-                if let previous=trail.last,hypot(previous.x-value.location.x,previous.y-value.location.y)<2 { return }
-                if let hit=hit(value.location,size:geometry.size) { hits.append(hit);trail.append(value.location) }
-            }.onEnded { _ in let submitted=hits;hits=[];trail=[];if enabled { onStroke(submitted) } })
+            .overlay {
+                CADTexturePaintInputSurface(enabled: enabled, fingerDrawingEnabled: fingerDrawingEnabled, onSample: { point in
+                    guard enabled,hits.count<128 else { return }
+                    if let previous=trail.last,hypot(previous.x-point.x,previous.y-point.y)<2 { return }
+                    if let hit=hit(point,size:geometry.size) { hits.append(hit);trail.append(point) }
+                }, onEnded: {
+                    let submitted=hits;hits=[];trail=[];if enabled { onStroke(submitted) }
+                }, onCancelled: { hits=[];trail=[] })
+            }
+            .onDisappear { hits=[];trail=[] }
         }
     }
+}
+
+/// Input-only admission state. It uses the viewport's source classifier and
+/// latches a revoked stroke until lift; it never routes paint into camera drags.
+struct CADTexturePaintStrokeGate {
+    private(set) var source: CADViewportInputSource?
+    private(set) var permitsSamples = false
+    mutating func begin(_ source: CADViewportInputSource, enabled: Bool, fingerDrawingEnabled: Bool) -> Bool {
+        guard self.source == nil, enabled, source.editsDrawing(fingerDrawingEnabled: fingerDrawingEnabled) else { return false }
+        self.source = source; permitsSamples = true
+        return true
+    }
+    mutating func update(enabled: Bool, fingerDrawingEnabled: Bool) {
+        if !enabled || source?.editsDrawing(fingerDrawingEnabled: fingerDrawingEnabled) == false { permitsSamples = false }
+    }
+    mutating func finish() -> Bool { defer { cancel() }; return source != nil && permitsSamples }
+    mutating func cancel() { source = nil; permitsSamples = false }
+}
+
+@MainActor final class CADTexturePaintStrokeRecognizer: UIGestureRecognizer {
+    var onSample: ((CGPoint) -> Void)?
+    var onEnded: (() -> Void)?
+    var onCancelled: (() -> Void)?
+    private var activeTouch: UITouch?
+    private var input = CADTexturePaintStrokeGate()
+    private var paintingEnabled = false
+    private var fingerDrawingEnabled = false
+
+    func configure(enabled: Bool, fingerDrawingEnabled: Bool) {
+        paintingEnabled = enabled; self.fingerDrawingEnabled = fingerDrawingEnabled
+        input.update(enabled: enabled, fingerDrawingEnabled: fingerDrawingEnabled)
+        let types: [UITouch.TouchType] = [.pencil, .indirect, .indirectPointer, .direct]
+        let allowed = types.filter { CADViewportInputSource($0).editsDrawing(fingerDrawingEnabled: fingerDrawingEnabled) }
+            .map { NSNumber(value: $0.rawValue) }
+        if allowedTouchTypes != allowed { allowedTouchTypes = allowed }
+    }
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard activeTouch == nil, let touch = touches.first,
+              input.begin(CADViewportInputSource(touch.type), enabled: paintingEnabled, fingerDrawingEnabled: fingerDrawingEnabled) else {
+            if activeTouch == nil { state = .failed }; return
+        }
+        activeTouch = touch
+        state = .began
+        onSample?(touch.location(in: view))
+    }
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let touch = activeTouch, touches.contains(touch) else { return }
+        guard input.permitsSamples else { cancelStroke(); return }
+        state = .changed
+        emit(touch, event: event)
+    }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let touch = activeTouch, touches.contains(touch) else { return }
+        guard input.permitsSamples else { cancelStroke(); return }
+        emit(touch, event: event)
+        // Preserve tap dots and the last sample before the existing paint call.
+        activeTouch = nil
+        let commit = input.finish()
+        state = .ended
+        if commit { onEnded?() }
+    }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let touch = activeTouch, touches.contains(touch) else { return }
+        cancelStroke()
+    }
+    override func reset() {
+        let discarded = input.source != nil
+        super.reset(); activeTouch = nil; input.cancel()
+        // UIKit can interrupt recognition without a normal lift.
+        if discarded { onCancelled?() }
+    }
+    private func emit(_ touch: UITouch, event: UIEvent) {
+        if let samples = event.coalescedTouches(for: touch), !samples.isEmpty {
+            for sample in samples { onSample?(sample.location(in: view)) }
+        }
+        onSample?(touch.location(in: view))
+    }
+    private func cancelStroke() {
+        activeTouch = nil; input.cancel(); state = .cancelled; onCancelled?()
+    }
+}
+
+private struct CADTexturePaintInputSurface: UIViewRepresentable {
+    let enabled: Bool
+    let fingerDrawingEnabled: Bool
+    let onSample: (CGPoint) -> Void
+    let onEnded: () -> Void
+    let onCancelled: () -> Void
+    func makeUIView(context: Context) -> CADTexturePaintInputView {
+        let view = CADTexturePaintInputView(frame: .zero)
+        configure(view)
+        return view
+    }
+    func updateUIView(_ view: CADTexturePaintInputView, context: Context) { configure(view) }
+    private func configure(_ view: CADTexturePaintInputView) {
+        view.input.onSample = onSample; view.input.onEnded = onEnded; view.input.onCancelled = onCancelled
+        view.input.configure(enabled: enabled, fingerDrawingEnabled: fingerDrawingEnabled)
+    }
+    static func dismantleUIView(_ view: CADTexturePaintInputView, coordinator: ()) {
+        view.input.onSample = nil; view.input.onEnded = nil; view.input.onCancelled = nil
+        view.input.isEnabled = false
+    }
+}
+private final class CADTexturePaintInputView: UIView {
+    let input = CADTexturePaintStrokeRecognizer(target: nil, action: nil)
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear; isMultipleTouchEnabled = false
+        // Immediate ownership keeps an accepted paint stroke out of the Form's
+        // scroll gesture. Rejected finger touches remain ordinary navigation.
+        input.cancelsTouchesInView = true; input.delaysTouchesBegan = false
+        addGestureRecognizer(input)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 #endif

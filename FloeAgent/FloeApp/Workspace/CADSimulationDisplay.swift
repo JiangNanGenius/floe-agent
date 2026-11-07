@@ -9,7 +9,8 @@ import FloeSimulationAnimation
 import FloeSimulationUI
 
 nonisolated enum CADSimulationDisplayBuilder {
-    static func make(geometry: CADSimulationGeometry, source: SimulationSourceRef, result: SimulationResult?, frame: SimulationResultFrame?, field: SimulationResultField?, physics: PhysicsSimulationConfiguration, pose: SimulationAnimationPose?, deformation: Double) throws -> CADSimulationDisplay {
+    static func make(geometry: CADSimulationGeometry, source: SimulationSourceRef, result: SimulationResult?, frame: SimulationResultFrame?, field: SimulationResultField?, physics: PhysicsSimulationConfiguration, pose: SimulationAnimationPose?, deformation: Double, graph:SimulationAnimationGraph? = nil) throws -> CADSimulationDisplay {
+        guard result == nil || result?.source == source, graph == nil || graph?.source == source else { throw SimulationError.staleSource }
         var surfaces: [CADSimulationDisplay.Surface] = []
         func point(_ p: SimulationVector3) -> SIMD3<Float> { SIMD3(Float(p.x*1000),Float(p.y*1000),Float(p.z*1000)) }
         if let mesh = result?.mesh, let frame {
@@ -50,7 +51,9 @@ nonisolated enum CADSimulationDisplayBuilder {
             }
             for bin in bins.keys.sorted() {
                 let t = Float(bin)/15
-                surfaces.append(.init(positionsMM:positions,indices:bins[bin]!,color:SIMD4(t,0.25+0.5*(1-abs(2*t-1)),1-t,1)))
+                let original = bins[bin]!, used = Array(Set(original)).sorted()
+                let remap = Dictionary(uniqueKeysWithValues:used.enumerated().map { ($0.element,UInt32($0.offset)) })
+                surfaces.append(.init(positionsMM:used.map { positions[Int($0)] },indices:original.map { remap[$0]! },color:SIMD4(t,0.25+0.5*(1-abs(2*t-1)),1-t,1)))
             }
             let legend = field.map { value in
                 let name = value.components > 1 || value.imaginaryValues != nil ? "|\(value.simulationDisplayName)|" : value.simulationDisplayName
@@ -70,6 +73,13 @@ nonisolated enum CADSimulationDisplayBuilder {
             if let sourceIDs, sourceIDs.indices.contains(index), cadObjectIDs.contains(sourceIDs[index].lowercased()) { return id }
             return cadObjectIDs.contains(id.uuidString.lowercased()) ? id:nil
         })
+        var soft: [String:[SimulationVector3]] = [:]
+        for field in frame?.fields ?? [] where field.id.hasPrefix("soft/") && field.components == 3 && field.values.count.isMultiple(of:3) {
+            soft[field.id] = stride(from:0,to:field.values.count,by:3).map { .init(field.values[$0],field.values[$0+1],field.values[$0+2]) }
+        }
+        if let pose { soft = pose.softVertices }
+        let softSourceIDs = result?.diagnostics["softSourceObjectIDs"].flatMap { try? JSONDecoder().decode([String:String].self,from:Data($0.utf8)) } ?? [:]
+        var renderedSoft = Set<String>()
         for cad in geometry.bodies {
             let index = sourceIDs?.firstIndex { $0.lowercased() == cad.id.uuidString.lowercased() } ?? order.firstIndex(of:cad.id)
             if pose?.hiddenObjects.contains(cad.id.uuidString.lowercased()) == true || pose?.hiddenObjects.contains(cad.id.uuidString) == true { continue }
@@ -77,8 +87,24 @@ nonisolated enum CADSimulationDisplayBuilder {
             let objectPose = pose?.objects[cad.id.uuidString.lowercased()] ?? pose?.objects[cad.id.uuidString]
             let count = Double(max(1,cad.positionsMM.count))
             let origin = cad.positionsMM.reduce(SimulationVector3.zero) { $0+SimulationVector3($1[0]*0.001/count,$1[1]*0.001/count,$1[2]*0.001/count) }
-            let transformed = cad.positionsMM.map { value -> SIMD3<Float> in
-                var p = SimulationVector3(value[0]*0.001,value[1]*0.001,value[2]*0.001)
+            var sourcePositions = cad.positionsMM.map { SimulationVector3($0[0]*0.001,$0[1]*0.001,$0[2]*0.001) }
+            let softID = softSourceIDs.first { $0.value.lowercased() == cad.id.uuidString.lowercased() }?.key
+            let softKey = softID.map { "soft/"+$0 }
+            if let softKey, let vertices = soft[softKey] {
+                let mapping = result?.diagnostics[softKey+"/sourceVertexToParticle"].flatMap { try? JSONDecoder().decode([UInt32].self,from:Data($0.utf8)) }
+                if let mapping {
+                    guard mapping.count == sourcePositions.count, mapping.allSatisfy({ Int($0) < vertices.count }) else { throw SimulationError.staleSource }
+                    sourcePositions = mapping.map { vertices[Int($0)] }
+                } else {
+                    guard vertices.count == sourcePositions.count else { throw SimulationError.staleSource }; sourcePositions = vertices
+                }
+                renderedSoft.insert(softKey)
+            } else if let pose, let graph {
+                sourcePositions = try SimulationAnimationMeshDeformer.deform(sourcePositions,sourceObjectID:cad.id.uuidString.lowercased(),graph:graph,pose:pose)
+            }
+            let transformed = sourcePositions.map { value -> SIMD3<Float> in
+                var p = value
+                if let softKey, renderedSoft.contains(softKey) { return point(p) }
                 if let objectPose {
                     let local = p-origin
                     p = SimulationAnimationMath.rotate(objectPose.rotation,.init(local.x*objectPose.scale.x,local.y*objectPose.scale.y,local.z*objectPose.scale.z))+objectPose.translation
@@ -90,12 +116,7 @@ nonisolated enum CADSimulationDisplayBuilder {
             }
             surfaces.append(.init(positionsMM:transformed,indices:cad.indices,color:SIMD4(0.2,0.55,0.85,1)))
         }
-        var soft: [String:[SimulationVector3]] = [:]
-        for field in frame?.fields ?? [] where field.id.hasPrefix("soft/") && field.components == 3 {
-            soft[field.id] = stride(from:0,to:field.values.count-2,by:3).map { .init(field.values[$0],field.values[$0+1],field.values[$0+2]) }
-        }
-        if let pose { soft = pose.softVertices }
-        for id in soft.keys.sorted() {
+        for id in soft.keys.sorted() where !renderedSoft.contains(id) {
             let raw = result?.diagnostics[id+"/triangles"]
             let triangles = raw.flatMap { try? JSONDecoder().decode([[UInt32]].self,from:Data($0.utf8)) } ?? []
             let points = (soft[id] ?? []).map(point)
@@ -104,9 +125,16 @@ nonisolated enum CADSimulationDisplayBuilder {
         }
         var rendered = Set<UUID>()
         let cadIDs = Set(geometry.bodies.map { $0.id.uuidString.lowercased() })
+        let cachedBodies: [UUID:SimulationAnimationTransform]
+        if let pose,let result,graph?.physicsResultID == result.id { cachedBodies = try SimulationPhysicsCacheSampler.sample(result,timeSeconds:pose.timeSeconds).bodies }
+        else { cachedBodies = [:] }
+        let bones = Set(graph?.bones.map(\.id) ?? [])
+        let hasSkin = graph?.meshBindings?.contains(where: { !$0.skin.isEmpty }) == true
+        let skinBodies = pose != nil && hasSkin ? Set((graph?.physicsBindings ?? []).filter { bones.contains($0.targetID) }.map(\.bodyID)):[]
         if physics.bodies.count <= 256 {
             for body in physics.bodies where !cadIDs.contains(body.sourceObjectID.lowercased()) {
-                let index = order.firstIndex(of:body.id), objectPose = pose?.objects[body.sourceObjectID]
+                if skinBodies.contains(body.id) { continue }
+                let index = order.firstIndex(of:body.id), objectPose = pose?.objects[body.sourceObjectID] ?? cachedBodies[body.id]
                 if pose?.hiddenObjects.contains(body.sourceObjectID) == true { continue }
                 if pose == nil, let index, let visible, visible.indices.contains(index), visible[index] < 0.5 { continue }
                 var p = objectPose?.translation ?? body.translation, q = objectPose?.rotation ?? body.rotation
@@ -131,7 +159,8 @@ nonisolated enum CADSimulationDisplayBuilder {
             }
             surfaces += try markers(points,color:SIMD4(0.95,0.6,0.2,1))
         }
-        return .init(id:source.documentID,revision:UInt64(frame?.id ?? 0),surfaces:surfaces)
+        let camera = pose?.objects["camera"].map { value in CADSimulationCamera(positionMeters:SIMD3(value.translation.x,value.translation.y,value.translation.z),rotation:SIMD4(value.rotation.x,value.rotation.y,value.rotation.z,value.rotation.w),verticalFOVDegrees:pose?.cameraProjection?.verticalFOVDegrees ?? 60,orthographicHeightMeters:pose?.cameraProjection?.orthographicHeightMeters) }
+        return .init(id:source.documentID,revision:UInt64(frame?.id ?? 0),surfaces:surfaces,camera:camera)
     }
     private static func markers(_ points: [SIMD3<Float>], color: SIMD4<Float>) throws -> [CADSimulationDisplay.Surface] {
         guard points.count <= 100_000 else { throw SimulationError.resourceLimit("The display exceeds 100,000 particle positions.") }
@@ -146,6 +175,7 @@ nonisolated enum CADSimulationDisplayBuilder {
     }
 }
 
+#if !FLOE_SIMULATION_DATA_QUALIFICATION
 struct CADSimulationResultViewport: View {
     let entry: CADSimulationSessions.Entry
     let model: SimulationWorkbenchModel
@@ -165,8 +195,8 @@ struct CADSimulationResultViewport: View {
             let geometry = entry.geometry, source = model.document.source
             let result = model.displaysAnimation && model.result?.mesh != nil ? nil : model.result
             let frame = result == nil ? nil : model.currentFrame
-            let field = model.currentField, physics = model.physics, pose = model.displaysAnimation ? model.animationPose : nil, scale = model.deformationScale
-            let worker = Task.detached(priority:.userInitiated) { try CADSimulationDisplayBuilder.make(geometry:geometry,source:source,result:result,frame:frame,field:field,physics:physics,pose:pose,deformation:scale) }
+            let field = model.currentField, physics = model.physics, pose = model.displaysAnimation ? model.animationPose : nil, scale = model.deformationScale, graph = model.displaysAnimation ? model.animationGraph:nil
+            let worker = Task.detached(priority:.userInitiated) { try CADSimulationDisplayBuilder.make(geometry:geometry,source:source,result:result,frame:frame,field:field,physics:physics,pose:pose,deformation:scale,graph:graph) }
             do {
                 var value = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
                 try Task.checkCancellation(); renderRevision &+= 1; value.revision = renderRevision
@@ -175,4 +205,5 @@ struct CADSimulationResultViewport: View {
         }
     }
 }
+#endif
 #endif

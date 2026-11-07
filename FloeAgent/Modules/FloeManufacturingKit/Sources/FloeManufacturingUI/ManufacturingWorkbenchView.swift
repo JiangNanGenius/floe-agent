@@ -181,9 +181,9 @@ public struct ManufacturingWorkbenchView: View {
             }
             .navigationDestination(item:researchEditor) { item in
                 switch item {
-                case .cell: ManufacturingCellWorkbenchView(project:.demonstration(),directory:model.directory.appendingPathComponent("cell"),initialFile:researchFile,embedded:true)
-                case .virtual: VirtualMachineWorkbenchView(project:.demonstration(),directory:model.directory.appendingPathComponent("virtual"),initialFile:researchFile,embedded:true)
-                case .engineering: EngineeringWorkbenchView(directory:model.directory.appendingPathComponent("engineering"),initialFile:researchFile,embedded:true)
+                case .cell: ManufacturingCellWorkbenchView(project:.demonstration(),directory:model.directory.appendingPathComponent("cell"),initialFile:researchFile,embedded:true,sessions:model.researchSessions)
+                case .virtual: VirtualMachineWorkbenchView(project:.demonstration(),directory:model.directory.appendingPathComponent("virtual"),initialFile:researchFile,embedded:true,sessions:model.researchSessions)
+                case .engineering: EngineeringWorkbenchView(directory:model.directory.appendingPathComponent("engineering"),initialFile:researchFile,embedded:true,sessions:model.researchSessions)
                 default: EmptyView()
                 }
             }

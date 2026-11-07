@@ -22,6 +22,9 @@ import FloeToolboxWorkbenches
     private var sampler: RoamingSampler?
     private var observer: Task<Void, Never>?
     private var traceGeneration = UUID()
+    private var publishedTraceGeneration: UUID?
+    let history = ToolboxHistoryStore.shared
+    private var traceHistoryAttempt: UUID?
     init(database: DatabaseManager) { self.database = database }
     var canReadWiFiIdentity: Bool { LocationServicesCenter.shared.canReadWiFiIdentity }
     var needsInitialWiFiAuthorization: Bool { LocationServicesCenter.shared.authorizationStatus == .notDetermined }
@@ -60,7 +63,16 @@ import FloeToolboxWorkbenches
         let service = DiagnosticService(lease: lease, authorize: { [weak self] expected, _, _ in
             await self?.isCurrent(tool, lease: expected) == true
         })
-        let model = try DiagnosticWorkbenchModel(tool: tool, service: service, mayReadWiFiIdentity: canReadWiFiIdentity)
+        let model = try DiagnosticWorkbenchModel(tool: tool, service: service, mayReadWiFiIdentity: canReadWiFiIdentity,
+            onRequestState: { [weak self] request, state in
+                guard let self else { return }
+                switch state {
+                case .running: self.history.begin(.diagnostic(request), attemptID: request.id)
+                case .completed: self.history.finish(request.id, outcome: .completed)
+                case .failed: self.history.finish(request.id, outcome: .failed)
+                case .cancelled: self.history.finish(request.id, outcome: .cancelled)
+                }
+            })
         models[tool] = model
         return model
     }
@@ -77,7 +89,9 @@ import FloeToolboxWorkbenches
         stopTraceNow()
     }
     func startTrace(target: String, interval: Double) {
+        history.finish(traceHistoryAttempt, outcome: .cancelled)
         let generation = UUID(); traceGeneration = generation
+        traceHistoryAttempt = history.begin(.roaming(target: target, interval: interval), attemptID: generation)
         observer?.cancel()
         tracing = true; failed = false
         observer = Task { [weak self] in
@@ -109,12 +123,15 @@ import FloeToolboxWorkbenches
                 while traceGeneration == generation, !Task.isCancelled {
                     let snapshot = await service.snapshot(), state = await service.state()
                     guard traceGeneration == generation, !Task.isCancelled else { break }
-                    roaming = snapshot
+                    roaming = snapshot; publishedTraceGeneration = generation
                     if let observation = snapshot.samples.last(where: { $0.observation.status != .notObserved })?.observation {
                         wifiIdentity = WiFiIdentity(status: observation.status, ssid: observation.ssid,
                             bssid: observation.bssid, signalDBM: observation.signalDBM)
                     }
-                    if !state.running { tracing = false; failed = state.error != nil; break }
+                    if !state.running {
+                        tracing = false; failed = state.error != nil
+                        history.finish(generation, outcome: failed ? .failed : .completed); break
+                    }
                     try await Task.sleep(for: .seconds(1))
                 }
                 await service.stop(); await diagnostic.stop()
@@ -122,15 +139,25 @@ import FloeToolboxWorkbenches
                 await diagnostic.stop()
                 guard traceGeneration == generation else { return }
                 tracing = false; failed = !(error is CancellationError)
+                history.finish(generation, outcome: failed ? .failed : .cancelled)
             }
         }
     }
     func stopTraceNow() {
+        history.finish(traceHistoryAttempt, outcome: .cancelled); traceHistoryAttempt = nil
         traceGeneration = UUID(); leases[.roaming] = nil
         observer?.cancel(); observer = nil
         let previous = sampler; sampler = nil
         Task { await previous?.stop() }; tracing = false
     }
     func stopTrace() async { stopTraceNow() }
+    /// A new attempt can temporarily leave the preceding trace visible in UI.
+    /// Model observation never relabels that retained snapshot as this attempt.
+    func nativeObservationState() -> ToolboxNativeRoamingState {
+        let current = publishedTraceGeneration == traceGeneration
+        return .init(running: tracing, latestAttemptFailed: failed, hasRetainedSnapshot: roaming != nil,
+            snapshotIsCurrentAttempt: current,
+            snapshot: publishedTraceGeneration != nil && (!tracing || current) ? roaming : nil)
+    }
 }
 #endif

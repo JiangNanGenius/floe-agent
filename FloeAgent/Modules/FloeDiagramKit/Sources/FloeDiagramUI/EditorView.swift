@@ -9,6 +9,7 @@ import FloeDiagramExchange
 /// iPad-first editor surface. Embed inside the host's existing Notes/Files navigation.
 public struct DiagramEditorView: View {
     @Bindable private var model: DiagramEditorModel
+    @AppStorage(DiagramDrawingInputPolicy.preferenceKey) private var fingerDrawing = false
     @State private var sheet: EditorSheet?
     @State private var importing = false
     @State private var importFormat: DiagramFormat = .floemap
@@ -191,7 +192,7 @@ public struct DiagramEditorView: View {
             if model.mode == .outline { DiagramNavigator(model: model, fullWidth: true) }
             else if let scene = model.scene {
                 ZStack(alignment: .topLeading) {
-                    DiagramCanvas(model: model).accessibilityIdentifier("diagram.nativeCanvas")
+                    DiagramCanvas(model: model, fingerDrawing: fingerDrawing).accessibilityIdentifier("diagram.nativeCanvas")
                     if !model.isPresenting { canvasTools.padding(8) }
                     if showOverview, !compact, !model.isPresenting {
                         DiagramMinimap(model: model, scene: scene).frame(width: 128, height: 72)
@@ -220,7 +221,8 @@ public struct DiagramEditorView: View {
     }
     private var canvasTools: some View {
         GlassEffectContainer(spacing: 8) {
-            HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
                 HStack(spacing: 2) {
                     toolButton(.select, symbol: "cursorarrow", title: DL("选择", "Select"))
                     toolButton(.pan, symbol: "hand.draw", title: DL("移动画布", "Pan canvas"))
@@ -232,6 +234,15 @@ public struct DiagramEditorView: View {
                         .buttonStyle(DiagramChromeButtonStyle()).foregroundStyle(.primary).padding(2).glassEffect(.regular, in: .rect(cornerRadius: 14)).accessibilityIdentifier("diagram.addMenu")
                 } else {
                     icon("plus", DL("添加任务", "Add task"), id: "diagram.addTask") { model.addTask() }.buttonStyle(DiagramChromeButtonStyle()).foregroundStyle(.primary).padding(2).glassEffect(.regular, in: .rect(cornerRadius: 14))
+                }
+                }
+                if model.mode == .canvas, model.tool == .pencil {
+                    Toggle(isOn: $fingerDrawing) {
+                        Label(DL("手指绘图", "Draw with Finger"), systemImage: "hand.point.up.left")
+                    }
+                    .fixedSize().frame(minHeight: 44).padding(.horizontal, 10)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 14))
+                    .accessibilityIdentifier("diagram.fingerDrawing.toggle")
                 }
             }
         }

@@ -64,7 +64,9 @@ let package = Package(
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.10.0"),
         // NOTE: dev plan pinned swift-crypto 4.1.0, but Citadel (main) caps
         // at <4.0.0. 3.15.1 is the newest 3.x. Deviation flagged.
-        .package(url: "https://github.com/apple/swift-crypto.git", exact: "3.15.1"),
+        // Same 3.15.1 source; one dynamic Crypto/Extras runtime for App + tests.
+        // See ThirdParty/swift-crypto/FLOE_PATCHES.md and FLOE_UPSTREAM.json.
+        .package(path: "ThirdParty/swift-crypto"),
         // Pinned upstream library slice with a synchronized input queue.
         // Provenance and the minimal patch are tracked beside the source.
         .package(path: "ThirdParty/RoyalVNCKit"),
@@ -308,8 +310,7 @@ let package = Package(
             name: "FloeExecution",
             dependencies: [
                 .product(name: "FloeMacBridgeProtocol", package: "FloeMacBridge"),
-                .product(name: "WasmKit", package: "WasmKit"),
-                .product(name: "WasmKitWASI", package: "WasmKit"),
+                .product(name: "FloeWasmRuntime", package: "WasmKit"),
                 .product(name: "SystemPackage", package: "swift-system"),
                 "FloeCore", "FloeTools", "FloeSSH", "FloeWorkspace", "FloeSecurity",
                 // Interpreted shared ARM64 Linux, without a host fallback.
@@ -430,6 +431,7 @@ let package = Package(
                 "FloePersistence",
                 "FloeTools",
                 .product(name: "Citadel", package: "Citadel"),
+                .product(name: "NIOFoundationCompat", package: "swift-nio"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOSSH", package: "swift-nio-ssh"),

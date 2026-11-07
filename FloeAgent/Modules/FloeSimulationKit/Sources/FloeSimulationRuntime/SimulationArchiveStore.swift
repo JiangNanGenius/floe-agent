@@ -28,6 +28,23 @@ public struct SimulationSavedResult: Codable, Equatable, Sendable, Identifiable 
     public var savedAt: Date
 }
 
+public enum SimulationAnimationExportFormat:String,Codable,Sendable,CaseIterable {
+    case motionJSON = "animation.json", glb, mp4
+}
+public struct SimulationSavedAnimationExport:Codable,Equatable,Sendable,Identifiable {
+    public var id:UUID
+    public var format:SimulationAnimationExportFormat
+    public var source:SimulationSourceRef
+    public var graphSHA256:String
+    public var physicsResultID:UUID?
+    public var framesPerSecond:Int
+    public var frameCount:Int
+    public var durationSeconds:Double
+    public var byteCount:Int
+    public var sha256:String
+    public var savedAt:Date
+}
+
 /// The host must supply a project-owned directory. Result datasets are immutable
 /// packages with checksummed binary chunks, never one unbounded JSON value.
 public actor SimulationArchiveStore {
@@ -155,6 +172,97 @@ public actor SimulationArchiveStore {
         guard data.count <= maximumBytes else { throw SimulationError.resourceLimit("The attachment exceeds its export budget.") }
         let url = try checkedURL(folder.appendingPathComponent(id.uuidString+"."+fileExtension))
         try data.write(to:url,options:.atomic); return url
+    }
+
+    /// The producer writes only inside this project-owned private staging
+    /// directory. A complete payload + provenance become visible together.
+    public func beginAnimationExport(id:UUID,format:SimulationAnimationExportFormat) throws -> URL {
+        let parent = try checkedURL(directory.appendingPathComponent("exports",isDirectory:true))
+        try FileManager.default.createDirectory(at:parent,withIntermediateDirectories:true)
+        let staging = try checkedURL(parent.appendingPathComponent(".staging-animation-"+id.uuidString,isDirectory:true))
+        guard !FileManager.default.fileExists(atPath:staging.path), !FileManager.default.fileExists(atPath:parent.appendingPathComponent(id.uuidString).path) else { throw SimulationError.invalidInput("An export with this identity already exists.") }
+        try FileManager.default.createDirectory(at:staging,withIntermediateDirectories:false)
+        return try checkedURL(staging.appendingPathComponent("Motion."+format.rawValue))
+    }
+    public func discardAnimationExport(id:UUID) throws {
+        let staging = try checkedURL(directory.appendingPathComponent("exports/.staging-animation-"+id.uuidString,isDirectory:true))
+        if FileManager.default.fileExists(atPath:staging.path) { try FileManager.default.removeItem(at:staging) }
+    }
+    public func commitAnimationExport(id:UUID,format:SimulationAnimationExportFormat,source:SimulationSourceRef,
+                                      graphSHA256:String,physicsResultID:UUID?,framesPerSecond:Int,frameCount:Int,durationSeconds:Double) throws -> SimulationSavedAnimationExport {
+        try source.validate(); try Task.checkCancellation()
+        guard graphSHA256.count == 64, graphSHA256.allSatisfy(\.isHexDigit), (1...240).contains(framesPerSecond),
+              frameCount > 0, frameCount <= 144_001, durationSeconds.isFinite, durationSeconds > 0, durationSeconds <= 600 else { throw SimulationError.invalidInput("Invalid animation export provenance.") }
+        let parent = try checkedURL(directory.appendingPathComponent("exports",isDirectory:true))
+        let staging = try checkedURL(parent.appendingPathComponent(".staging-animation-"+id.uuidString,isDirectory:true))
+        let payload = try checkedURL(staging.appendingPathComponent("Motion."+format.rawValue))
+        let (bytes,sha) = try animationFileIdentity(payload)
+        let file = try FileHandle(forReadingFrom:payload); defer { try? file.close() }
+        let header = try file.read(upToCount:32) ?? Data()
+        let valid:Bool
+        switch format {
+        case .motionJSON: valid = header.first == 123
+        case .glb: valid = header.count >= 12 && header.prefix(4) == Data([0x67,0x6c,0x54,0x46])
+        case .mp4: valid = header.count >= 12 && header.subdata(in:4..<8) == Data("ftyp".utf8)
+        }
+        guard valid else { throw SimulationError.corruptArchive("The animation output does not match its format.") }
+        let record = SimulationSavedAnimationExport(id:id,format:format,source:source,graphSHA256:graphSHA256,physicsResultID:physicsResultID,framesPerSecond:framesPerSecond,frameCount:frameCount,durationSeconds:durationSeconds,byteCount:bytes,sha256:sha,savedAt:Date())
+        try encode(record).write(to:staging.appendingPathComponent("manifest.json"),options:.atomic)
+        try Task.checkCancellation()
+        let final = try checkedURL(parent.appendingPathComponent(id.uuidString,isDirectory:true))
+        guard !FileManager.default.fileExists(atPath:final.path) else { throw SimulationError.invalidInput("The animation export already exists.") }
+        try FileManager.default.moveItem(at:staging,to:final)
+        return record
+    }
+    public func savedAnimationExports(source:SimulationSourceRef) throws -> [SimulationSavedAnimationExport] {
+        let parent = try checkedURL(directory.appendingPathComponent("exports",isDirectory:true))
+        guard FileManager.default.fileExists(atPath:parent.path) else { return [] }
+        let children = try FileManager.default.contentsOfDirectory(at:parent,includingPropertiesForKeys:[.isDirectoryKey],options:.skipsHiddenFiles)
+        guard children.count <= 8192 else { throw SimulationError.resourceLimit("The animation export index exceeds its directory budget.") }
+        var records:[SimulationSavedAnimationExport] = []
+        for folder in children where UUID(uuidString:folder.lastPathComponent) != nil {
+            try Task.checkCancellation()
+            let record = try readAnimationExportRecord(id:UUID(uuidString:folder.lastPathComponent)!)
+            guard record.source.projectID == source.projectID, record.source.documentID == source.documentID else { continue }
+            records.append(record)
+        }
+        return records.sorted { $0.savedAt > $1.savedAt }
+    }
+    public func animationExportURL(id:UUID,source:SimulationSourceRef) throws -> URL {
+        let record = try readAnimationExportRecord(id:id)
+        guard record.source.projectID == source.projectID, record.source.documentID == source.documentID else { throw SimulationError.staleSource }
+        let url = try checkedURL(directory.appendingPathComponent("exports/"+id.uuidString+"/Motion."+record.format.rawValue))
+        let (bytes,sha) = try animationFileIdentity(url)
+        guard bytes == record.byteCount, sha == record.sha256 else { throw SimulationError.corruptArchive("The saved animation file changed or is incomplete.") }
+        return url
+    }
+    private func readAnimationExportRecord(id:UUID) throws -> SimulationSavedAnimationExport {
+        let folder = try checkedURL(directory.appendingPathComponent("exports/"+id.uuidString,isDirectory:true))
+        let url = try checkedURL(folder.appendingPathComponent("manifest.json"))
+        let size = try url.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0
+        guard size > 0, size <= 65_536 else { throw SimulationError.corruptArchive("Invalid animation export manifest.") }
+        let record = try JSONDecoder().decode(SimulationSavedAnimationExport.self,from:Data(contentsOf:url))
+        try record.source.validate()
+        guard record.id == id, record.byteCount > 0, record.byteCount <= maximumBytes, record.sha256.count == 64,
+              record.sha256.allSatisfy(\.isHexDigit), record.graphSHA256.count == 64,
+              (1...240).contains(record.framesPerSecond), record.frameCount > 0,
+              record.durationSeconds.isFinite, record.durationSeconds > 0 else { throw SimulationError.corruptArchive("Invalid animation export identity.") }
+        let payload = try checkedURL(folder.appendingPathComponent("Motion."+record.format.rawValue))
+        guard try payload.resourceValues(forKeys:[.fileSizeKey]).fileSize == record.byteCount else { throw SimulationError.corruptArchive("The saved animation file is incomplete.") }
+        return record
+    }
+    private func animationFileIdentity(_ url:URL) throws -> (Int,String) {
+        let url = try checkedURL(url)
+        guard try url.resourceValues(forKeys:[.isRegularFileKey]).isRegularFile == true else { throw SimulationError.corruptArchive("The animation payload is missing.") }
+        let file = try FileHandle(forReadingFrom:url); defer { try? file.close() }
+        var bytes = 0, digest = SHA256()
+        while let data = try file.read(upToCount:1_048_576), !data.isEmpty {
+            try Task.checkCancellation()
+            guard data.count <= maximumBytes-bytes else { throw SimulationError.resourceLimit("The animation output exceeds its export budget.") }
+            bytes += data.count; digest.update(data:data)
+        }
+        guard bytes > 0 else { throw SimulationError.corruptArchive("The animation payload is empty.") }
+        return (bytes,digest.finalize().map { String(format:"%02x",$0) }.joined())
     }
 
     public func resultIDs() throws -> [UUID] {

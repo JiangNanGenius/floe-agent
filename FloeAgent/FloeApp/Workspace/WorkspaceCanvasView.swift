@@ -10085,7 +10085,7 @@ private struct CanvasPencilKitSurface: UIViewRepresentable {
         canvas.backgroundColor = .clear
         canvas.isOpaque = false
         canvas.delegate = context.coordinator
-        canvas.drawingPolicy = fingerDrawingEnabled ? .anyInput : .pencilOnly
+        NativeDrawingInputPolicy.apply(to: canvas, fingerDrawing: fingerDrawingEnabled)
         applyTool(to: canvas)
         if let drawingData, let drawing = try? PKDrawing(data: drawingData) {
             context.coordinator.isApplyingExternalDrawing = true
@@ -10098,7 +10098,7 @@ private struct CanvasPencilKitSurface: UIViewRepresentable {
     func updateUIView(_ canvas: PKCanvasView, context: Context) {
         context.coordinator.onDrawingChanged = onDrawingChanged
         context.coordinator.onClosedShape = onClosedShape
-        canvas.drawingPolicy = fingerDrawingEnabled ? .anyInput : .pencilOnly
+        NativeDrawingInputPolicy.apply(to: canvas, fingerDrawing: fingerDrawingEnabled)
         applyTool(to: canvas)
         let current = canvas.drawing.dataRepresentation()
         let expected = drawingData ?? Data()

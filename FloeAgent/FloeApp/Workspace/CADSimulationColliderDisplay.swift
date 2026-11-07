@@ -29,7 +29,7 @@ nonisolated enum CADSimulationColliderDisplay {
                 if y > 0 { indices += [a,b,c] }
                 if y < rings-1 { indices += [b,d,c] }
             } }
-        case .triangleMesh:
+        case .triangleMesh,.convexDecomposition:
             vertices = collider.vertices; indices = collider.triangles.flatMap { $0 }
         case .convexHull: return nil
         }

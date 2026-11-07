@@ -1,9 +1,7 @@
 import Foundation
 import FloeToolboxCore
 import FloeToolboxUSBWire
-#if canImport(IOKit)
-import IOKit
-#endif
+import FloeToolboxUSBIOKit
 
 public enum USBClientError: Error, Equatable, Sendable { case unavailable, invalidPacket, detached, busy, limit, io(Int32) }
 /// The production host opens an explicitly selected, entitled user client; no first-device fallback.
@@ -14,12 +12,14 @@ public protocol USBUserClientChannel: Sendable {
 public struct USBDeviceInformation: Sendable {
     public let vendor: UInt16; public let product: UInt16
     public let interfaceNumber: UInt8; public let controlInterface: UInt8
+    public let interfaceClass: UInt8; public let interfaceSubclass: UInt8
     public let maximumPacketSize: UInt16
     public let family: USBSerialFamily?
     public let pl2303Revision: PL2303Revision?
     public let generation: UInt64
     fileprivate init(_ info: FloeUSBDeviceInfo, generation: UInt64) {
         vendor = info.vendor; product = info.product; interfaceNumber = info.interfaceNumber
+        interfaceClass = info.interfaceClass; interfaceSubclass = info.interfaceSubclass
         controlInterface = info.controlInterface; maximumPacketSize = info.maximumPacketSize; self.generation = generation
         if info.interfaceClass == 10, info.controlInterface != info.interfaceNumber { family = .cdcACM }
         else { family = USBSerialChipPlans.candidate(vendor:info.vendor,product:info.product,interfaceClass:info.interfaceClass,subclass:info.interfaceSubclass) }
@@ -86,64 +86,73 @@ public actor USBUserClientExecutor: USBTransferExecutor {
     public func close() async { guard !closed else { return }; closed = true; generation = 0; await channel.close() }
 }
 
-#if canImport(IOKit)
 /// IOConnectCallStructMethod runs on a private queue, never the UI/cooperative executor.
 /// Each packet is below 4 KiB, so large shared-memory descriptors are not accepted by the driver.
 public final class IOKitUSBUserClientChannel: USBUserClientChannel, @unchecked Sendable {
     private let queue = DispatchQueue(label:"floe.toolbox.usb-user-client")
-    private var connection: io_connect_t
+    private var connection: UInt32
     private var closed = false
-    private init(connection: io_connect_t) { self.connection = connection }
-    public static func open(registryEntryID: UInt64) async throws -> IOKitUSBUserClientChannel {
+    private init(connection: UInt32) { self.connection = connection }
+    // Native selection holds the complete observed identity; no raw-ID bypass.
+    static func open(expectedIdentity: USBRegistryIdentity) async throws -> IOKitUSBUserClientChannel {
         try Task.checkCancellation()
         let channel: IOKitUSBUserClientChannel = try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos:.utility).async { continuation.resume(with:Result { try openSynchronously(registryEntryID:registryEntryID) }) }
+            DispatchQueue.global(qos:.utility).async { continuation.resume(with:Result { try openSynchronously(expectedIdentity: expectedIdentity) }) }
         }
         if Task.isCancelled { await channel.close(); throw CancellationError() }; return channel
     }
-    private static func openSynchronously(registryEntryID: UInt64) throws -> IOKitUSBUserClientChannel {
-        guard registryEntryID != 0 else { throw USBClientError.unavailable }
-        let service = IOServiceGetMatchingService(kIOMainPortDefault,IORegistryEntryIDMatching(registryEntryID))
-        guard service != 0 else { throw USBClientError.unavailable }; defer { IOObjectRelease(service) }
-        // Verify this is our service before opening a user-selected registry entry.
-        guard let property = IORegistryEntryCreateCFProperty(service,"IOUserClass" as CFString,kCFAllocatorDefault,0)?.takeRetainedValue() as? String,
-              property == "FloeUSBSerialDriver" else { throw USBClientError.unavailable }
-        var connection: io_connect_t = 0
-        let status = IOServiceOpen(service,mach_task_self_,0,&connection)
-        guard status == KERN_SUCCESS, connection != 0 else { throw USBClientError.io(status) }
+    private static func openSynchronously(expectedIdentity: USBRegistryIdentity) throws -> IOKitUSBUserClientChannel {
+        var raw = expectedIdentity.raw
+        var connection: UInt32 = 0
+        try USBRegistryError.check(floe_usb_host_open(&raw, &connection))
+        guard connection != 0 else { throw USBRegistryError.identityUnavailable }
         return IOKitUSBUserClientChannel(connection:connection)
     }
     public func exchange(_ request: Data, maximumReplyBytes: Int) async throws -> Data {
+        try Task.checkCancellation()
         guard request.count <= MemoryLayout<FloeUSBRequest>.size+Int(FLOE_USB_MAX_PAYLOAD),
               (MemoryLayout<FloeUSBResponse>.size...MemoryLayout<FloeUSBResponse>.size+Int(FLOE_USB_MAX_PAYLOAD)).contains(maximumReplyBytes) else { throw USBClientError.limit }
         return try await withCheckedThrowingContinuation { continuation in queue.async { [self] in
             guard !closed else { continuation.resume(throwing:USBClientError.detached); return }
             var result = Data(count:maximumReplyBytes), count = maximumReplyBytes
             let status = request.withUnsafeBytes { input in result.withUnsafeMutableBytes { output in
-                IOConnectCallStructMethod(connection,0,input.baseAddress,input.count,output.baseAddress,&count)
+                floe_usb_host_exchange(connection,input.baseAddress,input.count,output.baseAddress,&count)
             } }
-            guard status == KERN_SUCCESS, count <= result.count else { continuation.resume(throwing:USBClientError.io(status)); return }
+            do { try USBRegistryError.check(status) }
+            catch { continuation.resume(throwing: error); return }
+            guard (0...result.count).contains(count) else { continuation.resume(throwing: USBClientError.invalidPacket); return }
             result.count = count; continuation.resume(returning:result)
         } }
     }
     public func close() async {
         await withCheckedContinuation { continuation in queue.async { [self] in
-            if !closed { closed = true; IOServiceClose(connection); connection = 0 }; continuation.resume()
+            if !closed { closed = true; floe_usb_host_close(connection); connection = 0 }; continuation.resume()
         } }
     }
-    deinit { if connection != 0 { IOServiceClose(connection) } }
+    deinit { if connection != 0 { floe_usb_host_close(connection) } }
 }
-#endif
 
 public enum USBSerialClient {
     public static func connect(channel: any USBUserClientChannel, settings: USBSerialSettings) async throws -> USBSerialConnection {
+        try await connectValidated(channel: channel, settings: settings, expectedIdentity: nil)
+    }
+    static func connect(channel: any USBUserClientChannel, settings: USBSerialSettings,
+                        expectedIdentity: USBRegistryIdentity) async throws -> USBSerialConnection {
+        try await connectValidated(channel: channel, settings: settings, expectedIdentity: expectedIdentity)
+    }
+    private static func connectValidated(channel: any USBUserClientChannel, settings: USBSerialSettings,
+                                          expectedIdentity: USBRegistryIdentity?) async throws -> USBSerialConnection {
         let executor = USBUserClientExecutor(channel:channel)
         do {
+            try Task.checkCancellation()
             let info = try await executor.information()
+            try Task.checkCancellation()
+            if let expectedIdentity, !expectedIdentity.matchesInformation(info) { throw USBRegistryError.staleSelection }
             guard let family = info.family, family != .pl2303 || info.pl2303Revision != nil else { throw USBClientError.unavailable }
             let connection = try USBSerialConnection(executor:executor,family:family,maximumPacketSize:Int(info.maximumPacketSize),
                 ftdiPortIndexed:family == .ftdi && [0x6010,0x6011,0x6014].contains(info.product),pl2303Revision:info.pl2303Revision)
             try await connection.configure(settings,interface:family == .cdcACM ? info.controlInterface : info.interfaceNumber)
+            try Task.checkCancellation()
             return connection
         } catch { await executor.close(); throw error }
     }

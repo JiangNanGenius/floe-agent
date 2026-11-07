@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import XCTest
-import FloeCAD
+@testable import FloeCAD
+import simd
 import FloeCore
 import FloeTools
 import FloeSecurity
@@ -12,6 +13,7 @@ import FloeSimulationGeometry
 import FloeSimulationFields
 import FloeSimulationPhysics
 import FloeSimulationAnimation
+import FloeSimulationUI
 @testable import FloeApp
 
 @MainActor final class CADSimulationIntegrationTests: XCTestCase {
@@ -105,6 +107,7 @@ import FloeSimulationAnimation
         let environment = FloeAgentApp.liveEnvironment; try await environment.ensureDurableAutomationReady()
         let names = StudioCoordinator.names.union([StudioSimulationTool.name])
         var tasks: [UUID] = [], contexts: [ToolContext] = [], created: (UUID,FloeCADDocument)?
+        var stage = "prepare project"
         do {
             for _ in 0..<2 {
                 let id = UUID(), run = UUID(), now = Date(); tasks.append(id)
@@ -120,8 +123,13 @@ import FloeSimulationAnimation
             let record = try XCTUnwrap(made["record"] as? [String:Any]), rawID = try XCTUnwrap(record["id"] as? String)
             let id = try XCTUnwrap(UUID(uuidString:rawID)), location = try await PersonalContentService.shared.library().resolve(id)
             let cad = try await PersonalCADSessions.open(id:id,directory:location.url); created = (id,cad); try box(cad)
+            // The fixture authored native commands directly rather than through
+            // Studio's normal saved-edit path. Persist that original before move.
+            stage = "save authored CAD fixture"
+            let savedCAD = await cad.save(); XCTAssertNil(savedCAD.error)
             func invoke(_ command: String, _ input: [String:Any] = [:], _ context: ToolContext? = nil) async throws -> [String:Any] {
-                try await call(StudioSimulationTool.name,["projectID":rawID,"command":command,"inputJSON":String(decoding:JSONSerialization.data(withJSONObject:input),as:UTF8.self)],context ?? owner)
+                stage = command + (input["format"].map { " (\($0))" } ?? "")
+                return try await call(StudioSimulationTool.name,["projectID":rawID,"command":command,"inputJSON":String(decoding:JSONSerialization.data(withJSONObject:input),as:UTF8.self)],context ?? owner)
             }
             do { _ = try await invoke("simulation.read",[:],foreign); XCTFail("Foreign project access") } catch {}
             var temporary = owner; temporary.temporaryReadOnly = true
@@ -170,16 +178,33 @@ import FloeSimulationAnimation
             let bakeReceipt = try await invoke("simulation.animation.bake",["expectedGeneration":animationGeneration])
             let baked = try XCTUnwrap(bakeReceipt["output"] as? [String:Any])
             XCTAssertTrue((baked["url"] as? String)?.hasSuffix(".animation.json") == true)
+            let bakedGeneration = try XCTUnwrap(baked["generation"] as? Int)
+            let afterBake = await entry.model.workspace.snapshot()
+            XCTAssertEqual(UInt64(bakedGeneration),afterBake.generation)
+            XCTAssertTrue(afterBake.document.resultIDs.contains(resultID))
+            let glbReceipt = try await invoke("simulation.animation.bake",["expectedGeneration":bakedGeneration,"format":"glb","framesPerSecond":24])
+            let glb = try XCTUnwrap(glbReceipt["output"] as? [String:Any])
+            XCTAssertTrue((glb["url"] as? String)?.hasSuffix(".glb") == true)
+            XCTAssertEqual(glb["generation"] as? Int,bakedGeneration,"A second export does not edit the saved graph or its result IDs")
+            let exportsReceipt = try await invoke("simulation.animation.exports")
+            let exports = try XCTUnwrap(exportsReceipt["output"] as? [[String:Any]])
+            XCTAssertEqual(exports.count,2)
+            let exportID = try XCTUnwrap(exports.first { $0["format"] as? String == "glb" }?["id"] as? String)
+            let sharedReceipt = try await invoke("simulation.animation.export.read",["exportID":exportID])
+            XCTAssertNotNil((sharedReceipt["output"] as? [String:Any])?["url"])
             do { _ = try await invoke("simulation.unknown"); XCTFail("Unknown command accepted") } catch {}
             XCTAssertEqual(try cad.simulationGeometry().contentSHA256,before)
+            stage = "close original before move"
             try await CADSimulationSessions.close(document:cad); cad.close()
             let library = try await PersonalContentService.shared.library()
             let folder = "Simulation move fixture "+String(UUID().uuidString.prefix(8))
             try await library.createFolder(folder,in:[])
             let beforeMove = try await library.resolve(id).record
+            stage = "move saved project"
             _ = try await library.move(id,to:[folder],expectedRelativePath:beforeMove.relativePath)
             let moved = try await library.resolve(id)
             let movedCAD = try await PersonalCADSessions.open(id:id,directory:moved.url); created = (id,movedCAD)
+            stage = "reopen moved simulation"
             let movedEntry = try await CADSimulationSessions.open(document:movedCAD,directory:moved.url.appendingPathComponent("Simulation"),ownerID:id)
             XCTAssertEqual(movedEntry.source.documentID,id)
             XCTAssertEqual(movedEntry.source,current.document.source,"Moving an unchanged original must preserve its source revision and digest")
@@ -193,6 +218,7 @@ import FloeSimulationAnimation
             _ = try await PersonalContentService.shared.library().softDelete(freshRecord)
             created = nil
         } catch {
+            XCTFail("Simulation workflow stage \(stage): \(error)")
             if let (_,cad) = created { try? await CADSimulationSessions.close(document:cad); cad.close() }
             for id in tasks { try? await environment.conversationStore.deleteConversation(id:id) }
             throw error
@@ -217,5 +243,70 @@ import FloeSimulationAnimation
             XCTAssertTrue(TypedMutationContract.specs(for:StudioSimulationTool.name,arguments:input).isEmpty)
         }
     }
+    func testExistingRigAndCameraImportDeformsSameSourceMesh() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("animation-interop04-"+UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:root) }
+        let cad = try await FloeCADDocument.create(at:root.appendingPathComponent("Document.floecad"),name:"Rig interop")
+        defer { cad.close() }
+        let id = BodyID(), definition = CADPolygonMeshDefinition(cage:try .box(width:4,height:20,depth:2))
+        let placement = Transform3D(translation:SIMD3(2,3,4))
+        let node = FeatureNode(name:"Rig Mesh",kind:.polygonCage(definition:definition,placement:placement),outputBodyIDs:[id])
+        cad.session.recordAndRebuild([node],title:"Fixture")
+        let service = CADRiggingService(document:cad)
+        func edit(_ action:String,_ args:[String:Any]) throws {
+            let value = service.handle(action:action,args:args)
+            XCTAssertEqual(value["ok"] as? Bool,true,"\(value)")
+            if value["ok"] as? Bool != true { throw CADRigError.invalid }
+        }
+        try edit("rig.bind",["body_id":id.raw.uuidString,"duration":1.0])
+        var rig = try XCTUnwrap(try CADRigCodec.read(cad.session.document.sceneSettingsData))
+        try edit("rig.morph",["name":"Depth","deltas":[["vertex_id":definition.cage.vertices[0].id.uuidString,"delta":[0.0,0.0,0.5]]],"weight":0.0])
+        try edit("rig.key",["time":0.0])
+        let q = simd_quatd(angle:Double.pi/4,axis:SIMD3(0,0,1)).vector
+        try edit("rig.pose",["joint_id":rig.joints[0].id.uuidString,"rotation":[q.x,q.y,q.z,q.w]])
+        rig = try XCTUnwrap(try CADRigCodec.read(cad.session.document.sceneSettingsData))
+        try edit("rig.morph.weight",["morph_id":rig.morphs[0].id.uuidString,"weight":1.0])
+        try edit("rig.key",["time":1.0]); try edit("rig.clip",[:])
+        let captured = try cad.simulationGeometry(), hash = captured.contentSHA256
+        let source = SimulationSourceRef(projectID:UUID(),documentID:UUID(),revision:0,contentSHA256:hash)
+        let graph = try XCTUnwrap(CADSimulationAnimationBridge.graph(cad.simulationAnimationSource(),source:source))
+        let body = try XCTUnwrap(captured.bodies.first), objectID = body.id.uuidString.lowercased()
+        let native = try XCTUnwrap(cad.rigPlayback()).evaluate(at:1)
+        let pose = try SimulationAnimationEvaluator.evaluate(graph,timeSeconds:1)
+        let vertices = try SimulationAnimationMeshDeformer.deform(body.positionsMM.map { .init($0[0]*0.001,$0[1]*0.001,$0[2]*0.001) },sourceObjectID:objectID,graph:graph,pose:pose)
+        XCTAssertEqual(vertices.count,native.positions.count)
+        for index in vertices.indices {
+            let p = native.positions[index]
+            XCTAssertEqual(vertices[index].x,(Double(p.x)+2)*0.001,accuracy:2e-8)
+            XCTAssertEqual(vertices[index].y,(Double(p.y)+3)*0.001,accuracy:2e-8)
+            XCTAssertEqual(vertices[index].z,(Double(p.z)+4)*0.001,accuracy:2e-8)
+        }
+        let clip = try cad.createAnimationClip(name:"Camera",duration:1)
+        try cad.setAnimationCameraKeyframe(clipID:clip.id,time:0,camera:.init(target:SIMD3(0,0,0),distance:0.1,azimuthRadians:0,elevationRadians:0.2,fovYDegrees:60))
+        try cad.setAnimationCameraKeyframe(clipID:clip.id,time:1,camera:.init(target:SIMD3(0,0,0),distance:0.2,azimuthRadians:0.5,elevationRadians:0.2,fovYDegrees:30))
+        let cameraGraph = try XCTUnwrap(CADSimulationAnimationBridge.graph(cad.simulationAnimationSource(),source:source))
+        let cameraPose = try SimulationAnimationEvaluator.evaluate(cameraGraph,timeSeconds:1)
+        XCTAssertEqual(cameraPose.cameraProjection?.verticalFOVDegrees,30)
+        XCTAssertNotNil(cameraPose.objects["camera"])
+        let initialDisplay = try CADSimulationDisplayBuilder.make(geometry:captured,source:source,result:nil,frame:nil,field:nil,physics:.init(),pose:cameraPose,deformation:1,graph:cameraGraph)
+        XCTAssertEqual(initialDisplay.camera?.verticalFOVDegrees,30)
+        let archive = try SimulationArchiveStore(directory:root.appendingPathComponent("Simulation"))
+        let model = SimulationWorkbenchModel(document:.init(source:source),coordinator:.init(archive:archive),archive:archive)
+        model.setSourceMeshes([.init(id:objectID,positionsMeters:body.positionsMM.map { .init($0[0]*0.001,$0[1]*0.001,$0[2]*0.001) },indices:body.indices)])
+        model.writeAnimationGraph(cameraGraph); model.createRagdoll(pinRoot:true)
+        let study = try XCTUnwrap(model.selectedStudy), request = SimulationRequest(source:source,study:study)
+        let physics = model.physics, result = try await RapierSimulationBackend().solve(request) { _ in }
+        try await archive.saveResult(result,request:request)
+        let records = try await archive.savedResults(); await model.showSavedResult(try XCTUnwrap(records.first))
+        model.attachCurrentPhysicsCache()
+        XCTAssertNoThrow(try model.animationGraph.validate(),"Attached cache duration: \(model.animationGraph.durationSeconds)")
+        let ragdollPose = try SimulationAnimationEvaluator.evaluate(model.animationGraph,timeSeconds:model.animationGraph.durationSeconds,physics:result)
+        let ragdollDisplay = try CADSimulationDisplayBuilder.make(geometry:captured,source:source,result:result,frame:nil,field:nil,physics:physics,pose:ragdollPose,deformation:1,graph:model.animationGraph)
+        XCTAssertEqual(ragdollDisplay.surfaces.count,captured.bodies.count,"Animated skin must not be covered by duplicate collision geometry")
+        XCTAssertEqual(ragdollDisplay.camera?.verticalFOVDegrees,30)
+        await model.close()
+        XCTAssertEqual(try cad.simulationGeometry().contentSHA256,hash)
+    }
+
 }
 #endif

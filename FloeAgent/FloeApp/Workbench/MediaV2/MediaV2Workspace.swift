@@ -218,9 +218,17 @@ struct MediaV2Workspace: View {
                     Divider().padding(.vertical, 8)
                     Text(WorkbenchText.t("工程素材", "Project assets")).font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10)
                     ForEach(session.document.assets) { asset in
-                        Button { session.insertExistingAsset(asset) } label: {
-                            Label(asset.originalName, systemImage: asset.kind == .image ? "photo" : asset.kind == .audio ? "waveform" : "film").font(.caption2).lineLimit(2).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(.horizontal, 10)
-                        }.buttonStyle(.plain).help(WorkbenchText.t("加入当前工程", "Insert into project"))
+                        HStack(spacing: 7) {
+                            PersonalEditorAssetPreview(sourceID: "media:\(session.id):\(session.document.revision):\(asset.id)", title: asset.originalName) { pixels in
+                                try await PersonalEditorPreviewRequests.mediaAsset(session: session, asset: asset, pixels: pixels)
+                            }.frame(width: 64, height: 48).accessibilityIdentifier("media.asset.preview.\(asset.id.uuidString)")
+                            Button { session.insertExistingAsset(asset) } label: {
+                                HStack(spacing: 4) {
+                                    Text(asset.originalName).font(.caption2).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+                                    Image(systemName: "plus.circle").font(.caption)
+                                }.frame(minHeight: 44)
+                            }.buttonStyle(.plain).help(WorkbenchText.t("加入当前工程", "Insert into project"))
+                        }.padding(.horizontal, 8).padding(.vertical, 3)
                     }
                 }
             }
@@ -342,7 +350,11 @@ struct MediaV2Workspace: View {
         MediaV2ClipTimingInspector(session: session, track: track, clip: clip).id(clip.id)
     }
     private var previewControls: some View {
-        HStack(spacing: 8) {
+        VStack(spacing: 0) {
+            if session.project.kind == .image, MediaDrawingInputPolicy.isStrokeTool(session.tool) {
+                HStack { MediaFingerDrawingToggle(); Spacer() }.padding(.horizontal, 10)
+            }
+            HStack(spacing: 8) {
             if session.project.kind == .video {
                 Button {
                     if session.player != nil { session.stopPlayback() }
@@ -357,7 +369,8 @@ struct MediaV2Workspace: View {
             MusicIconButton("minus.magnifyingglass", WorkbenchText.t("缩小", "Zoom out")) { session.zoom = max(0.25, session.zoom / 1.25) }
             Text("\(Int(session.zoom * 100))%").font(.caption.monospacedDigit())
             MusicIconButton("plus.magnifyingglass", WorkbenchText.t("放大", "Zoom in")) { session.zoom = min(4, session.zoom * 1.25) }
-        }.padding(.horizontal, 8).background(Color(uiColor: .secondarySystemBackground))
+            }.padding(.horizontal, 8)
+        }.background(Color(uiColor: .secondarySystemBackground))
     }
     private var status: some View {
         HStack(spacing: 6) {

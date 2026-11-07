@@ -117,7 +117,14 @@ public enum SimulationAnimationEvaluator {
             let weight = b>a ? min(1,max(0,(timeSeconds-a)/(b-a))) : 0
             morphs[track.targetID] = zip(track.weights[lower],track.weights[upper]).map { $0+($1-$0)*weight }
         }
-        return .init(timeSeconds:timeSeconds,objects:objects,localBones:locals,worldBones:world,morphWeights:morphs,softVertices:softVertices,hiddenObjects:hiddenObjects)
+        var projection:SimulationAnimationCameraProjection?
+        if let keys = graph.cameraKeys {
+            let upper = keys.firstIndex { $0.timeSeconds >= timeSeconds } ?? keys.count-1, lower = max(0,upper-1)
+            let a = keys[lower], b = keys[upper], alpha = b.timeSeconds>a.timeSeconds ? min(1,max(0,(timeSeconds-a.timeSeconds)/(b.timeSeconds-a.timeSeconds))):0
+            let height = a.projection.orthographicHeightMeters.flatMap { first in b.projection.orthographicHeightMeters.map { first+($0-first)*alpha } }
+            projection = .init(verticalFOVDegrees:a.projection.verticalFOVDegrees+(b.projection.verticalFOVDegrees-a.projection.verticalFOVDegrees)*alpha,orthographicHeightMeters:height)
+        }
+        return .init(timeSeconds:timeSeconds,objects:objects,localBones:locals,worldBones:world,morphWeights:morphs,softVertices:softVertices,hiddenObjects:hiddenObjects,cameraProjection:projection)
     }
     private static func sample(_ track: SimulationAnimationTrack, at time: Double) -> SimulationAnimationTransform {
         let upper = track.keys.firstIndex { $0.timeSeconds >= time } ?? track.keys.count-1

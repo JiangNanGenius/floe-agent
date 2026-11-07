@@ -23,7 +23,7 @@ public struct ManufacturingCellWorkbenchView:View {
         case step(String),complete
         var id:String { switch self { case .step(let id):"step:"+id;case .complete:"complete" } }
     }
-    public init(project:ManufacturingCellProject,directory:URL,initialFile:URL? = nil,embedded:Bool = false) { self.directory = directory;self.initialFile = initialFile;self.embedded = embedded;_model = State(initialValue:CellWorkbenchModel(project:project,directory:directory)) }
+    public init(project:ManufacturingCellProject,directory:URL,initialFile:URL? = nil,embedded:Bool = false,sessions:ManufacturingResearchSessions? = nil) { self.directory = directory;self.initialFile = initialFile;self.embedded = embedded;_model = State(initialValue:sessions?.cell(project:project) ?? CellWorkbenchModel(project:project,directory:directory)) }
     public var body:some View {
         Group {
             if embedded { workbenchContent }
@@ -64,7 +64,7 @@ public struct ManufacturingCellWorkbenchView:View {
             .navigationTitle(L("多主轴与多刀塔","Spindles and turrets"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement:.confirmationAction) { Button(L("完成","Done")) { model.cancel();dismiss() }.accessibilityIdentifier("cell.done") }
+                ToolbarItem(placement:.confirmationAction) { Button(L("完成","Done")) { dismiss() }.accessibilityIdentifier("cell.done") }
                 ToolbarItemGroup(placement:.primaryAction) {
                     if let artifact = model.artifact {
                         Button(L("加工仿真","Simulate machining"),systemImage:"play.rectangle") { camPreview = .init(source:.cell(.init(cell:model.project),artifact)) }.accessibilityIdentifier("cell.simulate")
@@ -119,7 +119,7 @@ public struct ManufacturingCellWorkbenchView:View {
             }
             .fullScreenCover(item:$camPreview) { request in CAMSimulationWorkbenchView(source:request.source,directory:directory.appendingPathComponent("preview")) }
         }
-        .onDisappear { if camPreview == nil && selectedStep == nil && !importing { model.cancel() } }
+        // The parent service owns accepted calculations; disappearing is not Cancel.
     }
     @ViewBuilder private var savedResultPrompt:some View {
         if model.artifact == nil, model.savedResultAvailability == .available || model.savedResultAvailability == .unavailable {

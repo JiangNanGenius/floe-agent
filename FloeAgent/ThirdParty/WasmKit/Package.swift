@@ -4,6 +4,7 @@
 import PackageDescription
 let package = Package(name: "WasmKit", platforms: [.macOS(.v15), .iOS(.v18)], products: [
     .library(name: "WasmKit", targets: ["WasmKit"]),
+    .library(name: "FloeWasmRuntime", type: .dynamic, targets: ["WasmKit", "WasmKitWASI"]),
     .library(name: "WasmKitWASI", targets: ["WasmKitWASI"]),
     .library(name: "WAT", targets: ["WAT"])
 ], dependencies: [.package(url: "https://github.com/apple/swift-system", from: "1.5.0")], targets: [

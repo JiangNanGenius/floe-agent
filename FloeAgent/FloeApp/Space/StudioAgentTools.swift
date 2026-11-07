@@ -46,7 +46,7 @@ enum StudioToolOutput {
     let access: Result<StudioDocumentAccess, Error>
     private var preparations: [UUID: Task<UUID, Error>] = [:]
     private var mutating: Set<UUID> = []
-    static let names: Set<String> = ["studio.create", "studio.list", "studio.read", "studio.edit", "studio.run", "studio.media", "studio.chemistry", "studio.machining"]
+    static let names: Set<String> = ["studio.create", "studio.list", "studio.library", "studio.read", "studio.edit", "studio.run", "studio.media", "studio.chemistry", "studio.machining"]
 
     init(environment: AppEnvironment) {
         self.environment = environment
@@ -147,6 +147,7 @@ enum StudioToolOutput {
         let id = try await authority.reserveCreation(operationKey: "\(context.runID)/\(call)", digest: digest)
         try context.cancellation.throwIfCancelled()
         let record: PersonalContentRecord
+        if kind == .biology, let environment { _ = try await environment.biologyComposition.host() }
         if let documentFormat {
             record = try await PersonalContentService.shared.createDocument(format: documentFormat, title: title, id: id)
         } else {
@@ -174,11 +175,17 @@ enum StudioToolOutput {
         guard offset <= text.count else { throw FloeError.validationFailed("Page offset exceeds work length") }
         let start = text.index(text.startIndex, offsetBy: offset)
         let end = text.index(start, offsetBy: min(limit, text.distance(from: start, to: text.endIndex)))
+        let audioSources = try await StudioAudioObservation.discovery(record: value.record, directory: value.url, context: context)
+        let liveSelection = try StudioMediaObservation.selection(record: value.record, directory: value.url)
+        if let revision = liveSelection?.media?.revision ?? liveSelection?.music?.revision,
+           String(revision) != state.revision { throw PersonalContentError.changedDocument }
+        try context.cancellation.throwIfCancelled()
         return try StudioToolOutput.make(StudioReadPage(projectID: id, kind: value.record.kind, title: value.record.title,
             revision: state.revision, contentSHA256: StudioToolOutput.hash(state.data),
             contentJSON: String(text[start..<end]), nextOffset: end == text.endIndex ? nil : offset + limit,
             editFormat: Self.editFormat(value.record.kind, diagramPageID: value.record.kind == .diagram
                 ? (try JSONDecoder().decode(DiagramDocument.self, from: state.data)).pages.first?.id : nil,
+                musicRevision: value.record.kind == .music ? Int64(state.revision) : nil,
                 musicTicksPerQuarter: value.record.kind == .music
                     ? (try JSONDecoder().decode(MusicDocument.self, from: state.data)).tempoMap.ticksPerQuarter : nil,
                 chemistryProject: value.record.kind == .chemistry
@@ -188,18 +195,22 @@ enum StudioToolOutput {
                     ? (try JSONDecoder().decode(MusicDocument.self, from: state.data)).assets.first(where: { $0.kind != .midiFile }) : nil,
                 cadState: [.cad2D, .cad3D].contains(value.record.kind) ? state.data : nil),
             manufacturingCell: [.cad2D, .cad3D].contains(value.record.kind)
-                ? (try JSONDecoder().decode(StudioCADCellProjection.self,from:state.data)).machining.manufacturingCell : nil))
+                ? (try JSONDecoder().decode(StudioCADCellProjection.self,from:state.data)).machining.manufacturingCell : nil,
+            audioSources: audioSources, liveSelection: liveSelection,
+            hostToolIDs: value.record.kind == .music ? StudioMediaSourceContracts.musicHostToolIDs.sorted()
+                : [.image, .drawing, .video].contains(value.record.kind) ? StudioMediaSourceContracts.hostToolIDs.sorted() : []))
     }
     private func state(_ value: (record: PersonalContentRecord, url: URL), context: ToolContext) async throws -> (data: Data, revision: String) {
         guard let environment else { throw PersonalContentError.storageUnavailable }
         switch value.record.kind {
         case .image, .drawing, .video:
-            let session = try await PersonalMediaFactory.session(id: value.record.id, directory: value.url)
-            let project = try JSONSerialization.jsonObject(with: StudioToolOutput.data(session.project))
-            let catalog = try JSONSerialization.jsonObject(with: StudioToolOutput.data(session.catalog))
+            let native = try await StudioAudioObservation.mediaDocument(id: value.record.id, directory: value.url)
+            guard let prepared = native.prepared else { throw PersonalContentError.invalidProject }
+            let project = try JSONSerialization.jsonObject(with: StudioToolOutput.data(native))
+            let catalog = try JSONSerialization.jsonObject(with: StudioToolOutput.data((try? MediaPreparedBundledCatalog.load().entries) ?? []))
             let data = try JSONSerialization.data(withJSONObject: ["project": project, "catalog": catalog,
                 "localToolIDs": MediaV2Session.localToolIDs.sorted(), "hostToolIDs": StudioMediaSourceContracts.hostToolIDs.sorted()], options: [.sortedKeys])
-            return (data, String(session.document.revision))
+            return (data, String(prepared.revision))
         case .document:
             let file = try await PersonalContentService.shared.originalFile(value.record.id)
             if ["md", "markdown", "txt", "json", "csv", "yaml", "yml"].contains(file.pathExtension.lowercased()) {
@@ -236,8 +247,8 @@ enum StudioToolOutput {
             let document = try await FileDiagramRepository(directory: value.url.appendingPathComponent("Diagram")).load(value.record.id)
             return (try StudioToolOutput.data(document), String(document.revision))
         case .music:
-            let session = try await MusicProjectSession.open(id: value.record.id, directory: value.url.appendingPathComponent("Music"), environment: environment)
-            return (try StudioToolOutput.data(session.document), String(session.document.revision))
+            let document = try await StudioAudioObservation.musicDocument(id: value.record.id, directory: value.url)
+            return (try StudioToolOutput.data(document), String(document.revision))
         case .manufacturing:
             let model = ManufacturingSessions.open(id: value.record.id, directory: value.url.appendingPathComponent("Manufacturing"))
             return (try model.study.encoded(), try model.study.fingerprint())
@@ -253,6 +264,11 @@ enum StudioToolOutput {
                 decisions: session.decisions, speakers: session.speakers, summaries: session.summaries,
                 personalNote: personalNote, intelligence: session.intelligence))
             return (bytes, StudioToolOutput.hash(bytes))
+        case .biology:
+            let host = try await environment.biologyComposition.host()
+            try BiologyOriginalBinding.verify(id: value.record.id, directory: value.url)
+            let project = try await host.service.project(value.record.id)
+            return (try StudioToolOutput.data(project), String(project.revision))
         case .chemistry:
             let session = try await ChemistryProjectSession.open(id: value.record.id, directory: value.url, environment: environment)
             let project = try await session.projectForRead()
@@ -271,6 +287,7 @@ enum StudioToolOutput {
         defer { fileUse.release() }
         guard let environment else { throw PersonalContentError.storageUnavailable }
         let decoder = JSONDecoder(), data = Data(operations.utf8)
+        var nativeOperationResult: Data?
         let current = try await state(value, context: context)
         guard current.revision == revision else { throw PersonalContentError.changedDocument }
         try context.cancellation.throwIfCancelled(); try Task.checkCancellation()
@@ -290,7 +307,7 @@ enum StudioToolOutput {
             guard await document.save() else { throw PersonalContentError.changedDocument }
         case .cad2D, .cad3D:
             let document = try await PersonalCADSessions.open(id: id, directory: value.url)
-            try await StudioCADToolContract.applyAndSave(data, to: document, expected: .init(snapshot: current.data), context: context) { @MainActor in
+            nativeOperationResult = try await StudioCADToolContract.applyAndSave(data, to: document, expected: .init(snapshot: current.data), context: context) { @MainActor in
                 try context.cancellation.throwIfCancelled(); try Task.checkCancellation()
                 let current = try await self.location(id, context: context, editing: true)
                 guard current.url == value.url, !document.isClosed,
@@ -356,12 +373,26 @@ enum StudioToolOutput {
         let object = try JSONSerialization.jsonObject(with: after.data) as? [String: Any]
         let title = object?["name"] as? String ?? object?["title"] as? String
             ?? (object?["meeting"] as? [String: Any])?["title"] as? String
-        try await PersonalContentService.shared.library().markChanged(id, title: title)
-        changed(id)
-        return try await read(id: id, offset: 0, limit: 6_000, context: context)
+        let receipt = try nativeOperationResult.map { try JSONSerialization.jsonObject(with: $0) }
+        let didSave = (receipt as? [String: Any])?["saved"] as? Bool ?? true
+        if didSave {
+            try await PersonalContentService.shared.library().markChanged(id, title: title)
+            changed(id)
+        }
+        var output = try await read(id: id, offset: 0, limit: 6_000, context: context)
+        if let receipt {
+            var page = try JSONSerialization.jsonObject(with: Data((output.capturedOutput ?? output.summary).utf8)) as? [String: Any] ?? [:]
+            page["operationResult"] = receipt
+            let bytes = try JSONSerialization.data(withJSONObject: page, options: [.sortedKeys])
+            guard bytes.count <= 96 * 1_024 else { throw FloeError.validationFailed("Read a smaller operation result page") }
+            output.summary = String(decoding: bytes, as: UTF8.self); output.capturedOutput = output.summary
+            output.fullOutputSHA256 = StudioToolOutput.hash(bytes)
+        }
+        return output
     }
     func run(id: UUID, action: String, context: ToolContext, inputJSON: String? = nil) async throws -> ToolExecutionOutput {
         if action == "inspectAudio" { return try await inspectMusicAudio(id: id, inputJSON: inputJSON, context: context) }
+        if action == "inspectFrame" { return try await inspectMediaFrame(id: id, inputJSON: inputJSON, context: context) }
         let value = try await location(id, context: context, editing: true)
         if value.record.kind != .chemistry, let inputJSON, !inputJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             guard let options = try JSONSerialization.jsonObject(with: Data(inputJSON.utf8)) as? [String: Any], options.isEmpty else {
@@ -425,12 +456,15 @@ enum StudioToolOutput {
         }
         defer { cancellation.cancel() }
         let (file, sourceRevision) = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
-        var receipt = try await Task.detached(priority: .utility) {
-            let bytes = try Data(contentsOf: file, options: .mappedIfSafe)
-            guard !bytes.isEmpty else { throw PersonalContentError.invalidProject }
-            return StudioRunReceipt(projectID: id, action: action, fileName: file.lastPathComponent,
-                bytes: bytes.count, sha256: StudioToolOutput.hash(bytes), openURL: "floe://work/" + id.uuidString.lowercased())
-        }.value
+        let published = try await StudioResultPublication.publish(file: file, projectRoot: value.url, action: action, context: context,
+            validateSource: { @MainActor in
+                try context.cancellation.throwIfCancelled()
+                let current = try await self.location(id, context: context, editing: true)
+                guard current.url == value.url, current.record.kind == value.record.kind else { throw PersonalContentError.changedDocument }
+            })
+        var receipt = StudioRunReceipt(projectID: id, action: action, fileName: file.lastPathComponent,
+            bytes: published.bytes, sha256: published.sha256, openURL: "floe://work/" + id.uuidString.lowercased())
+        receipt.outputFile = published.file
         if let sourceRevision {
             let session = try await MusicProjectSession.open(id: id, directory: value.url.appendingPathComponent("Music"), environment: environment)
             let sourceHash = receipt.sha256
@@ -456,31 +490,32 @@ enum StudioToolOutput {
         try context.cancellation.throwIfCancelled()
         try await PersonalContentService.shared.library().markChanged(id)
         changed(id)
-        return try StudioToolOutput.make(receipt)
+        var output = try StudioToolOutput.make(receipt)
+        output.outputFiles = [published.file]
+        return output
+    }
+    private func inspectMediaFrame(id: UUID, inputJSON: String?, context: ToolContext) async throws -> ToolExecutionOutput {
+        let value = try await location(id, context: context, editing: false)
+        let fileUse = try PersonalLibraryFileActions.acquireUse(id: id, directory: value.url)
+        defer { fileUse.release() }
+        return try await StudioFrameObservation.inspect(record: value.record, directory: value.url,
+            input: StudioFrameInput.decode(inputJSON), context: context, validateProject: { @MainActor in
+                try context.cancellation.throwIfCancelled()
+                let current = try await self.location(id, context: context, editing: false)
+                guard current.url == value.url, current.record.kind == value.record.kind else { throw PersonalContentError.changedDocument }
+            })
     }
     private func inspectMusicAudio(id: UUID, inputJSON: String?, context: ToolContext) async throws -> ToolExecutionOutput {
         let value = try await location(id, context: context, editing: false)
         let fileUse = try PersonalLibraryFileActions.acquireUse(id: id, directory: value.url)
         defer { fileUse.release() }
-        guard value.record.kind == .music, let environment else { throw PersonalContentError.invalidProject }
         let input = try StudioMediaSourceContracts.decodeAudio(inputJSON)
-        let session = try await MusicProjectSession.open(id: id, directory: value.url.appendingPathComponent("Music"), environment: environment)
-        let revision = session.document.revision
-        guard let asset = session.document.assets.first(where: { $0.id == input.assetID }) else { throw FloeError.notFound("Music asset in this work") }
-        guard asset.kind != .midiFile else { throw FloeError.validationFailed("MIDI contains note events. Use renderWAV to observe the actual synthesized audio.") }
-        let url = try await session.repository.resolvedURL(for: asset)
-        let reference = "studio/\(id.uuidString.lowercased())/asset/" + StudioToolOutput.hash(Data(asset.id.rawValue.utf8)) + "/\(asset.sourceRevision)"
-        let observation = try await AudioWaveformInspector().inspectAuthorizedSource(at: url, sourceReference: reference,
-            expectedSHA256: asset.contentHash, startSeconds: input.startSeconds, endSeconds: input.endSeconds, bins: input.bins, context: context,
-            validateSource: { @MainActor in
+        return try await StudioAudioObservation.inspect(record: value.record, directory: value.url, input: input, context: context,
+            validateProject: { @MainActor in
                 try context.cancellation.throwIfCancelled()
                 let current = try await self.location(id, context: context, editing: false)
-                guard current.url == value.url, session.document.revision == revision,
-                      session.document.assets.first(where: { $0.id == input.assetID }) == asset,
-                      try await session.repository.resolvedURL(for: asset) == url else { throw PersonalContentError.changedDocument }
+                guard current.url == value.url, current.record.kind == value.record.kind else { throw PersonalContentError.changedDocument }
             })
-        // Read-only: no mutation grant, markChanged, or editor notification.
-        return try StudioToolOutput.make(StudioAudioInspectionReceipt(projectID: id, revision: revision, assetID: asset.id, audioObservation: observation))
     }
     func chemistry(id: UUID, action: String, inputJSON: String, context: ToolContext) async throws -> ToolExecutionOutput {
         let editing = !["capabilities", "history", "status"].contains(action)
@@ -500,10 +535,37 @@ enum StudioToolOutput {
     /// Manufacturing is owned by the selected CAD original. The task cannot
     /// choose a host path, substitute a mesh, or create a standalone job.
     func machining(id: UUID, action: String, expectedRevision: String?, studyJSON: String?,
-                   title: String?, offset: Int, limit: Int, context: ToolContext) async throws -> ToolExecutionOutput {
-        let value = try await location(id, context: context, editing: action != "inspect")
+                   title: String?, offset: Int, limit: Int, researchJSON:String? = nil, context: ToolContext) async throws -> ToolExecutionOutput {
+        let researchAction = StudioManufacturingResearchContract.Action(rawValue:action)
+        let readOnly = action == "inspect" || researchAction?.isReadOnly == true
+        let value = try await location(id, context: context, editing: !readOnly)
         guard [.cad2D, .cad3D].contains(value.record.kind) else { throw PersonalContentError.invalidProject }
         if action == "inspect" { return try await read(id: id, offset: offset, limit: limit, context: context) }
+        if let researchAction {
+            let request = try StudioManufacturingResearchContract.Request.decode(researchJSON)
+            try request.validate(action:researchAction)
+            if !readOnly { try requireMutationGrant(context) }
+            // Exact-job cancellation must remain reachable while its calculation
+            // owns the project mutation slot. It cannot start or redirect work.
+            let ownsMutationSlot = !readOnly && researchAction != .cancel
+            if ownsMutationSlot { guard mutating.insert(id).inserted else { throw PersonalContentError.changedDocument } }
+            defer { if ownsMutationSlot { mutating.remove(id) } }
+            if !readOnly {
+                guard let expectedRevision,try await state(value,context:context).revision == expectedRevision else { throw PersonalContentError.changedDocument }
+            }
+            let document = try await PersonalCADSessions.open(id:id,directory:value.url)
+            let revision = document.revision,changes = document.exchangeChangeCount,source = document.contentSHA256
+            let bytes = try await StudioManufacturingResearchContract.perform(action:researchAction,request:request,
+                document:document,ownerID:id,projectDirectory:value.url,context:context) { @MainActor in
+                try context.cancellation.throwIfCancelled();try Task.checkCancellation()
+                let current = try await self.location(id,context:context,editing:!readOnly)
+                guard current.url == value.url,!document.isClosed,document.url == current.url.appendingPathComponent("Document.floecad"),
+                      document.revision == revision,document.exchangeChangeCount == changes,document.contentSHA256 == source else { throw PersonalContentError.changedDocument }
+            }
+            if [.configure,.calculate,.save].contains(researchAction) { try await PersonalContentService.shared.library().markChanged(id) }
+            if !readOnly { changed(id) }
+            return ToolExecutionOutput(summary:String(decoding:bytes,as:UTF8.self),fullOutputSHA256:StudioToolOutput.hash(bytes),exitStatus:0)
+        }
         try requireMutationGrant(context)
         guard mutating.insert(id).inserted else { throw PersonalContentError.changedDocument }
         defer { mutating.remove(id) }
@@ -578,12 +640,19 @@ enum StudioToolOutput {
         default: throw PersonalContentError.invalidProject
         }
         try checkSource()
-        let bytes = try await Task.detached(priority: .utility) { try Data(contentsOf: file, options: .mappedIfSafe) }.value
-        guard !bytes.isEmpty else { throw PersonalContentError.invalidProject }
+        let published = try await StudioResultPublication.publish(file: file, projectRoot: value.url, action: action, context: context,
+            validateSource: { @MainActor in
+                try checkSource()
+                let current = try await self.location(id, context: context, editing: true)
+                guard current.url == value.url else { throw PersonalContentError.changedDocument }
+            })
         try await PersonalContentService.shared.library().markChanged(id)
         changed(id)
-        return try StudioToolOutput.make(StudioRunReceipt(projectID: id, action: action, fileName: file.lastPathComponent,
-            bytes: bytes.count, sha256: StudioToolOutput.hash(bytes), openURL: "floe://work/" + id.uuidString.lowercased()))
+        var receipt = StudioRunReceipt(projectID: id, action: action, fileName: file.lastPathComponent,
+            bytes: published.bytes, sha256: published.sha256, openURL: "floe://work/" + id.uuidString.lowercased())
+        receipt.outputFile = published.file
+        var output = try StudioToolOutput.make(receipt); output.outputFiles = [published.file]
+        return output
     }
     private func changed(_ id: UUID) {
         NotificationCenter.default.post(name: .floeStudioDocumentDidChange, object: id)
@@ -592,13 +661,36 @@ enum StudioToolOutput {
     func media(id: UUID, toolID: String, inputJSON: String, context: ToolContext) async throws -> ToolExecutionOutput {
         let location = try await location(id, context: context, editing: true)
         try requireMutationGrant(context)
-        guard [.image, .drawing, .video].contains(location.record.kind),
-              MediaV2Session.localToolIDs.contains(toolID) || StudioMediaSourceContracts.hostToolIDs.contains(toolID),
+        guard ([.image, .drawing, .video].contains(location.record.kind)
+                && (MediaV2Session.localToolIDs.contains(toolID) || StudioMediaSourceContracts.hostToolIDs.contains(toolID)))
+              || (location.record.kind == .music && StudioMediaSourceContracts.musicHostToolIDs.contains(toolID)),
               inputJSON.utf8.count <= 256 * 1_024, mutating.insert(id).inserted else { throw PersonalContentError.invalidProject }
         defer { mutating.remove(id) }
         let fileUse = try PersonalLibraryFileActions.acquireUse(id: id, directory: location.url)
         defer { fileUse.release() }
         try context.cancellation.throwIfCancelled()
+        if toolID == "music.import" {
+            guard let environment, let taskID = context.conversationID, let sourceRoot = context.workspaceRootURL else { throw PersonalContentError.storageUnavailable }
+            let input = try StudioMediaSourceContracts.decodeImport(inputJSON)
+            let source = try StudioMediaSourceContracts.workspaceURL(input.source.workspacePath, context: context)
+            let session = try await MusicProjectSession.open(id: id, directory: location.url.appendingPathComponent("Music"), environment: environment)
+            let provenance = String(decoding: try StudioToolOutput.data(StudioMusicSourceProvenance(taskID: taskID,
+                runID: context.runID, environmentID: context.environmentID, workspacePath: input.source.workspacePath)), as: UTF8.self)
+            let imported = try await session.importAuthorizedFile(source, sourceRoot: sourceRoot,
+                sourceReference: "task/\(taskID.uuidString.lowercased())/file/" + StudioToolOutput.hash(Data(input.source.workspacePath.utf8)),
+                provenance: provenance, expectedRevision: input.expectedRevision, expectedSHA256: input.source.expectedSHA256,
+                cancellation: context.cancellation, validateSource: { @MainActor in
+                    try context.cancellation.throwIfCancelled()
+                    let current = try await self.location(id, context: context, editing: true)
+                    guard current.url == location.url, current.record.kind == .music,
+                          try StudioMediaSourceContracts.workspaceURL(input.source.workspacePath, context: context) == source else { throw PersonalContentError.changedDocument }
+                })
+            try await PersonalContentService.shared.library().markChanged(id); changed(id)
+            return try StudioToolOutput.make(StudioMusicImportReceipt(documentID: id, revision: imported.revision,
+                assetID: imported.asset.id, trackIDs: imported.trackIDs, clipIDs: imported.clipIDs,
+                sourceWorkspacePath: input.source.workspacePath, sha256: imported.asset.contentHash, byteCount: imported.byteCount,
+                supportedSubset: imported.asset.kind == .midiFile ? "notes-and-tempo; original SMF retained" : "native audio source"))
+        }
         if toolID == "media.import" {
             let input = try StudioMediaSourceContracts.decodeImport(inputJSON)
             let source = try StudioMediaSourceContracts.workspaceURL(input.source.workspacePath, context: context)
@@ -624,15 +716,15 @@ enum StudioToolOutput {
         }
         let input = try StudioMediaToolContract.decode(inputJSON)
         let result = try await PersonalMediaFactory.tool(id: id, directory: location.url, toolID: toolID, input: input)
-        try await PersonalContentService.shared.library().markChanged(id)
-        changed(id); return try StudioToolOutput.make(result)
+        if !result.selectionOnly { try await PersonalContentService.shared.library().markChanged(id); changed(id) }
+        return try StudioToolOutput.make(result)
     }
     private static func requestID(_ context: ToolContext) -> UUID {
         let bytes = Array(SHA256.hash(data: Data("\(context.runID)/\(context.toolCallID ?? context.toolIdempotencyKey)".utf8)).prefix(16))
         return UUID(uuid: (bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]))
     }
     static func editFormat(_ kind: PersonalContentKind, diagramPageID: UUID? = nil,
-                           musicTicksPerQuarter: Int? = nil, chemistryProject: ChemistryProject? = nil,
+                           musicRevision: Int64? = nil, musicTicksPerQuarter: Int? = nil, chemistryProject: ChemistryProject? = nil,
                            mediaRevision: Int64? = nil, musicAudioAsset: MusicAsset? = nil, cadState: Data? = nil) -> String {
         switch kind {
         case .image, .drawing, .video: return StudioTypedEditExamples.mediaFormat(kind: kind, revision: mediaRevision)
@@ -648,10 +740,11 @@ enum StudioToolOutput {
                 .upsertConnection(pageID: pageID, connection: .init(from: first.id, to: second.id, kind: .flow, route: .orthogonal, endArrow: true))]
             guard let example = try? StudioToolOutput.data(edits) else { return guide }
             return guide + "\nExample JSON:\n" + String(decoding: example, as: UTF8.self)
-        case .music: return StudioTypedEditExamples.musicFormat(ticksPerQuarter: musicTicksPerQuarter ?? 960, firstAudioAsset: musicAudioAsset)
+        case .music: return StudioTypedEditExamples.musicFormat(ticksPerQuarter: musicTicksPerQuarter ?? 960, firstAudioAsset: musicAudioAsset, revision: musicRevision)
         case .manufacturing: return "Complete ManufacturingStudy JSON from state, with the exact revision fingerprint. Validate stock, tools, operations, fixtures and machine through the native engine."
         case .printing: return "Array of PrintProjectEdit objects: {action: addPlate|selectPlate|removePlate|addCube|duplicateObject|removeObject|moveObject|transform|arrange|renameObject|settings|assignTool, objectID?, plateID?, name?, x?, y?, z?, axis?, degrees?, scale?, sizeMM?, preset?, layerHeight?, processSettings?, machine?, toolID?}. sizeMM is the actual edge length in millimeters for addCube only. Inspect geometry.objects for measured bounds/sizeMM/sha/triangles, including explicit unmeasured markers. Transform xyz are millimeter deltas, scale is a multiplier and axis is integer 0...2. Use the current document's machine/processSettings structure from studio.read; machine includes bed origins, tool offsets, G-code blocks and resin build direction. Example settings JSON: [{\"action\":\"settings\",\"layerHeight\":0.2,\"processSettings\":{\"sliceFillSparse\":0.15,\"sliceTopLayers\":4,\"sliceBottomLayers\":4}}]. An empty objects list cannot slice: preparePrint from CAD, import STL in the editor, or addCube for an explicitly requested test part. Run slice only after saved edits; inputJSON does not set print parameters. Legacy {preset,layerHeight} remains accepted."
         case .chemistry: return StudioTypedEditExamples.chemistryFormat(project: chemistryProject)
+        case .biology: return "Use biology.read/methods to inspect this exact projectID and its native revisions, then biology.edit/analyze/job/derive/export. Biology tools share this work's existing task grant; project paths and metadata never grant access. Read actual result and job status before reporting completion."
         case .meeting: return "Append one {action: note|todo|decision|summary, text: string}. To append to this current meeting's own saved notebook, use {\"action\":\"note\",\"text\":\"Meeting note text\"} with this exact studio.read revision. It saves through the existing Notes repository and returns a fresh readback of personalNote. Ordinary notes.read is not a substitute for the notebook bound to this meeting. User corrections and original recordings are retained. Summary and todo text must derive from the inspected transcript/notes."
         default: return "Open this work in its native editor."
         }
@@ -666,6 +759,11 @@ private struct StudioReadPage: Encodable {
     // Kept outside the paged CAD JSON so the actual saved metrics are available
     // even when a large CAD body consumes the first page.
     var manufacturingCell:CADManufacturingCellInspection? = nil
+    // Native audio source IDs are outside paged contentJSON. Failed discovery
+    // is explicit and does not disguise an unavailable inventory as no audio.
+    var audioSources:StudioAudioSourceDiscovery? = nil
+    var liveSelection:StudioSelectionObservation? = nil
+    var hostToolIDs:[String] = []
 }
 private struct StudioCADCellProjection:Decodable {
     struct Machining:Decodable { let manufacturingCell:CADManufacturingCellInspection }
@@ -674,16 +772,23 @@ private struct StudioCADCellProjection:Decodable {
 private struct StudioRunReceipt: Encodable {
     let projectID: UUID; let action: String; let fileName: String; let bytes: Int; let sha256: String; let openURL: String
     var sourceRevision: Int64? = nil
+    var outputFile: RunOutputFile? = nil
     var audioObservation: AudioWaveformInspection? = nil
     var audioObservationUnavailableReason: String? = nil
-}
-private struct StudioAudioInspectionReceipt: Encodable {
-    let projectID: UUID; let revision: Int64; let assetID: MusicAssetID; let audioObservation: AudioWaveformInspection
 }
 private struct StudioMediaImportReceipt: Encodable {
     let toolID = "media.import"
     let documentID: UUID; let revision: Int64; let groupID: UUID; let assetID: UUID
     let sourceWorkspacePath: String; let sha256: String; let byteCount: Int64; let kind: String
+}
+private struct StudioMusicImportReceipt: Encodable {
+    let toolID = "music.import"
+    let documentID: UUID; let revision: Int64; let assetID: MusicAssetID
+    let trackIDs: [MusicTrackID]; let clipIDs: [MusicClipID]
+    let sourceWorkspacePath: String; let sha256: String; let byteCount: Int; let supportedSubset: String
+}
+private struct StudioMusicSourceProvenance: Encodable {
+    let taskID: UUID; let runID: UUID; let environmentID: String?; let workspacePath: String
 }
 private struct StudioPrintSettings: Decodable { let preset: PrintPreset; let layerHeight: Double }
 private struct StudioTextState: Encodable { let title: String; let text: String }
@@ -746,7 +851,7 @@ private struct StudioReadTool: AgentTool {
 private struct StudioEditTool: AgentTool {
     struct Arguments: Decodable, Sendable { let projectID: UUID; let expectedRevision: String; let operationsJSON: String }
     static let name = "studio.edit"
-    static let toolDescription = "Edit and save the current native work or meeting notes / 当前会议笔记. For a meeting use studio.read then its note command; success is persisted and read back. Commit edits through the actual validated repository and revision guard. Managed Space CAD 2D/3D works always use this projectID route, not cad.document with a guessed .floeproject filename. Native {op:scene.object.rename,args:{id:bodyUUID,name:string}}, {op:sketch.rename,args:{id:sketchUUID,name:string}} and {op:document.save,args:{}} edit/save the SAME current native original; every successful CAD edit awaits its real save. Inspect studio.read for the exact editFormat first. Supports canvas, diagram, music, manufacturing, printing settings, chemistry objects/documents and meeting notes/todos/decisions/summaries. Returns updated state and notifies the open editor."
+    static let toolDescription = "Edit and save the current native work or meeting notes / 当前会议笔记. For a meeting use studio.read then its note command; success is persisted and read back. Commit edits through the actual validated repository and revision guard. Managed Space CAD 2D/3D works always use this projectID route, not cad.document with a guessed .floeproject filename. Read nativeCAD.geometryOperations for this build's executable sketch, feature, face, material and visibility commands; use one native {op,args} command. scene.object.rename and sketch.rename use an actual native item UUID; document.save uses empty args. Every successful CAD edit awaits its real save. Inspect studio.read for the exact editFormat first. Supports canvas, diagram, music, manufacturing, printing settings, chemistry objects/documents and meeting notes/todos/decisions/summaries. Returns updated state and notifies the open editor."
     static let parametersJSON = #"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"expectedRevision":{"type":"string"},"operationsJSON":{"type":"string","description":"JSON encoded exactly as studio.read editFormat specifies"}},"required":["projectID","expectedRevision","operationsJSON"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     static let isSideEffecting = true
@@ -761,18 +866,24 @@ private struct StudioEditTool: AgentTool {
 private struct StudioMachiningTool: AgentTool {
     struct Arguments: Decodable, Sendable {
         let projectID: UUID; let action: String
-        let expectedRevision: String?; let studyJSON: String?; let title: String?
+        let expectedRevision: String?; let studyJSON: String?; let title: String?; let researchJSON:String?
         let offset: Int?; let limit: Int?
     }
     static let name = "studio.machining"
-    static let toolDescription = "Read saved 制造单元/多主轴/多刀塔 (manufacturing cell/multi-spindle/multi-turret) results with inspect: total schedule seconds, computed operations, transfer records and remaining workpiece volume. Use machining INSIDE the selected CAD original. inspect returns the same read-only studio.read CAD state: ordinary machining.study/fingerprint stay separate from machining.manufacturingCell. Every CAD page also includes a compact top-level manufacturingCell with status none or saved, validated archive/input SHA, scheduleTotalSeconds, computedOperationCount, transferRecordCount and remainingWorkpieces (mm3). A cell is its independently saved program, not proof of ordinary CAM or current-CAD geometry computation. Never calculate to answer a saved-result read. prepare captures actual CAD geometry and saves the initial machining setup; then inspect, configure machine/stock/fixtures/tools/operations, calculate, inspect simulation, and export. configure takes the study JSON from inspection; preserve its id/source/profile and omit CAD-owned cam.partMesh. Every mutation requires the exact studio.read expectedRevision. preparePrint copies this CAD's current complete geometry into its print job, returns its bound work link, and is idempotent for the approved call; edit/slice that returned project through studio.edit/run. No path or demo geometry input is accepted."
-    static let parametersJSON = #"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"action":{"type":"string","description":"inspect reads saved ordinary CAM and manufacturing-cell / 多主轴多刀塔 results without recalculation; other actions mutate the ordinary CAD machining workflow","enum":["inspect","prepare","configure","calculate","exportSTL","exportToolpath","preparePrint"]},"expectedRevision":{"type":"string"},"studyJSON":{"type":"string","maxLength":2097152},"title":{"type":"string","minLength":1,"maxLength":160},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":12000}},"required":["projectID","action"],"additionalProperties":false}"#
+    static let toolDescription = "Cell/Virtual/Engineering / 制造单元、虚拟机床、工程分析 use research.inspect/status/configure/calculate/cancel/save/openSaved with researchJSON {family:manufacturingCell|virtualMachine|engineeringAnalysis,expectedFingerprint?,inputJSON?,operationID?,content:input|result|savedInput|savedResult,offset?,limit?}. Read actual input/result pages first; use the returned research fingerprint in addition to the CAD expectedRevision for mutations. Saved reads never calculate. openSaved explicitly replaces the inspected UI configuration with the actual saved original; cancel names the exact current operationID. These independent authored programs do not prove use of the current CAD geometry. Read saved 制造单元/多主轴/多刀塔 (manufacturing cell/multi-spindle/multi-turret) results with inspect: total schedule seconds, computed operations, transfer records and remaining workpiece volume. Use machining INSIDE the selected CAD original. inspect returns the same read-only studio.read CAD state: ordinary machining.study/fingerprint stay separate from machining.manufacturingCell. Every CAD page also includes a compact top-level manufacturingCell with status none or saved, validated archive/input SHA, scheduleTotalSeconds, computedOperationCount, transferRecordCount and remainingWorkpieces (mm3). A cell is its independently saved program, not proof of ordinary CAM or current-CAD geometry computation. Never calculate to answer a saved-result read. prepare captures actual CAD geometry and saves the initial machining setup; then inspect, configure machine/stock/fixtures/tools/operations, calculate, inspect simulation, and export. configure takes the study JSON from inspection; preserve its id/source/profile and omit CAD-owned cam.partMesh. Every mutation requires the exact studio.read expectedRevision. preparePrint copies this CAD's current complete geometry into its print job, returns its bound work link, and is idempotent for the approved call; edit/slice that returned project through studio.edit/run. No path or demo geometry input is accepted."
+    static let parametersJSON = #"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"action":{"type":"string","description":"inspect reads saved ordinary CAM/cell; research.inspect/status read the selected independent Cell/Virtual/Engineering program without recalculation; other explicit research actions edit, run, save or cancel that program","enum":["inspect","prepare","configure","calculate","exportSTL","exportToolpath","preparePrint","research.inspect","research.status","research.configure","research.calculate","research.cancel","research.save","research.openSaved"]},"expectedRevision":{"type":"string"},"studyJSON":{"type":"string","maxLength":2097152},"researchJSON":{"type":"string","maxLength":2097152},"title":{"type":"string","minLength":1,"maxLength":160},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":12000}},"required":["projectID","action"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .internalState
     let coordinator: StudioCoordinator
     func validate(_ args: Arguments) throws {
-        guard ["inspect", "prepare", "configure", "calculate", "exportSTL", "exportToolpath", "preparePrint"].contains(args.action),
+        if let action = StudioManufacturingResearchContract.Action(rawValue:args.action) {
+            guard args.studyJSON == nil,args.title == nil,args.offset == nil,args.limit == nil,
+                  action.isReadOnly || args.expectedRevision?.isEmpty == false else { throw PersonalContentError.invalidProject }
+            let request = try StudioManufacturingResearchContract.Request.decode(args.researchJSON)
+            try request.validate(action:action);return
+        }
+        guard args.researchJSON == nil, ["inspect", "prepare", "configure", "calculate", "exportSTL", "exportToolpath", "preparePrint"].contains(args.action),
               args.action == "inspect" || args.expectedRevision?.isEmpty == false,
               (args.studyJSON?.utf8.count ?? 0) <= 2 * 1_024 * 1_024,
               (args.offset ?? 0) >= 0, (1...12_000).contains(args.limit ?? 12_000) else {
@@ -784,28 +895,28 @@ private struct StudioMachiningTool: AgentTool {
         try validate(args)
         return try await coordinator.machining(id: args.projectID, action: args.action,
             expectedRevision: args.expectedRevision, studyJSON: args.studyJSON, title: args.title,
-            offset: args.offset ?? 0, limit: args.limit ?? 12_000, context: context)
+            offset: args.offset ?? 0, limit: args.limit ?? 12_000, researchJSON:args.researchJSON, context: context)
     }
 }
 private struct StudioRunTool: AgentTool {
     struct Arguments: Decodable, Sendable { let projectID: UUID; let action: String; let inputJSON: String? }
     static let name = "studio.run"
-    static let toolDescription = "Run the actual native service and await its saved output. Music inspectAudio is read-only: inputJSON {assetID:{rawValue:String},startSeconds?,endSeconds?,bins?} uses an actual asset from this work; no mutation grant or playback. Music renders return actual file metadata plus measured audioObservation for their first 30 seconds. Chemistry calculate uses inputJSON with objectID/expectedObjectRevision/method/options on native.local: manufacturing calculate/exportSTL/exportToolpath, printing slice, music renderWAV/renderMP3, image/drawing/video exportMedia/exportOriginal, image exportORA/exportPSD, video exportOTIO. Format subsets reject unsupported content explicitly. Progress appears in the same editor; cancellation belongs to this run. Returns actual file size/hash and the work link."
-    static let parametersJSON = #"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"action":{"type":"string","enum":["calculate","exportSTL","exportToolpath","slice","renderWAV","renderMP3","exportMedia","exportOriginal","exportORA","exportPSD","exportOTIO","inspectAudio"]},"inputJSON":{"type":"string","maxLength":262144}},"required":["projectID","action"],"additionalProperties":false}"#
+    static let toolDescription = "Run the actual native service and await its saved output. Exports/renders return a verified run-owned outputFile reference, also carried in outputFiles, never only a private filename. inspectFrame is read-only for native image/drawing/video originals: inputJSON {expectedRevision,seconds?:number,maximumPixelSize?:64...1024} renders a real composed PNG artifact near that timeline time, without playback or UI capture. Only vision-capable models can inspect pixels; others use structured state. inspectAudio is read-only for Music, stopped Meeting recordings and native Media audio/video assets. inputJSON {} lists this authorized work's opaque audio source IDs (offset/limit page metadata only, kind=sources); inspect {sourceID,startSeconds?,endSeconds?,bins?} returns kind=waveform measured by the actual decoder. Legacy {assetID:{rawValue:String},...} stays Music-only. Sources/revisions come from this work, never a host path, permission grant or automatic playback. A video without an audio track returns its actual source error. Music renders return actual file metadata plus measured audioObservation for their first 30 seconds. Chemistry calculate uses inputJSON with objectID/expectedObjectRevision/method/options on native.local: manufacturing calculate/exportSTL/exportToolpath, printing slice, music renderWAV/renderMP3, image/drawing/video exportMedia/exportOriginal, image exportORA/exportPSD, video exportOTIO. Format subsets reject unsupported content explicitly. Progress appears in the same editor; cancellation belongs to this run. Returns actual file size/hash and the work link."
+    static let parametersJSON = #"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"action":{"type":"string","enum":["calculate","exportSTL","exportToolpath","slice","renderWAV","renderMP3","exportMedia","exportOriginal","exportORA","exportPSD","exportOTIO","inspectAudio","inspectFrame"]},"inputJSON":{"type":"string","maxLength":262144}},"required":["projectID","action"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .internalState
     let coordinator: StudioCoordinator
     func validate(_ args: Arguments) throws {
         guard (args.inputJSON?.utf8.count ?? 0) <= 256 * 1_024,
-              ["calculate", "exportSTL", "exportToolpath", "slice", "renderWAV", "renderMP3", "exportMedia", "exportOriginal", "exportORA", "exportPSD", "exportOTIO", "inspectAudio"].contains(args.action) else { throw FloeError.validationFailed("Unsupported native operation") }
+              ["calculate", "exportSTL", "exportToolpath", "slice", "renderWAV", "renderMP3", "exportMedia", "exportOriginal", "exportORA", "exportPSD", "exportOTIO", "inspectAudio", "inspectFrame"].contains(args.action) else { throw FloeError.validationFailed("Unsupported native operation") }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput { try await coordinator.run(id: args.projectID, action: args.action, context: context, inputJSON: args.inputJSON) }
 }
 private struct StudioMediaTool: AgentTool {
     struct Arguments: Decodable, Sendable { let projectID: UUID; let toolID: String; let inputJSON: String }
     static let name = "studio.media"
-    static let toolDescription = "Run one actually implemented native image/drawing/video command. Read studio.read and its complete typed example first. inputJSON is ONE object with required expectedRevision (the current studio.read decimal revision, string or integer); objectID is a UUID string, objectIDs an array of UUID strings, number/secondary/start/duration are numbers, text/color/property are strings, flag is boolean and points is an array of {x:number,y:number}. Video captionStyle is an optional CaptionStyle object; it affects all captions. Use actual object IDs to edit, never invent reduced nested types. Unavailable catalog entries cannot execute. Uses the existing coordinator, revision guard, undo and renderer. Host command media.import accepts {expectedRevision,source:{workspacePath,expectedSHA256?}} for this task's authorized relative file (including existing Attachments paths). It copies into this original and commits through the same undo/CAS coordinator; it never reads arbitrary host/App Documents paths or unbound tokens. No shell or code input."
+    static let toolDescription = "Run one actually implemented native image/drawing/video command. Read studio.read and its complete typed example first. inputJSON is ONE object with required expectedRevision (the current studio.read decimal revision, string or integer); objectID is a UUID string, objectIDs an array of UUID strings, number/secondary/start/duration are numbers, text/color/property are strings, flag is boolean and points is an array of {x:number,y:number}. Video captionStyle is an optional CaptionStyle object; it affects all captions. Use actual object IDs to edit, never invent reduced nested types. Unavailable catalog entries cannot execute. Uses the existing coordinator, revision guard, undo and renderer. Host command media.import accepts {expectedRevision,source:{workspacePath,expectedSHA256?}} for this task's authorized relative file (including existing Attachments paths). It copies into this original and commits through the same undo/CAS coordinator; it never reads arbitrary host/App Documents paths or unbound tokens. No shell or code input. Music originals also accept explicit host toolID=music.import with {expectedRevision,source:{workspacePath,expectedSHA256?}} from this task; it imports real WAV/CAF/AIFF/MP3/M4A or SMF MIDI bytes through the native repository and returns actual asset/track/clip IDs. Read studio.read hostToolIDs and editFormat; never mint asset metadata without its original bytes."
     static let parametersJSON = #"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"toolID":{"type":"string"},"inputJSON":{"type":"string","maxLength":262144}},"required":["projectID","toolID","inputJSON"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     static let isSideEffecting = true
@@ -823,6 +934,7 @@ private struct StudioMediaTool: AgentTool {
     let coordinator = environment.studioCoordinator
     ToolCatalog.register(StudioCreateTool.self); registry.register(StudioCreateTool(coordinator: coordinator))
     ToolCatalog.register(StudioListTool.self); registry.register(StudioListTool(coordinator: coordinator))
+    ToolCatalog.register(StudioLibraryTool.self); registry.register(StudioLibraryTool(coordinator: coordinator))
     ToolCatalog.register(StudioReadTool.self); registry.register(StudioReadTool(coordinator: coordinator))
     ToolCatalog.register(StudioEditTool.self); registry.register(StudioEditTool(coordinator: coordinator))
     ToolCatalog.register(StudioRunTool.self); registry.register(StudioRunTool(coordinator: coordinator))

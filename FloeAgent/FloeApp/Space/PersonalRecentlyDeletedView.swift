@@ -15,6 +15,7 @@ enum PersonalLibraryDeleteSelection {
 }
 
 struct PersonalRecentlyDeletedView: View {
+    @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.dismiss) private var dismiss
     @State private var entries: [PersonalLibraryTrashEntry] = []
     @State private var restoring: UUID?
@@ -67,7 +68,7 @@ struct PersonalRecentlyDeletedView: View {
     @MainActor private func restore(_ entry: PersonalLibraryTrashEntry) async {
         guard restoring == nil else { return }; restoring = entry.id; defer { restoring = nil }
         do {
-            try await PersonalContentService.shared.library().restore(entry.id)
+            try await PersonalLibraryFileActions.restore(entry, environment: environment)
             NotificationCenter.default.post(name: .floeStudioDocumentDidChange, object: entry.projectID ?? entry.id)
             await refresh()
         } catch { notice = error.localizedDescription }
