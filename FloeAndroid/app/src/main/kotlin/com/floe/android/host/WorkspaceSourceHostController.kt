@@ -1446,9 +1446,17 @@ internal class WorkspaceSourceHostController(
          * references this lane reloaded from ORIGINAL durable rows, never
          * while an unfinished journal receipt references them, never while
          * the lane is busy, and only inside the broker's exclusive section.
-         * Grants another feature (attachments/skills) acquired are preserved
-         * by the broker — this lane NEVER releases what it did not own. */
-        suspend fun revoke(reference: String): WorkspaceSourceResult {
+         * Ordinary callers release only this gateway's acquisitions. The
+         * separate explicit UI confirmation covers App-wide persistent
+         * access after restart; active consumers remain broker-protected. */
+        suspend fun revoke(reference: String): WorkspaceSourceResult = revokeBound(reference, userConfirmed = false)
+
+        /** UI-only per-file confirmation. No serialized model argument can
+         * select this broader App-grant action; all durable-owner, idle,
+         * recovery and other-consumer checks below remain authoritative. */
+        suspend fun revokeFromUser(reference: String): WorkspaceSourceResult = revokeBound(reference, userConfirmed = true)
+
+        private suspend fun revokeBound(reference: String, userConfirmed: Boolean): WorkspaceSourceResult {
             if (!admitted()) return RUNTIME_UNAVAILABLE
             return whenIdle {
                 try {
@@ -1470,9 +1478,11 @@ internal class WorkspaceSourceHostController(
                             closePickReferences(reference)
                             mutate { state -> if (state.accepted?.uri == reference)
                                 state.copy(accepted = null) else state }
-                            service.grants.requestRelease(SafUriRef(reference),
-                                                          setOf(SafAccessFlag.READ, SafAccessFlag.WRITE))
+                            val flags = setOf(SafAccessFlag.READ, SafAccessFlag.WRITE)
+                            if (userConfirmed) service.grants.requestUserConfirmedRelease(SafUriRef(reference), flags)
+                            else service.grants.requestRelease(SafUriRef(reference), flags)
                         }
+                        android.util.Log.i("FloeSourceGrant", "userConfirmed=$userConfirmed result=${release.javaClass.simpleName}")
                         val mapped = mapRelease(release)
                         mutate { it.copy(lastResult = mapped) }
                         refresh()

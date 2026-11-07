@@ -189,6 +189,43 @@ class SafGrantGatewayTest {
     }
 
     @Test
+    fun userConfirmedReleaseSurvivesGatewayRecreationWithoutAdoptingOwnership() {
+        val fake = FakeSafBackend()
+        val selected = fake.treeUri("selected")
+        val other = fake.treeUri("other")
+        fake.seedRoot(selected)
+        fake.persisted[selected.uriString] = mutableSetOf(SafAccessFlag.READ, SafAccessFlag.WRITE)
+        fake.persisted[other.uriString] = mutableSetOf(SafAccessFlag.READ)
+        val gateway = SafGrantGateway(fake.backend, SafSharedGrantBroker())
+        assertTrue(gateway.requestRelease(selected, setOf(SafAccessFlag.READ)) is ReleaseResult.NotOwned)
+        val result = gateway.requestUserConfirmedRelease(selected, setOf(SafAccessFlag.READ, SafAccessFlag.WRITE))
+        assertTrue(result is ReleaseResult.Released)
+        assertNull(fake.persisted[selected.uriString])
+        assertNotNull(fake.persisted[other.uriString])
+        assertTrue(gateway.ownedGrantUris().isEmpty())
+        assertTrue(fake.takeLog.isEmpty())
+        assertEquals(2, fake.releaseLog.size)
+    }
+
+    @Test
+    fun userConfirmedReleaseStillRequiresBrokerAndProtectsActiveConsumers() {
+        val fake = FakeSafBackend()
+        val selected = fake.treeUri("shared-selected")
+        fake.seedRoot(selected)
+        fake.persisted[selected.uriString] = mutableSetOf(SafAccessFlag.READ)
+        assertTrue(SafGrantGateway(fake.backend).requestUserConfirmedRelease(selected, setOf(SafAccessFlag.READ))
+            is ReleaseResult.RefusedNoBroker)
+        val broker = SafSharedGrantBroker()
+        val otherConsumer = broker.retain(selected, SafAccessFlag.READ)
+        val gateway = SafGrantGateway(fake.backend, broker)
+        assertTrue(gateway.requestUserConfirmedRelease(selected, setOf(SafAccessFlag.READ)) is ReleaseResult.RetainedByBroker)
+        assertTrue(fake.releaseLog.isEmpty())
+        otherConsumer.close()
+        assertTrue(gateway.requestUserConfirmedRelease(selected, setOf(SafAccessFlag.READ)) is ReleaseResult.Released)
+        assertEquals(1, fake.releaseLog.size)
+    }
+
+    @Test
     fun grantTakenElsewhereIsNeverAReleaseCandidate() {
         val fake = FakeSafBackend()
         fake.persisted["content://fake.provider/tree/main"] = mutableSetOf(SafAccessFlag.READ) // attachments took it

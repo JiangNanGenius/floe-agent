@@ -282,6 +282,23 @@ class SafGrantGateway internal constructor(
         }
         val candidates = flags.filter { it in owned }.toSet()
         if (candidates.isEmpty()) return ReleaseResult.NothingOwned(persistedByUs = owned.toSet())
+        return releaseCandidates(uri, candidates)
+    }
+
+    /** Explicit UI confirmation to release this App's persistent access to a
+     * selected durable source, including grants acquired before process death.
+     * This does NOT adopt a preexisting grant or change ordinary cleanup rules.
+     * Callers must bind the confirmation to a real owned source and reject live
+     * IO/recovery first. The shared broker still protects every active consumer. */
+    fun requestUserConfirmedRelease(uri: SafUriRef, flags: Set<SafAccessFlag>): ReleaseResult {
+        val live = backend.persistedGrants().firstOrNull { it.uri == uri }
+        val candidates = flags.filter { flag ->
+            if (flag == SafAccessFlag.READ) live?.read == true else live?.write == true
+        }.toSet()
+        return releaseCandidates(uri, candidates)
+    }
+
+    private fun releaseCandidates(uri: SafUriRef, candidates: Set<SafAccessFlag>): ReleaseResult {
         val broker = releaseBroker
             ?: return ReleaseResult.RefusedNoBroker(candidates, heldElsewhere = currentAccess(uri).read || currentAccess(uri).write)
         val released = mutableSetOf<SafAccessFlag>()
@@ -293,8 +310,10 @@ class SafGrantGateway internal constructor(
                 is BrokeredRelease.Retained -> retained += flag
             }
         }
-        owned -= released
-        if (owned.isEmpty()) ownedPersisted.remove(uri.uriString)
+        ownedPersisted[uri.uriString]?.let { owned ->
+            owned -= released
+            if (owned.isEmpty()) ownedPersisted.remove(uri.uriString)
+        }
         // Successful release of a flag does not by itself end the session note:
         // probe truth governs (other features may still hold access).
         return when {

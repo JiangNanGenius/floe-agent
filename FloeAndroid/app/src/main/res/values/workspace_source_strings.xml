@@ -69,4 +69,6 @@
     <string name="workspace_source_revoke_retained">Kept: other parts of Floe still use this access, so nothing was released.</string>
     <string name="workspace_source_failed">The operation did not complete. Your workspace files are intact. Try again.</string>
     <string name="workspace_source_error_details">Details</string>
+    <string name="workspace_source_revoke_confirm_title">Release Floe access?</string>
+    <string name="workspace_source_revoke_confirm_message">Release Floe’s persistent access to this file? Other Floe features may need you to select it again. The file and Floe’s copies are kept.</string>
 </resources>

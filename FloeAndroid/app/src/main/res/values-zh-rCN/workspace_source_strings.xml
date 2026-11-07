@@ -69,4 +69,6 @@
     <string name="workspace_source_revoke_retained">已保留：Floe 的其他功能仍在使用此授权，因此未释放。</string>
     <string name="workspace_source_failed">操作未完成。你的工作区文件完好，请重试。</string>
     <string name="workspace_source_error_details">详情</string>
+    <string name="workspace_source_revoke_confirm_title">释放 Floe 的长期授权？</string>
+    <string name="workspace_source_revoke_confirm_message">Floe 的其他功能再次访问此文件时，可能需要重新选取。原文件和 Floe 中的副本都会保留。</string>
 </resources>

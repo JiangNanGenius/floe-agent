@@ -92,6 +92,7 @@ internal fun WorkspaceSourcePanel(
     }
     val state by lane.state.collectAsState()
     var sheet by remember(lane) { mutableStateOf(SourceSheet.NONE) }
+    var revokeTarget by remember(lane) { mutableStateOf<WorkspaceSourceRowUi?>(null) }
     var targetPath by remember(lane) { mutableStateOf("") }
     /** The seed the Import form last AUTO-FILLED from the accepted pick
      * (G05-R3 repair 2026-10-27). A newer pick while the sheet is open may
@@ -267,7 +268,7 @@ internal fun WorkspaceSourcePanel(
                 FloeCapsuleButton(stringResource(R.string.workspace_source_revoke),
                                   enabled = !state.busy && row.reference !in state.blockedReferences,
                                   modifier = Modifier.weight(1f),
-                                  onClick = { scope.launch { lane.revoke(row.reference) } })
+                                  onClick = { revokeTarget = row })
                 FloeCapsuleButton(stringResource(R.string.workspace_source_repick),
                                   enabled = !state.busy &&
                                       (row.reference in state.expiredReferences ||
@@ -303,6 +304,25 @@ internal fun WorkspaceSourcePanel(
         }
         FloeText(stringResource(R.string.workspace_source_tree_limits),
                  style = Floe.typography.body, color = Floe.colors.secondaryLabel)
+    }
+
+    FloeActionSheet(visible = revokeTarget != null, onDismiss = { revokeTarget = null }, maxCardWidth = 640.dp) {
+        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            FloeText(stringResource(R.string.workspace_source_revoke_confirm_title),
+                style = Floe.typography.toolbarTitle, color = Floe.colors.label)
+            FloeText(revokeTarget?.path.orEmpty(), style = Floe.typography.body, color = Floe.colors.label)
+            FloeText(stringResource(R.string.workspace_source_revoke_confirm_message),
+                style = Floe.typography.body, color = Floe.colors.secondaryLabel)
+            FloeCapsuleButton(stringResource(R.string.workspace_source_revoke),
+                modifier = Modifier.fillMaxWidth(), enabled = !state.busy,
+                onClick = {
+                    val target = revokeTarget
+                    revokeTarget = null
+                    if (target != null) scope.launch { lane.revokeFromUser(target.reference) }
+                })
+            FloeCapsuleButton(stringResource(R.string.cancel),
+                modifier = Modifier.fillMaxWidth(), onClick = { revokeTarget = null })
+        }
     }
 
     FloeActionSheet(visible = sheet != SourceSheet.NONE,

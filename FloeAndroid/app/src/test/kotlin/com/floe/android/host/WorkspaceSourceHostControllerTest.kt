@@ -795,6 +795,7 @@ class WorkspaceSourceHostControllerTest {
         lane.refresh()
         val blocked = lane.revoke(bound)
         assertEquals("journalRefused", blocked.status)
+        assertEquals("journalRefused", lane.revokeFromUser(bound).status)
         assertEquals(0, backend.releaseCalls)
         // Unknown references are never releasable (durable-rows gate).
         assertEquals("unbound", lane.revoke("content://other/tree/9/document/1").status)
@@ -825,6 +826,30 @@ class WorkspaceSourceHostControllerTest {
             assertNull(lane.state.value.accepted)
         } finally { other.close() }
         assertEquals("ok", lane.revoke(bound).status)
+        assertEquals(1, backend.releaseCalls)
+    }
+
+    @Test
+    fun confirmedColdGrantReleaseRequiresBoundSourceAndProtectsOtherConsumers() = runBlocking {
+        val bound = "content://com.floe.testprovider/tree/1/document/cold-source-grant"
+        val otherUri = "content://com.floe.testprovider/tree/1/document/another-source-grant"
+        channel.sourcePageBody = """{"ok":1,"rows":[{"id":"cold-row","kind":"saf","path":"docs/cold.txt","reference":"$bound","documentID":"cold-source-grant","sha256":"","revision":"rev-1"}]}"""
+        channel.recoveryPageBody = """{"ok":1,"rows":[]}"""
+        // Simulate OS grants acquired by the prior process, not this gateway.
+        backend.takePersistable(SafUriRef(bound), SafAccessFlag.READ)
+        backend.takePersistable(SafUriRef(otherUri), SafAccessFlag.READ)
+        val lane = laneFor(controller())
+        lane.refresh()
+        assertEquals("retained", lane.revoke(bound).status)
+        assertEquals("unbound", lane.revokeFromUser(otherUri).status)
+        val liveConsumer = SharedUriGrantAuthority.broker.retain(SafUriRef(bound), SafAccessFlag.READ)
+        try {
+            assertEquals("retained", lane.revokeFromUser(bound).status)
+            assertEquals(0, backend.releaseCalls)
+        } finally { liveConsumer.close() }
+        assertEquals("ok", lane.revokeFromUser(bound).status)
+        assertFalse(backend.persistedGrants().any { it.uri.uriString == bound })
+        assertTrue(backend.persistedGrants().any { it.uri.uriString == otherUri })
         assertEquals(1, backend.releaseCalls)
     }
 
