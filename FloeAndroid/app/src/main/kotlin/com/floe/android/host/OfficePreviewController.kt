@@ -12,6 +12,7 @@ import com.floe.android.core.officeengine.OfficeApprovalNotice
 import com.floe.android.core.officeengine.OfficeApprovalNoticePolicy
 import com.floe.android.core.officeengine.OfficeCloseAck
 import com.floe.android.core.officeengine.OfficeCloseAckPolicy
+import com.floe.android.core.officeengine.OfficeCloseProof
 import com.floe.android.core.officeengine.OfficeEngine
 import com.floe.android.core.officeengine.OfficePermission
 import com.floe.android.core.officeengine.OfficePreviewActivity
@@ -296,7 +297,9 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
      * successful accept (and dropped when the operation settles or is
      * replaced).
      */
-    private val closeAckBinder: IBinder by lazy { OfficeCloseAck.parentBinder(this::acceptCloseIntent) }
+    private val closeAckBinder: IBinder by lazy {
+        OfficeCloseAck.parentBinder(this::acceptCloseIntent, this::acceptPreparedClose)
+    }
 
     /**
      * Parent endpoint of the module's narrow approval-notice capability
@@ -350,6 +353,11 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         private set
 
     private enum class Phase { PICKING, COMPONENT, STAGING, LAUNCH, VIEWING }
+
+    private class PreparedClose(val receipt: OfficeCloseProof.Receipt, val lifetime: IBinder) {
+        lateinit var death: IBinder.DeathRecipient
+        var processDead = false
+    }
     private data class PendingComponentWorkspace(
         val operation: Operation,
         val owner: WorkspaceOfficeSnapshotStager.Owner,
@@ -429,6 +437,8 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         @Volatile var saveOriginalInFlight = false
         /** Durable recovery candidate created before the editable mount. */
         @Volatile var recoveryCandidateId: String? = null
+        /** lock-protected; an engine snapshot alone never settles this mount. */
+        var preparedClose: PreparedClose? = null
     }
 
     private fun current(op: Operation): Boolean = synchronized(lock) {
@@ -1048,6 +1058,67 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         true
     }
 
+    /** Accept a frozen engine snapshot only for the already acknowledged mount.
+     * The live Binder is registered before replying; process death may race the
+     * reply, but neither a stale result nor the grace timer can certify it. */
+    private fun acceptPreparedClose(receipt: OfficeCloseProof.Receipt, lifetime: IBinder): Boolean = synchronized(lock) {
+        val op = active ?: return false
+        if (!ackedCloseStillOwnsSlot(active === op, op.retired, op.viewEnded,
+                op.phase == Phase.VIEWING, op.id, op.sessionToken, ackedClose) ||
+            ackedClose != receipt.close
+        ) return false
+        op.preparedClose?.let { return it.receipt == receipt && it.lifetime == lifetime }
+        val prepared = PreparedClose(receipt, lifetime)
+        prepared.death = IBinder.DeathRecipient { onEngineProcessEnded(op, prepared) }
+        op.preparedClose = prepared
+        try {
+            lifetime.linkToDeath(prepared.death, 0)
+            true
+        } catch (_: Exception) {
+            op.preparedClose = null
+            false
+        }
+    }
+
+    private fun onEngineProcessEnded(op: Operation, prepared: PreparedClose) {
+        synchronized(lock) {
+            if (active !== op || op.retired || op.viewEnded || op.preparedClose !== prepared || prepared.processDead) return
+            prepared.processDead = true
+            // A real death receipt now owns final verification; a grace expiry
+            // cannot overtake its file read and misclassify the same close.
+            ackQuiescence?.cancel()
+        }
+        scope.launch(Dispatchers.IO) {
+            val input = op.workingCopy ?: op.input
+            val verified = input != null && OfficeCloseFileVerification.matches(
+                input, setOf(workingRoot, workspaceRoot, providerRoot, runOutputRoot), prepared.receipt,
+                processDead = prepared.processDead,
+            )
+            android.util.Log.i("FloeOfficeClose", "engineExited=true fileVerified=$verified discarded=${prepared.receipt.discarded}")
+            if (!verified) {
+                settleAcknowledgedCloseIfUnclaimed(op, verificationFailed = true)
+                return@launch
+            }
+            val baselineSha = op.originalBaselineSha256 ?: op.workingCopySha256 ?: op.snapshotSha256
+            val baselineBytes = when {
+                op.originalBaselineSha256 != null -> op.originalBaselineBytes
+                op.workingCopySha256 != null -> op.workingCopyBytes
+                else -> op.snapshotBytes
+            }
+            val dirty = OfficeCloseProof.hasUnsavedBytes(prepared.receipt, baselineSha, baselineBytes)
+            if (!settle(op, null, removeInput = true)) return@launch
+            recovery.onViewerClosed(
+                candidateId = op.recoveryCandidateId,
+                sessionToken = op.sessionToken,
+                resultPresent = true,
+                closedCleanly = true,
+                dirtyAtClose = dirty,
+                discarded = prepared.receipt.discarded,
+                outputDescriptors = emptyList(),
+            )
+        }
+    }
+
     /**
      * Answers ONE engine approval-notice query on a Binder thread: ONLY the
      * current, un-retired VIEWING operation whose opaque viewer incarnation,
@@ -1131,9 +1202,9 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
      * acknowledgement recorded for another incarnation/token — is never
      * touched.
      */
-    private fun settleAcknowledgedCloseIfUnclaimed(op: Operation) {
+    private fun settleAcknowledgedCloseIfUnclaimed(op: Operation, verificationFailed: Boolean = false) {
         val acked = synchronized(lock) {
-            ackedCloseStillOwnsSlot(
+            (verificationFailed || op.preparedClose?.processDead != true) && ackedCloseStillOwnsSlot(
                 activeIsCandidate = active === op,
                 retired = op.retired,
                 viewEnded = op.viewEnded,
@@ -1304,6 +1375,10 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
             active?.takeIf { it.id == incarnation && it.phase == Phase.VIEWING }
         } ?: return
         val outcome = OfficeViewerOutcome.fromResultData(data)
+        // The platform commonly returns RESULT_CANCELED as the fatal BYE
+        // exits. Keep the exact prepared mount until its Binder death and
+        // byte verification, or the existing honest-uncertainty grace expiry.
+        if (outcome?.closedCleanly != true && synchronized(lock) { op.preparedClose != null }) return
         val exact = outcome?.sessionToken == op.sessionToken
         if (outcome != null) recordFailure(op, outcome)
         // Consume the close-intent record only for THIS exact operation and
@@ -1882,6 +1957,10 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                     pendingComponentWorkspace = null
                 }
                 ackQuiescence?.cancel()
+                op.preparedClose?.let { prepared ->
+                    runCatching { prepared.lifetime.unlinkToDeath(prepared.death, 0) }
+                }
+                op.preparedClose = null
                 // A close-intent belongs only to the operation it acknowledged.
                 ackedClose = null
                 op.viewEnded = true

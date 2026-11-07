@@ -73,6 +73,9 @@ class OfficeEngineService : Service() {
         /** Honest notices for refused routes; display strings live in the App/UI layer. */
         fun onNotice(sessionToken: String, generation: Long, key: String, detail: String?)
 
+        /** The page's Close action uses the same dirty/save guard as Back. */
+        fun onCloseRequested(sessionToken: String, generation: Long) {}
+
         /** Issued once per mount after native create completed; the view loads then. */
         fun onLoadUrl(sessionToken: String, generation: Long, url: String)
 
@@ -1701,6 +1704,9 @@ class OfficeEngineService : Service() {
 
         val terminalDelivered = AtomicBoolean(false)
         val nativeCloseClaimed = AtomicBoolean(false)
+        /** Kept alive by this exact session until its dedicated process exits. */
+        val closeLifetime = Binder()
+        @Volatile var closeDiscarded = false
         val hulloClaimed = AtomicBoolean(false)
         @Volatile var nativeHandshakeComplete = false
         val nativeCreateStarted = AtomicBoolean(false)
@@ -1804,6 +1810,38 @@ class OfficeEngineService : Service() {
             return accepted
         }
 
+        /** Called only with nativeCallLock held, after cancellation has fenced
+         * further host/page dispatch. Pending native operations refuse proof;
+         * the old uncertain-close path then preserves all recoverable bytes. */
+        fun prepareCloseProof(reason: String?) {
+            val close = OfficeCloseAckPolicy.validateShape(
+                request.sessionToken, generation, viewerIncarnation, reason,
+            ) ?: return
+            if (!permissionBarrierObserved || saveCoordinator.pendingFlushOpId() != null ||
+                saveCoordinator.runningExportOpId() != null || precision.leaseActive() || revision.hasPending()
+            ) {
+                Log.i(TAG, "close snapshot unavailable: permission=$permissionBarrierObserved pendingOperation=true")
+                return
+            }
+            val file = workingCopyFile ?: return
+            if (java.nio.file.Files.isSymbolicLink(file.toPath())) return
+            val digest = OfficeRequestPolicy.digestWorkingCopy(file) ?: return
+            if (digest.second !in 1..OfficeRequestPolicy.MAX_STAGED_BYTES) return
+            val flushed = synchronized(issuedReceipts) {
+                issuedReceipts.any {
+                    it.operation == OfficeSaveOperation.WORKING_COPY_FLUSH &&
+                        it.state in setOf(OfficeSaveState.FLUSHED, OfficeSaveState.UNMODIFIED) &&
+                        it.workingCopySha256 == digest.first && it.workingCopyBytes == digest.second
+                }
+            }
+            val cleanState = !editable || (documentModified == false &&
+                ((!editRequested && !pageEditMode) || flushed))
+            val receipt = OfficeCloseProof.Receipt(close, !cleanState, closeDiscarded, digest.first, digest.second)
+            val accepted = OfficeCloseAck.prepareClose(closeAck, receipt, closeLifetime)
+            Log.i(TAG, "close snapshot accepted=$accepted dirty=${receipt.dirtyAtClose} discarded=${receipt.discarded}")
+            recordDiagnostic(OfficeSessionDiagnostics.KIND_STATE, "close snapshot accepted=$accepted")
+        }
+
         /** Delivers the terminal result exactly once for this mount. */
         fun deliverTerminal(closedCleanly: Boolean, failure: OfficeFailureCode?, message: String?) {
             if (!terminalDelivered.compareAndSet(false, true)) return
@@ -1854,7 +1892,7 @@ class OfficeEngineService : Service() {
         // --- EngineBridge (may be called on native threads; NEVER throws) ---
 
         override fun onMessageFromJs(message: String): Boolean {
-            if (retired || presentationSuperseded) return false
+            if (retired || presentationSuperseded || cancelled.get() || current !== this@Session) return false
             if (OfficeReadOnlyProtocol.command(message) == OfficeRenderWitness.COMMAND) {
                 observeRendererWitness(message)
                 return false
@@ -1958,11 +1996,11 @@ class OfficeEngineService : Service() {
             when (outcome.decision) {
                 CoolMessageGate.Decision.BLOCK_WITHOUT_NOTICE -> {
                     when (outcome.noticeKey) {
-                        "bye" -> this@OfficeEngineService.requestClose(
-                            request.sessionToken,
-                            "page-close",
-                            userInitiated = true,
-                        )
+                        "bye" -> mainHandler.post {
+                            if (!retired && !cancelled.get() && current === this@Session) {
+                                listeners.forEach { it.onCloseRequested(request.sessionToken, generation) }
+                            }
+                        }
                         null -> when {
                             message.startsWith("MOBILEWIZARD") -> mobileWizardVisible = rest.trim() == "show"
                             // Upstream-parity host-bridge consumption (gate
@@ -2825,12 +2863,14 @@ class OfficeEngineService : Service() {
         reason: String?,
         userInitiated: Boolean,
         failure: OfficeFailureCode? = null,
+        discarded: Boolean = false,
     ) {
         val session: Session
         val beforeNative: Boolean
         synchronized(sessionLock) {
             session = current ?: return
             if (session.request.sessionToken != sessionToken || session.retired || session.state == OfficeViewerState.CLOSING) return
+            session.closeDiscarded = userInitiated && discarded
             session.cancelled.set(true)
             beforeNative = !session.nativeCreateStarted.get()
             session.setState(OfficeViewerState.CLOSING)
@@ -4258,6 +4298,11 @@ class OfficeEngineService : Service() {
         val thrown = session.nativeCallLock.run {
             lock()
             try {
+                // Drain a page command already inside the native ingress gate.
+                // Cancellation rejects all later page/host dispatch; do not
+                // hold ingress across BYE's synchronous native callbacks.
+                synchronized(session.host.nativeIngressLock) { Unit }
+                if (userInitiated && failure == null) runCatching { session.prepareCloseProof(message) }
                 runCatching { session.host.postMobileMessageNative("BYE") }.exceptionOrNull()
             } finally {
                 unlock()

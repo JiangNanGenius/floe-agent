@@ -39,8 +39,29 @@ object OfficeCloseAck {
      * plain proxy and is used only for this one transaction.
      */
     @JvmStatic
-    fun parentBinder(onAck: (OfficeCloseAckPolicy.AckRequest) -> Boolean): IBinder = object : Binder() {
+    fun parentBinder(onAck: (OfficeCloseAckPolicy.AckRequest) -> Boolean): IBinder =
+        parentBinder(onAck) { _, _ -> false }
+
+    @JvmStatic
+    fun parentBinder(
+        onAck: (OfficeCloseAckPolicy.AckRequest) -> Boolean,
+        onPreparedClose: (OfficeCloseProof.Receipt, IBinder) -> Boolean,
+    ): IBinder = object : Binder() {
         override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
+            if (code == OfficeCloseProof.TRANSACTION_PREPARE_CLOSE) {
+                data.enforceInterface(OfficeCloseAckPolicy.DESCRIPTOR)
+                val accepted = if (Binder.getCallingUid() != Process.myUid()) false else runCatching {
+                    if (data.readInt() != OfficeCloseProof.SCHEMA_VERSION) return@runCatching false
+                    val receipt = OfficeCloseProof.validate(
+                        data.readString(), data.readLong(), data.readLong(), data.readString(),
+                        data.readInt(), data.readInt(), data.readString(), data.readLong(),
+                    ) ?: return@runCatching false
+                    val lifetime = data.readStrongBinder() ?: return@runCatching false
+                    onPreparedClose(receipt, lifetime)
+                }.getOrDefault(false)
+                reply?.writeInt(if (accepted) 1 else 0)
+                return true
+            }
             if (code == OfficeCloseAckPolicy.TRANSACTION_ACK_CLOSE) {
                 // Unknown or mismatched interface tokens reject fail-closed
                 // (SecurityException travels back to the caller as failure).
@@ -104,6 +125,33 @@ object OfficeCloseAck {
             transacted && word == 1
         } catch (error: Exception) {
             android.util.Log.w("OfficeCloseAck", "transport failed: ${error.javaClass.simpleName}")
+            false
+        } finally {
+            reply.recycle()
+            data.recycle()
+        }
+    }
+
+    /** Synchronous pre-BYE handoff. The Binder is owned by the engine process;
+     * only its death, followed by host byte verification, proves writer exit. */
+    fun prepareClose(ack: IBinder?, receipt: OfficeCloseProof.Receipt, lifetime: IBinder): Boolean {
+        if (ack == null) return false
+        val data = Parcel.obtain()
+        val reply = Parcel.obtain()
+        return try {
+            data.writeInterfaceToken(OfficeCloseAckPolicy.DESCRIPTOR)
+            data.writeInt(OfficeCloseProof.SCHEMA_VERSION)
+            data.writeString(receipt.close.sessionToken)
+            data.writeLong(receipt.close.generation)
+            data.writeLong(receipt.close.viewerIncarnation)
+            data.writeString(receipt.close.reason)
+            data.writeInt(if (receipt.dirtyAtClose) 1 else 0)
+            data.writeInt(if (receipt.discarded) 1 else 0)
+            data.writeString(receipt.sha256)
+            data.writeLong(receipt.bytes)
+            data.writeStrongBinder(lifetime)
+            ack.transact(OfficeCloseProof.TRANSACTION_PREPARE_CLOSE, data, reply, 0) && reply.readInt() == 1
+        } catch (_: Exception) {
             false
         } finally {
             reply.recycle()

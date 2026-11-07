@@ -1407,7 +1407,7 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         // Mark the result only when an exact close request was actually
         // issued; a failed keep-editing path must not tag a later save.
         userDiscarded = true
-        engine.requestClose(token, "user-back", userInitiated = true)
+        engine.requestClose(token, "user-back", userInitiated = true, discarded = true)
     }
 
     private fun freezeDocumentInput() {
@@ -1587,6 +1587,10 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         if (!accepts(sessionToken, generation)) return
         noticeKey = key
         noticeDetail = detail
+    }
+
+    override fun onCloseRequested(sessionToken: String, generation: Long) {
+        if (accepts(sessionToken, generation)) performBack()
     }
 
     override fun onSaveReceipt(receipt: OfficeSaveReceipt) {
