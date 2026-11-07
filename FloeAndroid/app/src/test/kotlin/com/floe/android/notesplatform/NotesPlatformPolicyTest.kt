@@ -43,6 +43,9 @@ class NotesPlatformPolicyTest {
             explicit: Boolean = true,
             valid: Boolean = true,
             acked: Boolean = false,
+            exited: Boolean = false,
+            discarded: Boolean = false,
+            dirty: Boolean = false,
         ) = NotesOfficeReadbackPolicy.decide(
             resultPresent = result,
             tokenMatches = token,
@@ -52,6 +55,9 @@ class NotesPlatformPolicyTest {
             explicitSaveCompleted = explicit,
             validOoxml = valid,
             userCloseAcknowledged = acked,
+            snapshotAndExitVerified = exited,
+            discarded = discarded,
+            dirtyAtClose = dirty,
         )
 
         assertEquals(NotesOfficeReadbackDecision.SAVED, decide())
@@ -70,14 +76,14 @@ class NotesPlatformPolicyTest {
         // R3 close-bypass cases. The pinned last-session BYE can exit before
         // setResult; an exact OfficeCloseAck acknowledgement makes that a
         // known user close, never an inferred clean close.
-        assertEquals(NotesOfficeReadbackDecision.SAVED, decide(result = false, acked = true))
+        assertEquals(NotesOfficeReadbackDecision.SAVED, decide(result = false, acked = true, exited = true))
         assertEquals(
             "a verified close never bypasses the OOXML check",
             NotesOfficeReadbackDecision.INVALID_SAVED_COPY,
-            decide(result = false, acked = true, valid = false),
+            decide(result = false, acked = true, exited = true, valid = false),
         )
-        assertEquals(NotesOfficeReadbackDecision.SAVED, decide(failure = "PROCESS_LOST", clean = false, acked = true))
-        assertEquals(NotesOfficeReadbackDecision.SAVED, decide(failure = "TRANSPORT_FAILURE", clean = false, acked = true))
+        assertEquals(NotesOfficeReadbackDecision.SAVED, decide(failure = "PROCESS_LOST", clean = false, acked = true, exited = true))
+        assertEquals(NotesOfficeReadbackDecision.SAVED, decide(failure = "TRANSPORT_FAILURE", clean = false, acked = true, exited = true))
         assertEquals(
             "a missing result without the exact close ack stays an unexpected failure",
             NotesOfficeReadbackDecision.MISSING_RESULT,
@@ -86,27 +92,47 @@ class NotesPlatformPolicyTest {
         assertEquals(
             "a real cancel is never turned into a save by the close ack",
             NotesOfficeReadbackDecision.EDITOR_FAILED,
-            decide(failure = "SESSION_CANCELLED", clean = false, acked = true),
+            decide(failure = "SESSION_CANCELLED", clean = false, acked = true, exited = true),
         )
         assertEquals(
             "a foreign Activity result is never imported even after an owned close",
             NotesOfficeReadbackDecision.STALE_RESULT,
-            decide(token = false, acked = true),
+            decide(token = false, acked = true, exited = true),
         )
         assertEquals(
             "a plain acknowledged close with an unchanged working copy is not an error",
             NotesOfficeReadbackDecision.UNCHANGED,
-            decide(result = false, changed = false, explicit = false, acked = true),
+            decide(result = false, changed = false, explicit = false, acked = true, exited = true),
         )
         assertEquals(
             "a discard/autosave changed copy is still never imported",
             NotesOfficeReadbackDecision.UNSAVED_AT_CLOSE,
-            decide(result = false, changed = true, explicit = false, acked = true),
+            decide(result = false, changed = true, explicit = false, acked = true, exited = true),
         )
         assertEquals(
             "an unacknowledged missing result stays a failure even when the working copy is unchanged",
             NotesOfficeReadbackDecision.MISSING_RESULT,
             decide(result = false, changed = false, explicit = false, acked = false),
+        )
+        assertEquals(
+            "a close intent and identical file without writer exit are insufficient",
+            NotesOfficeReadbackDecision.MISSING_RESULT,
+            decide(result = false, explicit = false, changed = false, acked = true),
+        )
+        assertEquals(
+            "an explicit snapshot does not allow live-writer cleanup",
+            NotesOfficeReadbackDecision.MISSING_RESULT,
+            decide(result = false, acked = true),
+        )
+        assertEquals(
+            "Discard never imports an earlier saved copy",
+            NotesOfficeReadbackDecision.UNCHANGED,
+            decide(result = false, acked = true, exited = true, discarded = true),
+        )
+        assertEquals(
+            "in-memory dirty state stays unsaved even when disk still matches",
+            NotesOfficeReadbackDecision.UNSAVED_AT_CLOSE,
+            decide(result = false, explicit = false, changed = false, acked = true, exited = true, dirty = true),
         )
     }
 

@@ -2,8 +2,10 @@
 
 - 补接 Office 关闭前的文档状态回执，等待对应引擎进程结束后核对文件，再结算本次关闭。缺少证据时保留恢复副本。
 - Office 页面内的关闭按钮与返回键共用保存／放弃提示；关闭后拒绝后续页面输入。
+- 手记 Office 返回也核对关闭回执与进程退出；选择放弃时不会导入此前的另存副本。
 - Office close now carries a sealed document snapshot. The host waits for the exact engine process to exit and verifies its owned file before reconciling recovery state. Missing evidence preserves recovery data.
 - The Office page Close action follows the same save/discard guard as Back; closing mounts reject further page input.
+- Notes Office handoff also verifies the close receipt and engine exit. Discard never imports an earlier Save Copy result.
 
 ## 已知问题 / Known issues
 

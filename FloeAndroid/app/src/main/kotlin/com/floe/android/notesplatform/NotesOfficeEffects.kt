@@ -9,6 +9,9 @@ import android.content.ServiceConnection
 import android.net.Uri
 import android.os.IBinder
 import com.floe.android.core.officeengine.OfficeCloseAck
+import com.floe.android.core.officeengine.OfficeCloseAckPolicy
+import com.floe.android.core.officeengine.OfficeCloseProof
+import com.floe.android.core.officeengine.OfficePreviewActivity
 import com.floe.android.core.officeengine.OfficeEngine
 import com.floe.android.core.officeengine.OfficeEngineCommands
 import com.floe.android.core.officeengine.OfficeHostSaveChannel
@@ -67,9 +70,9 @@ import kotlinx.coroutines.withTimeoutOrNull
  * A saved snapshot is imported only after the bounded OOXML check and, on
  * return, the normal Notes resource/revision transaction. The pinned
  * last-session BYE can exit the `:floe_office` process before an Activity
- * result, so an exact OfficeCloseAck acknowledgement is recorded; a verified
- * save or an unchanged working copy may then settle honestly even though the
- * result is missing. It never imports a discarded/autosaved working copy:
+ * result. A sealed snapshot plus the exact engine's Binder death and file
+ * re-read replace that missing result; close intent alone is insufficient.
+ * It never imports a discarded/autosaved working copy:
  * without a verified save for this exact session, changed bytes stay
  * `unsavedAtClose` and are retained for recovery.
  */
@@ -126,7 +129,13 @@ internal class NotesOfficeEffects(
      * missing result belongs to a real user close of THIS mount rather than
      * an unexpected death. It never implies a clean close or a save.
      */
-    private val ackedCloses = ConcurrentHashMap<String, Long>()
+    private val ackedCloses = ConcurrentHashMap<String, OfficeCloseAckPolicy.AckRequest>()
+
+    private class PreparedClose(val receipt: OfficeCloseProof.Receipt, val lifetime: IBinder) {
+        val exited = CompletableDeferred<Unit>()
+        lateinit var death: IBinder.DeathRecipient
+    }
+    private var preparedClose: PreparedClose? = null
 
     /**
      * One verified App-owned internal working-copy snapshot per edit session,
@@ -137,16 +146,44 @@ internal class NotesOfficeEffects(
      */
     private val internalSaves = ConcurrentHashMap<String, SettledCopy>()
 
-    private val closeAck = OfficeCloseAck.parentBinder { ack ->
+    private val closeAck = OfficeCloseAck.parentBinder(onAck = { ack ->
         synchronized(activeLock) {
             val owned = !closed && activeViewing &&
                 ack.sessionToken == activeToken &&
                 ack.viewerIncarnation == activeIncarnation
             if (owned) {
-                ackedCloses[ack.sessionToken] = ack.viewerIncarnation
+                ackedCloses[ack.sessionToken] = ack
             }
             owned
         }
+    }, onPreparedClose = { receipt, lifetime ->
+        synchronized(activeLock) {
+            if (closed || !activeViewing || receipt.close.sessionToken != activeToken ||
+                receipt.close.viewerIncarnation != activeIncarnation ||
+                ackedCloses[receipt.close.sessionToken] != receipt.close
+            ) false else {
+                val previous = preparedClose
+                if (previous != null) {
+                    previous.receipt == receipt && previous.lifetime == lifetime
+                } else {
+                    val prepared = PreparedClose(receipt, lifetime)
+                    prepared.death = IBinder.DeathRecipient { prepared.exited.complete(Unit) }
+                    preparedClose = prepared
+                    try {
+                        lifetime.linkToDeath(prepared.death, 0)
+                        true
+                    } catch (_: Exception) {
+                        preparedClose = null
+                        false
+                    }
+                }
+            }
+        }
+    })
+
+    private fun releasePreparedClose() = synchronized(activeLock) {
+        preparedClose?.let { runCatching { it.lifetime.unlinkToDeath(it.death, 0) } }
+        preparedClose = null
     }
 
     override suspend fun createBlank(request: NotesOfficeCreateBlankRequest): NotesOfficeBlankOutcome {
@@ -241,6 +278,7 @@ internal class NotesOfficeEffects(
             settledCopies.clear()
             settlementSignals.clear()
             ackedCloses.clear()
+            releasePreparedClose()
             internalSaves.clear()
             synchronized(activeLock) {
                 activeToken = sessionToken
@@ -328,11 +366,25 @@ internal class NotesOfficeEffects(
                     activeIncarnation = 0L
                 }
             }
-            val userCloseAcknowledged = ackedCloses.remove(sessionToken) == activeInc
+            val userCloseAcknowledged = ackedCloses.remove(sessionToken)?.viewerIncarnation == activeInc
             val outcome = OfficeViewerOutcome.fromResultData(activityResult.data)
-            val afterSha = withContext(ioDispatcher) {
-                if (canonical.isFile) NotesPlatformFiles.sha256(canonical) else null
+            val prepared = synchronized(activeLock) {
+                preparedClose?.takeIf {
+                    it.receipt.close.sessionToken == sessionToken && it.receipt.close.viewerIncarnation == activeInc
+                }
             }
+            val processExited = prepared != null && withTimeoutOrNull(4_000L) { prepared.exited.await() } != null
+            val afterSha = withContext(ioDispatcher) {
+                if (NotesPlatformFiles.isPlainFile(canonical, NotesPlatformFiles.MAX_OFFICE_BYTES)) {
+                    NotesPlatformFiles.sha256(canonical)
+                } else null
+            }
+            val verifiedClose = prepared != null && OfficeCloseProof.matchesClosedFile(
+                prepared.receipt, processExited, afterSha, canonical.length(),
+            )
+            val discarded = (verifiedClose && prepared?.receipt?.discarded == true) ||
+                (outcome != null && outcome.sessionToken == sessionToken && outcome.closedCleanly &&
+                    activityResult.data?.getBooleanExtra(OfficePreviewActivity.EXTRA_USER_DISCARDED, false) == true)
             val digestChanged = afterSha != null && afterSha != staged.sha256
             val signal = settlementSignals[sessionToken]
             val awaited = if (signal != null) {
@@ -368,6 +420,9 @@ internal class NotesOfficeEffects(
                 explicitSaveCompleted = explicit != null,
                 validOoxml = validOoxml,
                 userCloseAcknowledged = userCloseAcknowledged,
+                snapshotAndExitVerified = verifiedClose,
+                discarded = discarded,
+                dirtyAtClose = prepared?.receipt?.dirtyAtClose == true || outcome?.dirtyAtClose == true,
             )
             when (decision) {
                 NotesOfficeReadbackDecision.SAVED -> {
@@ -399,6 +454,7 @@ internal class NotesOfficeEffects(
                 }
                 NotesOfficeReadbackDecision.UNCHANGED -> {
                     NotesPlatformFiles.deleteQuietly(work)
+                    if (discarded) explicit?.directory?.let(NotesPlatformFiles::deleteQuietly)
                     NotesOfficeEditOutcome.ClosedWithoutChanges
                 }
                 NotesOfficeReadbackDecision.UNSAVED_AT_CLOSE ->
@@ -420,6 +476,7 @@ internal class NotesOfficeEffects(
             val failure = NotesPlatformErrors.notes(error, "officeEditFailed").failure
             NotesOfficeEditOutcome.Failed(failure)
         } finally {
+            releasePreparedClose()
             synchronized(activeLock) {
                 activeViewing = false
                 activeToken = null
@@ -450,6 +507,7 @@ internal class NotesOfficeEffects(
 
     override fun close() {
         closed = true
+        releasePreparedClose()
         NotesPlatformFiles.sweepOlderThan(blankRoot, NotesPlatformFiles.CACHE_MAX_AGE_MILLIS)
         NotesPlatformFiles.sweepOlderThan(editRoot, NotesPlatformFiles.CACHE_MAX_AGE_MILLIS)
         NotesPlatformFiles.sweepOlderThan(outputRoot, NotesPlatformFiles.CACHE_MAX_AGE_MILLIS)

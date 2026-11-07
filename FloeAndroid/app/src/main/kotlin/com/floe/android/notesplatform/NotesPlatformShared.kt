@@ -548,6 +548,10 @@ internal object NotesOfficeReadbackPolicy {
      *        native BYE. It proves the user closed this mount; it never
      *        proves the document was saved and never becomes a clean-close
      *        claim.
+     * @param snapshotAndExitVerified the exact acknowledged mount sealed its
+     *        state, its engine Binder died, and its owned file matched on re-read
+     * @param discarded an explicit discard from that verified current close
+     * @param dirtyAtClose native dirty state, including unflushed in-memory edits
      */
     fun decide(
         resultPresent: Boolean,
@@ -558,72 +562,35 @@ internal object NotesOfficeReadbackPolicy {
         explicitSaveCompleted: Boolean,
         validOoxml: Boolean,
         userCloseAcknowledged: Boolean = false,
+        snapshotAndExitVerified: Boolean = false,
+        discarded: Boolean = false,
+        dirtyAtClose: Boolean = false,
     ): NotesOfficeReadbackDecision {
-        val closeOnlyFailure = failureCode != null && failureCode in CLOSE_BYPASS_FAILURES
-        // 1. A verified, freshly serialized save is the only positive outcome.
-        if (explicitSaveCompleted) {
-            if (!validOoxml) return NotesOfficeReadbackDecision.INVALID_SAVED_COPY
-            if (!resultPresent) {
-                // Normal case: the native process exited after BYE and no
-                // result arrived. The App already proved the exact bytes
-                // and the user close was acknowledged for this mount.
-                return if (userCloseAcknowledged) {
-                    NotesOfficeReadbackDecision.SAVED
-                } else {
-                    NotesOfficeReadbackDecision.MISSING_RESULT
-                }
-            }
-            if (!tokenMatches) return NotesOfficeReadbackDecision.STALE_RESULT
-            if (failureCode == null && closedCleanly) return NotesOfficeReadbackDecision.SAVED
-            // A close-transport failure AFTER the exact user close does not
-            // invalidate the bytes the App already verified.
-            if (userCloseAcknowledged && (failureCode == null || closeOnlyFailure)) {
-                return NotesOfficeReadbackDecision.SAVED
-            }
-            return if (failureCode != null) {
-                NotesOfficeReadbackDecision.EDITOR_FAILED
-            } else {
-                NotesOfficeReadbackDecision.EDITOR_UNCLEAN
-            }
-        }
-        // 2. No verified save: an acknowledged user close may still be a
-        // plain return (unchanged) or a Discard; a change is never imported.
-        if (!resultPresent) {
+        if (resultPresent && !tokenMatches) return NotesOfficeReadbackDecision.STALE_RESULT
+        val realCleanResult = resultPresent && tokenMatches && closedCleanly && failureCode == null
+        val verifiedExit = userCloseAcknowledged && snapshotAndExitVerified &&
+            (failureCode == null || failureCode in CLOSE_BYPASS_FAILURES)
+        if (!realCleanResult && !verifiedExit) {
             return when {
-                !userCloseAcknowledged -> NotesOfficeReadbackDecision.MISSING_RESULT
-                !digestChanged -> NotesOfficeReadbackDecision.UNCHANGED
-                else -> NotesOfficeReadbackDecision.UNSAVED_AT_CLOSE
+                !resultPresent -> NotesOfficeReadbackDecision.MISSING_RESULT
+                failureCode != null -> NotesOfficeReadbackDecision.EDITOR_FAILED
+                else -> NotesOfficeReadbackDecision.EDITOR_UNCLEAN
             }
         }
-        if (!tokenMatches) return NotesOfficeReadbackDecision.STALE_RESULT
-        if (failureCode != null) {
-            return if (userCloseAcknowledged && closeOnlyFailure) {
-                if (!digestChanged) {
-                    NotesOfficeReadbackDecision.UNCHANGED
-                } else {
-                    NotesOfficeReadbackDecision.UNSAVED_AT_CLOSE
-                }
-            } else {
-                NotesOfficeReadbackDecision.EDITOR_FAILED
-            }
-        }
-        if (!closedCleanly) {
-            return if (userCloseAcknowledged) {
-                if (!digestChanged) {
-                    NotesOfficeReadbackDecision.UNCHANGED
-                } else {
-                    NotesOfficeReadbackDecision.UNSAVED_AT_CLOSE
-                }
-            } else {
-                NotesOfficeReadbackDecision.EDITOR_UNCLEAN
-            }
-        }
-        return if (!digestChanged) {
-            NotesOfficeReadbackDecision.UNCHANGED
+        // Discard applies to this edit, even if an earlier Save Copy produced
+        // an output. It never imports that earlier snapshot into the Note.
+        if (discarded) return NotesOfficeReadbackDecision.UNCHANGED
+        if (explicitSaveCompleted) return if (validOoxml) {
+            NotesOfficeReadbackDecision.SAVED
         } else {
-            // A changed working copy with no verified save is a Discard or an
-            // autosave we cannot prove; never import it.
+            NotesOfficeReadbackDecision.INVALID_SAVED_COPY
+        }
+        // A native dirty flag also protects edits still held only in memory;
+        // equality of the on-disk working copy cannot prove them saved.
+        return if (digestChanged || dirtyAtClose) {
             NotesOfficeReadbackDecision.UNSAVED_AT_CLOSE
+        } else {
+            NotesOfficeReadbackDecision.UNCHANGED
         }
     }
 }
