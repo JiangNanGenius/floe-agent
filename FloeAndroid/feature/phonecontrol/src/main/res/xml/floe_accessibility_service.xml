@@ -7,7 +7,7 @@
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/phonecontrol_service_description"
-    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowsChanged|typeWindowContentChanged|typeViewScrolled|typeViewClicked|typeTouchInteractionStart|typeTouchInteractionEnd"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowsChanged|typeWindowContentChanged|typeViewTextChanged|typeViewTextSelectionChanged|typeViewScrolled|typeViewClicked|typeTouchInteractionStart|typeTouchInteractionEnd"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:notificationTimeout="100"
     android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"

@@ -47,7 +47,11 @@ class PhoneControlAccessibilityService : AccessibilityService() {
                 packageName = event.packageName?.toString(),
             )
 
-            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> session.onContentChanged()
+            // Editable fields can emit text/selection events without a window
+            // content event. They affect settling, never read event.text here.
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
+            AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED -> session.onContentChanged()
 
             // Programmatic and user scrolls/clicks both arrive here. The
             // session suppresses the short window around its own dispatch;

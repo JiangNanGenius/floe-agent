@@ -92,6 +92,7 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
         var nodeLimited: Boolean = false,
         var depthLimited: Boolean = false,
         var hasSensitiveField: Boolean = false,
+        var obsoleteNode: Boolean = false,
     )
 
     @Suppress("DEPRECATION")
@@ -102,8 +103,15 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
         keyguardLocked: Boolean,
     ): PhoneControlCapture? {
         val req = request.normalized()
+        // A quiet event stream does not prove the framework cache is fresh.
+        // Samsung's calculator returned the preceding formula after accepted
+        // input. Invalidate the service cache before an explicit observation;
+        // older systems refresh the bounded visited nodes from their source.
+        val cacheCleared = Build.VERSION.SDK_INT >= 33 &&
+            runCatching { service.clearCache() }.getOrDefault(false)
         val root = service.rootInActiveWindow ?: return null
         try {
+            if (!cacheCleared && !runCatching { root.refresh() }.getOrDefault(false)) return null
             val windowId = root.windowId
             val packageName = root.packageName?.toString()
             val navigationOnly = PhoneControlPolicy.isFloePackage(packageName)
@@ -156,9 +164,13 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
                 depth = 0,
                 redactAllText = preProtected,
                 request = req,
+                refreshFromSource = !cacheCleared,
                 out = raw,
                 stats = stats,
             )
+            // An obsolete source is an unavailable capture, never a partial
+            // tree presented as the verified effect of the previous action.
+            if (stats.obsoleteNode) return null
 
             val protectedWindow = PhoneControlPolicy.isProtectedWindow(
                 packageName = packageName,
@@ -222,11 +234,19 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
         depth: Int,
         redactAllText: Boolean,
         request: PhoneControlObserveRequest,
+        refreshFromSource: Boolean,
         out: MutableList<PhoneControlRawNode>,
         stats: ReadStats,
     ) {
+        if (stats.obsoleteNode) return
         if (out.size >= request.maxNodes) {
             stats.nodeLimited = true
+            return
+        }
+        // The root was already refreshed before its identity/privacy checks.
+        if (refreshFromSource && path.isNotEmpty() &&
+            !runCatching { node.refresh() }.getOrDefault(false)) {
+            stats.obsoleteNode = true
             return
         }
         val viewId = runCatching { node.viewIdResourceName }.getOrNull()
@@ -265,6 +285,7 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
         }
         val childCount = runCatching { node.childCount }.getOrDefault(0)
         for (index in 0 until childCount) {
+            if (stats.obsoleteNode) return
             if (out.size >= request.maxNodes) {
                 stats.nodeLimited = true
                 return
@@ -278,6 +299,7 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
                     depth = depth + 1,
                     redactAllText = redactAllText,
                     request = request,
+                    refreshFromSource = refreshFromSource,
                     out = out,
                     stats = stats,
                 )
