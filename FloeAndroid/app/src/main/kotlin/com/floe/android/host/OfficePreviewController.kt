@@ -608,7 +608,7 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                 }
                 op.recoveryCandidateId = candidateId
                 if (!com.floe.android.host.officecomponent.OfficeComponentController.installed(context) && current(op)) {
-                    (context.applicationContext as? FloeApplication)?.componentDocumentReturns?.prepare(
+                    (context.applicationContext as? com.floe.android.FloeApplication)?.componentDocumentReturns?.prepare(
                         "officepreview", owner.taskID, owner.workspaceID, path)
                 }
                 prepare(op, OfficePreviewRequest.of(
