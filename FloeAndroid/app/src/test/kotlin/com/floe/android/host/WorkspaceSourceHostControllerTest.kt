@@ -789,16 +789,34 @@ class WorkspaceSourceHostControllerTest {
         assertEquals(0, backend.releaseCalls)
         // Unknown references are never releasable (durable-rows gate).
         assertEquals("unbound", lane.revoke("content://other/tree/9/document/1").status)
-        // With no unfinished receipt and a pick THIS gateway instance
-        // persisted (then dropped), release runs through the broker.
+        // With no unfinished receipt, explicit revoke must retire THIS
+        // idle pick reference itself; users need no hidden Clear step.
         channel.recoveryPageBody = """{"ok":1,"rows":[]}"""
         lane.refresh()
         val issued = lane.requestPick(PickKind.OPEN_DOCUMENT, PickPurpose.IMPORT)!!
         lane.onPickerResult(issued, bound, FLAG_READ or FLAG_PERSISTABLE)
-        lane.clearAccepted() // drops this lane's references; OS grant stands
         val released = lane.revoke(bound)
         assertEquals(released.detail, "ok", released.status)
         assertEquals(1, backend.releaseCalls) // READ only (WRITE never granted)
+        assertNull(lane.state.value.accepted)
+    }
+
+    @Test
+    fun revokeRetiresOwnPickButPreservesAnotherConsumer() = runBlocking {
+        val bound = "content://com.floe.testprovider/tree/1/document/revoke-owned-selection"
+        channel.sourcePageBody = """{"ok":1,"rows":[{"id":"row-owned","kind":"saf","path":"docs/owned.txt","reference":"$bound","documentID":"revoke-owned-selection","sha256":"","revision":"rev-1"}]}"""
+        channel.recoveryPageBody = """{"ok":1,"rows":[]}"""
+        val lane = laneFor(controller())
+        lane.refresh()
+        acceptImportPick(lane, bound)
+        val other = SharedUriGrantAuthority.broker.retain(SafUriRef(bound), SafAccessFlag.READ)
+        try {
+            assertEquals("retained", lane.revoke(bound).status)
+            assertEquals(0, backend.releaseCalls)
+            assertNull(lane.state.value.accepted)
+        } finally { other.close() }
+        assertEquals("ok", lane.revoke(bound).status)
+        assertEquals(1, backend.releaseCalls)
     }
 
     @Test

@@ -14,7 +14,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
+import com.floe.android.design.detectFloeTwoFingerTransforms
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -692,7 +692,7 @@ private fun RdpViewerPage(
                     }
                 }
                 .pointerInput(session.sessionID) {
-                    detectTransformGestures { centroid, pan, gestureZoom, _ ->
+                    detectFloeTwoFingerTransforms(onTakeover = actions.onReleaseAll) { centroid, pan, gestureZoom ->
                         if (zoom <= 1.001f && abs(gestureZoom - 1f) < 0.02f && abs(pan.y) >= 1f) {
                             rdpMapPoint(currentTransform, centroid.x, centroid.y)?.let { point ->
                                 actions.onWheel(

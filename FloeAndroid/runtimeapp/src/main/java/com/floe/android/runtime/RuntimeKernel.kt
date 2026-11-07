@@ -137,7 +137,18 @@ class RuntimeKernel(context: Context) {
             require(request.payload.keys().asSequence().toSet() == setOf("requestID"))
             val id = request.payload.getString("requestID")
             return synchronized(receipts) {
-                receipts[id]?.let { JSONObject(it.toString()) }
+                receipts[id]?.let { receipt ->
+                    JSONObject(receipt.toString()).also { snapshot ->
+                        if (receipt.optString("state") == "failed") {
+                            // The same positive ownership set used to retire
+                            // foreground permits includes pending admissions,
+                            // retained failed leases and deferred exports.
+                            // A sibling workload must not hold a failed start
+                            // open after THIS exact request has really drained.
+                            snapshot.put("requestReleased", id !in ownedRequestIDs())
+                        }
+                    }
+                }
                     ?: JSONObject().put("state", "unknown")
             }
         }
@@ -281,6 +292,10 @@ class RuntimeKernel(context: Context) {
                     // reach these keys, and nothing here is a new reader,
                     // registry or authority: it is the same transient receipt.
                     val failed = JSONObject().put("state", "failed").put("code", "operation_failed")
+                    if (traceStart) startFailureCode(failure)?.let {
+                        failed.put("startFailureCode", it)
+                        android.util.Log.i("FloeLinuxStart", "START_FAILURE:$it")
+                    }
                     (failure as? com.floe.android.workspacebridge.WorkspaceBridgeException)
                         ?.let { bridge ->
                             failedStartReceiptAddenda(bridge.code, bridge.recovery?.toString())?.let {
@@ -417,6 +432,26 @@ class RuntimeKernel(context: Context) {
     }
 
     companion object {
+        /** Closed diagnostic vocabulary; never log an exception message,
+         * path, command, identifier or arbitrary provider/native text. */
+        internal fun startFailureCode(failure: Exception): String? {
+            if (failure is com.floe.android.workspacebridge.WorkspaceBridgeException) {
+                return failure.code.takeIf { it in setOf(
+                    "grantClosed", "grantIdentityMismatch", "operationNoLongerOwned", "nativeUnavailable",
+                    "grantInternal", "baselineUnavailable", "sessionKeyInvalid", "journalUnavailable",
+                    "journalCollision", "newInputPathUnavailable", "snapshotPathUnsafe", "snapshotDataMissing",
+                    "snapshotHeaderMismatch", "snapshotTableShort", "snapshotMalformed", "budgetExceeded",
+                    "diskReserveUnmet", "transportUncertain", "nativeRejected", "importCancelled", "importFailed",
+                ) } ?: "workspace_transfer_failed"
+            }
+            return when (failure.message) {
+                "workspaceOwnerUnavailable" -> "workspace_owner_unavailable"
+                "newWorkspaceInputsUnavailable" -> "workspace_inputs_unavailable"
+                "workspaceIdentityChanged" -> "workspace_identity_changed"
+                else -> null
+            }
+        }
+
         /** Real single-workload engine contract (single-slot executor plus
          *  the exclusive-start admission above). Ingested as a FACT only
          *  while the engine additionally reports itself idle. */

@@ -790,6 +790,21 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                             else -> Stage.PUMP_WATCH_UNKNOWN
                         }
                         if (emittedStages.add(stage)) RuntimeExecutionTrace.mark(stage)
+                        if (failedStartClaim != null &&
+                            isReleasedFailedStartReceipt(receipt.toString(), owned.controlID)) {
+                            // This exact request has no pending admission,
+                            // retained lease or export. Siblings may remain
+                            // active: their global quiescence is irrelevant to
+                            // this never-started claim. finish still drains and
+                            // closes THIS Core grant before its failure reply.
+                            owned.latency.mark(LinuxTerminalLatency.Phase.SETTLE)
+                            owned.latency.publish(LinuxTerminalLatency.TERMINAL_FAILED)
+                            owned.finish(JSONObject().put("state", "not_started")
+                                .put("requestID", owned.controlID))
+                            complete(failedStartClaim, 1, failedStartProof(owned, "runtime_start_failed"))
+                            RuntimeExecutionTrace.mark(Stage.PUMP_FINISHED)
+                            return@withContext
+                        }
                         if (receipt.optString("state") == "completed") {
                             owned.sessionID = receipt.getJSONObject("result").getString("sessionID")
                         }
@@ -1762,6 +1777,18 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             "restoredPriorChanges", "revertedNewEntries", "retainedFailures",
         )
         private const val FAILED_START_MAX_EVIDENCE_BYTES = 4_096
+
+        /** A genuine same-request failed terminal AND its runtime-owned
+         * retirement bit are required; an old peer, unknown receipt, string
+         * "true", another id or a still-retained start cannot release work. */
+        internal fun isReleasedFailedStartReceipt(receiptJson: String, controlID: String): Boolean {
+            val value = runCatching {
+                kotlinx.serialization.json.Json.parseToJsonElement(receiptJson) as? JsonObject
+            }.getOrNull() ?: return false
+            return value.stringValue("state") == "failed" &&
+                value.stringValue("requestID") == controlID &&
+                (value["requestReleased"] as? JsonPrimitive)?.let { !it.isString && it.content == "true" } == true
+        }
 
         /** Strict closed-grammar capture of the kernel failed terminal for
          *  exactly [controlID]. Returns null for ANY violation (wrong state,

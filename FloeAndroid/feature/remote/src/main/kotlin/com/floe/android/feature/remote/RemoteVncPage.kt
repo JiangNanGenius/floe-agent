@@ -12,7 +12,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -66,6 +65,7 @@ import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeText
 import com.floe.android.design.FloeToolbar
 import com.floe.android.design.IconGlyph
+import com.floe.android.design.detectFloeTwoFingerTransforms
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -290,7 +290,7 @@ fun RemoteVncViewerPage(
                     }
                 }
                 .pointerInput(vnc.sessionID) {
-                    detectTransformGestures { centroid, pan, gestureZoom, _ ->
+                    detectFloeTwoFingerTransforms(onTakeover = onReleaseAll) { centroid, pan, gestureZoom ->
                         if (zoom <= 1.001f && abs(gestureZoom - 1f) < 0.02f &&
                             abs(pan.y) >= 1f
                         ) {

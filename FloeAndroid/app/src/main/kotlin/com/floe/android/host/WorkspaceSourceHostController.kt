@@ -250,6 +250,10 @@ internal class WorkspaceSourceHostController(
         @Volatile private var ownerFence: () -> Boolean = initialOwner
         @Volatile private var activeOperation: SafOperation<*>? = null
         @Volatile private var pickReferences: List<SafSharedGrantBroker.Lease> = emptyList()
+        /** Assigned with the retained references, independently of the later
+         * UI projection, so a concurrent picker callback cannot drop a newer
+         * selection while revoking an older durable source. */
+        private var pickReferenceUri: String? = null
 
         private val ui = MutableStateFlow(WorkspaceSourceLaneState())
         val state: StateFlow<WorkspaceSourceLaneState> = ui
@@ -289,11 +293,15 @@ internal class WorkspaceSourceHostController(
             ui.value = transform(ui.value)
         }
 
-        private fun closePickReferences() {
-            val references = pickReferences
-            pickReferences = emptyList()
-            references.asReversed().forEach { runCatching { it.release() } }
-        }
+        private fun closePickReferences(reference: String? = null) =
+            SharedUriGrantAuthority.withExclusiveAuthority {
+                if (reference == null || pickReferenceUri == reference) {
+                    val references = pickReferences
+                    pickReferences = emptyList()
+                    pickReferenceUri = null
+                    references.asReversed().forEach { runCatching { it.release() } }
+                }
+            }
 
         private inline fun <R> whenIdle(body: () -> R): R? =
             if (!stopped.get() && busy.compareAndSet(false, true)) body() else null
@@ -415,6 +423,7 @@ internal class WorkspaceSourceHostController(
                     }
                     closePickReferences()
                     pickReferences = references
+                    pickReferenceUri = outcome.uri.uriString
                 }
                 outcome
             }
@@ -1454,6 +1463,13 @@ internal class WorkspaceSourceHostController(
                         }
                         val service = gateway() ?: return@guardedRun RUNTIME_UNAVAILABLE
                         val release = SharedUriGrantAuthority.withExclusiveAuthority {
+                            // This idle lane's picker selection is not an
+                            // independent consumer. Retire only its reference
+                            // to the explicitly revoked URI before asking the
+                            // broker. Real IO/other features remain retained.
+                            closePickReferences(reference)
+                            mutate { state -> if (state.accepted?.uri == reference)
+                                state.copy(accepted = null) else state }
                             service.grants.requestRelease(SafUriRef(reference),
                                                           setOf(SafAccessFlag.READ, SafAccessFlag.WRITE))
                         }
