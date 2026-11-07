@@ -13,6 +13,7 @@ struct BiologySequenceView:View {
     @State private var page=0
     private var record:SequenceRecord? {records.indices.contains(recordIndex) ? records[recordIndex]:nil}
     var body:some View {
+        ScrollView {
         VStack(alignment:.leading,spacing:16) {
             BiologyChoiceField(title:biologyText("Record","记录"),selection:$recordIndex,value:record?.name ?? biologyText("Choose record","选择记录"),identifier:"biology.sequenceRecord") {
                 ForEach(Array(records.enumerated()),id:\.element.id) { i,r in Text(r.name).tag(i) }
@@ -45,7 +46,8 @@ struct BiologySequenceView:View {
                     ForEach(record.annotations.prefix(12)) { a in HStack {Text(a.name);Spacer();Text("\(a.start+1)…\(a.end) "+(a.strand<0 ? "←":"→")).monospacedDigit()}.font(.caption) }
                 }
             }
-        }.padding(BiologyStyle.spacing).frame(maxWidth:960,maxHeight:.infinity,alignment:.topLeading).frame(maxWidth:.infinity).background(BiologyStyle.background)
+        }.padding(BiologyStyle.spacing).frame(maxWidth:BiologyStyle.contentWidth,alignment:.topLeading).frame(maxWidth:.infinity)
+        }.background(BiologyStyle.background)
         .onChange(of:recordIndex){_,_ in page=0}
         .onChange(of:selectedRange,initial:true){_,range in if let range{page=range.lowerBound/2000}}
     }
@@ -62,6 +64,7 @@ struct BiologySequenceView:View {
             var baseline=Path();baseline.move(to:.init(x:16,y:y));baseline.addLine(to:.init(x:size.width-16,y:y))
             context.stroke(baseline,with:.color(.secondary.opacity(0.6)),lineWidth:1)
             for tick in 0...4 {let x=16+CGFloat(tick)/4*(size.width-32);var line=Path();line.move(to:.init(x:x,y:y));line.addLine(to:.init(x:x,y:y+5));context.stroke(line,with:.color(.secondary),lineWidth:1);context.draw(Text(String(max(1,Int(Double(tick)/4*Double(r.sequence.count))))).font(.caption2).foregroundStyle(.primary),at:.init(x:x,y:y+17))}
+            if r.annotations.isEmpty {context.draw(Text(biologyText("No annotated features","暂无注释区域")).font(.caption).foregroundStyle(.secondary),at:.init(x:16,y:55),anchor:.leading)}
             for (i,a) in r.annotations.prefix(8).enumerated() {
                 let rect=CGRect(x:16+CGFloat(a.start)/CGFloat(count)*(size.width-32),y:CGFloat(i)*24+40,width:max(3,CGFloat(a.end-a.start)/CGFloat(count)*(size.width-32)),height:12)
                 context.fill(Path(roundedRect:rect,cornerRadius:3),with:.color(a.strand<0 ? .orange:.teal))
@@ -140,6 +143,7 @@ struct BiologyMatrixView:View {
     @State private var gene=0
     @State private var cell=0
     var body:some View {
+        ScrollView {
         VStack(alignment:.leading,spacing:20) {
             BiologySectionHeading(title:biologyText("Expression matrix","表达矩阵"),detail:"\(matrix.geneIDs.count) × \(matrix.cellIDs.count)")
             let rows=min(40,matrix.geneIDs.count),columns=min(24,matrix.cellIDs.count),maximum=max(matrix.values.max() ?? 1,1),selectedGene=gene,selectedCell=cell
@@ -157,18 +161,24 @@ struct BiologyMatrixView:View {
                 for j in Swift.stride(from:0,to:columns,by:max(1,Int(ceil(56/(width/CGFloat(columns)))))) {context.draw(Text(String(matrix.cellIDs[j].prefix(8))).font(.caption2).foregroundStyle(.primary),at:.init(x:left+(CGFloat(j)+0.5)*width/CGFloat(columns),y:top+height+12),anchor:.top)}
             }.frame(height:min(440,max(220,CGFloat(rows)*32+58))).biologyCanvas().accessibilityLabel(biologyText("Expression heatmap","表达热图")).accessibilityIdentifier("biology.matrixHeatmap")
             HStack {Text("0");Rectangle().fill(LinearGradient(colors:[.teal.opacity(0.08),.teal],startPoint:.leading,endPoint:.trailing)).frame(width:100,height:7);Text(maximum.formatted(.number.precision(.significantDigits(1...4))));Spacer();Text(biologyText("Genes × cells","基因 × 细胞"))}.font(.caption).foregroundStyle(.secondary).monospacedDigit()
-            HStack(spacing:24) {
-                BiologyChoiceField(title:biologyText("Gene","基因"),selection:$gene,value:matrix.geneIDs.indices.contains(gene) ? matrix.geneIDs[gene]:"",identifier:"biology.geneField"){ForEach(matrix.geneIDs.indices,id:\.self){Text(matrix.geneIDs[$0]).tag($0)}}.frame(maxWidth:.infinity)
-                BiologyChoiceField(title:biologyText("Cell","细胞"),selection:$cell,value:matrix.cellIDs.indices.contains(cell) ? matrix.cellIDs[cell]:"",identifier:"biology.cellField"){ForEach(matrix.cellIDs.indices,id:\.self){Text(matrix.cellIDs[$0]).tag($0)}}.frame(maxWidth:.infinity)
-            }.frame(minHeight:44)
+            ViewThatFits(in:.horizontal){
+                HStack(alignment:.top,spacing:16){geneField.frame(minWidth:220);cellField.frame(minWidth:220)}
+                VStack(alignment:.leading,spacing:16){geneField;cellField}
+            }
             if matrix.geneIDs.indices.contains(gene),matrix.cellIDs.indices.contains(cell){LabeledContent{Text(matrix.values[gene*matrix.cellIDs.count+cell].formatted()).foregroundStyle(.primary).fontWeight(.medium)}label:{Text(biologyText("Selected value","选中值"))}.font(.subheadline).monospacedDigit().accessibilityElement(children:.combine).accessibilityLabel(biologyText("Selected value","选中值")).accessibilityValue(matrix.values[gene*matrix.cellIDs.count+cell].formatted()).accessibilityIdentifier("biology.matrixSelectedValue")}
             if matrix.geneIDs.count>40 || matrix.cellIDs.count>24 {BiologyViewFootnote(text:biologyText("Preview: 40 gene rows × 24 cell columns. Export includes the full matrix.","预览 40 行基因 × 24 列细胞，导出包含完整矩阵。"))}
-            Spacer(minLength:0)
-        }.padding(BiologyStyle.spacing).frame(maxWidth:960).frame(maxWidth:.infinity).background(BiologyStyle.background)
+        }.padding(BiologyStyle.spacing).frame(maxWidth:BiologyStyle.contentWidth).frame(maxWidth:.infinity)
+        }.background(BiologyStyle.background)
         .onChange(of:selection,initial:true){_,s in
             if let id=s?["genes"]?.array?.first?.string,let i=matrix.geneIDs.firstIndex(of:id){gene=i}
             if let id=s?["cells"]?.array?.first?.string,let i=matrix.cellIDs.firstIndex(of:id){cell=i}
         }
+    }
+    private var geneField:some View {
+        BiologyChoiceField(title:biologyText("Gene","基因"),selection:$gene,value:matrix.geneIDs.indices.contains(gene) ? matrix.geneIDs[gene]:"",identifier:"biology.geneField"){ForEach(matrix.geneIDs.indices,id:\.self){Text(matrix.geneIDs[$0]).tag($0)}}.frame(maxWidth:.infinity)
+    }
+    private var cellField:some View {
+        BiologyChoiceField(title:biologyText("Cell","细胞"),selection:$cell,value:matrix.cellIDs.indices.contains(cell) ? matrix.cellIDs[cell]:"",identifier:"biology.cellField"){ForEach(matrix.cellIDs.indices,id:\.self){Text(matrix.cellIDs[$0]).tag($0)}}.frame(maxWidth:.infinity)
     }
 }
 struct BiologyNetworkView:View {
@@ -202,18 +212,12 @@ struct BiologyNetworkView:View {
             }.frame(height:network.species.count>8 ? 520:network.species.count>4 ? 360:260).biologyCanvas()
             if network.species.count>16 {Text(biologyText("Graph shows the first 16 species; the model retains every species.","图中显示前 16 个物种，模型保留完整数据。")).font(.caption)}
             if let result,result.columns.first=="time" {
-                Chart {
-                    ForEach(Array(result.columns.dropFirst().enumerated()),id:\.offset){j,name in
-                        ForEach(Array(result.rows.enumerated()),id:\.offset){_,row in
-                            if row.count>j+1 {LineMark(x:.value("Time",row[0]),y:.value("Amount",row[j+1])).foregroundStyle(by:.value("Species",name))}
-                        }
-                    }
-                }.chartXAxisLabel(network.timeUnit).chartYAxisLabel(network.amountUnit).chartPlotStyle{$0.background(BiologyStyle.canvas)}.frame(height:220).padding(.vertical,8)
+                BiologyTimeCoursePlot(result:result,timeUnit:network.timeUnit,amountUnit:network.amountUnit)
             }
             ForEach(network.reactions){r in
                 HStack {Text(r.reactants.keys.sorted().map{"\($0) × \(r.reactants[$0]!)"}.joined(separator:" + ")+" → "+r.products.keys.sorted().map{"\($0) × \(r.products[$0]!)"}.joined(separator:" + "));Spacer();Text("k = "+r.rateConstant.formatted()).monospacedDigit()}.font(.subheadline).padding(.vertical,10)
             }
-        }.padding(BiologyStyle.spacing).frame(maxWidth:960).frame(maxWidth:.infinity).background(BiologyStyle.background)
+        }.padding(BiologyStyle.spacing).frame(maxWidth:BiologyStyle.contentWidth).frame(maxWidth:.infinity).background(BiologyStyle.background)
     }
 }
 #endif

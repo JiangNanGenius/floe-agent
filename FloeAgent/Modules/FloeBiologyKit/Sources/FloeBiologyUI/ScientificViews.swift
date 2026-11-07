@@ -142,7 +142,7 @@ func biologyViewCompute<T:Sendable>(_ body:@escaping @Sendable ()throws->T) asyn
             if let volume {
                 if surface {
                     ViewThatFits(in:.horizontal) {
-                        HStack(spacing:16){isovalueField;samplingControl;fitButton}
+                        HStack(alignment:.bottom,spacing:16){isovalueField;samplingControl;fitButton}
                         VStack(spacing:12){isovalueField;HStack{samplingControl;fitButton}}
                     }.font(.subheadline)
                     if let scene {BiologyMeshScene(scene:scene,resetToken:resetToken).biologyCanvas().accessibilityIdentifier("biology.densitySurface")}
@@ -162,8 +162,15 @@ func biologyViewCompute<T:Sendable>(_ body:@escaping @Sendable ()throws->T) asyn
         .onChange(of:axis){_,_ in if let volume{index=min(index,volume.dimensions[axis]-1)}}
         .onChange(of:selection){_,s in if let volume{axis=min(2,max(0,Int(s?["axis"]?.number ?? 2)));index=min(volume.dimensions[axis]-1,max(0,Int(s?["index"]?.number ?? 0)))}}
     }
-    private var isovalueField:some View{LabeledContent(biologyText("Isovalue","等值")){TextField(biologyText("Isovalue","等值"),value:$isovalue,format:.number.precision(.significantDigits(1...4))).textFieldStyle(.roundedBorder).frame(maxWidth:140).monospacedDigit()}}
-    private var samplingControl:some View{Stepper(biologyText("Sampling ","采样间隔 ")+String(stride),value:$stride,in:1...32)}
+    private var isovalueField:some View {
+        TextField("",value:$isovalue,format:.number.precision(.significantDigits(1...4))).keyboardType(.decimalPad).biologyNamedInput(biologyText("Isovalue","等值")).frame(maxWidth:240)
+    }
+    private var samplingControl:some View {
+        VStack(alignment:.leading,spacing:8){
+            Text(biologyText("Sampling","采样")).font(.subheadline)
+            Stepper(String(stride),value:$stride,in:1...4).frame(minHeight:44)
+        }
+    }
     private var fitButton:some View{Button{resetToken+=1}label:{Image(systemName:"arrow.up.left.and.arrow.down.right").frame(width:44,height:44)}.buttonStyle(BiologyControlButtonStyle(compact:true)).accessibilityLabel(biologyText("Fit","适合窗口"))}
     private func redraw() async {
         guard let volume else {return};error=nil

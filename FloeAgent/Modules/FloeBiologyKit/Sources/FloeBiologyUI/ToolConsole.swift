@@ -31,14 +31,17 @@ import FloeBiologyEngine
                         TextEditor(text:$arguments).focused($editingArguments).font(.system(.callout,design:.monospaced)).autocorrectionDisabled().textInputAutocapitalization(.never).frame(minHeight:140).biologyInputSurface().accessibilityIdentifier("biology.toolArguments")
                     }header:{HStack{Text(biologyText("Arguments · JSON","参数 · JSON"));Spacer();Button{editingArguments=false;arguments=""}label:{Text(biologyText("Clear","清空")).frame(minWidth:44,minHeight:44)}.buttonStyle(BiologyControlButtonStyle()).accessibilityIdentifier("biology.clearToolArguments")}}
                     HStack {
-                        Button(biologyText("Run tool","执行工具")){run()}.buttonStyle(.borderedProminent).controlSize(.large).disabled(task != nil).frame(minHeight:44).accessibilityIdentifier("biology.toolRun")
+                        Button(biologyText("Run tool","执行工具")){run()}.buttonStyle(BiologyPrimaryButtonStyle()).disabled(task != nil).frame(minHeight:44).accessibilityIdentifier("biology.toolRun")
                         Spacer()
                         if task != nil {ProgressView();Button(biologyText("Stop waiting","停止等待")){task?.cancel()}.buttonStyle(BiologyControlButtonStyle())}
                     }.frame(minHeight:44)
                     if !phase.isEmpty {Text(phase).font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("biology.toolPhase")}
                 } else {Text(biologyText("Connect the host's task tools to operate this project.","接通宿主的任务工具后，可在这里操作项目。")).foregroundStyle(.secondary)}
                 if let error {Section{Text(error).foregroundStyle(.secondary).textSelection(.enabled)}}
-                if !output.isEmpty {Section(biologyText("Actual response","实际返回")){Text(output).font(.system(.caption,design:.monospaced)).textSelection(.enabled).accessibilityIdentifier("biology.toolResponse")}}
+                if !output.isEmpty {Section(biologyText("Actual response","实际返回")){
+                    ScrollView{Text(output).font(.system(.callout,design:.monospaced)).textSelection(.enabled).frame(maxWidth:.infinity,alignment:.leading).accessibilityIdentifier("biology.toolResponse")}
+                        .frame(height:300).biologyInputSurface()
+                }}
             }.navigationTitle(biologyText("Automation tools","自动化工具")).navigationBarTitleDisplayMode(.inline)
             .navigationDestination(isPresented:$choosingTool){List(descriptors,id:\.name){item in Button{name=item.name;choosingTool=false}label:{HStack{Text(item.name);Spacer();if item.name==name{Image(systemName:"checkmark")}}.frame(minHeight:44)}.accessibilityIdentifier("biology.toolChoice."+item.name)}.navigationTitle(biologyText("Choose tool","选择工具"))}
             .toolbar{ToolbarItem(placement:.confirmationAction){Button(biologyText("Done","完成")){dismiss()}}}
@@ -88,7 +91,7 @@ import FloeBiologyEngine
                 HStack {Stepper(biologyText("Series ","序列 ")+String(series+1),value:$series,in:0...1024);Stepper(biologyText("Level ","层级 ")+String(level),value:$level,in:0...64)}
                 HStack {Stepper("C \(channel+1)",value:$channel,in:0...31);Stepper("Z \(slice+1)",value:$slice,in:0...511);Stepper("T \(frame+1)",value:$frame,in:0...511)}
                 HStack {TextField("X",value:$x,format:.number).biologyNamedInput("X");TextField("Y",value:$y,format:.number).biologyNamedInput("Y");BiologyChoiceField(title:biologyText("Tile size","图块大小"),selection:$size,value:String(size)){ForEach([128,256,512,1024],id:\.self){Text(String($0)).tag($0)}}}
-                Button(biologyText("Read region","读取区域")){Task{await read()}}.buttonStyle(.borderedProminent).controlSize(.large).disabled(busy || environment.isEmpty || executionOwner==nil)
+                Button(biologyText("Read region","读取区域")){Task{await read()}}.buttonStyle(BiologyPrimaryButtonStyle()).disabled(busy || environment.isEmpty || executionOwner==nil)
                 if environment.isEmpty || executionOwner==nil {Text(biologyText("Connect a compute environment to read this image. The original is saved.","接通计算环境后即可读取图像，原件已保存。")).foregroundStyle(.secondary)}
                 if let error {Text(error).font(.caption).textSelection(.enabled)}
             }.frame(maxHeight:300)

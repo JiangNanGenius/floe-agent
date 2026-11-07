@@ -26,6 +26,12 @@ Swift 6; iOS/iPadOS 26+, core/engine on macOS 15+. No external Swift dependency 
 
 There are 21 native and 32 optional mature methods. Available methods are filtered by the actual format and installed-engine probe. All previews/results are bounded; originals retain exact bytes. A derived asset records the source result/revision/digest and rejects stale data. Sequence edits invalidate overlapping annotations and measured quality. No secondary structure, density, measurements or provider answers are fabricated.
 
+## Workbench layout
+
+The iPad workbench keeps the dataset stage, materials navigation and analysis inspector separate. Analysis opens in a native inspector; its method, execution location and applicable input parameters are grouped, with a fixed Run action. Data editing, annotation and network editing are in **More**. Compact toolbars keep undo/redo in that menu. All choices and primary/secondary actions share 44-point control geometry, with matching input borders and aligned content margins.
+
+Sequence and matrix stages scroll in smaller windows. Matrix fields adapt between two equal columns and a vertical layout. Protein and density viewports retain the native antialiased renderer. Network/result time-course charts use measured rows and original units, with a bounded preview (up to 12 series and about 6,000 plotted points); the full result remains available for export. Editors, notes, history, the assistant and the diagnostic console use page-sized native presentations with inline titles. Notes provide one document surface; diagnostic responses have their own bounded scroll area.
+
 ## AI and host integration
 
 Keep one `BiologyService(store:backends:fileAccess:authorize:)` per workspace. Present `BiologyLibraryView` or `BiologyWorkbench` inside the App's existing feature without replacing its outer split view. `onAI` uses the host's ordinary model/task services; `onInsertInNotes` saves through the existing Notes service without sharing editor state. `executionOwner` resolves the real task/run for a native scientific launch. `makeTools` supplies an authorized diagnostic session.

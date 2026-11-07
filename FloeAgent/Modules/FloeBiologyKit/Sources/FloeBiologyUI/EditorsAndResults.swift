@@ -46,10 +46,15 @@ struct BiologyResultView:View {
                         }
                     }
                     if !result.rows.isEmpty {
+                        if result.columns.first=="time",result.columns.count>1 {
+                            if let source,case .biochemicalNetwork(let network)=source.payload {
+                                BiologyTimeCoursePlot(result:result,timeUnit:network.timeUnit,amountUnit:network.amountUnit)
+                            }else{BiologyTimeCoursePlot(result:result,timeUnit:biologyText("Time","时间"),amountUnit:biologyText("Value","数值"))}
+                        }
                         if result.columns.prefix(2)==["PC1","PC2"] || result.columns.prefix(2)==["UMAP1","UMAP2"] {
                             Chart(Array(result.rows.enumerated()),id:\.offset){_,row in
                                 if row.count>=2 {PointMark(x:.value(result.columns[0],row[0]),y:.value(result.columns[1],row[1]))}
-                            }.frame(height:200)
+                            }.chartXAxisLabel(result.columns[0]).chartYAxisLabel(result.columns[1]).foregroundStyle(.teal).frame(height:260).padding(16).biologyCanvas()
                         }
                         ScrollView(.horizontal) {
                             Grid(alignment:.leading,horizontalSpacing:16,verticalSpacing:8) {
@@ -63,7 +68,7 @@ struct BiologyResultView:View {
                                         ForEach(Array(row.enumerated()),id:\.offset){_,value in Text(numeric(value)).monospacedDigit()}
                                     }
                                 }
-                            }.font(.caption).padding(16).biologyCanvas()
+                            }.font(.subheadline).padding(16).biologyCanvas()
                         }
                         if result.rows.count>100 {Text(biologyText("Showing the first 100 rows. Export includes the complete table.","显示前 100 行，导出包含完整表格。")).font(.caption).foregroundStyle(.secondary)}
                     }
@@ -77,8 +82,38 @@ struct BiologyResultView:View {
                 } else if run.isActive {ProgressView(biologyText("Calculating…","正在计算…"))}
                 else if let error=run.error {Text(error).foregroundStyle(.red)}
                 else {Text(run.status.rawValue)}
-            }.padding(BiologyStyle.spacing).frame(maxWidth:880).frame(maxWidth:.infinity,alignment:.top)
+            }.padding(BiologyStyle.spacing).frame(maxWidth:BiologyStyle.contentWidth).frame(maxWidth:.infinity,alignment:.top)
         }.background(BiologyStyle.background).accessibilityIdentifier("biology.resultView")
+    }
+}
+struct BiologyTimeCoursePlot:View {
+    let result:BiologyAnalysisResult
+    let timeUnit:String
+    let amountUnit:String
+    private var series:[String]{Array(result.columns.dropFirst().prefix(12))}
+    private var sampleIndices:[Int] {
+        guard !result.rows.isEmpty else{return []}
+        let budget=max(2,6000/max(1,series.count)),step=max(1,Int(ceil(Double(result.rows.count)/Double(budget))))
+        var indices=Array(Swift.stride(from:0,to:result.rows.count,by:step))
+        if indices.last != result.rows.count-1{indices.append(result.rows.count-1)}
+        return indices
+    }
+    var body:some View {
+        let samples=sampleIndices,series=series
+        VStack(alignment:.leading,spacing:16){
+            Text(biologyText("Time course","时间过程")).font(.headline)
+            Chart {
+                ForEach(Array(series.enumerated()),id:\.offset){column,name in
+                    ForEach(samples,id:\.self){index in
+                        let row=result.rows[index]
+                        if row.count>column+1{LineMark(x:.value("Time",row[0]),y:.value("Amount",row[column+1])).foregroundStyle(by:.value("Species",name))}
+                    }
+                }
+            }.chartXAxisLabel(timeUnit).chartYAxisLabel(amountUnit).chartLegend(position:.bottom,alignment:.leading).frame(height:240)
+            if series.count<result.columns.count-1 || samples.count<result.rows.count {
+                Text(biologyText("Chart preview: up to 12 series with sampled time points. Export includes the full results.","曲线预览最多显示 12 条曲线并按需抽样时间点，导出包含完整结果。")).font(.caption).foregroundStyle(.secondary)
+            }
+        }.padding(16).biologyCanvas().accessibilityIdentifier("biology.timeCoursePlot")
     }
 }
 struct BiologySequenceEditor:View {
@@ -99,8 +134,10 @@ struct BiologySequenceEditor:View {
             Form {
                 if let record {
                     Section(biologyText("Edit range · 1-based inclusive","编辑范围 · 从 1 开始的闭区间")) {
-                        TextField(biologyText("Start","起点"),value:$start,format:.number).keyboardType(.numberPad).biologyNamedInput(biologyText("Start","起点"))
-                        TextField(biologyText("End","终点"),value:$end,format:.number).keyboardType(.numberPad).biologyNamedInput(biologyText("End","终点"))
+                        HStack(alignment:.top,spacing:16){
+                            TextField(biologyText("Start","起点"),value:$start,format:.number).keyboardType(.numberPad).biologyNamedInput(biologyText("Start","起点"))
+                            TextField(biologyText("End","终点"),value:$end,format:.number).keyboardType(.numberPad).biologyNamedInput(biologyText("End","终点"))
+                        }
                         Button(biologyText("Load range","加载范围")){load(record)}.frame(minHeight:44)
                     }
                     Section {
@@ -110,7 +147,7 @@ struct BiologySequenceEditor:View {
                     if let error {Text(error).foregroundStyle(.red)}
                 }
             }
-            .textFieldStyle(.roundedBorder).buttonStyle(BiologyControlButtonStyle()).navigationTitle(biologyText("Edit sequence","编辑序列"))
+            .textFieldStyle(.roundedBorder).buttonStyle(BiologyControlButtonStyle(expands:true)).navigationTitle(biologyText("Edit sequence","编辑序列")).navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement:.cancellationAction){Button(biologyText("Cancel","取消")){dismiss()}.disabled(saving)}
                 ToolbarItem(placement:.confirmationAction){Button(biologyText("Save","保存")){Task{await save()}}.disabled(saving).accessibilityIdentifier("biology.saveSequence")}
@@ -147,11 +184,13 @@ struct BiologyAnnotationEditor:View {
         NavigationStack {
             Form {
                 TextField(biologyText("Feature name","注释名称"),text:$name).biologyNamedInput(biologyText("Feature name","注释名称"))
-                TextField(biologyText("Start · 1-based","起点 · 从 1 开始"),value:$start,format:.number).biologyNamedInput(biologyText("Start · 1-based","起点 · 从 1 开始"))
-                TextField(biologyText("End · inclusive","终点 · 包含"),value:$end,format:.number).biologyNamedInput(biologyText("End · inclusive","终点 · 包含"))
+                HStack(alignment:.top,spacing:16){
+                    TextField(biologyText("Start · 1-based","起点 · 从 1 开始"),value:$start,format:.number).biologyNamedInput(biologyText("Start · 1-based","起点 · 从 1 开始"))
+                    TextField(biologyText("End · inclusive","终点 · 包含"),value:$end,format:.number).biologyNamedInput(biologyText("End · inclusive","终点 · 包含"))
+                }
                 Toggle(biologyText("Reverse strand","反向链"),isOn:$reverse)
                 if let error {Text(error).foregroundStyle(.red)}
-            }.textFieldStyle(.roundedBorder).buttonStyle(BiologyControlButtonStyle()).navigationTitle(biologyText("Add annotation","添加注释"))
+            }.textFieldStyle(.roundedBorder).buttonStyle(BiologyControlButtonStyle(expands:true)).navigationTitle(biologyText("Add annotation","添加注释")).navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement:.cancellationAction){Button(biologyText("Cancel","取消")){dismiss()}}
                 ToolbarItem(placement:.confirmationAction){Button(biologyText("Save","保存")){Task{
@@ -201,7 +240,7 @@ struct BiologyNetworkEditor:View {
                     }
                 }
                 if let error {Text(error).foregroundStyle(.red)}
-            }.textFieldStyle(.roundedBorder).buttonStyle(BiologyControlButtonStyle()).navigationTitle(biologyText("Edit network","编辑网络"))
+            }.textFieldStyle(.roundedBorder).buttonStyle(BiologyControlButtonStyle(expands:true)).navigationTitle(biologyText("Edit network","编辑网络")).navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement:.cancellationAction){Button(biologyText("Cancel","取消")){dismiss()}}
                 ToolbarItem(placement:.confirmationAction){Button(biologyText("Save","保存")){Task{

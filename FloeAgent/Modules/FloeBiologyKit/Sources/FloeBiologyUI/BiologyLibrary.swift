@@ -16,6 +16,7 @@ import FloeBiologyEngine
     @State private var error:String?
     @State private var busy=false
     @State private var deleted:[BiologyDeletedProject]=[]
+    @FocusState private var editingTitle:Bool
     public init(service:BiologyService,onAI:BiologyAIHandler? = nil,onInsertInNotes:BiologyNotesHandler? = nil,executionOwner:(@MainActor @Sendable (UUID,UUID) async throws -> BiologyExecutionOwner)? = nil,makeTools:(@MainActor @Sendable (UUID) async throws -> BiologyToolSession)? = nil) {
         self.service=service;self.onAI=onAI;self.onInsertInNotes=onInsertInNotes
         self.executionOwner=executionOwner;self.makeTools=makeTools
@@ -24,16 +25,17 @@ import FloeBiologyEngine
         NavigationStack {
             List {
                 Section {
-                    HStack(alignment:.bottom,spacing:12) {
-                        TextField(biologyText("Project name","项目名称"),text:$title).textFieldStyle(.roundedBorder).accessibilityIdentifier("biology.projectName").biologyNamedInput(biologyText("Project name","项目名称"))
-                        Button(biologyText("Create","新建"),systemImage:"plus") {Task{await create(examples:false)}}
-                            .buttonStyle(.borderedProminent).controlSize(.large).disabled(busy).frame(minWidth:60,minHeight:44).accessibilityIdentifier("biology.create")
+                    TextField(biologyText("Project name","项目名称"),text:$title).focused($editingTitle).accessibilityIdentifier("biology.projectName").biologyNamedInput(biologyText("Project name","项目名称"))
+                    HStack(spacing:12) {
+                        Button{Task{await create(examples:false)}}label:{Label(biologyText("Create project","新建项目"),systemImage:"plus").frame(maxWidth:.infinity,minHeight:44)}
+                            .buttonStyle(BiologyPrimaryButtonStyle()).disabled(busy).accessibilityIdentifier("biology.create")
+                        Button{Task{await create(examples:true)}}label:{Label(biologyText("Example project","示例项目"),systemImage:"play.rectangle").frame(maxWidth:.infinity)}
+                            .buttonStyle(BiologyControlButtonStyle(expands:true)).disabled(busy).accessibilityIdentifier("biology.examples")
                     }
-                    Button(biologyText("Open a complete example project","打开完整示例项目"),systemImage:"play.rectangle") {Task{await create(examples:true)}}
-                        .buttonStyle(BiologyControlButtonStyle()).frame(minHeight:44).disabled(busy).accessibilityIdentifier("biology.examples")
-                    Text(biologyText("Import your own data, or explore sequence, structure, image, matrix and network examples.","导入自己的数据，或体验序列、结构、图像、矩阵和网络示例。")).font(.subheadline).foregroundStyle(.secondary)
-                }
+                } header:{Text(biologyText("New research project","新建研究项目"))}
+                footer:{Text(biologyText("Keep sequences, structures, images, matrices and models together in one project.","在同一个项目中整理序列、结构、图像、矩阵和模型。"))}
                 Section(biologyText("Projects","项目")) {
+                    if projects.isEmpty {Text(biologyText("Create a project or open the example to get started.","新建项目或打开示例即可开始。")).foregroundStyle(.secondary).padding(.vertical,8)}
                     ForEach(projects) { p in
                         Button {route=p.id} label:{
                             HStack {
@@ -43,8 +45,8 @@ import FloeBiologyEngine
                                     Text("\(p.assets.count) "+biologyText("datasets","份数据")).font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer();Image(systemName:"chevron.right").foregroundStyle(.tertiary)
-                            }.frame(minHeight:44)
-                        }.accessibilityIdentifier("biology.project."+p.id.uuidString)
+                            }.frame(minHeight:44).contentShape(Rectangle())
+                        }.buttonStyle(.plain).accessibilityIdentifier("biology.project."+p.id.uuidString)
                         .swipeActions {
                             Button(biologyText("Delete","删除"),role:.destructive) {Task{do{try await service.delete(p.id);try await reload()}catch{self.error=error.localizedDescription}}}
                         }
@@ -59,7 +61,7 @@ import FloeBiologyEngine
                 }
                 if let error {Section{Text(error).foregroundStyle(.red)}}
             }
-            .listSectionSpacing(24)
+            .listStyle(.insetGrouped).listSectionSpacing(24)
             .navigationTitle(biologyText("Biology workbench","生物工作台"))
             .navigationDestination(item:$route) { id in BiologyWorkbench(service:service,projectID:id,onAI:onAI,onInsertInNotes:onInsertInNotes,executionOwner:executionOwner,makeTools:makeTools) }
             .task {do{try await reload()}catch{self.error=error.localizedDescription}}
@@ -68,6 +70,7 @@ import FloeBiologyEngine
     }
     private func reload() async throws {projects=try await service.projects();deleted=try await service.deletedProjects()}
     private func create(examples:Bool) async {
+        editingTitle=false
         busy=true;defer{busy=false}
         do {
             let name=title.trimmingCharacters(in:.whitespacesAndNewlines)
