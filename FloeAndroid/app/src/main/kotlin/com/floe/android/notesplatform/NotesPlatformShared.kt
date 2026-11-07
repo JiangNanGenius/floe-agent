@@ -548,8 +548,8 @@ internal object NotesOfficeReadbackPolicy {
      *        native BYE. It proves the user closed this mount; it never
      *        proves the document was saved and never becomes a clean-close
      *        claim.
-     * @param snapshotAndExitVerified the exact acknowledged mount sealed its
-     *        state, its engine Binder died, and its owned file matched on re-read
+     * @param closeAndExitVerified the exact acknowledged mount sealed its
+     *        state, its engine Binder died, and non-discarded bytes matched on re-read
      * @param discarded an explicit discard from that verified current close
      * @param dirtyAtClose native dirty state, including unflushed in-memory edits
      */
@@ -562,13 +562,13 @@ internal object NotesOfficeReadbackPolicy {
         explicitSaveCompleted: Boolean,
         validOoxml: Boolean,
         userCloseAcknowledged: Boolean = false,
-        snapshotAndExitVerified: Boolean = false,
+        closeAndExitVerified: Boolean = false,
         discarded: Boolean = false,
         dirtyAtClose: Boolean = false,
     ): NotesOfficeReadbackDecision {
         if (resultPresent && !tokenMatches) return NotesOfficeReadbackDecision.STALE_RESULT
         val realCleanResult = resultPresent && tokenMatches && closedCleanly && failureCode == null
-        val verifiedExit = userCloseAcknowledged && snapshotAndExitVerified &&
+        val verifiedExit = userCloseAcknowledged && closeAndExitVerified &&
             (failureCode == null || failureCode in CLOSE_BYPASS_FAILURES)
         if (!realCleanResult && !verifiedExit) {
             return when {

@@ -2,8 +2,10 @@
 package com.floe.android.core.officeengine
 
 /** A sealed engine snapshot, never a save destination or a process-exit receipt.
- * The host must additionally observe this engine's Binder death and verify the
- * owned file again. A timeout or an Activity result cannot replace either fact. */
+ * The host must additionally observe this engine's Binder death. Saving or
+ * returning unchanged requires an owned-file re-read; explicit discard may
+ * retire only owned artifacts after writer exit even if teardown changed them.
+ * A timeout never replaces exit, and no disposition here proves a save. */
 object OfficeCloseProof {
     const val TRANSACTION_PREPARE_CLOSE = 2
     const val SCHEMA_VERSION = 1

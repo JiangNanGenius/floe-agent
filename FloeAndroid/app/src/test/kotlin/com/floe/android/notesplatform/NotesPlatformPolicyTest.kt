@@ -55,7 +55,7 @@ class NotesPlatformPolicyTest {
             explicitSaveCompleted = explicit,
             validOoxml = valid,
             userCloseAcknowledged = acked,
-            snapshotAndExitVerified = exited,
+            closeAndExitVerified = exited,
             discarded = discarded,
             dirtyAtClose = dirty,
         )
@@ -123,6 +123,11 @@ class NotesPlatformPolicyTest {
             "an explicit snapshot does not allow live-writer cleanup",
             NotesOfficeReadbackDecision.MISSING_RESULT,
             decide(result = false, acked = true),
+        )
+        assertEquals(
+            "Discard without writer exit cannot retire the working copy",
+            NotesOfficeReadbackDecision.MISSING_RESULT,
+            decide(result = false, acked = true, discarded = true),
         )
         assertEquals(
             "Discard never imports an earlier saved copy",

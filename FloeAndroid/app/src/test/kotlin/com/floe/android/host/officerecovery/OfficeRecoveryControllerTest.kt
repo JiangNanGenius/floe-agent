@@ -177,6 +177,7 @@ class OfficeRecoveryControllerTest {
         var original: OfficeRecoveryOriginalState = OfficeRecoveryOriginalState.UNAVAILABLE
         var activeFor = false
         var sessionBusy = false
+        var onBusyProbe: (() -> Unit)? = null
         var prepareCalls = 0
         var deliverCalls = 0
         var cancelCalls = 0
@@ -215,7 +216,14 @@ class OfficeRecoveryControllerTest {
 
         override fun hasActiveFor(candidateId: String): Boolean = activeFor
 
-        override fun isSessionBusy(sessionToken: String): Boolean = sessionBusy
+        override fun isSessionBusy(sessionToken: String): Boolean {
+            val observed = sessionBusy
+            onBusyProbe?.let { callback ->
+                onBusyProbe = null
+                callback()
+            }
+            return observed
+        }
 
         override fun checkDestination(
             uriString: String,
@@ -610,6 +618,25 @@ class OfficeRecoveryControllerTest {
         fixture.controller.onSessionQuiescent(token)
         assertFalse(File(candidate.workingCopyPath).exists())
         assertNull(fixture.journal.candidate(candidate.id))
+    }
+
+    @Test
+    fun viewerDiscardCannotMissTheFinalWriterDuringBusyProbe() {
+        val fixture = Fixture()
+        val candidate = fixture.candidate(withOutput = true)
+        val original = File(fixture.root, "original.docx").apply { writeBytes(docx(byteArrayOf(9))) }
+        fixture.export.sessionBusy = true
+        fixture.export.onBusyProbe = {
+            fixture.export.sessionBusy = false
+            fixture.controller.onSessionQuiescent(token)
+        }
+        fixture.controller.onViewerClosed(candidate.id, token, true, true, true, true, emptyList())
+        assertFalse(File(candidate.workingCopyPath).exists())
+        assertFalse(File(candidate.outputPath!!).exists())
+        assertNull(fixture.journal.candidate(candidate.id))
+        // Duplicate drain cannot remove an original or another candidate.
+        fixture.controller.onSessionQuiescent(token)
+        assertTrue(original.exists())
     }
 
     @Test

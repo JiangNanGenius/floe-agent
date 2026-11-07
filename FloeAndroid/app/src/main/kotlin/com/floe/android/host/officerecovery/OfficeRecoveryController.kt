@@ -673,8 +673,12 @@ internal class OfficeRecoveryController(
                     )
                 }
                 val token = sessionToken ?: candidate.originSessionToken
-                if (token != null && exportPort.isSessionBusy(token)) {
+                if (token != null) {
+                    // Register before probing: the last writer may drain and
+                    // notify between the probe and registration. The callback
+                    // and the idle recheck consume the same entry once.
                     pendingDiscards[token] = candidateId
+                    if (!exportPort.isSessionBusy(token)) onSessionQuiescent(token)
                 } else {
                     val latest = runCatching { journal.candidate(candidateId) }.getOrNull()
                     if (latest != null && runCatching { artifacts.deleteOwned(latest) }.getOrDefault(false)) {

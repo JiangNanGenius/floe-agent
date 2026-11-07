@@ -382,7 +382,8 @@ internal class NotesOfficeEffects(
             val verifiedClose = prepared != null && OfficeCloseProof.matchesClosedFile(
                 prepared.receipt, processExited, afterSha, canonical.length(),
             )
-            val discarded = (verifiedClose && prepared?.receipt?.discarded == true) ||
+            val discardCompleted = processExited && prepared?.receipt?.discarded == true
+            val discarded = discardCompleted ||
                 (outcome != null && outcome.sessionToken == sessionToken && outcome.closedCleanly &&
                     activityResult.data?.getBooleanExtra(OfficePreviewActivity.EXTRA_USER_DISCARDED, false) == true)
             val digestChanged = afterSha != null && afterSha != staged.sha256
@@ -420,7 +421,7 @@ internal class NotesOfficeEffects(
                 explicitSaveCompleted = explicit != null,
                 validOoxml = validOoxml,
                 userCloseAcknowledged = userCloseAcknowledged,
-                snapshotAndExitVerified = verifiedClose,
+                closeAndExitVerified = verifiedClose || discardCompleted,
                 discarded = discarded,
                 dirtyAtClose = prepared?.receipt?.dirtyAtClose == true || outcome?.dirtyAtClose == true,
             )

@@ -1065,7 +1065,7 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         val op = active ?: return false
         if (!ackedCloseStillOwnsSlot(active === op, op.retired, op.viewEnded,
                 op.phase == Phase.VIEWING, op.id, op.sessionToken, ackedClose) ||
-            ackedClose != receipt.close
+            ackedClose != receipt.close || op.saveOriginalInFlight
         ) return false
         op.preparedClose?.let { return it.receipt == receipt && it.lifetime == lifetime }
         val prepared = PreparedClose(receipt, lifetime)
@@ -1094,8 +1094,13 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                 input, setOf(workingRoot, workspaceRoot, providerRoot, runOutputRoot), prepared.receipt,
                 processDead = prepared.processDead,
             )
+            // Discard is a distinct explicit decision, not a saved/unchanged
+            // claim. After this exact writer died it covers even a teardown
+            // autosave; the recovery controller still drains App-owned IO and
+            // deletes only its validated working/output artifacts.
+            val discarded = prepared.processDead && prepared.receipt.discarded
             android.util.Log.i("FloeOfficeClose", "engineExited=true fileVerified=$verified discarded=${prepared.receipt.discarded}")
-            if (!verified) {
+            if (!verified && !discarded) {
                 settleAcknowledgedCloseIfUnclaimed(op, verificationFailed = true)
                 return@launch
             }
@@ -1113,7 +1118,7 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                 resultPresent = true,
                 closedCleanly = true,
                 dirtyAtClose = dirty,
-                discarded = prepared.receipt.discarded,
+                discarded = discarded,
                 outputDescriptors = emptyList(),
             )
         }
