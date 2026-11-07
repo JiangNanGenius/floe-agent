@@ -27,11 +27,12 @@ internal class ComponentDocumentReturns(
     private val mutableRestoring = MutableStateFlow<ComponentDocumentReturn?>(null)
     val restoring = mutableRestoring.asStateFlow()
 
-    @Synchronized fun prepare(module: String, task: String, workspace: String, path: String) {
+    @Synchronized fun prepare(module: String, task: String, workspace: String, path: String): ComponentDocumentReturn {
         val value = ComponentDocumentReturn(UUID.randomUUID().toString(), module, task,
             workspace, path, versionCode, now(), process)
         require(ComponentDocumentReturnPolicy.valid(value))
         persist(value)
+        return value
     }
 
     /** Called before the real system install can kill this process. Does not

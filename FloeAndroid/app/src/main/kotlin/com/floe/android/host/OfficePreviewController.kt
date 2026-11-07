@@ -340,7 +340,8 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
     data class State(val picker: Long? = null, val viewer: ViewerLaunch? = null,
                      val staging: Boolean = false, val cancelling: Boolean = false,
                      val error: String? = null,
-                     val ownedReturn: OwnedViewerReturn? = null)
+                     val ownedReturn: OwnedViewerReturn? = null,
+                     val componentRequired: Boolean = false)
     private val mutableState = MutableStateFlow(State())
     val state: StateFlow<State> = mutableState
     /** Original failure retained in RAM for explicit diagnostics, never
@@ -348,7 +349,14 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
     @Volatile var diagnosticFailure: Any? = null
         private set
 
-    private enum class Phase { PICKING, STAGING, LAUNCH, VIEWING }
+    private enum class Phase { PICKING, COMPONENT, STAGING, LAUNCH, VIEWING }
+    private data class PendingComponentWorkspace(
+        val operation: Operation,
+        val owner: WorkspaceOfficeSnapshotStager.Owner,
+        val path: String,
+        val returnID: String?,
+    )
+    private var pendingComponentWorkspace: PendingComponentWorkspace? = null
     private class AiLaunchAdmission(val owner: Any, val allows: (String?) -> Boolean)
     private var aiLaunchAdmission: AiLaunchAdmission? = null
 
@@ -507,6 +515,15 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
      * old process. Restores only a re-hashed private READ_ONLY provider copy;
      * old task/URI/write authority is never inferred from saved metadata. */
     fun restoreComponentPreview() {
+        if (!com.floe.android.host.officecomponent.OfficeComponentController.installed(context)) return
+        val waiting = synchronized(lock) {
+            pendingComponentWorkspace?.takeIf { it.operation.phase == Phase.COMPONENT && current(it.operation) }
+                ?.also { pendingComponentWorkspace = null }
+        }
+        if (waiting != null) {
+            stageWorkspace(waiting.operation, waiting.owner, waiting.path)
+            return
+        }
         if (!pendingPreviewRestored.compareAndSet(false, true) || isBusy) return
         scope.launch(Dispatchers.IO) {
             var admitted: Operation? = null
@@ -556,6 +573,29 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
     private fun openWorkspace(owner: WorkspaceOfficeSnapshotStager.Owner, path: String, ownerCurrent: () -> Boolean,
                               requiresAiLaunchAdmission: Boolean) {
         val op = admit(Phase.STAGING, ownerCurrent, owner, requiresAiLaunchAdmission) ?: return
+        if (!com.floe.android.host.officecomponent.OfficeComponentController.installed(context)) {
+            val returning = (context.applicationContext as? com.floe.android.FloeApplication)
+                ?.componentDocumentReturns?.prepare("officepreview", owner.taskID, owner.workspaceID, path)
+            synchronized(lock) {
+                if (!current(op)) return
+                op.phase = Phase.COMPONENT
+                pendingComponentWorkspace = PendingComponentWorkspace(op, owner, path, returning?.id)
+                mutableState.value = State(componentRequired = true)
+            }
+            return
+        }
+        stageWorkspace(op, owner, path)
+    }
+
+    /** Waiting for an optional component is navigation, not an interrupted
+     * edit. Create snapshots/working copies and R2 recovery only after the
+     * engine is actually installed; the same admitted operation resumes on
+     * Play/new Android, or the durable route rebinds after process death. */
+    private fun stageWorkspace(op: Operation, owner: WorkspaceOfficeSnapshotStager.Owner, path: String) {
+        synchronized(lock) {
+            if (!current(op)) return
+            op.phase = Phase.STAGING
+        }
         mutableState.value = State(staging = true)
         scope.launch(Dispatchers.IO) {
             try {
@@ -607,10 +647,6 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                     return@launch
                 }
                 op.recoveryCandidateId = candidateId
-                if (!com.floe.android.host.officecomponent.OfficeComponentController.installed(context) && current(op)) {
-                    (context.applicationContext as? com.floe.android.FloeApplication)?.componentDocumentReturns?.prepare(
-                        "officepreview", owner.taskID, owner.workspaceID, path)
-                }
                 prepare(op, OfficePreviewRequest.of(
                     sessionToken = copy.sessionID, stagedFilePath = copy.file.canonicalPath,
                     sha256 = copy.sha256, lengthBytes = copy.bytes,
@@ -1838,6 +1874,13 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
             if (active !== op) {
                 false
             } else {
+                pendingComponentWorkspace?.takeIf { it.operation === op }?.let { waiting ->
+                    waiting.returnID?.let { id ->
+                        (context.applicationContext as? com.floe.android.FloeApplication)
+                            ?.componentDocumentReturns?.discard(id)
+                    }
+                    pendingComponentWorkspace = null
+                }
                 ackQuiescence?.cancel()
                 // A close-intent belongs only to the operation it acknowledged.
                 ackedClose = null

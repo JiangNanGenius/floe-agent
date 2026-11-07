@@ -47,8 +47,8 @@ internal fun OfficePreviewEffect(controller: OfficePreviewController, themeMode:
     LaunchedEffect(controller, moduleReady) {
         if (moduleReady) controller.restoreComponentPreview()
     }
-    LaunchedEffect(state.viewer?.incarnation) {
-        if (state.viewer != null && !moduleReady) module.requestInstall()
+    LaunchedEffect(state.viewer?.incarnation, state.componentRequired) {
+        if ((state.viewer != null || state.componentRequired) && !moduleReady) module.requestInstall()
     }
     val pickerLedger = remember(controller) { PlatformLaunchOwnership.LaneLedger(controller.pickerNamespace) }
     var issuedPicker by rememberSaveable { mutableStateOf<String?>(null) }
@@ -101,7 +101,7 @@ internal fun OfficePreviewEffect(controller: OfficePreviewController, themeMode:
         }
     }
 
-    OfficeComponentDialog(visible = viewerPending != null && !moduleReady,
+    OfficeComponentDialog(visible = (viewerPending != null || state.componentRequired) && !moduleReady,
         onCancel = controller::cancelUnopened)
     FloeActionSheet(visible = state.staging || state.error != null,
         onDismiss = { if (state.staging) controller.cancelUnopened() else controller.clearError() },
