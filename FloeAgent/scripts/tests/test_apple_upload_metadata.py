@@ -40,6 +40,23 @@ class AppleUploadMetadataTests(unittest.TestCase):
     def test_current_committed_inputs(self):
         self.assertEqual(metadata.problems(self.root), [])
 
+    def test_generation_would_drop_wifi_information(self):
+        self.source_replace("        " + metadata.WIFI + ": true\n", "")
+        failures = metadata.problems(self.root)
+        self.assertTrue(any("project.yml: Wi-Fi" in failure for failure in failures))
+        self.assertFalse(any("Floe.entitlements: Wi-Fi" in failure for failure in failures))
+
+    def test_generated_signing_input_missing_wifi_information(self):
+        path = self.root / "FloeApp/Entitlements/Floe.entitlements"
+        values = plistlib.loads(path.read_bytes())
+        values.pop(metadata.WIFI)
+        path.write_bytes(plistlib.dumps(values))
+        self.assertTrue(any("Floe.entitlements: Wi-Fi" in failure for failure in metadata.problems(self.root)))
+
+    def test_disabled_wifi_information_is_refused(self):
+        self.source_replace(metadata.WIFI + ": true", metadata.WIFI + ": false")
+        self.assertTrue(any("project.yml: Wi-Fi" in failure for failure in metadata.problems(self.root)))
+
     def test_original_rejected_nfc_and_health_omissions(self):
         self.source_replace("          - TAG", "          - NDEF")
         source = self.root / "project.yml"

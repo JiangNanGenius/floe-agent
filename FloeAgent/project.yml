@@ -308,6 +308,7 @@ targets:
       path: FloeApp/Entitlements/Floe.entitlements
       properties:
         aps-environment: $(FLOE_APNS_ENVIRONMENT)
+        com.apple.developer.networking.wifi-info: true
         com.apple.developer.icloud-container-identifiers:
           - iCloud.org.floeagent.ios
         com.apple.developer.icloud-services:
@@ -520,8 +521,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.8.3"
-        CURRENT_PROJECT_VERSION: "323"
+        MARKETING_VERSION: "1.8.4"
+        CURRENT_PROJECT_VERSION: "324"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -604,8 +605,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.3"
-        CURRENT_PROJECT_VERSION: "323"
+        MARKETING_VERSION: "1.8.4"
+        CURRENT_PROJECT_VERSION: "324"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -655,8 +656,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.3"
-        CURRENT_PROJECT_VERSION: "323"
+        MARKETING_VERSION: "1.8.4"
+        CURRENT_PROJECT_VERSION: "324"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -699,8 +700,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.3"
-        CURRENT_PROJECT_VERSION: "323"
+        MARKETING_VERSION: "1.8.4"
+        CURRENT_PROJECT_VERSION: "324"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -752,8 +753,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.3"
-        CURRENT_PROJECT_VERSION: "323"
+        MARKETING_VERSION: "1.8.4"
+        CURRENT_PROJECT_VERSION: "324"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:

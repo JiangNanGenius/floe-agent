@@ -12,6 +12,7 @@ import re
 import sys
 
 FORMATS = "com.apple.developer.nfc.readersession.formats"
+WIFI = "com.apple.developer.networking.wifi-info"
 PURPOSES = ("NSHealthShareUsageDescription", "NSHealthUpdateUsageDescription", "NFCReaderUsageDescription")
 
 
@@ -38,6 +39,13 @@ def problems(root):
         errors.append("project.yml: NFC formats must be exactly TAG for this shipping SDK baseline")
     if entitlements.get(FORMATS) != ["TAG"]:
         errors.append("Floe.entitlements: NFC formats must be exactly TAG")
+    # XcodeGen recreates this plist, and the signer uses only its declared
+    # capabilities. A profile grant alone cannot enable Wi-Fi information.
+    wifi = re.findall(r"^        " + re.escape(WIFI) + r": *([^\n]+)$", source, re.M)
+    if wifi != ["true"]:
+        errors.append("project.yml: Wi-Fi information entitlement must be true exactly once")
+    if entitlements.get(WIFI) is not True:
+        errors.append("Floe.entitlements: Wi-Fi information entitlement must be true")
     for key in PURPOSES:
         values = re.findall(r"^        " + re.escape(key) + r": ([^\n]+)$", source, re.M)
         value = plain_scalar(values[0]) if len(values) == 1 else None
@@ -67,7 +75,7 @@ def main():
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
-    print("Apple upload metadata: TAG source/generated formats and translated Health/NFC purposes match")
+    print("Apple upload metadata: Wi-Fi entitlement, TAG formats and translated Health/NFC purposes match")
     return 0
 
 
