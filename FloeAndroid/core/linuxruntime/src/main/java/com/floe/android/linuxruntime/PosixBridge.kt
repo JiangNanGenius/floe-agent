@@ -143,6 +143,12 @@ object PosixBridge {
      */
     external fun syncfsDirectory(path: String): Int
 
+    /** Publish one fully staged input under an already no-follow-opened
+     * directory. renameat2(RENAME_NOREPLACE) returns 0 or -errno; unsupported
+     * kernels/filesystems fail without an overwrite/copy fallback. Only the
+     * workspace import backend calls this with its own stage and anchor. */
+    external fun moveNewWorkspaceInput(stage: String, parentFd: Int, leaf: String): Int
+
     /** Host page size from sysconf(_SC_PAGESIZE). */
     external fun hostPageSize(): Int
 

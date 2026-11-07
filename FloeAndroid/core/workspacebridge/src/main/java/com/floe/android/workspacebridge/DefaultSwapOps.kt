@@ -5,6 +5,7 @@ import android.os.ParcelFileDescriptor
 import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
+import com.floe.android.linuxruntime.PosixBridge
 import java.io.File
 import java.security.MessageDigest
 
@@ -74,11 +75,11 @@ class DefaultSwapOps : WorkspaceSwapOps {
         if (error.errno == OsConstants.ENOENT) SwapKind.MISSING else SwapKind.UNREADABLE
     } catch (_: Exception) { SwapKind.UNREADABLE }
 
-    private fun commitNew(root: File, relativePath: String, install: (String) -> Unit): Boolean {
+    private fun commitNew(root: File, relativePath: String, install: (ParentAnchor) -> Unit): Boolean {
         var committed = false
         return try {
             parentAnchor(root, relativePath, true).use { anchor ->
-                install(anchor.path)
+                install(anchor)
                 committed = true
                 Os.fsync(anchor.descriptor.fileDescriptor)
                 true
@@ -95,16 +96,21 @@ class DefaultSwapOps : WorkspaceSwapOps {
     override fun installNewFile(stage: File, root: File, relativePath: String): Boolean {
         val source = try { Os.lstat(stage.absolutePath) } catch (_: Exception) { return false }
         if (!OsConstants.S_ISREG(source.st_mode)) return false
-        // The source is our private import journal, never a guest path.
-        // link() atomically refuses an existing destination.
-        return commitNew(root, relativePath) { target -> Os.link(stage.absolutePath, target) }
+        // The fully written source belongs to our private import journal.
+        // Android storage can refuse hard links. Publish with the kernel's
+        // atomic no-replace rename instead; never expose a partial copy or
+        // fall back to a rename that can overwrite a live guest creation.
+        return commitNew(root, relativePath) { anchor ->
+            val result = PosixBridge.moveNewWorkspaceInput(stage.absolutePath, anchor.descriptor.fd, anchor.leaf)
+            if (result != 0) throw ErrnoException("workspace input commit", -result)
+        }
     }
 
     override fun createNewDirectory(root: File, relativePath: String): Boolean =
-        commitNew(root, relativePath) { target -> Os.mkdir(target, WorkspaceFileModes.DIR_DEFAULT) }
+        commitNew(root, relativePath) { anchor -> Os.mkdir(anchor.path, WorkspaceFileModes.DIR_DEFAULT) }
 
     override fun createNewSymlink(root: File, relativePath: String, target: String): Boolean =
-        commitNew(root, relativePath) { destination -> Os.symlink(target, destination) }
+        commitNew(root, relativePath) { anchor -> Os.symlink(target, anchor.path) }
 
     override fun size(path: File): Long = try {
         Os.lstat(path.absolutePath).st_size

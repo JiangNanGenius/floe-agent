@@ -21,6 +21,8 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -34,6 +36,9 @@
 #endif
 #ifndef ETIMEDOUT
 #define ETIMEDOUT 110
+#endif
+#ifndef RENAME_NOREPLACE
+#define RENAME_NOREPLACE 1
 #endif
 
 // ---------------------------------------------------------------------------
@@ -603,6 +608,55 @@ Java_com_floe_android_linuxruntime_PosixBridge_setFdNonBlocking(JNIEnv *env, jcl
     if (flags < 0) return -errno;
     if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) return -errno;
     return 0;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_floe_android_linuxruntime_PosixBridge_moveNewWorkspaceInput(
+        JNIEnv *env, jclass clazz, jstring stage, jint parentFd, jstring leaf) {
+    (void)clazz;
+    if (!stage || !leaf || parentFd < 0) return -EINVAL;
+    // Strict UTF-16 validation before conversion: embedded NUL may never
+    // shorten either pathname, and the target is exactly one basename.
+    jstring values[2] = { stage, leaf };
+    for (int n = 0; n < 2; ++n) {
+        jsize length = (*env)->GetStringLength(env, values[n]);
+        if (length == 0) return -EINVAL;
+        const jchar *chars = (*env)->GetStringChars(env, values[n], NULL);
+        if (!chars) return -ENOMEM;
+        int valid = n != 0 || chars[0] == '/';
+        for (jsize i = 0; i < length; ++i) {
+            if (chars[i] == 0 || (n == 1 && chars[i] == '/')) valid = 0;
+        }
+        (*env)->ReleaseStringChars(env, values[n], chars);
+        if (!valid) return -EINVAL;
+    }
+    int ok = 1;
+    char *source = utf8_from_jstring(env, stage, &ok);
+    char *name = ok ? utf8_from_jstring(env, leaf, &ok) : NULL;
+    if (!ok || !source || !name) { free(source); free(name); return -EINVAL; }
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+        free(source); free(name); return -EINVAL;
+    }
+    struct stat parentStat, sourceStat;
+    int result = 0;
+    if (fstat(parentFd, &parentStat) != 0) result = -errno;
+    else if (!S_ISDIR(parentStat.st_mode)) result = -ENOTDIR;
+    else if (lstat(source, &sourceStat) != 0) result = -errno;
+    else if (!S_ISREG(sourceStat.st_mode)) result = -EINVAL;
+    else {
+#ifdef SYS_renameat2
+        // The kernel publishes the complete file or refuses an existing
+        // target atomically. No hard link, path-based target reopen, partial
+        // visible copy or overwrite-capable rename fallback is used.
+        result = syscall(SYS_renameat2, AT_FDCWD, source, parentFd, name,
+                         RENAME_NOREPLACE) == 0 ? 0 : -errno;
+#else
+        result = -ENOSYS;
+#endif
+    }
+    free(source);
+    free(name);
+    return result;
 }
 
 JNIEXPORT jint JNICALL
