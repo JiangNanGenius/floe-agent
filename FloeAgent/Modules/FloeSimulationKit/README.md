@@ -18,13 +18,19 @@
 
 当前实际可运行的计算后端是 `floe.tet4`、`floe.rapier`、`floe.particles`、`floe.fields.mfem`，以及独立的 Netgen 网格服务。MFEM 当前只声明静电和压力声学，使用 tet4 体网格、1–3 阶 H1 有限元。高级结构、CFD、磁场、射频和耦合驱动仍返回明确不可用状态，执行能力及参数模板发现只返回实际已链接的种类。
 
-待完成的计算工作包括 FEBio/Chrono、谱分析与热扩展、SU2、低频磁场、Palace 串行射频、ozz 接入及完整多场求解。实际 App 的 CAD 几何捕获、Metal 结果显示、现有 Studio 工具注册、视频和动画资产导出仍待接入；当前独立工作台和运动 JSON 导出不代表这些 App 路径已完成。
+实际 App 已接入 CAD 工具栏和 Space CAD 原件：`CADSimulationEntry` 打开同一项目会话，`CADSimulationSessions` 捕获当前可见零件，结果复用 CAD Metal 渲染器，`studio.simulation` 注册到现有任务工具链。UI 和 AI 共享配置、保存、计算、取消、结果与动画 JSON 导出；不改写 CAD 原件、撤销栈或装配姿态。
+
+待完成的计算工作包括 FEBio/Chrono、谱分析与热扩展、SU2、低频磁场、Palace 串行射频、ozz 接入及完整多场求解。骨骼/FK/IK 当前输出姿态数据，蒙皮渲染、现有 CAD 动画资产与视频导出尚未接合。独立组件检查、App 对象编译和定向代码检查各自记录，不能替代完整界面或真机验收。
+
+App 的单个无放置变换实体使用原始 B-rep；多零件、已放置零件采用带零件/面标签的当前封闭曲面，并在边界转换为 SI。来源几何改变后清除旧网格绑定、取消旧计算；关闭项目合并并发关闭请求、保存待提交设置并等待原生任务停止，文件整理守卫覆盖源文件与仿真伴随目录。
+
+CAD 源身份复用编辑器按实体/修订校验的持久化 B-rep 档案，避免原样重开时 OCCT 重序列化造成摘要漂移。曲面来源排除名称和临时命名缓存，边界面使用当前几何限定的身份；Space 原件移动后继续使用稳定记录 ID。
 
 静电支持区域介电常数、电势/接地/绝缘边界、电场/电位移/能量和能量等效电容；悬空域及冲突电势会被拒绝。压力声学支持复数声压、法向速度、被动复阻抗和一阶辐射边界、区域介质与损耗、频率扫描、速度及声压级。相量约定为 `exp(+iωt)`，幅值为峰值，声压级使用 RMS。没有通过修改物理算子对角线来掩盖不收敛。
 
 ## 构建
 
-Rapier 静态库由固定 Cargo.lock 构建。首次使用 SwiftPM 前先生成 XCFramework；该可再生产物不入 Git。脚本保存三个分片、每个输入和产物的 SHA-256 及依赖许可证。
+Rapier 静态库由固定 Cargo.lock 构建，三个原生组件均采用独立命名的静态框架，避免完整 App 的头文件模块路径冲突。首次使用 SwiftPM 前先生成 XCFramework；该可再生产物不入 Git。脚本保存三个分片、每个输入和产物的 SHA-256 及依赖许可证。
 
 以下命令在本包目录执行。
 
@@ -64,5 +70,7 @@ swift test --scratch-path "$HOME/Library/Caches/CodexBuild/FloeSimulation/0dd039
 5. AI 先读取 `simulation.templates`、`simulation.read` 和 `simulation.mesh.info`。模板来自 UI 同一套默认配置，带完整实体示例和 SI 参数名；写入/运行参数必须携带上次读取的 `expectedGeneration`，不能因宿主重新建立上下文而覆盖较新的 UI 修改。研究更新还需要其 `expectedRevision`。
 6. 宿主几何变化时用递增来源修订调用 `model.refreshSource`；重开时也会校验当前来源，清除旧网格绑定并保留历史结果。关闭 CAD 项目时调用 `sessions.close`，等待原生工作实际结束；关闭面板只停止观察。关闭后的旧模型和工具不能继续写入。
 7. CAD 标签中的 `nativeIndex` 仅指同一 B-rep 内的一基拓扑序号；持久身份来自宿主 `sourceEntityID`。没有宿主标签时只生成表示摘要限定的面名，不将其当作跨修订的稳定面身份。
+
+App 已按以上协议接合；其注册工具为 `studio.simulation`。先调用 `definitions` 获取普通 JSON schema，再读取 `simulation.objects` 的名称/身份、`simulation.templates`、`simulation.read` 与网格信息。动画配置使用 `simulation.animation.read/put`，预览/烘焙/取消与 UI 共用模型和保存代次。项目关闭时停止任务，面板关闭时保存设置并结束观察，计算服务仍由项目会话持有。
 
 独立 iPad 宿主位于 [Qualification/Simulation](../../Qualification/Simulation/README.md)。其线框用于组件检查；实际 App 继续使用原有 Metal 渲染器。

@@ -22,6 +22,7 @@ def verify(name):
         if digest(path)!=expected:raise ValueError('Artifact digest mismatch: '+relative)
     source=KIT/'Native'/native
     if name=='rapier':
+        if 'packagerSHA256' in manifest and digest(source/'package_apple.py')!=manifest['packagerSHA256']:raise ValueError('Rapier packager source mismatch')
         for relative,expected in manifest['sourceFiles'].items():
             path=source/relative;path.resolve().relative_to(source.resolve())
             if digest(path)!=expected:raise ValueError('Rapier input digest mismatch: '+relative)

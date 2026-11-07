@@ -2,6 +2,7 @@
 """Build the locked in-process Rapier bridge for Apple's three local slices."""
 import argparse, hashlib, json, os, shutil, subprocess
 from pathlib import Path
+from package_apple import framework
 
 def main():
     parser = argparse.ArgumentParser()
@@ -24,7 +25,9 @@ def main():
         print('Building ' + target, flush=True)
         env['SDKROOT'] = subprocess.check_output(['xcrun','--sdk',sdk,'--show-sdk-path'], env=env, text=True).strip()
         subprocess.run(['cargo','build','--locked','--release','--jobs','6','--manifest-path',str(root/'Cargo.toml'),'--target-dir',str(build),'--target',target],env=env,check=True)
-        libraries += ['-library', str(build/target/'release'/'libfloe_rapier_native.a'), '-headers',str(root/'include')]
+        destination = build / ('framework-' + target) / 'FloeRapierNative.framework'
+        if destination.exists(): shutil.rmtree(destination)
+        libraries += ['-framework', str(framework(build/target/'release'/'libfloe_rapier_native.a',root/'include',destination,sdk))]
     staging = build/'FloeRapierNative.xcframework'
     if staging.exists(): shutil.rmtree(staging)
     subprocess.run(['xcodebuild','-create-xcframework',*libraries,'-output',str(staging)],env=env,check=True)
@@ -54,7 +57,7 @@ def main():
                     destination.mkdir(parents=True,exist_ok=True)
                     shutil.copyfile(license_file,destination/license_file.name)
     files={str(p.relative_to(output)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(output.rglob('*')) if p.is_file()}
-    manifest={'bridgeVersion':'0.1.0','rapierVersion':'0.36.1','sourceFiles':source_hashes,'cargoLockSHA256':hashlib.sha256((root/'Cargo.lock').read_bytes()).hexdigest(),'slices':['macos-arm64','ios-arm64','ios-arm64-simulator'],'dependencies':notices,'files':files}
+    manifest={'bridgeVersion':'0.1.0','rapierVersion':'0.36.1','layout':'namespaced-static-framework','packagerSHA256':hashlib.sha256((root/'package_apple.py').read_bytes()).hexdigest(),'sourceFiles':source_hashes,'cargoLockSHA256':hashlib.sha256((root/'Cargo.lock').read_bytes()).hexdigest(),'slices':['macos-arm64','ios-arm64','ios-arm64-simulator'],'dependencies':notices,'files':files}
     (output.parent/'FloeRapierNative.manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     print('Saved ' + str(output), flush=True)
 

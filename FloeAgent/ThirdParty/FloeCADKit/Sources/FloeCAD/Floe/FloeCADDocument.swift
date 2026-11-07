@@ -239,6 +239,7 @@ public final class FloeCADDocument {
         session.flushPendingAutosave()
         session.discardOwnedCommandReceipts()
         closed = true
+        CADSimulationLifecycle.closed(session)
         // Fence the store: waits out any in-flight commit and forbids later
         // ones, so the release/delete sequence cannot be resurrected by a
         // late asynchronous flush.

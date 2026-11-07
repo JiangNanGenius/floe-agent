@@ -1,5 +1,8 @@
 import Foundation
 
+/// A live host can fence native work against edits or closure of its source.
+public typealias SimulationSourceValidator = @Sendable (SimulationSourceRef) async throws -> Void
+
 public struct SimulationBackendDescriptor: Codable, Equatable, Sendable, Identifiable {
     public var id: String
     public var version: String

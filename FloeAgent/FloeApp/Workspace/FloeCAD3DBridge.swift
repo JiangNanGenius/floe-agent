@@ -108,6 +108,7 @@ final class FloeCAD3DBridge {
     func requireClosedForFileAction(at url: URL) throws {
         let target = key(url)
         let matches: (String) -> Bool = { $0 == target || $0.hasPrefix(target + "/") }
+        guard !CADSimulationSessions.hasSession(under:url) else { throw WorkspaceFileDeletionError.closeFirst }
         guard !opening.keys.contains(where: matches),
               !filePresentations.contains(where: { matches($0.key) && !$0.value.isEmpty }) else { throw WorkspaceFileDeletionError.closeFirst }
         let cached = documents.filter { matches($0.key) && !$0.value.isClosed }
@@ -294,6 +295,18 @@ final class FloeCAD3DBridge {
             lastMessage = "CAD document changed while releasing; kept open for retry."
             var retry = outcome
             retry.error = String(localized: "cad.recovery.release.changed")
+            return retry
+        }
+        let beforeDrainChange = document.exchangeChangeCount
+        do { try await CADSimulationSessions.close(document:document) }
+        catch {
+            var retry = outcome; retry.error = error.localizedDescription; lastMessage = retry.error
+            return retry
+        }
+        guard documents[key] === document, documentAdoptions[key] == adoption else { return nil }
+        guard !document.hasUnsavedChanges, document.exchangeChangeCount == beforeDrainChange,
+              document.revision == outcome.revision, document.contentSHA256 == outcome.contentSHA256 else {
+            var retry = outcome; retry.error = String(localized:"cad.recovery.release.changed")
             return retry
         }
         documents[key] = nil

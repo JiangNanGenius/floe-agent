@@ -35,11 +35,13 @@ public actor SimulationCoordinator {
     private var worker: Task<Void, Never>?
     private var observers: [UUID: AsyncStream<[SimulationJobSnapshot]>.Continuation] = [:]
     private let archive: SimulationArchiveStore?
+    private let validateSource: SimulationSourceValidator?
     private var closed = false
 
-    public init(backends: [any SimulationBackend] = [], archive: SimulationArchiveStore? = nil) {
+    public init(backends: [any SimulationBackend] = [], archive: SimulationArchiveStore? = nil, validateSource: SimulationSourceValidator? = nil) {
         for backend in backends { self.backends[backend.descriptor.id] = backend }
         self.archive = archive
+        self.validateSource = validateSource
     }
 
     public func register(_ backend: any SimulationBackend) throws {
@@ -160,10 +162,11 @@ public actor SimulationCoordinator {
         let id = queue.removeFirst()
         guard let request = requests[id], let backendID = jobs[id]?.backendID, let backend = backends[backendID] else { launchNext(); return }
         runningID = id; jobs[id]?.status = .running; jobs[id]?.startedAt = Date(); publish()
-        let coordinator = self
+        let coordinator = self, validateSource = self.validateSource
         worker = Task.detached {
             do {
                 try Task.checkCancellation()
+                try await validateSource?(request.source)
                 let result = try await backend.solve(request) { progress in await coordinator.recordProgress(progress, id: id) }
                 try Task.checkCancellation()
                 try result.validate(for: request)
@@ -181,12 +184,14 @@ public actor SimulationCoordinator {
         guard runningID == id, let request = requests[id] else { return }
         let stale = currentSources[sourceKey(request.source)] != request.source || invalidatedJobs.contains(id)
         let cancelled = jobs[id]?.status == .cancelling || failure is CancellationError || (failure as? SimulationError) == .cancelled
-        if stale { jobs[id]?.status = .stale }
+        if stale || (failure as? SimulationError) == .staleSource { jobs[id]?.status = .stale }
         else if cancelled { jobs[id]?.status = .cancelled }
         else if let failure { jobs[id]?.status = .failed; jobs[id]?.error = failure.localizedDescription }
         else if let result {
             do {
+                try await validateSource?(request.source)
                 if let archive { try await archive.saveResult(result, request: request) }
+                try await validateSource?(request.source)
                 // The actor may have received a source change or cancellation while saving.
                 if currentSources[sourceKey(request.source)] != request.source || invalidatedJobs.contains(id) { jobs[id]?.status = .stale }
                 else if jobs[id]?.status == .cancelling { jobs[id]?.status = .cancelled }
@@ -194,7 +199,8 @@ public actor SimulationCoordinator {
                     if archive != nil, results.count >= 2, let oldest = snapshots().compactMap(\.resultID).first(where:{ results[$0] != nil }) { results.removeValue(forKey:oldest) }
                     results[result.id] = result; jobs[id]?.resultID = result.id; jobs[id]?.status = .completed
                 }
-            } catch { jobs[id]?.status = .failed; jobs[id]?.error = error.localizedDescription }
+            } catch SimulationError.staleSource { jobs[id]?.status = .stale }
+            catch { jobs[id]?.status = .failed; jobs[id]?.error = error.localizedDescription }
         } else { jobs[id]?.status = .failed; jobs[id]?.error = "The backend returned no result." }
         jobs[id]?.finishedAt = Date(); requests.removeValue(forKey: id)
         invalidatedJobs.remove(id)

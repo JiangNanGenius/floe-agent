@@ -827,6 +827,7 @@ private struct StudioMediaTool: AgentTool {
     ToolCatalog.register(StudioEditTool.self); registry.register(StudioEditTool(coordinator: coordinator))
     ToolCatalog.register(StudioRunTool.self); registry.register(StudioRunTool(coordinator: coordinator))
     ToolCatalog.register(StudioMachiningTool.self); registry.register(StudioMachiningTool(coordinator: coordinator))
+    ToolCatalog.register(StudioSimulationTool.self); registry.register(StudioSimulationTool(coordinator: coordinator))
     ToolCatalog.register(StudioMediaTool.self); registry.register(StudioMediaTool(coordinator: coordinator))
 }
 #endif

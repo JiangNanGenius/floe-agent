@@ -1,7 +1,7 @@
 import FloeSimulationCore
 
 extension SimulationResultField {
-    var simulationDisplayName: String {
+    public var simulationDisplayName: String {
         let names: (String,String)? = switch id {
         case "potential": ("Electric potential","电势")
         case "electric_field": ("Electric field","电场")

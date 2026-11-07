@@ -44,13 +44,14 @@ struct FloeCADHostChrome: ViewModifier {
     @State private var saveOutcome: String?
     @State private var fullScreen = false
     @State private var building = false
+    @State private var simulationCovered = false
     @State private var printAfterFullscreen = false
 
     func body(content: Content) -> some View {
         content
             .onAppear { filePresentation.attach(document) }
             .onDisappear {
-                if !fullScreen && !building && !externalCoverPresented { filePresentation.release() }
+                if !fullScreen && !building && !externalCoverPresented && !simulationCovered { filePresentation.release() }
             }
             .task(id:ObjectIdentifier(document)) {
                 filePresentation.attach(document)
@@ -60,8 +61,9 @@ struct FloeCADHostChrome: ViewModifier {
             // is TRANSIENTLY covered — its disappearance is not a close, so
             // the close-time preview flush is suppressed (T7T). A real close
             // (cover dismissed) leaves this false and flushes normally.
-            .environment(\.cadWorkbenchTransientlyCovered, fullScreen || building || externalCoverPresented)
+            .environment(\.cadWorkbenchTransientlyCovered, fullScreen || building || externalCoverPresented || simulationCovered)
             .modifier(CADOfflineRenderEntry(document:document,root:workspaceRoot,workspaceID:workspaceID,conversationID:conversationID))
+            .modifier(CADSimulationEntry(document:document,onCoverChange:{ simulationCovered = $0 }))
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { building=true } label:{
@@ -107,6 +109,7 @@ struct FloeCADHostChrome: ViewModifier {
                         .navigationTitle(document.name)
                         .navigationBarTitleDisplayMode(.inline)
                         .modifier(CADOfflineRenderEntry(document:document,root:workspaceRoot,workspaceID:workspaceID,conversationID:conversationID))
+                        .modifier(CADSimulationEntry(document:document))
                         .toolbar {
                             ToolbarItem(placement: .topBarLeading) {
                                 Button(FloeCADStrings.text("engineering.done", "Done")) {

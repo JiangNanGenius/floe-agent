@@ -113,6 +113,15 @@ public enum OrdinaryDocumentActionProfile {
             guard let id = arguments["projectID"] as? String, UUID(uuidString:id) != nil,
                   Set(arguments.keys).isSubset(of:["projectID","action","expectedRevision","studyJSON","title","offset","limit"]) else { return nil }
             return arguments["action"] as? String == "inspect" ? .readOnly:nil
+        case "studio.simulation":
+            guard let id = arguments["projectID"] as? String, UUID(uuidString:id) != nil,
+                  Set(arguments.keys).isSubset(of:["projectID","command","inputJSON"]),
+                  let command = arguments["command"] as? String else { return nil }
+            if let value = arguments["inputJSON"], !(value is NSNull) {
+                guard let text = value as? String, text.utf8.count <= 524_288,
+                      (try? JSONSerialization.jsonObject(with:Data(text.utf8))) is [String:Any] else { return nil }
+            }
+            return ["definitions","simulation.read","simulation.objects","simulation.capabilities","simulation.templates","simulation.study.read","simulation.materials","simulation.mesh.info","simulation.jobs","simulation.mesh.jobs","simulation.results","simulation.result.info","simulation.result.field","simulation.animation.read","simulation.animation.status"].contains(command) ? .readOnly:nil
         case "studio.chemistry":
             guard let id = arguments["projectID"] as? String, UUID(uuidString:id) != nil,
                   Set(arguments.keys).isSubset(of:["projectID","action","inputJSON"]) else { return nil }

@@ -16,7 +16,7 @@ struct SimulationStudySettingsView: View {
             }
             switch kind {
             case .rigidBody,.skeletalPhysics,.cloth,.rope,.softBody:
-                PhysicsSettings(configuration:Binding(get:{ model.physics },set:{ model.writeConfiguration($0) }))
+                PhysicsSettings(configuration:Binding(get:{ model.physics },set:{ model.writeConfiguration($0) }),names:Dictionary(uniqueKeysWithValues:model.sourceObjects.map { ($0.id,$0.name) }))
             case .structuralStatic,.beamShell,.laminate,.modal,.buckling,.nonlinearContact,.thermalSteady,.thermalTransient,.thermalStress:
                 EngineeringSettings(configuration:Binding(get:{ model.engineering },set:{ model.writeConfiguration($0) }),kind:kind,mesh:model.activeMesh,results:model.savedResults)
             case .incompressibleFlow,.compressibleFlow,.turbulentFlow:
@@ -102,13 +102,15 @@ struct SimulationTimeFields: View {
 
 private struct PhysicsSettings: View {
     @Binding var configuration: PhysicsSimulationConfiguration
+    var names: [String:String] = [:]
     var body: some View {
         Section(simulationText("World","场景")) { SimulationVectorFields(title:simulationText("Gravity","重力"),value:$configuration.gravity,unit:"m/s²"); SimulationTimeFields(time:$configuration.time) }
         SimulationForceFieldSettings(fields:$configuration.forceFields)
         Section(simulationText("Bodies","物体")) {
             ForEach($configuration.bodies) { $body in
-                DisclosureGroup(body.sourceObjectID) {
-                    TextField(simulationText("Object","对象"),text:$body.sourceObjectID)
+                DisclosureGroup(names[body.sourceObjectID] ?? body.sourceObjectID) {
+                    if let name = names[body.sourceObjectID] { LabeledContent(simulationText("Object","对象"),value:name) }
+                    else { TextField(simulationText("Name","名称"),text:$body.sourceObjectID) }
                     SimulationChoicePicker(title:simulationText("Motion","运动模式"),selection:$body.motion)
                     SimulationChoicePicker(title:simulationText("Collider","碰撞形体"),selection:$body.collider.kind)
                     SimulationVectorFields(title:simulationText("Position","位置"),value:$body.translation,unit:"m")
@@ -136,8 +138,8 @@ private struct PhysicsSettings: View {
             ForEach($configuration.joints) { $joint in
                 DisclosureGroup(simulationOption(joint.kind.rawValue)) {
                     SimulationChoicePicker(title:simulationText("Type","类型"),selection:$joint.kind)
-                    Picker(simulationText("First body","物体一"),selection:$joint.firstBody) { ForEach(configuration.bodies) { Text($0.sourceObjectID).tag($0.id) } }
-                    Picker(simulationText("Second body","物体二"),selection:$joint.secondBody) { ForEach(configuration.bodies) { Text($0.sourceObjectID).tag($0.id) } }
+                    Picker(simulationText("First body","物体一"),selection:$joint.firstBody) { ForEach(configuration.bodies) { Text(names[$0.sourceObjectID] ?? $0.sourceObjectID).tag($0.id) } }
+                    Picker(simulationText("Second body","物体二"),selection:$joint.secondBody) { ForEach(configuration.bodies) { Text(names[$0.sourceObjectID] ?? $0.sourceObjectID).tag($0.id) } }
                     SimulationVectorFields(title:simulationText("First anchor","锚点一"),value:$joint.firstAnchor,unit:"m")
                     SimulationVectorFields(title:simulationText("Second anchor","锚点二"),value:$joint.secondAnchor,unit:"m")
                     SimulationVectorFields(title:simulationText("Axis","轴向"),value:$joint.axis)

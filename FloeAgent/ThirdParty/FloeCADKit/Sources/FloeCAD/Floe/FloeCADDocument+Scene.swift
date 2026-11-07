@@ -208,7 +208,7 @@ extension FloeCADDocument {
     /// export, GLB-style captures) must pass false: a display-only preview must
     /// never be baked into an exported baseline. The saved assembly data is
     /// never modified either way.
-    func sceneSnapshot(includeExplodedPreview: Bool = true) -> CADSceneSnapshot {
+    func sceneSnapshot(includeExplodedPreview: Bool = true, includeAnimationPreview: Bool = true) -> CADSceneSnapshot {
         var bodies: [CADSceneBodyResource] = []
         var unresolved: [CADSceneUnresolvedFaceBinding] = []
         var images: [String: CADSceneImageResource] = [:]
@@ -231,7 +231,7 @@ extension FloeCADDocument {
             }
         }
 
-        let rigPose = rigPlayback().flatMap { try? $0.evaluate(at:nil) }
+        let rigPose = includeAnimationPreview ? rigPlayback().flatMap { try? $0.evaluate(at:nil) } : nil
         for body in session.document.bodies {
             let m = body.transform.matrix
             let transform = [m.columns.0.x, m.columns.0.y, m.columns.0.z, m.columns.0.w,

@@ -749,6 +749,7 @@ final class DocumentSession {
 
     private func didChange(autosave: Bool = true, persistedChange: Bool = true) {
         changeCount += 1
+        CADSimulationLifecycle.changed(self)
         if persistedChange { persistenceChangeCount = changeCount }
         if autosave {
             scheduleAutosave()
@@ -2952,7 +2953,9 @@ final class DocumentSession {
         }
     }
 
-    private func serializedBrep(for body: Body) -> Data? {
+    // Geometry consumers reuse the verified persistence archive. Serializing
+    // a restored OCCT handle again can change bytes without changing shape.
+    func serializedBrep(for body: Body) -> Data? {
         // A body owns at most one exact shape. Prefer the solid field if a
         // future path ever leaves both populated.
         guard let handle = body.brep ?? body.surfaceBRep else { return nil }

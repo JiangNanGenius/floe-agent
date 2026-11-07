@@ -8,6 +8,13 @@ import FloeSimulationPhysics
 import FloeSimulationFields
 import FloeSimulationAnimation
 
+public struct SimulationSourceObject: Identifiable, Codable, Equatable, Sendable {
+    public var id: String
+    public var name: String
+    public var restTransform: SimulationAnimationTransform
+    public init(id: String, name: String, restTransform: SimulationAnimationTransform) { self.id = id; self.name = name; self.restTransform = restTransform }
+}
+
 @MainActor @Observable public final class SimulationWorkbenchModel {
     public private(set) var document: SimulationWorkspaceDocument
     public var selectedStudyID: UUID? {
@@ -27,6 +34,10 @@ import FloeSimulationAnimation
     public private(set) var hasUnsavedChanges = false
     public private(set) var hasExternalChanges = false
     public private(set) var isClosed = false
+    public private(set) var sourceAvailable = true
+    public private(set) var sourceObjects: [SimulationSourceObject] = []
+    public private(set) var animationPreviewRevision: UInt64 = 0
+    public var displaysAnimation = false
     public var animationTimeSeconds = 0.0
     public private(set) var animationPose: SimulationAnimationPose?
     public private(set) var baking = false
@@ -54,7 +65,7 @@ import FloeSimulationAnimation
         set { document.meshSettings = newValue; hasUnsavedChanges = true }
     }
     public func generateMesh() async {
-        guard !isClosed else { return }
+        guard !isClosed, sourceAvailable else { return }
         if hasUnsavedChanges, !(await save()) { return }
         guard let study = selectedStudy, let meshing else { return }
         do { _ = try await meshing.start(studyID:study.id,source:document.source,expectedGeneration:generation,settings:meshSettings); errorDetails = nil }
@@ -64,18 +75,27 @@ import FloeSimulationAnimation
     @discardableResult public func refreshSource(_ source: SimulationSourceRef) async -> Bool {
         guard !isClosed else { return false }
         if hasUnsavedChanges, !(await save()) { return false }
-        guard source != document.source else { return true }
+        guard source != document.source else { sourceAvailable = true; return true }
         do {
             var candidate = document; candidate.source = source; candidate.meshes = []
             for index in candidate.studies.indices { candidate.studies[index].meshID = nil; try candidate.studies[index].touch() }
             let committed = try await workspace.commit(candidate,expectedGeneration:generation)
             document = committed.document; generation = committed.generation; hasUnsavedChanges = false; hasExternalChanges = false
-            animationPose = nil; cancelBake(); result = nil; exportURL = nil; errorDetails = nil; return true
+            sourceAvailable = true; animationPose = nil; cancelBake(); result = nil; exportURL = nil; errorDetails = nil; return true
         } catch { errorDetails = error.localizedDescription; return false }
+    }
+    /// Called synchronously by the live CAD owner before awaiting a new snapshot.
+    public func invalidateLiveSource() {
+        sourceAvailable = false; result = nil; animationPose = nil; exportURL = nil; cancelBake()
+        Task { await coordinator.cancelAll(); for job in await meshing?.snapshots() ?? [] where !job.status.isTerminal { await meshing?.cancel(job.id) } }
     }
     public var activeMesh: SimulationMesh? {
         if let meshID = selectedStudy?.meshID { return document.meshes.first { $0.id == meshID && $0.source == document.source } }
         return document.meshes.last { $0.source == document.source }
+    }
+    public func setSourceObjects(_ objects: [SimulationSourceObject]) {
+        guard !isClosed, objects.count <= 256, Set(objects.map(\.id)).count == objects.count else { return }
+        sourceObjects = objects
     }
     public var currentFrame: SimulationResultFrame? { result.flatMap { $0.frames.indices.contains(frameIndex) ? $0.frames[frameIndex] : $0.frames.first } }
     public var currentField: SimulationResultField? { currentFrame.flatMap { frame in frame.fields.first { $0.id == selectedFieldID } ?? frame.fields.first } }
@@ -102,24 +122,32 @@ import FloeSimulationAnimation
         } catch { errorDetails = error.localizedDescription }
     }
     public func previewAnimation() {
+        animationPreviewRevision &+= 1
+        guard !isClosed, sourceAvailable else { animationPose = nil; return }
         do { let graph = animationGraph; guard graph.source == document.source else { throw SimulationError.staleSource }; animationPose = try SimulationAnimationEvaluator.evaluate(graph,timeSeconds:animationTimeSeconds,physics:graph.physicsResultID == nil ? nil : result); errorDetails = nil }
         catch { animationPose = nil; errorDetails = error.localizedDescription }
     }
     public func bakeAnimation() async {
-        guard !baking, !isClosed else { return }; baking = true; bakeCancelling = false
+        guard !baking, !isClosed, sourceAvailable else { return }; baking = true; bakeCancelling = false
+        exportURL = nil; errorDetails = nil
         defer {
             baking = false; bakeTask = nil; bakeCancelling = false
             let waiting = bakeEndWaiters; bakeEndWaiters = []; for waiter in waiting { waiter.resume() }
         }
+        if hasUnsavedChanges, !(await save()) { return }
+        guard sourceAvailable, !isClosed else { return }
+        let capturedGeneration = await workspace.snapshot().generation
         let graph = animationGraph, physics = graph.physicsResultID == nil ? nil : result
         do {
             let progress: SimulationProgressHandler = { [weak self] value in await self?.recordBakeProgress(value) }
             let task = Task.detached { try await SimulationAnimationBaker.bake(graph,physics:physics,progress:progress) }
             bakeTask = task
             let bake = try await task.value
-            guard !isClosed, !bakeCancelling, document.source == graph.source, animationGraph == graph else { throw SimulationError.staleSource }
+            guard !isClosed, sourceAvailable, !bakeCancelling, document.source == graph.source, animationGraph == graph,
+                  await workspace.snapshot().generation == capturedGeneration else { throw SimulationError.staleSource }
             let url = try await archive.saveAttachment(bake,id:UUID(),fileExtension:"animation.json")
-            guard !isClosed, document.source == graph.source, animationGraph == graph else { throw SimulationError.staleSource }
+            guard !isClosed, sourceAvailable, document.source == graph.source, animationGraph == graph,
+                  await workspace.snapshot().generation == capturedGeneration else { throw SimulationError.staleSource }
             exportURL = url
         } catch is CancellationError { return } catch { errorDetails = error.localizedDescription }
     }
@@ -204,7 +232,7 @@ import FloeSimulationAnimation
         }
     }
     public func run() async {
-        guard !isClosed else { return }
+        guard !isClosed, sourceAvailable else { return }
         if hasUnsavedChanges, !(await save()) { return }
         guard let study = selectedStudy else { return }
         do {

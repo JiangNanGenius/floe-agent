@@ -10,7 +10,7 @@ import FloeSimulationGeometry
     private var opening: [String:Task<SimulationWorkbenchModel,any Error>] = [:]
     private var closing = Set<String>()
     public init() {}
-    public func open(initial: SimulationWorkspaceDocument, directory: URL, additionalBackends: [any SimulationBackend] = [], geometryProvider: SimulationGeometryProvider? = nil) async throws -> SimulationWorkbenchModel {
+    public func open(initial: SimulationWorkspaceDocument, directory: URL, additionalBackends: [any SimulationBackend] = [], geometryProvider: SimulationGeometryProvider? = nil, validateSource: SimulationSourceValidator? = nil) async throws -> SimulationWorkbenchModel {
         let key = try key(directory)
         guard !closing.contains(key) else { throw SimulationError.invalidInput("Wait for this simulation workspace to close.") }
         let model: SimulationWorkbenchModel
@@ -19,7 +19,7 @@ import FloeSimulationGeometry
         else {
             guard models.count+opening.count < 16 else { throw SimulationError.resourceLimit("Close another simulation workspace before opening this one.") }
             let pending = Task { @MainActor in
-                try await SimulationWorkbenchFactory.openOrCreate(initial:initial,directory:directory,additionalBackends:additionalBackends,geometryProvider:geometryProvider)
+                try await SimulationWorkbenchFactory.openOrCreate(initial:initial,directory:directory,additionalBackends:additionalBackends,geometryProvider:geometryProvider,validateSource:validateSource)
             }
             opening[key] = pending
             defer { opening.removeValue(forKey:key) }

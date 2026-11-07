@@ -5,6 +5,8 @@ options:
 packages:
   FloeSimulationKit:
     path: ../../Modules/FloeSimulationKit
+  FloeCADKit:
+    path: ../../ThirdParty/FloeCADKit
 settings:
   base:
     SWIFT_VERSION: '6.0'
@@ -25,7 +27,7 @@ targets:
   SimulationNativeCodeChecks:
     type: bundle.unit-test
     platform: iOS
-    sources: [NativeCodeChecks.swift, Fixtures]
+    sources: [NativeCodeChecks.swift, CADIdentityCodeChecks.swift, Fixtures]
     dependencies:
       - target: SimulationNativeCodeHost
       - package: FloeSimulationKit
@@ -36,6 +38,8 @@ targets:
         product: FloeSimulationGeometry
       - package: FloeSimulationKit
         product: FloeSimulationFields
+      - package: FloeCADKit
+        product: FloeCAD
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.simulation.native-tests

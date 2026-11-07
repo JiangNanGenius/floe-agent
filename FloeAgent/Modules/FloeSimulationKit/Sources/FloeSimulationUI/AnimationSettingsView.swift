@@ -9,8 +9,13 @@ struct SimulationAnimationSettingsView: View {
         Form {
             Section(simulationText("Animation","动画")) {
                 SimulationNumberField(label:simulationText("Duration","时长"),value:graph.durationSeconds,unit:"s")
-                Slider(value:$model.animationTimeSeconds,in:0...max(0.001,model.animationGraph.durationSeconds.isFinite ? model.animationGraph.durationSeconds : 1)).onChange(of:model.animationTimeSeconds) { model.previewAnimation() }
                 Button(simulationText("Preview pose","预览姿态")) { model.previewAnimation() }
+                if model.animationGraph.source != model.document.source {
+                    Button(simulationText("Use current model","使用当前模型")) {
+                        var value = model.animationGraph; value.source = model.document.source
+                        value.physicsResultID = nil; value.physicsBindings = []; model.writeAnimationGraph(value)
+                    }
+                }
             }
             Section(simulationText("Animation layers","动画层")) {
                 ForEach(graph.layers) { $layer in
@@ -18,7 +23,7 @@ struct SimulationAnimationSettingsView: View {
                         SimulationNumberField(label:simulationText("Weight","权重"),value:$layer.weight)
                         Toggle(simulationText("Additive","附加混合"),isOn:$layer.additive)
                         ForEach($layer.tracks) { $track in
-                            DisclosureGroup(track.targetID) {
+                            DisclosureGroup(model.sourceObjects.first { $0.id == track.targetID }?.name ?? track.targetID) {
                                 TextField(simulationText("Object, bone or camera","对象、骨骼或相机"),text:$track.targetID)
                                 ForEach(track.keys.indices,id:\.self) { index in
                                     DisclosureGroup("\(track.keys[index].timeSeconds.formatted()) s") {
@@ -30,7 +35,15 @@ struct SimulationAnimationSettingsView: View {
                                 Button(simulationText("Remove track","移除轨道"),role:.destructive) { layer.tracks.removeAll { $0.id == track.id } }
                             }
                         }
-                        Button(simulationText("Add track","添加轨道")) { layer.tracks.append(.init(targetID:"object-\(layer.tracks.count+1)",keys:[.init(timeSeconds:0,transform:.identity)])) }
+                        Menu(simulationText("Add track","添加轨道")) {
+                            ForEach(model.sourceObjects) { object in
+                                Button(object.name) { layer.tracks.append(.init(targetID:object.id,keys:[.init(timeSeconds:0,transform:object.restTransform)])) }
+                            }
+                            ForEach(model.animationGraph.bones) { bone in
+                                Button(bone.id) { layer.tracks.append(.init(targetID:bone.id,keys:[.init(timeSeconds:0,transform:bone.restLocal)])) }
+                            }
+                            Button(simulationText("Custom track","自定义轨道")) { layer.tracks.append(.init(targetID:"object-\(layer.tracks.count+1)",keys:[.init(timeSeconds:0,transform:.identity)])) }
+                        }
                     }
                 }
                 Button(simulationText("Add layer","添加图层")) { var value = model.animationGraph; value.layers.append(.init()); model.writeAnimationGraph(value) }

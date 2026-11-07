@@ -227,8 +227,8 @@ public enum DeterministicLocalApprovalPolicy {
         return true
     }
 
-    private static let nativeStudioWriteTools:Set<String> = ["studio.create","studio.edit","studio.run","studio.media","studio.chemistry","studio.machining"]
-    private static let nativeStudioReadTools:Set<String> = ["studio.list","studio.run","studio.chemistry","studio.machining"]
+    private static let nativeStudioWriteTools:Set<String> = ["studio.create","studio.edit","studio.run","studio.media","studio.chemistry","studio.machining","studio.simulation"]
+    private static let nativeStudioReadTools:Set<String> = ["studio.list","studio.run","studio.chemistry","studio.machining","studio.simulation"]
 
     /// A real service path is required; the typed resolver/action table still
     /// decides coverage. This does not grant access to an unbound record.

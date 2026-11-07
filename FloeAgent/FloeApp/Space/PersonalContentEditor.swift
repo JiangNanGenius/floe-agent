@@ -177,6 +177,8 @@ struct PersonalContentEditor: View {
                             ownerID: record.id,
                             onPreparePrint: { Task { await preparePrint() } },
                             onAssistant: { showingAssistant = true }))
+                        .modifier(CADSimulationEntry(document:document,
+                            directory:document.url.deletingLastPathComponent().appendingPathComponent("Simulation",isDirectory:true),ownerID:record.id))
                     }
                 } else if let error {
                     ContentUnavailableView {
@@ -329,6 +331,8 @@ struct PersonalContentEditor: View {
         case .text(let document): guard await document.close() else { return }
         case .chemistry(let session): guard await session.flushForClose() else { return }
         case .cad(let document):
+            do { try await CADSimulationSessions.close(document:document) }
+            catch { self.error = error.localizedDescription; return }
             let saved = await document.save()
             guard saved.succeeded else { error = saved.error; return }
             document.close()

@@ -42,6 +42,7 @@ public struct RapierSimulationBackend: SimulationBackend {
         try Task.checkCancellation()
         let bodyIDs = configuration.bodies.map(\.id), softIDs = configuration.softBodies.map(\.id)
         var diagnostics = ["bodyIDs":bodyIDs.map(\.uuidString).joined(separator: ","), "seed":String(output.seed), "stepSeconds":String(configuration.time.stepSeconds)]
+        diagnostics["bodySourceObjectIDs"] = String(decoding:try JSONEncoder().encode(configuration.bodies.map(\.sourceObjectID)),as:UTF8.self)
         guard output.softTopology.map(\.id) == softIDs else { throw SimulationError.solverFailure("Soft-body topology identities do not match the scene.") }
         for topology in output.softTopology { diagnostics["soft/"+topology.id.uuidString+"/triangles"] = String(data:try JSONEncoder().encode(topology.triangles),encoding:.utf8) }
         let frames = try output.frames.enumerated().map { index, frame -> SimulationResultFrame in

@@ -407,15 +407,25 @@
     }
   ],
   "files": {
-    "Info.plist": "6e37f4468775b2184979785a78ba419fed2c7ed1492aaf880c83f8e928b01e8f",
-    "ios-arm64/Headers/FloeRapierNative.h": "c564743762a3822b55a3e28b735767cc6cff407a12c1a55612365febc460a913",
-    "ios-arm64/Headers/module.modulemap": "c4e3e8bc6fed8a5df30acc09b74a889bdbc21f77376737b5854f692087db9a12",
-    "ios-arm64/libfloe_rapier_native.a": "03d61e38d8b803aae1e98619d41a7ec23274b5e790c60b00e57512fd2fc652e9",
-    "ios-arm64-simulator/Headers/FloeRapierNative.h": "c564743762a3822b55a3e28b735767cc6cff407a12c1a55612365febc460a913",
-    "ios-arm64-simulator/Headers/module.modulemap": "c4e3e8bc6fed8a5df30acc09b74a889bdbc21f77376737b5854f692087db9a12",
-    "ios-arm64-simulator/libfloe_rapier_native.a": "f996b62916b7cd8b70846c36c031509d81b8a7f98bc93dd725047931e8a06be9",
-    "macos-arm64/Headers/FloeRapierNative.h": "c564743762a3822b55a3e28b735767cc6cff407a12c1a55612365febc460a913",
-    "macos-arm64/Headers/module.modulemap": "c4e3e8bc6fed8a5df30acc09b74a889bdbc21f77376737b5854f692087db9a12",
-    "macos-arm64/libfloe_rapier_native.a": "e49dab4c8a6182ce8a10ac52ce8e03c61825c466ab52ccfb9b0a57a908331b7f"
-  }
+    "Info.plist": "39b4c24681c340c1fd9d56b3fb67b54cf1367b3444acae63a93a27636687cf08",
+    "ios-arm64/FloeRapierNative.framework/FloeRapierNative": "03d61e38d8b803aae1e98619d41a7ec23274b5e790c60b00e57512fd2fc652e9",
+    "ios-arm64/FloeRapierNative.framework/Headers/FloeRapierNative.h": "c564743762a3822b55a3e28b735767cc6cff407a12c1a55612365febc460a913",
+    "ios-arm64/FloeRapierNative.framework/Info.plist": "77a8c647d4c60360ddb6e515f4da0db5edda13d16e3944bcfd7651367c45b4e0",
+    "ios-arm64/FloeRapierNative.framework/Modules/module.modulemap": "913f746021536a996b5b6f3fe7372893e94463e82dfec7157cc5df4d350c65c0",
+    "ios-arm64-simulator/FloeRapierNative.framework/FloeRapierNative": "f996b62916b7cd8b70846c36c031509d81b8a7f98bc93dd725047931e8a06be9",
+    "ios-arm64-simulator/FloeRapierNative.framework/Headers/FloeRapierNative.h": "c564743762a3822b55a3e28b735767cc6cff407a12c1a55612365febc460a913",
+    "ios-arm64-simulator/FloeRapierNative.framework/Info.plist": "aec284e235d7f79630c6632eb753e38fc4d363b4b2541232fbd3c103bbfa1aab",
+    "ios-arm64-simulator/FloeRapierNative.framework/Modules/module.modulemap": "913f746021536a996b5b6f3fe7372893e94463e82dfec7157cc5df4d350c65c0",
+    "macos-arm64/FloeRapierNative.framework/FloeRapierNative": "e49dab4c8a6182ce8a10ac52ce8e03c61825c466ab52ccfb9b0a57a908331b7f",
+    "macos-arm64/FloeRapierNative.framework/Headers/FloeRapierNative.h": "c564743762a3822b55a3e28b735767cc6cff407a12c1a55612365febc460a913",
+    "macos-arm64/FloeRapierNative.framework/Info.plist": "e5df239a5957bfe2d107414b6468a05824b992b496e4ec95827c900a951fa311",
+    "macos-arm64/FloeRapierNative.framework/Modules/module.modulemap": "913f746021536a996b5b6f3fe7372893e94463e82dfec7157cc5df4d350c65c0"
+  },
+  "layout": "namespaced-static-framework",
+  "archiveBytesReused": {
+    "macos-arm64": "e49dab4c8a6182ce8a10ac52ce8e03c61825c466ab52ccfb9b0a57a908331b7f",
+    "ios-arm64": "03d61e38d8b803aae1e98619d41a7ec23274b5e790c60b00e57512fd2fc652e9",
+    "ios-arm64-simulator": "f996b62916b7cd8b70846c36c031509d81b8a7f98bc93dd725047931e8a06be9"
+  },
+  "packagerSHA256": "d03a5474c2f0a3343b4a716a08e26caee3d130a5c6307198b55fd0e5db1c2b29"
 }

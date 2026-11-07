@@ -25,6 +25,7 @@ public actor SimulationMeshingService {
     private let workspace: SimulationWorkspaceStore
     private let mesher: NativeSimulationMesher
     private let geometry: SimulationGeometryProvider
+    private let validateSource: SimulationSourceValidator?
     private var activeID: UUID?
     private var committing = false
     private var closed = false
@@ -34,8 +35,9 @@ public actor SimulationMeshingService {
     private var jobs: [SimulationMeshJobSnapshot] = []
     private var observers: [UUID:AsyncStream<[SimulationMeshJobSnapshot]>.Continuation] = [:]
 
-    public init(workspace: SimulationWorkspaceStore, mesher: NativeSimulationMesher, geometry: @escaping SimulationGeometryProvider) {
+    public init(workspace: SimulationWorkspaceStore, mesher: NativeSimulationMesher, geometry: @escaping SimulationGeometryProvider, validateSource: SimulationSourceValidator? = nil) {
         self.workspace = workspace; self.mesher = mesher; self.geometry = geometry; isAvailable = mesher.isAvailable
+        self.validateSource = validateSource
     }
     public func snapshots() -> [SimulationMeshJobSnapshot] { jobs }
     public func updates() -> AsyncStream<[SimulationMeshJobSnapshot]> {
@@ -99,6 +101,7 @@ public actor SimulationMeshingService {
         guard let mesh else { update(id) { $0.status = .failed; $0.error = "The native mesher returned no mesh." }; return }
         committing = true; update(id) { $0.progress = .init(stage:"saving") }; publish()
         do {
+            try await validateSource?(job.source)
             var snapshot = await workspace.snapshot()
             guard snapshot.generation == expectedGeneration, snapshot.document.source == job.source,
                   let study = snapshot.document.studies.firstIndex(where:{ $0.id == job.studyID }) else { throw SimulationError.staleSource }

@@ -8,7 +8,6 @@ public struct SimulationWorkbenchView<Viewport: View>: View {
     @Bindable private var model: SimulationWorkbenchModel
     private let viewport: (SimulationWorkbenchModel) -> Viewport
     @State private var capabilities: [SimulationBackendDescriptor] = []
-    @State private var animationMode = false
     @State private var playing = false
     public init(model: SimulationWorkbenchModel, @ViewBuilder viewport: @escaping (SimulationWorkbenchModel) -> Viewport) { self.model = model; self.viewport = viewport }
     public var body: some View {
@@ -36,9 +35,15 @@ public struct SimulationWorkbenchView<Viewport: View>: View {
         .task(id:playing) {
             while playing, !Task.isCancelled {
                 do { try await Task.sleep(for:.milliseconds(33)) } catch { break }
-                if let frames = model.result?.frames, frames.count > 1 { model.frameIndex = (model.frameIndex+1)%frames.count }
+                if model.displaysAnimation {
+                    let duration = model.animationGraph.durationSeconds
+                    guard duration.isFinite, duration > 0 else { playing = false; break }
+                    model.animationTimeSeconds = (model.animationTimeSeconds+1/30).truncatingRemainder(dividingBy:duration)
+                    model.previewAnimation()
+                } else if let frames = model.result?.frames, frames.count > 1 { model.frameIndex = (model.frameIndex+1)%frames.count }
             }
         }
+        .onChange(of:model.displaysAnimation) { _,_ in playing = false }
         .accessibilityIdentifier("simulation.workbench")
         .disabled(model.isClosed)
     }
@@ -64,17 +69,17 @@ public struct SimulationWorkbenchView<Viewport: View>: View {
             Button { Task { await model.run() } } label: { Image(systemName:"play.fill") }.accessibilityLabel(simulationText("Run","运行")).disabled(model.selectedStudy == nil || !canRun).accessibilityIdentifier("simulation.run")
         }.buttonStyle(.bordered)
     }
-    private var canRun: Bool { guard let kind = model.selectedStudy?.kind else { return false }; return capabilities.contains { $0.isAvailable && $0.supportedStudies.contains(kind) } }
+    private var canRun: Bool { guard model.sourceAvailable, let kind = model.selectedStudy?.kind else { return false }; return capabilities.contains { $0.isAvailable && $0.supportedStudies.contains(kind) } }
     private var inspector: some View {
         VStack(spacing:0) {
-            Picker(simulationText("Workspace","工作模式"),selection:$animationMode) {
+            Picker(simulationText("Workspace","工作模式"),selection:$model.displaysAnimation) {
                 Text(simulationText("Studies","仿真分析")).tag(false)
                 Text(simulationText("Animation","动画")).tag(true)
             }.pickerStyle(.segmented).padding(.horizontal)
             if model.hasExternalChanges {
                 Button(simulationText("Workspace changed · Reload","工作区已更新 · 重新载入")) { Task { await model.reopen() } }.font(.caption).padding(.horizontal)
             }
-            if animationMode { SimulationAnimationSettingsView(model:model) }
+            if model.displaysAnimation { SimulationAnimationSettingsView(model:model) }
             else if let study = model.selectedStudy {
                 Picker(simulationText("Study","研究"),selection:$model.selectedStudyID) { ForEach(model.document.studies) { Text($0.name).tag(Optional($0.id)) } }.padding(.horizontal)
                 SimulationMeshSettingsView(model:model)
@@ -89,7 +94,14 @@ public struct SimulationWorkbenchView<Viewport: View>: View {
     }
     private var timeline: some View {
         Group {
-            if let result = model.result, result.frames.count > 1 {
+            if model.displaysAnimation {
+                let duration = max(0.001,model.animationGraph.durationSeconds.isFinite ? model.animationGraph.durationSeconds : 1)
+                HStack {
+                    Button { playing.toggle() } label: { Image(systemName:playing ? "pause.fill" : "play.fill") }.accessibilityLabel(playing ? simulationText("Pause","暂停") : simulationText("Play","播放"))
+                    Slider(value:Binding(get:{ min(duration,max(0,model.animationTimeSeconds)) },set:{ model.animationTimeSeconds = $0; model.previewAnimation() }),in:0...duration)
+                    Text(String(format:"%.3f s",model.animationTimeSeconds)).monospacedDigit().font(.caption)
+                }.padding(.horizontal).frame(minHeight:44).accessibilityIdentifier("simulation.animation.timeline")
+            } else if let result = model.result, result.frames.count > 1 {
                 HStack {
                     Button { playing.toggle() } label: { Image(systemName:playing ? "pause.fill" : "play.fill") }.accessibilityLabel(playing ? simulationText("Pause","暂停") : simulationText("Play","播放"))
                     Slider(value:Binding(get:{ Double(model.frameIndex) },set:{ model.frameIndex = Int($0.rounded()); model.probeIndex = 0 }),in:0...Double(result.frames.count-1),step:1)

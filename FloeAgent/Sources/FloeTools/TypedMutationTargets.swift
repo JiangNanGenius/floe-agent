@@ -216,7 +216,7 @@ public enum TypedMutationContract {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         switch toolName {
-        case "studio.create", "studio.edit", "studio.run", "studio.media", "studio.chemistry", "studio.machining":
+        case "studio.create", "studio.edit", "studio.run", "studio.media", "studio.chemistry", "studio.machining", "studio.simulation":
             return nativeStudioSpecs(toolName:toolName,arguments:arguments)
         case "document.pdf.edit":
             // inputPath is read-only; the verified new copy is outputPath.
@@ -519,6 +519,13 @@ public enum TypedMutationContract {
                       let action = arguments["action"] as? String,
                       ["prepare","configure","calculate","exportSTL","exportToolpath","preparePrint"].contains(action),
                       text("expectedRevision",4096) != nil else { return [] }
+            case "studio.simulation":
+                guard keys(["projectID","command","inputJSON"]), let command = arguments["command"] as? String,
+                      ["simulation.study.put","simulation.material.put","simulation.run","simulation.mesh.generate","simulation.cancel","simulation.mesh.cancel","simulation.export","simulation.animation.put","simulation.animation.preview","simulation.animation.bake","simulation.animation.cancel"].contains(command) else { return [] }
+                if let value = arguments["inputJSON"], !(value is NSNull) {
+                    guard let text = value as? String, text.utf8.count <= 524_288,
+                          (try? JSONSerialization.jsonObject(with:Data(text.utf8))) is [String:Any] else { return [] }
+                }
             default: return []
             }
             role = .sourceWrite
