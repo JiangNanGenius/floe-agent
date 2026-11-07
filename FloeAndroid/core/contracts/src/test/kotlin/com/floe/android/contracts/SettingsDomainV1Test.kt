@@ -47,7 +47,7 @@ class SettingsDomainV1Test {
             "project.list", "project.get", "project.create", "project.rename",
             "project.assign", "project.delete",
         )
-        val rows = BridgeV3CommandMatrix.ENTRIES.drop(108)
+        val rows = BridgeV3CommandMatrix.ENTRIES.drop(108).take(6)
         assertEquals(expected, rows.map { it.command })
         val writes = setOf(
             "project.create", "project.rename", "project.assign", "project.delete",
@@ -58,6 +58,17 @@ class SettingsDomainV1Test {
             assertEquals(row.command in writes, row.revisionRequired)
             assertEquals(row.command == "project.create", row.allowsCreateIntent)
         }
+    }
+
+    @Test
+    fun systemConditionsAppendOnlyTheExistingScheduleRevisionRole() {
+        val row = BridgeV3CommandMatrix.ENTRIES.drop(114).single()
+        assertEquals("schedule.systemEvent", row.command)
+        assertEquals(BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, row.scope)
+        assertEquals("schedule", row.configurationScope)
+        assertTrue(row.revisionRequired)
+        assertFalse(row.allowsCreateIntent)
+        assertNull(BridgeV3CommandMatrix.entry(row.command, BridgeV3Scope.Kind.TASK_EXECUTION))
     }
 
     private fun failure(
@@ -74,7 +85,7 @@ class SettingsDomainV1Test {
         // 90 accepted tuples + the five G07.3A interaction tuples. The first
         // 90 entries (including the G04 workspace ledger at the tail before
         // this batch) remain intact; the interaction tuples are appended.
-        assertEquals(114, BridgeV3CommandMatrix.ENTRIES.size)
+        assertEquals(115, BridgeV3CommandMatrix.ENTRIES.size)
         val interactionCommands = listOf(
             "conversation.messageSearch", "conversation.messageWindow",
             "question.pending", "question.answer", "question.cancel",
@@ -401,16 +412,16 @@ class SettingsDomainV1Test {
         val keys = entries.map {
             "${it.scope.wire}|${it.configurationScope ?: ""}|${it.command}"
         }
-        assertEquals(114, keys.toSet().size)
+        assertEquals(115, keys.toSet().size)
         assertEquals(57, entries.take(57).map {
             "${it.scope.wire}|${it.configurationScope ?: ""}|${it.command}"
         }.toSet().size)
-        assertEquals(113, entries.map { "${it.scope.wire}|${it.command}" }.toSet().size)
+        assertEquals(114, entries.map { "${it.scope.wire}|${it.command}" }.toSet().size)
         assertEquals(2, entries.count {
             it.scope == BridgeV3Scope.Kind.APPLICATION_CONFIGURATION &&
                 it.command == "content.read"
         })
-        assertEquals(114, entries.size)
+        assertEquals(115, entries.size)
         assertEquals(20, BridgeProtocolV3.CONFIGURATION_SCOPES.size)
     }
 

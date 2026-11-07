@@ -3,11 +3,11 @@
 - 定时任务改用可读的触发方式菜单；模型标明提供商，所有选择按真实编号保持，项目切换更新环境选择。
 - 补齐计划环境的项目归属、状态和执行后端信息；环境列表仅显示当前项目可用的 Linux 目标，未就绪的原目标保留待处理。
 - 新计划使用已有全局审批默认值；已有计划和明确选择保持。返回页面时刷新后台产生的执行回执。
-- 网络条件按系统回调事件记录断开和验证状态；新增持久事件接续已有工作链，补充有限的传输诊断。
+- 网络条件按系统回调事件记录断开和验证状态；新增持久事件接续工作链，补齐系统条件命令路由，继续使用原有计划修订校验。
 - Scheduled tasks use readable trigger menus, provider-qualified model labels and exact choice IDs. Changing projects updates the environment selection.
 - Environment options carry actual ownership, state and backend metadata; the editor offers eligible project Linux targets and retains unavailable saved targets for repair.
 - New plans use the existing global approval default while saved and explicit choices stay unchanged. Resuming the page refreshes background receipts.
-- Network conditions record ordered callback states. Fresh durable edges continue the existing work chain, with bounded transport diagnostics.
+- Network conditions record ordered callback states. Fresh durable edges continue the work chain; system-condition commands now reach the existing schedule revision gate.
 
 ## 已知问题 / Known issues
 

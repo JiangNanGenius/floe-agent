@@ -345,6 +345,10 @@ object BridgeV3CommandMatrix {
         rule("project.rename", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "projects", revision = true),
         rule("project.assign", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "projects", revision = true),
         rule("project.delete", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "projects", revision = true),
+
+        // System conditions use the existing schedule CAS, never a task role.
+        // Append after the preserved 114 tuples to keep their order stable.
+        rule("schedule.systemEvent", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "schedule", revision = true),
     )
 
     fun entry(command: String, scope: BridgeV3Scope.Kind): BridgeV3CommandRule? =

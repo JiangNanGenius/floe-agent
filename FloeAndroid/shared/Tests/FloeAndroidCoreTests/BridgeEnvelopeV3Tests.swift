@@ -113,8 +113,8 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
         // G07.3B appends thirteen schedule configuration tuples to the
         // preserved Alpha20 matrix. Existing role counts and mailbox bounds
         // are unchanged; the new label grants no execution role by itself.
-        XCTAssertEqual(rules.count, 114)
-        XCTAssertEqual(rules.filter { $0.scope == .applicationConfiguration }.count, 74)
+        XCTAssertEqual(rules.count, 115)
+        XCTAssertEqual(rules.filter { $0.scope == .applicationConfiguration }.count, 75)
         XCTAssertEqual(rules.filter { $0.scope == .conversationLifecycle }.count, 21)
         XCTAssertEqual(rules.filter { $0.scope == .launch }.count, 5)
         XCTAssertEqual(rules.filter { $0.scope == .taskExecution }.count, 14)
@@ -310,15 +310,16 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
             ("applicationConfiguration", "projects", "project.rename"),
             ("applicationConfiguration", "projects", "project.assign"),
             ("applicationConfiguration", "projects", "project.delete"),
+            ("applicationConfiguration", "schedule", "schedule.systemEvent"),
         ]
-        XCTAssertEqual(goldenPairs.count, 114)
+        XCTAssertEqual(goldenPairs.count, 115)
         // The uniqueness key includes configurationScope: the third
         // content.read entry intentionally shares scope+command with the
         // conversations entry. The 57 legacy tuples remain unchanged.
         let goldenKeys = goldenPairs.map {
             "\($0.scope)|\($0.configurationScope ?? "")|\($0.command)"
         }
-        XCTAssertEqual(Set(goldenKeys).count, 114)
+        XCTAssertEqual(Set(goldenKeys).count, 115)
         XCTAssertEqual(Set(goldenPairs.prefix(57).map {
             "\($0.scope)|\($0.configurationScope ?? "")|\($0.command)"
         }).count, 57)
@@ -326,21 +327,21 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
         // workspace.read + workspace.write + workspace.activate (all three
         // are new distinct commands) => 89 (86+3); distinct COMMAND names are
         // 88 (85+3).
-        XCTAssertEqual(Set(goldenPairs.map { "\($0.scope)|\($0.command)" }).count, 113)
-        XCTAssertEqual(Set(goldenPairs.map { "\($0.command)" }).count, 112)
+        XCTAssertEqual(Set(goldenPairs.map { "\($0.scope)|\($0.command)" }).count, 114)
+        XCTAssertEqual(Set(goldenPairs.map { "\($0.command)" }).count, 113)
         XCTAssertEqual(Set(rules.map {
             "\($0.scope.rawValue)|\($0.configurationScope ?? "")|\($0.command)"
         }), Set(goldenKeys),
-                       "Swift matrix must equal the approved 114-entry golden matrix")
+                       "Swift matrix must equal the approved 115-entry golden matrix")
     }
 
     func testScheduleWritesRetainCASAndTheClosedConfigurationRole() {
         let expectedWrites: Set<String> = [
             "schedule.create", "schedule.update", "schedule.enable",
-            "schedule.disable", "schedule.delete", "schedule.runNow",
+            "schedule.disable", "schedule.delete", "schedule.runNow", "schedule.systemEvent",
         ]
         let schedules = BridgeV3.commandRules.filter { $0.command.hasPrefix("schedule.") }
-        XCTAssertEqual(schedules.count, 13)
+        XCTAssertEqual(schedules.count, 14)
         XCTAssertEqual(Set(schedules.filter(\.revisionRequired).map(\.command)), expectedWrites)
         XCTAssertEqual(schedules.filter(\.allowsCreateIntent).map(\.command), ["schedule.create"])
         for rule in schedules {

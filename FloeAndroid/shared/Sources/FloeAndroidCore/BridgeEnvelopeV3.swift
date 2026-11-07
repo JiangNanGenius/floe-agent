@@ -409,6 +409,11 @@ public enum BridgeV3 {
                     configurationScope: "projects", revisionRequired: true),
         CommandRule(command: "project.delete", scope: .applicationConfiguration,
                     configurationScope: "projects", revisionRequired: true),
+
+        // System conditions retain the existing schedule revision gate.
+        // Append after the preserved 114 tuples; no new execution role.
+        CommandRule(command: "schedule.systemEvent", scope: .applicationConfiguration,
+                    configurationScope: "schedule", revisionRequired: true),
     ]
 
     public enum BinderChannel: String, Sendable {
