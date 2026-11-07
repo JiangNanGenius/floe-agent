@@ -20,7 +20,10 @@ object PhoneControlLimits {
     const val MAX_SET_TEXT_CHARS = 2_000
     const val MAX_PACKAGE_CHARS = 255
     const val MAX_TARGET_PACKAGES = 64
-    const val OBSERVATION_TTL_MS = 30_000L
+    // Includes both cloud planning and approval: the Samsung trace needed
+    // 32s before its first click. Live owner/grant/page/node checks still
+    // run at dispatch; this bounded lifetime never authorizes a stale page.
+    const val OBSERVATION_TTL_MS = 120_000L
     const val SETTLE_MIN_MS = 250L
     const val SETTLE_QUIET_MS = 120L
     const val SETTLE_TIMEOUT_MS = 1_500L
