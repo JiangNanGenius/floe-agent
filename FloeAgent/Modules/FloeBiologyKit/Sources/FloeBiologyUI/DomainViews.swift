@@ -8,6 +8,7 @@ import FloeBiologyCore
 struct BiologySequenceView:View {
     let records:[SequenceRecord]
     @Binding var recordIndex:Int
+    var selectedRange:Range<Int>?=nil
     @State private var circular=false
     @State private var page=0
     private var record:SequenceRecord? {records.indices.contains(recordIndex) ? records[recordIndex]:nil}
@@ -33,7 +34,7 @@ struct BiologySequenceView:View {
                         ForEach(Array(stride(from:start,to:end,by:60)),id:\.self) { offset in
                             HStack(alignment:.top,spacing:12) {
                                 Text(String(offset+1)).foregroundStyle(.secondary).frame(width:60,alignment:.trailing)
-                                Text(String(chars[offset..<min(end,offset+60)])).textSelection(.enabled)
+                                Text(highlight(String(chars[offset..<min(end,offset+60)]),offset:offset)).textSelection(.enabled)
                             }.font(.system(.body,design:.monospaced))
                         }
                     }.padding(.vertical,8)
@@ -45,6 +46,14 @@ struct BiologySequenceView:View {
             }
         }.padding()
         .onChange(of:recordIndex){_,_ in page=0}
+        .onChange(of:selectedRange,initial:true){_,range in if let range{page=range.lowerBound/2000}}
+    }
+    private func highlight(_ text:String,offset:Int)->AttributedString {
+        var value=AttributedString(text)
+        if let range=selectedRange {
+            let lo=max(0,range.lowerBound-offset),hi=min(text.count,range.upperBound-offset)
+            if lo<hi {let a=value.index(value.startIndex,offsetByCharacters:lo),b=value.index(value.startIndex,offsetByCharacters:hi);value[a..<b].backgroundColor = .orange.opacity(0.25)}
+        };return value
     }
     private func linearFeatures(_ r:SequenceRecord)->some View {
         Canvas { context,size in
@@ -151,6 +160,7 @@ struct BiologyMicroscopyView:View {
     @Binding var channel:Int
     @Binding var slice:Int
     @Binding var frame:Int
+    var selectedRegion:[Int]?=nil
     @State private var overlay=true
     private var pixels:[Double] {(try? image.plane(channel:channel,slice:slice,frame:frame)) ?? []}
     private func displayImage(_ pixels:[Double])->UIImage? {
@@ -174,6 +184,9 @@ struct BiologyMicroscopyView:View {
                 let w=CGFloat(image.width)*scale,h=CGFloat(image.height)*scale
                 ZStack {
                     if let ui=displayImage(pixels) {Image(uiImage:ui).resizable().interpolation(.none).frame(width:w,height:h)}
+                    if let r=selectedRegion,r.count==4 {
+                        Canvas{context,_ in context.stroke(Path(CGRect(x:CGFloat(r[0])*scale,y:CGFloat(r[1])*scale,width:CGFloat(r[2])*scale,height:CGFloat(r[3])*scale)),with:.color(.orange),lineWidth:2)}.frame(width:w,height:h)
+                    }
                     if overlay,let result,result.labels.count==pixels.count,
                        result.details["channel"]==String(channel),result.details["slice"]==String(slice),result.details["frame"]==String(frame) {
                         Canvas { context,_ in
@@ -194,6 +207,7 @@ struct BiologyMicroscopyView:View {
 }
 struct BiologyMatrixView:View {
     let matrix:ExpressionMatrix
+    var selection:JSONValue?=nil
     @State private var gene=0
     @State private var cell=0
     var body:some View {
@@ -206,6 +220,7 @@ struct BiologyMatrixView:View {
                         let value=matrix.values[i*matrix.cellIDs.count+j]
                         let rect=CGRect(x:CGFloat(j)*size.width/CGFloat(columns),y:CGFloat(i)*size.height/CGFloat(rows),width:size.width/CGFloat(columns)-1,height:size.height/CGFloat(rows)-1)
                         context.fill(Path(rect),with:.color(.teal.opacity(0.08+0.92*value/maximum)))
+                        if selection?["genes"]?.array?.contains(.string(matrix.geneIDs[i]))==true || selection?["cells"]?.array?.contains(.string(matrix.cellIDs[j]))==true {context.stroke(Path(rect),with:.color(.orange),lineWidth:2)}
                     }}
                 }.accessibilityIdentifier("biology.matrixHeatmap")
             }.frame(minHeight:200,maxHeight:400)
@@ -215,7 +230,10 @@ struct BiologyMatrixView:View {
             if matrix.geneIDs.indices.contains(gene),matrix.cellIDs.indices.contains(cell) {
                 LabeledContent(biologyText("Count","计数"),value:matrix.values[gene*matrix.cellIDs.count+cell].formatted())
             }
-        }.padding()
+        }.padding().onChange(of:selection,initial:true){_,s in
+            if let id=s?["genes"]?.array?.first?.string,let i=matrix.geneIDs.firstIndex(of:id){gene=i}
+            if let id=s?["cells"]?.array?.first?.string,let i=matrix.cellIDs.firstIndex(of:id){cell=i}
+        }
     }
 }
 struct BiologyNetworkView:View {

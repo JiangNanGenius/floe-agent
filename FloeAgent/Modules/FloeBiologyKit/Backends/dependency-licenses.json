@@ -286,6 +286,19 @@
       ]
     },
     {
+      "package": "libroadrunner",
+      "version": "2.11.0",
+      "license": "See upstream license",
+      "upstream": [
+        "http://libroadrunner.org"
+      ],
+      "licenseFiles": [
+        "libroadrunner-2.11.0.dist-info/licenses/AUTHORS.txt",
+        "libroadrunner-2.11.0.dist-info/licenses/LICENSE.txt",
+        "libroadrunner-2.11.0.dist-info/licenses/NOTICE.txt"
+      ]
+    },
+    {
       "package": "llvmlite",
       "version": "0.50.0",
       "license": "BSD-2-Clause AND Apache-2.0 WITH LLVM-exception",

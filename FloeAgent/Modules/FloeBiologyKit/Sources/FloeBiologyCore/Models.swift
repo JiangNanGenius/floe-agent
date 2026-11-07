@@ -143,10 +143,29 @@ public struct BiologyAsset: Codable, Sendable, Equatable, Identifiable {
     public var payload: BiologyAssetPayload
     public let originalData: Data
     public let originalFormat: String
+    /// Opaque host-owned file identity for datasets larger than inline storage.
+    /// This metadata never grants access; the host revalidates project/task scope.
+    public var fileReference: BiologyFileReference?
     public var warnings: [String] = []
     public var provenance: [String: String] = [:]
     public var kind: BiologyAssetKind { payload.kind }
-    public init(title: String, payload: BiologyAssetPayload, originalData: Data, originalFormat: String) { self.title = title; self.payload = payload; self.originalData = originalData; self.originalFormat = originalFormat }
+    public init(title: String, payload: BiologyAssetPayload, originalData: Data, originalFormat: String, fileReference: BiologyFileReference? = nil) { self.title = title; self.payload = payload; self.originalData = originalData; self.originalFormat = originalFormat; self.fileReference=fileReference }
+}
+public struct BiologyFileReference: Codable, Sendable, Equatable, Identifiable {
+    public var id:UUID
+    public var projectID:UUID
+    public var fileName:String
+    public var byteCount:UInt64
+    public var sha256:String
+    public var environmentID:String
+    public init(id:UUID,projectID:UUID,fileName:String,byteCount:UInt64,sha256:String,environmentID:String) {
+        self.id=id;self.projectID=projectID;self.fileName=fileName;self.byteCount=byteCount;self.sha256=sha256;self.environmentID=environmentID
+    }
+    public func validate() throws {
+        guard !fileName.isEmpty,fileName.utf8.count<=4096,byteCount>0,byteCount<=512*1024*1024*1024,
+              sha256.count==64,sha256.allSatisfy({"0123456789abcdef".contains($0)}),
+              !environmentID.isEmpty,environmentID.utf8.count<=4096 else {throw BiologyError.invalid("Invalid referenced dataset identity.")}
+    }
 }
 public struct BiologyAnalysisResult: Codable, Sendable, Equatable {
     public var summary: String
@@ -166,7 +185,7 @@ public struct BiologyAnalysisResult: Codable, Sendable, Equatable {
     }
 }
 public enum BiologyRunStatus: String, Codable, Sendable { case queued, running, cancelling, succeeded, failed, cancelled, interrupted }
-public struct BiologyExecutionOwner: Codable, Sendable, Equatable {
+public struct BiologyExecutionOwner: Codable, Sendable, Hashable {
     public var taskID: UUID
     public var hostRunID: UUID
     public init(taskID: UUID, hostRunID: UUID) { self.taskID = taskID; self.hostRunID = hostRunID }
@@ -185,7 +204,8 @@ public struct BiologyRun: Codable, Sendable, Equatable, Identifiable {
     public var createdAt = Date()
     public var result: BiologyAnalysisResult?
     public var error: String?
-    public var isActive: Bool { [.queued, .running, .cancelling].contains(status) }
+    public var workerStopUnconfirmed:Bool?
+    public var isActive: Bool {workerStopUnconfirmed==true || [.queued, .running, .cancelling].contains(status)}
     public init(asset: BiologyAsset, inputDigest: String, method: String, options: JSONValue, environmentID: String, engineVersion: String, owner: BiologyExecutionOwner?) {
         assetID = asset.id; assetRevision = asset.revision; self.inputDigest = inputDigest; self.method = method; self.options = options; self.environmentID = environmentID; self.engineVersion = engineVersion; self.owner = owner
     }
@@ -200,7 +220,26 @@ public struct BiologyProject: Codable, Sendable, Equatable, Identifiable {
     public var runs: [BiologyRun] = []
     public var notes = ""
     public var chemistryLinks: [String] = []
+    public var activeAssetID:UUID?
+    public var selections:[String:JSONValue]?
+    public var mutationReceipts:[BiologyMutationReceipt]?
+    public var deletedAt:Date?
+    public var createdByOperation:BiologyMutationIdentity?
     public init(title: String) { self.title = title }
+}
+public struct BiologyMutationIdentity: Codable, Sendable, Equatable {
+    public var owner:BiologyExecutionOwner
+    public var requestID:String
+    public var argumentDigest:String
+    public init(owner:BiologyExecutionOwner,requestID:String,argumentDigest:String) {
+        self.owner=owner;self.requestID=requestID;self.argumentDigest=argumentDigest
+    }
+}
+public struct BiologyMutationReceipt: Codable, Sendable, Equatable {
+    public var identity:BiologyMutationIdentity
+    public var result:Data
+    public var createdAt:Date
+    public init(identity:BiologyMutationIdentity,result:Data) {self.identity=identity;self.result=result;createdAt=Date()}
 }
 public enum BiologyCoding {
     public static func encode<T: Encodable>(_ value: T) throws -> Data {

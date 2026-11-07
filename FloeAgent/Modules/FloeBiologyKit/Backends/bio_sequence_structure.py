@@ -4,7 +4,7 @@ import base64
 import io
 import json
 import math
-from bio_common import bounded_integer, finite_number
+from bio_common import bounded_integer, finite_number, source_file
 
 def output(summary, metrics=None, columns=None, rows=None, names=None, text="", details=None, labels=None):
     return dict(summary=summary, metrics=metrics or {}, columns=columns or [], rows=rows or [],
@@ -18,10 +18,10 @@ def native_payload(asset):
     return next(iter(payload.values()))["_0"]
 
 def original(asset):
-    raw=base64.b64decode(asset["originalData"],validate=True)
-    if len(raw)>16*1024*1024:
-        raise ValueError("Original exceeds its input budget")
-    return raw
+    with source_file(asset) as stream:
+        raw=stream.read(16*1024*1024+1)
+        if len(raw)>16*1024*1024:raise ValueError("This operation needs a bounded file-backed parser rather than expanding the complete input")
+        return raw
 
 def sequence(asset, operation, options):
     import Bio
@@ -125,6 +125,26 @@ def structure(asset, operation, options):
     def read(text,fmt):
         return gemmi.read_pdb_string(text) if fmt=="pdb" else gemmi.make_structure_from_block(gemmi.cif.read_string(text).sole_block())
     st=read(raw,asset["originalFormat"])
+    if "proteinStructure" in asset["payload"]:
+        # Native edits are authoritative. Rebuild Gemmi's hierarchy from
+        # current typed coordinates, preserving exact original bytes separately.
+        st=gemmi.Structure();p=native_payload(asset);models={}
+        for a in p["atoms"]:
+            key=a.get("model",1)
+            if key not in models:models[key]=[]
+            models[key].append(a)
+        for key,values in models.items():
+            model=gemmi.Model(str(key));chains={};residues={}
+            for a in values:
+                c=a["chain"]
+                if c not in chains:chains[c]=gemmi.Chain(c)
+                rk=(c,a["residueNumber"],a.get("insertionCode", ""))
+                if rk not in residues:
+                    r=gemmi.Residue();r.name=a["residue"];r.seqid=gemmi.SeqId(a["residueNumber"],a.get("insertionCode") or ' ');r.het_flag='H' if a["hetero"] else 'A';residues[rk]=r
+                atom=gemmi.Atom();atom.name=a["name"];atom.element=gemmi.Element(a["element"]);atom.pos=gemmi.Position(a["x"],a["y"],a["z"]);atom.occ=a["occupancy"];residues[rk].add_atom(atom)
+            for (c,_,_),r in residues.items():chains[c].add_residue(r)
+            for chain in chains.values():model.add_chain(chain)
+            st.add_model(model)
     model=bounded_integer(options.get("model",0),0,len(st)-1,"model")
     def atoms_for(structure,model_index):
         atoms=[]

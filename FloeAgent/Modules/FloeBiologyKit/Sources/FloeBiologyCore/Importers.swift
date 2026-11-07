@@ -10,6 +10,8 @@ public enum BiologyImporter {
         var warnings: [String] = []
         let payload: BiologyAssetPayload
         switch format {
+        case "newick","nwk","tree":_=try BiologyTree.parse(data);payload = .externalDataset("newick")
+        case "mrc","map","ccp4":_=try BiologyDensityVolume.parse(data);payload = .externalDataset("mrc")
         case "fa", "fasta", "fna", "faa":
             var records=try sequences(text(data),format:"fasta")
             if format=="faa" {for i in records.indices {records[i].alphabet="protein"}}
@@ -163,6 +165,39 @@ public enum BiologyImporter {
             if tokens.count > 2_000_000 { throw BiologyError.invalid("CIF token budget exceeded.") }
         }
         return tokens
+    }
+    public static func cifSecondaryClasses(_ text:String) throws -> [String:UInt8] {
+        let tokens=try cifTokens(text)
+        var rows:[[String:String]]=[],single:[String:String]=[:],i=0
+        func wanted(_ field:String)->Bool {field.hasPrefix("_struct_conf.") || field.hasPrefix("_struct_sheet_range.")}
+        while i<tokens.count {
+            if tokens[i].control && tokens[i].value=="loop_" {
+                i+=1;var fields:[String]=[]
+                while i<tokens.count,tokens[i].control,tokens[i].value.hasPrefix("_"){fields.append(tokens[i].value);i+=1}
+                guard !fields.isEmpty,Set(fields).count==fields.count else {throw BiologyError.invalid("Invalid CIF loop fields.")}
+                var values:[String]=[]
+                while i<tokens.count {
+                    let t=tokens[i]
+                    if values.count%fields.count==0,t.control,(t.value.hasPrefix("_") || t.value=="loop_" || t.value=="stop_" || t.value.hasPrefix("data_") || t.value.hasPrefix("save_")){break}
+                    values.append(t.value);i+=1
+                }
+                guard values.count%fields.count==0 else {throw BiologyError.invalid("Incomplete CIF secondary-structure loop.")}
+                if fields.contains(where:wanted) {
+                    for offset in stride(from:0,to:values.count,by:fields.count){rows.append(Dictionary(uniqueKeysWithValues:fields.enumerated().map{($0.element,values[offset+$0.offset])}))}
+                }
+            } else if tokens[i].control,wanted(tokens[i].value),i+1<tokens.count {
+                single[tokens[i].value]=tokens[i+1].value;i+=2
+            } else {i+=1}
+        }
+        if !single.isEmpty {rows.append(single)}
+        var classes:[String:UInt8]=[:]
+        for row in rows {
+            let sheet=row.keys.contains{$0.hasPrefix("_struct_sheet_range.")},prefix=sheet ? "_struct_sheet_range.":"_struct_conf."
+            if !sheet,!(row[prefix+"conf_type_id"] ?? "").hasPrefix("HELX"){continue}
+            func value(_ keys:String...)->String? {for key in keys {if let v=row[prefix+key],v != ".",v != "?"{return v}};return nil}
+            guard let chain=value("beg_auth_asym_id","beg_label_asym_id"),chain==value("end_auth_asym_id","end_label_asym_id"),let lo=value("beg_auth_seq_id","beg_label_seq_id").flatMap(Int.init),let hi=value("end_auth_seq_id","end_label_seq_id").flatMap(Int.init),hi>=lo,hi-lo<100000 else {continue}
+            for residue in lo...hi {classes[chain+":"+String(residue)]=sheet ? 2:1}
+        };return classes
     }
     public static func cif(_ text: String) throws -> ProteinStructure {
         let tokens = try cifTokens(text); var i = 0

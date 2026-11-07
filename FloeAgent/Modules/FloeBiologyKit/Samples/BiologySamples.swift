@@ -12,6 +12,8 @@ public enum BiologySampleID: String, CaseIterable, Identifiable, Sendable {
     case microscopy = "synthetic-microscopy.json"
     case microscopyPGM = "synthetic-microscopy.pgm"
     case reactionNetwork = "synthetic-network.json"
+    case phylogeneticTree = "synthetic-tree.newick"
+    case densityVolume = "synthetic-density.mrc"
 
     public var id: String { rawValue }
 }

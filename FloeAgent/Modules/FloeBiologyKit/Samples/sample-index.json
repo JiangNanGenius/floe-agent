@@ -57,6 +57,22 @@
       "bytes": 399,
       "origin": "Floe analytical teaching model; explicit mass-action kinetics",
       "license": "MPL-2.0"
+    },
+    {
+      "file": "synthetic-tree.newick",
+      "title": "Synthetic branching tree",
+      "sha256": "0ea4d59bb2c268c0b85c25d580677e8b900f4781ffa678c0fc93fe2aefdb573c",
+      "bytes": 105,
+      "origin": "Floe deterministic teaching fixture; not biological observations",
+      "license": "MPL-2.0"
+    },
+    {
+      "file": "synthetic-density.mrc",
+      "title": "Synthetic density volume",
+      "sha256": "ccd9f6bff697d6ef286e38116d2658b815782169639a85501accca48f1fc2082",
+      "bytes": 56320,
+      "origin": "Floe deterministic teaching fixture; not biological observations",
+      "license": "MPL-2.0"
     }
   ]
 }

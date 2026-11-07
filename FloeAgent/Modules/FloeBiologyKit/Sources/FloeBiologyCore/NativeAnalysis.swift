@@ -8,7 +8,8 @@ public enum BiologyNativeAnalysis {
         .proteinStructure: ["structure.geometry","structure.contacts","structure.distance"],
         .microscopyImage: ["image.segment","image.statistics"],
         .expressionMatrix: ["matrix.qc","matrix.normalize","matrix.log1p","matrix.geneStatistics"],
-        .biochemicalNetwork: ["network.simulate","network.sweep"]
+        .biochemicalNetwork: ["network.simulate","network.sweep"],
+        .externalDataset:["tree.inspect","volume.statistics","volume.slice","volume.isosurface"]
     ]
     public static func run(asset: BiologyAsset, method: String, options: JSONValue = .object([:])) throws -> BiologyAnalysisResult {
         try Task.checkCancellation()
@@ -19,7 +20,7 @@ public enum BiologyNativeAnalysis {
         case .microscopyImage(let image): return try microscopy(image,method:method,options:options)
         case .expressionMatrix(let matrix): return try omics(matrix,method:method,options:options)
         case .biochemicalNetwork(let network): return try simulation(network,method:method,options:options)
-        case .externalDataset: throw BiologyError.unavailable("Configure a scientific backend for this dataset.")
+        case .externalDataset:return try BiologyScientificAnalysis.run(asset:asset,method:method,options:options)
         }
     }
     private static func integer(_ o: JSONValue,_ key:String,_ fallback:Int,_ range:ClosedRange<Int>) throws -> Int {

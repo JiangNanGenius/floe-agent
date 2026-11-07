@@ -8,22 +8,23 @@ import io
 import json
 import sys
 import uuid
-from bio_common import strict_json, hex_digest, bounded_integer
+from bio_common import strict_json, hex_digest, bounded_integer, WORKSPACE
 
 MAX_BYTES=32*1024*1024
 METHODS={
  "Bio":["seq.parse","seq.stats","seq.translate","seq.reverseComplement","seq.export","seq.align.global","seq.align.local","seq.phylogeny"],
  "gemmi":["struct.parse","struct.select","struct.geometry","struct.contacts","struct.rmsd"],
- "skimage":["micro.import","micro.segment","micro.overlay"],
+ "skimage":["micro.import","micro.segment","micro.overlay","micro.series","micro.tile"],
  "scanpy":["omics.import","omics.export","omics.qc","omics.normalize","omics.pca","omics.cluster","omics.embedding","omics.diffexp"],
  "scipy":["net.simulate","net.sweep"],
- "libsbml":["net.sbml.import","net.sbml.export"]
+ "libsbml":["net.sbml.import","net.sbml.export"],
+ "roadrunner":["net.sbml.simulate","net.sbml.sweep"]
 }
 def capabilities():
     import importlib.metadata as metadata
     engines={};methods=[];unavailable={}
-    requirements={"Bio":["Bio"],"gemmi":["gemmi","numpy","scipy"],"skimage":["skimage","tifffile","numpy","PIL"],
-                  "scanpy":["scanpy","anndata","scipy","numpy","igraph","leidenalg"],"scipy":["scipy","numpy"],"libsbml":["libsbml"]}
+    requirements={"Bio":["Bio"],"gemmi":["gemmi","numpy","scipy"],"skimage":["skimage","tifffile","zarr","numpy","PIL"],
+                  "scanpy":["scanpy","anndata","scipy","numpy","igraph","leidenalg"],"scipy":["scipy","numpy"],"libsbml":["libsbml"],"roadrunner":["roadrunner","libsbml","numpy"]}
     for engine,names in requirements.items():
         try:
             modules=[importlib.import_module(n) for n in names]
@@ -40,14 +41,21 @@ def capabilities():
                 import numpy as np
                 from skimage.measure import label
                 if int(label(np.array([[0,1],[0,0]])).max())!=1:raise RuntimeError("Image probe failed")
+            elif engine=='roadrunner':
+                import libsbml
+                doc=libsbml.SBMLDocument(3,2);m=doc.createModel();m.setId('probe')
+                c=m.createCompartment();c.setId('cell');c.setSize(1);c.setConstant(True);c.setSpatialDimensions(3)
+                s=m.createSpecies();s.setId('S');s.setCompartment('cell');s.setInitialAmount(1);s.setHasOnlySubstanceUnits(True);s.setBoundaryCondition(False);s.setConstant(False)
+                rr=modules[0].RoadRunner(libsbml.writeSBMLToString(doc));probe=rr.simulate(0,0.01,2,selections=['time','S'])
+                if probe.shape!=(2,2) or abs(float(probe[-1,1])-1)>1e-8:raise RuntimeError('SBML solver probe failed')
             engines[engine]=str(getattr(modules[0],"__version__",getattr(modules[0],"getLibSBMLDottedVersion",lambda:"unknown")()))
             methods.extend(METHODS[engine])
         except Exception as error:unavailable[engine]=str(error)
     return dict(protocol="floe.biology.worker",version=1,methods=sorted(methods),engines=engines,unavailable=unavailable,
-                limits=dict(envelopeBytes=MAX_BYTES,imageElements=4000000,denseElements=2000000,sparseNonzeros=2000000,alignmentCells=4000000,atoms=100000,contacts=200000))
+                limits=dict(envelopeBytes=MAX_BYTES,imageElements=4000000,tilePixels=1048576,decodeChunkBytes=67108864,denseElements=2000000,sparseNonzeros=2000000,alignmentCells=4000000,atoms=100000,contacts=200000,sbmlSpecies=128,sbmlTimePoints=10001))
 
-def execute(request):
-    identity=None;digest=None
+def execute(request,workspace=None):
+    identity=None;digest=None;token=None
     try:
         if "protocol" in request:
             if set(request)!={"protocol","version","identity","requestJSON","requestDigest"} or request["protocol"]!="floe.biology.worker" or type(request["version"]) is not int or request["version"]!=1:raise ValueError("Invalid worker envelope")
@@ -72,6 +80,11 @@ def execute(request):
         snapshot=inner["snapshotJSON"]
         if not isinstance(snapshot,str) or len(snapshot.encode())>MAX_BYTES:raise ValueError("Invalid dataset snapshot")
         asset=strict_json(snapshot)
+        if asset.get('fileReference'):
+            ref=asset['fileReference']
+            if identity is None or ref.get('projectID','').lower()!=identity['projectID'] or ref.get('environmentID')!=identity['environmentID']:
+                raise ValueError('Referenced file does not belong to this project and execution environment')
+        token=WORKSPACE.set(workspace)
         if identity and (hashlib.sha256(snapshot.encode()).hexdigest()!=identity["inputDigest"] or asset.get("id","").lower()!=identity["objectID"] or asset.get("revision")!=identity["objectRevision"]):raise ValueError("Dataset does not match the execution identity")
         if not isinstance(inner["options"],dict):raise ValueError("Options must be an object")
         operation=inner["operation"]
@@ -93,7 +106,7 @@ def execute(request):
                 from bio_image_omics import omics
                 result=omics(asset,operation,inner["options"])
             elif operation.startswith("net."):
-                if operation not in METHODS["scipy"]+METHODS["libsbml"]:raise ValueError("Unknown network method")
+                if operation not in METHODS["scipy"]+METHODS["libsbml"]+METHODS['roadrunner']:raise ValueError("Unknown network method")
                 from bio_network import network
                 result=network(asset,operation,inner["options"])
             else:raise ValueError("Unknown scientific method")
@@ -104,13 +117,19 @@ def execute(request):
         return dict(protocol="floe.biology.worker",version=1,identity=identity,requestDigest=digest,complete=True,success=True,result=result)
     except Exception as error:
         return dict(protocol="floe.biology.worker",version=1,identity=identity,requestDigest=digest,complete=True,success=False,error=dict(type=type(error).__name__,message=str(error)[:4096]))
+    finally:
+        if token is not None:WORKSPACE.reset(token)
 
 def main():
+    import argparse
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--workspace',default=None)
+    args=parser.parse_args()
     raw=sys.stdin.buffer.read(MAX_BYTES+1)
     if not raw or len(raw)>MAX_BYTES:
         response=dict(protocol="floe.biology.worker",version=1,complete=True,success=False,error=dict(type="ValueError",message="Input exceeds 32 MiB or is empty"))
     else:
-        try:response=execute(strict_json(raw))
+        try:response=execute(strict_json(raw),workspace=args.workspace)
         except Exception as error:response=dict(protocol="floe.biology.worker",version=1,complete=True,success=False,error=dict(type=type(error).__name__,message=str(error)[:4096]))
     sys.stdout.write(json.dumps(response,allow_nan=False,separators=(",",":"))+"\n")
 

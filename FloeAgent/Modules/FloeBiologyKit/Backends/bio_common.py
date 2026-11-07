@@ -9,6 +9,52 @@ import math
 import os
 import pathlib
 import re
+import contextvars
+import contextlib
+import hashlib
+import io
+import stat
+
+WORKSPACE = contextvars.ContextVar('biology_workspace', default=None)
+
+class _NamedReader:
+    """Preserve the verified descriptor while supplying a textual name to
+    scientific libraries that cannot accept fdopen's integer .name value."""
+    def __init__(self,stream,path):self.stream=stream;self.name=str(path)
+    def __getattr__(self,key):return getattr(self.stream,key)
+
+@contextlib.contextmanager
+def source_file(asset):
+    """Only a trusted CLI workspace can resolve a file identity. Model-supplied
+    paths are never used. Hash verification streams bounded chunks before any
+    scientific parser sees the bytes, including compressed/TIFF/HDF5 inputs."""
+    ref = asset.get('fileReference')
+    if not ref:
+        raw = base64.b64decode(asset['originalData'], validate=True)
+        if len(raw) > 16*1024*1024:
+            raise ValueError('Inline original exceeds its input budget')
+        with io.BytesIO(raw) as stream:
+            yield stream
+        return
+    root = WORKSPACE.get()
+    if root is None:
+        raise ValueError('File input requires the host-configured worker workspace')
+    digest = hex_digest(ref['sha256'], 'file digest')
+    size = bounded_integer(ref['byteCount'], 1, 512*1024**3, 'file bytes')
+    root = pathlib.Path(root).absolute()
+    folder = root/'inputs'
+    candidate = folder/(digest+'.bin')
+    if root.resolve() != root or folder.resolve() != folder or candidate.resolve() != candidate:
+        raise ValueError('Scientific input traverses a symbolic link')
+    fd = os.open(candidate, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size != size:
+            raise ValueError('File size or type changed')
+        if hashlib.file_digest(stream, 'sha256').hexdigest() != digest:
+            raise ValueError('File digest changed')
+        stream.seek(0)
+        yield _NamedReader(stream,candidate)
 
 MAX_ENVELOPE_BYTES = 64 * 1024 * 1024
 MAX_DATA_BYTES = 32 * 1024 * 1024

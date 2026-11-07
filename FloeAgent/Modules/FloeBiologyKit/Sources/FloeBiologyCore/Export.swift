@@ -3,7 +3,10 @@ import Foundation
 
 public enum BiologyExport {
     public static func asset(_ asset:BiologyAsset,format:String) throws -> Data {
-        if format=="original" { return asset.originalData }
+        if format=="original" {
+            guard asset.fileReference==nil || !asset.originalData.isEmpty else {throw BiologyError.unavailable("Export this referenced original through its authorized host file service.")}
+            return asset.originalData
+        }
         if format=="json" { return try BiologyCoding.encode(asset.payload) }
         switch asset.payload {
         case .sequence(let records):

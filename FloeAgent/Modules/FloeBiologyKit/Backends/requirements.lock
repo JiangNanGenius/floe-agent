@@ -22,6 +22,7 @@ kiwisolver==1.5.1
 lazy-loader==0.6
 legacy-api-wrap==1.5
 leidenalg==0.12.0
+libroadrunner==2.11.0
 llvmlite==0.50.0
 matplotlib==3.11.2
 msgspec==0.22.0
@@ -35,8 +36,8 @@ packaging==26.3
 pandas==3.1.1
 patsy==1.0.3
 pillow==13.0.0
-pydantic==2.14.3
 pydantic-settings==2.16.2
+pydantic==2.14.3
 pydantic_core==2.50.4
 pynndescent==0.7.0
 pyparsing==3.3.3

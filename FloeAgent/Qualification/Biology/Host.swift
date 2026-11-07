@@ -12,7 +12,8 @@ import FloeBiologyUI
         do {
             let root=URL.applicationSupportDirectory.appendingPathComponent("FloeBiologyQualification",isDirectory:true)
             let store=try BiologyProjectStore(root:root)
-            service=try BiologyService(store:store,authorize:{_ in
+            let files=try BiologyWorkspaceFiles(root:root.appendingPathComponent("files"),environmentID:"qualification.native.files",authorize:{_,_ in})
+            service=try BiologyService(store:store,fileAccess:files,authorize:{_ in
                 // This standalone host only owns its own application sandbox.
                 // The actual App supplies its existing task/file/environment checks.
             });failure=nil
@@ -33,7 +34,11 @@ import FloeBiologyUI
     @State private var error:String?
     var body:some View {
         Group {
-            if ready{BiologyLibraryView(service:service)}
+            if ready{BiologyLibraryView(service:service,makeTools:{projectID in
+                // Explicit host-owned qualification task, confined to this
+                // app's current project. No model/provider credentials.
+                BiologyToolSession(service:service,authorizedProjectIDs:[projectID],owner:.init(taskID:projectID,hostRunID:UUID()))
+            })}
             else if let error{ContentUnavailableView("Biology",systemImage:"exclamationmark.triangle",description:Text(error))}
             else{ProgressView()}
         }.task {

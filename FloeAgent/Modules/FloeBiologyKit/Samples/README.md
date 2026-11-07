@@ -26,6 +26,9 @@ manifest records each exact input's origin, byte count, SHA-256 and license.
   analytical solution and conserved total. The amounts are in arbitrary units
   and time is in seconds.
 
+- `synthetic-tree.newick`: a small synthetic multifurcating teaching tree with branch lengths.
+- `synthetic-density.mrc`: a synthetic scalar field with physical grid metadata for slice/isosurface inspection; it is not an experimental density reconstruction.
+
 Floe's synthetic fixtures and resource wrapper use MPL-2.0. Bundling examples
 does not establish general format, scientific-method or physical-device
 acceptance; those are checked separately in the qualification evidence.

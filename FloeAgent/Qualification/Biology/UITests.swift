@@ -57,6 +57,78 @@ import XCTest
         }
         saveAndReopenNotes(app,token)
     }
+    func testRibbonDensityTreeAndActualToolEdits() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["-AppleLanguages","(en)","-AppleLocale","en_AU"]
+        XCUIDevice.shared.orientation = .portrait;app.launch();defer{app.terminate();XCUIDevice.shared.orientation = .portrait}
+        createExamples(app,"BiologyClosure-"+String(UUID().uuidString.prefix(6)))
+        select(app,"proteinStructure")
+        app.segmentedControls["biology.structureRepresentation"].buttons["Ribbon"].tap()
+        let ribbon=element(app,"biology.ribbonViewport");XCTAssertTrue(ribbon.waitForExistence(timeout:20));XCTAssertTrue(ribbon.isHittable)
+        ribbon.swipeLeft();screenshot(app,"Biology-native-ribbon")
+        func chooseFormat(_ format:String) {
+            app.buttons["biology.materials"].tap();let row=element(app,"biology.assetFormat."+format);XCTAssertTrue(row.waitForExistence(timeout:10));row.tap()
+        }
+        chooseFormat("newick");XCTAssertTrue(element(app,"biology.treeViewport").waitForExistence(timeout:15));screenshot(app,"Biology-native-tree")
+        chooseFormat("mrc");XCTAssertTrue(element(app,"biology.imageViewport").waitForExistence(timeout:15));screenshot(app,"Biology-density-slice")
+        app.segmentedControls.buttons["Surface"].tap();XCTAssertTrue(element(app,"biology.densitySurface").waitForExistence(timeout:20));screenshot(app,"Biology-density-surface")
+        try exerciseToolEdit(app)
+    }
+    func testToolEditsUpdateLiveView() throws {
+        continueAfterFailure=false
+        let app=XCUIApplication();app.launchArguments=["-AppleLanguages","(en)","-AppleLocale","en_AU"]
+        XCUIDevice.shared.orientation = .portrait;app.launch();defer{app.terminate();XCUIDevice.shared.orientation = .portrait}
+        createExamples(app,"BiologyTools-"+String(UUID().uuidString.prefix(6)))
+        try exerciseToolEdit(app)
+    }
+    private func exerciseToolEdit(_ app:XCUIApplication) throws {
+        select(app,"sequence")
+        app.buttons["biology.more"].tap();app.buttons["biology.tools"].tap()
+        let picker=element(app,"biology.toolName");XCTAssertTrue(picker.waitForExistence(timeout:10))
+        let form=app.collectionViews.firstMatch
+        func chooseTool(_ name:String) {
+            for _ in 0..<8 {if picker.exists && picker.isHittable{break};form.swipeDown()}
+            picker.tap()
+            let choice=app.buttons["biology.toolChoice."+name]
+            XCTAssertTrue(choice.waitForExistence(timeout:5));XCTAssertTrue(choice.isHittable);choice.tap()
+            XCTAssertTrue(picker.waitForExistence(timeout:5))
+        }
+        let response=element(app,"biology.toolResponse")
+        func revealResponse() {
+            let run=app.buttons["biology.toolRun"]
+            XCTAssertEqual(XCTWaiter.wait(for:[XCTNSPredicateExpectation(predicate:NSPredicate(format:"enabled == true"),object:run)],timeout:10),.completed)
+            // Form virtualizes off-screen rows. A completed response below
+            // the argument editor must be scrolled into view before querying.
+            for _ in 0..<4 {if response.exists{break};form.swipeUp()}
+            XCTAssertTrue(response.waitForExistence(timeout:5))
+        }
+        let input=app.textViews["biology.toolArguments"]
+        func replaceArguments(_ object:[String:Any]) throws {
+            let text=String(decoding:try JSONSerialization.data(withJSONObject:object,options:[.sortedKeys]),as:UTF8.self)
+            app.buttons["biology.clearToolArguments"].tap()
+            input.tap();input.typeText(text)
+            XCTAssertEqual(input.value as? String,text,"Do not submit a partial replacement or malformed test request")
+        }
+        chooseTool("biology.read")
+        let initial=try XCTUnwrap((input.value as? String)?.data(using:.utf8)),args=try XCTUnwrap(JSONSerialization.jsonObject(with:initial) as? [String:Any]),projectID=try XCTUnwrap(args["projectID"] as? String)
+        app.buttons["biology.toolRun"].tap();revealResponse()
+        let data=try XCTUnwrap(response.label.data(using:.utf8)),project=try XCTUnwrap(JSONSerialization.jsonObject(with:data) as? [String:Any]),assets=try XCTUnwrap(project["assets"] as? [[String:Any]]),dna=try XCTUnwrap(assets.first(where:{$0["kind"] as? String=="sequence"})),assetID=try XCTUnwrap(dna["id"] as? String)
+        chooseTool("biology.edit")
+        try replaceArguments(["projectID":projectID,"assetID":assetID,"expectedRevision":1,"record":0,"start":0,"end":3,"replacement":"TTG"])
+        let finish=app.buttons["biology.finishToolEditing"]
+        if finish.exists{finish.tap()}
+        let run=app.buttons["biology.toolRun"];for _ in 0..<3 {if run.isHittable{break};form.swipeUp()};XCTAssertTrue(run.isHittable);run.tap();revealResponse()
+        let returned=response.waitForExistence(timeout:10)
+        if !returned {screenshot(app,"Biology-tool-submit-failure");let debug=XCTAttachment(string:app.debugDescription);debug.name="Biology-tool-submit-failure";debug.lifetime = .keepAlways;add(debug)}
+        XCTAssertTrue(returned)
+        let committed=XCTNSPredicateExpectation(predicate:NSPredicate{element,_ in (element as? XCUIElement)?.label.contains("\"revision\":2")==true},object:response)
+        XCTAssertEqual(XCTWaiter.wait(for:[committed],timeout:15),.completed)
+        screenshot(app,"Biology-AI-tool-actual-edit")
+        app.buttons["Done"].tap()
+        let changed=app.staticTexts.matching(NSPredicate(format:"label BEGINSWITH %@","TTGGCT")).firstMatch
+        XCTAssertTrue(changed.waitForExistence(timeout:10),"Tool mutation must reach the live sequence viewport")
+        screenshot(app,"Biology-tool-edit-live-view")
+    }
     private func saveAndReopenNotes(_ app:XCUIApplication,_ token:String) {
         app.buttons["biology.more"].tap();app.buttons["Research notes"].tap()
         let notes=app.textViews["biology.notesDraft"]
@@ -64,6 +136,8 @@ import XCTest
         XCTAssertEqual(XCTWaiter.wait(for:[XCTNSPredicateExpectation(predicate:NSPredicate(format:"enabled == true"),object:notes)],timeout:10),.completed)
         notes.tap();notes.typeText(token)
         XCTAssertTrue((notes.value as? String ?? "").contains(token))
+        let hideKeyboard=app.buttons["Hide keyboard"]
+        if hideKeyboard.exists {hideKeyboard.tap()}
         app.buttons["biology.saveNotes"].tap()
         let committed=XCTWaiter.wait(for:[XCTNSPredicateExpectation(predicate:NSPredicate(format:"exists == false"),object:notes)],timeout:15)
         if committed != .completed {let info=XCTAttachment(string:app.debugDescription);info.name="Biology-save-acknowledgement";info.lifetime = .keepAlways;add(info);screenshot(app,"Biology-save-acknowledgement")}

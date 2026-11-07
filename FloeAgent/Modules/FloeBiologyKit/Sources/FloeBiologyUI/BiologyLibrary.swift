@@ -8,13 +8,17 @@ import FloeBiologyEngine
     public let service:BiologyService
     public var onAI:BiologyAIHandler?
     public var onInsertInNotes:BiologyNotesHandler?
+    public var executionOwner:(@MainActor @Sendable (UUID,UUID) async throws -> BiologyExecutionOwner)?
+    public var makeTools:(@MainActor @Sendable (UUID) async throws -> BiologyToolSession)?
     @State private var projects:[BiologyProject]=[]
     @State private var title=""
     @State private var route:UUID?
     @State private var error:String?
     @State private var busy=false
-    public init(service:BiologyService,onAI:BiologyAIHandler? = nil,onInsertInNotes:BiologyNotesHandler? = nil) {
+    @State private var deleted:[BiologyDeletedProject]=[]
+    public init(service:BiologyService,onAI:BiologyAIHandler? = nil,onInsertInNotes:BiologyNotesHandler? = nil,executionOwner:(@MainActor @Sendable (UUID,UUID) async throws -> BiologyExecutionOwner)? = nil,makeTools:(@MainActor @Sendable (UUID) async throws -> BiologyToolSession)? = nil) {
         self.service=service;self.onAI=onAI;self.onInsertInNotes=onInsertInNotes
+        self.executionOwner=executionOwner;self.makeTools=makeTools
     }
     public var body:some View {
         NavigationStack {
@@ -46,14 +50,22 @@ import FloeBiologyEngine
                         }
                     }
                 }
+                if !deleted.isEmpty {
+                    Section(biologyText("Recently Deleted","最近删除")) {
+                        ForEach(deleted) {p in
+                            HStack {Text(p.title);Spacer();Button(biologyText("Restore","恢复")){Task{do{_=try await service.restoreDeleted(p.id,projectID:p.projectID);try await reload()}catch{self.error=error.localizedDescription}}}.frame(minHeight:44).accessibilityIdentifier("biology.restoreDeleted."+p.projectID.uuidString)}
+                        }
+                    }
+                }
                 if let error {Section{Text(error).foregroundStyle(.red)}}
             }
             .navigationTitle(biologyText("Biology workbench","生物工作台"))
-            .navigationDestination(item:$route) { id in BiologyWorkbench(service:service,projectID:id,onAI:onAI,onInsertInNotes:onInsertInNotes) }
+            .navigationDestination(item:$route) { id in BiologyWorkbench(service:service,projectID:id,onAI:onAI,onInsertInNotes:onInsertInNotes,executionOwner:executionOwner,makeTools:makeTools) }
             .task {do{try await reload()}catch{self.error=error.localizedDescription}}
+            .onChange(of:route){_,next in if next==nil{Task{do{try await reload()}catch{self.error=error.localizedDescription}}}}
         }
     }
-    private func reload() async throws {projects=try await service.projects()}
+    private func reload() async throws {projects=try await service.projects();deleted=try await service.deletedProjects()}
     private func create(examples:Bool) async {
         busy=true;defer{busy=false}
         do {
@@ -61,7 +73,7 @@ import FloeBiologyEngine
             let p=try await service.create(title:name.isEmpty ? biologyText("Biology research","生物研究"):name)
             if examples {
                 let model=BiologyWorkbenchModel(service:service,projectID:p.id)
-                for sample in [FloeBiologySamples.BiologySampleID.sequenceComparison,.ubiquitinPDB,.microscopy,.expressionCounts,.reactionNetwork] {
+                for sample in [FloeBiologySamples.BiologySampleID.sequenceComparison,.ubiquitinPDB,.microscopy,.expressionCounts,.reactionNetwork,.phylogeneticTree,.densityVolume] {
                     await model.addSample(sample)
                     if let error=model.error {throw BiologyError.invalid(error)}
                 }

@@ -40,10 +40,12 @@ public struct ConfiguredBiologyBackend: BiologyBackend {
     public let methods:Set<String>
     private let execute:@Sendable (BiologyTransportRequest) async throws -> BiologyTransportReceipt
     private let stop:@Sendable (UUID) async throws -> Bool
-    public init(environmentID:String,engineVersion:String,methods:Set<String>,execute:@escaping @Sendable (BiologyTransportRequest) async throws -> BiologyTransportReceipt,stop:@escaping @Sendable (UUID) async throws -> Bool) throws {
+    private let bind:@Sendable (UUID,BiologyExecutionOwner?,String?) async throws -> Void
+    public init(environmentID:String,engineVersion:String,methods:Set<String>,prepare:@escaping @Sendable (UUID,BiologyExecutionOwner?,String?) async throws -> Void = {_,_,_ in},execute:@escaping @Sendable (BiologyTransportRequest) async throws -> BiologyTransportReceipt,stop:@escaping @Sendable (UUID) async throws -> Bool) throws {
         guard !environmentID.isEmpty,environmentID != "native.local",environmentID.utf8.count<=4096,!engineVersion.isEmpty,!methods.isEmpty,methods.count<=256 else {throw BiologyError.invalid("Invalid configured scientific backend.")}
-        self.environmentID=environmentID;self.engineVersion=engineVersion;self.methods=methods;self.execute=execute;self.stop=stop
+        self.environmentID=environmentID;self.engineVersion=engineVersion;self.methods=methods;self.bind=prepare;self.execute=execute;self.stop=stop
     }
+    public func prepare(runID:UUID,owner:BiologyExecutionOwner?,requestID:String?) async throws {try await bind(runID,owner,requestID)}
     private struct Inner:Encodable {let operation:String;let snapshotJSON:String;let options:JSONValue}
     private struct Envelope:Encodable {
         let protocolName="floe.biology.worker"
@@ -81,6 +83,6 @@ public struct ConfiguredBiologyBackend: BiologyBackend {
         return result
     }
     public func cancel(runID:UUID) async throws {
-        guard try await stop(runID) else {throw BiologyError.unavailable("The host has not confirmed that the owned scientific worker stopped.")}
+        guard try await stop(runID) else {throw BiologyWorkerStopUnconfirmed("The host has not confirmed that the owned scientific worker stopped.")}
     }
 }

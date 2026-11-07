@@ -4,13 +4,16 @@ import io
 import json
 import math
 import base64
-from bio_common import bounded_integer, finite_number
+from bio_common import bounded_integer, finite_number, source_file
 from bio_sequence_structure import output, original, native_payload
 
 MAX_ELEMENTS=4000000
 MAX_DENSE_ELEMENTS=2000000
 
 def microscopy(asset,operation,options):
+    if 'microscopyImage' not in asset['payload'] and operation!='micro.import':
+        from bio_tiff import microscopy_region
+        return microscopy_region(asset,operation,options)
     import numpy as np
     import tifffile
     import skimage
@@ -21,13 +24,15 @@ def microscopy(asset,operation,options):
         p=native_payload(asset)
         shape=(p.get("frames",1),p.get("slices",1),p.get("channels",1),p["height"],p["width"])
         if math.prod(shape)>MAX_ELEMENTS or len(p["samples"])!=math.prod(shape):raise ValueError("Image axis/sample budget mismatch")
+        if operation=='micro.series':
+            return output('Microscopy axes',{'series':1},text=json.dumps([dict(index=0,name=asset['title'],axes='TZCYX',shape=list(shape),dtype='float64',levels=[dict(index=0,shape=list(shape),axes='TZCYX')])]),details={'reader':'current native dataset'})
+        if options.get('series',0)!=0 or options.get('level',0)!=0:raise ValueError('A native dataset has one series and one resolution level')
         cube=np.asarray(p["samples"],dtype=float).reshape(shape)
         bit_depth=p.get("bitDepth",64)
         if p.get("pixelSizeX") is not None and p.get("pixelSizeY") is not None:
             calibration=(finite_number(p["pixelSizeX"],1e-12,1e9,"pixel size"),finite_number(p["pixelSizeY"],1e-12,1e9,"pixel size"),p.get("calibrationUnit","µm"))
     else:
-        raw=original(asset)
-        with tifffile.TiffFile(io.BytesIO(raw)) as tif:
+        with source_file(asset) as source,tifffile.TiffFile(source) as tif:
             series=tif.series[0]
             if math.prod(series.shape)>MAX_ELEMENTS or np.dtype(series.dtype).itemsize>8:raise ValueError("Expanded image exceeds its native worker budget")
             axes=series.axes.replace("S","C")
@@ -54,12 +59,24 @@ def microscopy(asset,operation,options):
     z=bounded_integer(options.get("slice",0),0,cube.shape[1]-1,"slice")
     c=bounded_integer(options.get("channel",0),0,cube.shape[2]-1,"channel")
     image=cube[t,z,c]
-    details=dict(engine="scikit-image "+skimage.__version__+"; tifffile "+tifffile.__version__,axes="TZCYX",frame=t,slice=z,channel=c)
+    origin_x=origin_y=0
+    if options.get('region') is not None:
+        region=options['region']
+        if not isinstance(region,list) or len(region)!=4:raise ValueError('Region is [x,y,width,height]')
+        x,y,w,h=[bounded_integer(v,0,100000000,'region') for v in region]
+        if not w or not h or x+w>image.shape[1] or y+h>image.shape[0] or w*h>1048576:raise ValueError('Image region is outside the image or exceeds its sample budget')
+        image=image[y:y+h,x:x+w];origin_x=x;origin_y=y
+    details=dict(engine="scikit-image "+skimage.__version__+"; tifffile "+tifffile.__version__,axes="TZCYX",frame=t,slice=z,channel=c,globalOriginX=origin_x,globalOriginY=origin_y)
     metrics=dict(width=image.shape[1],height=image.shape[0],minimum=float(image.min()),maximum=float(image.max()),mean=float(image.mean()),frames=cube.shape[0],slices=cube.shape[1],channels=cube.shape[2])
     if operation=="micro.import":
         dataset=dict(width=cube.shape[4],height=cube.shape[3],channels=cube.shape[2],slices=cube.shape[1],frames=cube.shape[0],bitDepth=bit_depth,samples=cube.reshape(-1).tolist(),calibrationUnit=calibration[2] if calibration else "µm")
         if calibration:dataset.update(pixelSizeX=calibration[0],pixelSizeY=calibration[1])
         return output("Image axes and calibration",metrics,text=json.dumps(dataset),details={**details,"pixelCalibration":calibration,"derivedFormat":"image.json"})
+    if operation=='micro.tile':
+        if image.size>1048576:raise ValueError('Choose a tile of at most 1,048,576 samples')
+        dataset=dict(width=image.shape[1],height=image.shape[0],channels=1,slices=1,frames=1,bitDepth=bit_depth,samples=image.reshape(-1).tolist(),calibrationUnit=calibration[2] if calibration else 'µm')
+        if calibration:dataset.update(pixelSizeX=calibration[0],pixelSizeY=calibration[1])
+        return output('Microscopy region',metrics,text=json.dumps(dataset),details=details)
     threshold=options.get("threshold")
     threshold=float(filters.threshold_otsu(image)) if threshold is None else finite_number(threshold,-1e15,1e15,"threshold")
     mask=image>threshold
@@ -70,13 +87,13 @@ def microscopy(asset,operation,options):
     minimum=bounded_integer(options.get("minArea",1),1,image.size,"minimum object area")
     if minimum>1:
         labels=morphology.remove_small_objects(labels,min_size=minimum)
-        labels=measure.label(labels>0,connectivity=2)
+        labels=measure.label(labels>0,connectivity=bounded_integer(options.get("connectivity",2),1,2,"connectivity"))
     regions=measure.regionprops(labels,intensity_image=image)
     if len(regions)>100000:raise ValueError("Region table budget exceeded")
     scale=calibration[0]*calibration[1] if calibration else 1
     details["areaUnit"]=(calibration[2]+"²") if calibration else "px²"
     metrics.update(objects=len(regions),threshold=float(threshold))
-    rows=[[int(r.area),float(r.area*scale),float(r.intensity_mean),float(r.centroid[1]),float(r.centroid[0])] for r in regions]
+    rows=[[int(r.area),float(r.area*scale),float(r.intensity_mean),float(r.centroid[1]+origin_x),float(r.centroid[0]+origin_y)] for r in regions]
     text=""
     if operation=="micro.overlay":
         from PIL import Image
@@ -96,16 +113,21 @@ def read_matrix(asset):
         if len(g)*len(c)>MAX_DENSE_ELEMENTS or len(p["values"])!=len(g)*len(c):raise ValueError("Dense matrix budget/dimensions exceeded")
         x=np.asarray(p["values"],dtype=float).reshape(len(g),len(c)).T
     elif asset["originalFormat"] in {"mtx"}:
-        raw=original(asset);lines=raw.decode().splitlines()
-        if not lines or not lines[0].lower().startswith("%%matrixmarket matrix coordinate"):raise ValueError("A sparse coordinate Matrix Market file is required")
-        header=next((l for l in lines[1:] if l.strip() and not l.startswith("%")),None)
-        dims=[int(v) for v in header.split()] if header else []
-        if len(dims)!=3 or any(v<=0 for v in dims[:2]) or max(dims[:2])>1000000 or not 0<=dims[2]<=2000000:raise ValueError("Sparse matrix dimensions/nnz budget exceeded")
-        x=mmread(io.BytesIO(raw)).tocsr().T
+        with source_file(asset) as source:
+            if not source.readline(4096).lower().startswith(b"%%matrixmarket matrix coordinate"):raise ValueError("A sparse coordinate Matrix Market file is required")
+            header=None
+            for _ in range(4096):
+                line=source.readline(4096)
+                if not line or len(line)==4096:raise ValueError("Matrix Market header budget exceeded")
+                if line.strip() and not line.startswith(b"%"):
+                    header=line;break
+            dims=[int(v) for v in header.split()] if header else []
+            if len(dims)!=3 or any(v<=0 for v in dims[:2]) or max(dims[:2])>1000000 or not 0<=dims[2]<=2000000:raise ValueError("Sparse matrix dimensions/nnz budget exceeded")
+            source.seek(0);x=mmread(source).tocsr().T
         g=["Gene_"+str(i+1) for i in range(dims[0])];c=["Cell_"+str(i+1) for i in range(dims[1])]
     elif asset["originalFormat"]=="h5ad":
         import h5py
-        with h5py.File(io.BytesIO(original(asset)),"r") as file:
+        with source_file(asset) as source,h5py.File(source,"r") as file:
             total=[0];visited=set()
             def check(group,depth=0):
                 if depth>32:raise ValueError("HDF5 nesting limit exceeded")

@@ -9,7 +9,7 @@ import sys
 
 sys.dont_write_bytecode=True
 ROOT=Path(__file__).resolve().parent
-FILES=["biology_worker.py","bio_common.py","bio_sequence_structure.py","bio_image_omics.py","bio_network.py","requirements.lock","dependency-licenses.json","verify_backend.py"]
+FILES=["biology_worker.py","bio_common.py","bio_sequence_structure.py","bio_image_omics.py","bio_network.py","bio_sbml.py","bio_tiff.py","requirements.lock","dependency-licenses.json","verify_backend.py"]
 
 def manifest():
     entries=[]

@@ -93,6 +93,9 @@ def sbml(asset,operation,options):
 
 def network(asset,operation,options):
     import scipy
+    if operation in {'net.sbml.simulate','net.sbml.sweep'}:
+        from bio_sbml import sbml_simulate
+        return sbml_simulate(asset,operation,options)
     if operation.startswith("net.sbml."):return sbml(asset,operation,options)
     model=network_model(asset)
     if operation=="net.sweep":

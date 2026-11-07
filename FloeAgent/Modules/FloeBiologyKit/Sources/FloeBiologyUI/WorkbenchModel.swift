@@ -57,7 +57,10 @@ public enum BiologyLabels {
             "struct.parse":("Read structure","读取结构"),"struct.select":("Select structure","选择结构"),"struct.geometry":("Structure geometry","结构统计"),"struct.contacts":("Atomic contacts","原子接触"),"struct.rmsd":("Superpose structures","叠合结构"),
             "micro.import":("Read microscopy dataset","读取显微数据"),"micro.segment":("Segment and measure","分割与测量"),"micro.overlay":("Create label overlay","生成标记叠加图"),
             "omics.import":("Read expression dataset","读取表达数据"),"omics.export":("Export expression data","导出表达数据"),"omics.qc":("Quality control","质量控制"),"omics.normalize":("Normalize counts","标准化计数"),"omics.pca":("Principal components","主成分分析"),"omics.cluster":("Cluster cells","细胞聚类"),"omics.embedding":("UMAP embedding","UMAP 降维"),"omics.diffexp":("Compare expression groups","比较表达分组"),
-            "net.simulate":("Adaptive time course","自适应时间过程"),"net.sweep":("Parameter comparison","参数比较"),"net.sbml.import":("Read SBML model","读取 SBML 模型"),"net.sbml.export":("Export SBML model","导出 SBML 模型")
+            "net.simulate":("Adaptive time course","自适应时间过程"),"net.sweep":("Parameter comparison","参数比较"),"net.sbml.import":("Read SBML model","读取 SBML 模型"),"net.sbml.export":("Export SBML model","导出 SBML 模型"),
+            "net.sbml.simulate":("Simulate SBML model","模拟 SBML 模型"),"net.sbml.sweep":("Compare SBML parameters","比较 SBML 参数"),
+            "micro.tile":("Read image region","读取图像区域"),"micro.series":("Inspect image series","查看图像序列"),
+            "tree.inspect":("Tree statistics","系统树统计"),"volume.statistics":("Density statistics","密度统计"),"volume.slice":("Density slice","密度切片"),"volume.isosurface":("Density surface","密度等值面")
         ]
         if let value=map[name] {return biologyText(value.0,value.1)}
         return name
@@ -88,8 +91,9 @@ public enum BiologyLabels {
         do {
             let latest=try await service.project(projectID)
             if let project,project.revision>latest.revision {return}
+            let activeChanged=project?.activeAssetID != latest.activeAssetID
             project=latest
-            if !latest.assets.contains(where:{$0.id==selectedID}) {selectedID=latest.assets.first?.id}
+            if activeChanged || !latest.assets.contains(where:{$0.id==selectedID}) {selectedID=latest.activeAssetID ?? latest.assets.first?.id}
             methods=if let selected {await service.capabilities(for:selected)} else {[:]}
         } catch {self.error=error.localizedDescription}
     }
@@ -115,6 +119,8 @@ public enum BiologyLabels {
             case .microscopy:format="json"
             case .microscopyPGM:format="pgm"
             case .reactionNetwork:format="json"
+            case .phylogeneticTree:format="newick"
+            case .densityVolume:format="mrc"
             }
             let a=try await service.importAsset(projectID,title:Self.sampleTitle(sample),format:format,data:BiologySamples.data(for:sample),provenance:["origin":info.origin,"license":info.license,"sha256":info.sha256])
             selectedID=a.id;selectedRunID=nil
@@ -128,6 +134,8 @@ public enum BiologyLabels {
         case .expressionCounts:biologyText("Expression matrix · synthetic","表达矩阵 · 合成示例")
         case .microscopy,.microscopyPGM:biologyText("Microscopy · synthetic","显微图像 · 合成示例")
         case .reactionNetwork:biologyText("Reaction network · synthetic","反应网络 · 合成示例")
+        case .phylogeneticTree:biologyText("Branching tree · synthetic","分支树 · 合成示例")
+        case .densityVolume:biologyText("Density volume · synthetic","密度体 · 合成示例")
         }
     }
     public func start(method:String,options:JSONValue = .object([:]),environmentID:String = "native.local",owner:BiologyExecutionOwner? = nil) async {
