@@ -391,6 +391,42 @@ final class G04WorkspaceSourceHostTests: XCTestCase {
 
     // MARK: - 4. The save ladder (journal-admitted, native-observed)
 
+    func testEditorExportOfNewEmptyFileHasExactDigestAndEOF() async throws {
+        let boot = try await bootInstalledGeneration()
+        let host = G04WorkspaceSourceHost.shared
+        let (taskID, workspaceID) = try await makeBoundOrdinaryTask()
+        let cancellation = CancellationToken()
+        let owner = G04WorkspaceOwner(epoch: boot.epoch, taskID: taskID, workspaceID: workspaceID)
+        let service = try await G04LiveWorkspaceAccess.managedService(owner, cancellation: cancellation)
+        try service.createFile("new-empty.txt", content: "", cancellation: cancellation)
+        let original = try service.guardResolver.resolve("new-empty.txt")
+
+        let ticket = host.egressOpen(epoch: boot.epoch, mode: "export", taskHex: taskID.uuidString,
+                                    workspaceHex: workspaceID.uuidString, logicalPath: "new-empty.txt",
+                                    sourceHex: nil)
+        XCTAssertGreaterThan(ticket, 0, "a new empty regular file is a valid external-editor input")
+        guard ticket > 0 else { return }
+        defer { _ = host.egressClose(ticket: ticket) }
+        var buffer = [CChar](repeating: 0, count: 4096)
+        let count = host.egressInfo(ticket: ticket, buffer: &buffer, capacity: 4096)
+        let info = try XCTUnwrap(reply(count, buffer))
+        XCTAssertEqual(info["bytes"] as? Int, 0)
+        XCTAssertEqual(info["sha256"] as? String, FloeDigest.sha256Hex(Data()))
+        XCTAssertEqual(info["mode"] as? String, "export")
+        XCTAssertNil(info["sourceID"] as? String, "an ordinary new file acquires no provider write grant")
+        var page = [UInt8](repeating: 0xa5, count: 64)
+        XCTAssertEqual(host.egressRead(ticket: ticket, offset: 0, buffer: &page, capacity: 64), 0)
+        XCTAssertEqual(try Data(contentsOf: original), Data(), "export must preserve the empty original")
+
+        // Import/save callers still require their original nonempty input;
+        // only the read-only working-copy snapshot opts into empty exports.
+        let refused = original.deletingLastPathComponent().appendingPathComponent("refused-copy")
+        XCTAssertThrowsError(try G04WorkspaceSourceCoordinator.streamCopy(
+            from: original, to: refused, freeReservePath: original.deletingLastPathComponent().path,
+            cancellation: cancellation))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: refused.path))
+    }
+
     func testEditorExportRetainsBoundOriginalWithoutCallerSourceID() async throws {
         let boot = try await bootInstalledGeneration()
         let host = G04WorkspaceSourceHost.shared

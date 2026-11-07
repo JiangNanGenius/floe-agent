@@ -664,7 +664,7 @@ public actor G04TerminalStore {
     /// `shell.start`, and the pump keeps it until real settlement.
     func open(conversationID: UUID, workspaceID expectedWorkspaceID: UUID?,
               purpose: G04TerminalSessionPurpose, command: String, cwd: String,
-              columns: Int, rows: Int, requestID: String) async {
+              columns: Int, rows: Int, projectSoftware: Bool = false, requestID: String) async {
         guard !retired, G02NativeRootEpoch.readback() == epoch else {
             reply(requestID, ok: false, code: .retired); return
         }
@@ -754,11 +754,12 @@ public actor G04TerminalStore {
                 rootURL: rootURL,
                 cancellation: receipt.cancellation,
                 forTerminal: true,           // ORIGINAL terminal semantics: raw bytes + no forced prepare
-                toolEnvironment: nil,        // ORIGINAL persisted workspace binding resolves the layer
+                toolEnvironment: nil,        // The runtime resolves this explicit dependency write scope.
                 clientSessionID: nil,        // ORIGINAL nil-owner = existing UI terminals
                 conversationID: conversationID,
                 workspaceOperationID: operationGrantID,
-                leaseRole: role)
+                leaseRole: role,
+                projectSoftware: projectSoftware)
             let record = TerminalSessionRecord(sessionToken: result.sessionID, ownerRunID: ownerRunID,
                                                conversationID: conversationID, workspaceID: workspaceID,
                                                rootURL: rootURL,

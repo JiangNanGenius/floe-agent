@@ -93,6 +93,7 @@ public fun FloeIdeWorkspace(
     onOpenDocument: ((String) -> Boolean)? = null,
     windowWidthDp: Float? = null,
     smallestWindowWidthDp: Float? = null,
+    fileSelectionOnly: Boolean = false,
 ) {
     val state by presenter.state.collectAsState()
     val colors = Floe.colors
@@ -108,7 +109,10 @@ public fun FloeIdeWorkspace(
     }
     var compactTreeOpen by remember { mutableStateOf(false) }
     BoxWithConstraints(modifier.fillMaxSize().background(colors.readingSurface)) {
-        val phoneListFirst = IdeWorkspacePresentation.usesPhoneFileList(windowWidthDp, maxWidth.value, smallestWindowWidthDp)
+        // An explicit file chooser uses the same owned tree on either form
+        // factor. It must not expose or reopen a previous editor tab.
+        val phoneListFirst = fileSelectionOnly ||
+            IdeWorkspacePresentation.usesPhoneFileList(windowWidthDp, maxWidth.value, smallestWindowWidthDp)
         val wide = maxWidth >= FloeLayout.PersistentTwoColumnMinWidth && !phoneListFirst
         // One handler for the whole surface: on the phone list, Back leaves
         // the workspace; in the phone editor it returns to the list first.
@@ -117,7 +121,7 @@ public fun FloeIdeWorkspace(
             // Read the live level, not this composition's captured state: a
             // second Back pressed before recomposition must still leave the
             // workspace instead of replaying "editor -> list".
-            if (IdeWorkspacePresentation.backReturnsToTask(
+            if (fileSelectionOnly || IdeWorkspacePresentation.backReturnsToTask(
                     phoneListFirst, presenter.state.value.compactLevel)) {
                 onBack()
             } else {
@@ -144,7 +148,7 @@ public fun FloeIdeWorkspace(
                 com.floe.android.design.FloeVerticalDivider()
                 EditorColumn(presenter, state, compact = false, onOpenTree = {}, onBack = onBack, showTreeButton = false)
             }
-        } else if (phoneListFirst && state.compactLevel == IdeCompactLevel.FILE_LIST) {
+        } else if (phoneListFirst && (fileSelectionOnly || state.compactLevel == IdeCompactLevel.FILE_LIST)) {
             // Phone root: the workspace list itself, exactly like the iOS
             // inspector Files root. Selecting a text file pushes the editor;
             // a document the host routes to its native viewer keeps the list

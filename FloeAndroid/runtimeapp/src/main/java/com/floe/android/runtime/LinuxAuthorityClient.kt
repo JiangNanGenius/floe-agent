@@ -42,7 +42,7 @@ internal class LinuxAuthorityClient(context: Context) {
     @Synchronized fun acquire(payload: JSONObject): Lease {
         val arguments = JSONObject().put("projectID", payload.getString("projectID"))
             .put("runID", payload.getString("runID"))
-        for (key in listOf("conversationID", "environmentID", "leaseRole")) {
+        for (key in listOf("conversationID", "environmentID", "leaseRole", "environmentScope")) {
             if (payload.has(key) && !payload.isNull(key)) arguments.put(key, payload.getString(key))
         }
         val result = exchange("acquire", arguments)

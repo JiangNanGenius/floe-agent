@@ -646,7 +646,7 @@ public actor G04WorkspaceSourceCoordinator {
             let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
             let before = try sourceURL.resourceValues(forKeys: keys)
             guard before.isRegularFile == true, before.isSymbolicLink != true,
-                  let size = before.fileSize, size > 0 else {
+                  let size = before.fileSize, size >= 0 else {
                 await endLease(lease)
                 throw G04SourceCoordinatorError.invalidWorkingCopy("notRegularFile")
             }
@@ -661,7 +661,7 @@ public actor G04WorkspaceSourceCoordinator {
             }
             try Self.streamCopy(from: sourceURL, to: snapshotURL,
                                 freeReservePath: snapshotURL.deletingLastPathComponent().path,
-                                cancellation: lease.cancellation)
+                                cancellation: lease.cancellation, allowEmpty: true)
             let streamedDigest = try FloeDigest.sha256Hex(ofFileAt: sourceURL,
                                                           isCancelled: { lease.cancellation.isCancelled })
             let snapshotDigest = try FloeDigest.sha256Hex(ofFileAt: snapshotURL,
@@ -901,11 +901,12 @@ public actor G04WorkspaceSourceCoordinator {
     /// chunks, and an fsync before the caller re-hashes the result.
     static func streamCopy(from source: URL, to destination: URL,
                            freeReservePath: String,
-                           cancellation: CancellationToken) throws {
+                           cancellation: CancellationToken,
+                           allowEmpty: Bool = false) throws {
         let fileManager = FileManager.default
         let attributes = try fileManager.attributesOfItem(atPath: source.path)
         let size = (attributes[.size] as? NSNumber)?.int64Value ?? -1
-        guard size > 0, Int(size) <= maximumProviderCopyBytes else {
+        guard size >= 0, (allowEmpty || size > 0), Int(size) <= maximumProviderCopyBytes else {
             throw G04SourceCoordinatorError.tooLarge(limit: maximumProviderCopyBytes)
         }
         if let available = try fileManager.attributesOfFileSystem(forPath: freeReservePath)[.systemFreeSize] as? NSNumber,

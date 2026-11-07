@@ -341,7 +341,8 @@ internal class ExternalEditController(private val context: Context, private val 
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
-                val code = (error as? Failure)?.code ?: (error as? G04WorkspaceBridgeClient.Failure)?.code ?: "operationFailed"
+                val code = (error as? Failure)?.code ?: (error as? G04WorkspaceBridgeClient.Failure)?.code
+                    ?: (error as? WorkspaceOfficeSnapshotStager.Failure)?.code ?: "operationFailed"
                 logFailure("open", code)
                 lock.withLock {
                     row?.let { records[it.id] }?.let { save(it.copy(errorCode = code, updatedAt = System.currentTimeMillis())) }
@@ -462,7 +463,8 @@ internal class ExternalEditController(private val context: Context, private val 
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (error: Exception) {
             val latest = records[id] ?: row
-            val code = (error as? Failure)?.code ?: (error as? G04WorkspaceBridgeClient.Failure)?.code ?: "operationFailed"
+            val code = (error as? Failure)?.code ?: (error as? G04WorkspaceBridgeClient.Failure)?.code
+                ?: (error as? WorkspaceOfficeSnapshotStager.Failure)?.code ?: "operationFailed"
             logFailure("return", code)
             // Retain pending commit identity on unknown outcomes; no success or blind replay.
             save(latest.copy(phase = if (latest.phase == ExternalEditPhase.SOURCE_PENDING)

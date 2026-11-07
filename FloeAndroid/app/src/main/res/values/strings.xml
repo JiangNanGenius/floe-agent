@@ -545,6 +545,11 @@
     <string name="external_edit_done">Done</string>
     <string name="external_edit_description">Edit a working copy in another app. Saved changes return automatically; conflicting versions are kept for review.</string>
     <string name="external_edit_path">Project file</string>
+    <string name="external_edit_select_file">Choose a file to edit</string>
+    <string name="external_edit_details">Details</string>
+    <string name="external_edit_history_show">%1$d completed edits</string>
+    <string name="external_edit_history_hide">Hide completed edits</string>
+    <string name="external_edit_open_error">Could not open this file. Try again or choose another editor.</string>
     <string name="external_edit_open">Choose editor</string>
     <string name="external_edit_preparing">Preparing copy…</string>
     <string name="external_edit_no_handler">No suitable editor was found. Use a Linux editor, or install another app and try again.</string>

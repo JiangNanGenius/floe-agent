@@ -171,6 +171,7 @@ public struct LinuxShellStartRequest: Sendable, Equatable {
     /// G07.3A validated same-workspace participation (live owner required).
     public var workspaceReuse: LinuxShellWorkspaceReuse?
     public var environmentTransaction: Bool
+    public var projectSoftware: Bool
 
     public init(projectID: UUID, runID: UUID, conversationID: UUID?,
                 environmentID: String?, command: String, cwd: String,
@@ -180,7 +181,8 @@ public struct LinuxShellStartRequest: Sendable, Equatable {
                 stdinDelivery: LinuxShellStdinDelivery? = nil,
                 hostLeaseRole: LinuxShellLeaseRole? = nil,
                 workspaceReuse: LinuxShellWorkspaceReuse? = nil,
-                environmentTransaction: Bool = false) {
+                environmentTransaction: Bool = false,
+                projectSoftware: Bool = false) {
         self.projectID = projectID
         self.runID = runID
         self.conversationID = conversationID
@@ -197,6 +199,7 @@ public struct LinuxShellStartRequest: Sendable, Equatable {
         self.hostLeaseRole = hostLeaseRole
         self.workspaceReuse = workspaceReuse
         self.environmentTransaction = environmentTransaction
+        self.projectSoftware = projectSoftware
     }
 
     /// The engine's own `shell.start` env bounds (authoritative source:

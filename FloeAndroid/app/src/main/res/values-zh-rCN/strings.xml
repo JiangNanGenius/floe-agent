@@ -545,6 +545,11 @@
     <string name="external_edit_done">完成</string>
     <string name="external_edit_description">在其他应用编辑工作副本。已保存的修改会自动回传；出现冲突时保留两份供你选择。</string>
     <string name="external_edit_path">项目文件</string>
+    <string name="external_edit_select_file">选择要编辑的文件</string>
+    <string name="external_edit_details">详情</string>
+    <string name="external_edit_history_show">%1$d 项已结束编辑</string>
+    <string name="external_edit_history_hide">收起已结束编辑</string>
+    <string name="external_edit_open_error">无法打开此文件。可以重试，或选择其他编辑器。</string>
     <string name="external_edit_open">选择编辑器</string>
     <string name="external_edit_preparing">正在准备副本…</string>
     <string name="external_edit_no_handler">未找到合适的编辑器。可以使用 Linux 编辑器，或安装其他应用后重试。</string>

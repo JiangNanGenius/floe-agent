@@ -253,6 +253,70 @@ final class FloeLinuxAuthorityLifecycleTests: XCTestCase {
         try await completeLease(info)
     }
 
+    func testProjectSoftwareSurvivesTaskChangeWithoutSharingAnotherProject() async throws {
+        try await standardConfigure()
+        let project = UUID()
+        let firstTask = UUID()
+        let first = try await authority.acquire(.init(
+            projectID: project.uuidString, runID: UUID().uuidString,
+            conversationID: firstTask.uuidString, environmentID: nil,
+            leaseRole: "interactive", environmentScope: "project"))
+        XCTAssertEqual(first.descriptor.conversationID, firstTask.uuidString)
+        XCTAssertEqual(first.descriptor.environmentID, first.descriptor.projectContainerID)
+        let markerName = "qa-project-software-marker"
+        let marker = URL(fileURLWithPath: first.descriptor.writableLayer).appendingPathComponent(markerName)
+        let bytes = Data("installed-in-the-explicit-project-layer".utf8)
+        try bytes.write(to: marker)
+        try await completeLease(first)
+
+        let secondTask = UUID()
+        let second = try await authority.acquire(.init(
+            projectID: project.uuidString, runID: UUID().uuidString,
+            conversationID: secondTask.uuidString, environmentID: nil,
+            leaseRole: "interactive", environmentScope: "project"))
+        XCTAssertEqual(second.descriptor.conversationID, secondTask.uuidString)
+        XCTAssertNotEqual(second.descriptor.runID, first.descriptor.runID)
+        XCTAssertEqual(second.descriptor.environmentID, first.descriptor.environmentID)
+        XCTAssertEqual(second.descriptor.writableLayer, first.descriptor.writableLayer)
+        XCTAssertEqual(try Data(contentsOf: marker), bytes)
+        try await completeLease(second)
+
+        let other = try await authority.acquire(.init(
+            projectID: UUID().uuidString, runID: UUID().uuidString,
+            conversationID: UUID().uuidString, environmentID: nil,
+            leaseRole: "interactive", environmentScope: "project"))
+        XCTAssertNotEqual(other.descriptor.environmentID, first.descriptor.environmentID)
+        let otherMarker = URL(fileURLWithPath: other.descriptor.writableLayer).appendingPathComponent(markerName)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: otherMarker.path))
+        try await completeLease(other)
+    }
+
+    func testProjectSoftwareRejectsUnknownScopeAndConflictingEnvironment() async throws {
+        try await standardConfigure()
+        for scope in ["firstProject", "../project", "session"] {
+            let code = await errorCodes {
+                try await self.authority.acquire(.init(
+                    projectID: UUID().uuidString, runID: UUID().uuidString,
+                    conversationID: UUID().uuidString, environmentID: nil,
+                    environmentScope: scope))
+            }
+            XCTAssertEqual(code, .invalidIdentifier)
+        }
+        let noTask = await errorCodes {
+            try await self.authority.acquire(.init(
+                projectID: UUID().uuidString, runID: UUID().uuidString,
+                conversationID: nil, environmentID: nil, environmentScope: "project"))
+        }
+        XCTAssertEqual(noTask, .invalidIdentifier)
+        let conflicting = await errorCodes {
+            try await self.authority.acquire(.init(
+                projectID: UUID().uuidString, runID: UUID().uuidString,
+                conversationID: UUID().uuidString, environmentID: "another-environment",
+                environmentScope: "project"))
+        }
+        XCTAssertEqual(conflicting, .invalidIdentifier)
+    }
+
     func testLowercaseCanonicalUUIDInputsNormalizeToUppercaseWorkspace() async throws {
         try await standardConfigure()
         let project = UUID()

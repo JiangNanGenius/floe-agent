@@ -781,7 +781,8 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             // Ctrl-D/Ctrl-C semantics, exchange paging and R1/R2 session
             // contracts are byte-identical to before.
             hostLeaseRole: role,
-            workspaceReuse: reuseHint
+            workspaceReuse: reuseHint,
+            projectSoftware: request.projectSoftware
         )
         let reply: LinuxShellStartReply
         do {

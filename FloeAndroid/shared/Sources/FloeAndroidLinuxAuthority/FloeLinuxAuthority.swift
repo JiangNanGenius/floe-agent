@@ -274,6 +274,12 @@ public actor FloeLinuxAuthority {
         } else {
             environmentID = nil
         }
+        if let scope = request.environmentScope {
+            guard scope == "project", conversationID != nil, environmentID == nil else {
+                throw LinuxAuthorityError(code: .invalidIdentifier,
+                                          message: "Project scope requires a conversation and no explicit environment")
+            }
+        }
         // Bounded role admission: the role is resolved and the counters are
         // reserved in this synchronous stretch BEFORE the first suspension, so
         // concurrent acquires can never over-admit. Absent role = legacy Agent
@@ -336,13 +342,29 @@ public actor FloeLinuxAuthority {
         }
 
         let workspace = try LinuxAuthorityRootPolicy.workspace(parentCanonicalPath: config.workspacesRoot.canonicalPath, name: projectID.uuidString)
+        let selectedEnvironmentID: String?
+        if request.environmentScope == "project" {
+            // Resolve from the same canonical workspace as the real grant.
+            // Preserve conversation/run ownership; only the dependency write
+            // layer changes. Existing per-task environments remain untouched.
+            do {
+                try await config.registry.prepare()
+                let workspaceOwner = FloeDigest.sha256Hex(Data(workspace.canonicalPath.utf8))
+                selectedEnvironmentID = try await config.registry.ensureProjectContainer(
+                    workspaceID: workspaceOwner, workspaceRootPath: workspace.canonicalPath).id
+            } catch {
+                throw Self.mapAuthorityError(error)
+            }
+        } else {
+            selectedEnvironmentID = environmentID
+        }
         let cancellation = CancellationToken()
         let context = ToolContext(
             runID: runID,
             scope: .local,
             workspaceRootURL: workspace.url,
             cancellation: cancellation,
-            environmentID: environmentID,
+            environmentID: selectedEnvironmentID,
             conversationID: conversationID
         )
         let holder: LinuxExecutionLeaseHolder

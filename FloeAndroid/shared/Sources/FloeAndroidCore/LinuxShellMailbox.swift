@@ -933,6 +933,9 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
         if let role = request.hostLeaseRole {
             payload["leaseRole"] = role.rawValue
         }
+        if request.projectSoftware {
+            payload["environmentScope"] = "project"
+        }
         if let reuse = request.workspaceReuse {
             payload["workspaceReuse"] = try Self.workspaceReuseObject(reuse)
         }

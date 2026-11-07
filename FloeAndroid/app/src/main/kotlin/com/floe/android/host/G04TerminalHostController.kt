@@ -952,6 +952,7 @@ internal class G04TerminalHostController(
     suspend fun openTab(conversationID: String, workspaceID: String?,
                         columns: Int, rows: Int,
                         paneVisible: Boolean = true,
+                        projectSoftware: Boolean = false,
                         onRefusal: (TerminalActionReply) -> Unit = {}): TerminalTabView? {
         val epoch = boundEpoch
         if (epoch == 0L || stopped.get() || currentNativeEpoch() != epoch) return null
@@ -963,6 +964,7 @@ internal class G04TerminalHostController(
             put("action", "terminalOpen")
             put("conversationID", conversationID)
             workspaceID?.let { put("workspaceID", it) }
+            if (projectSoftware) put("projectSoftware", true)
             put("columns", columns); put("rows", rows); put("requestID", requestID)
         }, timeoutMillis = 165_000)
         if (boundEpoch != epoch || stopped.get() || currentNativeEpoch() != epoch) {

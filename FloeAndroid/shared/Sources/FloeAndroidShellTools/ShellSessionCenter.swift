@@ -198,9 +198,16 @@ public actor ShellSessionCenter {
         hostToolCallID: String? = nil,
         leaseRole: LinuxShellLeaseRole = .interactive,
         workspaceReuse: LinuxShellWorkspaceReuse? = nil,
-        ownershipContext: ToolContext? = nil
+        ownershipContext: ToolContext? = nil,
+        projectSoftware: Bool = false
     ) async throws -> ShellOpenResult {
         try cancellation?.throwIfCancelled()
+        if projectSoftware {
+            guard forTerminal, workspaceOperationID != nil, conversationID != nil,
+                  toolEnvironment == nil, clientSessionID == nil, ownershipContext == nil else {
+                throw FloeError.validationFailed("Project software requires an owned workspace UI operation")
+            }
+        }
         try ShellInputValidation.validate(command: command, cwd: cwd, environment: environment)
         _ = try ShellInputValidation.directory(cwd: cwd, root: rootURL)
         if !command.isEmpty {
@@ -259,7 +266,8 @@ public actor ShellSessionCenter {
             hostToolCallID: hostToolCallID,   // C01 durable-job/owner identity
             prepareLinuxIfMissing: !forTerminal,
             leaseRole: leaseRole,           // G07.3A engine admission accounting
-            workspaceReuse: workspaceReuse  // G07.3A validated same-workspace participation
+            workspaceReuse: workspaceReuse, // G07.3A validated same-workspace participation
+            projectSoftware: projectSoftware
         )
         let result: ShellOpenResult
         do { result = try await backend.openSession(request, cancellation: cancellation) }

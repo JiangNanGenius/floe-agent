@@ -81,7 +81,8 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                 val terminal = checkNotNull(host.workspaceTerminal)
                 stage = "terminal"
                 var refusal: TerminalActionReply? = null
-                val tab = terminal.openTab(taskID, workspaceID, 120, 36, paneVisible = false) { refusal = it }
+                val tab = terminal.openTab(taskID, workspaceID, 120, 36,
+                    paneVisible = false, projectSoftware = true) { refusal = it }
                     .also {
                         (refusal as? TerminalActionReply.Refused)?.let { reply ->
                             throw G04WorkspaceBridgeClient.Failure(reply.code)

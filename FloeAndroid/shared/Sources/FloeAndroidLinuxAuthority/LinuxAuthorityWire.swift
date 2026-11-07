@@ -401,18 +401,22 @@ public struct LinuxAuthorityAcquireRequest: Codable, Sendable, Equatable {
     public var environmentID: String?
     /// Optional bounded workload role. Absent keeps the legacy Agent default.
     public var leaseRole: String?
+    /// Explicit project dependency write layer for the trusted graphical UI.
+    /// Nil preserves normal task/session resolution. Never a path or environment id.
+    public var environmentScope: String?
 
     public init(projectID: String, runID: String, conversationID: String?,
-                environmentID: String?, leaseRole: String? = nil) {
+                environmentID: String?, leaseRole: String? = nil, environmentScope: String? = nil) {
         self.projectID = projectID
         self.runID = runID
         self.conversationID = conversationID
         self.environmentID = environmentID
         self.leaseRole = leaseRole
+        self.environmentScope = environmentScope
     }
 
     private static let allowedKeys: Set<String> = ["projectID", "runID", "conversationID",
-                                                    "environmentID", "leaseRole"]
+                                                    "environmentID", "leaseRole", "environmentScope"]
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: AnyCodingKey.self)
@@ -422,6 +426,7 @@ public struct LinuxAuthorityAcquireRequest: Codable, Sendable, Equatable {
         conversationID = try LinuxAuthorityStrict.optional(String.self, "conversationID", in: container)
         environmentID = try LinuxAuthorityStrict.optional(String.self, "environmentID", in: container)
         leaseRole = try LinuxAuthorityStrict.optional(String.self, "leaseRole", in: container)
+        environmentScope = try LinuxAuthorityStrict.optional(String.self, "environmentScope", in: container)
     }
 
     /// Validated role: absent means the legacy Agent default; an unknown

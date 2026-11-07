@@ -310,6 +310,7 @@ internal fun WorkspaceFilesPane(
     }
     var sourcesVisible by remember(owner) { mutableStateOf(false) }
     var externalEditorVisible by remember(owner) { mutableStateOf(false) }
+    var pickingExternalFile by rememberSaveable(owner) { mutableStateOf(false) }
     var linuxDesktopVisible by remember(owner) { mutableStateOf(false) }
     var linuxDesktopPath by remember(owner) { mutableStateOf("") }
     var externalEditorPath by rememberSaveable(owner) { mutableStateOf(documentPath ?: activeDocumentPath.orEmpty()) }
@@ -450,42 +451,49 @@ internal fun WorkspaceFilesPane(
         // full-screen dialog). System Back / outside tap dismiss the menu
         // first; the secondary forms then open normally on the next explicit
         // selection, exactly like the previous pills did.
-        WorkspacePaneHeader(title = title, onDismiss = onDismiss) {
-            // Explicit full-window entry for the tablet inspector (iOS
-            // FileInspectorView's expand control, L142-146/L256-287): the
-            // pane keeps its preview-sized editor and only the user's tap
-            // promotes the same document to the full-window cover. Phones
-            // open the cover directly, so this control is absent there.
-            if (expandableDocumentPath != null) {
+        WorkspacePaneHeader(
+            title = if (pickingExternalFile) stringResource(R.string.external_edit_select_file) else title,
+            onDismiss = onDismiss,
+        ) {
+            if (pickingExternalFile) {
+                FloeCapsuleAction(label = stringResource(R.string.cancel), onClick = { pickingExternalFile = false })
+            } else {
+                // Explicit full-window entry for the tablet inspector (iOS
+                // FileInspectorView's expand control, L142-146/L256-287): the
+                // pane keeps its preview-sized editor and only the user's tap
+                // promotes the same document to the full-window cover. Phones
+                // open the cover directly, so this control is absent there.
+                if (expandableDocumentPath != null) {
+                    FloeCircleButton(
+                        icon = FloeIdeExpandGlyph,
+                        contentDescription = stringResource(R.string.workspace_document_open_full_window),
+                        onClick = { raiseDocument(expandableDocumentPath, WorkspaceDocumentSurface.CODE_EDITOR) },
+                        visualSize = 34.dp,
+                        iconSize = 16.dp,
+                        modifier = Modifier.testTag("workspace.documentExpand"),
+                    )
+                }
                 FloeCircleButton(
-                    icon = FloeIdeExpandGlyph,
-                    contentDescription = stringResource(R.string.workspace_document_open_full_window),
-                    onClick = { raiseDocument(expandableDocumentPath, WorkspaceDocumentSurface.CODE_EDITOR) },
+                    icon = FloeIcons.Plus,
+                    contentDescription = stringResource(R.string.workspace_new_menu),
+                    onClick = { toolbarMenu = if (toolbarMenu == WorkspaceToolbarMenu.NEW) null else WorkspaceToolbarMenu.NEW },
+                    enabled = !busy,
                     visualSize = 34.dp,
                     iconSize = 16.dp,
-                    modifier = Modifier.testTag("workspace.documentExpand"),
+                    modifier = Modifier.testTag("workspace.newMenuTrigger")
+                        .onGloballyPositioned { coordinates -> newTriggerBounds = coordinates.boundsInWindow() },
+                )
+                FloeCircleButton(
+                    icon = FloeIcons.Ellipsis,
+                    contentDescription = stringResource(R.string.workspace_more_menu),
+                    onClick = { toolbarMenu = if (toolbarMenu == WorkspaceToolbarMenu.MORE) null else WorkspaceToolbarMenu.MORE },
+                    enabled = !busy,
+                    visualSize = 34.dp,
+                    iconSize = 16.dp,
+                    modifier = Modifier.testTag("workspace.moreMenuTrigger")
+                        .onGloballyPositioned { coordinates -> moreTriggerBounds = coordinates.boundsInWindow() },
                 )
             }
-            FloeCircleButton(
-                icon = FloeIcons.Plus,
-                contentDescription = stringResource(R.string.workspace_new_menu),
-                onClick = { toolbarMenu = if (toolbarMenu == WorkspaceToolbarMenu.NEW) null else WorkspaceToolbarMenu.NEW },
-                enabled = !busy,
-                visualSize = 34.dp,
-                iconSize = 16.dp,
-                modifier = Modifier.testTag("workspace.newMenuTrigger")
-                    .onGloballyPositioned { coordinates -> newTriggerBounds = coordinates.boundsInWindow() },
-            )
-            FloeCircleButton(
-                icon = FloeIcons.Ellipsis,
-                contentDescription = stringResource(R.string.workspace_more_menu),
-                onClick = { toolbarMenu = if (toolbarMenu == WorkspaceToolbarMenu.MORE) null else WorkspaceToolbarMenu.MORE },
-                enabled = !busy,
-                visualSize = 34.dp,
-                iconSize = 16.dp,
-                modifier = Modifier.testTag("workspace.moreMenuTrigger")
-                    .onGloballyPositioned { coordinates -> moreTriggerBounds = coordinates.boundsInWindow() },
-            )
         }
         // Host-supplied attached-pane accessory (2026-10-25 device evidence:
         // the toolbar toggle advertised a slot no content ever filled). The
@@ -501,9 +509,19 @@ internal fun WorkspaceFilesPane(
         if (documentRequest == null) {
             FloeIdeWorkspace(
                 presenter,
-                onBack = onDismiss,
+                onBack = { if (pickingExternalFile) pickingExternalFile = false else onDismiss() },
                 modifier = Modifier.weight(1f),
-                onOpenDocument = ::openDocument,
+                onOpenDocument = { path ->
+                    if (pickingExternalFile) {
+                        // This click, rather than a dormant editor tab, selects
+                        // the target of the explicit external-edit request.
+                        pickingExternalFile = false
+                        externalEditorPath = path
+                        externalEditorVisible = true
+                        true
+                    } else openDocument(path)
+                },
+                fileSelectionOnly = pickingExternalFile,
                 windowWidthDp = windowWidthDp,
                 smallestWindowWidthDp = minimumWindowWidthDp,
                 bottomAccessory = terminalAccessory,
@@ -569,13 +587,16 @@ internal fun WorkspaceFilesPane(
             items = listOf(
                 WorkspaceMenuItem(stringResource(R.string.linux_desktop_title), enabled = !busy) {
                     toolbarMenu = null
-                    linuxDesktopPath = externalEditorPath.ifBlank { activeDocumentPath.orEmpty() }
+                    // The global Apps entry opens applications, not the last
+                    // document the user happened to view in this workspace.
+                    linuxDesktopPath = ""
                     linuxDesktopVisible = true
                 },
                 WorkspaceMenuItem(stringResource(R.string.external_edit_title), enabled = !busy) {
                     toolbarMenu = null
-                    if (externalEditorPath.isBlank()) externalEditorPath = activeDocumentPath.orEmpty()
-                    externalEditorVisible = true
+                    externalEditorPath = ""
+                    pickingExternalFile = true
+                    presenter.showCompactFileList()
                 },
                 WorkspaceMenuItem(stringResource(R.string.workspace_file_actions), enabled = !busy) {
                     toolbarMenu = null

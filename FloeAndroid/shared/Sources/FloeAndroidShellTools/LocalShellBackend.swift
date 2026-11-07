@@ -237,6 +237,10 @@ public struct ShellOpenRequest: Sendable {
     /// observation only; the runtime re-proves the live owner).
     public var workspaceReuse: LinuxShellWorkspaceReuse?
 
+    /// Trusted graphical-workspace UI only: install software in this project's
+    /// existing dependency layer while retaining the real task and operation lease.
+    public var projectSoftware: Bool
+
     public init(
         command: String = "",
         cwd: String = ".",
@@ -254,7 +258,8 @@ public struct ShellOpenRequest: Sendable {
         environmentID: String? = nil,
         prepareLinuxIfMissing: Bool = true,
         leaseRole: LinuxShellLeaseRole = .interactive,
-        workspaceReuse: LinuxShellWorkspaceReuse? = nil
+        workspaceReuse: LinuxShellWorkspaceReuse? = nil,
+        projectSoftware: Bool = false
     ) {
         self.command = command
         self.cwd = cwd
@@ -273,6 +278,7 @@ public struct ShellOpenRequest: Sendable {
         self.prepareLinuxIfMissing = prepareLinuxIfMissing
         self.leaseRole = leaseRole
         self.workspaceReuse = workspaceReuse
+        self.projectSoftware = projectSoftware
     }
 }
 

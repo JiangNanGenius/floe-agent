@@ -493,7 +493,13 @@ internal class LinuxRuntimeOperations(
         // G07.1 terminal04: the runtime half of this start's composition.
         val latency = LinuxRuntimePhaseTiming.begin()
         fields(payload, setOf("projectID", "runID", "conversationID", "environmentID", "command", "cwd",
-            "env", "rows", "columns", "timeoutSeconds", "stdinDelivery", "leaseRole", "workspaceReuse", "environmentTransaction"))
+            "env", "rows", "columns", "timeoutSeconds", "stdinDelivery", "leaseRole", "workspaceReuse", "environmentTransaction", "environmentScope"))
+        if (payload.has("environmentScope")) {
+            require(payload.opt("environmentScope") == "project" &&
+                payload.optString("conversationID").isNotEmpty() && !payload.has("environmentID")) {
+                "environmentScope invalid"
+            }
+        }
         if (payload.has("environmentTransaction")) require(payload.opt("environmentTransaction") is Boolean)
         val transactional = payload.optBoolean("environmentTransaction", false)
         if (transactional) require(payload.optString("leaseRole", "agent") == "agent" && !hasOwnedWork()) {

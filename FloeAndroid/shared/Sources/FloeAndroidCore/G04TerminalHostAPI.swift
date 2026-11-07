@@ -335,11 +335,16 @@ public final class G04TerminalHostMailbox: @unchecked Sendable {
                 emitControl(["type": "actionReply", "requestID": requestID, "ok": false,
                              "code": "invalidConversation"]); return
             }
+            guard object["projectSoftware"] == nil || object["projectSoftware"] is Bool else {
+                emitControl(["type": "actionReply", "requestID": requestID, "ok": false,
+                             "code": "invalidArguments"]); return
+            }
             await store.open(conversationID: conversation,
                              workspaceID: uuid(object["workspaceID"]),
                              purpose: .interactive, command: "", cwd: ".",
                              columns: int(object["columns"]) ?? 80,
                              rows: int(object["rows"]) ?? 24,
+                             projectSoftware: object["projectSoftware"] as? Bool ?? false,
                              requestID: requestID)
         case "terminalInput":
             guard let token = object["sessionToken"] as? String,
