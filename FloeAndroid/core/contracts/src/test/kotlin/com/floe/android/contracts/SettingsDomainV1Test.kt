@@ -26,7 +26,7 @@ class SettingsDomainV1Test {
             "schedule.runNow", "schedule.history", "schedule.dispatch", "schedule.rearm",
             "schedule.dispatchPending",
         )
-        val rows = BridgeV3CommandMatrix.ENTRIES.drop(95).take(13)
+        val rows = BridgeV3CommandMatrix.ENTRIES.drop(96).take(13)
         assertEquals(expected, rows.map { it.command })
         val writes = setOf(
             "schedule.create", "schedule.update", "schedule.enable", "schedule.disable",
@@ -47,7 +47,7 @@ class SettingsDomainV1Test {
             "project.list", "project.get", "project.create", "project.rename",
             "project.assign", "project.delete",
         )
-        val rows = BridgeV3CommandMatrix.ENTRIES.drop(108).take(6)
+        val rows = BridgeV3CommandMatrix.ENTRIES.drop(109).take(6)
         assertEquals(expected, rows.map { it.command })
         val writes = setOf(
             "project.create", "project.rename", "project.assign", "project.delete",
@@ -62,7 +62,7 @@ class SettingsDomainV1Test {
 
     @Test
     fun systemConditionsAppendOnlyTheExistingScheduleRevisionRole() {
-        val row = BridgeV3CommandMatrix.ENTRIES.drop(114).single()
+        val row = BridgeV3CommandMatrix.ENTRIES.drop(115).single()
         assertEquals("schedule.systemEvent", row.command)
         assertEquals(BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, row.scope)
         assertEquals("schedule", row.configurationScope)
@@ -85,14 +85,14 @@ class SettingsDomainV1Test {
         // 90 accepted tuples + the five G07.3A interaction tuples. The first
         // 90 entries (including the G04 workspace ledger at the tail before
         // this batch) remain intact; the interaction tuples are appended.
-        assertEquals(115, BridgeV3CommandMatrix.ENTRIES.size)
+        assertEquals(116, BridgeV3CommandMatrix.ENTRIES.size)
         val interactionCommands = listOf(
             "conversation.messageSearch", "conversation.messageWindow",
             "question.pending", "question.answer", "question.cancel",
         )
         assertEquals(
             interactionCommands,
-            BridgeV3CommandMatrix.ENTRIES.take(95).takeLast(5).map { it.command },
+            BridgeV3CommandMatrix.ENTRIES.take(96).takeLast(5).map { it.command },
         )
         for (command in interactionCommands) {
             val entry = BridgeV3CommandMatrix.ENTRIES.single { it.command == command }
@@ -412,16 +412,16 @@ class SettingsDomainV1Test {
         val keys = entries.map {
             "${it.scope.wire}|${it.configurationScope ?: ""}|${it.command}"
         }
-        assertEquals(115, keys.toSet().size)
+        assertEquals(116, keys.toSet().size)
         assertEquals(57, entries.take(57).map {
             "${it.scope.wire}|${it.configurationScope ?: ""}|${it.command}"
         }.toSet().size)
-        assertEquals(114, entries.map { "${it.scope.wire}|${it.command}" }.toSet().size)
+        assertEquals(115, entries.map { "${it.scope.wire}|${it.command}" }.toSet().size)
         assertEquals(2, entries.count {
             it.scope == BridgeV3Scope.Kind.APPLICATION_CONFIGURATION &&
                 it.command == "content.read"
         })
-        assertEquals(115, entries.size)
+        assertEquals(116, entries.size)
         assertEquals(21, BridgeProtocolV3.CONFIGURATION_SCOPES.size)
     }
 

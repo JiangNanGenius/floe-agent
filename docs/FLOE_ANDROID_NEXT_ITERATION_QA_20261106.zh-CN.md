@@ -522,4 +522,6 @@ English: Android remains a lightweight Agent workspace. Prefer external Android 
 ### Alpha51三星原故障定位：系统条件命令缺少路由
 
 - 私有code75真实断网／重连日志确认观察边沿、持久事件和Worker均已到达，随后实际主机入口返回`unknownCommandInScope`。没有创建执行记录，不算模型或文件成果通过；新故障计划已暂停，旧现场保留。
-- 已将既有`schedule.systemEvent`追加到Kotlin和原生两端的命令矩阵，继续要求原计划修订及schedule配置角色；前114项及既有权限边界不变。增加直接覆盖实际HostCommandValidator的回归，下一候选使用递增code76，尚待ARM64生产编译、实际APK与三星新计划验证。
+- 已将既有`schedule.systemEvent`追加到Kotlin和原生两端的命令矩阵，继续要求原计划修订及schedule配置角色；既有115项命令及权限边界不变。增加直接覆盖实际HostCommandValidator的回归，下一候选使用递增code76，尚待ARM64生产编译、实际APK与三星新计划验证。
+
+- 定向契约测试另发现旧golden漏记了两端早已存在的`run.events`，实际旧矩阵为115项。已按原生产顺序补回台账与断言；生产只追加系统条件这一项，未删除或放宽既有入口。原五项断言失败保留，修正后继续定向验证。
