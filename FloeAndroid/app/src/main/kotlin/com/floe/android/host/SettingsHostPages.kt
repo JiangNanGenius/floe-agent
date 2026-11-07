@@ -74,13 +74,6 @@ object SettingsHostPages {
     fun DefaultsPage(settings: SettingsHostController) {
         val state by settings.state.collectAsState()
         val defaults = state.defaults
-        val roles by settings.roles.state.collectAsState()
-        androidx.compose.runtime.LaunchedEffect(Unit) {
-            // Idempotent: the host start already loads it when admitted;
-            // opening the page must also recover when admission raced the
-            // first composition.
-            settings.roles.refresh()
-        }
         Column(
             Modifier
                 .fillMaxWidth()
@@ -172,15 +165,48 @@ object SettingsHostPages {
                 status = state.defaultsStatus,
                 onRetry = { settings.refreshDefaults() },
             )
-            ModelRolesCard(settings.roles)
         }
     }
 
     @Composable
-    fun AuxiliaryPage(settings: SettingsHostController) {
+    fun AuxiliaryPage(settings: SettingsHostController, showActions: Boolean = true) {
         LaunchedEffect(settings.roles) { settings.roles.refresh() }
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-            ModelRolesCard(settings.roles, mediaOnly = true)
+            ModelRolesCard(settings.roles, mediaOnly = true, showActions = showActions)
+        }
+    }
+
+    @Composable
+    fun ModelRolesPage(settings: SettingsHostController, showActions: Boolean = true) {
+        LaunchedEffect(settings.roles) { settings.roles.refresh() }
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+            ModelRolesCard(settings.roles, showActions = showActions)
+        }
+    }
+
+    /** The existing explicit save/discard actions can live in a sticky
+     * navigation bar without changing persistence or draft ownership. */
+    @Composable
+    fun ModelRoleActions(roles: SettingsRoleModelController) {
+        val state by roles.state.collectAsState()
+        if (state.hasDraftChanges) {
+            Column {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.settings_save),
+                        enabled = !state.saving,
+                        onClick = { roles.save() },
+                    )
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.cancel),
+                        enabled = !state.saving,
+                        onClick = { roles.discardDraft() },
+                    )
+                }
+                if (state.saveError != null) {
+                    FloeText(stringResource(R.string.settings_role_save_failed), style = Floe.typography.metadata)
+                }
+            }
         }
     }
 
@@ -194,7 +220,11 @@ object SettingsHostPages {
      * value row states its honest inherit/unavailable state.
      */
     @Composable
-    private fun ModelRolesCard(roles: SettingsRoleModelController, mediaOnly: Boolean = false) {
+    private fun ModelRolesCard(
+        roles: SettingsRoleModelController,
+        mediaOnly: Boolean = false,
+        showActions: Boolean = true,
+    ) {
         val state by roles.state.collectAsState()
         var pickerSlot by remember { mutableStateOf<SettingsRoleModelController.RoleSlot?>(null) }
         FloeSettingsSectionCard(title = stringResource(R.string.settings_model_roles)) {
@@ -305,7 +335,7 @@ object SettingsHostPages {
                     }
                 })
             }
-            if (state.hasDraftChanges) {
+            if (showActions && state.hasDraftChanges) {
                 Row(
                     Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),

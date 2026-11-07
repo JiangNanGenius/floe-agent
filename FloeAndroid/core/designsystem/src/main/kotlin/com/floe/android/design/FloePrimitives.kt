@@ -518,6 +518,7 @@ fun io.github.robinpcrd.cupertino.section.SectionScope.FloeSwitchRow(
     caption: String? = null,
 ) {
     SectionItem(
+        paddingValues = floeSettingsRowPadding(),
         // Native settings semantics: the whole row toggles (Android
         // SwitchPreference / iOS cell parity). Before this, only the switch
         // itself responded and tapping the title silently did nothing — the

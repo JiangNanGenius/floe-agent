@@ -59,10 +59,18 @@ internal object TaskScheduleConditions {
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
                     val active = when (intent.action) {
-                        Intent.ACTION_POWER_CONNECTED -> true
+                        Intent.ACTION_POWER_CONNECTED -> charging(app)
                         Intent.ACTION_POWER_DISCONNECTED -> false
+                        Intent.ACTION_BATTERY_CHANGED -> charging(intent)
                         else -> return
                     }
+                    // Battery broadcasts also carry level/temperature changes.
+                    // Those must not create a fresh background probe when the
+                    // actual charging state stayed unchanged.
+                    if (intent.action == Intent.ACTION_BATTERY_CHANGED && synchronized(observations) {
+                            val prefs = app.getSharedPreferences("floe.schedule.conditions", Context.MODE_PRIVATE)
+                            prefs.contains("active.charging") && prefs.getBoolean("active.charging", false) == active
+                        }) return
                     observe(app, listOf("charging" to active))
                     enqueue(app)
                 }
@@ -70,6 +78,7 @@ internal object TaskScheduleConditions {
             ContextCompat.registerReceiver(app, receiver, IntentFilter().apply {
                 addAction(Intent.ACTION_POWER_CONNECTED)
                 addAction(Intent.ACTION_POWER_DISCONNECTED)
+                addAction(Intent.ACTION_BATTERY_CHANGED)
             }, ContextCompat.RECEIVER_NOT_EXPORTED)
             powerReceiver = receiver
         }
@@ -96,6 +105,14 @@ internal object TaskScheduleConditions {
         return connectivity.getNetworkCapabilities(connectivity.activeNetwork)
             ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
     }
+
+    private fun charging(intent: Intent?): Boolean = when (intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1)) {
+        BatteryManager.BATTERY_STATUS_CHARGING, BatteryManager.BATTERY_STATUS_FULL -> true
+        else -> false
+    }
+
+    private fun charging(context: Context): Boolean = charging(
+        context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)))
 
     private fun networkChanged(context: Context) {
         // Losing an old network while another validated network is active is not
@@ -137,10 +154,7 @@ internal object TaskScheduleConditions {
             observe = {
                 // Re-read actual state after making space, rather than replaying
                 // the snapshot taken before a slow native submission.
-                val battery = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-                val status = battery?.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
-                val charging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
-                observe(context, listOf("charging" to charging, "networkConnected" to connected(context)))
+                observe(context, listOf("charging" to charging(context), "networkConnected" to connected(context)))
             },
             peek = { synchronized(observations) {
                 val queue = JSONArray(prefs.getString("pending", "[]"))

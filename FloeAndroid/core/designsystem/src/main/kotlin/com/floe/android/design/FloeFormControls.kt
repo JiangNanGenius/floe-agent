@@ -779,6 +779,7 @@ fun FloeCapsuleAction(
 ) {
     val colors = Floe.colors
     val shape = FloeLayout.SidebarSelectionShape
+    val compact = LocalFloeCompactSettings.current
     val textColor = when {
         !enabled -> colors.tertiaryLabel
         tint != null -> tint
@@ -787,18 +788,27 @@ fun FloeCapsuleAction(
     Box(
         modifier = modifier
             .heightIn(min = FloeLayout.MinimumTarget)
-            .clip(shape)
-            .background(colors.chromeSurface)
-            .then(if (showHairline) Modifier.border(0.5.dp, colors.chromeHairline, shape) else Modifier)
+            .widthIn(min = FloeLayout.MinimumTarget)
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics {
                 contentDescription = label
                 if (!enabled) disabled()
             }
-            .padding(horizontal = 18.dp, vertical = 8.dp),
+            .then(if (!compact) Modifier.clip(shape).background(colors.chromeSurface)
+                .then(if (showHairline) Modifier.border(0.5.dp, colors.chromeHairline, shape) else Modifier)
+                else Modifier),
         contentAlignment = Alignment.Center,
     ) {
-        FloeText(label, style = Floe.typography.bodyEmphasized, color = textColor)
+        Box(
+            Modifier
+                .clip(shape)
+                .background(colors.chromeSurface)
+                .then(if (compact && showHairline) Modifier.border(0.5.dp, colors.chromeHairline, shape) else Modifier)
+                .padding(horizontal = if (compact) 12.dp else 18.dp, vertical = if (compact) 6.dp else 8.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            FloeText(label, style = Floe.typography.bodyEmphasized, color = textColor)
+        }
     }
 }
 

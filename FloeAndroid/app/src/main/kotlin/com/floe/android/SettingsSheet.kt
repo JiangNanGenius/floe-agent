@@ -55,12 +55,14 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
 import com.floe.android.design.FloeCapsuleAction
+import com.floe.android.design.FloeActionRow
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloePageSheet
 import com.floe.android.design.FloeSelectionStyle
 import com.floe.android.design.FloeSegmented
+import com.floe.android.design.FloeSectionRow
 import com.floe.android.design.FloeSettingsContentDensity
 import com.floe.android.design.FloeSettingsSectionCard
 import com.floe.android.design.FloeSettingsSection
@@ -81,7 +83,20 @@ import com.floe.android.host.WebSearchSettingsPage
 import com.floe.android.host.GitHubCredentialEditor
 import com.floe.android.feature.desktopassist.DesktopAssistSettingsPage
 import com.floe.android.host.voice.C03VoiceSettingsCard
+import com.floe.android.host.voice.C03VoiceSettingsLinks
+import com.floe.android.host.voice.C03VoiceSettingsPage
+import com.floe.android.host.voice.c03VoiceSettingsTitle
 import io.github.robinpcrd.cupertino.section.SectionItem
+
+private enum class SettingsSubpage(
+    val parent: FloeSettingsSection,
+    val voicePage: C03VoiceSettingsPage? = null,
+) {
+    VOICE_INPUT(FloeSettingsSection.GENERAL, C03VoiceSettingsPage.INPUT),
+    VOICE_OUTPUT(FloeSettingsSection.GENERAL, C03VoiceSettingsPage.OUTPUT),
+    VOICE_FILES(FloeSettingsSection.GENERAL, C03VoiceSettingsPage.FILES),
+    MODEL_ROLES(FloeSettingsSection.PROVIDERS),
+}
 
 /**
  * Settings opens as a page sheet (iOS presents `SettingsRootView` from the
@@ -135,6 +150,7 @@ fun SettingsSheet(
     // (mirrors SettingsRootView's iPhone NavigationStack path), fully
     // independent of the wide column collapse.
     var compactDetailOpen by rememberSaveable { mutableStateOf(false) }
+    var detailSubpage by rememberSaveable { mutableStateOf<String?>(null) }
     // Presentation-transition capture. SettingsSheet itself stays composed
     // while hidden and its saveable state survives rotation/recreation, so a
     // keyed effect could not tell "new presentation" from "recreation of an
@@ -146,6 +162,7 @@ fun SettingsSheet(
     if (visible != lastPresented) {
         lastPresented = visible
         if (visible) {
+            detailSubpage = null
             val entrySection = FloeSettingsSection.entries
                 .firstOrNull { it.name == initialSection }
             val externalEntry = externalSections
@@ -206,8 +223,27 @@ fun SettingsSheet(
                 !FloeLayout.usesCompactNavigation(maxWidth.value, smallestWidth)
             val active = runCatching { FloeSettingsSection.valueOf(section) }.getOrDefault(FloeSettingsSection.GENERAL)
             val activeExternal = externalSections.firstOrNull { it.key == section }
-            val activeTitle = activeExternal?.let { stringResource(it.titleRes) }
+            val nested = SettingsSubpage.entries.firstOrNull {
+                it.name == detailSubpage && it.parent.name == section
+            }
+            LaunchedEffect(section, detailSubpage) {
+                if (detailSubpage != null && nested == null) detailSubpage = null
+            }
+            val nestedTitle = nested?.voicePage?.let(::c03VoiceSettingsTitle)
+                ?: if (nested == SettingsSubpage.MODEL_ROLES) stringResource(R.string.settings_model_roles) else null
+            val activeTitle = nestedTitle ?: activeExternal?.let { stringResource(it.titleRes) }
                 ?: settingsTitle(active)
+            val onBack: () -> Unit = {
+                if (nested != null) detailSubpage = null else compactDetailOpen = false
+            }
+            val openVoicePage: (C03VoiceSettingsPage) -> Unit = { page ->
+                detailSubpage = SettingsSubpage.entries.first { it.voicePage == page }.name
+            }
+            val modelRoleActions: @Composable () -> Unit = {
+                if ((wide || compactDetailOpen) &&
+                    (nested == SettingsSubpage.MODEL_ROLES || active == FloeSettingsSection.AUXILIARY)
+                ) runtimeHost?.let { SettingsHostPages.ModelRoleActions(it.settings.roles) }
+            }
             // A channel category can disappear (detached presentation, channel
             // hand-over). Never keep the stale external key selected: fall back
             // to General, the same default a fresh presentation uses.
@@ -269,7 +305,7 @@ fun SettingsSheet(
                                             icon = settingsIcon(entry),
                                             label = settingsTitle(entry),
                                             selected = activeExternal == null && entry == active,
-                                            onClick = { section = entry.name },
+                                            onClick = { detailSubpage = null; section = entry.name },
                                             selectionStyle = FloeSelectionStyle.GRAY,
                                             modifier = Modifier
                                                 .padding(horizontal = 12.dp)
@@ -293,7 +329,7 @@ fun SettingsSheet(
                                             icon = entry.icon,
                                             label = stringResource(entry.titleRes),
                                             selected = externalSelected,
-                                            onClick = { section = entry.key },
+                                            onClick = { detailSubpage = null; section = entry.key },
                                             selectionStyle = FloeSelectionStyle.GRAY,
                                             modifier = Modifier
                                                 .padding(horizontal = 12.dp)
@@ -330,9 +366,17 @@ fun SettingsSheet(
                                 topPadding = 68.dp,
                                 showColumnToggle = wideListCollapsed,
                                 onToggleColumns = { wideListCollapsed = false },
+                                onBack = if (nested != null) onBack else null,
+                                actions = modelRoleActions,
                             )
                             val slot = providerContent
-                            if (activeExternal != null) {
+                            if (nested != null) {
+                                SettingsSubpageContent(
+                                    nested, runtimeHost,
+                                    Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()),
+                                )
+                                ImeFirstBackHandler { onBack() }
+                            } else if (activeExternal != null) {
                                 // The external page owns its own bounded
                                 // content; host exactly one scroll container.
                                 Column(
@@ -347,9 +391,11 @@ fun SettingsSheet(
                                 // The provider destination owns its list
                                 // scroll; the host supplies a finite slot with
                                 // no outer scrolling parent.
-                                Box(Modifier.fillMaxWidth().weight(1f)) {
-                                    slot(hostGeometry, Modifier.fillMaxSize())
-                                }
+                                ProviderSettingsContent(
+                                    hostGeometry, slot, runtimeHost,
+                                    onOpenRoles = { detailSubpage = SettingsSubpage.MODEL_ROLES.name },
+                                    modifier = Modifier.fillMaxWidth().weight(1f),
+                                )
                             } else if (active == FloeSettingsSection.SKILLS) {
                                 // The integrations destination owns its own
                                 // bounded scrolling list; a pane-level scroll
@@ -369,6 +415,8 @@ fun SettingsSheet(
                                     SettingsSectionContent(
                                         active, themeMode, onThemeModeChange, onOpenPreview,
                                         runtimeHost = runtimeHost,
+                                        onOpenVoice = openVoicePage,
+                                        onOpenModelRoles = { detailSubpage = SettingsSubpage.MODEL_ROLES.name },
                                     )
                                 }
                             }
@@ -384,11 +432,18 @@ fun SettingsSheet(
                             },
                             compactDetail = compactDetailOpen,
                             onDone = onDismiss,
-                            onBack = { compactDetailOpen = false },
+                            onBack = onBack,
+                            actions = modelRoleActions,
                         )
                         if (compactDetailOpen) {
                             val slot = providerContent
-                            if (activeExternal != null) {
+                            if (nested != null) {
+                                SettingsSubpageContent(
+                                    nested, runtimeHost,
+                                    Modifier.fillMaxSize().background(Floe.colors.groupedSurface)
+                                        .verticalScroll(rememberScrollState()),
+                                )
+                            } else if (activeExternal != null) {
                                 // Same one-scroll-owner contract as the wide
                                 // pane: the external page supplies plain
                                 // content and the host owns the scroll.
@@ -414,9 +469,11 @@ fun SettingsSheet(
                                         .background(Floe.colors.groupedSurface),
                                 ) {
                                     Spacer(Modifier.height(8.dp))
-                                    Box(Modifier.fillMaxWidth().weight(1f)) {
-                                        slot(hostGeometry, Modifier.fillMaxSize())
-                                    }
+                                    ProviderSettingsContent(
+                                        hostGeometry, slot, runtimeHost,
+                                        onOpenRoles = { detailSubpage = SettingsSubpage.MODEL_ROLES.name },
+                                        modifier = Modifier.fillMaxWidth().weight(1f),
+                                    )
                                 }
                             } else if (active == FloeSettingsSection.SKILLS) {
                                 Column(
@@ -445,6 +502,8 @@ fun SettingsSheet(
                                         SettingsSectionContent(
                                             active, themeMode, onThemeModeChange, onOpenPreview,
                                             runtimeHost = runtimeHost,
+                                            onOpenVoice = openVoicePage,
+                                            onOpenModelRoles = { detailSubpage = SettingsSubpage.MODEL_ROLES.name },
                                         )
                                     }
                                 }
@@ -452,7 +511,7 @@ fun SettingsSheet(
                             // Settings hosts real text fields (pairing code,
                             // provider forms). Back hides the keyboard first
                             // instead of popping the page underneath it.
-                            ImeFirstBackHandler { compactDetailOpen = false }
+                            ImeFirstBackHandler { onBack() }
                         } else {
                             Column(
                                 Modifier
@@ -465,7 +524,7 @@ fun SettingsSheet(
                                         icon = settingsIcon(entry),
                                         label = settingsTitle(entry),
                                         selected = false,
-                                        onClick = { section = entry.name; compactDetailOpen = true },
+                                        onClick = { detailSubpage = null; section = entry.name; compactDetailOpen = true },
                                         selectionStyle = FloeSelectionStyle.NONE,
                                         modifier = Modifier.padding(horizontal = 12.dp),
                                         trailing = { IconGlyph(FloeIcons.ChevronForward, Floe.colors.tertiaryLabel, 14.dp) },
@@ -476,7 +535,7 @@ fun SettingsSheet(
                                         icon = entry.icon,
                                         label = stringResource(entry.titleRes),
                                         selected = false,
-                                        onClick = { section = entry.key; compactDetailOpen = true },
+                                        onClick = { detailSubpage = null; section = entry.key; compactDetailOpen = true },
                                         selectionStyle = FloeSelectionStyle.NONE,
                                         modifier = Modifier.padding(horizontal = 12.dp),
                                         trailing = { IconGlyph(FloeIcons.ChevronForward, Floe.colors.tertiaryLabel, 14.dp) },
@@ -489,6 +548,50 @@ fun SettingsSheet(
             }
         }
     }
+    }
+}
+
+/** Model-role drafts keep the same controller when opened from Providers. */
+@Composable
+private fun ModelRolesSettingsEntry(onOpen: () -> Unit) {
+    FloeSettingsSectionCard(null, Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        FloeActionRow(stringResource(R.string.settings_model_roles), onClick = onOpen)
+    }
+}
+
+@Composable
+private fun ProviderSettingsContent(
+    geometry: FloeSettingsHostGeometry,
+    content: @Composable (FloeSettingsHostGeometry, Modifier) -> Unit,
+    runtimeHost: RuntimeHost?,
+    onOpenRoles: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier) {
+        if (runtimeHost != null) ModelRolesSettingsEntry(onOpenRoles)
+        Box(Modifier.fillMaxWidth().weight(1f)) {
+            content(geometry, Modifier.fillMaxSize())
+        }
+    }
+}
+
+@Composable
+private fun SettingsSubpageContent(
+    page: SettingsSubpage,
+    runtimeHost: RuntimeHost?,
+    modifier: Modifier,
+) {
+    Column(modifier) {
+        val voicePage = page.voicePage
+        if (voicePage != null) {
+            C03VoiceSettingsCard(
+                runtimeHost?.voiceOrNull(),
+                Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                page = voicePage,
+            )
+        } else if (runtimeHost != null) {
+            SettingsHostPages.ModelRolesPage(runtimeHost.settings, showActions = false)
+        } else HostPendingPage(R.string.settings_skills_pending)
     }
 }
 
@@ -526,6 +629,8 @@ private fun SettingsDetailHeader(
     topPadding: Dp = 14.dp,
     showColumnToggle: Boolean = false,
     onToggleColumns: () -> Unit = {},
+    onBack: (() -> Unit)? = null,
+    actions: (@Composable () -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
@@ -533,12 +638,16 @@ private fun SettingsDetailHeader(
             .padding(start = 20.dp, end = 16.dp, top = topPadding, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (onBack != null) {
+            FloeToolbarIconButton(FloeIcons.ChevronBack, stringResource(R.string.back), onBack)
+        }
         FloeText(
             title,
             style = Floe.typography.navLargeTitle,
             color = Floe.colors.label,
             modifier = Modifier.weight(1f),
         )
+        actions?.invoke()
         if (showColumnToggle) {
             FloeToolbarIconButton(
                 icon = FloeIcons.SidebarToggle,
@@ -555,13 +664,14 @@ private fun SheetToolbar(
     compactDetail: Boolean,
     onDone: () -> Unit,
     onBack: () -> Unit,
+    actions: (@Composable () -> Unit)? = null,
 ) {
     val colors = Floe.colors
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = FloeLayout.ToolbarHeight)
-            .padding(horizontal = 12.dp, vertical = 2.dp),
+            .heightIn(min = FloeLayout.MinimumTarget)
+            .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (compactDetail) {
@@ -577,12 +687,13 @@ private fun SheetToolbar(
             // category name must not be duplicated as a second large title
             // inside the form.
             title,
-            style = Floe.typography.title,
+            style = Floe.typography.toolbarTitle,
             color = colors.label,
             maxLines = 1,
             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f).padding(start = if (compactDetail) 0.dp else 8.dp),
         )
+        actions?.invoke()
         FloeDoneButton(onDone)
     }
     FloeDivider()
@@ -609,16 +720,22 @@ private fun SettingsSectionContent(
     onThemeModeChange: (FloeThemeMode) -> Unit,
     onOpenPreview: () -> Unit,
     runtimeHost: RuntimeHost? = null,
+    onOpenVoice: (C03VoiceSettingsPage) -> Unit,
+    onOpenModelRoles: () -> Unit,
 ) {
     when (section) {
         FloeSettingsSection.GENERAL -> {
             GeneralSettingsPage(themeMode, onThemeModeChange)
-            C03VoiceSettingsCard(runtimeHost?.voiceOrNull())
+            C03VoiceSettingsLinks(
+                runtimeHost?.voiceOrNull(), onOpenVoice,
+                Modifier.padding(horizontal = 16.dp),
+            )
             if (runtimeHost != null) {
                 SettingsHostPages.DefaultsPage(runtimeHost.settings)
             }
         }
         FloeSettingsSection.PROVIDERS -> {
+            if (runtimeHost != null) ModelRolesSettingsEntry(onOpenModelRoles)
             ProvidersSettingsPage()
             // G09-R2 media-enhancement backend lives with the provider
             // configuration state (its fal.ai credential is provider config,
@@ -626,7 +743,7 @@ private fun SettingsSectionContent(
             MediaEnhancementSettingsCard()
         }
         FloeSettingsSection.AUXILIARY -> {
-            if (runtimeHost != null) SettingsHostPages.AuxiliaryPage(runtimeHost.settings)
+            if (runtimeHost != null) SettingsHostPages.AuxiliaryPage(runtimeHost.settings, showActions = false)
             else HostPendingPage(R.string.settings_skills_pending)
         }
         FloeSettingsSection.EXECUTION -> com.floe.android.host.linux.LocalRuntimeSettingsCard()
@@ -725,12 +842,15 @@ private fun SkillsSettingsPage(runtimeHost: RuntimeHost?) {
 @Composable
 private fun GeneralSettingsPage(themeMode: FloeThemeMode, onThemeModeChange: (FloeThemeMode) -> Unit) {
     val colors = Floe.colors
+    val configuration = LocalConfiguration.current
+    val compact = FloeLayout.usesCompactNavigation(
+        configuration.screenWidthDp.toFloat(), configuration.smallestScreenWidthDp.toFloat())
     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
         FloeSettingsSectionCard(title = stringResource(R.string.day_night_theme)) {
-            SectionItem(
+            FloeSectionRow(
                 title = {
-                    Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 12.dp)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = if (compact) 6.dp else 12.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp)) {
                             val modes = listOf(FloeThemeMode.AUTO, FloeThemeMode.LIGHT, FloeThemeMode.DARK)
                             modes.forEach { mode ->
                                 ThemePreviewThumb(
@@ -738,10 +858,11 @@ private fun GeneralSettingsPage(themeMode: FloeThemeMode, onThemeModeChange: (Fl
                                     selected = themeMode == mode,
                                     onClick = { onThemeModeChange(mode) },
                                     modifier = Modifier.weight(1f),
+                                    compact = compact,
                                 )
                             }
                         }
-                        Spacer(Modifier.height(14.dp))
+                        Spacer(Modifier.height(if (compact) 8.dp else 14.dp))
                         FloeSegmented(
                             options = listOf(
                                 stringResource(R.string.theme_auto),
@@ -757,7 +878,7 @@ private fun GeneralSettingsPage(themeMode: FloeThemeMode, onThemeModeChange: (Fl
                                 onThemeModeChange(listOf(FloeThemeMode.AUTO, FloeThemeMode.LIGHT, FloeThemeMode.DARK)[index])
                             },
                         )
-                        Spacer(Modifier.height(12.dp))
+                        Spacer(Modifier.height(if (compact) 6.dp else 12.dp))
                         FloeText(
                             stringResource(R.string.theme_auto_caption),
                             style = Floe.typography.metadata,
@@ -768,19 +889,19 @@ private fun GeneralSettingsPage(themeMode: FloeThemeMode, onThemeModeChange: (Fl
             )
         }
         FloeSettingsSectionCard(title = stringResource(R.string.language_section)) {
-            SectionItem(
+            FloeSectionRow(
                 title = {
                     Column(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp)) {
                         FloeText(stringResource(R.string.language), style = Floe.typography.body, color = colors.label)
                     }
                 },
-                trailingContent = {
+                trailing = {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         FloeText(stringResource(R.string.follow_system), style = Floe.typography.metadata, color = colors.secondaryLabel)
                     }
                 },
             )
-            SectionItem(
+            FloeSectionRow(
                 title = {
                     FloeText(
                         stringResource(R.string.language_caption),
@@ -801,6 +922,7 @@ private fun ThemePreviewThumb(
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
 ) {
     val dark = mode == FloeThemeMode.DARK
     val bg = if (dark) Color(0xFF000000) else Color(0xFFFFFFFF)
@@ -811,7 +933,7 @@ private fun ThemePreviewThumb(
     val description = modeDescription(mode)
     Column(
         modifier = modifier
-            .height(84.dp)
+            .height(if (compact) 56.dp else 84.dp)
             .clip(shape)
             .background(bg)
             .border(if (selected) 2.dp else 0.5.dp, if (selected) accent else line, shape)
@@ -819,28 +941,29 @@ private fun ThemePreviewThumb(
             .semantics { this.selected = selected; contentDescription = description },
     ) {
         Row(Modifier.fillMaxWidth().weight(1f)) {
-            Box(Modifier.width(26.dp).fillMaxHeight().background(side)) {
-                Column(Modifier.padding(6.dp)) {
+            Box(Modifier.width(if (compact) 18.dp else 26.dp).fillMaxHeight().background(side)) {
+                Column(Modifier.padding(if (compact) 4.dp else 6.dp)) {
                     Box(Modifier.height(6.dp).width(14.dp).clip(CircleShape).background(if (selected) accent else line))
                     Spacer(Modifier.height(5.dp))
                     Box(Modifier.height(6.dp).width(14.dp).clip(CircleShape).background(line))
                 }
             }
-            Column(Modifier.weight(1f).padding(8.dp)) {
+            Column(Modifier.weight(1f).padding(if (compact) 6.dp else 8.dp)) {
                 Box(Modifier.height(6.dp).fillMaxWidth().clip(CircleShape).background(line))
                 Spacer(Modifier.height(5.dp))
                 Box(Modifier.height(6.dp).fillMaxWidth(0.7f).clip(CircleShape).background(line))
             }
         }
-        Box(Modifier.fillMaxWidth().padding(8.dp).height(18.dp).clip(CircleShape).background(if (dark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)))
+        Box(Modifier.fillMaxWidth().padding(if (compact) 6.dp else 8.dp).height(if (compact) 12.dp else 18.dp).clip(CircleShape).background(if (dark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)))
     }
 }
 
-private fun modeDescription(mode: FloeThemeMode): String = when (mode) {
-    FloeThemeMode.AUTO -> "Auto"
-    FloeThemeMode.LIGHT -> "Day"
-    FloeThemeMode.DARK -> "Night"
-}
+@Composable
+private fun modeDescription(mode: FloeThemeMode): String = stringResource(when (mode) {
+    FloeThemeMode.AUTO -> R.string.theme_auto
+    FloeThemeMode.LIGHT -> R.string.theme_light
+    FloeThemeMode.DARK -> R.string.theme_dark
+})
 
 @Composable
 private fun ProvidersSettingsPage() {

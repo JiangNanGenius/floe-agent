@@ -58,10 +58,10 @@ fun FloeSettingsContentDensity(compact: Boolean, content: @Composable () -> Unit
     val base = Floe.typography
     val type = remember(base) {
         base.copy(
-            title = base.title.copy(fontSize = 20.sp, lineHeight = 25.sp),
+            title = base.title.copy(fontSize = 17.sp, lineHeight = 22.sp),
             section = base.section.copy(fontSize = 15.sp, lineHeight = 21.sp),
-            body = base.body.copy(fontSize = 15.sp, lineHeight = 21.sp),
-            bodyEmphasized = base.bodyEmphasized.copy(fontSize = 15.sp, lineHeight = 21.sp),
+            body = base.body.copy(fontSize = 14.sp, lineHeight = 20.sp),
+            bodyEmphasized = base.bodyEmphasized.copy(fontSize = 14.sp, lineHeight = 20.sp),
             metadata = base.metadata.copy(fontSize = 12.sp, lineHeight = 17.sp),
             groupHeader = base.groupHeader.copy(fontSize = 12.sp, lineHeight = 16.sp),
         )
