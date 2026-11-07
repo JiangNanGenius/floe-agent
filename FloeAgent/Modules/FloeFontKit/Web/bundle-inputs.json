@@ -820,12 +820,12 @@
     "bytes": 546
   },
   {
-    "source": "npm/paper/dist/paper-full.js",
-    "bytes": 750680
+    "source": "npm/paper/dist/paper-core.js",
+    "bytes": 687879
   },
   {
     "source": "FloeFontKit/Web/geometry.js",
-    "bytes": 12320
+    "bytes": 12339
   },
   {
     "source": "npm/opentype.js/dist/opentype.js",

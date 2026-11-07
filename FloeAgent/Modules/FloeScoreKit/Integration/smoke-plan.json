@@ -6,6 +6,7 @@
     {"command":"score.project.metadata","arguments":{"title":"Floe qualification score","composer":"Floe fixture"}},
     {"command":"score.edit.insert","arguments":{"pitch":"C4","type":"quarter","onset":"0","voice":1,"staff":1}},
     {"command":"score.edit.chord","arguments":{"pitches":"E4,G4"}},
+    {"command":"score.edit.select","arguments":{"from":1,"to":1,"voice":"1"}},
     {"command":"score.edit.transpose","arguments":{"semitones":2}},
     {"command":"score.edit.direction","arguments":{"kind":"tempo","tempo":108,"onset":"0"}},
     {"command":"score.edit.direction","arguments":{"kind":"dynamic","text":"mf","onset":"0"}},

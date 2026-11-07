@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-import paper from 'paper';
+import paper from 'paper/dist/paper-core.js';
 import { t,clone,required,parseXML } from '../../FloeHeavyEditorSupport/Web/runtime.js';
 import { getGlyph,glyphList,glyphField,glyphPath,point,field } from './model.js';
 import { cubicToQuadratics } from './contours.js';

@@ -32,12 +32,14 @@ async function installedPackage(from,name,nodeRoot){
 
 // A prebundled npm entry is one esbuild input. Bind its reviewed inner runtime
 // graph to exact bytes instead of treating all package dependencies as shipped.
-async function collectPrebundled({packages,nodeRoot,qualificationRoot,cache,lock}){
+async function collectPrebundled({packages,nodeRoot,qualificationRoot,cache,lock,inputs}){
   const directory=path.join(qualificationRoot,'Notices/score/embedded'),review=JSON.parse(await fs.readFile(path.join(directory,'prebundled-runtime.json'),'utf8'));
   const provenance=new Map(),audits=[],components=[],packageOriginals=new Map();
   for(const bundle of review.bundles){
     const found=[...packages].find(([,metadata])=>metadata.name===bundle.name);if(!found)continue;
     const [root,metadata]=found;if(metadata.version!==bundle.version)throw new Error('Prebundled runtime review needs update: '+bundle.name);
+    const reviewedInput='npm/'+path.relative(nodeRoot,path.join(root,bundle.entry)).replaceAll(path.sep,'/');
+    if(!inputs.some(input=>input.source===reviewedInput&&input.bytes>0))throw new Error('Reviewed prebundled entry is not an actual build input: '+reviewedInput);
     const actual=hash(await fs.readFile(path.join(root,bundle.entry)));if(actual!==bundle.sha256)throw new Error('Reviewed prebundled entry bytes changed: '+bundle.name);
     const relative=path.relative(cache,root).replaceAll(path.sep,'/'),pinned=lock.packages[relative];if(!pinned||pinned.version!==metadata.version||!pinned.integrity)throw new Error('Prebundled parent does not match the lock: '+metadata.name);
     const parent={name:metadata.name,version:metadata.version,packagePath:relative,integrity:pinned.integrity,source:pinned.resolved,entry:bundle.entry,sha256:actual},roots=new Map([[metadata.name,root]]);
@@ -71,7 +73,7 @@ export async function writeNotices({inputs,cache,kind,target,qualificationRoot})
     }
     if(!found)throw new Error('No installed package identity for actual input: '+input.source);
   }
-  const prebundled=await collectPrebundled({packages,nodeRoot,qualificationRoot,cache,lock});
+  const prebundled=await collectPrebundled({packages,nodeRoot,qualificationRoot,cache,lock,inputs});
   const notices=[],records=[],seenSupplemental=new Set();
   for(const [root,metadata]of [...packages].sort((a,b)=>a[1].name.localeCompare(b[1].name)||a[1].version.localeCompare(b[1].version))){
     const declared=typeof metadata.license==='string'?metadata.license:Array.isArray(metadata.licenses)?metadata.licenses.map(v=>typeof v==='string'?v:v.type).join(' OR '):'';

@@ -309,10 +309,10 @@
             "packagePath": "node_modules/paper",
             "integrity": "sha512-AWHQVUNScPN/swbCg0wwb2bTerMieraol76Fpn1s+7Zw7R6mMyI0QltMkj/XOS3Jv+9785q0p4eLsYggn63ZQw==",
             "source": "https://registry.npmjs.org/paper/-/paper-0.17.0.tgz",
-            "entry": "dist/paper-full.js",
-            "sha256": "61e0afe43129a6952fe441a418f54bff13a841bb8383957e422c01685ee1c7fb"
+            "entry": "dist/paper-core.js",
+            "sha256": "1bbe2b295f8c9f486404685cb0aa89c97aee0118215c518539edc424365236c6"
           },
-          "evidence": "Actual Paper full bundle header credits Straps.js and its separate 2006-2020 Juerg Lehni copyright; Base inheritance implementation is embedded. There is no installed/locked standalone Straps package, so parent Paper integrity binds the source bytes."
+          "evidence": "Actual paper-core.js header credits Straps.js with its separate 2006-2020 Juerg Lehni copyright, and the Base inheritance implementation is present. The generic upstream header also retains an Acorn acknowledgment, but the reviewed core entry contains no Acorn parser, PaperScript, makePredicate or dynamic-function implementation. No standalone Straps package is installed or locked; parent Paper integrity and exact core entry hash bind this embedded snapshot."
         }
       ],
       "notices": [
@@ -322,42 +322,8 @@
           "sha256": "24d455af6e878040157f11910a6c3411bd3cc9f4112f3dab970a00269711a71c"
         },
         {
-          "name": "Notices/score/embedded/paper-0.17.0-header.original.txt",
-          "source": "npm:paper@0.17.0/dist/paper-full.js (original header)",
-          "sha256": "35d693a85913f1a930e366a719c31a1a3d314d7b8db259682fa7d66d477f0b36"
-        }
-      ]
-    },
-    {
-      "name": "Acorn embedded in Paper.js",
-      "version": "0.5.0",
-      "component": true,
-      "selectedLicense": "MIT",
-      "source": "https://github.com/acornjs/acorn/tree/0.5.0",
-      "inclusion": [
-        {
-          "mode": "prebundled-component",
-          "via": {
-            "name": "paper",
-            "version": "0.17.0",
-            "packagePath": "node_modules/paper",
-            "integrity": "sha512-AWHQVUNScPN/swbCg0wwb2bTerMieraol76Fpn1s+7Zw7R6mMyI0QltMkj/XOS3Jv+9785q0p4eLsYggn63ZQw==",
-            "source": "https://registry.npmjs.org/paper/-/paper-0.17.0.tgz",
-            "entry": "dist/paper-full.js",
-            "sha256": "61e0afe43129a6952fe441a418f54bff13a841bb8383957e422c01685ee1c7fb"
-          },
-          "evidence": "Actual bundled parser sets exports.version=\"0.5.0\" and the Paper header separately identifies Acorn. There is no standalone installed/locked Acorn runtime package; parent Paper integrity binds embedded bytes."
-        }
-      ],
-      "notices": [
-        {
-          "name": "Notices/score/embedded/acorn-0.5.0-LICENSE.original.txt",
-          "source": "https://raw.githubusercontent.com/acornjs/acorn/0.5.0/LICENSE",
-          "sha256": "ac8c2d7724613151f5874fb48365c6a29ad43e8f8efa12413499625955b6c8c5"
-        },
-        {
-          "name": "Notices/score/embedded/paper-0.17.0-header.original.txt",
-          "source": "npm:paper@0.17.0/dist/paper-full.js (original header)",
+          "name": "Notices/score/embedded/paper-core-0.17.0-header.original.txt",
+          "source": "npm:paper@0.17.0/dist/paper-core.js (original header)",
           "sha256": "35d693a85913f1a930e366a719c31a1a3d314d7b8db259682fa7d66d477f0b36"
         }
       ]
@@ -382,12 +348,16 @@
       "packagePath": "node_modules/paper",
       "integrity": "sha512-AWHQVUNScPN/swbCg0wwb2bTerMieraol76Fpn1s+7Zw7R6mMyI0QltMkj/XOS3Jv+9785q0p4eLsYggn63ZQw==",
       "source": "https://registry.npmjs.org/paper/-/paper-0.17.0.tgz",
-      "entry": "dist/paper-full.js",
-      "sha256": "61e0afe43129a6952fe441a418f54bff13a841bb8383957e422c01685ee1c7fb",
+      "entry": "dist/paper-core.js",
+      "sha256": "1bbe2b295f8c9f486404685cb0aa89c97aee0118215c518539edc424365236c6",
       "excluded": [
         {
           "name": "canvas/jsdom/source-map-support",
           "reason": "Paper package browser mapping disables these Node-only paths."
+        },
+        {
+          "name": "Acorn / PaperScript",
+          "reason": "Current consumer uses official paper-core.js. Its header retains generic Acorn acknowledgment, while parser/PaperScript/makePredicate/dynamic-function code is absent. Historical full-entry Acorn original notices remain review evidence only."
         }
       ],
       "runtimeDependencies": []

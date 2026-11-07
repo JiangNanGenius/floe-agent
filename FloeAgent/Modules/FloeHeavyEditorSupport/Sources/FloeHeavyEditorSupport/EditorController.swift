@@ -8,6 +8,7 @@ import WebKit
     public private(set) var document: HeavyEditorDocument
     public private(set) var isReady = false
     public private(set) var isWorking = false
+    public private(set) var engineDiagnostics: [String] = []
     public var errorMessage: String?
     public var importRequested = false
     public var onAssistant: (() -> Void)?
@@ -70,7 +71,12 @@ import WebKit
             total += size; assets[file.lastPathComponent] = bytes.base64EncodedString()
         }
         let json = String(decoding: try JSONSerialization.data(withJSONObject: assets, options: [.sortedKeys]), as: UTF8.self)
-        return "Object.defineProperty(globalThis,'FloeBundledBinaryAssets',{value:Object.freeze(" + json + "),writable:false,configurable:false});"
+        return """
+        Object.defineProperty(globalThis,'FloeBundledBinaryAssets',{value:Object.freeze(\(json)),writable:false,configurable:false});
+        const floeEngineFailure = value => globalThis.webkit?.messageHandlers?.floeEditor?.postMessage({type:'engineFailure',message:String(value).slice(0,2048)});
+        globalThis.addEventListener('error',event=>floeEngineFailure(event.message));
+        globalThis.addEventListener('unhandledrejection',event=>floeEngineFailure(event.reason?.stack??event.reason?.message??event.reason));
+        """
     }
 
     public func reload() async throws {
@@ -149,12 +155,22 @@ import WebKit
             let catalog = try await call("return JSON.stringify(window.FloeEditor.catalog());", value: .null)
             allowedCommands = Set(catalog.array.compactMap { $0["id"].string })
             try await reload(); isReady = true
-        } catch { errorMessage = error.localizedDescription }
+        } catch {
+            let detail = (error as NSError).userInfo["WKJavaScriptExceptionMessage"].map { String(describing: $0) } ?? error.localizedDescription
+            engineDiagnostics.append(String(detail.prefix(2048)))
+            if engineDiagnostics.count > 8 { engineDiagnostics.removeFirst(engineDiagnostics.count - 8) }
+            errorMessage = EditorText.t("无法打开编辑器，请重新打开后继续。", "Unable to open the editor. Reopen it to continue.")
+        }
     }
     fileprivate func receive(_ message: EditorJSON) async {
         let id = message["requestID"].string ?? ""
         do {
             switch message["type"].string {
+            case "engineFailure":
+                engineDiagnostics.append(String((message["message"].string ?? "Unknown engine failure").prefix(2048)))
+                if engineDiagnostics.count > 8 { engineDiagnostics.removeFirst(engineDiagnostics.count - 8) }
+                if !isReady { errorMessage = EditorText.t("无法打开编辑器，请重新打开后继续。", "Unable to open the editor. Reopen it to continue.") }
+                return
             case "ready": await ready(); return
             case "import": importRequested = true; return
             case "assistant": onAssistant?(); return
@@ -220,8 +236,13 @@ import WebKit
     }
     private func encoded<T: Encodable>(_ value: T) throws -> EditorJSON { try EditorJSON.decode(JSONEncoder().encode(value)) }
     private func call(_ body: String, value: EditorJSON) async throws -> EditorJSON {
-        let argument = try JSONSerialization.jsonObject(with: value.data(), options: [.fragmentsAllowed])
-        let result = try await webView.callAsyncJavaScript(body, arguments: ["value": argument], in: nil, contentWorld: .page)
+        // Foundation may intern empty NSArray instances. Passing the decoded
+        // object graph through WK preserves those aliases: modifying glyphs[]
+        // could then also modify axes[]/masters[]. Transfer JSON values as text
+        // and parse inside the page so every array/object has JSON semantics.
+        let argument = String(decoding: try value.data(), as: UTF8.self)
+        let result = try await webView.callAsyncJavaScript("const value=JSON.parse(serializedValue);\n" + body,
+            arguments: ["serializedValue": argument], in: nil, contentWorld: .page)
         guard let text = result as? String, let data = text.data(using: .utf8) else { throw HeavyEditorError.invalidDocument }
         return try EditorJSON.decode(data)
     }

@@ -27,6 +27,6 @@ Floe 自有源码使用 MPL-2.0。第三方源码、字体轮廓、JavaScript �
 
 - 乐谱模块的 OpenSheetMusicDisplay 2.2.1 内嵌 VexFlow 1.2.93、JSZip 3.10.1、loglevel、typescript-collections，以及 JSZip 实际内嵌的 lie／immediate／pako／setimmediate。每个 npm 组件保留实际锁定版本、integrity、完整原文和预打包父链；JSZip 明确选择 MIT。
 - Gonville 轮廓采用 Simon Tatham 原作者的 unrestricted 输出字体许可，VexFlow 自定义／微分音字形仍保留自身 MIT 声明；适用原文和设计署名见 [Gonville LICENCE](../../Qualification/HeavyEditors/Notices/score/Gonville-LICENCE.original.txt) 与 [来源／credits](../../Qualification/HeavyEditors/Notices/score/Gonville-SOURCE-AND-CREDITS.txt)。没有使用 Bravura／OFL 代替 Gonville 的许可。
-- 字体模块的 Paper.js 0.17.0 完整构建另内嵌 **Straps.js（MIT）** 和 **Acorn 0.5.0（MIT）**。保留 [实际 Paper 头注](../../Qualification/HeavyEditors/Notices/score/embedded/paper-0.17.0-header.original.txt)、[Straps 原文](../../Qualification/HeavyEditors/Notices/score/embedded/straps-LICENSE.original.txt) 与 [Acorn 原文](../../Qualification/HeavyEditors/Notices/score/embedded/acorn-0.5.0-LICENSE.original.txt)，以父包 integrity 和实际 entry SHA 绑定内嵌代码。
+- 字体模块使用同版本 Paper.js 0.17.0 的官方 **Core** 构建，仅包含几何所需实现与 **Straps.js（MIT）**。保留 Core 实际头注和 [Straps 原文](../../Qualification/HeavyEditors/Notices/score/embedded/straps-LICENSE.original.txt)，以父包 integrity 和实际 `dist/paper-core.js` entry SHA 绑定。未使用的 PaperScript／Acorn 实现已从当前消费者移除；原始上游通用头注及历史 Acorn 原文仍按原字节保留，不据其泛用署名认定实际包含 parser。
 
 预打包审查记录位于 [prebundled-runtime.json](../../Qualification/HeavyEditors/Notices/score/embedded/prebundled-runtime.json)。它只补有实际字节证据的组件；`@types`、未带入浏览器包的 Node stream 实现及开发依赖不计为运行时。依赖更新使已审查的入口或原文 SHA 改变时，生成器会拒绝沿用旧结论。

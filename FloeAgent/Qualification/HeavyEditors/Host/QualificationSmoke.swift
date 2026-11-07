@@ -49,6 +49,16 @@ import WebKit
         guard plan.kind == kind else { throw HeavyEditorError.wrongDocument }
         var controller = try await workspace.create(kind, title: "QA " + kind.rawValue)
         try await controller.waitUntilReady()
+        if kind == .font {
+          let initial = try await controller.webView.callAsyncJavaScript(
+            "return JSON.stringify({axes:FloeEditor.state.axes.length,masters:FloeEditor.state.masters.length,glyphs:FloeEditor.state.glyphs.length,independent:FloeEditor.state.glyphs!==FloeEditor.state.axes&&FloeEditor.state.axes!==FloeEditor.state.masters});",
+            arguments: [:], in: nil, contentWorld: .page)
+          guard let json = initial as? String, let bytes = json.data(using: .utf8) else { throw HeavyEditorError.invalidDocument }
+          let state = try EditorJSON.decode(bytes)
+          guard state["axes"] == .number(0), state["masters"] == .number(0), state["glyphs"] == .number(1), state["independent"] == .bool(true) else {
+            throw HeavyEditorError.engine("Empty native JSON arrays were aliased in the page")
+          }
+        }
         let id = controller.document.id
         let described = try await model(.describe, controller: controller, kind: kind)
         guard described["commands"].array.count > 20 else { throw HeavyEditorError.invalidDocument }
@@ -148,9 +158,23 @@ import WebKit
       workspace.smokeStatus = "\(evidence.count) editors · save, reopen, exports verified"
       try write(workspace, evidence: evidence, success: true, error: nil)
     } catch {
+      if let controller = workspace.current {
+        let body = """
+        const e=globalThis.FloeEditor;
+        if(!e)return JSON.stringify({enginePresent:false});
+        const report={enginePresent:true,loaded:!!e.envelope,axes:e.state.axes,axesIsArray:Array.isArray(e.state.axes),masters:e.state.masters?.length,info:e.state.info};
+        try{report.commandCount=e.catalog().length;}catch(error){report.catalogError=String(error);report.stack=error.stack;}
+        try{e.configuration.normalize(structuredClone(e.state));report.normalization=true;}catch(error){report.normalizeError=String(error);report.normalizeStack=error.stack;}
+        return JSON.stringify(report);
+        """
+        if let state = try? await controller.webView.callAsyncJavaScript(body, arguments: [:], in: nil, contentWorld: .page) as? String {
+          try? Data(state.utf8).write(to: workspace.root.appendingPathComponent("EngineDiagnostic.json"), options: .atomic)
+        }
+      }
       workspace.smokeStatus = "Qualification failed: " + error.localizedDescription
       workspace.error = error.localizedDescription
       let diagnostic = error.localizedDescription + "\n" + String(describing: (error as NSError).userInfo)
+        + "\n" + (workspace.current?.engineDiagnostics.joined(separator: "\n") ?? "")
       try? write(workspace, evidence: evidence, success: false, error: diagnostic)
     }
   }

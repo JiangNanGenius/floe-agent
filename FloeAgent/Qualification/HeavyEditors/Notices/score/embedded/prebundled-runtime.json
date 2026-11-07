@@ -148,13 +148,17 @@
     {
       "name": "paper",
       "version": "0.17.0",
-      "entry": "dist/paper-full.js",
-      "sha256": "61e0afe43129a6952fe441a418f54bff13a841bb8383957e422c01685ee1c7fb",
+      "entry": "dist/paper-core.js",
+      "sha256": "1bbe2b295f8c9f486404685cb0aa89c97aee0118215c518539edc424365236c6",
       "runtimeDependencies": [],
       "excluded": [
         {
           "name": "canvas/jsdom/source-map-support",
           "reason": "Paper package browser mapping disables these Node-only paths."
+        },
+        {
+          "name": "Acorn / PaperScript",
+          "reason": "Current consumer uses official paper-core.js. Its header retains generic Acorn acknowledgment, while parser/PaperScript/makePredicate/dynamic-function code is absent. Historical full-entry Acorn original notices remain review evidence only."
         }
       ],
       "components": [
@@ -170,31 +174,12 @@
               "source": "https://raw.githubusercontent.com/lehni/straps.js/17db0716e3dd8c1ffe353b6ab994f48a451a690b/LICENSE.txt"
             },
             {
-              "name": "paper-0.17.0-header.original.txt",
+              "name": "paper-core-0.17.0-header.original.txt",
               "sha256": "35d693a85913f1a930e366a719c31a1a3d314d7b8db259682fa7d66d477f0b36",
-              "source": "npm:paper@0.17.0/dist/paper-full.js (original header)"
+              "source": "npm:paper@0.17.0/dist/paper-core.js (original header)"
             }
           ],
-          "evidence": "Actual Paper full bundle header credits Straps.js and its separate 2006-2020 Juerg Lehni copyright; Base inheritance implementation is embedded. There is no installed/locked standalone Straps package, so parent Paper integrity binds the source bytes."
-        },
-        {
-          "name": "Acorn embedded in Paper.js",
-          "version": "0.5.0",
-          "selectedLicense": "MIT",
-          "source": "https://github.com/acornjs/acorn/tree/0.5.0",
-          "noticeFiles": [
-            {
-              "name": "acorn-0.5.0-LICENSE.original.txt",
-              "sha256": "ac8c2d7724613151f5874fb48365c6a29ad43e8f8efa12413499625955b6c8c5",
-              "source": "https://raw.githubusercontent.com/acornjs/acorn/0.5.0/LICENSE"
-            },
-            {
-              "name": "paper-0.17.0-header.original.txt",
-              "sha256": "35d693a85913f1a930e366a719c31a1a3d314d7b8db259682fa7d66d477f0b36",
-              "source": "npm:paper@0.17.0/dist/paper-full.js (original header)"
-            }
-          ],
-          "evidence": "Actual bundled parser sets exports.version=\"0.5.0\" and the Paper header separately identifies Acorn. There is no standalone installed/locked Acorn runtime package; parent Paper integrity binds embedded bytes."
+          "evidence": "Actual paper-core.js header credits Straps.js with its separate 2006-2020 Juerg Lehni copyright, and the Base inheritance implementation is present. The generic upstream header also retains an Acorn acknowledgment, but the reviewed core entry contains no Acorn parser, PaperScript, makePredicate or dynamic-function implementation. No standalone Straps package is installed or locked; parent Paper integrity and exact core entry hash bind this embedded snapshot."
         }
       ]
     },

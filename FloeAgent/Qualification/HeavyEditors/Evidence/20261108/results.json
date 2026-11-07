@@ -1,0 +1,94 @@
+{
+  "date": "2026-11-08",
+  "target": "FloeHeavyEditorsQA, independent macOS arm64 native WK host",
+  "toolchain": "Xcode 27.2 (27B52)",
+  "scope": "Independent modules; production App composition and physical iPad not accepted by this evidence",
+  "success": true,
+  "editors": [
+    {
+      "kind": "gis",
+      "entry": "space",
+      "commands": 75,
+      "revision": 2,
+      "reopenedEqual": true,
+      "staleMutationRejected": true,
+      "exportCount": 4,
+      "screenshot": {
+        "file": "gis-wk.png",
+        "sha256": "9ac050f448e7a0738ea38847227f8b2f9f5049ba4e99b43ddafca2ebe3dd1bbf"
+      }
+    },
+    {
+      "kind": "score",
+      "entry": "notes",
+      "commands": 57,
+      "revision": 10,
+      "reopenedEqual": true,
+      "staleMutationRejected": true,
+      "exportCount": 4,
+      "screenshot": {
+        "file": "score-wk.png",
+        "sha256": "5f95c1605ecbf831954498ba7c8e374d7b8462b5f575f16cdf7ab6b1705f1d53"
+      }
+    },
+    {
+      "kind": "font",
+      "entry": "task",
+      "commands": 70,
+      "revision": 4,
+      "reopenedEqual": true,
+      "staleMutationRejected": true,
+      "exportCount": 6,
+      "screenshot": {
+        "file": "font-wk.png",
+        "sha256": "15c4f8b9e5e256a9ed13dc4ab82ab2604c7c6921a923a203f43b17a57f950eb5"
+      }
+    }
+  ],
+  "emptyNativeArrays": "JSON string parsed inside WK; default font glyph/axis/master arrays checked independent",
+  "manualEntrypoints": "Observed native three-create cards; task/font, notes/score and space/GIS reopen and Done return; actual WebGL terrain visible",
+  "scoreChordSemanticReadback": {
+    "success": true,
+    "expectedPitches": [
+      62,
+      66,
+      69
+    ],
+    "musicXMLPitches": [
+      62,
+      66,
+      69
+    ],
+    "midiNoteOn": [
+      [
+        0,
+        62
+      ],
+      [
+        0,
+        66
+      ],
+      [
+        0,
+        69
+      ]
+    ],
+    "midiNoteOff": [
+      [
+        960,
+        62
+      ],
+      [
+        960,
+        66
+      ],
+      [
+        960,
+        69
+      ]
+    ],
+    "division": 960,
+    "selection": "explicit first measure voice 1, three chord notes"
+  },
+  "subsequentDirection": "Native SwiftUI controls requested after this initial WebKit workbench qualification; migration continues separately"
+}
