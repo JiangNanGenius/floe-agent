@@ -1,0 +1,69 @@
+{
+  "method": "Count model-colored pixels inside stage ROI: max(R,G,B)-min(R,G,B)>65 and max(R,G,B)>100; EXIF orientation applied in memory only. Original PNGs are unchanged. This is display footprint, not biological surface area.",
+  "comparison": [
+    {
+      "name": "before",
+      "file": "docs/qualification/biology-layout-20261107/landscape-inspector.png",
+      "sha256": "92e8d680a0905cf8697f60583fc77c5370ed45b9bac7f59578e060dcfd59c40a",
+      "logicalPixels": [
+        2266,
+        1488
+      ],
+      "exifOrientation": 8,
+      "stagePixelROI": [
+        40,
+        470,
+        1466,
+        1278
+      ],
+      "coloredPixels": 60379,
+      "modelPixelBounds": [
+        550,
+        650,
+        993,
+        1115
+      ]
+    },
+    {
+      "name": "after",
+      "file": "docs/qualification/biology-space-20261107/landscape-inspector.png",
+      "sha256": "a8a2b2cbde11b43ec8418df5fc0452f4741c003803b5ad3d5693553d034a3ac8",
+      "logicalPixels": [
+        2266,
+        1488
+      ],
+      "exifOrientation": 8,
+      "stagePixelROI": [
+        24,
+        397,
+        1602,
+        1372
+      ],
+      "coloredPixels": 209618,
+      "modelPixelBounds": [
+        427,
+        474,
+        1330,
+        1336
+      ]
+    }
+  ],
+  "displayAreaRatio": 3.4717037380546216,
+  "windowPoints": [
+    0,
+    0,
+    1133,
+    744
+  ],
+  "viewportPoints": [
+    12,
+    198.5,
+    789,
+    487.5
+  ],
+  "widthShare": 0.6963812886142984,
+  "heightShare": 0.655241935483871,
+  "parameterGroupHeightPoints": 168.5,
+  "selectionTargetHeightPoints": 44,
+  "inspectorWidthPoints": 320
+}

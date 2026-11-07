@@ -1,12 +1,14 @@
 # 生物工作台 App 接入交接（2026-11-07）
 
-实现源码：`50e08ec4f89593f409cb31a5545552c2eaa0956a`（全界面），基础组件闭环 `cbfcbe30d0bf932810eb56404a9f088651040199`，原生三维/抗锯齿 `71f520f882f6b53ce6bc9b7b2c36b3c938de138d`。均已在 main；本任务不修改主 App、版本、315/325 或分发。
+实现源码：`f00e150cd050b8515398d8c39673c4ff4285a9bb`（空间利用率），此前全界面 `50e08ec4f89593f409cb31a5545552c2eaa0956a`，基础组件闭环 `cbfcbe30d0bf932810eb56404a9f088651040199`，原生三维/抗锯齿 `71f520f882f6b53ce6bc9b7b2c36b3c938de138d`。均已在 main；本组件 UI 任务不修改主 App、版本、315/325 或分发。
+
+最新布局采用 320 点检查器、同行 44 点选择框、真实坐标取景和内容相关图高；公开 Workbench / Library 回调不变，新增的 `BiologyViewportFraming` 为纯显示计算。7 项几何与同轮 2 项 UI 已通过，同蛋白显示面积约为旧图的 3.47 倍；原图、精确尺寸和包绑定见 [空间利用率记录](FLOE_BIOLOGY_SPACE_UTILIZATION_20261107.zh-CN.md)。
 
 组件覆盖序列、蛋白、显微、组学、网络，加 Newick/MRC 原生视图；21 个原生方法、32 个可选成熟方法、22 个 AI 工具。既有组件/科学/适配器证据见 [代码闭环](FLOE_BIOLOGY_COMPONENT_CLOSURE_20261107.zh-CN.md)，最新 7 个 UI 用例和 24 张原始截图见 [界面记录](FLOE_BIOLOGY_UI_POLISH_20261107.zh-CN.md#全工作台布局增量)。独立 iPad 宿主、脚本协议 fixture、真实科学数值和完整 App 验收分别记录。
 
 ## 主 App 需要连接的部分
 
-本次实查主 `project.yml`、根 Package、FloeApp 和 FloeTools 尚无 Biology 引用。按既定架构，生物与化学是并列工作台，共用既有 AI、文件、环境与任务服务，保持各自编辑状态。
+下表记录此前 `50e08ec4f` 交接时的主 App 接线事项；主线正在并发适配，由其所有者更新实际 App 证据，本组件宿主通过不代表正式 App 已验收。按既定架构，生物与化学是并列工作台，共用既有 AI、文件、环境与任务服务，保持各自编辑状态。
 
 | 接入点 | 宿主工作 |
 | --- | --- |
@@ -25,4 +27,4 @@
 
 科学数值使用已固定的 CPython 3.12 macOS arm64 环境验证；实际 Linux 平台轮子、完整 App 中的模型目录与调用、真实 guest/provider 路径、iPhone/iOS 26 运行时、实体 iPad 和大文件吞吐尚未由该宿主验收。缺开发侧账号实测不应封禁用户配置的外部 provider，实际错误走现有错误/回退链。多文件 OME 拼接等既有方法边界保持原样，不用 UI 预览成功替代它们。
 
-最新独立 Simulator 包：`Local/Artifacts/FloeBiologyKit/20261107/round2/FloeBiology-layout-keyboard-iPad-Simulator.zip`，SHA-256 `691714d05729383a3151a04acf0f2bcbf84077ae6859f41c0f23d093bfe15829`。源码/代码映像/用例绑定为同目录 `layout-qualified.json`；原始失败和一次原因未定的测试 Runner SIGTERM 均保留。组件原生窗口已释放，任务缓存已清理；既有 canonical 数据与其他任务的构件未删除。
+最新独立 Simulator 包：`Local/Artifacts/FloeBiologyKit/20261107/round2/FloeBiology-space-05-iPad-Simulator.zip`，SHA-256 `23b82e3ab7e8f5c91366f25a14992eaade3350821d45727da6fcc7bde370b2e1`。冻结源码 / 代码映像 / 用例绑定为同目录 `space-qualified.json`，完整 82 文件源 ZIP 与逐文件哈希一并保存，不将同 checkout 后续 App 适配修改混入其通过结论。旧布局包、原始失败和原因未定的历史 Runner SIGTERM 均保留。组件原生窗口已释放，任务缓存已清理；既有 canonical 数据与其他任务的构件未删除。

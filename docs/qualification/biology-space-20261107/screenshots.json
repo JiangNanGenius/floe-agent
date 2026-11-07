@@ -1,0 +1,101 @@
+{
+  "scope": "Independent biology iPad Simulator host; space-utilization increment",
+  "screenshots": [
+    {
+      "file": "analysis-controls.png",
+      "sha256": "d4f25d739c9543489640183db7e8d0f26440dcc6d5be819aff33690d2d7122b3",
+      "phase": "ipad-space-05",
+      "test": "BiologyHostUITests/testFramedControlsUseTheirFullHitArea()",
+      "originalAttachment": "992CEB39-97DB-43BA-A3E7-CC1A17BFDAEE.png",
+      "unaltered": true
+    },
+    {
+      "file": "model-controls.png",
+      "sha256": "d4f25d739c9543489640183db7e8d0f26440dcc6d5be819aff33690d2d7122b3",
+      "phase": "ipad-space-05",
+      "test": "BiologyHostUITests/testFramedControlsUseTheirFullHitArea()",
+      "originalAttachment": "F346CACC-BB80-4619-90F1-AED84B55F44D.png",
+      "unaltered": true
+    },
+    {
+      "file": "density.png",
+      "sha256": "9ab59be2da10d476ca1ec489ce7218c28c555db7b7ff259830880adebe4a499e",
+      "phase": "ipad-space-05",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "68613FFA-6433-4FC9-8D30-51C200CD25F8.png",
+      "unaltered": true
+    },
+    {
+      "file": "tree.png",
+      "sha256": "9a757da8cd039a1a41402d6f6e0ebee83a43a096868ed4d0f3127e4125a82e22",
+      "phase": "ipad-space-05",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "62669C16-6620-46C1-9015-FC6B6901BC65.png",
+      "unaltered": true
+    },
+    {
+      "file": "result.png",
+      "sha256": "c20b6ae13661eb12b29c672cd718f0ad843286e4cb3f1727a25063b9a5d35df5",
+      "phase": "ipad-space-05",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "E6F8B0D1-3C40-48E6-AF4E-BC8138BF2CD6.png",
+      "unaltered": true
+    },
+    {
+      "file": "network.png",
+      "sha256": "716dc1ad0217dbdd70692fc15eb08e2d32c07a9b91e38fe0e6aab3311ae6f700",
+      "phase": "ipad-space-05",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "6271B9EF-9951-484A-803A-3E95018D9B4B.png",
+      "unaltered": true
+    },
+    {
+      "file": "landscape-inspector.png",
+      "sha256": "a8a2b2cbde11b43ec8418df5fc0452f4741c003803b5ad3d5693553d034a3ac8",
+      "phase": "ipad-space-05",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "49E37756-2620-4086-9490-4CF8F8148D02.png",
+      "unaltered": true
+    },
+    {
+      "file": "ribbon-landscape.png",
+      "sha256": "b7aa355a60a53e60139bea91adcdf36fcee112c83b4f3ecce6bb549856609fbe",
+      "phase": "ipad-space-05",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "A23A1D58-7C93-4BDA-9861-EBE1E2E74696.png",
+      "unaltered": true
+    },
+    {
+      "file": "ribbon.png",
+      "sha256": "c7b2cd1a5fd31aef6ea4b70d97204f9a8af6c104d33ebadbed87a275616e2e3f",
+      "phase": "ipad-space-05",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "222888C5-23AB-43FA-A773-4F18C7062BEB.png",
+      "unaltered": true
+    },
+    {
+      "file": "atoms.png",
+      "sha256": "79f9e69845a67f7d50386f98a414ce1d782f617892808cdf64382c3256389569",
+      "phase": "ipad-space-05",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "2DD0CE18-C571-4D1C-92FB-1EB28566A138.png",
+      "unaltered": true
+    },
+    {
+      "file": "backbone.png",
+      "sha256": "dac357f83f3e981ddd418fed68e0c674a7729debdfe48ce3da49e5afafebe7cc",
+      "phase": "ipad-space-05",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "EEE503E9-528F-4EE6-9D10-A6439A2AB8D6.png",
+      "unaltered": true
+    },
+    {
+      "file": "sequence.png",
+      "sha256": "dfc930c146f629f49eab680fb33934befc72bc25178c56610486ad6f5b97f40b",
+      "phase": "ipad-space-05",
+      "test": "BiologyHostUITests/testVisualWorkbenchPortraitAndLandscape()",
+      "originalAttachment": "B1246593-C18C-4742-A539-DEE8147CE8B7.png",
+      "unaltered": true
+    }
+  ]
+}
