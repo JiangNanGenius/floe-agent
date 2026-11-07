@@ -27,8 +27,8 @@ func biologyViewCompute<T:Sendable>(_ body:@escaping @Sendable ()throws->T) asyn
     private var displayedCount:Int{representation=="ribbon" ? alphaCount:min(5000,representation=="atoms" ? atoms.count:alphaCount)}
     private var countUnit:String{representation=="ribbon" ? biologyText("residues","个残基"):representation=="backbone" ? biologyText("Cα atoms","个 Cα 原子"):biologyText("atoms","个原子")}
     var body:some View {
-        VStack(alignment:.leading,spacing:16) {
-            HStack(spacing:16) {
+        VStack(alignment:.leading,spacing:8) {
+            HStack(spacing:12) {
                 Picker(biologyText("Structure view","结构视图"),selection:$representation) {
                     Text(biologyText("Backbone","主链")).tag("backbone")
                     Text(biologyText("Atoms","原子")).tag("atoms")
@@ -45,18 +45,12 @@ func biologyViewCompute<T:Sendable>(_ body:@escaping @Sendable ()throws->T) asyn
                 }else if let error{ContentUnavailableView(biologyText("Unable to draw structure","无法显示结构"),systemImage:"exclamationmark.triangle",description:Text(error))}
                 else{ProgressView()}
             }.frame(minHeight:280,maxHeight:.infinity).biologyCanvas()
-            HStack(alignment:.firstTextBaseline) {
-                Text("\(displayedCount) "+countUnit).font(.subheadline).monospacedDigit()
-                Spacer()
-                if selectedAtoms.count==2,let a=atoms.first(where:{$0.id==selectedAtoms[0]}),let b=atoms.first(where:{$0.id==selectedAtoms[1]}) {
-                    Text(sqrt(pow(a.x-b.x,2)+pow(a.y-b.y,2)+pow(a.z-b.z,2)).formatted(.number.precision(.fractionLength(2)))+" Å").font(.subheadline.weight(.semibold)).monospacedDigit()
-                }else if let id=selectedAtoms.first,let a=atoms.first(where:{$0.id==id}){Text(a.chain+":"+String(a.residueNumber)+" · "+a.name).font(.subheadline).foregroundStyle(.secondary)}else{Text(biologyText("Drag to rotate · pinch to zoom","拖动旋转 · 捏合缩放")).font(.caption).foregroundStyle(.secondary)}
-            }
-            if representation=="ribbon" {
-                HStack(spacing:18){legend(biologyText("Helix","螺旋"),.orange);legend(biologyText("Sheet","折叠"),.blue);legend(biologyText("Unassigned","未标注"),.teal)}
+            ViewThatFits(in:.horizontal) {
+                HStack(spacing:16){countLabel;if representation=="ribbon"{ribbonLegend};Spacer(minLength:8);selectionLabel}.fixedSize(horizontal:true,vertical:false).frame(maxWidth:.infinity,alignment:.leading)
+                VStack(alignment:.leading,spacing:6){HStack{countLabel;Spacer();selectionLabel};if representation=="ribbon"{ribbonLegend}}
             }
             if representation != "ribbon",(representation=="atoms" ? atoms.count:alphaCount)>5000{BiologyViewFootnote(text:biologyText("Showing the first 5,000 atoms. Select a chain to narrow the view.","显示前 5,000 个原子，可选择链缩小范围。"))}
-        }.padding(BiologyStyle.spacing).background(BiologyStyle.background)
+        }.padding(12).background(BiologyStyle.background)
         .task(id:"\(asset.id):\(asset.revision):\(modelNumber):\(chain):\(representation)") {
             scene=nil;error=nil
             do {
@@ -75,6 +69,13 @@ func biologyViewCompute<T:Sendable>(_ body:@escaping @Sendable ()throws->T) asyn
             }catch is CancellationError{}catch{self.error=error.localizedDescription}
         }
     }
+    private var countLabel:some View{Text("\(displayedCount) "+countUnit).font(.subheadline).monospacedDigit()}
+    private var ribbonLegend:some View{HStack(spacing:12){legend(biologyText("Helix","螺旋"),.orange);legend(biologyText("Sheet","折叠"),.blue);legend(biologyText("Unassigned","未标注"),.teal)}}
+    @ViewBuilder private var selectionLabel:some View {
+        if selectedAtoms.count==2,let a=atoms.first(where:{$0.id==selectedAtoms[0]}),let b=atoms.first(where:{$0.id==selectedAtoms[1]}) {
+            Text(sqrt(pow(a.x-b.x,2)+pow(a.y-b.y,2)+pow(a.z-b.z,2)).formatted(.number.precision(.fractionLength(2)))+" Å").font(.subheadline.weight(.semibold)).monospacedDigit()
+        }else if let id=selectedAtoms.first,let a=atoms.first(where:{$0.id==id}){Text(a.chain+":"+String(a.residueNumber)+" · "+a.name).font(.subheadline).foregroundStyle(.secondary)}else{Text(biologyText("Drag to rotate · pinch to zoom","拖动旋转 · 捏合缩放")).font(.caption).foregroundStyle(.secondary)}
+    }
     private func legend(_ text:String,_ color:Color)->some View {Label{Text(text)}icon:{Circle().fill(color).frame(width:7,height:7)}.font(.caption).foregroundStyle(.secondary)}
 }
 
@@ -90,7 +91,7 @@ func biologyViewCompute<T:Sendable>(_ body:@escaping @Sendable ()throws->T) asyn
         VStack(alignment:.leading,spacing:16) {
             Toggle(biologyText("Use branch lengths","使用分支长度"),isOn:$lengths).font(.subheadline).frame(minHeight:44)
             if let tree {
-                let positions=tree.layout(useLengths:lengths),span=max(positions.map(\.x).max() ?? 1,1e-12),height=max(260,Double(min(100,tree.leaves.count-page*100))*32),pageOffset=Double(page*100),selectedNode=selected
+                let positions=tree.layout(useLengths:lengths),span=max(positions.map(\.x).max() ?? 1,1e-12),height=max(96,Double(min(100,tree.leaves.count-page*100)-1)*32),pageOffset=Double(page*100),selectedNode=selected
                 if tree.leaves.count>100 {HStack{Button(biologyText("Previous","上一页")){page-=1}.buttonStyle(BiologyControlButtonStyle()).disabled(page==0);Spacer();Text("\(page+1) / \((tree.leaves.count+99)/100)");Spacer();Button(biologyText("Next","下一页")){page+=1}.buttonStyle(BiologyControlButtonStyle()).disabled((page+1)*100>=tree.leaves.count)}.padding(.horizontal)}
                 GeometryReader { geometry in
                 let plotWidth=max(80,geometry.size.width-172),labelBackground=BiologyStyle.canvas
@@ -112,7 +113,7 @@ func biologyViewCompute<T:Sendable>(_ body:@escaping @Sendable ()throws->T) asyn
                     }.frame(width:geometry.size.width,height:height+40)
                     .gesture(SpatialTapGesture().onEnded{value in selected=positions.indices.min{a,b in hypot(20+positions[a].x/span*plotWidth-value.location.x,20+(positions[a].y-Double(page*100))*32-value.location.y)<hypot(20+positions[b].x/span*plotWidth-value.location.x,20+(positions[b].y-Double(page*100))*32-value.location.y)}})
                 }.biologyCanvas().accessibilityIdentifier("biology.treeViewport")
-                }.frame(minHeight:260,maxHeight:440)
+                }.frame(height:min(440,height+40))
                 if let selected,tree.nodes.indices.contains(selected) {let node=tree.nodes[selected];Text(node.label+" · "+(node.length.map{String($0)} ?? biologyText("No branch length","无分支长度"))).textSelection(.enabled).padding(.horizontal)}
                 BiologyViewFootnote(text:"\(tree.leaves.count) "+biologyText("leaves · saved Newick topology","个叶节点 · Newick 拓扑"),symbol:"point.3.connected.trianglepath.dotted")
                 Spacer(minLength:0)

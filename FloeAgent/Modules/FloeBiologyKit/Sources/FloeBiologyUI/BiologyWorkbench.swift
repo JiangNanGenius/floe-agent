@@ -59,7 +59,7 @@ import FloeBiologySamples
         .navigationTitle(model.project?.title ?? biologyText("Biology","生物"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {toolbar}
-        .inspector(isPresented:$showingAnalysis){properties.inspectorColumnWidth(min:340,ideal:380,max:440).presentationDetents([.large])}
+        .inspector(isPresented:$showingAnalysis){properties.inspectorColumnWidth(min:280,ideal:320,max:360).presentationDetents([.large])}
         .sheet(item:$sheet){panel in panelView(panel).presentationSizing(.page).presentationCornerRadius(24).presentationDragIndicator(.visible)}
         .sheet(item:$nativeExport){item in BiologyNativeExportPicker(export:item){nativeExport=nil;Task{await model.service.finishNativeExport(item)}}}
         .alert(biologyText("Biology","生物"),isPresented:Binding(get:{model.notice != nil},set:{if !$0{model.notice=nil}})){Button(biologyText("OK","好")){model.notice=nil}}message:{Text(model.notice ?? "")}
@@ -114,7 +114,7 @@ import FloeBiologySamples
                     Text(biologyText("Data","数据")).tag(false);Text(biologyText("Result","结果")).tag(true)
                 }.pickerStyle(.segmented).frame(width:150).accessibilityIdentifier("biology.viewMode")
             }
-        }.padding(.horizontal,20).padding(.vertical,12).background(BiologyStyle.canvas)
+        }.frame(minHeight:44).padding(.horizontal,12).padding(.vertical,2).background(BiologyStyle.canvas)
     }
     private var materials:some View {
         List(selection:$model.selectedID) {
@@ -220,17 +220,14 @@ import FloeBiologySamples
                 Spacer()
                 Button{analysisInput=nil;showingAnalysis=false}label:{Image(systemName:"xmark").frame(width:44,height:44)}
                     .buttonStyle(BiologyControlButtonStyle(compact:true)).accessibilityLabel(biologyText("Done","完成")).accessibilityIdentifier("biology.closeAnalysis")
-            }.padding(.horizontal,20).padding(.vertical,12)
+            }.padding(.horizontal,12).padding(.vertical,6)
             Divider()
             ScrollView {
-                VStack(alignment:.leading,spacing:24) {
+                VStack(alignment:.leading,spacing:12) {
                     if let a=model.selected {
-                        BiologyPanelHeader(title:a.title,detail:BiologyLabels.kind(a.kind),symbol:BiologyLabels.icon(a.kind))
-                        Divider()
-                        BiologyInspectorSection(title:biologyText("Analysis method","分析方法"),symbol:"slider.horizontal.3") {
-                            BiologyChoiceField(title:biologyText("Method","方法"),selection:$selectedMethod,value:BiologyLabels.method(selectedMethod),identifier:"biology.methodField"){ForEach(model.methods[environment] ?? [],id:\.self){Text(BiologyLabels.method($0)).tag($0)}}
-                            BiologyChoiceField(title:biologyText("Execution location","执行位置"),selection:$environment,value:environmentTitle(environment),identifier:"biology.environmentField"){ForEach(model.methods.keys.sorted(),id:\.self){Text(environmentTitle($0)).tag($0)}}
-                        }
+                        Label(a.title,systemImage:BiologyLabels.icon(a.kind)).font(.subheadline.weight(.medium)).lineLimit(1).padding(.vertical,4)
+                        BiologyChoiceField(title:biologyText("Method","方法"),selection:$selectedMethod,value:BiologyLabels.method(selectedMethod),identifier:"biology.methodField",compact:true){ForEach(model.methods[environment] ?? [],id:\.self){Text(BiologyLabels.method($0)).tag($0)}}
+                        BiologyChoiceField(title:biologyText("Execution location","执行位置"),selection:$environment,value:environmentTitle(environment),identifier:"biology.environmentField",compact:true){ForEach(model.methods.keys.sorted(),id:\.self){Text(environmentTitle($0)).tag($0)}}
                         Divider()
                         analysisParameters(a)
                         DisclosureGroup(biologyText("Additional parameters","更多参数")) {
@@ -247,13 +244,13 @@ import FloeBiologySamples
                             DisclosureGroup(biologyText("Source","来源")){ForEach(a.provenance.keys.sorted(),id:\.self){key in LabeledContent(key,value:a.provenance[key]!).font(.caption).textSelection(.enabled).padding(.vertical,4)}}
                         }
                     }
-                }.padding(20).frame(maxWidth:720,alignment:.leading).frame(maxWidth:.infinity)
+                }.padding(12).frame(maxWidth:720,alignment:.leading).frame(maxWidth:.infinity)
             }.scrollDismissesKeyboard(.interactively).frame(maxHeight:.infinity)
             VStack(spacing:0){
                 Divider()
                 Button{analysisInput=nil;Task{await startAnalysis()}}label:{
                     HStack(spacing:10){if model.busy{ProgressView().tint(.white)}else{Image(systemName:"play.fill")};Text(biologyText("Run analysis","运行分析"))}.frame(maxWidth:.infinity,minHeight:44)
-                }.buttonStyle(BiologyPrimaryButtonStyle()).disabled(model.selected==nil || selectedMethod.isEmpty || model.busy).accessibilityIdentifier("biology.run").padding(20)
+                }.buttonStyle(BiologyPrimaryButtonStyle()).disabled(model.selected==nil || selectedMethod.isEmpty || model.busy).accessibilityIdentifier("biology.run").padding(12)
             }.background(BiologyStyle.canvas)
         }.frame(maxWidth:.infinity,maxHeight:.infinity).background(BiologyStyle.background)
         // A trailing inspector can retain the previous keyboard's bottom inset
@@ -275,15 +272,15 @@ import FloeBiologySamples
         switch a.payload {
         case .sequence(let records):
             BiologyInspectorSection(title:biologyText("Input and parameters","输入与参数"),symbol:"text.alignleft") {
-                BiologyChoiceField(title:biologyText("Record","记录"),selection:$recordIndex,value:records.indices.contains(recordIndex) ? records[recordIndex].name:"",identifier:"biology.analysisRecord"){ForEach(Array(records.enumerated()),id:\.element.id){i,record in Text(record.name).tag(i)}}
-                if supports("frame"){BiologyChoiceField(title:biologyText("Reading frame","阅读框"),selection:$translationFrame,value:String(translationFrame),identifier:"biology.readingFrameField"){ForEach([-3,-2,-1,1,2,3],id:\.self){Text(String($0)).tag($0)}}}
-                if supports("code"){BiologyChoiceField(title:biologyText("Genetic code","遗传密码表"),selection:$geneticCode,value:geneticCode==1 ? biologyText("Standard","标准"):biologyText("Vertebrate mitochondrial","脊椎动物线粒体"),identifier:"biology.geneticCodeField"){Text(biologyText("Standard","标准")).tag(1);Text(biologyText("Vertebrate mitochondrial","脊椎动物线粒体")).tag(2)}}
+                BiologyChoiceField(title:biologyText("Record","记录"),selection:$recordIndex,value:records.indices.contains(recordIndex) ? records[recordIndex].name:"",identifier:"biology.analysisRecord",compact:true){ForEach(Array(records.enumerated()),id:\.element.id){i,record in Text(record.name).tag(i)}}
+                if supports("frame"){BiologyChoiceField(title:biologyText("Reading frame","阅读框"),selection:$translationFrame,value:String(translationFrame),identifier:"biology.readingFrameField",compact:true){ForEach([-3,-2,-1,1,2,3],id:\.self){Text(String($0)).tag($0)}}}
+                if supports("code"){BiologyChoiceField(title:biologyText("Genetic code","遗传密码表"),selection:$geneticCode,value:geneticCode==1 ? biologyText("Standard","标准"):biologyText("Vertebrate mitochondrial","脊椎动物线粒体"),identifier:"biology.geneticCodeField",compact:true){Text(biologyText("Standard","标准")).tag(1);Text(biologyText("Vertebrate mitochondrial","脊椎动物线粒体")).tag(2)}}
             }
         case .proteinStructure(let structure):
-            BiologyInspectorSection(title:biologyText("Structure selection","结构范围"),symbol:"point.3.connected.trianglepath.dotted") {
+            VStack(alignment:.leading,spacing:10) {
                 HStack(alignment:.top,spacing:12){
-                    BiologyChoiceField(title:biologyText("Model","模型"),selection:$structureModel,value:String(structureModel),identifier:"biology.modelField"){ForEach(Array(Set(structure.atoms.map(\.model))).sorted(),id:\.self){Text(String($0)).tag($0)}}
-                    BiologyChoiceField(title:biologyText("Chain","链"),selection:$chain,value:chain.isEmpty ? biologyText("All chains","所有链"):chain,identifier:"biology.chainField"){Text(biologyText("All chains","所有链")).tag("");ForEach(Array(Set(structure.atoms.map(\.chain))).sorted(),id:\.self){Text($0.isEmpty ? "∅":$0).tag($0)}}
+                    BiologyChoiceField(title:biologyText("Model","模型"),selection:$structureModel,value:String(structureModel),identifier:"biology.modelField",compact:true){ForEach(Array(Set(structure.atoms.map(\.model))).sorted(),id:\.self){Text(String($0)).tag($0)}}
+                    BiologyChoiceField(title:biologyText("Chain","链"),selection:$chain,value:chain.isEmpty ? biologyText("All","全部"):chain,identifier:"biology.chainField",compact:true){Text(biologyText("All chains","所有链")).tag("");ForEach(Array(Set(structure.atoms.map(\.chain))).sorted(),id:\.self){Text($0.isEmpty ? "∅":$0).tag($0)}}
                 }
                 if supports("cutoff"){TextField("Å",value:$cutoff,format:.number).focused($analysisInput,equals:.cutoff).biologyNamedInput(biologyText("Contact cutoff · Å","接触阈值 · Å"))}
                 if selectedMethod=="structure.distance"{BiologyViewFootnote(text:biologyText("Select two atoms in the viewport.","请在视图中选择两个原子。"),symbol:"ruler")}

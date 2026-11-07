@@ -55,23 +55,25 @@ struct BiologyPrimaryButtonStyle:ButtonStyle {
 /// A native selection menu with a full-width 44-point button label. Framing
 /// only the Picker's outer view leaves its text-sized hit target ambiguous.
 struct BiologyChoiceField<Selection:Hashable,Options:View>:View {
+    @Environment(\.dynamicTypeSize) private var typeSize
     let title:String
     @Binding var selection:Selection
     let value:String
     var identifier=""
+    var compact=false
     let options:()->Options
-    init(title:String,selection:Binding<Selection>,value:String,identifier:String="",@ViewBuilder options:@escaping ()->Options){
-        self.title=title;_selection=selection;self.value=value;self.identifier=identifier;self.options=options
+    init(title:String,selection:Binding<Selection>,value:String,identifier:String="",compact:Bool=false,@ViewBuilder options:@escaping ()->Options){
+        self.title=title;_selection=selection;self.value=value;self.identifier=identifier;self.compact=compact;self.options=options
     }
     var body:some View {
         VStack(alignment:.leading,spacing:8) {
-            Text(title).font(.subheadline).foregroundStyle(.primary)
+            if !compact || typeSize.isAccessibilitySize {Text(title).font(.subheadline).foregroundStyle(.primary)}
             Menu {
                 Picker(title,selection:$selection){options()}
             } label:{
-                HStack(spacing:12){
-                    Text(value.isEmpty ? biologyText("Choose","请选择"):value).lineLimit(1).truncationMode(.middle).foregroundStyle(.primary)
-                    Spacer(minLength:4)
+                HStack(spacing:8){
+                    if compact && !typeSize.isAccessibilitySize {Text(title).font(.subheadline).foregroundStyle(.primary).lineLimit(1).layoutPriority(1)}
+                    Text(value.isEmpty ? biologyText("Choose","请选择"):value).font(.subheadline).lineLimit(1).truncationMode(.middle).foregroundStyle(.primary).frame(maxWidth:.infinity,alignment:compact ? .trailing:.leading)
                     Image(systemName:"chevron.up.chevron.down").font(.caption.weight(.semibold)).foregroundStyle(.tint)
                 }.frame(maxWidth:.infinity,minHeight:44).padding(.horizontal,12)
                     .background(BiologyStyle.canvas,in:RoundedRectangle(cornerRadius:10))
@@ -101,7 +103,7 @@ struct BiologyInspectorSection<Content:View>:View {
     let symbol:String
     @ViewBuilder var content:()->Content
     var body:some View {
-        VStack(alignment:.leading,spacing:16){
+        VStack(alignment:.leading,spacing:10){
             Label(title,systemImage:symbol).font(.headline).foregroundStyle(.primary)
             content()
         }.frame(maxWidth:.infinity,alignment:.leading)

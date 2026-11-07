@@ -26,8 +26,10 @@ struct BiologySequenceView:View {
                     Text(biologyText("Sequence","序列")).font(.headline)
                     Text("\(record.sequence.count) · "+record.alphabet.uppercased()).font(.subheadline).foregroundStyle(.secondary).monospacedDigit()
                     Spacer()
-                    Button {page=max(0,page-1)} label:{Image(systemName:"chevron.left").frame(width:44,height:44)}.buttonStyle(BiologyControlButtonStyle(compact:true)).disabled(page==0)
-                    Button {page=min(max(0,(record.sequence.count-1)/2000),page+1)} label:{Image(systemName:"chevron.right").frame(width:44,height:44)}.buttonStyle(BiologyControlButtonStyle(compact:true)).disabled((page+1)*2000>=record.sequence.count)
+                    if record.sequence.count>2000 {
+                        Button {page=max(0,page-1)} label:{Image(systemName:"chevron.left").frame(width:44,height:44)}.buttonStyle(BiologyControlButtonStyle(compact:true)).disabled(page==0)
+                        Button {page=min(max(0,(record.sequence.count-1)/2000),page+1)} label:{Image(systemName:"chevron.right").frame(width:44,height:44)}.buttonStyle(BiologyControlButtonStyle(compact:true)).disabled((page+1)*2000>=record.sequence.count)
+                    }
                 }
                 let start=min(page*2000,max(0,record.sequence.count-1))
                 let chars=Array(record.sequence),end=min(chars.count,start+2000)
@@ -40,7 +42,7 @@ struct BiologySequenceView:View {
                             }.font(.system(.body,design:.monospaced))
                         }
                     }.padding(16).frame(maxWidth:.infinity,alignment:.leading)
-                }.frame(height:CGFloat(min(360,max(110,((end-start+59)/60)*32+32)))).biologyCanvas().accessibilityIdentifier("biology.sequenceViewport")
+                }.frame(height:CGFloat(min(360,max(64,((end-start+59)/60)*32+32)))).biologyCanvas().accessibilityIdentifier("biology.sequenceViewport")
                 if !record.annotations.isEmpty {
                     Text(biologyText("Annotations · coordinates shown as 1-based inclusive","注释 · 坐标显示为从 1 开始的闭区间")).font(.caption).foregroundStyle(.secondary)
                     ForEach(record.annotations.prefix(12)) { a in HStack {Text(a.name);Spacer();Text("\(a.start+1)…\(a.end) "+(a.strand<0 ? "←":"→")).monospacedDigit()}.font(.caption) }
@@ -209,7 +211,7 @@ struct BiologyNetworkView:View {
                         context.draw(Text(String(s.id.prefix(8))).font(.subheadline.weight(.semibold)),at:p)
                     }
                 }.accessibilityIdentifier("biology.networkViewport")
-            }.frame(height:network.species.count>8 ? 520:network.species.count>4 ? 360:260).biologyCanvas()
+            }.frame(height:network.species.count>8 ? 520:network.species.count>4 ? 360:network.species.count>2 ? 240:160).biologyCanvas()
             if network.species.count>16 {Text(biologyText("Graph shows the first 16 species; the model retains every species.","图中显示前 16 个物种，模型保留完整数据。")).font(.caption)}
             if let result,result.columns.first=="time" {
                 BiologyTimeCoursePlot(result:result,timeUnit:network.timeUnit,amountUnit:network.amountUnit)

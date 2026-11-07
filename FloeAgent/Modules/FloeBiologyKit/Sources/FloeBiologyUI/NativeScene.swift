@@ -71,14 +71,22 @@ import FloeBiologyCore
     func fitModel() {
         guard let model=scene?.rootNode.childNode(withName:"biology.model",recursively:false),
               let camera=scene?.rootNode.childNode(withName:"biology.camera",recursively:false),bounds.width>0,bounds.height>0 else{return}
-        let radius=max(Float(0.5),Float(model.boundingSphere.radius)),aspect=Float(bounds.width/bounds.height)
-        let vertical:Float = .pi*38/360,horizontal=atan(tan(vertical)*aspect),distance=radius/max(0.1,sin(min(vertical,horizontal)))*1.12
-        camera.position=SCNVector3(0,0,distance);camera.eulerAngles=SCNVector3Zero
-        camera.camera?.zNear=Double(max(radius*0.001,0.001));camera.camera?.zFar=Double(distance+radius*8)
+        guard let measured=scene as? BiologyRenderScene,
+              let framing=BiologyViewportFraming.fit(points:measured.framingPoints,offset:model.simdPosition,radius:measured.framingRadius,aspect:Float(bounds.width/bounds.height)) else{return}
+        camera.position=SCNVector3(0,0,framing.distance)
+        camera.eulerAngles=SCNVector3(0,0,framing.quarterTurn ? Float.pi/2:0)
+        camera.camera?.projectionDirection = .vertical
+        camera.camera?.zNear=Double(framing.near);camera.camera?.zFar=Double(framing.far)
         pointOfView=camera;defaultCameraController.target=SCNVector3Zero
+        defaultCameraController.worldUp=framing.quarterTurn ? SCNVector3(-1,0,0):SCNVector3(0,1,0)
         defaultCameraController.stopInertia()
         setNeedsDisplay()
     }
+}
+
+@MainActor private final class BiologyRenderScene:SCNScene {
+    var framingPoints:[SIMD3<Float>]=[]
+    var framingRadius:Float=0
 }
 
 @MainActor enum BiologySceneFactory {
@@ -110,7 +118,7 @@ import FloeBiologyCore
         for i in Swift.stride(from:0,to:mesh.vertices.count,by:3){groups[min(3,Int(mesh.classes[i]))] += [Int32(i),Int32(i+1),Int32(i+2)]}
         let geometry=SCNGeometry(sources:[SCNGeometrySource(vertices:mesh.vertices.map{SCNVector3($0.x,$0.y,$0.z)}),SCNGeometrySource(normals:normals)],elements:groups.map{SCNGeometryElement(indices:$0,primitiveType:.triangles)})
         geometry.materials=[UIColor.systemTeal,.systemOrange,.systemBlue,.systemIndigo].map(material)
-        return finish(SCNNode(geometry:geometry))
+        return finish(SCNNode(geometry:geometry),points:mesh.vertices)
     }
     static func molecule(_ atoms:[StructureAtom],backbone:Bool)->SCNScene {
         let shown=Array((backbone ? atoms.filter{$0.name=="CA" && !$0.hetero}:atoms).prefix(5000)),model=SCNNode()
@@ -135,10 +143,10 @@ import FloeBiologyCore
                 let node=SCNNode(geometry:cylinder);node.simdPosition=(p+q)/2;node.simdOrientation=simd_quatf(from:SIMD3<Float>(0,1,0),to:delta/length);model.addChildNode(node)
             }
         }
-        return finish(model)
+        return finish(model,points:shown.map{SIMD3<Float>(Float($0.x),Float($0.y),Float($0.z))},radius:backbone ? 0.34:0.42)
     }
-    private static func finish(_ model:SCNNode)->SCNScene {
-        let scene=SCNScene();model.name="biology.model"
+    private static func finish(_ model:SCNNode,points:[SIMD3<Float>],radius:Float=0)->SCNScene {
+        let scene=BiologyRenderScene();scene.framingPoints=points;scene.framingRadius=radius;model.name="biology.model"
         let (low,high)=model.boundingBox
         model.position=SCNVector3(-(low.x+high.x)/2,-(low.y+high.y)/2,-(low.z+high.z)/2)
         scene.rootNode.addChildNode(model)

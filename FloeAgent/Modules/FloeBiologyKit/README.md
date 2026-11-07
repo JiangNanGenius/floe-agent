@@ -30,6 +30,8 @@ There are 21 native and 32 optional mature methods. Available methods are filter
 
 The iPad workbench keeps the dataset stage, materials navigation and analysis inspector separate. Analysis opens in a native inspector; its method, execution location and applicable input parameters are grouped, with a fixed Run action. Data editing, annotation and network editing are in **More**. Compact toolbars keep undo/redo in that menu. All choices and primary/secondary actions share 44-point control geometry, with matching input borders and aligned content margins.
 
+The analysis column defaults to 320 points (280–360). Common selections put their title and value in one framed row; accessibility text sizes retain stacked labels. Three-dimensional Fit uses the displayed coordinates and perspective frustum, with a small edge margin and a quarter turn only when it significantly improves the fit. Source coordinates, atom radii and physical proportions stay unchanged. Count, legend and selection feedback share an adaptive footer. Short sequences, small trees and small networks use content-dependent heights.
+
 Sequence and matrix stages scroll in smaller windows. Matrix fields adapt between two equal columns and a vertical layout. Protein and density viewports retain the native antialiased renderer. Network/result time-course charts use measured rows and original units, with a bounded preview (up to 12 series and about 6,000 plotted points); the full result remains available for export. Editors, notes, history, the assistant and the diagnostic console use page-sized native presentations with inline titles. Notes provide one document surface; diagnostic responses have their own bounded scroll area.
 
 ## AI and host integration

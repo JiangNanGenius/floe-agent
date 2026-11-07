@@ -4,6 +4,57 @@ import FloeBiologySamples
 import simd
 
 final class BiologyScientificViewTests:XCTestCase {
+    func testPerspectiveFramingUsesWideViewportWithoutClippingAtoms() throws {
+        let points:[SIMD3<Float>]=[-2,2].flatMap{x in [-12,12].flatMap{y in [-4,4].map{z in SIMD3(Float(x),Float(y),Float(z))}}}
+        let wide=try XCTUnwrap(BiologyViewportFraming.fit(points:points,radius:0.42,aspect:1.6))
+        let tall=try XCTUnwrap(BiologyViewportFraming.fit(points:points,radius:0.42,aspect:0.65))
+        XCTAssertTrue(wide.quarterTurn);XCTAssertFalse(tall.quarterTurn)
+        XCTAssertLessThan(wide.distance,tall.distance*0.75)
+        for framing in [wide,tall] {
+            let tanV=tan(Float.pi*38/360),aspect:Float=framing.quarterTurn ? 1.6:0.65
+            // Check actual sphere boundary points, including front/back depth.
+            for p in points {
+                for axis in [SIMD3<Float>(1,0,0),SIMD3<Float>(0,1,0),SIMD3<Float>(0,0,1)] {
+                    for sign:Float in [-1,1] {
+                        let q=p+axis*sign*0.42,depth=framing.distance-q.z
+                        let x=framing.quarterTurn ? q.y:q.x,y=framing.quarterTurn ? -q.x:q.y
+                        XCTAssertGreaterThan(depth,framing.near);XCTAssertLessThan(depth,framing.far)
+                        XCTAssertLessThan(abs(x)/(depth*tanV*aspect),1)
+                        XCTAssertLessThan(abs(y)/(depth*tanV),1)
+                    }
+                }
+            }
+        }
+    }
+    func testMeasuredRibbonAndDensityFitAtPortraitAndLandscapeAspects() throws {
+        let raw=try BiologySamples.data(for:.ubiquitinPDB),asset=try BiologyImporter.parse(title:"UBQ",format:"pdb",data:raw)
+        guard case .proteinStructure(let structure)=asset.payload else{return XCTFail("Structure missing")}
+        let ribbon=try BiologyProteinRibbon.build(structure,model:1)
+        let density=try BiologyDensityVolume.parse(BiologySamples.data(for:.densityVolume)).isosurface(value:0.5,stride:2)
+        for mesh in [ribbon,density] {
+            let low=mesh.vertices.reduce(SIMD3<Float>(repeating:.infinity)){simd_min($0,$1)}
+            let high=mesh.vertices.reduce(SIMD3<Float>(repeating:-.infinity)){simd_max($0,$1)},offset = -(low+high)/2
+            for aspect:Float in [0.65,1.6,2.8] {
+                let fit=try XCTUnwrap(BiologyViewportFraming.fit(points:mesh.vertices,offset:offset,aspect:aspect)),tanV=tan(Float.pi*38/360)
+                var occupied:Float=0
+                for vertex in mesh.vertices {
+                    let p=vertex+offset,depth=fit.distance-p.z,x=fit.quarterTurn ? p.y:p.x,y=fit.quarterTurn ? -p.x:p.y
+                    let normalized=max(abs(x)/(depth*tanV*aspect),abs(y)/(depth*tanV))
+                    XCTAssertLessThan(normalized,1);occupied=max(occupied,normalized)
+                }
+                XCTAssertGreaterThan(occupied,0.85,"Fit should use the available viewport.")
+            }
+        }
+        XCTAssertEqual(asset.originalData,raw)
+    }
+    func testFramingRejectsInvalidInputsAndHandlesSinglePoint() throws {
+        XCTAssertNil(BiologyViewportFraming.fit(points:[],aspect:1))
+        XCTAssertNil(BiologyViewportFraming.fit(points:[.zero],aspect:0))
+        XCTAssertNil(BiologyViewportFraming.fit(points:[.init(.nan,0,0)],aspect:1))
+        XCTAssertNil(BiologyViewportFraming.fit(points:[.zero],radius:-1,aspect:1))
+        let point=try XCTUnwrap(BiologyViewportFraming.fit(points:[.zero],aspect:1))
+        XCTAssertFalse(point.quarterTurn);XCTAssertGreaterThan(point.distance,point.near);XCTAssertGreaterThan(point.far,point.distance)
+    }
     func testNewickQuotedLabelsCommentsMultifurcationsAndMissingLengths() throws {
         let tree=try BiologyTree.parse(Data("('A''s label'[note]:0.1,(B:0.2,C:0.3,D:0.4)Group:0.2)Root;".utf8))
         XCTAssertEqual(tree.leaves.count,4);XCTAssertEqual(tree.leaves[0].label,"A's label");XCTAssertEqual(tree.leaves[0].comments,["note"])

@@ -13,6 +13,10 @@ import XCTest
         app.buttons["biology.examples"].tap()
         XCTAssertTrue(app.buttons["biology.materials"].waitForExistence(timeout:25))
         XCTAssertEqual(app.webViews.count,0)
+        // The native presentation may already be open in a reused window.
+        // Establish the requested state through its real control, not a blind
+        // toggle that can close the panel this test is about to inspect.
+        if app.buttons["biology.closeAnalysis"].exists {app.buttons["biology.closeAnalysis"].tap()}
     }
     private func select(_ app:XCUIApplication,_ kind:String) {
         if app.buttons["biology.materials"].exists {app.buttons["biology.materials"].tap()}
@@ -105,7 +109,7 @@ import XCTest
         XCTAssertEqual(XCTWaiter.wait(for:[wide],timeout:15),.completed)
         app.buttons["biology.structureFit"].tap();XCTAssertTrue(ribbon.isHittable)
         screenshot(app,"Biology-polish-ribbon-landscape")
-        app.buttons["biology.analysis"].tap()
+        if !app.buttons["biology.closeAnalysis"].exists {app.buttons["biology.analysis"].tap()}
         XCTAssertTrue(app.buttons["biology.closeAnalysis"].waitForExistence(timeout:10))
         XCTAssertTrue(ribbon.isHittable,"The landscape inspector must keep the scientific viewport usable.")
         let run=app.buttons["biology.run"],method=app.buttons["biology.methodField"]
@@ -115,6 +119,14 @@ import XCTest
         }
         XCTAssertTrue(run.isHittable);XCTAssertTrue(method.isHittable)
         XCTAssertFalse(run.frame.intersects(method.frame),"Run must not cover a parameter field.")
+        let canvas=ribbon.frame,window=app.windows.firstMatch.frame
+        XCTAssertGreaterThan(canvas.width/window.width,0.68,"The inspector must leave most of the width to the model.")
+        XCTAssertGreaterThan(canvas.height/window.height,0.65,"Stage chrome must leave most of the height to the model.")
+        let model=app.buttons["biology.modelField"],chain=app.buttons["biology.chainField"],environment=app.buttons["biology.environmentField"]
+        for field in [method,environment,model,chain] {XCTAssertTrue(field.isHittable);XCTAssertGreaterThanOrEqual(field.frame.height,44)}
+        XCTAssertLessThan(chain.frame.maxY-method.frame.minY,190,"Common parameters should fit into a compact group.")
+        let layout=XCTAttachment(string:"window=\(window)\nviewport=\(canvas)\nmethod=\(method.frame)\nenvironment=\(environment.frame)\nmodel=\(model.frame)\nchain=\(chain.frame)\nrun=\(run.frame)")
+        layout.name="Biology-space-measurements";layout.lifetime = .keepAlways;add(layout)
         screenshot(app,"Biology-layout-landscape-inspector")
         app.buttons["biology.closeAnalysis"].tap()
         XCUIDevice.shared.orientation = .portrait
