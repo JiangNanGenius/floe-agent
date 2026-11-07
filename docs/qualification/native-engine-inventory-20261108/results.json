@@ -1,0 +1,621 @@
+{
+  "observedAtUTC": "2026-11-07T15:17:57.208173+00:00",
+  "sourceSHA256": {
+    "FloeAgent/FloeApp/App/AppEnvironment.swift": "9fbecc482e484fdbf68d40f8b2f7f2a1f78de0a573e689e4ed2580c323f55e58",
+    "FloeAgent/FloeApp/Space/PersonalContentEditor.swift": "4c1d7d11c663b3d3de4a5c8c7cd36940ea5e753cc2de6f38ea05c98219804455",
+    "FloeAgent/FloeApp/Space/Biology/BiologyAppComposition.swift": "0c763c609e091c7426aecd0a5e6f9c9244c4452ab98034efdf559a8a1fdbba56",
+    "FloeAgent/Sources/FloeTools/CapabilityExecutionRouter.swift": "071559fa0717726f57e8dcb9d66e01901986e52137568fb525fe461088a0ab48",
+    "FloeAgent/ThirdParty/ARM64EMU/README.md": "850465fc5037e50b8a1bb9b209e2ba834a62252720f47d9baecd7cf423ad8de9",
+    "FloeAgent/FloeApp/Workbench/MediaV2/MediaV2Commands.swift": "d2539533fc3f1c4c5c7945e4c62158d3c46156bc25c0d92d9691d3424017a5e5",
+    "FloeAgent/Sources/FloeWorkbench/PreparedTools/MediaPreparedBundledCatalog.swift": "095b7c8f8aace51f01f0c0fe5004b8283a8175d4d6600b4fb44d29955288c474",
+    "FloeAgent/Sources/FloeMedia/MediaEnhancementContract.swift": "7fc11f42ea871d252647ff3b080b35d5b89532aac16f7b8409cd6614f45bf463",
+    "FloeAgent/Sources/FloeMedia/MediaEnhancement.swift": "454bdc3d9cc776e1a060de027574cf57ee13aa4bd83669b3f9d9bc3a0b3a56ed",
+    "FloeAgent/Sources/FloeImages/ImagePipeline.swift": "8adac70cdd17a417225be2425b9333707ae57977224ae1efaeca3df9dc8ee6cf",
+    "FloeAgent/FloeApp/Space/Printing/NativePrintBackend.swift": "855b332c450e510f71c2df7829e0bed6deac7124b9a4edb6d1a120e8002cdcc7",
+    "FloeAgent/FloeApp/Space/Music/MusicProjectSession.swift": "6164022b746868e1710a4afbcbbb7d95b5b77eb2f027e9319143eca3b4235c8d",
+    "FloeAgent/Modules/FloeManufacturingKit/README.md": "c40ec6b7e24a2263e6093f9d7eea159b206857b29d39016b1c328afd55f54a59",
+    "FloeAgent/Modules/FloeSimulationKit/README.md": "edf34b9745efaab7e5e8b69c787882818e62b6ab3067deda6584fb0df59b57a4",
+    "FloeAgent/Modules/FloeSimulationKit/Sources/FloeSimulationUI/SimulationWorkbenchFactory.swift": "7ac79fc69535f57a632f8cf837e10593c5d7601368c817c90b304272ed234ba6",
+    "FloeAgent/Modules/FloeChemistryNative/README.md": "32af6b5f2d72a409608a434551d86b764a7bb9a965e3f16f4366ae47d9a100ab",
+    "FloeAgent/Modules/FloeChemistryKit/README.md": "4ea4b1a311b1a5f2c480a08665608763a323b15592857c5dbda6c75da9e53404",
+    "FloeAgent/Modules/FloeBiologyKit/README.md": "c2161bc5141b0dd7ac34b88d4225046012effa07bfaf8a950d446ffd1e0d2e78",
+    "FloeAgent/Modules/FloeBiologyKit/Backends/README.md": "bc777d44d7026818542dc1dd85f962141b0a797b65fb7fcaecb7fc751d52648f",
+    "FloeAgent/Modules/FloeLaTeXKit/Package.swift": "7f7b59b51017d86a07ebff5221686df3bfd783ba78a39e5073df0760c40da1d3",
+    "FloeAgent/Modules/FloeLaTeXKit/Sources/FloeLaTeXEngine/NativeEngine.swift": "a0d3db5435f5d3548d0e83507ba6e79a7bb540dc2e6be22ba14202eb247f7fbc",
+    "FloeAgent/Modules/FloeLaTeXKit/Integration/FloeLaTeXHostAdapter/Sources/FloeLaTeXHostAdapter/Tools.swift": "f30ef05bc9f0a2d7362e841c6f6b3e7da7c653773814b0396aeebaf2b8c84f5b",
+    "FloeAgent/Qualification/LaTeX/NativeTests.swift": "784968db3a19c8c595458a52827984a47b024a39d660afbd11b7202721cb7f4a",
+    "FloeAgent/Qualification/LaTeX/UITests.swift": "162e34b8a7cefe0f6c951f561db4ac275b3109471c7c56d246ec16355818c25d",
+    "FloeAgent/Sources/FloeExecution/ScientificDataAnalysis.swift": "9f74a8c625bb9634f42dddce0919725cfe76bf053896b8ae815e894b65d8a9d3",
+    "docs/FLOE_PREDEVELOPMENT_APP_INTEGRATION.zh-CN.md": "9908709f136d8919ee1236acb6f9a7516d7c2e5766f35dacd6e16bcb6e090f0a",
+    "docs/FLOE_NEXT_ROUND_ENGINES_AND_USABILITY_PLAN.zh-CN.md": "67c512ecd8b6f3d56e102aa1208e34d89650f1792db30e6dae0fe8cab11774d3",
+    "docs/FLOE_3D_SIMULATION_IMPLEMENTATION_STATUS.zh-CN.md": "798a16a6b806e3d53bc1c8e6186aaee9d65a4a2789944e1118657e0b27a2f003",
+    "docs/CAD_MESH_BUILDING_PREDEVELOPMENT_20261106.zh-CN.md": "893ca723634048ba18b48908ef76bf2f4b00e563257d278ab5dbd930cdfce6ee"
+  },
+  "scope": "Read-only source and existing-evidence audit for a revised plan; no new builds, tests, devices or provider calls.",
+  "media": {
+    "catalogCount": 107,
+    "localCommandCount": 52,
+    "remainingCount": 55,
+    "remainingByKind": {
+      "image": 29,
+      "video": 26
+    },
+    "existingCommandPointers": [
+      {
+        "id": "image.resize",
+        "existingCommand": "setCanvas"
+      },
+      {
+        "id": "image.canvas-size",
+        "existingCommand": "setCanvas"
+      },
+      {
+        "id": "video.transcribe",
+        "existingCommand": "FileSpeechTranscriber"
+      },
+      {
+        "id": "video.caption-style",
+        "existingCommand": "setCaptionStyle"
+      }
+    ],
+    "modelAdapterPointers": [
+      "image.heal",
+      "image.remove",
+      "image.background",
+      "image.content-fill",
+      "image.inpaint",
+      "image.outpaint",
+      "video.translate"
+    ],
+    "remaining": [
+      {
+        "id": "image.wand",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.subject",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.refine-edge",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.expand",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.smooth",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.gradient",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.smudge",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.blur-brush",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.sharpen-brush",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.layer-effect",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.resize",
+        "kind": "image",
+        "sourceState": "sourcePresent",
+        "existingCommand": "setCanvas",
+        "modelBackend": null
+      },
+      {
+        "id": "image.canvas-size",
+        "kind": "image",
+        "sourceState": "sourcePresent",
+        "existingCommand": "setCanvas",
+        "modelBackend": null
+      },
+      {
+        "id": "image.perspective",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.distort",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.boolean",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.path-text",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.outline",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.heal",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": "imageModel"
+      },
+      {
+        "id": "image.clone",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.patch",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.remove",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": "imageModel"
+      },
+      {
+        "id": "image.background",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": "imageModel"
+      },
+      {
+        "id": "image.content-fill",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": "imageModel"
+      },
+      {
+        "id": "image.inpaint",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": "imageModel"
+      },
+      {
+        "id": "image.outpaint",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": "imageModel"
+      },
+      {
+        "id": "image.curves",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.balance",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.lut",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "image.denoise",
+        "kind": "image",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.reverse",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.freeze",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.nest",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.chroma",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.video-blend",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.tracking",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.stabilize",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.graph",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.motion-path",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.motion-title",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.preset-motion",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.transcribe",
+        "kind": "video",
+        "sourceState": "sourcePresent",
+        "existingCommand": "FileSpeechTranscriber",
+        "modelBackend": null
+      },
+      {
+        "id": "video.caption-style",
+        "kind": "video",
+        "sourceState": "sourcePresent",
+        "existingCommand": "setCaptionStyle",
+        "modelBackend": null
+      },
+      {
+        "id": "video.translate",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": "textModel"
+      },
+      {
+        "id": "video.video-curves",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.wheels",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.video-hsl",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.video-lut",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.scopes",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.color-match",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.hdr",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.eq",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.compressor",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.noise",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.duck",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      },
+      {
+        "id": "video.voice-separate",
+        "kind": "video",
+        "sourceState": "planned",
+        "existingCommand": null,
+        "modelBackend": null
+      }
+    ]
+  },
+  "latex": {
+    "nativeDeclared": [
+      "xeLaTeX",
+      "BibTeX"
+    ],
+    "mainAppEntryMatches": {
+      "FloeAgent/project.yml": 0,
+      "FloeAgent/FloeApp/App/AppEnvironment.swift": 0,
+      "FloeAgent/FloeApp/Space/PersonalContentEditor.swift": 0,
+      "FloeAgent/FloeApp/Space/SpaceRootView.swift": 0
+    },
+    "observedQualification": {
+      "coreTests": 15,
+      "nativeSimulatorTests": 2,
+      "nativeSimulatorCases": [
+        "testActualNativePDFAndSourceMap",
+        "testNativeBibTeXAndRecoveryAfterCancellation"
+      ],
+      "fullEditingUITest": "not yet a passing result in the inspected evidence"
+    }
+  },
+  "licenseReview": {
+    "objective": "Preserve Floe-authored MPL-2.0 source and avoid introducing dependencies that force a change to the intended application distribution terms.",
+    "existingDirectLinkFinding": {
+      "path": [
+        "FloeAgent App target",
+        "FloeManufacturingUI/Core",
+        "TurningNative",
+        "LibLathe derivative"
+      ],
+      "declaredLicense": "GPL-2.0",
+      "status": "Requires a resolved distribution plan; root MPL declaration and thin C ABI do not establish clearance."
+    },
+    "biologyEnvironmentalPackages": [
+      {
+        "package": "igraph",
+        "declaredLicense": "GPL"
+      },
+      {
+        "package": "leidenalg",
+        "declaredLicense": "GPL-3.0-or-later"
+      }
+    ],
+    "licenseInventoryCheck": {
+      "command": "python3 FloeAgent/scripts/license_inventory.py --check",
+      "exitCode": 1,
+      "reason": "FloeCADKit package-lock originHash differs from its concurrently modified Package.swift manifest; no lock was rewritten."
+    },
+    "actions": "Main integration owner informed; existing LICENSE, third-party notices, source and functionality preserved; no licensing or production-source mutation by this audit.",
+    "sourceSHA256": {
+      "LICENSE": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+      "FloeAgent/Modules/FloeManufacturingKit/Package.swift": "e86e45c79995138815be9c809693cd2423896af14e9c75bb6073c9fabd7e8aa4",
+      "FloeAgent/Modules/FloeManufacturingKit/THIRD_PARTY.md": "a685eef21ed7b80a099c33807e1681a6f5e33a5f7f08808bb57fa9b20018507c",
+      "FloeAgent/Modules/FloeManufacturingKit/Sources/FloeManufacturingCore/NativeEngine.swift": "8ab800619b45b3332c839c7bb377448542af62862dea837afa72d44b3911bd7f",
+      "FloeAgent/project.yml": "6d203a37493a216dfd23b0e1c936310c0fb3ad56d22a98ba04101d93a99c13f8",
+      "FloeAgent/Modules/FloeBiologyKit/Backends/dependency-licenses.json": "5e99057fa07a3a002d8b35f25465393ae7507208ec2db509fb97352b341c4eb2",
+      "FloeAgent/scripts/license_inventory.py": "58533779cd70cc4c6196c45e9bdfa04ab606ccf13053928eb67f2126a9cac972"
+    },
+    "coordination": {
+      "mainIntegrationOwner": "Acknowledged direct-link finding; checks final linked artifact and provenance before distribution; preserves source/function.",
+      "simulationOwner": "Acknowledged; Mesh/skin/GLB/MP4 batch adds no new App dependency; existing native pins/notices remain."
+    }
+  },
+  "lastSourceRecheckAtUTC": "2026-11-07T15:28:02.798308+00:00",
+  "concurrentChangesReviewed": {
+    "paths": [
+      "FloeAgent/Modules/FloeLaTeXKit/Sources/FloeLaTeXEngine/NativeEngine.swift",
+      "FloeAgent/Modules/FloeLaTeXKit/Integration/FloeLaTeXHostAdapter/Sources/FloeLaTeXHostAdapter/Tools.swift"
+    ],
+    "review": "LaTeX native capability declaration and registry remain component-level; core/native test results stay bound to their recorded earlier run, not all later editor/tool changes."
+  },
+  "baseSource": "60f803afae967905529cbb01e0c8229ae0b92cdb",
+  "sourceState": "Shared working-tree snapshot for planning; not an immutable release or a claim that all qualification results apply to one final App artifact.",
+  "mainlineProgressUpdate": {
+    "observedAt": "2026-11-08T04:38:40.986380+11:00",
+    "observedMainHEAD": "f045a79b434e028474fab95fce8d48cae6a8bacb",
+    "nativeAnalysisSourceState": "Frozen; source and test hashes still match the original qualification. Confirmed ready for mainline local commit.",
+    "appCompilation": {
+      "iteration": 25,
+      "result": "TEST BUILD SUCCEEDED",
+      "logSHA256": "2b3e488504fc9e4426d60c2adc778e2737754f0eca55d3ece63e86269513d417",
+      "boundary": "Compilation/build-for-testing only; no claim that every runtime or UI test finished."
+    },
+    "licenseInventoryCheck": {
+      "command": "python3 FloeAgent/scripts/license_inventory.py --check",
+      "exitCode": 0,
+      "components": 243,
+      "bundledNotices": 55,
+      "swiftPackageRows": 40,
+      "originalFailurePreserved": true,
+      "L01Resolved": false
+    }
+  },
+  "planningBaselineUpdate": {
+    "observedAt": "2026-11-08T05:10:44.212622+11:00",
+    "implementationCheckpoint": "9b016097d7169cdf864ca25ccbc4f280b0d07a6b",
+    "observedMainHEAD": "e150a7034b7c0975fbfa75c37034fa6f1b29c701",
+    "checkpointIsAncestorOfCurrentMain": true,
+    "checkpointSourceSHA256": {
+      "FloeAgent/FloeApp/App/AppEnvironment.swift": "9fbecc482e484fdbf68d40f8b2f7f2a1f78de0a573e689e4ed2580c323f55e58",
+      "FloeAgent/FloeApp/Space/PersonalContentEditor.swift": "4c1d7d11c663b3d3de4a5c8c7cd36940ea5e753cc2de6f38ea05c98219804455",
+      "FloeAgent/FloeApp/Space/Biology/BiologyAppComposition.swift": "0c763c609e091c7426aecd0a5e6f9c9244c4452ab98034efdf559a8a1fdbba56",
+      "FloeAgent/Sources/FloeTools/CapabilityExecutionRouter.swift": "071559fa0717726f57e8dcb9d66e01901986e52137568fb525fe461088a0ab48",
+      "FloeAgent/ThirdParty/ARM64EMU/README.md": "850465fc5037e50b8a1bb9b209e2ba834a62252720f47d9baecd7cf423ad8de9",
+      "FloeAgent/FloeApp/Workbench/MediaV2/MediaV2Commands.swift": "d2539533fc3f1c4c5c7945e4c62158d3c46156bc25c0d92d9691d3424017a5e5",
+      "FloeAgent/Sources/FloeWorkbench/PreparedTools/MediaPreparedBundledCatalog.swift": "095b7c8f8aace51f01f0c0fe5004b8283a8175d4d6600b4fb44d29955288c474",
+      "FloeAgent/Sources/FloeMedia/MediaEnhancementContract.swift": "7fc11f42ea871d252647ff3b080b35d5b89532aac16f7b8409cd6614f45bf463",
+      "FloeAgent/Sources/FloeMedia/MediaEnhancement.swift": "454bdc3d9cc776e1a060de027574cf57ee13aa4bd83669b3f9d9bc3a0b3a56ed",
+      "FloeAgent/Sources/FloeImages/ImagePipeline.swift": "8adac70cdd17a417225be2425b9333707ae57977224ae1efaeca3df9dc8ee6cf",
+      "FloeAgent/FloeApp/Space/Printing/NativePrintBackend.swift": "855b332c450e510f71c2df7829e0bed6deac7124b9a4edb6d1a120e8002cdcc7",
+      "FloeAgent/FloeApp/Space/Music/MusicProjectSession.swift": "6164022b746868e1710a4afbcbbb7d95b5b77eb2f027e9319143eca3b4235c8d",
+      "FloeAgent/Modules/FloeManufacturingKit/README.md": "c40ec6b7e24a2263e6093f9d7eea159b206857b29d39016b1c328afd55f54a59",
+      "FloeAgent/Modules/FloeSimulationKit/README.md": "264e618e7eeae5fd61354983afcd445b07d5048740b937e7e6f1fb3f60b12df8",
+      "FloeAgent/Modules/FloeSimulationKit/Sources/FloeSimulationUI/SimulationWorkbenchFactory.swift": "7ac79fc69535f57a632f8cf837e10593c5d7601368c817c90b304272ed234ba6",
+      "FloeAgent/Modules/FloeChemistryNative/README.md": "32af6b5f2d72a409608a434551d86b764a7bb9a965e3f16f4366ae47d9a100ab",
+      "FloeAgent/Modules/FloeChemistryKit/README.md": "4ea4b1a311b1a5f2c480a08665608763a323b15592857c5dbda6c75da9e53404",
+      "FloeAgent/Modules/FloeBiologyKit/README.md": "c2161bc5141b0dd7ac34b88d4225046012effa07bfaf8a950d446ffd1e0d2e78",
+      "FloeAgent/Modules/FloeBiologyKit/Backends/README.md": "bc777d44d7026818542dc1dd85f962141b0a797b65fb7fcaecb7fc751d52648f",
+      "FloeAgent/Sources/FloeExecution/ScientificDataAnalysis.swift": "9f74a8c625bb9634f42dddce0919725cfe76bf053896b8ae815e894b65d8a9d3",
+      "docs/FLOE_PREDEVELOPMENT_APP_INTEGRATION.zh-CN.md": "9908709f136d8919ee1236acb6f9a7516d7c2e5766f35dacd6e16bcb6e090f0a",
+      "docs/FLOE_NEXT_ROUND_ENGINES_AND_USABILITY_PLAN.zh-CN.md": "483b03295466335bb723fa0db1826f8d4155196ba13dfb450b49eddb9460ed3c",
+      "docs/FLOE_3D_SIMULATION_IMPLEMENTATION_STATUS.zh-CN.md": "0553ef0631bc8fd3aedfd00e3805f69722ff5fea01e2a20f96b503b62489c2d4",
+      "docs/CAD_MESH_BUILDING_PREDEVELOPMENT_20261106.zh-CN.md": "893ca723634048ba18b48908ef76bf2f4b00e563257d278ab5dbd930cdfce6ee"
+    },
+    "independentInProgressSources": {
+      "FloeAgent/Modules/FloeLaTeXKit/Package.swift": {
+        "committedInCheckpoint": false,
+        "auditSHA256": "7f7b59b51017d86a07ebff5221686df3bfd783ba78a39e5073df0760c40da1d3"
+      },
+      "FloeAgent/Modules/FloeLaTeXKit/Sources/FloeLaTeXEngine/NativeEngine.swift": {
+        "committedInCheckpoint": false,
+        "auditSHA256": "a0d3db5435f5d3548d0e83507ba6e79a7bb540dc2e6be22ba14202eb247f7fbc"
+      },
+      "FloeAgent/Modules/FloeLaTeXKit/Integration/FloeLaTeXHostAdapter/Sources/FloeLaTeXHostAdapter/Tools.swift": {
+        "committedInCheckpoint": false,
+        "auditSHA256": "f30ef05bc9f0a2d7362e841c6f6b3e7da7c653773814b0396aeebaf2b8c84f5b"
+      },
+      "FloeAgent/Qualification/LaTeX/NativeTests.swift": {
+        "committedInCheckpoint": false,
+        "auditSHA256": "784968db3a19c8c595458a52827984a47b024a39d660afbd11b7202721cb7f4a"
+      },
+      "FloeAgent/Qualification/LaTeX/UITests.swift": {
+        "committedInCheckpoint": false,
+        "auditSHA256": "162e34b8a7cefe0f6c951f561db4ac275b3109471c7c56d246ec16355818c25d"
+      }
+    },
+    "acceptanceRecord": "docs/qualification/next-round-integration-20261108/README.md",
+    "focusedAppEvidence": {
+      "distinctCasesWithPassingEvidence": 84,
+      "separateNumericalCases": 18,
+      "separateNumericalCasesIncludedIn84": false,
+      "finalAutomatedUIFixtures": "Two failed at fixture lookup/creation; manual review of the same App verified the affected flows. Final locator edits were not rebuilt or reported as automated passes.",
+      "physicsAppCasesWithPassingEvidence": 4,
+      "biologyHostToolContractsPassed": 11,
+      "notNewlyAccepted": [
+        "physical device behavior",
+        "configured external scientific backends",
+        "live provider/model calls"
+      ]
+    },
+    "licenseL01": "Unresolved; preserved pending the mainline owner final-link and distribution review.",
+    "dataHandoff": "Frozen analysis source, two tests and qualification package are committed in the implementation checkpoint, byte-identical to the original qualification hashes."
+  }
+}
