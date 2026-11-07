@@ -37,6 +37,7 @@ internal object TaskScheduleConditions {
     private var bootIdentity: String? = null // Accessed only under observations.
     private val processIdentity = UUID.randomUUID().toString()
     data class Event(val id: String, val condition: String, val at: Long)
+    private data class Observation(val status: ConditionObservation, val queued: Int = 0)
 
     @Synchronized
     fun attach(context: Context) {
@@ -84,19 +85,31 @@ internal object TaskScheduleConditions {
         }
         if (callback == null) {
             val monitor = object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) { networkChanged(app) }
-                override fun onLost(network: Network) { networkChanged(app) }
-                override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) { networkChanged(app) }
+                // Since API26 (below minSdk), onAvailable is followed by
+                // onCapabilitiesChanged. Read its ordered arguments instead
+                // of racing a fresh synchronous ConnectivityManager snapshot.
+                override fun onLost(network: Network) {
+                    // For the DEFAULT callback this means its last network
+                    // was lost with no replacement. A delayed loss must still
+                    // record false even if a later reconnect is already live.
+                    networkChanged(app, false)
+                }
+                override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                    networkChanged(app, capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED))
+                }
             }
             runCatching { app.getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(monitor) }
                 .onSuccess { callback = monitor }
+                .onFailure { trace("network_callback_unavailable " + it.javaClass.simpleName) }
         }
         enqueue(app)
     }
 
     fun enqueue(context: Context) {
         WorkManager.getInstance(context.applicationContext).enqueueUniqueWork("floe.schedule.conditions.probe",
-            ExistingWorkPolicy.KEEP,
+            // A new durable edge can arrive after the current worker's last
+            // empty peek but before its success. KEEP drops that wakeup.
+            ExistingWorkPolicy.APPEND_OR_REPLACE,
             OneTimeWorkRequestBuilder<TaskScheduleConditionWorker>().build())
     }
 
@@ -114,14 +127,22 @@ internal object TaskScheduleConditions {
     private fun charging(context: Context): Boolean = charging(
         context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)))
 
-    private fun networkChanged(context: Context) {
-        // Losing an old network while another validated network is active is not
-        // a disconnect/reconnect occurrence.
-        observe(context, listOf("networkConnected" to connected(context)))
-        enqueue(context)
+    private fun networkChanged(context: Context, active: Boolean) {
+        val observation = observe(context, listOf("networkConnected" to active))
+        // Capabilities can change repeatedly without another connection.
+        // Only a freshly queued edge needs another work-chain leaf. Existing
+        // pending events already have a worker/retry or the periodic fallback.
+        if (observation.queued > 0 || observation.status == ConditionObservation.STORAGE_UNAVAILABLE) enqueue(context)
     }
 
-    private fun observe(context: Context, states: List<Pair<String, Boolean>>): ConditionObservation = synchronized(observations) {
+    /** Closed transport stages/counts only, never task text, IDs, network
+     * names, credentials or model requests. Optional logging cannot change
+     * the durable result (including on a JVM Android stub). */
+    internal fun trace(stage: String) {
+        runCatching { android.util.Log.i("FloeScheduleCondition", stage) }
+    }
+
+    private fun observe(context: Context, states: List<Pair<String, Boolean>>): Observation = synchronized(observations) {
         val prefs = context.getSharedPreferences("floe.schedule.conditions", Context.MODE_PRIVATE)
         val queue = JSONArray(prefs.getString("pending", "[]"))
         val now = System.currentTimeMillis()
@@ -130,12 +151,19 @@ internal object TaskScheduleConditions {
             "boot:${Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT)}"
         }.getOrElse { "process:$processIdentity" }.also { bootIdentity = it }
         val editor = prefs.edit()
+        val changed = states.any { (condition, active) ->
+            !prefs.contains("active.$condition") || prefs.getBoolean("active.$condition", false) != active
+        }
+        val previousQueued = queue.length()
         for ((condition, active) in states) {
             if (TaskScheduleConditionPolicy.risingEdge(
                     prefs.getBoolean("active.$condition", false), active, elapsed,
                     if (prefs.contains("last_elapsed.$condition")) prefs.getLong("last_elapsed.$condition", -1) else null,
                     prefs.getString("last_boot.$condition", null) == boot)) {
-                if (queue.length() >= 32) return@synchronized ConditionObservation.QUEUE_FULL
+                if (queue.length() >= 32) {
+                    trace("observe queue_full pending=" + queue.length())
+                    return@synchronized Observation(ConditionObservation.QUEUE_FULL)
+                }
                 queue.put(JSONObject().put("id", UUID.randomUUID().toString()).put("condition", condition).put("at", now))
                 editor.putLong("last_elapsed.$condition", elapsed).putString("last_boot.$condition", boot)
             }
@@ -144,8 +172,13 @@ internal object TaskScheduleConditions {
             editor.remove("last.$condition").putBoolean("active.$condition", active)
         }
         // Commit the observed edge and stable event ID before starting native work.
-        if (editor.putString("pending", queue.toString()).commit()) ConditionObservation.DURABLE
-        else ConditionObservation.STORAGE_UNAVAILABLE
+        val durable = editor.putString("pending", queue.toString()).commit()
+        if (changed || queue.length() != previousQueued || !durable) {
+            trace("observe states=" + states.joinToString() + " queued=" +
+                (queue.length() - previousQueued) + " pending=" + queue.length() + " durable=" + durable)
+        }
+        Observation(if (durable) ConditionObservation.DURABLE else ConditionObservation.STORAGE_UNAVAILABLE,
+            queued = if (durable) queue.length() - previousQueued else 0)
     }
 
     suspend fun drain(context: Context, submit: suspend (Event) -> Boolean): Boolean = gate.withLock {
@@ -154,7 +187,7 @@ internal object TaskScheduleConditions {
             observe = {
                 // Re-read actual state after making space, rather than replaying
                 // the snapshot taken before a slow native submission.
-                observe(context, listOf("charging" to charging(context), "networkConnected" to connected(context)))
+                observe(context, listOf("charging" to charging(context), "networkConnected" to connected(context))).status
             },
             peek = { synchronized(observations) {
                 val queue = JSONArray(prefs.getString("pending", "[]"))
@@ -182,10 +215,14 @@ class TaskScheduleConditionWorker(context: Context, params: WorkerParameters) : 
     override suspend fun doWork(): Result {
         val platform = TaskSchedulePlatform.current ?: return Result.retry()
         return try {
-            if (TaskScheduleConditions.drain(applicationContext) { platform.submitConditionEvent(it) }) Result.success()
-            else Result.retry()
+            val drained = TaskScheduleConditions.drain(applicationContext) { platform.submitConditionEvent(it) }
+            TaskScheduleConditions.trace("worker drained=" + drained)
+            if (drained) Result.success() else Result.retry()
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-        catch (_: Exception) { Result.retry() }
+        catch (error: Exception) {
+            TaskScheduleConditions.trace("worker failed=" + error.javaClass.simpleName)
+            Result.retry()
+        }
     }
 }
 

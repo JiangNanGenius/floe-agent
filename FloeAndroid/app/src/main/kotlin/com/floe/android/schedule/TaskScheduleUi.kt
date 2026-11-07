@@ -42,6 +42,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.floe.android.R
 import com.floe.android.design.CupertinoMenuEntry
@@ -55,7 +56,6 @@ import com.floe.android.design.FloeInfoDialog
 import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloePageSheet
 import com.floe.android.design.FloePlainFormField
-import com.floe.android.design.FloeSegmented
 import com.floe.android.design.FloeSheetPlacement
 import com.floe.android.design.FloeStatusLine
 import com.floe.android.design.FloeText
@@ -135,9 +135,14 @@ fun TaskScheduleDestination(
     val lifecycleOwner = context as? androidx.activity.ComponentActivity
     DisposableEffect(lifecycleOwner, controller) {
         if (lifecycleOwner == null) return@DisposableEffect onDispose { }
+        var resumedOnce = false
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 exactAllowed = TaskSchedulePlatform.exactAlarmAllowed(context)
+                // Initial loading is owned by LaunchedEffect below. Later
+                // resumes read receipts produced while this page was inactive.
+                if (resumedOnce) controller.refresh()
+                resumedOnce = true
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -317,6 +322,7 @@ fun TaskScheduleDestination(
             environmentSelectionAvailable = state.environmentSelectionAvailable,
             runChoices = runChoices,
             initial = editing,
+            globalAgentMode = host.settings.state.value.defaults.defaultAgentMode,
             compact = compact,
             onDismiss = { creating = false; editing = null },
             onSave = { draft ->
@@ -570,6 +576,7 @@ private fun TaskScheduleEditorSheet(
     environmentSelectionAvailable: Boolean,
     runChoices: List<TaskScheduleRunChoice>,
     initial: TaskScheduleDetail?,
+    globalAgentMode: String,
     compact: Boolean,
     onDismiss: () -> Unit,
     onSave: suspend (TaskScheduleDraft) -> String?,
@@ -596,7 +603,9 @@ private fun TaskScheduleEditorSheet(
         mutableStateOf(base?.modelID ?: options.defaultModelID ?: options.models.firstOrNull()?.id)
     }
     var environmentID by remember { mutableStateOf(base?.environmentID) }
-    var approvalMode by remember { mutableStateOf(base?.policy?.approvalMode ?: "ask") }
+    var approvalMode by remember {
+        mutableStateOf(TaskScheduleEditorPolicy.initialApprovalMode(base?.policy?.approvalMode, globalAgentMode))
+    }
     var upstreamRunID by remember { mutableStateOf(base?.upstreamRunID) }
     var saving by remember { mutableStateOf(false) }
     var errorCode by remember { mutableStateOf<String?>(null) }
@@ -611,6 +620,16 @@ private fun TaskScheduleEditorSheet(
         stringResource(R.string.schedule_cadence_network),
     )
     val cadences = TaskScheduleCadence.entries
+    val eligibleEnvironments = remember(options.environments, workspaceID) {
+        TaskScheduleEditorPolicy.eligibleEnvironments(options.environments, workspaceID)
+    }
+    val projectEnvironmentLabel = listOfNotNull(
+        options.workspaces.firstOrNull { it.id == workspaceID }?.name?.takeIf { it.isNotBlank() },
+        stringResource(R.string.schedule_environment_project),
+    ).joinToString(" · ")
+    val environmentLabels = remember(eligibleEnvironments, projectEnvironmentLabel) {
+        TaskScheduleEditorPolicy.environmentLabels(eligibleEnvironments, projectEnvironmentLabel)
+    }
     val timezone = base?.anchorTimezone ?: TimeZone.getDefault().id
     // REAL after-success candidates come from the native schedule.options
     // projection (same durable run store). A caller-supplied list is a visual
@@ -739,16 +758,13 @@ private fun TaskScheduleEditorSheet(
                     minLines = 4,
                     maxLines = 8,
                 )
-                FloeText(
-                    stringResource(R.string.schedule_field_cadence),
-                    style = Floe.typography.groupHeader,
-                    color = Floe.colors.secondaryLabel,
-                )
-                FloeSegmented(
-                    options = cadenceLabels,
-                    selectedIndex = cadences.indexOf(cadence).coerceAtLeast(0),
-                    onSelect = { index ->
-                        cadence = cadences[index]
+                ChoiceRow(
+                    label = stringResource(R.string.schedule_field_cadence),
+                    value = cadenceLabels[cadences.indexOf(cadence)],
+                    options = cadences.mapIndexed { index, item -> item.wire to cadenceLabels[index] },
+                    selectedKey = cadence.wire,
+                    onSelect = { wire ->
+                        cadence = TaskScheduleCadence.fromWire(wire) ?: return@ChoiceRow
                         if (cadence == TaskScheduleCadence.ONCE &&
                             scheduledAt <= System.currentTimeMillis()) {
                             scheduledAt = System.currentTimeMillis() + 3_600_000
@@ -760,6 +776,7 @@ private fun TaskScheduleEditorSheet(
                         label = stringResource(R.string.schedule_field_weekday),
                         value = weekdayLabel(weekday),
                         options = (1..7).map { it.toString() to weekdayLabel(it) },
+                        selectedKey = weekday.toString(),
                         onSelect = { weekday = it.toInt() },
                     )
                 }
@@ -789,6 +806,7 @@ private fun TaskScheduleEditorSheet(
                             options = visibleRunChoices.map {
                                 it.runID to runChoiceLabel(it)
                             },
+                            selectedKey = upstreamRunID,
                             onSelect = { upstreamRunID = it },
                         )
                     }
@@ -824,9 +842,11 @@ private fun TaskScheduleEditorSheet(
                     } ?: stringResource(R.string.schedule_workspace_new),
                     options = listOf("" to stringResource(R.string.schedule_workspace_new)) +
                         options.workspaces.map { it.id to it.name },
+                    selectedKey = workspaceID.orEmpty(),
                     onSelect = { key ->
-                        workspaceID = key.takeIf { it.isNotEmpty() }
-                        if (workspaceID == null) environmentID = null
+                        val next = key.takeIf { it.isNotEmpty() }
+                        environmentID = TaskScheduleEditorPolicy.environmentAfterWorkspaceChange(workspaceID, next, environmentID)
+                        workspaceID = next
                     },
                 )
                 FloeText(
@@ -837,9 +857,10 @@ private fun TaskScheduleEditorSheet(
                 )
                 ChoiceRow(
                     label = stringResource(R.string.schedule_field_model),
-                    value = options.models.firstOrNull { it.id == modelID }?.displayName
+                    value = options.models.firstOrNull { it.id == modelID }?.let(TaskScheduleEditorPolicy::modelLabel)
                         ?: stringResource(R.string.schedule_choose),
-                    options = options.models.map { it.id to it.displayName },
+                    options = options.models.map { it.id to TaskScheduleEditorPolicy.modelLabel(it) },
+                    selectedKey = modelID,
                     onSelect = { modelID = it },
                 )
                 if (workspaceID == null || !environmentSelectionAvailable) {
@@ -853,11 +874,11 @@ private fun TaskScheduleEditorSheet(
                 } else {
                     ChoiceRow(
                         label = stringResource(R.string.schedule_field_environment),
-                        value = environmentID?.let { id ->
-                            options.environments.firstOrNull { it.id == id }?.name
-                        } ?: stringResource(R.string.schedule_environment_auto),
+                        value = if (environmentID == null) stringResource(R.string.schedule_environment_auto)
+                            else environmentLabels[environmentID.orEmpty()] ?: stringResource(R.string.schedule_environment_unavailable),
                         options = listOf("" to stringResource(R.string.schedule_environment_auto)) +
-                            options.environments.map { it.id to it.name },
+                            eligibleEnvironments.map { it.id to environmentLabels.getValue(it.id) },
+                        selectedKey = environmentID.orEmpty(),
                         onSelect = { environmentID = it.takeIf { key -> key.isNotEmpty() } },
                     )
                 }
@@ -869,6 +890,7 @@ private fun TaskScheduleEditorSheet(
                         "automatic" to stringResource(R.string.schedule_approval_automatic),
                         "fullAccess" to stringResource(R.string.schedule_approval_full),
                     ),
+                    selectedKey = approvalMode,
                     onSelect = { approvalMode = it },
                 )
                 FloeText(
@@ -908,6 +930,7 @@ private fun ChoiceRow(
     label: String,
     value: String,
     options: List<Pair<String, String>>,
+    selectedKey: String?,
     onSelect: (String) -> Unit,
     enabled: Boolean = true,
 ) {
@@ -926,13 +949,16 @@ private fun ChoiceRow(
                 label,
                 style = Floe.typography.body,
                 color = if (enabled) Floe.colors.label else Floe.colors.tertiaryLabel,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(0.35f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             FloeText(
                 value,
-                style = Floe.typography.body,
+                style = Floe.typography.body.copy(textAlign = TextAlign.End),
                 color = if (enabled) Floe.colors.secondaryLabel else Floe.colors.tertiaryLabel,
-                maxLines = 1,
+                modifier = Modifier.weight(0.65f),
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.width(6.dp))
@@ -948,9 +974,7 @@ private fun ChoiceRow(
             options.forEach { (key, optionLabel) ->
                 CupertinoMenuEntry(
                     title = optionLabel,
-                    selected = key == options.firstOrNull {
-                        value == it.second
-                    }?.first,
+                    selected = key == selectedKey,
                     onClick = {
                         expanded = false
                         onSelect(key)

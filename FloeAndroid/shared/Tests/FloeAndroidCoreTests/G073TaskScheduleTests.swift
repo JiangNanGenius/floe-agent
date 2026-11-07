@@ -455,6 +455,50 @@ final class G073TaskScheduleTests: XCTestCase {
         "\"\\\u{0001}中" + String(repeating: "定", count: 40)
     }
 
+    func testOptionsCarryRealEnvironmentOwnershipThroughTheWire() async throws {
+        let options = await service.options()
+        let environment = try XCTUnwrap(options.environments.first { $0.id == environmentID })
+        XCTAssertEqual(environment.ownerID, workspaceID.uuidString)
+        XCTAssertEqual(environment.kind, "project")
+        XCTAssertEqual(environment.executionBackend, "linuxPRoot")
+        guard case .object(let root) = G073WireValue.options(options),
+              case .array(let rows)? = root["environments"],
+              let encoded = rows.first(where: {
+                  guard case .object(let row) = $0 else { return false }
+                  return row["id"] == DesignJSONValue.string(environmentID)
+              }), case .object(let row) = encoded else {
+            return XCTFail("real environment metadata must remain a whole selectable row")
+        }
+        XCTAssertEqual(row["ownerID"], DesignJSONValue.string(workspaceID.uuidString))
+        XCTAssertEqual(row["kind"], DesignJSONValue.string("project"))
+        XCTAssertEqual(row["state"], DesignJSONValue.string("active"))
+        XCTAssertEqual(row["requiresRebuild"], DesignJSONValue.bool(false))
+        XCTAssertEqual(row["executionBackend"], DesignJSONValue.string("linuxPRoot"))
+    }
+
+    func testOptionsKeepTypicalOwnedTargetsWithoutAnIdOnlySectionLimit() {
+        let environments = (0..<50).map { index in
+            let id = UUID().uuidString
+            return G073ScheduleOptions.Environment(
+                id: id, name: id, ownerID: workspaceID.uuidString,
+                executionBackend: "linuxPRoot", parentID: "parent-" + String(index))
+        }
+        let options = G073ScheduleOptions(
+            workspaces: [.init(id: workspaceID, name: "Project")],
+            models: [.init(id: modelID, providerID: providerID,
+                           displayName: "Model", providerName: "Provider")],
+            environments: environments, upstreamRunChoices: [], defaultModelID: modelID,
+            currentTimezone: "UTC", environmentSelectionAvailable: true)
+        let value = G073WireValue.options(options)
+        XCTAssertLessThanOrEqual(G073WireValue.serializedBytes(value), G073WireValue.maximumValueBytes)
+        guard case .object(let root) = value,
+              case .array(let rows)? = root["environments"] else {
+            return XCTFail("options must include the complete typical ownership rows")
+        }
+        XCTAssertEqual(rows.count, environments.count)
+        XCTAssertEqual(root["truncated"], DesignJSONValue.bool(false))
+    }
+
     func testOptionsValueAlwaysFitsTheFrameWithWholeRowsOnly() {
         let label = hostileLabel()
         let workspaces = (0..<50).map {
@@ -467,7 +511,8 @@ final class G073TaskScheduleTests: XCTestCase {
         }
         let environments = (0..<50).map {
             G073ScheduleOptions.Environment(id: "env-\($0)-" + UUID().uuidString,
-                                            name: label)
+                                            name: label, ownerID: workspaceID.uuidString,
+                                            executionBackend: "linuxPRoot", parentID: "parent-\($0)")
         }
         let choices = (0..<20).map {
             G073ScheduleOptions.RunChoice(

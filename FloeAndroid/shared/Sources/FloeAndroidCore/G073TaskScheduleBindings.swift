@@ -246,10 +246,6 @@ enum G073WireValue {
                      "displayName": .string(G073WireText.truncated($0.displayName, 120)),
                      "providerName": .string(G073WireText.truncated($0.providerName, 120))])
         }
-        let environments = boundedItems(value.environments, capBytes: 8 * 1024) {
-            .object(["id": .string($0.id),
-                     "name": .string(G073WireText.truncated($0.name, 120))])
-        }
         let runChoices = boundedItems(value.upstreamRunChoices, capBytes: 8 * 1024) {
             .object(["runID": .string($0.runID.uuidString),
                      "conversationID": .string($0.conversationID.uuidString),
@@ -258,12 +254,10 @@ enum G073WireValue {
                      "startedAt": G073WireDate.string($0.startedAt),
                      "workspaceID": optional($0.workspaceID)])
         }
-        let truncated = workspaces.truncated || models.truncated
-            || environments.truncated || runChoices.truncated
-        return .object([
+        var root: [String: DesignJSONValue] = [
             "workspaces": .array(workspaces.items),
             "models": .array(models.items),
-            "environments": .array(environments.items),
+            "environments": .array([]),
             "runChoices": .array(runChoices.items),
             "counts": .object([
                 "workspaces": .integer(Int64(value.workspaces.count)),
@@ -271,11 +265,27 @@ enum G073WireValue {
                 "environments": .integer(Int64(value.environments.count)),
                 "runChoices": .integer(Int64(value.upstreamRunChoices.count)),
             ]),
-            "truncated": .bool(truncated),
+            "truncated": .bool(false),
             "defaultModelID": optional(value.defaultModelID),
             "currentTimezone": .string(value.currentTimezone),
             "environmentSelectionAvailable": .bool(value.environmentSelectionAvailable),
-        ])
+        ]
+        // Ownership metadata must travel with each whole row. Use the actual
+        // remaining frame space rather than silently losing most targets to
+        // the old id/name-only section allowance. The overall bound is unchanged.
+        let environmentBudget = max(2, maximumValueBytes - serializedBytes(.object(root)) + 2)
+        let environments = boundedItems(value.environments, capBytes: environmentBudget) {
+            .object(["id": .string($0.id),
+                     "name": .string(G073WireText.truncated($0.name, 120)),
+                     "kind": .string($0.kind), "ownerID": optional($0.ownerID),
+                     "state": .string($0.state), "requiresRebuild": .bool($0.requiresRebuild),
+                     "executionBackend": optional($0.executionBackend),
+                     "parentID": optional($0.parentID)])
+        }
+        root["environments"] = .array(environments.items)
+        root["truncated"] = .bool(workspaces.truncated || models.truncated ||
+            environments.truncated || runChoices.truncated)
+        return .object(root)
     }
 
     static func mutation(_ value: G073ScheduleMutationResult,

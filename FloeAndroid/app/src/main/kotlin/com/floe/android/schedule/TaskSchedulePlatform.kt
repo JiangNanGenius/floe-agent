@@ -623,29 +623,49 @@ internal class TaskScheduleCoordinator(
     }
 
     suspend fun submitConditionEvent(event: TaskScheduleConditions.Event): Boolean {
-        val current = waitForHost(HOST_WAIT_MILLIS) ?: return false
+        val current = waitForHost(HOST_WAIT_MILLIS) ?: run {
+            TaskScheduleConditions.trace("submit host_unavailable")
+            return false
+        }
         val commands = TaskScheduleCommands(current)
         var offset = 0
         repeat(20) {
             val result = commands.listPage(limit = 20, offset = offset)
-            val page = (result as? TaskScheduleResult.Ok)?.value ?: return false
+            val page = (result as? TaskScheduleResult.Ok)?.value ?: run {
+                TaskScheduleConditions.trace("submit list_unavailable")
+                return false
+            }
             for (summary in page.schedules) {
                 if (!summary.enabled || summary.cadence.wire != event.condition) continue
-                val detail = (commands.detail(summary.id) as? TaskScheduleResult.Ok)?.value ?: return false
+                val detail = (commands.detail(summary.id) as? TaskScheduleResult.Ok)?.value ?: run {
+                    TaskScheduleConditions.trace("submit detail_unavailable")
+                    return false
+                }
                 val currentSummary = detail.summary
                 if (!currentSummary.enabled || currentSummary.cadence.wire != event.condition) continue
                 // A new schedule must not consume an event which predates it.
-                if ((detail.createdAtMillis ?: Long.MAX_VALUE) > event.at) continue
+                if ((detail.createdAtMillis ?: Long.MAX_VALUE) > event.at) {
+                    TaskScheduleConditions.trace(if (detail.createdAtMillis == null)
+                        "submit creation_time_missing" else "submit event_predates_definition")
+                    continue
+                }
                 when (val accepted = commands.systemEvent(currentSummary, event.id, event.at)) {
-                    is TaskScheduleResult.Ok -> if (accepted.value.accepted && accepted.value.scheduleID == currentSummary.id)
-                        enqueuePendingDispatch(currentSummary.id) else return false
+                    is TaskScheduleResult.Ok -> if (accepted.value.accepted && accepted.value.scheduleID == currentSummary.id) {
+                        TaskScheduleConditions.trace("submit accepted")
+                        enqueuePendingDispatch(currentSummary.id)
+                    } else {
+                        TaskScheduleConditions.trace("submit receipt_refused")
+                        return false
+                    }
                     is TaskScheduleResult.Failure -> {
                         // A timestamp invalidated by moving the clock backwards
                         // is a definite native refusal, not an uncertain launch.
                         // Retire this transport event only after its failure is
                         // durably visible; never fabricate an occurrence/run.
-                        if (!TaskScheduleConditionPolicy.clockRejected(accepted.code, event.at, System.currentTimeMillis()))
+                        if (!TaskScheduleConditionPolicy.clockRejected(accepted.code, event.at, System.currentTimeMillis())) {
+                            TaskScheduleConditions.trace("submit refused=" + accepted.code.take(80))
                             return false
+                        }
                         if (!choices.setNoticeDurably(currentSummary.id, "condition_clock_changed")) return false
                     }
                 }

@@ -128,4 +128,5 @@
     <string name="schedule_cadence_charging">When charging starts</string>
     <string name="schedule_cadence_network">When internet connects</string>
     <string name="schedule_condition_waiting">Waiting for the system condition</string>
+    <string name="schedule_environment_project">Project Linux</string>
 </resources>

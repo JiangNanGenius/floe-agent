@@ -128,4 +128,5 @@
     <string name="schedule_cadence_charging">开始充电时</string>
     <string name="schedule_cadence_network">连接网络时</string>
     <string name="schedule_condition_waiting">等待系统条件触发</string>
+    <string name="schedule_environment_project">项目 Linux</string>
 </resources>

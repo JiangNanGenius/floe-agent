@@ -485,6 +485,12 @@ public struct G073ScheduleOptions: Sendable, Equatable {
     public struct Environment: Sendable, Equatable {
         public var id: String
         public var name: String
+        public var kind: String = "project"
+        public var ownerID: String? = nil
+        public var state: String = "active"
+        public var requiresRebuild: Bool = false
+        public var executionBackend: String? = nil
+        public var parentID: String? = nil
     }
     /// One REAL top-level run the after-success trigger can follow. `label`
     /// is the owning conversation's durable title (bounded), never a model or
@@ -779,31 +785,24 @@ public actor G073TaskScheduleService: G073ScheduleCompletionRecording {
                                           displayName: $0.displayName,
                                           providerName: $0.providerName)
             }
-        var environments: [G073ScheduleOptions.Environment] = []
+        let metadata: [G073EnvironmentMetadata]
         var available = false
         if let source = dependencies.environmentSource {
-            let rows = await source.allEnvironmentMetadata()
+            metadata = await source.allEnvironmentMetadata()
             available = true
-            environments = rows
-                .filter { $0.kind == .project && $0.state == "active"
-                    && !$0.requiresRebuild
-                    && $0.executionBackend == G073EnvironmentMetadata.requiredExecutionBackend }
-                .prefix(G073ScheduleLimits.maximumScheduleList)
-                .map { G073ScheduleOptions.Environment(id: $0.id,
-                                                       name: $0.name ?? $0.id) }
         } else {
-            let rows = dependencies.environmentOwnership.allMetadata(now: now)
-            if !rows.isEmpty {
-                available = true
-                environments = rows
-                    .filter { $0.kind == .project && $0.state == "active"
-                        && !$0.requiresRebuild
-                        && $0.executionBackend == G073EnvironmentMetadata.requiredExecutionBackend }
-                    .prefix(G073ScheduleLimits.maximumScheduleList)
-                    .map { G073ScheduleOptions.Environment(id: $0.id,
-                                                           name: $0.name ?? $0.id) }
-            }
+            metadata = dependencies.environmentOwnership.allMetadata(now: now)
+            available = !metadata.isEmpty
         }
+        let environments = metadata
+            .filter { $0.kind == .project && $0.state == "active"
+                && !$0.requiresRebuild
+                && $0.executionBackend == G073EnvironmentMetadata.requiredExecutionBackend }
+            .prefix(G073ScheduleLimits.maximumScheduleList)
+            .map { G073ScheduleOptions.Environment(
+                id: $0.id, name: $0.name ?? $0.id, kind: $0.kind.rawValue,
+                ownerID: $0.ownerID, state: $0.state, requiresRebuild: $0.requiresRebuild,
+                executionBackend: $0.executionBackend, parentID: $0.parentID) }
         return G073ScheduleOptions(
             workspaces: Array(workspaces),
             models: Array(models),
