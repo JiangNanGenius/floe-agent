@@ -31,6 +31,11 @@ PIN_MANIFEST = "assets/preview_components/cad.json"
 CAD_ROOT = "assets/cad_viewer"
 SCHEMA = "floe-cad-component/1"
 MODULE = "cadpreview"
+# AGP 9.4.0 emits an empty R holder even for a hasCode=false feature. The
+# reviewed 532-byte DEX contains only com.floe.android.cadpreview.R, no fields,
+# and a private constructor calling Object.<init> then returning. Admit that
+# exact compiler stub only; any changed/additional Android code fails closed.
+RESOURCE_STUB_SHA256 = "c6f1ddb2c8f4b98f077b631f55d3164e332b50a60fb96f18fc0f669d6c30f7ba"
 
 
 def sha(path):
@@ -66,6 +71,15 @@ def main():
         [str(args.aapt2), "dump", "badging", str(args.apk)])
     if text.returncode != 0 or not re.search(r"\bsplit='" + MODULE + r"'", text.stdout):
         raise ValueError("the APK is not the declared CAD feature split")
+    xml = stage.run_readonly_tool([
+        str(args.aapt2), "dump", "xmltree", "--file", "AndroidManifest.xml", str(args.apk)])
+    if xml.returncode != 0:
+        raise ValueError("CAD component manifest unavailable")
+    applications = [node for node in stage.walk_nodes(stage.parse_xmltree(xml.stdout))
+        if node["tag"] == "application"]
+    if (len(applications) != 1 or applications[0]["attrs"].get("hasCode") != "false"
+            or applications[0]["children"]):
+        raise ValueError("CAD must be a hasCode=false component without Android entries")
     base_signing = stage.signing_facts(args.apksigner, args.base_apk)
     split_signing = stage.signing_facts(args.apksigner, args.apk)
     for proof in (base_signing, split_signing):
@@ -103,8 +117,13 @@ def main():
         names = [entry.filename for entry in infos]
         if any(name.startswith("lib/") for name in names):
             raise ValueError("CAD component must not carry native libraries")
-        if any(re.fullmatch(r"classes\d*\.dex", name) for name in names):
-            raise ValueError("CAD component is asset-only (hasCode=false): DEX refused")
+        dex_entries = [name for name in names if re.fullmatch(r"classes\d*\.dex", name)]
+        if dex_entries:
+            if dex_entries != ["classes.dex"]:
+                raise ValueError("unexpected Android code in CAD component")
+            stub = archive.read("classes.dex")
+            if len(stub) != 532 or hashlib.sha256(stub).hexdigest() != RESOURCE_STUB_SHA256:
+                raise ValueError("CAD DEX differs from the reviewed empty AGP resource holder")
         actual = {name for name in names
             if name.startswith("assets/") and not name.endswith("/")}
         if actual != set(expected):
@@ -142,6 +161,8 @@ def main():
         "signerSha256": split_signing["certSha256"],
         "assetCount": len(assets),
         "assets": assets,
+        "resourceStubSha256": RESOURCE_STUB_SHA256 if dex_entries else None,
+        "producerScriptSha256": sha(Path(__file__).resolve()),
     }
     (args.output / "CAD_COMPONENT_SAVED.json").write_text(
         json.dumps(record, indent=2, sort_keys=True) + "\n")
