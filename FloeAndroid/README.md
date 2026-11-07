@@ -1,12 +1,12 @@
 # Floe for Android
 
-## Current delivery — Android Alpha47 (2026-11-07)
+## Current delivery — Android Alpha48 (2026-11-07)
 
-[Android 0.1.0-alpha.47](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.47), code66, is published from immutable source `ad811235194e24484cc81f8ae539b0d943bce2d9`. Full packaging, Play Kotlin,11 focused recovery tests reused from the matching repair implementation, native binding, signing and16KiB checks passed. All seven public asset bytes and the annotated source tag were verified; iOS Latest remains unchanged.
+[Android 0.1.0-alpha.48](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.48), code67, is published from immutable source `281e06acbf5ec326e75b0b32550448da0f3d6b5e`. Full production, Play Kotlin,22 relevant focused tests on matching inputs, native binding, signing and16KiB checks passed. All seven public asset bytes and the annotated source tag were verified; iOS Latest remains unchanged.
 
-Office/CAD component installation now restores the originating owned document, distinguishes cancellation and avoids staging Office recovery data before the component is available. Matching private code65 Samsung checks cover these changes. Samsung actually upgraded through the in-App public full download to both code66 packages, with installed bytes, UIDs and visible project/history retention checked. The46→47 patch was locally reconstructed; this is separate from device incremental-update acceptance. Office close receipts, complete phone workflows, ADB pairing, conditional/project scenarios and the remaining N01–N08 work remain open.
+Samsung actually installed the public47→48 delta through the App: both code67 packages, exact bytes, UIDs and visible project/history retention were checked. This release fixes missed process-query results and reconnects to a changed wireless-debugging port while retaining pairing. Startup failures have local recovery guidance. A matching private implementation completed a six-action Calculator task; earlier intermittent observation failures remain open. Office close receipts, broader phone workflows, conditional/project scenarios and the remaining N01–N08 work continue.
 
-当前已发布Alpha47/code66，补齐可选组件安装后返回原文档、取消状态与Office安装前工作副本处理。三星已通过App完整包升级，两包版本、实际字节、UID及可见项目／历史保留已核对；组件修复行为证据绑定匹配的私有65候选。Office关闭回执、完整手机多步、ADB配对及其余N01–N08继续。范围见[交付记录](../docs/releases/ANDROID_ALPHA47_DELIVERY.md)和[推进计划](../docs/FLOE_ANDROID_NEXT_ITERATION_QA_20261106.zh-CN.md)。
+当前已发布Alpha48/code67。三星经App增量升级，两包版本、实际字节、UID及可见项目／历史保留已核对；ADB保留配对并通过换端口重连，进程漏报及启动提示已修复。计算器一次真实完整流程通过，原间歇失效仍保留。Office关闭回执和其他N01–N08事项继续，见[交付记录](../docs/releases/ANDROID_ALPHA48_DELIVERY.md)和[推进计划](../docs/FLOE_ANDROID_NEXT_ITERATION_QA_20261106.zh-CN.md)。
 
 ## Historical source checkpoint — G09-R2 (2026-11-01)
 
