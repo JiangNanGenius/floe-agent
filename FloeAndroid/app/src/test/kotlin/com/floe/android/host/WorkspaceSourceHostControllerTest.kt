@@ -306,6 +306,7 @@ class WorkspaceSourceHostControllerTest {
         val content = ConcurrentHashMap<String, ByteArray>()
         var takeCalls = 0
         var releaseCalls = 0
+        private val persisted = ConcurrentHashMap<String, Set<SafAccessFlag>>()
         var writeCapability = true
         var probeGranted = true
         /** Scripted platform identity decodes: URI -> the exact DECODED
@@ -349,15 +350,23 @@ class WorkspaceSourceHostControllerTest {
             else -> SafUriKind.NON_SAF
         }
 
-        override fun persistedGrants(): List<GrantSnapshot> = emptyList()
+        override fun persistedGrants(): List<GrantSnapshot> = persisted.map { (uri, flags) ->
+            GrantSnapshot(SafUriRef(uri), SafAccessFlag.READ in flags, SafAccessFlag.WRITE in flags)
+        }
 
         override fun takePersistable(uri: SafUriRef, flag: SafAccessFlag): TakeOutcome {
             takeCalls += 1
-            return TakeOutcome.Persisted
+            var alreadyHeld = false
+            persisted.compute(uri.uriString) { _, old ->
+                alreadyHeld = flag in old.orEmpty()
+                old.orEmpty() + flag
+            }
+            return if (alreadyHeld) TakeOutcome.AlreadyHeld else TakeOutcome.Persisted
         }
 
         override fun releasePersistable(uri: SafUriRef, flag: SafAccessFlag): Boolean {
             releaseCalls += 1
+            persisted.computeIfPresent(uri.uriString) { _, old -> (old - flag).takeIf { it.isNotEmpty() } }
             return true
         }
 
