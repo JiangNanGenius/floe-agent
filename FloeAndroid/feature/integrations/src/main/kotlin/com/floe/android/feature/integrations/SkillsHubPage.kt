@@ -104,6 +104,12 @@ fun SkillsHubPage(
                 title = stringResource(R.string.plugins_title),
                 actions = {
                     IntegrationCircleAction(
+                        icon = FloeIcons.Refresh,
+                        contentDescription = stringResource(R.string.skills_catalog_refresh),
+                        enabled = !skills.catalogChecking,
+                        onClick = { holder.refreshCatalog(force = true) },
+                    )
+                    IntegrationCircleAction(
                         icon = FloeIcons.Magnifier,
                         contentDescription = stringResource(R.string.skills_finder),
                         onClick = { holder.openFinder() },
@@ -409,6 +415,9 @@ private fun SectionScope.InstalledSkillRow(
 ) {
     val cancelling = holder.isRunCancelling(row)
     FloeSectionRow(
+        onClick = if (row.isBundledReadOnlyGuide) null else {
+            { holder.openUpgrade(row.skillId) }
+        },
         onLongClick = if (SkillsDisplayLogic.canDelete(row)) onLongPress else null,
         description = stringResource(R.string.skills_row_cd, row.name),
         title = {

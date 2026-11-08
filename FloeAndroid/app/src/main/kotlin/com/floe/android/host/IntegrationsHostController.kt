@@ -1008,6 +1008,7 @@ class IntegrationsHostController internal constructor(
     override fun load() {
         localNetwork.refreshCheck()
         refreshSkills()
+        refreshCatalog(force = false)
         refreshMcpServers()
         refreshToolSources()
     }
@@ -1248,6 +1249,8 @@ class IntegrationsHostController internal constructor(
 
     override fun refreshCatalog(force: Boolean): Boolean {
         if (!admitted()) return false
+        if (destinationState.value.skills.catalogChecking) return false
+        val rootEpoch = host.nativeRootEpoch() ?: return false
         updateDestination {
             it.copy(skills = it.skills.copy(catalogChecking = true, catalogError = null))
         }
@@ -1265,6 +1268,7 @@ class IntegrationsHostController internal constructor(
                 ),
             ),
         ) { outcome ->
+            if (!admitted() || host.nativeRootEpoch() != rootEpoch) return@trackOperation
             updateDestination {
                 it.copy(skills = it.skills.copy(catalogChecking = false))
             }

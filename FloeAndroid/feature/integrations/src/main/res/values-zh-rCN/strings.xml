@@ -74,6 +74,7 @@
     <string name="skills_update_save_check">保存并检查</string>
     <string name="skills_update_clear_source">清除已保存来源</string>
     <string name="skills_update_source_invalid">请检查仓库、分支或提交，以及文件路径。</string>
+    <string name="skills_catalog_refresh">刷新目录</string>
     <string name="skills_update_now">立即更新</string>
     <string name="skills_update_details">详细信息</string>
     <string name="skills_update_hide_details">收起详细信息</string>
