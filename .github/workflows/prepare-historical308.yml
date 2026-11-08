@@ -33,6 +33,14 @@ jobs:
   prepare:
     runs-on: macos-26
     timeout-minutes: 40
+    # GitHub hides the retained draft transport from a read-only token.
+    # Use this repository's already authorized release access in the frozen
+    # controller; no new credential or external account is introduced.
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
       EXPECTED_CONTROLLER_SHA: ${{ inputs.controller_sha }}
