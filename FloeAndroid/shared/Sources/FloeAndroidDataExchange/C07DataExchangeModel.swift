@@ -800,6 +800,9 @@ public enum C07SettingsPolicy {
     ]
 
     public static func isAllowedKey(_ key: String) -> Bool {
+        if key.hasPrefix(C07SkillSourceSettings.prefix) {
+            return C07SkillSourceSettings.skillID(for: key) != nil
+        }
         guard !key.isEmpty, key.utf8.count <= 256,
               key.unicodeScalars.allSatisfy({
                   $0.value < 128 && !CharacterSet.controlCharacters.contains($0)
@@ -826,6 +829,10 @@ public enum C07SettingsPolicy {
     public static func sanitize(_ values: [String: String]) -> [String: String] {
         var result: [String: String] = [:]
         for (key, value) in values where isAllowedKey(key) {
+            if key.hasPrefix(C07SkillSourceSettings.prefix) {
+                if let json = C07SkillSourceSettings.validatedValue(value) { result[key] = json }
+                continue
+            }
             guard value.utf8.count <= 65_536 else { continue }
             guard let data = value.data(using: .utf8),
                   let parsed = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]),

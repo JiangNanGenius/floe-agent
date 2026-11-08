@@ -509,9 +509,20 @@ public enum C07RestoreEngine {
                 progress?(completedOps, totalOps)
             }
 
+            // Journal the actual remapped settings key, so reverse cleanup
+            // never deletes another skill's original source intent.
+            let settings = C07SkillSourceSettings.remappedForRestore(plan.settingsValues) { oldID in
+                preparedResources?.plan.idMap.newID(.skill, old: oldID)
+            }
+            if settings.omitted > 0 {
+                settingsSkipped += settings.omitted
+                completedOps += settings.omitted
+                warnings.append("skillSourcesOmitted:\(settings.omitted)")
+                progress?(completedOps, totalOps)
+            }
             // Safe preferences are inserted only when the exact key is absent.
-            for key in plan.settingsValues.keys.sorted() {
-                let json = plan.settingsValues[key] ?? ""
+            for key in settings.values.keys.sorted() {
+                let json = settings.values[key] ?? ""
                 let opID = UUID()
                 try journal.append(kind: .intent, operationID: opID,
                                    operation: .setting, settingKey: key,

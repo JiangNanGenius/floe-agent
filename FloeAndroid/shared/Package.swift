@@ -582,7 +582,7 @@ let package = Package(
         // Pure Foundation/Crypto/ZIPFoundation + the real shared FloeNotes
         // types; no socket, UI, provider or second persistence authority.
         .target(name: "FloeAndroidDataExchange", dependencies: [
-            "FloeNotes", "ZIPFoundation",
+            "FloeNotes", "ZIPFoundation", "FloeSkills",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
         .target(name: "FloeAndroidJobTools", dependencies: [

@@ -95,7 +95,7 @@
     <string name="skills_update_owner">Owner</string>
     <string name="skills_update_repository">Repository</string>
     <string name="skills_update_ref">Branch / tag / commit</string>
-    <string name="skills_update_path">SKILL.md or package inventory JSON</string>
+    <string name="skills_update_path">Skill folder, SKILL.md or package inventory JSON</string>
     <string name="skills_update_local_source">App / local</string>
     <string name="skills_update_changed_files">Changed files</string>
     <string name="skills_update_before">Before</string>

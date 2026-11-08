@@ -9,7 +9,7 @@
 // ORIGINAL HTTPRequestService (bounded incremental reads over the qualified
 // FloeTransport streaming session, PublicNetworkTargetPolicy, redirect
 // revalidation delegate, cookie/credential-store-free ephemeral config,
-// 512 KiB-per-request internal clamp via send() and file-bounded download()).
+// 256 KiB-per-request internal clamp via send() and file-bounded download()).
 // This file is the production public-hub transport composed in
 // G02DomainServices.swift (SkillsRemoteTransportComposition.makePublicHubTransport).
 //
@@ -123,10 +123,10 @@ public struct WebToolsSkillsRemoteTransport: SkillsRemoteTransport {
         return sha.lowercased()
     }
 
-    /// Immutable blob fetch at a resolved commit. Files ≤8 MiB route
-    /// through the bounded download path (oversized ⇒ deleted + typed
-    /// error — the ORIGINAL download semantics, never a partial keep);
-    /// smaller documents use send() within its 256 KiB internal clamp.
+    /// Immutable blob fetch at a resolved commit. Hub archives retain their
+    /// 8 MiB download limit; Hub documents retain the 256 KiB text limit.
+    /// Community JSON inventories and resources use byte-exact downloads
+    /// at the stage's 256 KiB / 2 MiB limits, including binary assets.
     ///
     /// Official GitHub is always the first route. When the canonical URL
     /// is an approved hub raw shape, the verified same-content mirror
@@ -146,8 +146,20 @@ public struct WebToolsSkillsRemoteTransport: SkillsRemoteTransport {
             repository: source.repository, commit: commit.lowercased(), path: path)
         let url = try Self.validated(url: canonical ?? URL(string:
             "https://raw.githubusercontent.com/\(source.owner)/\(source.repository)/\(commit.lowercased())/\(encodedPath)")!)
+        if SkillsRemoteTransportRouting.usesConnectorTransport(for: source) {
+            try GitHubSkillSource.validatePath(path)
+            // Community inventories/resources are bytes, including images
+            // and scripts above send()'s text clamp. They have no signed Hub
+            // mirror identity and never trigger mirror discovery.
+            return try await downloadBounded(url: url,
+                maxBytes: Self.communityMaximumBytes(source: source, path: path))
+        }
         return try await loadWithMirrorPolicy(url: url,
                                               kind: path.hasSuffix(".zip") ? .boundedArchive : .document)
+    }
+
+    static func communityMaximumBytes(source: GitHubSkillSource, path: String) -> Int {
+        path == source.path && source.path.lowercased().hasSuffix(".json") ? 262_144 : 2_097_152
     }
 
     /// Finder envelope ingest (≤262 KiB exactly like the original cap at
@@ -253,17 +265,24 @@ public struct WebToolsSkillsRemoteTransport: SkillsRemoteTransport {
         return try await .init(payload: payload, signature: signature)
     }
 
-    private func downloadBounded(url: URL, maxBytes: Int) async throws -> Data {
+    func downloadBounded(url: URL, maxBytes: Int) async throws -> Data {
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("floe-hub-\(UUID().uuidString)")
+        let cancellation = CancellationToken()
+        defer { try? FileManager.default.removeItem(at: scratch) }
         do {
-            _ = try await http.download(url: url, timeout: 60, maxBytes: maxBytes,
-                                        to: scratch)
-            defer { try? FileManager.default.removeItem(at: scratch) }
-            let data = try Data(floeContentsOf: scratch, options: [.mappedIfSafe])
-            guard data.count <= maxBytes else {
-                throw TransportError.oversized("zip")
+            let result = try await withTaskCancellationHandler {
+                try await http.download(url: url, timeout: 60, maxBytes: maxBytes,
+                                        to: scratch, cancellation: cancellation)
+            } onCancel: {
+                cancellation.cancel()
             }
+            try Task.checkCancellation()
+            let data = try Data(floeContentsOf: scratch, options: [.mappedIfSafe])
+            guard data.count <= maxBytes, result.byteCount == data.count else {
+                throw TransportError.oversized("file")
+            }
+            try Task.checkCancellation()
             return data
         } catch let error as TransportError {
             throw error

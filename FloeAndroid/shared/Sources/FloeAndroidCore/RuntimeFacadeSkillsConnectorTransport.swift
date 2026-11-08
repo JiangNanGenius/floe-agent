@@ -17,12 +17,11 @@
 //     SkillsRemoteTransportRouting) NEVER reach this transport — they stay
 //     on the unchanged anonymous public mirror transport. This adapter
 //     REFUSES those shapes (typed, fail-closed) as defense in depth.
-//   * Community sources with NO configured token keep the EXISTING
-//     anonymous path VERBATIM (frozen 729812f2 behaviour): commit
-//     resolution and immutable raw.githubusercontent.com file bytes ride
-//     the injected public transport — tokenless public installs are never
-//     pushed through the rate-limited contents API. A missing token alone
-//     is never a refusal.
+//   * Without a configured token, commit resolution and JSON-inventory
+//     raw.githubusercontent.com bytes use the public transport. Directory
+//     sources need the Contents API to enumerate pinned files and Git blob
+//     identities; that endpoint also permits public reads without a token.
+//     A missing token alone is never a refusal.
 //   * Community sources WITH a configured token (GitHubCredentialStore
 //     lease, read PER REQUEST) resolve and fetch ONLY against
 //     api.github.com: GET /repos/o/r/commits/<ref-escaped> (Accept
@@ -86,10 +85,10 @@ public enum SkillsConnectorFetchFailure: Error, Sendable, Equatable {
 /// The production `SkillsRemoteTransport` for community/private GitHub
 /// skill sources, over the SAME qualified `HTTPRequestService`.
 ///
-/// Credential-aware per request set: no configured token delegates the
-/// whole community operation to the anonymous public transport (existing
-/// immutable raw path preserved); a configured token switches resolve and
-/// fetch to the authorized api.github.com contents route. The decision is
+/// Credential-aware per request set: no configured token keeps resolution
+/// and JSON inventories on the public transport. Directory enumeration uses
+/// the fixed Contents API anonymously. A configured token authorizes API
+/// resolve/fetch. The decision is
 /// per call — the transport protocol is stateless — and every route is
 /// immutable-commit-bound, so a token connecting or disconnecting between
 /// the resolve and a content fetch can only change WHICH official route
@@ -205,9 +204,10 @@ public struct WebToolsSkillsConnectorTransport: SkillsRemoteTransport {
         return sha.lowercased()
     }
 
-    /// Immutable blob fetch. Tokenless community sources keep the existing
-    /// anonymous raw.githubusercontent.com fetch verbatim. With a token, the
-    /// contents API serves the bytes at the commit resolved BEFORE any
+    /// Immutable blob/listing fetch. Tokenless JSON inventories keep the
+    /// anonymous raw.githubusercontent.com path. Directory sources use the
+    /// Contents API, with or without a configured token, to enumerate the
+    /// package at the commit resolved BEFORE any
     /// content request (`GitHubSkillDownload.stage` resolves first, then
     /// fetches with that exact commit). The package entry (`source.path`,
     /// ≤262144 B of inventory JSON) and every other inventory file use the
@@ -220,7 +220,9 @@ public struct WebToolsSkillsConnectorTransport: SkillsRemoteTransport {
         guard SkillsRemoteTransportRouting.usesConnectorTransport(for: source) else {
             throw SkillsConnectorFetchFailure.officialHubSourceRefused
         }
-        guard let token = try await leasedToken() else {
+        let token = try await leasedToken()
+        let inventory = source.path.lowercased().hasSuffix(".json")
+        if token == nil && inventory {
             do {
                 return try await anonymousTransport.fetch(source, commit: commit, path: path)
             } catch {
@@ -233,14 +235,20 @@ public struct WebToolsSkillsConnectorTransport: SkillsRemoteTransport {
         // Path segments are encoded individually (the source validator
         // already rejected '%', '\\', control characters and empty/'.'/'..'
         // segments — revalidate defensively before touching the wire).
-        try GitHubSkillSource.validatePath(path)
-        let segments = path.split(separator: "/", omittingEmptySubsequences: false)
+        if path.isEmpty {
+            // Root-directory listing is valid only for a directory source;
+            // it cannot widen a JSON inventory's relative file references.
+            guard !inventory else { throw SkillUpgradeError.invalidSource }
+        } else {
+            try GitHubSkillSource.validatePath(path)
+        }
+        let segments = path.isEmpty ? [] : path.split(separator: "/", omittingEmptySubsequences: false)
             .map(String.init)
         let url = try Self.endpoint(
             base: apiBase, owner: source.owner, repository: source.repository,
             suffix: ["contents"] + segments,
             query: [URLQueryItem(name: "ref", value: commit.lowercased())])
-        let entry = path == source.path
+        let entry = inventory && path == source.path
         return try await downloadFile(url: url, token: token,
                                       maximumBytes: entry ? 262_144 : 2_097_152,
                                       kind: entry ? "entry" : "file")
@@ -253,7 +261,7 @@ public struct WebToolsSkillsConnectorTransport: SkillsRemoteTransport {
     /// The owned download is bridged to cooperative cancellation: a
     /// cancelled caller cancels the transfer and the scratch file is
     /// removed instead of being kept.
-    private func downloadFile(url: URL, token: String, maximumBytes: Int,
+    private func downloadFile(url: URL, token: String?, maximumBytes: Int,
                               kind: String) async throws -> Data {
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("floe-connector-\(UUID().uuidString)")
@@ -310,8 +318,10 @@ public struct WebToolsSkillsConnectorTransport: SkillsRemoteTransport {
     /// Builds the header set for one credentialed request. The token was
     /// already read once for THIS request by the caller. It is neither
     /// re-read during routing nor retained on the transport.
-    private static func authorizedHeaders(accept: String, token: String) -> [String: String] {
-        ["Accept": accept, "Authorization": "Bearer \(token)"]
+    private static func authorizedHeaders(accept: String, token: String?) -> [String: String] {
+        var headers = ["Accept": accept]
+        if let token { headers["Authorization"] = "Bearer \(token)" }
+        return headers
     }
 
     /// The anonymous community path has the same actionable access failure.

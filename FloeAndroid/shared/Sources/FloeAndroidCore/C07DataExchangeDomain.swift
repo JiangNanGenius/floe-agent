@@ -674,6 +674,24 @@ struct C07LiveRestoreSink: C07RestoreSink, Sendable {
         guard C07SettingsPolicy.isAllowedKey(key) else {
             throw C07DataExchangeError.invalidScope("settingKey")
         }
+        if let skillID = C07SkillSourceSettings.skillID(for: key) {
+            guard C07SkillSourceSettings.validatedValue(json) != nil else {
+                throw C07DataExchangeError.invalidScope("skillSourceSetting")
+            }
+            // A deduplicated/skipped skill may have no row at its planned
+            // new id. Never leave an orphan source setting or replace a
+            // concurrently configured source. Existence and insert share
+            // the original single writer transaction.
+            return try await context.database.writer { db in
+                guard try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM skills WHERE id = ?)",
+                                        arguments: [skillID]) == true else { return false }
+                try db.execute(sql: """
+                    INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO NOTHING
+                    """, arguments: [key, json, c07DateString(Date())])
+                return db.changesCount == 1
+            }
+        }
         do {
             return try await context.settingsStore.compareAndSetValue(
                 json, forKey: key, expectedValue: nil)
@@ -3358,7 +3376,9 @@ extension C07LiveRestoreSink {
                    mapping.newID(policy.primaryKind, old: primary) == nil {
                     try mapping.insert(
                         policy.primaryKind, old: primary,
-                        new: UUID().uuidString)
+                        new: policy.primaryKind == .skill
+                            ? C07SkillSourceSettings.freshRestoredSkillID()
+                            : UUID().uuidString)
                 }
                 for (column, kind) in policy.references {
                     guard let reference = row[column]?.stringValue,
@@ -4036,6 +4056,7 @@ extension C07LiveRestoreSink {
             ("calendar_todos", "id", .todo),
             ("providers", "id", .provider),
             ("models", "id", .model),
+            ("skills", "id", .skill),
         ]
         try await context.database.reader { db in
             for (table, column, kind) in checks {

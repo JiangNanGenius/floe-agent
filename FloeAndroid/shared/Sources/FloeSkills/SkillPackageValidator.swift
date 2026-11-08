@@ -131,7 +131,8 @@ public struct SkillPackageValidator: Sendable {
                     "scripts/ contains entries with no usable file extension"
                 )
             }
-            return SkillManifest(id: metadata.name, version: "1.0.0")
+            return SkillManifest(id: metadata.name, version: "1.0.0",
+                                 platforms: [SkillPlatform.android.rawValue])
         }
         let python = Set(["py"])
         let taskEnvironment = Set(["sh", "js", "mjs"])
@@ -147,6 +148,7 @@ public struct SkillPackageValidator: Sendable {
             version: "1.0.0",
             capabilities: [SkillCapability.remoteExecution.rawValue],
             tools: ["exec.shell"],
+            platforms: [SkillPlatform.android.rawValue],
             scriptRuntime: .remote
         )
     }

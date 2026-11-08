@@ -86,7 +86,7 @@
     <string name="skills_update_owner">所有者</string>
     <string name="skills_update_repository">仓库</string>
     <string name="skills_update_ref">分支 / 标签 / 提交</string>
-    <string name="skills_update_path">SKILL.md 或包清单 JSON</string>
+    <string name="skills_update_path">技能目录、SKILL.md 或包清单 JSON</string>
     <string name="skills_update_local_source">App / 本地</string>
     <string name="skills_update_changed_files">变更文件</string>
     <string name="skills_update_before">之前</string>
