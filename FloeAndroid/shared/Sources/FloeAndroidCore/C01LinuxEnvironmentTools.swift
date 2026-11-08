@@ -367,7 +367,7 @@ public struct C01LinuxEnvironmentStatusTool: AgentTool {
 
     public static let name = C01LinuxEnvironmentToolNames.status
     public static let toolDescription =
-        "Read the truthful status of this environment's on-device Linux engine: installed phase, whether the runtime is active or stopping, the published workload contract, component match, and whether the engine is qualified for shell work. Read-only; it never installs, starts, stops or changes the environment."
+        "Read the truthful status of this environment's on-device Linux engine: installed phase, whether the runtime is active or stopping, the published workload contract, component match, and whether the engine is qualified for shell work. Active project graphics (DISPLAY, mode and size) are reported only when this task's exact pinned environment matches the graphical session. Missing graphics does not mean every project session is stopped. Select the project's existing environment through this task's execution-location UI and start a new run when a different target is required; do not guess DISPLAY or silently retarget a live run. Read-only; it never installs, starts, stops or changes the environment."
     public static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = []
     public static let isSideEffecting = false

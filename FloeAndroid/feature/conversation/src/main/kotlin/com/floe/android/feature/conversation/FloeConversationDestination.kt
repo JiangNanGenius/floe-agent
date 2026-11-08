@@ -23,6 +23,7 @@ package com.floe.android.feature.conversation
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -389,11 +390,14 @@ private fun ThreadTimeline(
     val contentTick = remember(state.rows.map { it.id }, state.liveAssistantText.length, state.liveReasoningText.length, state.isRunning) {
         state.rows.size.toString() + ":" + state.liveAssistantText.length + ":" + state.liveReasoningText.length + ":" + state.isRunning
     }
-    LaunchedEffect(contentTick, state.hasLoaded, search.focusedMessageId) {
+    LaunchedEffect(holder.session, contentTick, holder.latestScrollRequest,
+        state.hasLoaded, search.focusedMessageId, state.usage != null) {
         if (state.hasLoaded && holder.followState.followsLatest &&
             search.focusedMessageId == null && state.rows.isNotEmpty()
         ) {
-            listState.scrollToItem(state.rows.lastIndex)
+            // Scroll to an actual tail anchor. The last assistant row can be
+            // much taller than the viewport, so its top is not the live end.
+            listState.scrollToItem(state.rows.size + if (state.usage != null) 1 else 0)
         }
     }
     // Search reveal: scroll ONLY to the selected hit. The token changes on a
@@ -414,21 +418,19 @@ private fun ThreadTimeline(
         }
         if (index >= 0) listState.scrollToItem(index)
     }
-    // Feed the follow-state machine from the ACTUAL lazy-list geometry:
-    // (cumulative offset, distance-to-bottom estimate, user drag flag). The
-    // source-stage metric is item-based (offset = index*10k + pixel offset;
-    // bottomDistance = 0 while the last row is visible, else 100) — a faithful
-    // approximation of the iOS >48pt rule that the binder/UI stage refines
-    // with exact pixels; presentation logic itself (ConversationFollowState)
-    // is pure and already JVM-tested.
-    LaunchedEffect(listState) {
+    // Only an actual drag changes follow intent. Layout changes and our own
+    // scrollToItem are not user gestures. Encode index/positive scroll offset
+    // lexicographically for direction; visible tail determines bottom distance.
+    val dragged by listState.interactionSource.collectIsDraggedAsState()
+    LaunchedEffect(holder.session, listState) {
         androidx.compose.runtime.snapshotFlow {
             val info = listState.layoutInfo
             val atBottom = info.visibleItemsInfo.lastOrNull()?.index == info.totalItemsCount - 1
             Triple(
-                info.visibleItemsInfo.firstOrNull()?.let { (it.index * 10_000f + it.offset).toDouble() } ?: 0.0,
+                listState.firstVisibleItemIndex.toDouble() * (Int.MAX_VALUE.toDouble() + 1) +
+                    listState.firstVisibleItemScrollOffset,
                 if (atBottom) 0.0 else 100.0,
-                listState.isScrollInProgress,
+                dragged,
             )
         }.collect { (offset, bottomDistance, scrolling) ->
             holder.observeScroll(offset = offset, bottomDistance = bottomDistance, userScrolling = scrolling)
@@ -497,6 +499,7 @@ private fun ThreadTimeline(
                     )
                 }
             }
+            item(key = "thread-latest-anchor") { Spacer(Modifier.height(1.dp)) }
         }
         }
 

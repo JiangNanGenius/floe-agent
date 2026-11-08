@@ -1,6 +1,14 @@
 # Floe for Android
 
-## Current delivery — Android Alpha56 (2026-11-08)
+## Current delivery — Android Alpha57 (2026-11-08)
+
+[Alpha57/code83](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.57) is published from immutable source `f8b6df6d94d2e0b1557189e8c6a3f8eb0e0aa71d`. The model's `workspace.externalEdit` uses the actual Android editor service and verifies saved content. Seven anonymous public asset downloads and production update discovery passed; iOS Latest is preserved. Related Kotlin, native-host, ARM64 and packaging checks are recorded in the [delivery](../docs/releases/ANDROID_ALPHA57_DELIVERY.md).
+
+Samsung confirmed the exact main/runtime83 engineering installation and an actual model-opened X-plore session. Automatic input/save has not passed: original page-freshness, approval and nonclickable-node failures remain recorded. These are intermediate previews; N01–N08 continues. The next [Alpha58 candidate](../docs/releases/ANDROID_ALPHA58_NOTES.md) repairs control summaries and chat scrolling; it is not yet published.
+
+当前公开Alpha57/code83，七附件完整字节及生产更新发现已读回。模型真实打开外部编辑器通过，自动输入／保存仍未通过，原始失败和恢复会话保留。下一Alpha58候选修控件摘要与聊天定位，尚未发布，整轮继续。
+
+## Previous delivery — Android Alpha56 (2026-11-08)
 
 [Android 0.1.0-alpha.56](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.56), code82, is published from immutable source `2b3a473d62df94df3794e327acb739c42ca42013`. The exact Full APK, related Full/Play compilation, actual ARM64 native production, five focused native host tests and 25 related JVM tests passed. All seven anonymous public attachment bytes, tag binding and production update discovery were read back; iOS Latest is preserved.
 

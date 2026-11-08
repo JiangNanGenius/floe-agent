@@ -573,6 +573,9 @@ class ConversationFlowHolder(
     val followState = ConversationFollowState()
     var showsReturnToLatest: Boolean by mutableStateOf(false)
         private set
+    /** Explicit viewport intent must run even when no transcript row changed. */
+    var latestScrollRequest: Long by mutableStateOf(0L)
+        private set
 
     /** ⇄ actionError: honest failure surface (localized host text). */
     var actionError: String? by mutableStateOf(null)
@@ -1112,7 +1115,10 @@ class ConversationFlowHolder(
             )
             isConsumingDraft = false
             if (!started) return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
-            if (sendOriginAllows(originIncarnation)) consumeSentDraft(commit)
+            if (sendOriginAllows(originIncarnation)) {
+                consumeSentDraft(commit)
+                returnToLatest()
+            }
             return ConversationFlowResult.Accepted
         }
 
@@ -1174,7 +1180,10 @@ class ConversationFlowHolder(
         // ADMISSION only: the optimistic visual consumption stays
         // REVERSIBLE; the commit is retained; the durable draft clear is
         // deferred to the matching prepared echo (applyLaunchPrepared).
-        if (sendOriginAllows(originIncarnation)) consumeSentDraft(commit)
+        if (sendOriginAllows(originIncarnation)) {
+            consumeSentDraft(commit)
+            returnToLatest()
+        }
         return ConversationFlowResult.Accepted
     }
 
@@ -1948,6 +1957,7 @@ class ConversationFlowHolder(
     fun returnToLatest() {
         followState.returnToLatest()
         showsReturnToLatest = false
+        latestScrollRequest += 1
         // Returning to the live end is an explicit exit from a retained
         // search hit; the find bar may stay open.
         if (threadSearch.focusedMessageId != null) {

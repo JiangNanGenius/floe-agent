@@ -29,6 +29,31 @@ import org.junit.Test
 class ConversationSendDraftTest {
 
     @Test
+    fun acceptedSendReturnsToLiveEndButRejectedSendKeepsTheReadingPosition() {
+        val host = RecordingHost()
+        val holder = holder(host)
+        holder.observeScroll(100.0, 0.0, false)
+        holder.observeScroll(50.0, 300.0, true)
+        assertTrue(holder.showsReturnToLatest)
+        val request = holder.latestScrollRequest
+        holder.onDraftChange(TextFieldValue("new turn"))
+        host.startRunAccepted = false
+        assertTrue(holder.send() is ConversationFlowResult.Rejected)
+        assertEquals(request, holder.latestScrollRequest)
+        assertTrue(holder.showsReturnToLatest)
+
+        host.startRunAccepted = true
+        assertEquals(ConversationFlowResult.Accepted, holder.send())
+        assertEquals(request + 1, holder.latestScrollRequest)
+        assertTrue(holder.followState.followsLatest)
+        assertTrue(!holder.showsReturnToLatest)
+        // A second explicit jump must issue a viewport request even though
+        // no transcript row or streaming text changed.
+        holder.returnToLatest()
+        assertEquals(request + 2, holder.latestScrollRequest)
+    }
+
+    @Test
     fun firstTaskPermissionSurvivesRejectedPreparationAndClearsOnlyOnPrepared() {
         val host = RecordingHost()
         val holder = holder(host)

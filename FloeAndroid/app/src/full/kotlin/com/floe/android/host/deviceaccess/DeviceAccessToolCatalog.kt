@@ -161,7 +161,11 @@ internal object DeviceAccessToolCatalog {
             "Supported actions: click, setText, scroll, swipe, back, home, " +
             "launch. The action is dispatched once, then re-observed; framework " +
             "acceptance is not reported as semantic success. A node ref from an " +
-            "expired or replaced observation is refused.",
+            "expired or replaced observation is refused. Use only refs from the latest " +
+            "actual observation in this run, never from narrative or history. Node flags " +
+            "c/e/s indicate click/setText/scroll; '-' is read-only. A label child " +
+            "is not automatically clickable; use its returned actionable parent ref. " +
+            "An empty editable input is still listed as [empty input].",
         schema = schema(
             properties = JSONObject()
                 .put("observationId", string("Observation id returned by phone.observe; optional only for launching an authorized app.", 1, 64))

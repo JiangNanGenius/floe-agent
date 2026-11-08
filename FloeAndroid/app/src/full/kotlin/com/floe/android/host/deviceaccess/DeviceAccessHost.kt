@@ -3007,50 +3007,7 @@ internal class DeviceAccessHost(
     }
 
     private fun observationDigest(observation: PhoneControlObservation): String {
-        val builder = StringBuilder(2_000)
-        builder.append("observation=").append(observation.observationId)
-        builder.append(" page=").append(observation.packageName ?: "unknown")
-        observation.windowTitle?.take(48)?.let { builder.append(" title=").append(it) }
-        builder.append(" nodes=").append(observation.nodes.size)
-        if (observation.navigationOnly) builder.append(" navigationOnly")
-        if (observation.truncated) builder.append(" truncated")
-        val ranked = observation.nodes.sortedWith(
-            compareByDescending<com.floe.android.phonecontrol.PhoneControlNode> {
-                it.clickable || it.editable || it.scrollable
-            }.thenBy {
-                it.ref.removePrefix("n").toIntOrNull() ?: Int.MAX_VALUE
-            },
-        )
-        var count = 0
-        for (node in ranked) {
-            if (builder.length > 1_850) break
-            val label = sequenceOf(node.text, node.contentDescription, node.hintText, node.viewId)
-                .filterNotNull().firstOrNull { it.isNotBlank() } ?: continue
-            val role = node.className.substringAfterLast('.').take(24)
-            val flags = buildString {
-                if (node.clickable) append('c')
-                if (node.editable) append('e')
-                if (node.scrollable) append('s')
-                if (node.password) append('*')
-            }
-            builder.append('\n')
-                .append(node.ref).append('|')
-                .append(role).append('|')
-                .append(flags).append('|')
-                .append(label.replace('\n', ' ').take(56))
-            count += 1
-            if (count >= MAX_DIGEST_NODES) break
-        }
-        if (count == 0) {
-            builder.append(
-                if (observation.navigationOnly) {
-                    "\nProtected Floe page; navigation-only (back, home, or launch an allowed app)."
-                } else {
-                    "\nNo labeled nodes on this page."
-                },
-            )
-        }
-        return builder.toString()
+        return com.floe.android.phonecontrol.PhoneControlObservationText.summary(observation, MAX_DIGEST_NODES)
     }
 
     private fun observationEvidence(observation: PhoneControlObservation): List<String> {
