@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="task_transcript_export_failed">任务导出失败，请重试或清理存储空间。</string>
+    <string name="task_transcript_export_failed">任务未能保存，原任务仍保留。请换个位置重试。</string>
+    <string name="task_transcript_export_saved">任务已保存</string>
+    <string name="task_transcript_export_interrupted">导出已中断，请打开任务重新导出。</string>
 </resources>

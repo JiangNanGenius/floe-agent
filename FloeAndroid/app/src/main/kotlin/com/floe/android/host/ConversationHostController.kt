@@ -4897,31 +4897,31 @@ class ConversationHostController internal constructor(
         if (taskExports.containsKey(session.conversationId)) return refuseTaskExport("already_exporting")
         val job = host.scope.launch(host.ioDispatcher, start = kotlinx.coroutines.CoroutineStart.LAZY) {
             var file: java.io.File? = null
-            var shared = false
+            var discardFile = false
             try {
                 file = com.floe.android.host.dataexchange.C08TaskTranscriptExport.create(
                     context.cacheDir, session.conversationId, epoch,
                     current = { host.nativeRootEpoch() == epoch && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) })
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
-                    check(host.nativeRootEpoch() == epoch && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch))
-                    val uri = androidx.core.content.FileProvider.getUriForFile(context,
-                        context.packageName + ".taskexports", file!!)
-                    val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                        type = "application/x-ndjson"
-                        putExtra(android.content.Intent.EXTRA_STREAM, uri)
-                        clipData = android.content.ClipData.newRawUri("Task transcript", uri)
-                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                val destination = ConversationTaskExportController.chooseDestination(file!!.name)
+                if (destination != null) {
+                    val receipt = ConversationTaskExportController.save(context, file!!, destination) {
+                        host.nativeRootEpoch() == epoch && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)
                     }
-                    context.startActivity(android.content.Intent.createChooser(send, null)
-                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
-                    shared = true
-                    entry.holder.applyExportSettled(null)
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                        if (host.nativeRootEpoch() == epoch && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) {
+                            android.widget.Toast.makeText(context, context.getString(com.floe.android.R.string.task_transcript_export_saved),
+                                android.widget.Toast.LENGTH_SHORT).show()
+                            android.util.Log.i("FloeTaskExport", "saved bytes=${receipt.bytes}")
+                        }
+                    }
                 }
+                discardFile = true
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                if (!shared) file?.delete()
+                discardFile = true
                 throw cancelled
             } catch (failure: Exception) {
-                if (!shared) file?.delete()
+                // Keep the verified generated source under the existing bounded
+                // cache policy on failure. The original task is never modified.
                 val code = (failure as? com.floe.android.host.dataexchange.C07ClientFailure)?.code
                     ?: failure.javaClass.simpleName
                 val safeCode = code.takeIf { it.matches(Regex("[A-Za-z0-9_]{1,80}")) } ?: "unknown"
@@ -4932,6 +4932,7 @@ class ConversationHostController internal constructor(
                     }
                 }
             } finally {
+                if (discardFile) file?.delete()
                 taskExports.remove(session.conversationId, kotlinx.coroutines.currentCoroutineContext()[Job])
                 kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable + kotlinx.coroutines.Dispatchers.Main.immediate) {
                     if (ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) entry.holder.applyExportSettled(null)

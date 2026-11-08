@@ -1,6 +1,6 @@
 # Android 下一轮：外部应用与 ARM64 Linux 工作台
 
-日期：2026-11-06，实测更新至2026-11-09。当前：[Alpha63/code89已公开](releases/ANDROID_ALPHA63_DELIVERY.md)，固定App源`914ccff868a00cdee3bcbbc83ae8625b5957f5dd`。七附件完整公开字节、不可变来源及实际生产更新解析器读回完成；三星主／运行组件实际code89、字节与UID保持，双鼠标模式和关闭重开后的选择恢复已验证。本版三星安装为工程替换，不冒称63完成设备OTA；61→62的App内完整升级证据独立保留。Android9索尼组件故障和原VNC断连尚未证明已修复。整轮N01–N08继续，以下较早记录按原日期保留。
+日期：2026-11-06，实测更新至2026-11-09。当前：[Alpha64/code90已公开](releases/ANDROID_ALPHA64_DELIVERY.md)，固定App源`6c82d891180badb25c0f24c2a92a1ba259a89c07`。七附件完整公开字节、不可变来源及实际生产更新解析器读回完成；三星经App公开完整包升级至主／运行组件code90，精确字节、UID及原有数据保持。真实Ark Plan／`ark-code-latest`任务取得项目Linux命令的标准输出与退出码0，未请求启动桌面。双鼠标模式沿用Alpha63已有证据。Android9索尼组件故障、原VNC断连和整轮其余缺口继续保留；以下较早记录按原日期保留，不以历史“待发布”覆盖本段状态。
 
 iOS对照沿用固定视觉参照 `36f63bf4` 及原有编号。Alpha46的 `c828775b6`→`e4d334904` 仅为签名／版本／上传元数据变化；Alpha47后又登记Biology模块与独立宿主提交 `eb3bb7bca` 的51条路径，作为下一轮独立能力复核，不移动本轮范围。Alpha52候选又从 `eb3bb7bca` 对照到主集成 `9b016097d`：1481条iOS路径变化按轻量入口、网络历史、工具合同与独立重型模块分类，不等同缺失功能，详见[增量记录](FLOE_ANDROID_IOS_DELTA_AUDIT.zh-CN.md#2026-11-08-alpha52-候选的有界-ios-增量)。后续每个大目标结束增量核对实际iOS主线；不为小修重启全量审计。
 
@@ -726,3 +726,19 @@ Alpha63验收清理完成：为已有项目建立的单次Ark Plan／ark-code-la
 English: The next source batch wires CLI-first/manual-desktop guidance into ordinary Full/Play contexts, retaining Notes/temporary and phone-control boundaries. Four focused production-declaration guidance cases and28 real-module mirror/transport host cases pass; actual Android object/link and the new APK are pending. The public-Hub code packet was safely reclaimed after the bridge requested coordinator continuation. Mutable GitHub API commit resolution remains official-only; private connector fetching remains a distinct missing backend. Dialog-window system-bar contrast uses the existing appearance bridge and passes Full/Play Kotlin compilation; rendered device behavior remains pending. Old optional installers/deltas were retired only after exact public recovery checks, with all main APKs and failure evidence preserved.
 
 下一候选使用Alpha64/code90，已更新版本与Office源码入口的配套摘要；尚未因此宣称已构建、已安装或已发布。沿用全部既知问题和整轮N01–N08目标，不移动63的不可变来源。
+
+## 2026-11-09 Alpha64实际交付与下一批功能收口
+
+Alpha64已经完成实际ARM64对象／链接、同源Full APK生产和58项封装检查，并完成七附件公开字节与生产更新解析器读回。三星真实App更新使用完整包，系统安装器同时更新主包与运行环境至code90；两个UID、五条原有记录和两个项目保留。真实63→64补丁重建及生产策略接纳为独立证据，本次设备没有观察到增量通路，不重复宣称设备增量通过。
+
+真实模型任务沿`environment.linuxStatus`→`exec.shell`闭环，项目环境与任务一致，`printf FLOE64_CLI`返回正确输出及退出码0；没有桌面或手机操作工具请求。模型默认CLI、桌面主要给用户手动使用的分工已进入本版实际执行上下文。较早歧义提示导致的错误命令提案从未分派，保留导出后通过App删除；没有重放该提案。
+
+下一有界代码包直接接通完整任务JSONL的系统文件保存：沿用已有C07真实导出和任务归属，系统选择位置，流式写入并校验读取结果；取消、旧回调、Activity重建及进程退出不冒报保存成功。已有文本／Markdown分享保持。原分享流程可以交给外部App保存，但并不是无需第三方应用的直接保存通路。
+
+自建旧提案任务与两份已私有留存的设备导出副本已清理，累计退役83个测试任务（三星36、模拟器47）和12个旧计划。完成的CLI任务仅为紧接批次的系统保存验收暂留；原有记录、项目及原始失败保持。三星常亮0、无线调试0、无障碍未启用并休眠，未启动模拟器。图形弹窗对比度的新渲染、私有连接器取回、原VNC故障、自动解锁／条件重新锁屏与后台收尾继续在未闭合项内，整轮目标未结束。
+
+English: Alpha64 is publicly delivered and Samsung completed the actual full-package OTA for App/runtime code90 with identities/data retained. A real project-bound Ark Plan CLI task returned stdout and exit0 without requesting graphical operation. Patch production/admission and device full-package execution remain distinct. The next bounded packet adds real system-document task saving with streamed read-back verification and callback ownership; it does not replace JSONL with another archive format. One expired task and exact duplicate exports were removed,with one immediate-next-test fixture retained. Existing failures and overall N01–N08 gaps remain explicit.
+
+Alpha65源码准备：系统保存代码已接到真实完整任务导出，Full／Play Kotlin与14项相关JVM检查通过（8项新回调／读回，6项原C07导出）。原OpenCode包已按交接要求取消为终态且未分配原生会话，由主负责人收回实现；没有重复排队。准备code91并同步Office来源索引／摘要，尚未据此宣称新APK或三星通过。native24的3110个实际生产输入与当前源码相符，本批仅Kotlin／资源改变，后续可复用未变原生字节而不重复原生构建。
+
+Alpha64生成物清理已完成：19处已导出构件和两处源码／增量暂存退役，17份生产根级回执先保存；两个删除窗口内置可用空间实测分别增加479,395,840和2,715,578,368字节，逻辑／分配大小另留记录，不把其他编译窗口变化归入本次。精确当前包、必要回退、符号、原始失败、SDK/AVD和紧接构建需要的缓存保留。

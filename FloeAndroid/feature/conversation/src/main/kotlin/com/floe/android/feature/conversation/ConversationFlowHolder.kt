@@ -1825,8 +1825,7 @@ class ConversationFlowHolder(
         }
     }
 
-    /** Host echo for the bounded export job (success opens the share surface
-     * host-side; failure text is localized by the host). */
+    /** Host echo after system-document save or cancellation; failures are localized by the host. */
     fun applyExportSettled(message: String?) {
         if (retired) return
         exportInFlight = false

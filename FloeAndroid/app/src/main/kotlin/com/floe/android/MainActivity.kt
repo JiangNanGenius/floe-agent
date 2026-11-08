@@ -16,6 +16,8 @@ import com.floe.android.host.capture.PacketCaptureNavigation
 import com.floe.android.host.creative.GenerationReturnNavigation
 import com.floe.android.host.entryflow.C07EntryFlowHost
 import com.floe.android.host.gallery.GalleryPermissionRequester
+import com.floe.android.host.ConversationTaskExportController
+import com.floe.android.host.TaskExportDestination
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -39,6 +41,27 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         GalleryPermissionRequester.complete(granted)
+    }
+
+    private var taskExportRequestID: String? = null
+    private val taskExportLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val id = taskExportRequestID
+        taskExportRequestID = null
+        val destination = if (result.resultCode == RESULT_OK) {
+            result.data?.let { data -> data.data?.let { TaskExportDestination(it, data.flags) } }
+        } else null
+        val consumed = id != null && if (result.resultCode == RESULT_OK && destination == null) {
+            ConversationTaskExportController.invalidResult(id)
+        } else {
+            ConversationTaskExportController.complete(id, destination)
+        }
+        // Process death cannot resurrect the old task/file from a picker URI.
+        if (!consumed && result.resultCode == RESULT_OK) {
+            android.widget.Toast.makeText(this, R.string.task_transcript_export_interrupted,
+                android.widget.Toast.LENGTH_LONG).show()
+        }
     }
     override fun onResume() {
         super.onResume()
@@ -66,6 +89,7 @@ class MainActivity : ComponentActivity() {
         super.onPause()
     }
     override fun onCreate(savedInstanceState: Bundle?) {
+        taskExportRequestID = savedInstanceState?.getString("taskExportRequestID")
         super.onCreate(savedInstanceState)
         // C07 external entry: SEND/SEND_MULTIPLE, content VIEW, floe:// links
         // and question/schedule notification taps. Admission is data-only and
@@ -103,8 +127,37 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                ConversationTaskExportController.requests.collect { request ->
+                    if (request != null && ConversationTaskExportController.claimLaunch(request.id)) {
+                        taskExportRequestID = request.id
+                        try {
+                            taskExportLauncher.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                                addCategory(Intent.CATEGORY_OPENABLE)
+                                type = "application/x-ndjson"
+                                putExtra(Intent.EXTRA_TITLE, request.name)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                            })
+                        } catch (_: Exception) {
+                            taskExportRequestID = null
+                            ConversationTaskExportController.launchFailed(request.id)
+                        }
+                    }
+                }
+            }
+        }
         enableEdgeToEdge()
         setContent { FloeApp() }
+    }
+    override fun onSaveInstanceState(outState: Bundle) {
+        taskExportRequestID?.let { outState.putString("taskExportRequestID", it) }
+        super.onSaveInstanceState(outState)
+    }
+
+    override fun onDestroy() {
+        if (isFinishing) taskExportRequestID?.let(ConversationTaskExportController::activityFinished)
+        super.onDestroy()
     }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)

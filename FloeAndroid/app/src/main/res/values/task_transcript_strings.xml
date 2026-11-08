@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="task_transcript_export_failed">The task couldn’t be exported. Try again or free some storage.</string>
+    <string name="task_transcript_export_failed">The task couldn’t be saved. Your original task is unchanged. Choose another location and try again.</string>
+    <string name="task_transcript_export_saved">Task saved</string>
+    <string name="task_transcript_export_interrupted">The export was interrupted. Open the task and export again.</string>
 </resources>

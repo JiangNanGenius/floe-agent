@@ -569,7 +569,7 @@ interface ConversationUiCallbacks {
 
     /* ------------------------------ thread menu actions ---------------------- */
 
-    /** ⇄ exportStructuredConversation (host writes the file + share sheet). */
+    /** ⇄ exportStructuredConversation (host verifies and saves through the system picker). */
     fun exportStructuredConversation(session: ConversationSessionToken): Boolean
 
     /** ⇄ ShareLink(exportText/exportMarkdown): the host serializes and shares
