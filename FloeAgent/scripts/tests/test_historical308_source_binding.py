@@ -6,6 +6,9 @@ the fixtures have no genuine signatures. Real308 byte projection is pending.
 """
 import copy
 import importlib.util
+import contextlib
+import io
+import sys
 import json
 from pathlib import Path
 import plistlib
@@ -284,7 +287,7 @@ class Historical308SourceBindingTests(unittest.TestCase):
             binding.verify_output(target, {'manifest': manifest, 'entries': entries}, self.root / 'output-repair-test', repair)
         self.assertEqual(error.exception.code, 'outputNotCanonical')
 
-    def test_static_schema_and_route_have_no_publish_or_trust_entry(self):
+    def test_static_schema_and_preparation_route_keep_scoped_access_without_publication(self):
         schema = json.loads((HERE.parent / 'schemas/historical-source-binding-v2.schema.json').read_text())
         self.assertFalse(schema['additionalProperties'])
         self.assertEqual(set(schema['required']), set(binding.read_json(self.record)))
@@ -295,11 +298,97 @@ class Historical308SourceBindingTests(unittest.TestCase):
         if jsonschema is not None: jsonschema.Draft202012Validator(schema).validate(binding.read_json(self.record))
         root = HERE.parents[2]
         text = (root / '.github/workflows/prepare-historical308.yml').read_text()
-        self.assertIn('contents: read', text); self.assertNotIn('contents: write', text)
+        global_permissions = text.split('\npermissions:\n', 1)[1].split('\nconcurrency:', 1)[0]
+        self.assertIn('  contents: read\n', global_permissions)
+        self.assertNotIn('contents: write', global_permissions)
+        prepare_job = text.split('\n  prepare:\n', 1)[1].split('    env:\n', 1)[0]
+        self.assertIn('    permissions:\n      contents: write\n      actions: read\n', prepare_job)
+        self.assertEqual(text.count('contents: write'), 1)
         self.assertNotIn('gh release create', text); self.assertNotIn('publish-feather', text)
         self.assertNotIn('testflightUpload', text); self.assertNotIn('feather_recovery_trust', text)
         self.assertIn('historical308-reviewed-v2.json', text)
-        self.assertFalse((HERE.parent / 'release-policies/historical308-reviewed-v2.json').exists())
+        reviewed_policy = HERE.parent / 'release-policies/historical308-reviewed-v2.json'
+        self.assertEqual(binding.digest(reviewed_policy), '4b2caa0caebc4ab9d1ce192ce2ec37160bed47b49a14cebee395608cc2b021d9')
+        policy = binding.read_json(reviewed_policy)
+        binding.validate_policy(policy)
+        self.assertEqual(policy['purpose'], 'historical308-preparation-only-v2')
+        self.assertEqual(policy['app']['sourceCommit'], '3368baaf8045023043bfb70d9062374c17a48a1d')
+
+    def test_prepare_manifest_mismatch_retains_complete_diagnostics_before_original_refusal(self):
+        self.policy['expectedManifest']['sha256'] = '0' * 64
+        self.write_policy()
+        policy_before = self.policy_file.read_bytes()
+        work, output = self.root / 'prepare-mismatch', self.root / 'no-subjects'
+        real_review = binding.review_archives
+        def review(*args):
+            return real_review(*args, normalize=self.normalize)
+        argv = ['historical308_source_binding.py', 'prepare', '--policy', str(self.policy_file),
+                '--original-archive', str(self.source_archive), '--transport-archive', str(self.transport),
+                '--work', str(work), '--output', str(output), '--packager', str(self.root / 'must-not-run.sh')]
+        capture = io.StringIO()
+        with mock.patch.object(sys, 'argv', argv), \
+                mock.patch.object(binding, 'context_controller', return_value=self.controller), \
+                mock.patch.object(binding, 'check_sources') as source_checks, \
+                mock.patch.object(binding, 'review_archives', side_effect=review), \
+                contextlib.redirect_stdout(capture):
+            with self.assertRaises(binding.BindingError) as error:
+                binding.main()
+        self.assertEqual(error.exception.code, 'reviewedManifest')
+        source_checks.assert_called_once()
+        self.assertFalse(output.exists())
+        self.assertEqual(self.policy_file.read_bytes(), policy_before)
+        diagnostic = work / 'manifest-mismatch'
+        summary = json.loads((diagnostic / 'DIAGNOSTICS.private.json').read_text())
+        entries = json.loads((diagnostic / 'DEVICE-MANIFEST.private.json').read_text())
+        proofs = json.loads((diagnostic / 'NORMALIZATION-PROOF.private.json').read_text())
+        rows = json.loads((diagnostic / 'MACHO-OUTPUTS.private.json').read_text())
+        self.assertEqual(summary['expectedManifest'], self.policy['expectedManifest'])
+        self.assertNotEqual(summary['actualManifest'], summary['expectedManifest'])
+        self.assertEqual(summary['entryCounts']['total'], len(entries))
+        self.assertEqual(summary['machOFileCount'], 1)
+        self.assertEqual(rows[0]['path'], 'Floe Agent')
+        self.assertEqual(rows[0]['signed']['outputSHA256'], rows[0]['transport']['outputSHA256'])
+        self.assertEqual(rows[0]['signed']['outputSHA256'], proofs['signed']['files'][0]['outputSHA256'])
+        self.assertEqual(diagnostic.stat().st_mode & 0o777, 0o700)
+        self.assertTrue(all(p.stat().st_mode & 0o777 == 0o600 for p in diagnostic.iterdir()))
+        self.assertIn('HISTORICAL308_MANIFEST_MISMATCH=', capture.getvalue())
+        self.assertEqual(capture.getvalue().count('HISTORICAL308_MACHO_OUTPUT='), 1)
+
+    def test_matching_review_creates_no_diagnostics_or_log(self):
+        reviewed = binding.review_archives(self.policy, self.source_archive, self.transport,
+                                          self.root / 'matching-review', self.normalize)
+        work = self.root / 'no-diagnostics'
+        capture = io.StringIO()
+        with contextlib.redirect_stdout(capture):
+            binding.report_manifest_mismatch(self.policy, reviewed, work)
+        self.assertFalse(work.exists())
+        self.assertEqual(capture.getvalue(), '')
+
+    def test_diagnostic_destination_collision_cannot_overwrite_or_bypass_manifest_failure(self):
+        self.policy['expectedManifest']['sha256'] = '0' * 64
+        self.write_policy()
+        work = self.root / 'verify-1'; work.mkdir()
+        outside = self.root / 'outside'; outside.mkdir()
+        sentinel = outside / 'keep'; sentinel.write_text('original')
+        (work / 'manifest-mismatch').symlink_to(outside, target_is_directory=True)
+        capture, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(capture), contextlib.redirect_stderr(errors):
+            with self.assertRaises(binding.BindingError) as error:
+                self.verify()
+        self.assertEqual(error.exception.code, 'reviewedManifest')
+        self.assertEqual(sentinel.read_text(), 'original')
+        self.assertEqual([p.name for p in outside.iterdir()], ['keep'])
+        self.assertIn('HISTORICAL308_MANIFEST_MISMATCH=', capture.getvalue())
+        self.assertIn('HISTORICAL308_DIAGNOSTIC_ERROR=FileExistsError', errors.getvalue())
+
+    def test_failure_artifact_route_is_private_bounded_and_does_not_change_subjects(self):
+        text = (HERE.parents[2] / '.github/workflows/prepare-historical308.yml').read_text()
+        failure = text.split('      - name: Retain private manifest mismatch diagnostics after preparation failure\n')[1].split('      - name: Genuinely attest')[0]
+        self.assertIn("failure() && steps.prepare.outcome == 'failure'", failure)
+        self.assertIn('historical308/work/manifest-mismatch/', failure)
+        self.assertNotIn('subjects', failure)
+        self.assertNotIn('gh release', failure)
+        self.assertIn('actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02', failure)
 
     def test_plan_and_selective_extraction_skip_symbols_but_keep_the_complete_app(self):
         with zipfile.ZipFile(self.transport, 'a') as archive:

@@ -1,8 +1,7 @@
 name: Prepare historical308 V2 source binding (no publication)
 
-# This is a preparation controller, not a release publisher. A reviewed policy
-# is intentionally not supplied with this route. Adding/enabling one requires
-# the separate historical source/controller policy decision.
+# Preparation uses the separately reviewed exact policy and immutable source
+# authorities. It cannot publish a release or activate Feather trust.
 on:
   workflow_dispatch:
     inputs:
@@ -86,6 +85,7 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" \
             -H 'Accept: application/octet-stream' > "$RUNNER_TEMP/historical308/transport.zip"
       - name: Prepare with the normal unsigned producer and complete device manifests
+        id: prepare
         run: |
           set -euo pipefail
           python3 FloeAgent/scripts/historical308_source_binding.py prepare \
@@ -95,6 +95,14 @@ jobs:
             --work "$RUNNER_TEMP/historical308/work" \
             --output "$RUNNER_TEMP/historical308/subjects" \
             --packager app-source/FloeAgent/scripts/package_unsigned_ipa.sh
+      - name: Retain private manifest mismatch diagnostics after preparation failure
+        if: ${{ failure() && steps.prepare.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: historical308-mismatch-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/historical308/work/manifest-mismatch/
+          if-no-files-found: warn
+          retention-days: 30
       - name: Genuinely attest both the IPA and its minimal source binding
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:

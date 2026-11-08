@@ -14,12 +14,14 @@ import hashlib
 import importlib.util
 import json
 import os
+import platform
 from pathlib import Path
 import plistlib
 import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import zipfile
 
@@ -228,6 +230,59 @@ def file_manifest(app):
     return {'sha256': hashlib.sha256(canonical(entries)).hexdigest(),
             'files': sum(x['kind'] == 'file' for x in entries),
             'bytes': sum(x.get('bytes', 0) for x in entries)}, entries
+
+
+def report_manifest_mismatch(policy, review, work):
+    """Private failure evidence only; never a substitute for the manifest gate.
+
+    The exact reviewed policy and all normalization/source assertions remain
+    authoritative. Do not write this diagnostic into release subjects or use
+    its actual manifest to update the expected policy automatically.
+    """
+    if review['manifest'] == policy['expectedManifest']:
+        return
+    summary = {'diagnosticOnly': True, 'failureCode': 'reviewedManifest',
+               'expectedManifest': policy['expectedManifest'], 'actualManifest': review['manifest'],
+               'sourceRaw': review['sourceRaw'], 'transportRaw': review['transportRaw'],
+               'normalizationProof': review['normalizationProofSummary'],
+               'entryCounts': {'total': len(review['entries']),
+                               'files': sum(e['kind'] == 'file' for e in review['entries']),
+                               'directories': sum(e['kind'] == 'directory' for e in review['entries'])}}
+    # Even a full/unwritable diagnostic directory must leave expected/actual
+    # in the log and must not turn the following original refusal into success.
+    print('HISTORICAL308_MANIFEST_MISMATCH=' + canonical(summary).decode(), flush=True)
+    try:
+        codesign = Path('/usr/bin/codesign')
+        summary['host'] = {'platform': platform.platform(), 'macOS': platform.mac_ver()[0],
+                           'python': sys.version, 'codesignPath': str(codesign),
+                           'codesignSHA256': digest(codesign) if codesign.is_file() else None,
+                           'bindingScriptSHA256': digest(Path(__file__)),
+                           'normalizationScriptSHA256': digest(Path(projection.__file__))}
+        by_path = {}
+        for side in ('signed', 'transport'):
+            for item in review['normalizationProof'][side]['files']:
+                row = by_path.setdefault(item['path'], {'path': item['path']})
+                row[side] = {key: item[key] for key in
+                             ('mode', 'inputSHA256', 'inputBytes', 'outputSHA256', 'outputBytes',
+                              'intermediateSHA256', 'intermediateBytes', 'outputLayout', 'changedRanges')
+                             if key in item}
+        outputs = [by_path[path] for path in sorted(by_path)]
+        summary['machOFileCount'] = len(outputs)
+        for row in outputs:
+            print('HISTORICAL308_MACHO_OUTPUT=' + canonical(row).decode(), flush=True)
+        destination = Path(work) / 'manifest-mismatch'
+        destination.mkdir(mode=0o700, exist_ok=False)
+        for name, value in [('DIAGNOSTICS.private.json', summary),
+                            ('MACHO-OUTPUTS.private.json', outputs),
+                            ('DEVICE-MANIFEST.private.json', review['entries']),
+                            ('NORMALIZATION-PROOF.private.json', review['normalizationProof'])]:
+            # Exclusive creation in a fresh owner-only child. No App or ZIP
+            # bytes, controller policy, expected manifest or subject changes.
+            with (destination / name).open('xb') as stream:
+                os.chmod(stream.fileno(), 0o600)
+                stream.write(canonical(value) + b'\n')
+    except Exception as error:
+        print('HISTORICAL308_DIAGNOSTIC_ERROR=' + type(error).__name__, file=sys.stderr, flush=True)
 
 
 def apple_normalize(app, *, signed=False, require_unsigned=False):
@@ -511,6 +566,7 @@ def verify(policy_path, controller_path, ipa, binding, original_archive, transpo
     exact(record, 'schemaVersion kind policySHA256 app original transport deviceManifest ipa controller appRebuilt unsigned', 'binding')
     check_sources(policy, controller, api_get, completed_controller=True)
     review = review_archives(policy, original_archive, transport_archive, Path(work) / 'source', normalize)
+    report_manifest_mismatch(policy, review, work)
     require(review['manifest'] == policy['expectedManifest'], 'reviewedManifest', 'deviceManifest', 'Reviewed full device manifest changed')
     verify_output(ipa, review, Path(work) / 'output', normalize)
     expected = binding_for(policy, digest(policy_path), controller, review, ipa)
@@ -573,6 +629,7 @@ def main():
             (args.output / 'REVIEW.json').write_bytes(canonical(result) + b'\n')
             print(json.dumps(result, indent=2))
             return
+        report_manifest_mismatch(policy, review, args.work)
         require(review['manifest'] == policy['expectedManifest'], 'reviewedManifest', 'deviceManifest', 'Review the exact manifest before preparation')
         require(args.packager is not None and args.packager.is_file() and not args.packager.is_symlink()
                 and digest(args.packager) == policy['packagerSHA256'], 'packager', 'packager', 'Reviewed normal producer required')
