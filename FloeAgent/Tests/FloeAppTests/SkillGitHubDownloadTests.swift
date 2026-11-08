@@ -1,10 +1,11 @@
 #if canImport(UIKit) && DEBUG
 import Foundation
 import Testing
+import FloeSkills
 @testable import FloeApp
 
 private final class SkillHTTPFixture: URLProtocol, @unchecked Sendable {
-    enum Mode: Sendable, Equatable { case exact, declaredOversize, chunkOversize, suspended }
+    enum Mode: Sendable, Equatable { case exact, declaredOversize, chunkOversize, suspended, httpStatus(Int) }
     final class State: @unchecked Sendable {
         private let lock = NSLock()
         private var value: Mode = .exact
@@ -16,7 +17,9 @@ private final class SkillHTTPFixture: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let mode = Self.state.get()
-        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+        let status: Int
+        if case .httpStatus(let value) = mode { status = value } else { status = 200 }
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
             headerFields: mode == .declaredOversize ? ["Content-Length": "2048"] : [:])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         if mode == .suspended { return }
@@ -33,12 +36,29 @@ private final class SkillHTTPFixture: URLProtocol, @unchecked Sendable {
 
 @Suite("FloeApp.SkillGitHubDownload", .serialized)
 struct SkillGitHubDownloadTests {
-    private func request(_ mode: SkillHTTPFixture.Mode) async throws -> Data {
+    private func request(_ mode: SkillHTTPFixture.Mode, classify: Bool = false) async throws -> Data {
         SkillHTTPFixture.state.set(mode)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [SkillHTTPFixture.self]
         return try await SkillGitHubDataRequest(maximumBytes: 1024, diagnostic: "Test source unavailable",
-            configuration: configuration).load(URLRequest(url: URL(string: "https://skill-transport.invalid/test")!))
+            configuration: configuration, classifyAvailability: classify).load(URLRequest(url: URL(string: "https://skill-transport.invalid/test")!))
+    }
+    @Test func classifiesStatusOnlyForTheOptedInAnonymousRoute() async {
+        for status in [503, 403, 302] {
+            do { _ = try await request(.httpStatus(status), classify: true); Issue.record("HTTP failure accepted") }
+            catch {
+                #expect(error as? SkillHubMirrorTransport.Failure == .httpStatus(status))
+                #expect(SkillHubMirrorTransport.isAvailabilityFailure(error) == (status == 503))
+            }
+            do { _ = try await request(.httpStatus(status)); Issue.record("HTTP failure accepted") }
+            catch { #expect(!(error is SkillHubMirrorTransport.Failure)) }
+        }
+    }
+    @Test func optedInSizeFailureNeverAllowsFailover() async {
+        for mode: SkillHTTPFixture.Mode in [.declaredOversize, .chunkOversize] {
+            do { _ = try await request(mode, classify: true); Issue.record("Oversize response accepted") }
+            catch { #expect(!SkillHubMirrorTransport.isAvailabilityFailure(error)) }
+        }
     }
     @Test func receivesExactLimitAcrossChunks() async throws {
         let received = try await request(.exact)

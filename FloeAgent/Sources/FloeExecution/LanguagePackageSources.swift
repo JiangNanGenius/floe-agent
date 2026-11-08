@@ -4,10 +4,46 @@ import FloeCore
 
 /// One explicit source per ecosystem; never merge indexes by highest version.
 public struct LanguagePackageSources: Codable, Equatable, Sendable {
-    public var pythonIndex: String
+    public var pythonIndex: String {
+        didSet { pythonIndexIsExplicit = true }
+    }
     public var nodeRegistry: String
-    public init(pythonIndex: String = "https://pypi.org/simple/", nodeRegistry: String = "https://registry.npmjs.org/") {
+    /// A Node-only save or the absence of a source file must not opt shell
+    /// commands into the default PyPI URL and overwrite guest pip settings.
+    public private(set) var pythonIndexIsExplicit: Bool
+
+    public init() {
+        self.init(pythonIndex: "https://pypi.org/simple/", nodeRegistry: "https://registry.npmjs.org/", pythonIndexIsExplicit: false)
+    }
+    public init(nodeRegistry: String) {
+        self.init(pythonIndex: "https://pypi.org/simple/", nodeRegistry: nodeRegistry, pythonIndexIsExplicit: false)
+    }
+    public init(pythonIndex: String, nodeRegistry: String = "https://registry.npmjs.org/") {
+        self.init(pythonIndex: pythonIndex, nodeRegistry: nodeRegistry, pythonIndexIsExplicit: true)
+    }
+    private init(pythonIndex: String, nodeRegistry: String, pythonIndexIsExplicit: Bool) {
         self.pythonIndex = pythonIndex; self.nodeRegistry = nodeRegistry
+        self.pythonIndexIsExplicit = pythonIndexIsExplicit
+    }
+    private enum CodingKeys: String, CodingKey { case pythonIndex, nodeRegistry, pythonIndexIsExplicit }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        pythonIndex = try values.decode(String.self, forKey: .pythonIndex)
+        nodeRegistry = try values.decode(String.self, forKey: .nodeRegistry)
+        if values.contains(.pythonIndexIsExplicit) {
+            pythonIndexIsExplicit = try values.decode(Bool.self, forKey: .pythonIndexIsExplicit)
+        } else {
+            // Old saves always wrote BOTH default-valued fields, even for a
+            // Node-only change. A custom Python URL is evidence of a prior
+            // choice; an old Official value is ambiguous and needs a new
+            // explicit Python save before it overrides guest configuration.
+            let parts = URLComponents(string: pythonIndex.trimmingCharacters(in: .whitespacesAndNewlines))
+            pythonIndexIsExplicit = !(parts?.scheme?.lowercased() == "https"
+                && parts?.host?.lowercased() == "pypi.org"
+                && (parts?.port == nil || parts?.port == 443)
+                && ["/simple", "/simple/"].contains(parts?.path ?? ""))
+        }
     }
     public func validated() throws -> Self {
         func url(_ value: String) throws -> String {
@@ -24,7 +60,7 @@ public struct LanguagePackageSources: Codable, Equatable, Sendable {
             }
             return normalized
         }
-        return try Self(pythonIndex: url(pythonIndex), nodeRegistry: url(nodeRegistry))
+        return try Self(pythonIndex: url(pythonIndex), nodeRegistry: url(nodeRegistry), pythonIndexIsExplicit: pythonIndexIsExplicit)
     }
     private static func file(in root: URL) throws -> URL {
         let base = root.standardizedFileURL.resolvingSymlinksInPath()
@@ -49,5 +85,14 @@ public struct LanguagePackageSources: Codable, Equatable, Sendable {
         let value = try validated(), file = try Self.file(in: root)
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try JSONEncoder().encode(value).write(to: file, options: .atomic)
+    }
+
+    /// Saved, validated, environment-local public defaults only. The shell
+    /// backend filters caller-owned ordinary/sensitive names before export.
+    /// No file means no defaults: preserve guest pip config and env verbatim.
+    static func pythonShellDefaults(in root: URL) throws -> [String: String] {
+        let value = try load(in: root)
+        guard value.pythonIndexIsExplicit else { return [:] }
+        return ["PIP_INDEX_URL": value.pythonIndex, "PIP_EXTRA_INDEX_URL": "", "PIP_TRUSTED_HOST": ""]
     }
 }

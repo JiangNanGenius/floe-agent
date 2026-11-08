@@ -11,6 +11,7 @@ struct EnvironmentLanguagePackagesView: View {
     @State private var sources = LanguagePackageSources()
     @State private var editingSource = false
     @State private var sourceDraft = ""
+    @State private var sourceError: String?
     @State private var packages: [EnvironmentLanguagePackageService.Package] = []
     @State private var specification = ""
     @State private var query = ""
@@ -29,6 +30,7 @@ struct EnvironmentLanguagePackagesView: View {
             Section {
                 Button {
                     sourceDraft = language == .python ? sources.pythonIndex : sources.nodeRegistry
+                    sourceError = nil
                     editingSource = true
                 } label: {
                     HStack {
@@ -129,7 +131,7 @@ struct EnvironmentLanguagePackagesView: View {
                         }
                     }
                     Text("packages.registry.policy").font(.caption).foregroundStyle(.secondary)
-                    if let error { Text(error).foregroundStyle(FloeTheme.destructive) }
+                    if let sourceError { Text(sourceError).foregroundStyle(FloeTheme.destructive) }
                 }
                 .navigationTitle(FloeL10n.l("packages.registry.source"))
                 .toolbar {
@@ -219,8 +221,8 @@ struct EnvironmentLanguagePackagesView: View {
             var next = sources
             if language == .python { next.pythonIndex = sourceDraft } else { next.nodeRegistry = sourceDraft }
             sources = try await FloePlatformServices.shared.languagePackageService().sources(environmentID: environmentID, set: next)
-            error = nil; editingSource = false
-        } catch { self.error = error.localizedDescription }
+            sourceError = nil; editingSource = false
+        } catch { sourceError = error.localizedDescription }
     }
     @MainActor private func reload() async {
         guard !loading, !running else { return }
@@ -239,7 +241,11 @@ struct EnvironmentLanguagePackagesView: View {
             collectedAt = Date()
             error = nil
         } catch {
-            self.error = error.localizedDescription
+            if let guestError = error as? LinuxGuestError, case .notRunning = guestError {
+                self.error = String(localized: "environment.packages.linux.not_running")
+            } else {
+                self.error = error.localizedDescription
+            }
         }
     }
 }

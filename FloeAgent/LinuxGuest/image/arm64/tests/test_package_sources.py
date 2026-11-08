@@ -30,7 +30,7 @@ class PackageSourceTransactions(unittest.TestCase):
             "etc/os-release": b'ID=debian\nVERSION_CODENAME=trixie\n',
             "usr/share/keyrings/debian-archive-keyring.gpg": b"opaque fixture; NOT a signature qualification",
             "etc/apt/sources.list": b"deb https://custom.example.invalid/debian trixie main\n",
-            "etc/apt/sources.list.d/debian.sources": b"Types: deb\nURIs: https://deb.debian.org/debian\nSuites: trixie\nComponents: main\n",
+            "etc/apt/sources.list.d/debian.sources": b'Types: deb\n# http://snapshot.debian.org/archive/debian/20261027T000000Z\nURIs: http://deb.debian.org/debian\nSuites: trixie trixie-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.pgp\n\nTypes: deb\n# http://snapshot.debian.org/archive/debian-security/20261027T000000Z\nURIs: http://deb.debian.org/debian-security\nSuites: trixie-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.pgp\n',
         }.items():
             f = self.root / relative
             f.parent.mkdir(parents=True, exist_ok=True)
@@ -45,10 +45,7 @@ class PackageSourceTransactions(unittest.TestCase):
                 for p in self.root.rglob("*") if p.is_file() and not p.is_symlink()}
 
     def probe(self, selection):
-        if selection == "system":
-            return lambda: ("/etc/apt/sources.list", "/etc/apt/sources.list.d/", False)
-        return lambda: ("/etc/floe/package-sources/" + selection + ".sources",
-                        "/etc/floe/package-sources/empty.d/", False)
+        return lambda: ("/etc/apt/sources.list", "/etc/apt/sources.list.d/", False)
 
     def originals_unchanged(self):
         now = self.tree()
@@ -60,30 +57,33 @@ class PackageSourceTransactions(unittest.TestCase):
         self.assertTrue(state["verified"])
         self.assertEqual(self.tree(), self.originals)
 
-    def test_tuna_switch_is_exclusive_and_system_restore_preserves_originals(self):
+    def test_tuna_switch_keeps_standard_paths_and_cli_repository_then_restores_originals(self):
         result = SOURCES.select(self.root, CATALOG, "tuna", probe=self.probe("tuna"))
         self.assertEqual(result["uri"], "https://mirrors.tuna.tsinghua.edu.cn/debian")
-        text = (self.root / "etc/floe/package-sources/tuna.sources").read_text()
+        self.assertEqual(result["sourceList"], "/etc/apt/sources.list")
+        self.assertEqual(result["sourceParts"], "/etc/apt/sources.list.d/")
+        self.assertFalse((self.root / SOURCES.CONF).exists())
+        text = (self.root / SOURCES.MANAGED_SOURCE).read_text()
         self.assertIn("Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg", text)
         self.assertIn("URIs: https://security.debian.org/debian-security", text)
-        self.assertNotIn("deb.debian.org", text)
-        conf = (self.root / SOURCES.CONF).read_text()
-        self.assertIn('Dir::Etc::sourcelist "/etc/floe/package-sources/tuna.sources";', conf)
-        self.assertIn('Dir::Etc::sourceparts "/etc/floe/package-sources/empty.d";', conf)
-        self.assertEqual(list((self.root / SOURCES.EMPTY_DIR).iterdir()), [])
+        self.assertIn("URIs: https://mirrors.tuna.tsinghua.edu.cn/debian", text)
+        custom = self.root / "etc/apt/sources.list.d/model-added.list"
+        custom.write_text("deb https://deb.debian.org/debian trixie-backports main\n")
+        before = custom.read_bytes()
+        self.assertEqual(SOURCES.inspect(self.root, CATALOG, probe=self.probe("tuna"))["sourceParts"], "/etc/apt/sources.list.d/")
         SOURCES.select(self.root, CATALOG, "official", probe=self.probe("official"))
         state = SOURCES.select(self.root, CATALOG, "system", probe=self.probe("system"))
         self.assertEqual(state["selection"], "system")
-        self.assertFalse((self.root / SOURCES.CONF).exists())
+        self.assertEqual(custom.read_bytes(), before)
+        self.assertFalse((self.root / SOURCES.STATE).exists())
         self.originals_unchanged()
 
     def test_effective_path_mismatch_rolls_back_single_commit_fragment(self):
         SOURCES.select(self.root, CATALOG, "official", probe=self.probe("official"))
-        old = (self.root / SOURCES.CONF).read_bytes()
+        old = (self.root / SOURCES.MANAGED_SOURCE).read_bytes()
         with self.assertRaisesRegex(SOURCES.SourceError, "verificationFailed"):
-            SOURCES.select(self.root, CATALOG, "tuna", probe=self.probe("system"))
-        self.assertEqual((self.root / SOURCES.CONF).read_bytes(), old)
-        self.originals_unchanged()
+            SOURCES.select(self.root, CATALOG, "tuna", probe=lambda: ("/wrong.list", "/wrong.d", False))
+        self.assertEqual((self.root / SOURCES.MANAGED_SOURCE).read_bytes(), old)
 
     def test_cancel_after_verified_write_rolls_back_and_keeps_custom_sources(self):
         calls = []
@@ -98,19 +98,19 @@ class PackageSourceTransactions(unittest.TestCase):
 
     def test_cancel_immediately_after_atomic_replace_still_restores_old_fragment(self):
         SOURCES.select(self.root, CATALOG, "official", probe=self.probe("official"))
-        old = (self.root / SOURCES.CONF).read_bytes()
+        old = (self.root / SOURCES.MANAGED_SOURCE).read_bytes()
         real_write = SOURCES.atomic_write
         fired = False
         def interrupted(root, relative, data):
             nonlocal fired
             real_write(root, relative, data)
-            if relative == SOURCES.CONF and not fired:
+            if relative == SOURCES.MANAGED_SOURCE and not fired:
                 fired = True
                 raise SOURCES.SourceError("cancelled")
         with patch.object(SOURCES, "atomic_write", side_effect=interrupted):
             with self.assertRaisesRegex(SOURCES.SourceError, "cancelled"):
                 SOURCES.select(self.root, CATALOG, "tuna", probe=self.probe("tuna"))
-        self.assertEqual((self.root / SOURCES.CONF).read_bytes(), old)
+        self.assertEqual((self.root / SOURCES.MANAGED_SOURCE).read_bytes(), old)
 
     def test_modified_floe_fragment_and_symlink_or_hardlink_are_never_overwritten(self):
         target = self.root / SOURCES.CONF
@@ -154,27 +154,27 @@ class PackageSourceTransactions(unittest.TestCase):
         SOURCES.prepare_image(self.root, CATALOG, check=True)
         SOURCES.prepare_image(self.root, CATALOG)
         self.assertEqual(self.tree(), before)
-        self.assertEqual(SOURCES.existing_selection(self.root, CATALOG), "official")
+        self.assertEqual(SOURCES.inspect(self.root, CATALOG, probe=self.probe("official"))["selection"], "official")
+        self.assertFalse((self.root / SOURCES.CONF).exists())
+        for preset in CATALOG["python"]:
+            self.assertEqual((self.root / SOURCES.PROFILE_DIR / ("pypi-" + preset["id"] + ".conf")).read_text(), "[global]\nindex-url = " + preset["indexURL"] + "\n")
         stored = json.loads((self.root / SOURCES.CATALOG_FILE).read_text())
         self.assertEqual(stored, CATALOG)
         self.assertEqual({p["id"] for p in stored["python"]}, {"official", "tuna"})
-        for name in ["etc/apt/sources.list", "etc/apt/sources.list.d/debian.sources"]:
+        for name in ["etc/apt/sources.list"]:
             self.assertEqual(self.tree()[name], self.originals[name])
 
-    def test_apt_config_query_is_fixed_no_eval_and_binary_override_is_refused(self):
-        result = subprocess_result(b"FLOE_LIST='/etc/floe/package-sources/tuna.sources'\nFLOE_PARTS='/etc/floe/package-sources/empty.d/'\n")
-        with patch.object(SOURCES.subprocess, "run", side_effect=[result, subprocess_result(b"")]) as run:
-            self.assertEqual(SOURCES.apt_probe(), self.probe("tuna")())
-            argv = run.call_args_list[0].args[0]
+    def test_apt_config_query_keeps_normal_directories_and_does_not_block_added_sources(self):
+        result = subprocess_result(b"FLOE_LIST='/etc/apt/sources.list'\nFLOE_PARTS='/etc/apt/sources.list.d/'\n")
+        with patch.object(SOURCES.subprocess, "run", return_value=result) as run:
+            self.assertEqual(SOURCES.apt_probe(), self.probe("system")())
+            self.assertEqual(run.call_count, 1)
+            argv = run.call_args.args[0]
             self.assertEqual(argv[:2], ["/usr/bin/apt-config", "shell"])
             self.assertNotIn("apt-get", argv)
             self.assertNotIn("dump", argv)
-            self.assertEqual(run.call_args_list[1].args[0][-1], "APT::Sources::With")
         result.stdout += b"FLOE_OVERRIDE_apt_get_sourcelist='user.list'\n"
-        with patch.object(SOURCES.subprocess, "run", side_effect=[result, subprocess_result(b"")]):
-            self.assertTrue(SOURCES.apt_probe()[2])
-        normal = subprocess_result(b"FLOE_LIST='/etc/apt/sources.list'\nFLOE_PARTS='/etc/apt/sources.list.d/'\n")
-        with patch.object(SOURCES.subprocess, "run", side_effect=[normal, subprocess_result(b"/etc/apt/custom-extra.sources\n")]):
+        with patch.object(SOURCES.subprocess, "run", return_value=result):
             self.assertTrue(SOURCES.apt_probe()[2])
 
     def test_custom_apt_overrides_are_preserved_and_system_restore_remains_available(self):
@@ -226,6 +226,41 @@ class PackageSourceTransactions(unittest.TestCase):
             SOURCES.select(self.root, CATALOG, "tuna", probe=self.probe("tuna"))
         self.assertEqual(outside.read_bytes(), b"preserved")
         self.assertFalse((self.root / SOURCES.CONF).exists())
+
+    def test_legacy_read_is_nonmutating_and_explicit_selection_removes_only_own_override(self):
+        SOURCES.seed_profiles(self.root, CATALOG)
+        (self.root / SOURCES.EMPTY_DIR).mkdir()
+        conf = self.root / SOURCES.CONF
+        conf.parent.mkdir(parents=True, exist_ok=True)
+        conf.write_bytes(SOURCES.conf_text("tuna"))
+        before = self.tree()
+        legacy = lambda: ("/etc/floe/package-sources/tuna.sources", "/etc/floe/package-sources/empty.d/", False)
+        self.assertTrue(SOURCES.inspect(self.root, CATALOG, probe=legacy)["legacyOverride"])
+        self.assertEqual(self.tree(), before)
+        state = SOURCES.select(self.root, CATALOG, "tuna", probe=self.probe("tuna"))
+        self.assertFalse(state["legacyOverride"])
+        self.assertFalse(conf.exists())
+        SOURCES.select(self.root, CATALOG, "system", probe=self.probe("system"))
+        self.originals_unchanged()
+
+    def test_restore_record_and_cli_modified_distribution_are_preserved(self):
+        source = self.root / SOURCES.MANAGED_SOURCE
+        original = source.read_bytes()
+        source.write_bytes(original + b"\nTypes: deb\nURIs: https://other.example.invalid/debian\nSuites: stable\nComponents: main\n")
+        modified = source.read_bytes()
+        with self.assertRaisesRegex(SOURCES.SourceError, "configurationChanged"):
+            SOURCES.select(self.root, CATALOG, "tuna", probe=self.probe("tuna"))
+        self.assertEqual(source.read_bytes(), modified)
+        source.write_bytes(original)
+        SOURCES.select(self.root, CATALOG, "tuna", probe=self.probe("tuna"))
+        record = self.root / SOURCES.STATE
+        value = json.loads(record.read_text())
+        value["managedFile"] = "etc/unrelated"
+        record.write_text(json.dumps(value))
+        before = self.tree()
+        with self.assertRaisesRegex(SOURCES.SourceError, "configurationChanged"):
+            SOURCES.select(self.root, CATALOG, "system", probe=self.probe("system"))
+        self.assertEqual(self.tree(), before)
 
 
 def subprocess_result(stdout):

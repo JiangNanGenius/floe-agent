@@ -341,7 +341,7 @@ The local runtime uses one shared ARM64 Linux machine. Set CPU and memory global
 
 Settings → Execution Environments → choose project/task → Python·PyPI or Node.js·npm. Confirm the environment before installing; project and shared dependencies have different write locations.
 
-For a running Linux environment, **Debian source** offers Debian official and Tsinghua TUNA. Apply a choice, then refresh the package index before installing. **System configuration** restores the original sources. Python·PyPI → **Source** also offers official and TUNA presets, alongside your custom address; changes apply to later package installations and keep installed packages.
+**Debian source** offers Debian official and Tsinghua TUNA. Start the environment before applying a choice, then refresh the package index before installing. **System configuration** restores the original Debian configuration; other repositories remain available. You can also add or change repositories directly with Linux commands. Python·PyPI → **Source** offers official, TUNA and custom addresses. An explicitly saved Python source is shared by managed installation, shell commands and terminals in that environment; a command's own source settings take precedence. Installed packages are kept.
 
 Commands use the task’s selected environment: on-device Linux, a connected Mac bridge or a configured SSH host. Packages must support that system and architecture; binaries are not interchangeable. In the full IDE, Run shows the target and command. Resolve save errors/conflicts first. Remote single-file execution does not synchronize the entire project and requires the remote runtime, dependencies and assistant service where applicable.
 

@@ -31,7 +31,7 @@ private actor SourceRunner: LinuxCommandRunning {
 
 @Suite("Linux package source presets")
 struct LinuxPackageSourceTests {
-    private let tuna = #"{"selection":"tuna","sourceList":"/etc/floe/package-sources/tuna.sources","sourceParts":"/etc/floe/package-sources/empty.d/","uri":"https://mirrors.tuna.tsinghua.edu.cn/debian","verified":true}"#
+    private let tuna = #"{"selection":"tuna","sourceList":"/etc/apt/sources.list","sourceParts":"/etc/apt/sources.list.d/","uri":"https://mirrors.tuna.tsinghua.edu.cn/debian","verified":true}"#
     private let system = #"{"selection":"system","sourceList":"/etc/apt/sources.list","sourceParts":"/etc/apt/sources.list.d/","uri":null,"verified":true}"#
 
     @Test func catalogContainsOfficialAndTUNAKeepingOfficialSignedSecurity() throws {
@@ -87,7 +87,7 @@ struct LinuxPackageSourceTests {
         let input = try #require(JSONSerialization.jsonObject(with: Data(call.input!.utf8)) as? [String: Any])
         #expect(input["operation"] as? String == "select")
         #expect(input["selection"] as? String == "tuna")
-        let bad = SourceRunner(output: tuna.replacingOccurrences(of: "/etc/floe/package-sources/tuna.sources", with: "/etc/apt/sources.list"))
+        let bad = SourceRunner(output: tuna.replacingOccurrences(of: "/etc/apt/sources.list", with: "/etc/floe/package-sources/tuna.sources"))
         await #expect(throws: (any Error).self) {
             try await LinuxGuestPackageSourceConfiguration.run(environmentID: "owned-b", selection: "tuna", runner: bad, cancellation: nil)
         }
@@ -95,6 +95,20 @@ struct LinuxPackageSourceTests {
         await #expect(throws: (any Error).self) {
             try await LinuxGuestPackageSourceConfiguration.run(environmentID: "owned-b", selection: "tuna", runner: unverified, cancellation: nil)
         }
+    }
+
+    @Test func legacyOverrideCanBeReadButCannotMasqueradeAsNewSelection() async throws {
+        let legacy = tuna.replacingOccurrences(of: "/etc/apt/sources.list.d/", with: "/etc/floe/package-sources/empty.d/")
+            .replacingOccurrences(of: "/etc/apt/sources.list", with: "/etc/floe/package-sources/tuna.sources")
+            .replacingOccurrences(of: "\"verified\":true", with: "\"verified\":true,\"legacyOverride\":true")
+        let read = SourceRunner(output: legacy)
+        #expect(try await LinuxGuestPackageSourceConfiguration.run(environmentID: "owned", selection: nil, runner: read, cancellation: nil).legacyOverride == true)
+        let select = SourceRunner(output: legacy)
+        await #expect(throws: (any Error).self) {
+            try await LinuxGuestPackageSourceConfiguration.run(environmentID: "owned", selection: "tuna", runner: select, cancellation: nil)
+        }
+        #expect(LinuxPackageSourceCatalog.modelInstructions.contains("ordinary exec.shell"))
+        #expect(!LinuxPackageSourceCatalog.modelInstructions.contains("unless the user explicitly selects"))
     }
 
     @Test func unknownChoiceAndCancellationCannotDispatchOrReturnSuccess() async throws {

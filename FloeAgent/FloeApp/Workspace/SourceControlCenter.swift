@@ -403,16 +403,16 @@ final class SourceControlCenter: ObservableObject {
         case .localCommitResolution(let data):
             return data
         case .atomFeed(let url):
-            let atom = try await fetchBounded(
-                request: SkillHubPublicTransport.publicRequest(url: url, accept: "application/atom+xml"),
+            let atom = try await fetchPublicHubBounded(
+                url: url, accept: "application/atom+xml", policyStore: environment.githubTransportMirrors,
                 maximumBytes: SkillHubTransportBudget.maximumBytes(owner: owner, repository: repository, path: nil),
                 diagnostic: "GitHub skill source unavailable for the public curated Hub commit feed")
             try Task.checkCancellation()
             let commit = try SkillHubPublicTransport.commitSHA(fromAtom: atom, owner: owner, repository: repository)
             return SkillHubPublicTransport.commitResolutionData(sha: commit)
         case .pinnedFile(let url):
-            return try await fetchBounded(
-                request: SkillHubPublicTransport.publicRequest(url: url, accept: nil),
+            return try await fetchPublicHubBounded(
+                url: url, accept: nil, policyStore: environment.githubTransportMirrors,
                 maximumBytes: SkillHubTransportBudget.maximumBytes(owner: owner, repository: repository, path: path),
                 diagnostic: "GitHub skill source unavailable for the public curated Hub pinned file")
         case .rejected(let reason):
@@ -438,6 +438,57 @@ final class SourceControlCenter: ObservableObject {
             request: request,
             maximumBytes: SkillHubTransportBudget.maximumBytes(owner: owner, repository: repository, path: path),
             diagnostic: "GitHub skill source unavailable. Check the repository, ref, path and connector access")
+    }
+
+    /// Anonymous official Hub only. Signed bytes are returned to the existing
+    /// verification chain; a content failure never initiates another route.
+    private nonisolated func fetchPublicHubBounded(
+        url: URL, accept: String?, policyStore: GitHubTransportMirrorPolicyStore,
+        maximumBytes: Int, diagnostic: String
+    ) async throws -> Data {
+        let policy = await policyStore.policyRefreshingIfNeeded {
+            try await Self.downloadGitHubTransportManifest()
+        }
+        return try await SkillHubMirrorTransport.load(url, roles: policy.roles) { target in
+            try await SkillGitHubDataRequest(
+                maximumBytes: maximumBytes, diagnostic: diagnostic,
+                classifyAvailability: true
+            ).load(SkillHubPublicTransport.publicRequest(url: target, accept: accept))
+        }
+    }
+
+    /// One immutable discovery snapshot, using compiled routes only. It
+    /// never calls the policy store and cannot recursively trust a mirror.
+    private nonisolated static func downloadGitHubTransportManifest() async throws
+        -> GitHubTransportMirrorPolicyStore.Downloaded {
+        guard let atomURL = SkillHubPublicTransport.mainAtomURL(
+            owner: CuratedSkillHub.owner, repository: CuratedSkillHub.repository) else {
+            throw GitHubTransportManifestFailure.unavailable
+        }
+        let atom = try await SkillHubMirrorTransport.load(atomURL) { target in
+            try await SkillGitHubDataRequest(maximumBytes: 2_097_152,
+                diagnostic: "Skill Hub transport list unavailable", classifyAvailability: true)
+                .load(SkillHubPublicTransport.publicRequest(url: target, accept: "application/atom+xml"))
+        }
+        try Task.checkCancellation()
+        let commit = try SkillHubPublicTransport.commitSHA(fromAtom: atom,
+            owner: CuratedSkillHub.owner, repository: CuratedSkillHub.repository)
+        func fetch(_ path: String, maximumBytes: Int) async throws -> Data {
+            guard let url = SkillHubPublicTransport.rawFileURL(owner: CuratedSkillHub.owner,
+                repository: CuratedSkillHub.repository, commit: commit, path: path) else {
+                throw GitHubTransportManifestFailure.unavailable
+            }
+            return try await SkillHubMirrorTransport.load(url) { target in
+                try await SkillGitHubDataRequest(maximumBytes: maximumBytes,
+                    diagnostic: "Skill Hub transport list unavailable", classifyAvailability: true)
+                    .load(SkillHubPublicTransport.publicRequest(url: target, accept: nil))
+            }
+        }
+        async let payload = fetch(GitHubTransportMirrorManifest.payloadPath,
+                                  maximumBytes: GitHubTransportMirrorManifest.maximumPayloadBytes)
+        async let signature = fetch(GitHubTransportMirrorManifest.signaturePath,
+                                    maximumBytes: GitHubTransportMirrorManifest.maximumSignatureBytes)
+        return try await .init(payload: payload, signature: signature)
     }
 
     /// The delegate appends network chunks off the main actor. Iterating
@@ -902,6 +953,7 @@ final class SkillGitHubDataRequest: NSObject, URLSessionDataDelegate, @unchecked
     private let maximumBytes: Int
     private let diagnostic: String
     private let configuration: URLSessionConfiguration
+    private let classifyAvailability: Bool
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Data, Error>?
     private var session: URLSession?
@@ -910,10 +962,12 @@ final class SkillGitHubDataRequest: NSObject, URLSessionDataDelegate, @unchecked
     private var finished = false
     private var acceptedResponse = false
 
-    init(maximumBytes: Int, diagnostic: String, configuration: URLSessionConfiguration = .ephemeral) {
+    init(maximumBytes: Int, diagnostic: String, configuration: URLSessionConfiguration = .ephemeral,
+         classifyAvailability: Bool = false) {
         self.maximumBytes = max(1, maximumBytes)
         self.diagnostic = diagnostic
         self.configuration = configuration
+        self.classifyAvailability = classifyAvailability
         super.init()
     }
 
@@ -958,7 +1012,11 @@ final class SkillGitHubDataRequest: NSObject, URLSessionDataDelegate, @unchecked
         didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-            complete(.failure(FloeError.syncUnavailable("\(diagnostic). GitHub HTTP status \(status).")))
+            let error: Error = classifyAvailability
+                ? (status == -1 ? SkillHubMirrorTransport.Failure.invalidResponse
+                                : SkillHubMirrorTransport.Failure.httpStatus(status))
+                : FloeError.syncUnavailable("\(diagnostic). GitHub HTTP status \(status).")
+            complete(.failure(error))
             completionHandler(.cancel); return
         }
         guard http.expectedContentLength <= Int64(maximumBytes) else {

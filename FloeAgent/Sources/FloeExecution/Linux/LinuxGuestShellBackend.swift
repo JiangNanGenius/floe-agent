@@ -91,8 +91,14 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
             // verbatim. `SensitiveProcessEnvironment` never enters this
             // string.
             let environmentPreamble = try Self.environmentPreamble(request.environment)
+            let sourcePreamble = try Self.packageSourcePreamble(
+                environment: request.toolEnvironment,
+                ordinaryNames: Set(request.environment.keys),
+                sensitiveNames: Set(sensitive?.names ?? [])
+            )
             let command = LinuxGuestPythonEnvironment.activationPreamble()
                 + LinuxGuestNodeEnvironment.activationPreamble()
+                + sourcePreamble
                 + environmentPreamble
                 + request.command
             let workingDirectory = try Self.guestWorkingDirectory(cwd: request.cwd, root: request.rootURL)
@@ -204,6 +210,8 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
         // sensitive environment travels as the OPENENV envBlock.
         let preamble = LinuxGuestPythonEnvironment.activationPreamble()
             + LinuxGuestNodeEnvironment.activationPreamble()
+            + (try Self.packageSourcePreamble(environment: request.toolEnvironment,
+                ordinaryNames: Set(request.environment.keys), sensitiveNames: Set(sensitive?.names ?? [])))
             + (try Self.environmentPreamble(request.environment))
         let argv = command.isEmpty
             ? ["/bin/sh", "-c", preamble + "export TERM=xterm-256color; stty sane 2>/dev/null; if command -v bash >/dev/null 2>&1; then exec bash --noprofile --norc -i; else exec /bin/sh -i; fi"]
@@ -357,6 +365,22 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
             statements.append("export \(name)=\(quoted);")
         }
         return statements.joined(separator: " ") + " "
+    }
+
+    /// Source settings belong to the resolved environment layer, never to a
+    /// task workspace or a host process environment. Only public validated
+    /// defaults enter argv/staging; explicit ordinary/sensitive process env
+    /// and later shell/pip command options keep their existing precedence.
+    static func packageSourcePreamble(environment: ToolEnvironment?, ordinaryNames: Set<String>,
+                                      sensitiveNames: Set<String>) throws -> String {
+        guard let environment else { return "" }
+        let excluded = ordinaryNames.union(sensitiveNames)
+        // An explicit pip configuration file owns the per-process config.
+        // Do not mask it with App defaults or try to inspect its contents.
+        guard !excluded.contains("PIP_CONFIG_FILE") else { return "" }
+        let defaults = try LanguagePackageSources.pythonShellDefaults(in: environment.writableLayerURL)
+            .filter { !excluded.contains($0.key) }
+        return try environmentPreamble(defaults)
     }
 
     public func exchangeSession(_ request: ShellExchangeRequest, cancellation: CancellationToken?) async throws -> ShellExchangeResult {

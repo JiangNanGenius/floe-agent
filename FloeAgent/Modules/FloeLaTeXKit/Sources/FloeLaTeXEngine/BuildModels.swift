@@ -18,7 +18,9 @@ public struct LaTeXBuildConfiguration: Codable, Hashable, Sendable {
     public var offline: Bool
     public var timeoutSeconds: Int
     public var bundlePath: URL?
-    public init(offline: Bool = false, timeoutSeconds: Int = 120, bundlePath: URL? = nil) {
+    /// Includes repeated TeX passes and bibliography/index processing on a local runtime.
+    public static let defaultTimeoutSeconds = 600
+    public init(offline: Bool = false, timeoutSeconds: Int = LaTeXBuildConfiguration.defaultTimeoutSeconds, bundlePath: URL? = nil) {
         self.offline=offline; self.timeoutSeconds=min(600,max(1,timeoutSeconds)); self.bundlePath=bundlePath
     }
 }

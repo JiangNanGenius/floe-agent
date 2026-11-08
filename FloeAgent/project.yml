@@ -958,6 +958,9 @@ targets:
       - path: Tests/FloeAppTests/OfficialSkillMigrationTests.swift
       - path: Tests/FloeExecutionTests/SkillDependencyExecutionTests.swift
       - path: Tests/FloeExecutionTests/LinuxGuestLanguagePackageTests.swift
+      - path: Tests/FloeAppTests/LaTeXStructuredReceiptTests.swift
+      - path: Tests/FloeSkillsTests/SkillHubMirrorTransportTests.swift
+      - path: Tests/FloeSkillsTests/GitHubTransportMirrorManifestTests.swift
       - path: Tests/FloeExecutionTests/CloudWorkspaceToolContractTests.swift
       - path: Tests/FloeAppTests/TaskLiveActivityTests.swift
       - path: Tests/FloeAppTests/MCPServiceTemplateTests.swift
@@ -1728,6 +1731,9 @@ targets:
       Debug: Vendor/Office/native-host.xcconfig
       Release: Vendor/Office/native-host.xcconfig
     sources:
+      - path: Tests/FloeAppTests/LaTeXStructuredReceiptTests.swift
+      - path: Tests/FloeSkillsTests/SkillHubMirrorTransportTests.swift
+      - path: Tests/FloeSkillsTests/GitHubTransportMirrorManifestTests.swift
       - path: Tests/FloeProvidersTests/DeepSeekProtocolGuardTests.swift
       - path: Tests/FloeProvidersTests/DeepSeekNativeBoundaryTests.swift
       - path: Tests/FloeAgentRuntimeTests/NativeDiscoveryBudgetTests.swift
@@ -1755,6 +1761,7 @@ targets:
       - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsCoreTests/EDABusEntryTests.swift
       - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsUITests/EDBusEntryInteractionTests.swift
       - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsUITests/EDBusInspectorTests.swift
+      - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsUITests/EDBusDrawingTests.swift
       - path: Tests/FloeAppTests/ElectronicsBusEntryContractTests.swift
       - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsCoreTests/EDATechnicalManufacturingTests.swift
       - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsUITests/EDATechnicalManufacturingUITests.swift

@@ -21,15 +21,16 @@ enum EDWorkspaceTab: String, CaseIterable, Identifiable {
 }
 
 enum EDCanvasTool: String, CaseIterable, Identifiable {
-    case select, place, wire, junction, label, via, zone, outline, hole, erase
+    case select, place, wire, bus, junction, label, via, zone, outline, hole, erase
     var id: Self { self }
-    static let schematicTools: [Self] = [.select, .place, .wire, .junction, .label, .erase]
+    static let schematicTools: [Self] = [.select, .place, .wire, .bus, .junction, .label, .erase]
     static let boardTools: [Self] = [.select, .place, .wire, .via, .zone, .outline, .hole, .erase]
     var title: String {
         switch self {
         case .select: edText("选择", "Select")
         case .place: edText("放置元件", "Place part")
         case .wire: edText("连线", "Wire")
+        case .bus: edText("总线", "Bus")
         case .junction: edText("连接点", "Junction")
         case .label: edText("网络标签", "Net label")
         case .via: edText("过孔", "Via")
@@ -44,6 +45,7 @@ enum EDCanvasTool: String, CaseIterable, Identifiable {
         case .select: "cursorarrow"
         case .place: "plus.square"
         case .wire: "point.topleft.down.to.point.bottomright.curvepath"
+        case .bus: "line.3.horizontal"
         case .junction: "circle.fill"
         case .label: "tag"
         case .via: "circle.inset.filled"

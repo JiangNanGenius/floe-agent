@@ -303,6 +303,10 @@ final class AppEnvironment: ObservableObject {
     )
     private lazy var _workspaceCenter = WorkspaceCenter(environment: self)
     private lazy var _sourceControlCenter = SourceControlCenter(environment: self)
+    private lazy var _githubTransportMirrors = GitHubTransportMirrorPolicyStore(
+        persistenceURL: (try? FloeArtifactStore.root())?
+            .appendingPathComponent("GitHubTransport", isDirectory: true)
+            .appendingPathComponent("mirrors-state.v1.json"))
     private lazy var _settingsCenter = SettingsCenter(environment: self)
     private lazy var skillDependencies: SkillDependencyPreparationCenter = {
         let guests = linuxGuestService
@@ -568,6 +572,7 @@ final class AppEnvironment: ObservableObject {
     var sharedDocumentsCenter: SharedDocumentsCenter { .shared }
     var workspaceCenter: WorkspaceCenter { _workspaceCenter }
     var sourceControlCenter: SourceControlCenter { _sourceControlCenter }
+    var githubTransportMirrors: GitHubTransportMirrorPolicyStore { _githubTransportMirrors }
     /// Lazily created on first access; ConversationCenter reads
     /// `defaultAgentMode` through it without a construction cycle.
     var settingsCenter: SettingsCenter { _settingsCenter }

@@ -34,6 +34,7 @@ struct EDCanvasEditor:View {
     @State private var gestureGeneration=UUID()
     @State private var ownedEdit:Task<Void,Never>?
     @State private var pendingBusUnfold:EDBusUnfoldDraft?
+    @State private var busDrawing:EDBusDrawingDraft?
     @State private var choosingBusMember=false
     private var editingEnabled:Bool{!committing && !session.busy && !session.isRouting && !session.isFilling && !session.isClosed}
     private var tool:EDCanvasTool {
@@ -81,6 +82,7 @@ struct EDCanvasEditor:View {
                         EDAPlot.drawPolylinePreview(points,projection:projection,in:&canvas)
                     }
                     if !polygon.isEmpty{EDAPlot.drawPolylinePreview(polygon+(pointer.map{[$0]} ?? []),projection:projection,in:&canvas)}
+                    if let busDrawing{EDAPlot.drawPolylinePreview(busDrawing.points+(pointer.map{[$0]} ?? []),projection:projection,in:&canvas)}
                 }.background(.background)
 #if canImport(UIKit)
                 EDAInputSurface(fingerDrawing:session.fingerDrawingEnabled,
@@ -123,6 +125,7 @@ struct EDCanvasEditor:View {
         case .select:return edText("点选对象，拖动移动","Select an object; drag to move")
         case .place:return edText("点按放置，可连续放置","Tap to place; repeat for another")
         case .wire:return anchor == nil ? (isBoard ? edText("从已连接的焊盘或走线开始","Start on a connected pad or track"):edText("点选起点，再点选终点","Choose a start, then an endpoint")):edText("继续点按连线；完成后按取消","Tap to continue; cancel to finish")
+        case .bus:return edText("逐点绘制总线，最后点完成","Draw the bus point by point, then Finish")
         case .zone,.outline:return edText("逐点绘制边界，最后点完成","Draw the boundary point by point, then Finish")
         case .via:return edText("选择网络，在画布上放置过孔","Choose a net, then place a via")
         case .hole:return edText("在画布上点按放置安装孔","Tap the canvas to place a mounting hole")
@@ -141,12 +144,17 @@ struct EDCanvasEditor:View {
                 }
             }.font(.caption).foregroundStyle(.secondary).lineLimit(2)
             Spacer(minLength:0)
+            if let draft=busDrawing{
+                Button{undoBusPoint()}label:{Image(systemName:"arrow.uturn.backward").frame(minWidth:44,minHeight:44).contentShape(Rectangle())}
+                    .disabled(!editingEnabled).accessibilityLabel(edText("撤销上一点","Undo last point")).accessibilityIdentifier("electronics.undoBusPoint")
+                Button(edText("完成","Finish")){finishBus()}.disabled(!draft.canFinish || !editingEnabled).frame(minHeight:44).accessibilityIdentifier("electronics.finishBus")
+            }
             if !polygon.isEmpty{
                 Button{polygon.removeLast()}label:{Image(systemName:"arrow.uturn.backward").frame(minWidth:44,minHeight:44).contentShape(Rectangle())}.accessibilityLabel(edText("撤销上一点","Undo last point"))
                 Button(edText("完成","Finish")){finishPolygon()}.disabled(polygon.count<3 || committing).frame(minHeight:44).accessibilityIdentifier("electronics.finishPolygon")
             }
             if tool != .select || libraryTool.map({$0 != .select}) == true{
-                Button{resetGesture();onCancel()}label:{Image(systemName:"xmark").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("取消当前工具","Cancel current tool"))
+                Button{resetGesture();onCancel()}label:{Image(systemName:"xmark").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("取消当前工具","Cancel current tool")).disabled(tool == .bus && committing)
             }
         }.padding(.horizontal,10).frame(minHeight:36).background(.bar)
     }
@@ -171,7 +179,7 @@ struct EDCanvasEditor:View {
     private func canCommand(_ value:EDCanvasCommand)->Bool{
         if value != .cancel && value != .properties && !editingEnabled{return false}
         switch value{
-        case .cancel:return true
+        case .cancel:return !(tool == .bus && committing)
         case .properties:return !session.selection.objectIDs.isEmpty
         case .rotate:return tool == .place || selectionCapabilities.contains(.rotate)
         case .flip:return tool == .place || selectionCapabilities.contains(.flip)
@@ -195,7 +203,7 @@ struct EDCanvasEditor:View {
         case .delete:editSelection(.delete)
         }
     }
-    private func resetGesture(){ownedEdit?.cancel();anchor=nil;dragStart=nil;dragEnd=nil;pointer=nil;polygon=[];movingIDs=[];draftRevision=nil;pendingBusUnfold=nil;choosingBusMember=false;gestureGeneration=UUID()}
+    private func resetGesture(){ownedEdit?.cancel();anchor=nil;dragStart=nil;dragEnd=nil;pointer=nil;polygon=[];busDrawing?.cancel();busDrawing=nil;movingIDs=[];draftRevision=nil;pendingBusUnfold=nil;choosingBusMember=false;gestureGeneration=UUID()}
     private var selectedBus:EDABus?{
         guard case .schematic(let sheet)=context,session.selection.objectIDs.count==1 else{return nil}
         return session.project.sheets.first(where:{$0.id==sheet})?.buses.first{session.selection.objectIDs.contains($0.id)}
@@ -260,6 +268,12 @@ struct EDCanvasEditor:View {
                 else{apply([.putWire(sheet:sheet,.init(points:wirePoints(from:first,to:endpoint)))],expectedRevision:expected){if generation==gestureGeneration{anchor=endpoint;draftRevision=expected<UInt64.max ? expected+1:expected}}}
             default:break
             }
+        case .bus:
+            guard case .schematic(let sheet)=context else{return}
+            do{
+                var draft=try busDrawing ?? EDBusDrawingDraft(project:session.project,sheetID:sheet)
+                try draft.append(p);busDrawing=draft;pointer=p;session.selection = .none
+            }catch{session.report(error)}
         case .junction:if case .schematic(let sheet)=context{apply([.putJunction(sheet:sheet,.init(position:p))])}
         case .label:if case .schematic(let sheet)=context{apply([.putLabel(sheet:sheet,.init(name:labelName,position:p))])}
         case .outline,.zone:
@@ -309,6 +323,28 @@ struct EDCanvasEditor:View {
         if isBoard{let d=min(abs(delta.x),abs(delta.y));bend=start + .init(delta.x<0 ? -d:d,delta.y<0 ? -d:d)}
         else{bend = .init(end.x,start.y)}
         return bend==start || bend==end ? [start,end]:[start,bend,end]
+    }
+    private func undoBusPoint(){
+        guard editingEnabled else{return}
+        busDrawing?.undoLastPoint()
+        if busDrawing?.points.isEmpty == true{busDrawing=nil}
+    }
+    private func finishBus(){
+        guard editingEnabled,tool == .bus,case .schematic(let sheet)=context,
+              let draft=busDrawing,draft.sheetID==sheet else{return}
+        do{
+            let plan=try draft.plan(),generation=gestureGeneration
+            committing=true
+            ownedEdit=Task{
+                defer{committing=false;ownedEdit=nil}
+                do{
+                    try await plan.apply(to:session)
+                    if generation==gestureGeneration{
+                        busDrawing=nil;pointer=nil;session.selection=plan.selection;onCancel()
+                    }
+                }catch{session.report(error)}
+            }
+        }catch{session.report(error)}
     }
     private func finishPolygon(){
         guard case .board(let id)=context,polygon.count>=3,!committing else{return}

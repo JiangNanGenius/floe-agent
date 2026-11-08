@@ -24,6 +24,7 @@ struct EnvironmentAptSourcesView: View {
 
     private var catalog: LinuxPackageSourceCatalog? { try? LinuxPackageSourceCatalog.bundled() }
     private var currentState: LinuxGuestAptSourceState? { loadedEnvironmentID == environmentID ? state : nil }
+    private var needsLegacyMigration: Bool { currentState?.legacyOverride == true }
     private var title: String { OfficeInkText.t("Debian 软件源", "Debian source") }
 
     var body: some View {
@@ -37,9 +38,9 @@ struct EnvironmentAptSourcesView: View {
                 }.disabled(working)
                 Button(OfficeInkText.t("应用", "Apply")) {
                     operation = Operation(environmentID: environmentID, selection: draft)
-                }.disabled(working || currentState == nil || draft == currentState?.selection)
+                }.disabled(working || currentState == nil || (draft == currentState?.selection && !needsLegacyMigration))
             } footer: {
-                Text(OfficeInkText.t("仅切换此环境的软件源。原配置保留，选择“系统现有”即可恢复。", "Changes only this environment. Your original configuration is preserved; choose System configuration to restore it."))
+                Text(OfficeInkText.t("管理此环境的 Debian 主源，其它仓库保持可用。也可直接用命令增改软件源。选择“系统现有”可恢复此处的切换。", "Changes this environment’s Debian source and keeps other repositories available. You can also add or edit sources with commands. Choose System configuration to restore this change."))
             }
             if let state = currentState {
                 Section(OfficeInkText.t("当前生效", "Active source")) {
@@ -86,7 +87,11 @@ struct EnvironmentAptSourcesView: View {
                 working = false
             } catch {
                 guard !Task.isCancelled, operation == owner.operation else { return }
-                self.error = error.localizedDescription
+                if let guestError = error as? LinuxGuestError, case .notRunning = guestError {
+                    self.error = String(localized: "environment.packages.linux.not_running")
+                } else {
+                    self.error = error.localizedDescription
+                }
                 // A verification failure can mean a manual config changed;
                 // require a fresh actual read rather than showing old state.
                 state = nil

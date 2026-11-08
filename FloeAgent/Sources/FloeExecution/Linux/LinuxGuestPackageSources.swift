@@ -9,6 +9,9 @@ public struct LinuxGuestAptSourceState: Decodable, Sendable, Equatable {
     public let sourceParts: String
     public let uri: String?
     public let verified: Bool
+    /// Read-only detection of our earlier source-path override. Applying a
+    /// preset explicitly migrates it back to normal Debian source paths.
+    public let legacyOverride: Bool?
 }
 
 /// Fixed configuration transaction through the existing environment-owned
@@ -64,10 +67,18 @@ enum LinuxGuestPackageSourceConfiguration {
         }
         if state.selection != "system" {
             guard let preset = catalog.apt.first(where: { $0.id == state.selection }),
-                  state.uri == preset.uri,
-                  state.sourceList == "/etc/floe/package-sources/\(preset.id).sources",
-                  state.sourceParts.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == "etc/floe/package-sources/empty.d"
+                  state.uri == preset.uri
             else { throw failure("verificationFailed") }
+            if state.legacyOverride == true {
+                guard selection == nil,
+                      state.sourceList == "/etc/floe/package-sources/\(preset.id).sources",
+                      state.sourceParts.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == "etc/floe/package-sources/empty.d"
+                else { throw failure("verificationFailed") }
+            } else {
+                guard state.sourceList == "/etc/apt/sources.list",
+                      state.sourceParts.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == "etc/apt/sources.list.d"
+                else { throw failure("verificationFailed") }
+            }
         }
         return state
     }

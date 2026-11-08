@@ -178,8 +178,8 @@ import FloeLaTeXHostAdapter
         if let ceiling=policy.allowedToolNames {allowed.formIntersection(ceiling)}
         if purpose == .notes {allowed.formIntersection(NotesAssistantToolCatalog.toolNames)}
         guard allowed.contains(name),allowed.contains("exec.shell") else {throw NativeWorkbenchApprovalError.readOnly}
-        struct Arguments:Encodable {let projectID:UUID;let action:String;let expectedRevision:Int64;let offline:Bool;let wait:Bool;let installProfile:String?}
-        let data=try LaTeXDigest.encode(Arguments(projectID:original.id,action:operation,expectedRevision:revision,offline:configuration.offline,wait:true,installProfile:installProfile))
+        struct Arguments:Encodable {let projectID:UUID;let action:String;let expectedRevision:Int64;let offline:Bool;let wait:Bool;let timeoutSeconds:Int;let installProfile:String?}
+        let data=try LaTeXDigest.encode(Arguments(projectID:original.id,action:operation,expectedRevision:revision,offline:configuration.offline,wait:true,timeoutSeconds:configuration.timeoutSeconds,installProfile:installProfile))
         try runner.validateArguments(data)
         var context=base
         context.allowedToolNames=allowed;context.frozenEffectiveCatalogNames=allowed

@@ -26,18 +26,26 @@ basic image adds no science stack beyond the existing NumPy.
    Run `python3 prepare-package-sources.py --root /path/to/clean/base`, then
    the same command with `--check`. This uses the App's single reviewed
    `Sources/FloeExecution/Resources/LinuxPackageSources.json` catalog:
-   official Debian is selected; Tsinghua TUNA is also prepared. Debian
-   security stays official and both profiles use the Debian archive keyring.
-   The catalog also carries the official and TUNA single-index PyPI presets
-   used by the App's existing Python dependency page. No extra index or TLS
-   bypass is configured. Original/custom APT files remain untouched; a
-   Floe-owned apt.conf fragment selects the profile and can be removed to
-   restore system configuration. Never run preparation on a used environment.
-   This changes future clean image bytes and requires a new qualified image
-   ID/manifest/archive; no existing frozen image is relabeled. On the later
-   real guest qualification, read `apt-config shell SOURCE
-   Dir::Etc::sourcelist/f PARTS Dir::Etc::sourceparts/d` and the selected
-   source file to verify effective paths, then qualify normal package work.
+   official Debian is selected and Tsinghua TUNA is prepared. Both APT
+   profiles and the official/TUNA single-index PyPI config files live in
+   `/etc/floe/package-sources`; the same catalog is copied into
+   `/usr/share/floe/package-sources.json`. Debian security stays official,
+   with Debian archive keyring validation and HTTPS. No extra PyPI index or
+   TLS/signature bypass is configured.
+   Keep Debian's normal `/etc/apt/sources.list` and `sources.list.d` paths:
+   do not install a global `Dir::Etc` override. The recipe manages only a
+   recognized Debian distribution file, saves its exact original bytes and
+   leaves other repositories effective. Ordinary `exec.shell` commands may
+   add, edit or select repositories; preset IDs and Settings are convenient
+   choices, not a CLI repository allowlist. Only explicit preset selection
+   migrates a recognized older Floe path override; inspection is read-only.
+   Never prepare an image from a used environment. New bytes require a new
+   actual qualification run, ID/manifest/archive, rather than relabeling an
+   old frozen image. The real guest qualification must read `apt-config
+   shell SOURCE Dir::Etc::sourcelist/f PARTS Dir::Etc::sourceparts/d`, verify
+   TUNA selection and restoration, and confirm an added ordinary source file
+   remains discoverable. Qualify the existing production managed venv/pip
+   path with the same source presets.
 3. Create an ext4 disk with /base and an empty /state, 4096-byte blocks, label
    FLOE_ARM64_BASE and 16 GiB logical capacity. Check it with e2fsck.
    Never copy a used project's mutable disk into a release.

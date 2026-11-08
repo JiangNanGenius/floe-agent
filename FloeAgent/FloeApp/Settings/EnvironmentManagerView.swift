@@ -1120,12 +1120,14 @@ private struct EnvironmentDetailView: View {
                 Text("envdetail.language_deps")
             }
             Section("environment.packages.linux.title") {
-                if linuxAvailable {
+                if linuxOwned {
                     NavigationLink {
                         EnvironmentAptSourcesView(environmentID: report.id)
                     } label: {
                         Label(OfficeInkText.t("Debian 软件源", "Debian source"), systemImage: "network")
                     }.disabled(!writable)
+                }
+                if linuxAvailable {
                     Text("environment.packages.linux.origin").font(.caption).foregroundStyle(.secondary)
                     Button("environment.packages.refresh", systemImage: "arrow.clockwise") {
                         runLinux(["apt-get", "update"], String(localized: "environment.packages.linux.refresh_title"))

@@ -84,7 +84,10 @@ public enum LaTeXHostTools {
     static func output<T:Encodable>(_ value:T)throws->ToolExecutionOutput {
         let data=try LaTeXDigest.encode(value)
         guard data.count<=96*1024 else {throw FloeError.validationFailed("Read a smaller page using offset and limit.")}
-        return .init(summary:String(decoding:data,as:UTF8.self),fullOutputSHA256:LaTeXDigest.hash(data),exitStatus:0)
+        // The generic display preview defaults to 4096 characters. These are
+        // bounded structured receipts consumed by native callers and models;
+        // cutting their JSON would hide the actual build result and diagnostics.
+        return .init(summary:String(decoding:data,as:UTF8.self),fullOutputSHA256:LaTeXDigest.hash(data),exitStatus:0,maximumSummaryCharacters:data.count)
     }
     private struct Inspect:BoundLaTeXTool {
         struct Arguments:Decodable,Sendable {var projectID:UUID;var action:String;var path:String?;var query:String?;var offset:Int?;var limit:Int?;var regularExpression:Bool?;var caseSensitive:Bool?}
@@ -143,16 +146,17 @@ public enum LaTeXHostTools {
         }
     }
     private struct Typeset:BoundLaTeXTool {
-        struct Arguments:Decodable,Sendable {var projectID:UUID;var action:String;var expectedRevision:Int64?;var buildID:UUID?;var offline:Bool?;var wait:Bool?;var installProfile:String?}
+        struct Arguments:Decodable,Sendable {var projectID:UUID;var action:String;var expectedRevision:Int64?;var buildID:UUID?;var offline:Bool?;var wait:Bool?;var timeoutSeconds:Int?;var installProfile:String?}
         static let name="latex.typeset"
-        static let toolDescription="prepare optionally installs the fixed standard/full TeX Live profile through the existing Linux exec.shell/jobs (installProfile), then probes actual engines and auxiliary tool versions in this operation's explicitly resolved environment. If missing, use ordinary exec.shell and the selected Linux package manager, then prepare again. Run the real typesetting service for the inspected revision, with snapshot isolation, actual PDF/SyncTeX and saved logs. start requires expectedRevision and waits for the operation so the owning run stays alive. Offline requires prepared resources and verified network isolation. status reads an owned build; cancel stops it and joins the engine before releasing its source. A successful engine download is not a successful build. Only actually available engines are advertised by latex.inspect."
-        static let parametersJSON=#"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"action":{"type":"string","enum":["prepare","start","status","cancel"]},"expectedRevision":{"type":"integer","minimum":0},"buildID":{"type":"string","format":"uuid"},"offline":{"type":"boolean"},"wait":{"type":"boolean"},"installProfile":{"type":"string","enum":["standard","full"]}},"required":["projectID","action"],"additionalProperties":false}"#
+        static let toolDescription="prepare optionally installs the fixed standard/full TeX Live profile through the existing Linux exec.shell/jobs (installProfile), then probes actual engines and auxiliary tool versions in this operation's explicitly resolved environment. If missing, use ordinary exec.shell and the selected Linux package manager, then prepare again. Run the real typesetting service for the inspected revision, with snapshot isolation, actual PDF/SyncTeX and saved logs. start requires expectedRevision and waits for the operation so the owning run stays alive. timeoutSeconds optionally bounds all passes together (1-600 seconds; default 600). Offline requires prepared resources and verified network isolation. status reads an owned build; cancel stops it and joins the engine before releasing its source. A successful engine download is not a successful build. Only actually available engines are advertised by latex.inspect."
+        static let parametersJSON=#"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"action":{"type":"string","enum":["prepare","start","status","cancel"]},"expectedRevision":{"type":"integer","minimum":0},"buildID":{"type":"string","format":"uuid"},"offline":{"type":"boolean"},"wait":{"type":"boolean"},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":600},"installProfile":{"type":"string","enum":["standard","full"]}},"required":["projectID","action"],"additionalProperties":false}"#
         static let riskLabels:Set<RiskLabel>=[.persistsPersonalData,.executesLocalCode]
         static let isSideEffecting=true
         static let toolEffect:ToolEffect = .internalState
         let host:any LaTeXHostAccess
         func validate(_ a:Arguments)throws {
             guard ["prepare","start","status","cancel"].contains(a.action),a.action != "start" || (a.expectedRevision ?? -1)>=0 else {throw FloeError.validationFailed("Inspect the revision before typesetting.")}
+            guard a.timeoutSeconds == nil || (1...600).contains(a.timeoutSeconds!) else {throw FloeError.validationFailed("Choose a typesetting time limit between 1 and 600 seconds.")}
             guard a.action != "start" || a.wait != false else {throw FloeError.validationFailed("Typesetting must retain its owning run through verified completion. Omit wait or set it to true.")}
             guard a.installProfile==nil || (a.action=="prepare" && ["standard","full"].contains(a.installProfile!)) else {throw FloeError.validationFailed("Install a standard or full toolchain using prepare.")}
         }
@@ -168,7 +172,7 @@ public enum LaTeXHostTools {
             let record:LaTeXBuildRecord
             if a.action == "start" {
                 let engine=try await host.prepareEngine(project:access,context:context,binding:binding)
-                record=try await service.start(store:access.store,expectedRevision:a.expectedRevision,configuration:.init(offline:a.offline ?? false),executionOwner:.init(taskID:context.conversationID!,runID:context.runID,environmentID:context.environmentID),lifetime:access,engineOverride:engine)
+                record=try await service.start(store:access.store,expectedRevision:a.expectedRevision,configuration:.init(offline:a.offline ?? false,timeoutSeconds:a.timeoutSeconds ?? LaTeXBuildConfiguration.defaultTimeoutSeconds),executionOwner:.init(taskID:context.conversationID!,runID:context.runID,environmentID:context.environmentID),lifetime:access,engineOverride:engine)
             } else {
                 let history=try await service.history(store:access.store)
                 guard let selected=a.buildID.flatMap({id in history.first{$0.id==id}}) ?? (a.buildID == nil ? history.first:nil),selected.projectID==a.projectID else {throw FloeError.validationFailed("The requested build does not belong to this project.")}
