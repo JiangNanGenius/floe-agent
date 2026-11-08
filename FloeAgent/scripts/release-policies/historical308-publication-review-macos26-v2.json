@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "floe.historical308.publication-review-v2",
+  "reviewedMainSHA256": "8ef178368c176608cd8d849131619b899f4d5ecfd39d174f9bdfe2ec73e33a71",
+  "normalizerSHA256": "8040072e884c78a85a9e1aef3f817c9fa101e9b47cf81b48065b66510bbe9cb3",
+  "review": {
+    "signedIPA": {
+      "bytes": 830079031,
+      "sha256": "5c268bb0f67c087a5d7df0ce3f84753af4f013de327abf975397bc7b9aaacf34"
+    },
+    "deviceManifest": {
+      "bytes": 1440637339,
+      "files": 5248,
+      "sha256": "e66401fd093b3e3891a166f86bfe595b40e758362f6cfc66b00f47cc06cfeb6b"
+    },
+    "sourceRaw": {
+      "bytes": 1443477727,
+      "files": 5277,
+      "sha256": "a6babd3d994a7160690e5c47caeede4d2e08f417588aa847e9441b8719955504"
+    },
+    "transportRaw": {
+      "bytes": 1440637502,
+      "files": 5249,
+      "sha256": "3042c49b6d6d7ba619528df43c950e94791fd5fb3a4a457d3cc9ef654e5a6ba5"
+    },
+    "metadata": {
+      "bytes": 163,
+      "mappings": 1,
+      "sha256": "233aa2a1584bec7b8364c3bd711d0c6143163c5d19039c700efefa991b192023"
+    },
+    "normalizationProof": {
+      "files": 48,
+      "sha256": "06b53adbcd88bf8accae0a5e755ddb3ef75f3eeaa3ae6279522a243cf0cb3834"
+    }
+  },
+  "canonicalEntries": 5537,
+  "protectedLatest": {
+    "tag": "v1.8.5",
+    "build": "325"
+  }
+}

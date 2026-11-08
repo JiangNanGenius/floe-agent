@@ -306,7 +306,7 @@ class Historical308SourceBindingTests(unittest.TestCase):
         self.assertEqual(text.count('contents: write'), 1)
         self.assertNotIn('gh release create', text); self.assertNotIn('publish-feather', text)
         self.assertNotIn('testflightUpload', text); self.assertNotIn('feather_recovery_trust', text)
-        self.assertIn('historical308-reviewed-v2.json', text)
+        self.assertIn('REVIEW_POLICY: FloeAgent/scripts/release-policies/historical308-reviewed-macos26-v2.json', text)
         reviewed_policy = HERE.parent / 'release-policies/historical308-reviewed-v2.json'
         self.assertEqual(binding.digest(reviewed_policy), '4b2caa0caebc4ab9d1ce192ce2ec37160bed47b49a14cebee395608cc2b021d9')
         policy = binding.read_json(reviewed_policy)

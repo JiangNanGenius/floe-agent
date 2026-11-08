@@ -21,8 +21,8 @@ b = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(b)
 MODE = 'historical-source-binding-v2'
 PUBLISH_WORKFLOW = '.github/workflows/publish-historical308.yml'
-POLICY_FILE = 'historical308-reviewed-v2.json'
-REVIEW_FILE = 'historical308-publication-review-v2.json'
+POLICY_FILE = 'historical308-reviewed-macos26-v2.json'
+REVIEW_FILE = 'historical308-publication-review-macos26-v2.json'
 ACTIVATION_KEYS = ('mode sourceCommit packagingController controllerRef packagingRun packagingRunAttempt '
                    'signerWorkflow unsignedArtifactID unsignedArtifactDigest unsignedArtifactSize policySHA256 reviewSHA256')
 

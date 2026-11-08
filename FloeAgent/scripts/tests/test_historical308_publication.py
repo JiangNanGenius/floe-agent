@@ -181,6 +181,59 @@ class Historical308PublicationTests(unittest.TestCase):
     def fixture(self):
         f = Fixture(); self.addCleanup(f.close); return f
 
+    def test_fixed_macos26_pair_binds_exact_review_and_preserves_both_old_files(self):
+        policies = SCRIPTS / 'release-policies'
+        old_policy_path = policies / 'historical308-reviewed-v2.json'
+        old_review_path = policies / 'historical308-publication-review-v2.json'
+        self.assertEqual(sha(old_policy_path.read_bytes()),
+            '4b2caa0caebc4ab9d1ce192ce2ec37160bed47b49a14cebee395608cc2b021d9')
+        self.assertEqual(sha(old_review_path.read_bytes()),
+            '2c58a38ac34b897a364b4057b879dc3e4803a2e23f7d90afe56fecaac24bbc57')
+        self.assertEqual(v.POLICY_FILE, 'historical308-reviewed-macos26-v2.json')
+        self.assertEqual(v.REVIEW_FILE, 'historical308-publication-review-macos26-v2.json')
+        expected_manifest = {'bytes': 1440637339, 'files': 5248,
+            'sha256': 'e66401fd093b3e3891a166f86bfe595b40e758362f6cfc66b00f47cc06cfeb6b'}
+        expected_policy = json.loads(old_policy_path.read_text())
+        expected_policy['expectedManifest'] = expected_manifest
+        expected_review = json.loads(old_review_path.read_text())
+        expected_review['reviewedMainSHA256'] = sha((SCRIPTS / 'historical308_source_binding.py').read_bytes())
+        expected_review['review']['deviceManifest'] = expected_manifest
+        expected_review['review']['normalizationProof'] = {'files': 48,
+            'sha256': '06b53adbcd88bf8accae0a5e755ddb3ef75f3eeaa3ae6279522a243cf0cb3834'}
+        # Synthetic activation checks data/code compatibility only: it is never
+        # saved as production trust or passed off as a completed producer.
+        f = self.fixture(); activation = dict(f.activation,
+            policySHA256=sha((policies / v.POLICY_FILE).read_bytes()),
+            reviewSHA256=sha((policies / v.REVIEW_FILE).read_bytes()))
+        policy, review, controller = v.authority(activation, SCRIPTS)
+        self.assertEqual(policy, expected_policy); self.assertEqual(review, expected_review)
+        self.assertEqual(review['canonicalEntries'], 5537)
+        self.assertEqual(review['protectedLatest'], {'tag': 'v1.8.5', 'build': '325'})
+        self.assertNotEqual(controller['commit'], policy['app']['sourceCommit'])
+        self.assertNotEqual(activation['unsignedArtifactDigest'], 'sha256:' + expected_manifest['sha256'])
+
+    def test_fixed_pair_rejects_old_activation_hashes_and_mixed_review_even_with_refreshed_hash(self):
+        policies = SCRIPTS / 'release-policies'
+        old_review = json.loads((policies / 'historical308-publication-review-v2.json').read_text())
+        for mutation in ('old policy hash', 'old review hash', 'old validator', 'old manifest', 'old normalizer'):
+            f = self.fixture(); selected = f.authority / 'release-policies'
+            policy_path, review_path = selected / v.POLICY_FILE, selected / v.REVIEW_FILE
+            policy_bytes = (policies / v.POLICY_FILE).read_bytes()
+            review = json.loads((policies / v.REVIEW_FILE).read_text())
+            policy_path.write_bytes(policy_bytes)
+            if mutation == 'old validator': review['reviewedMainSHA256'] = old_review['reviewedMainSHA256']
+            elif mutation == 'old manifest': review['review']['deviceManifest'] = old_review['review']['deviceManifest']
+            elif mutation == 'old normalizer': review['normalizerSHA256'] = '0' * 64
+            review_path.write_bytes(canonical(review) + b'\n')
+            activation = dict(f.activation, policySHA256=sha(policy_path.read_bytes()), reviewSHA256=sha(review_path.read_bytes()))
+            if mutation == 'old policy hash':
+                activation['policySHA256'] = sha((policies / 'historical308-reviewed-v2.json').read_bytes())
+            elif mutation == 'old review hash':
+                activation['reviewSHA256'] = sha((policies / 'historical308-publication-review-v2.json').read_bytes())
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                v.authority(activation, f.authority)
+            self.assertEqual(f.crypto_calls, []); self.assertEqual(f.api_calls, [])
+
     def test_shared_reader_routes_only_explicit_new_mode_through_dual_crypto(self):
         f = self.fixture(); f.binding.write_text('{invalid JSON')
         activation = copy.deepcopy(f.activation)

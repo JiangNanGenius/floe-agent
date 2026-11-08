@@ -45,7 +45,7 @@ jobs:
       EXPECTED_CONTROLLER_SHA: ${{ inputs.controller_sha }}
       EXPECTED_CONTROLLER_REF: ${{ inputs.controller_ref }}
       EXPECTED_POLICY_SHA256: ${{ inputs.policy_sha256 }}
-      REVIEW_POLICY: FloeAgent/scripts/release-policies/historical308-reviewed-v2.json
+      REVIEW_POLICY: FloeAgent/scripts/release-policies/historical308-reviewed-macos26-v2.json
     steps:
       - name: Check out the exact reviewed packaging controller
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
