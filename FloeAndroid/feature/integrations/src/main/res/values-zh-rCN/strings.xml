@@ -93,6 +93,8 @@
     <string name="skills_update_rollback_note">回退会恢复上一版本的内容与权限决定。</string>
     <string name="skills_update_rollback_confirm_title">恢复上次更新前的内容与授权？</string>
     <string name="skills_update_rollback_confirm_message">将恢复上一版本及其权限决定。</string>
+    <!-- 社区 GitHub 来源检查（⇄ credentialUnavailable/githubConnectorAccess） -->
+    <string name="skills_update_connector_access">请检查仓库、引用（分支/标签/提交）、路径以及 GitHub 账户访问权限。</string>
 
     <!-- folder import -->
     <!-- full-catalog detail sheet -->

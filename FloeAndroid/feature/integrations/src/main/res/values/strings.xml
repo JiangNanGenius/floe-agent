@@ -102,6 +102,8 @@
     <string name="skills_update_rollback_note">Rolling back restores the previous content and permission decisions.</string>
     <string name="skills_update_rollback_confirm_title">Restore previous content and grants?</string>
     <string name="skills_update_rollback_confirm_message">This restores the previous version and its permission decisions.</string>
+    <!-- community GitHub source check (⇄ credentialUnavailable/githubConnectorAccess) -->
+    <string name="skills_update_connector_access">Check the repository, ref, path and your GitHub account access.</string>
 
     <!-- folder import (Android surface for the fileImporter step) -->
     <!-- full-catalog detail sheet -->

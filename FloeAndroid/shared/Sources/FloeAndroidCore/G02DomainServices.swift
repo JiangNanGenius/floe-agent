@@ -38,6 +38,34 @@ import FloeAndroidWebTools
 import FloeAndroidShellTools
 import FloeAndroidJobTools
 import FloeEnvironments
+import FloeGit
+
+/// Binds after graph construction so every read uses G04's exact accepted
+/// composition lease. The weak owner avoids a graph -> skills -> graph cycle.
+private final class G02SkillsCredentialLease: GitHubCredentialLeasing, @unchecked Sendable {
+    private let epoch: UInt64
+    private let lock = NSLock()
+    private weak var owner: G02InstalledComposition?
+    private var bound = false
+
+    init(epoch: UInt64) { self.epoch = epoch }
+
+    func bind(_ composition: G02InstalledComposition) -> Bool {
+        lock.withLock {
+            guard !bound, composition.epoch == epoch else { return false }
+            bound = true
+            owner = composition
+            return true
+        }
+    }
+
+    func leasedToken() async throws -> String? {
+        guard let composition = lock.withLock({ owner }) else {
+            throw G04GitCredentialLease.Failure.retired
+        }
+        return try await G04GitCredentialLease(epoch: epoch, installed: composition).leasedToken()
+    }
+}
 
 /// One generation's installed G02 ordinary service graph. Immutable after
 /// build (except the truthful transport-admission propagation); retired as a
@@ -336,6 +364,27 @@ public final class G02InstalledComposition: @unchecked Sendable {
             rootFingerprint: cluster.identity.root.fingerprint)
         // A real skills-init refusal fails the whole build closed (the
         // caller rolls back the self-installed lanes).
+        // ONE qualified HTTP service for BOTH skills transports
+        // (single-session doctrine): the anonymous public Hub transport and
+        // the community connector transport share this exact instance.
+        let skillsHTTP = HTTPRequestService()
+        let publicSkillsTransport = SkillsRemoteTransportComposition.makePublicHubTransport(
+            http: skillsHTTP,
+            mirrorPolicy: AndroidHubMirrorPolicyStore(
+                persistenceURL: rootURL.appendingPathComponent("FloeAgent/GitHubTransport",
+                                                               isDirectory: true)
+                    .appendingPathComponent("mirrors-state.v1.json")))
+        // The community/private connector transport reads the ONE existing
+        // user-configured GitHub credential through the SAME leased-token
+        // seam G04 git tools use (read per request; never cached, logged or
+        // persisted; api.github.com only). The lease carries root/session
+        // ownership across awaits: a stale epoch or a replaced/retired
+        // composition fails the token read closed BEFORE any request.
+        let skillsCredentialLease = G02SkillsCredentialLease(epoch: epoch)
+        let connectorSkillsTransport = SkillsRemoteTransportComposition.makeConnectorTransport(
+            http: skillsHTTP,
+            credentials: GitHubCredentialStore(lease: skillsCredentialLease),
+            anonymous: publicSkillsTransport)
         guard let skillsDomain = try? SkillsDomain(services: SkillsDomain.Services(
             database: database,
             installationRoot: rootURL.appendingPathComponent("FloeAgent/Skills",
@@ -343,12 +392,8 @@ public final class G02InstalledComposition: @unchecked Sendable {
             stagingRoot: rootURL.appendingPathComponent("FloeAgent/SkillsStaging",
                                                         isDirectory: true),
             hostContext: hostContext,
-            transport: SkillsRemoteTransportComposition.makePublicHubTransport(
-                http: HTTPRequestService(),
-                mirrorPolicy: AndroidHubMirrorPolicyStore(
-                    persistenceURL: rootURL.appendingPathComponent("FloeAgent/GitHubTransport",
-                                                                   isDirectory: true)
-                        .appendingPathComponent("mirrors-state.v1.json"))),
+            transport: publicSkillsTransport,
+            connectorTransport: connectorSkillsTransport,
             rewriter: SkillsModelRewriteComposition.makeAdapter(
                 database: database,
                 gateway: SecretGatewayRegistry.shared,
@@ -963,6 +1008,7 @@ public final class G02InstalledComposition: @unchecked Sendable {
         // `artifactRootBound:false` in readiness.
         _ = PlatformToolHostMailbox.shared.bindArtifactRoot(
             ownedRootPath: cluster.identity.root.path, epoch: epoch)
+        guard skillsCredentialLease.bind(installed) else { return nil }
         return installed
     }
 }

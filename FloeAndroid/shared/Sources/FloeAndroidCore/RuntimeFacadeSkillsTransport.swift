@@ -25,11 +25,16 @@
 //                                 zip ≤8 MiB via bounded download)
 //   * github.com                — the source URL shape OfficialSkillHub
 //                                 itself validates (:21-26)
-// A configured connector credential for PRIVATE repos (the iOS
-// usesConnectorCredential path, SkillsCenter:154) is NOT reimplemented:
-// private-ref fetch is honestly refused (the capability stays declared;
-// Main's G03/connector lane owns the real backend). No token is read, no
-// auth header is fabricated.
+// A configured connector credential for PRIVATE/community sources is bound
+// separately: RuntimeFacadeSkillsConnectorTransport.swift adapts the iOS
+// usesConnectorCredential path (2ce48570a SourceControlCenter:399-454) over
+// the SAME qualified HTTPRequestService, reading the existing
+// GitHubCredentialStore lease per request. With a token it reaches ONLY
+// api.github.com (contents route); with NO token the whole community
+// operation keeps the existing anonymous path of THIS transport verbatim.
+// Per-source selection between the two transports lives in
+// SkillsRemoteTransportRouting below; the token never reaches this public
+// transport, a mirror origin, or raw.githubusercontent.com.
 //
 // Signed transport-mirror policy (CONTRACT_V1): official GitHub is always
 // the first route. The service-owned AndroidHubMirrorPolicyStore keeps the
@@ -47,6 +52,7 @@
 import Foundation
 import FloeCore
 import FloeSkills
+import FloeGit
 import FloeTools
 import FloeAndroidWebTools
 
@@ -281,14 +287,91 @@ public struct WebToolsSkillsRemoteTransport: SkillsRemoteTransport {
     }
 }
 
-// MARK: - Honest-unavailable private/connector fetch (declared, not faked)
+// MARK: - Per-source transport routing (validated source identity only)
 
-/// The iOS private-repo path (SkillUpgradeCandidate for community sources
-/// with a connector credential, SkillsCenter:154 `usesCredential`) depends
-/// on SourceControlCenter/GitHub credential stores NOT present in the G02
-/// overlay. Until Main binds that backend, private fetch is EXACTLY this:
-/// typed refusal, capability retained. The public-web hub path above is
-/// unaffected. No token is read here, no header is faked.
+/// The ONE routing rule for the two production transports, decided from the
+/// VALIDATED source identity — never from a model-supplied skill id or an
+/// untrusted URL. `GitHubSkillSource.init` has already enforced the
+/// owner/repository charset+length rules, the ref rules and the path
+/// traversal rules before any value reaches this discriminator.
+///
+/// Public/official shapes (⇄ the iOS `SkillHubPublicTransport` short-circuit
+/// and `usesConnectorCredential = !OfficialSkillHub.skillIDs.contains(id)`,
+/// 2ce48570a): the official catalog path in JiangNanGenius/floe-agent and
+/// either channel catalog path in JiangNanGenius/floe-skill-hub keep the
+/// UNCHANGED anonymous public mirror transport. Every other validated
+/// source is a community source and uses the connector transport (token
+/// when configured, anonymous official API otherwise — a missing token is
+/// never a blanket refusal, and the source UI cannot prove private/public
+/// from a URL).
+public enum SkillsRemoteTransportRouting {
+    public static func isOfficialHubSource(_ source: GitHubSkillSource) -> Bool {
+        if source.owner == OfficialSkillHub.owner,
+           source.repository == OfficialSkillHub.repository {
+            return source.path == OfficialSkillHub.catalogPath
+        }
+        if source.owner == CuratedSkillHub.owner,
+           source.repository == CuratedSkillHub.repository {
+            return source.path == CuratedSkillHub.catalogPath(for: .ios)
+                || source.path == CuratedSkillHub.catalogPath(for: .android)
+        }
+        return false
+    }
+
+    public static func usesConnectorTransport(for source: GitHubSkillSource) -> Bool {
+        !isOfficialHubSource(source)
+    }
+
+    /// The domain-facing per-source router. `publicHub` keeps the signed
+    /// mirror policy, redirect stripping and hub budgets untouched;
+    /// `connector` carries the leased connector credential for community
+    /// sources only. Finder envelopes are public shapes and always stay on
+    /// the public transport.
+    public static func transport(for source: GitHubSkillSource,
+                                 connector: any SkillsRemoteTransport,
+                                 publicHub: any SkillsRemoteTransport) -> any SkillsRemoteTransport {
+        usesConnectorTransport(for: source) ? connector : publicHub
+    }
+}
+
+/// The SkillsDomain-bound router: every resolve/fetch closure in the domain
+/// rides this single value, so install AND upgrade-check selection is the
+/// same validated-identity decision at every call site. Both transports
+/// share the SAME qualified HTTPRequestService (single-session doctrine) —
+/// this router adds no session, engine or policy of its own.
+public struct SkillsRemoteTransportRouter: SkillsRemoteTransport {
+    private let connector: any SkillsRemoteTransport
+    private let publicHub: any SkillsRemoteTransport
+
+    public init(connector: any SkillsRemoteTransport, publicHub: any SkillsRemoteTransport) {
+        self.connector = connector
+        self.publicHub = publicHub
+    }
+
+    public func resolveCommit(_ source: GitHubSkillSource) async throws -> String {
+        try await SkillsRemoteTransportRouting
+            .transport(for: source, connector: connector, publicHub: publicHub)
+            .resolveCommit(source)
+    }
+
+    public func fetch(_ source: GitHubSkillSource, commit: String,
+                      path: String) async throws -> Data {
+        try await SkillsRemoteTransportRouting
+            .transport(for: source, connector: connector, publicHub: publicHub)
+            .fetch(source, commit: commit, path: path)
+    }
+
+    public func fetchFinderEnvelope(url: URL) async throws -> Data {
+        try await publicHub.fetchFinderEnvelope(url: url)
+    }
+}
+
+// MARK: - Honest-unavailable fallback (no connector transport bound)
+
+/// Explicit unavailable adapter retained for existing consumers. It is
+/// neither the production binding nor the no-token fallback: existing
+/// callers retain their configured public transport, while production
+/// binds the credential-aware adapter at G02DomainServices.
 public struct SkillsConnectorFetchUnavailable: SkillsRemoteTransport {
     public init() {}
     public func resolveCommit(_ source: GitHubSkillSource) async throws -> String {
@@ -310,9 +393,8 @@ public struct SkillsConnectorFetchUnavailable: SkillsRemoteTransport {
 /// `HTTPRequestService` (bounded incremental session over `FloeTransport`,
 /// public-target/redirect policy, cookie/credential-store-free configuration)
 /// behind the allow-listed adapter above. Ordinary public HTTPS resolveCommit/
-/// fetch/Finder requests are therefore genuinely available once the host
-/// binds the transport; a private/connector-credential source stays typed
-/// unavailable (its iOS credential store is not part of G02).
+/// fetch/Finder requests use the public adapter; production separately
+/// binds the existing credential lease for community/private sources.
 public enum SkillsRemoteTransportComposition {
     /// One transport, one session: create the qualified HTTP service here.
     public static func makePublicHubTransport() -> any SkillsRemoteTransport {
@@ -333,5 +415,23 @@ public enum SkillsRemoteTransportComposition {
         http: HTTPRequestService,
         mirrorPolicy: AndroidHubMirrorPolicyStore) -> any SkillsRemoteTransport {
         WebToolsSkillsRemoteTransport(http: http, mirrorPolicy: mirrorPolicy)
+    }
+
+    /// Production community/private connector binding: the SAME qualified
+    /// HTTP service (single-session doctrine — callers pass the SAME
+    /// instance they gave `makePublicHubTransport`), the existing leased
+    /// GitHub credential store (read per request; never cached here), and
+    /// the public transport as the anonymous delegate: tokenless community
+    /// sources keep the existing immutable raw path through it, and it
+    /// keeps every Finder envelope. `apiBase` stays pinned to api.github.com
+    /// in production; the loopback override exists solely for the host test
+    /// fixture.
+    public static func makeConnectorTransport(
+        http: HTTPRequestService,
+        credentials: GitHubCredentialStore,
+        anonymous publicHub: any SkillsRemoteTransport,
+        apiBase: URL = WebToolsSkillsConnectorTransport.productionAPIBase) -> any SkillsRemoteTransport {
+        WebToolsSkillsConnectorTransport(http: http, credentials: credentials,
+                                         anonymousTransport: publicHub, apiBase: apiBase)
     }
 }

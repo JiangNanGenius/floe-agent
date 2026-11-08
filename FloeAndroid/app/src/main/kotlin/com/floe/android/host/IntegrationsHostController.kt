@@ -1418,13 +1418,13 @@ class IntegrationsHostController internal constructor(
                         val sheet = state.upgrade
                         if (sheet != null && sheet.skillId == requestedSkillId) {
                             state.copy(upgrade = sheet.copy(
-                                checkInFlight = false, errorMessage = outcome.code))
+                                checkInFlight = false, errorMessage = skillInstallMessage(outcome.code, outcome.reason)))
                         } else state
                     }
                 }
                 updateDestination {
                     it.copy(skills = it.skills.copy(
-                        formOutcome = SkillsFormOutcomeUi(formId, false, outcome.code),
+                        formOutcome = SkillsFormOutcomeUi(formId, false, skillInstallMessage(outcome.code, outcome.reason)),
                     ))
                 }
             }
@@ -1434,19 +1434,24 @@ class IntegrationsHostController internal constructor(
                         val sheet = state.upgrade
                         if (sheet != null && sheet.skillId == requestedSkillId) {
                             state.copy(upgrade = sheet.copy(
-                                checkInFlight = false, errorMessage = outcome.code))
+                                checkInFlight = false, errorMessage = skillInstallMessage(outcome.code, outcome.reason)))
                         } else state
                     }
                 }
                 updateDestination {
                     it.copy(skills = it.skills.copy(
-                        formOutcome = SkillsFormOutcomeUi(formId, false, outcome.code),
+                        formOutcome = SkillsFormOutcomeUi(formId, false, skillInstallMessage(outcome.code, outcome.reason)),
                     ))
                 }
             }
             else -> Unit
         }
     }
+
+    private fun skillInstallMessage(code: String, reason: String): String =
+        if (reason == "githubConnectorAccess") {
+            host.appContext.getString(com.floe.android.feature.integrations.R.string.skills_update_connector_access)
+        } else code
 
     override fun setSkillEnabled(
         skillId: String,

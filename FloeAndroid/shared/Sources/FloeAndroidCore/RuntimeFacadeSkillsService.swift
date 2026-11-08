@@ -120,10 +120,8 @@ public struct SkillsHostContextUnavailable: SkillsHostContextProviding {
 /// GitHub hub fetch transport. Production binds the ORIGINAL WebTools
 /// bounded HTTP path (RuntimeFacadeSkillsTransport.swift — the qualified
 /// FloeAndroidWebTools session over FloeTransport, NOT a second simple-HTTP
-/// tool). Private/connector-credential fetch (the iOS
-/// SourceControlCenter.skillRepositoryData path) remains a declared
-/// unavailable host/G03 dependency: fetch refuses typed BEFORE any effect
-/// while the capability definition is retained.
+/// tool). Production routes community/private sources through the existing
+/// GitHub credential lease, retaining anonymous access when unconfigured.
 public protocol SkillsRemoteTransport: Sendable {
     func resolveCommit(_ source: GitHubSkillSource) async throws -> String
     func fetch(_ source: GitHubSkillSource, commit: String, path: String) async throws -> Data
@@ -607,7 +605,15 @@ public actor SkillsDomain {
         /// directory under the same trusted root.
         public let stagingRoot: URL
         public let hostContext: any SkillsHostContextProviding
+        /// The anonymous public transport for official/curated Hub sources
+        /// (signed mirror policy, immutable raw fetches, Finder envelopes).
         public let transport: any SkillsRemoteTransport
+        /// The connector transport for community/private sources (the iOS
+        /// usesConnectorCredential path over the SAME qualified HTTP
+        /// service). Existing callers without a connector retain their
+        /// configured anonymous transport. Production binds the real
+        /// connector adapter at G02DomainServices.
+        public let connectorTransport: any SkillsRemoteTransport
         public let rewriter: any SkillModelRewriting
         public let ownedWork: ConfigOwnedWorkLifecycle
         public let toolWork: FacadeToolWorkCoordinator
@@ -616,6 +622,7 @@ public actor SkillsDomain {
         public init(database: DatabaseManager, installationRoot: URL, stagingRoot: URL,
                     hostContext: any SkillsHostContextProviding,
                     transport: any SkillsRemoteTransport,
+                    connectorTransport: (any SkillsRemoteTransport)? = nil,
                     rewriter: any SkillModelRewriting,
                     ownedWork: ConfigOwnedWorkLifecycle,
                     toolWork: FacadeToolWorkCoordinator,
@@ -626,6 +633,7 @@ public actor SkillsDomain {
             self.stagingRoot = stagingRoot
             self.hostContext = hostContext
             self.transport = transport
+            self.connectorTransport = connectorTransport ?? transport
             self.rewriter = rewriter
             self.ownedWork = ownedWork
             self.toolWork = toolWork
@@ -643,7 +651,15 @@ public actor SkillsDomain {
         self.validator = SkillPackageValidator()
         self.fileManager = .default
         self.hostContext = services.hostContext
-        self.transport = services.transport
+        // Per-source selection (validated source identity, never a
+        // model-supplied id) is transport-level: official/curated Hub
+        // shapes keep the anonymous public transport (signed mirror policy
+        // unchanged); community/private sources use the connector transport
+        // over the SAME qualified HTTP service. Every resolve/fetch closure
+        // below rides this ONE router, so install and upgrade-check take
+        // the same route; Finder envelopes stay public.
+        self.transport = SkillsRemoteTransportRouter(
+            connector: services.connectorTransport, publicHub: services.transport)
         self.rewriter = services.rewriter
         self.ownedWork = services.ownedWork
         self.toolWork = services.toolWork
@@ -2240,6 +2256,10 @@ public actor SkillsDomain {
                 guard let source else {
                     throw ConfigDomainError(code: .notFound, reason: "upgradeSourceMissing")
                 }
+                // Community source: the domain-bound router selects the
+                // connector transport for this validated source identity
+                // (token when configured, anonymous official API otherwise)
+                // while Hub-shaped sources keep the public transport.
                 let (commit, proposed) = try await GitHubSkillDownload.stage(
                     source: source, at: packageRoot, markdownBase: installed,
                     resolve: { [transport] src in try await transport.resolveCommit(src) },
@@ -3197,6 +3217,30 @@ public actor SkillsDomain {
             default:
                 return ConfigDomainError(code: .invalidEnvelope,
                                          reason: "curated.\(safe(failure))")
+            }
+        }
+        if let failure = error as? SkillsConnectorFetchFailure {
+            switch failure {
+            case .officialHubSourceRefused:
+                // A Hub-shaped source reached the connector adapter: routing
+                // invariant broken, fail closed without any network claim.
+                return ConfigDomainError(code: .invalidEnvelope, reason: "connectorHubSource")
+            case .accessDenied:
+                // 401/403/404 on the community route — honest, actionable:
+                // check the repository, ref, path and GitHub account access
+                // (Connect a GitHub account for private repositories). Never
+                // the claim that every 404 proves a private repository.
+                return ConfigDomainError(code: .credentialUnavailable,
+                                         reason: "githubConnectorAccess")
+            case .oversized:
+                return ConfigDomainError(code: .transportUnavailable,
+                                         reason: "connectorOversized")
+            case .commitUnresolvable:
+                return ConfigDomainError(code: .transportUnavailable,
+                                         reason: "connectorCommitUnresolvable")
+            case .status:
+                return ConfigDomainError(code: .transportUnavailable,
+                                         reason: "connectorStatus")
             }
         }
         if error is SkillUpgradeError || error is SkillInstallError {

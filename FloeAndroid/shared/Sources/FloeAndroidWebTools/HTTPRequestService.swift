@@ -82,6 +82,7 @@ public enum HTTPRequestError: Error, Sendable, LocalizedError {
     case invalidMethod(String)
     case invalidHeaders(String)
     case privateNetworkTarget(String)
+    case responseTooLarge(Int64)
     case requestFailed(String)
 
     public var errorDescription: String? {
@@ -91,6 +92,7 @@ public enum HTTPRequestError: Error, Sendable, LocalizedError {
         case .invalidMethod(let method): "Unsupported HTTP method: \(method)"
         case .invalidHeaders(let detail): "Invalid headers: \(detail)"
         case .privateNetworkTarget(let host): "Private or non-public network target is not allowed: \(host)"
+        case .responseTooLarge(let cap): "HTTP request failed: download exceeds the \(cap)-byte limit"
         case .requestFailed(let detail): "HTTP request failed: \(detail)"
         }
     }
@@ -308,7 +310,8 @@ public struct HTTPRequestService: Sendable {
         timeout: TimeInterval,
         maxBytes: Int,
         to destination: URL,
-        cancellation: CancellationToken? = nil
+        cancellation: CancellationToken? = nil,
+        headers: [String: String] = [:]
     ) async throws -> DownloadResult {
         try cancellation?.throwIfCancelled()
         if allowsPrivateNetwork {
@@ -319,6 +322,12 @@ public struct HTTPRequestService: Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = max(1, min(timeout, 120))
+        for (key, value) in headers {
+            guard PublicNetworkTargetPolicy.isAllowedHeader(key) else {
+                throw HTTPRequestError.invalidHeaders("header is not allowed: \(key)")
+            }
+            request.setValue(value, forHTTPHeaderField: key)
+        }
 
         let (temporary, response): (URL, URLResponse)
         let downloadTask = Task { try await self.session.download(for: request) }
@@ -360,7 +369,7 @@ public struct HTTPRequestService: Sendable {
         let cap = Int64(max(1, min(maxBytes, 64 * 1_024 * 1_024)))
         guard size <= cap else {
             try? FileManager.default.removeItem(at: temporary)
-            throw HTTPRequestError.requestFailed("download exceeds the \(cap)-byte limit")
+            throw HTTPRequestError.responseTooLarge(cap)
         }
         do {
             try FileManager.default.moveItem(at: temporary, to: destination)
