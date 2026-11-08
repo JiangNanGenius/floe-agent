@@ -1,0 +1,110 @@
+name: Prepare historical308 V2 source binding (no publication)
+
+# This is a preparation controller, not a release publisher. A reviewed policy
+# is intentionally not supplied with this route. Adding/enabling one requires
+# the separate historical source/controller policy decision.
+on:
+  workflow_dispatch:
+    inputs:
+      controller_sha:
+        description: Exact reviewed packaging-controller commit, distinct from the App source
+        required: true
+        type: string
+      controller_ref:
+        description: Exact immutable packaging-controller tag ref
+        required: true
+        type: string
+      policy_sha256:
+        description: SHA256 of the separately reviewed preparation-only policy file
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: historical308-preparation
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: macos-26
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_CONTROLLER_SHA: ${{ inputs.controller_sha }}
+      EXPECTED_CONTROLLER_REF: ${{ inputs.controller_ref }}
+      EXPECTED_POLICY_SHA256: ${{ inputs.policy_sha256 }}
+      REVIEW_POLICY: FloeAgent/scripts/release-policies/historical308-reviewed-v2.json
+    steps:
+      - name: Check out the exact reviewed packaging controller
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate reviewed policy and both source authorities before downloading bytes
+        run: |
+          set -euo pipefail
+          test "$GITHUB_SHA" = "$EXPECTED_CONTROLLER_SHA"
+          test "$GITHUB_REF" = "$EXPECTED_CONTROLLER_REF"
+          test "$(shasum -a 256 "$REVIEW_POLICY" | cut -d ' ' -f1)" = "$EXPECTED_POLICY_SHA256"
+          PYTHONPATH=FloeAgent/scripts python3 - <<'PY'
+          import os
+          import historical308_source_binding as binding
+          policy = binding.read_json(os.environ['REVIEW_POLICY'])
+          binding.validate_policy(policy)
+          binding.check_sources(policy, binding.context_controller(), binding.github_api,
+                                completed_controller=False)
+          PY
+      - name: Check out the immutable original App producer separately
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: v1.7.67
+          path: app-source
+          sparse-checkout: FloeAgent/scripts
+          persist-credentials: false
+      - name: Download only the pinned original artifacts into private staging
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/historical308"
+          source_sha="$(jq -r .app.sourceCommit "$REVIEW_POLICY")"
+          test "$(git -C app-source rev-parse HEAD)" = "$source_sha"
+          artifact_id="$(jq -r .original.artifactID "$REVIEW_POLICY")"
+          asset_id="$(jq -r .transport.assetID "$REVIEW_POLICY")"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/historical308/original.zip"
+          gh api "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" \
+            -H 'Accept: application/octet-stream' > "$RUNNER_TEMP/historical308/transport.zip"
+      - name: Prepare with the normal unsigned producer and complete device manifests
+        run: |
+          set -euo pipefail
+          python3 FloeAgent/scripts/historical308_source_binding.py prepare \
+            --policy "$REVIEW_POLICY" \
+            --original-archive "$RUNNER_TEMP/historical308/original.zip" \
+            --transport-archive "$RUNNER_TEMP/historical308/transport.zip" \
+            --work "$RUNNER_TEMP/historical308/work" \
+            --output "$RUNNER_TEMP/historical308/subjects" \
+            --packager app-source/FloeAgent/scripts/package_unsigned_ipa.sh
+      - name: Genuinely attest both the IPA and its minimal source binding
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            ${{ runner.temp }}/historical308/subjects/Floe-Agent-1.7.67-build308-unsigned.ipa
+            ${{ runner.temp }}/historical308/subjects/FLOE-HISTORICAL-SOURCE-BINDING.json
+      - name: Retain private preparation subjects and complete manifest for review
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: historical308-preparation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/historical308/subjects/
+            ${{ runner.temp }}/historical308/work/DEVICE-MANIFEST.json
+            ${{ runner.temp }}/historical308/work/APPLEDOUBLE-METADATA.json
+            ${{ runner.temp }}/historical308/work/NORMALIZATION-PROOF.json
+          if-no-files-found: error
+          retention-days: 30
+
+# A subsequent read-only verifier requires this run to have completed
+# successfully. No same-run in-progress state can become publication success.
+# No release creation, feed update, signing identity or TestFlight action exists.

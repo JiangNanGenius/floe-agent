@@ -1,0 +1,323 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Preparation-only historical308 source binding V2",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 2
+    },
+    "kind": {
+      "const": "floe.historical308.source-binding"
+    },
+    "policySHA256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "app": {
+      "type": "object",
+      "properties": {
+        "tag": {
+          "const": "v1.7.67"
+        },
+        "tagObjectSHA": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "sourceCommit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "version": {
+          "const": "1.7.67"
+        },
+        "build": {
+          "const": "308"
+        },
+        "bundleIdentifier": {
+          "const": "org.floeagent.ios"
+        }
+      },
+      "required": [
+        "tag",
+        "tagObjectSHA",
+        "sourceCommit",
+        "version",
+        "build",
+        "bundleIdentifier"
+      ],
+      "additionalProperties": false
+    },
+    "original": {
+      "type": "object",
+      "properties": {
+        "runID": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "runAttempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifactID": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "archiveSHA256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "archiveBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "signedIPA": {
+          "type": "object",
+          "properties": {
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "sha256",
+            "bytes"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "runID",
+        "runAttempt",
+        "artifactID",
+        "archiveSHA256",
+        "archiveBytes",
+        "signedIPA"
+      ],
+      "additionalProperties": false
+    },
+    "transport": {
+      "type": "object",
+      "properties": {
+        "archiveSHA256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "archiveBytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "archiveSHA256",
+        "archiveBytes"
+      ],
+      "additionalProperties": false
+    },
+    "deviceManifest": {
+      "type": "object",
+      "properties": {
+        "normalization": {
+          "const": "apple-fixed-adhoc-remove-and-paired-appledouble-v2"
+        },
+        "canonical": {
+          "type": "object",
+          "properties": {
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "files": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "sha256",
+            "files",
+            "bytes"
+          ],
+          "additionalProperties": false
+        },
+        "sourceRaw": {
+          "type": "object",
+          "properties": {
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "files": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "sha256",
+            "files",
+            "bytes"
+          ],
+          "additionalProperties": false
+        },
+        "transportRaw": {
+          "type": "object",
+          "properties": {
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "files": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "sha256",
+            "files",
+            "bytes"
+          ],
+          "additionalProperties": false
+        },
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "mappings": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "sha256",
+            "mappings",
+            "bytes"
+          ],
+          "additionalProperties": false
+        },
+        "normalizationProof": {
+          "type": "object",
+          "properties": {
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "files": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "sha256",
+            "files"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "normalization",
+        "canonical",
+        "sourceRaw",
+        "transportRaw",
+        "metadata",
+        "normalizationProof"
+      ],
+      "additionalProperties": false
+    },
+    "ipa": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "const": "Floe-Agent-1.7.67-build308-unsigned.ipa"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "name",
+        "sha256",
+        "bytes"
+      ],
+      "additionalProperties": false
+    },
+    "controller": {
+      "type": "object",
+      "properties": {
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "ref": {
+          "type": "string",
+          "pattern": "^refs/tags/[A-Za-z0-9][A-Za-z0-9._/-]*$"
+        },
+        "runID": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "runAttempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "workflow": {
+          "const": ".github/workflows/prepare-historical308.yml"
+        }
+      },
+      "required": [
+        "commit",
+        "ref",
+        "runID",
+        "runAttempt",
+        "workflow"
+      ],
+      "additionalProperties": false
+    },
+    "appRebuilt": {
+      "const": false
+    },
+    "unsigned": {
+      "const": true
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "kind",
+    "policySHA256",
+    "app",
+    "original",
+    "transport",
+    "deviceManifest",
+    "ipa",
+    "controller",
+    "appRebuilt",
+    "unsigned"
+  ],
+  "additionalProperties": false
+}

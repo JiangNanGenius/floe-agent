@@ -6,6 +6,7 @@ original device-build artifact. Its controller SHA is never called the App SHA.
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -46,7 +47,7 @@ def validate_record(record, policy, *, tag, source_sha, ipa):
 
 
 def verify(ipa, tag, source_sha, trust, provenance=None, invoke=subprocess.run,
-           api_get=github_api):
+           api_get=github_api, historical_authority_root=None):
     ipa = Path(ipa)
     require(re.fullmatch(r'v\d+\.\d+\.\d+(?:-beta\.\d+)?', tag), 'Invalid release tag')
     require(re.fullmatch(r'[0-9a-f]{40}', source_sha), 'Invalid source digest')
@@ -59,6 +60,14 @@ def verify(ipa, tag, source_sha, trust, provenance=None, invoke=subprocess.run,
                 '--signer-workflow', REPOSITORY + '/.github/workflows/release-unsigned-ipa.yml'], check=True)
         return {'mode': 'original-source', 'sourceCommit': source_sha}
     require(policy['sourceCommit'] == source_sha, 'Trusted App source differs from immutable tag')
+    if policy.get('mode') == 'historical-source-binding-v2':
+        require(provenance is not None, 'Attested historical source binding is mandatory')
+        spec = importlib.util.spec_from_file_location('historical308_publication',
+            Path(__file__).with_name('historical308_publication.py'))
+        historical = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(historical)
+        return historical.verify(ipa, provenance, policy, invoke=invoke, api_get=api_get,
+            authority_root=historical_authority_root or Path(__file__).resolve().parent)
     require(re.fullmatch(r'[0-9a-f]{40}', policy['packagingController']), 'Invalid trusted controller')
     if policy.get('mode') == 'tagged-workflow-dispatch':
         require(provenance is None, 'Dispatch policy does not accept a recovery record')
@@ -111,13 +120,19 @@ def verify(ipa, tag, source_sha, trust, provenance=None, invoke=subprocess.run,
             'packagingController': policy['packagingController'], 'packagingRun': policy['packagingRun']}
 
 
-if __name__ == '__main__':
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--ipa', required=True, type=Path)
     parser.add_argument('--tag', required=True)
     parser.add_argument('--source-sha', required=True)
     parser.add_argument('--trust', required=True, type=Path)
     parser.add_argument('--provenance', type=Path)
-    args = parser.parse_args()
+    parser.add_argument('--historical-authority-root', type=Path)
+    args = parser.parse_args(argv)
     print(json.dumps(verify(args.ipa, args.tag, args.source_sha,
-                            json.loads(args.trust.read_text()), args.provenance)))
+                            json.loads(args.trust.read_text()), args.provenance,
+                            historical_authority_root=args.historical_authority_root)))
+
+
+if __name__ == '__main__':
+    main()

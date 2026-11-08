@@ -65,6 +65,24 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+      - name: Check out the frozen historical controller
+        if: inputs.historical_release == true
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          path: historical-controller
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select the verified code root
+        shell: bash
+        run: |
+          set -euo pipefail
+          code_root="$GITHUB_WORKSPACE"
+          if [[ "$HISTORICAL_RELEASE" == true ]]; then
+            code_root="$GITHUB_WORKSPACE/historical-controller"
+            test "$(git -C "$code_root" rev-parse HEAD)" = "$GITHUB_SHA"
+          fi
+          printf 'FEATHER_CODE_ROOT=%s\n' "$code_root" >> "$GITHUB_ENV"
       - name: Require a published immutable app release
         run: |
           set -euo pipefail
@@ -74,7 +92,7 @@ jobs:
           jq -e --arg tag "$RELEASE_TAG" '.tagName == $tag and .isDraft == false and .publishedAt != null' "$RUNNER_TEMP/feather-release.json"
           if [[ "${HISTORICAL_RELEASE:-false}" == true ]]; then
             test "$PRESERVE_LATEST_TAG" != "$RELEASE_TAG"
-            python3 FloeAgent/scripts/snapshot_github_latest.py \
+            python3 "$FEATHER_CODE_ROOT/FloeAgent/scripts/snapshot_github_latest.py" \
               --repo "$GITHUB_REPOSITORY" --expected-tag "$PRESERVE_LATEST_TAG" \
               --output "$RUNNER_TEMP/feather-protected-latest.json"
           else
@@ -125,11 +143,18 @@ jobs:
           if jq -e --arg tag "$RELEASE_TAG" '.[$tag].signerWorkflow == ".github/workflows/developer-ipa-from-recovery.yml"' "$trust" >/dev/null; then
             gh release download "$RELEASE_TAG" --pattern BUILD191-RECOVERY-PROVENANCE.json --dir "$RUNNER_TEMP/FeatherInput"
             recovery=(--provenance "$RUNNER_TEMP/FeatherInput/BUILD191-RECOVERY-PROVENANCE.json")
+          elif jq -e --arg tag "$RELEASE_TAG" '.[$tag].mode == "historical-source-binding-v2"' "$trust" >/dev/null; then
+            gh release download "$RELEASE_TAG" --pattern FLOE-HISTORICAL-SOURCE-BINDING.json --dir "$RUNNER_TEMP/FeatherInput"
+            recovery=(--provenance "$RUNNER_TEMP/FeatherInput/FLOE-HISTORICAL-SOURCE-BINDING.json")
           fi
-          python3 FloeAgent/scripts/verify_feather_provenance.py \
+          authority=()
+          if [[ "$HISTORICAL_RELEASE" == true ]]; then
+            authority=(--historical-authority-root "$GITHUB_WORKSPACE")
+          fi
+          python3 "$FEATHER_CODE_ROOT/FloeAgent/scripts/verify_feather_provenance.py" \
             --ipa "$(cat "$RUNNER_TEMP/FeatherInput/ipa-path.txt")" \
             --tag "$RELEASE_TAG" --source-sha "$(cat "$RUNNER_TEMP/feather-source-sha.txt")" \
-            --trust "$trust" "${recovery[@]}"
+            --trust "$trust" "${recovery[@]}" "${authority[@]}"
       - name: Generate source from verified binary metadata
         run: |
           set -euo pipefail
@@ -139,12 +164,12 @@ jobs:
           if [[ "${HISTORICAL_RELEASE:-false}" == true ]]; then
             mode=(--historical --preserve-latest-tag "$PRESERVE_LATEST_TAG")
           fi
-          python3 FloeAgent/scripts/generate_feather_source.py \
+          python3 "$FEATHER_CODE_ROOT/FloeAgent/scripts/generate_feather_source.py" \
             --ipa "$(cat "$RUNNER_TEMP/FeatherInput/ipa-path.txt")" \
             --tag "$RELEASE_TAG" --source-sha "$(cat "$RUNNER_TEMP/feather-source-sha.txt")" \
             --released-at "$(jq -r .publishedAt "$RUNNER_TEMP/feather-release.json")" \
             --output feather.json "${previous[@]+"${previous[@]}"}" "${mode[@]+"${mode[@]}"}"
-          python3 -m unittest discover -s FloeAgent/scripts/tests -p test_feather_source.py
+          python3 -m unittest discover -s "$FEATHER_CODE_ROOT/FloeAgent/scripts/tests" -p test_feather_source.py
       - name: Publish the stable source URL
         run: |
           set -euo pipefail

@@ -1,0 +1,242 @@
+name: Publish reviewed historical308 through the fixed controller
+
+# Preparation remains the frozen prepare-historical308.yml. First await its
+# successful complete run; independently activate that exact run/artifact on
+# main, then dispatch this workflow at the SAME immutable controller tag.
+on:
+  workflow_dispatch:
+    inputs:
+      producer_run:
+        description: Actual completed preparation run ID, independently pinned in the reviewed authority on main
+        required: true
+        type: string
+      producer_attempt:
+        description: Actual successful preparation attempt, independently pinned on main
+        required: true
+        type: string
+      producer_artifact:
+        description: Exact preparation artifact ID from that attempt, independently pinned with digest and size on main
+        required: true
+        type: string
+      publish:
+        description: Publish the verified historical assets and await Feather; false performs the same verification without a release/feed write
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+  attestations: read
+
+concurrency:
+  group: floe-release-refs/tags/v1.7.67
+  cancel-in-progress: false
+
+jobs:
+  verify-and-publish:
+    if: ${{ github.repository == 'JiangNanGenius/floe-agent' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    outputs:
+      tag: ${{ steps.authority.outputs.tag }}
+      protected_latest: ${{ steps.authority.outputs.protected_latest }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PRODUCER_RUN: ${{ inputs.producer_run }}
+      PRODUCER_ATTEMPT: ${{ inputs.producer_attempt }}
+      PRODUCER_ARTIFACT: ${{ inputs.producer_artifact }}
+      RELEASE_TAG: v1.7.67
+      ASSET_NAME: Floe-Agent-1.7.67-build308-unsigned.ipa
+      AUTHORITY_ROOT: release-authority/FloeAgent/scripts
+    steps:
+      - name: Check out the fixed controller code, never the old App workflow
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/workflows
+            FloeAgent/scripts
+      - name: Read the independent authority from main without executing its code
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: main
+          path: release-authority
+          persist-credentials: false
+          sparse-checkout: FloeAgent/scripts
+      - name: Require the activated controller and the exact selected producer
+        id: authority
+        run: |
+          set -euo pipefail
+          PYTHONPATH=FloeAgent/scripts python3 - <<'PY'
+          import json, os, re, subprocess
+          from pathlib import Path
+          import historical308_publication as publication
+          root = Path(os.environ['AUTHORITY_ROOT'])
+          entry = publication.activated(root)
+          policy, reviewed, controller = publication.publisher_context(entry, root)
+          for env, field in [('PRODUCER_RUN', 'packagingRun'), ('PRODUCER_ATTEMPT', 'packagingRunAttempt'), ('PRODUCER_ARTIFACT', 'unsignedArtifactID')]:
+              value = os.environ[env]
+              publication.require(re.fullmatch(r'[1-9][0-9]*', value) and int(value) == entry[field], field,
+                                  'Dispatch inputs must match the independently pinned real producer')
+          stage = Path(os.environ['RUNNER_TEMP']) / 'historical308-publish'
+          stage.mkdir()
+          (stage / 'authority.json').write_text(json.dumps({'activation': entry, 'authorityCommit': subprocess.check_output(
+              ['git', '-C', 'release-authority', 'rev-parse', 'HEAD'], text=True).strip()}, indent=2) + '\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('tag=' + policy['app']['tag'] + '\nprotected_latest=' + reviewed['protectedLatest']['tag'] + '\n')
+          PY
+      - name: Download only the exact pinned preparation artifact
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$PRODUCER_ARTIFACT/zip" \
+            > "$RUNNER_TEMP/historical308-publish/producer.zip"
+          PYTHONPATH=FloeAgent/scripts python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import historical308_publication as publication
+          stage = Path(os.environ['RUNNER_TEMP']) / 'historical308-publish'
+          publication.stage_prepared_archive(stage / 'producer.zip', stage / 'prepared',
+              publication.activated(Path(os.environ['AUTHORITY_ROOT'])))
+          PY
+      - name: Verify both attested subjects before binding JSON and live source authority
+        run: |
+          set -euo pipefail
+          PYTHONPATH=FloeAgent/scripts python3 - <<'PY'
+          import json, os, shutil
+          from pathlib import Path
+          import historical308_publication as publication
+          stage = Path(os.environ['RUNNER_TEMP']) / 'historical308-publish'
+          paths = {p.name: p for p in (stage / 'prepared').rglob('*') if p.is_file()}
+          result = publication.verify(paths[publication.b.IPA_NAME], paths[publication.b.BINDING_NAME],
+              publication.activated(Path(os.environ['AUTHORITY_ROOT'])), authority_root=Path(os.environ['AUTHORITY_ROOT']),
+              prepared_directory=stage / 'prepared')
+          (stage / 'verified-producer.json').write_text(json.dumps(result, indent=2) + '\n')
+          assets = stage / 'release-assets'; assets.mkdir()
+          for name in [publication.b.IPA_NAME, publication.b.IPA_NAME + '.sha256', publication.b.BINDING_NAME]:
+              shutil.copy2(paths[name], assets / name)
+          PY
+      - name: Snapshot the protected build325 release and immutable source
+        run: |
+          set -euo pipefail
+          python3 FloeAgent/scripts/snapshot_github_latest.py --repo "$GITHUB_REPOSITORY" \
+            --expected-tag '${{ steps.authority.outputs.protected_latest }}' \
+            --output "$RUNNER_TEMP/historical308-publish/latest-before.json"
+      - name: Read the original bilingual release notes without executing old source
+        if: ${{ inputs.publish }}
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: 3368baaf8045023043bfb70d9062374c17a48a1d
+          path: app-source
+          persist-credentials: false
+          sparse-checkout: docs/releases/notes
+      - name: Publish or attach only missing verified assets without clobbering
+        if: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/historical308-publish"
+          notes=app-source/docs/releases/notes/RELEASE_NOTES_1.7.67_BUILD_308.md
+          test "$(git -C app-source rev-parse HEAD)" = 3368baaf8045023043bfb70d9062374c17a48a1d
+          test -s "$notes"
+          grep -qE '^##+ 简体中文' "$notes"
+          grep -qE '^##+ English' "$notes"
+          cp "$notes" "$stage/release-notes.md"
+          cat <<'EOF' >> "$stage/release-notes.md"
+
+          ## 历史渠道补发 / Historical channel backfill
+
+          本次只补发原版本的 GitHub/Feather 未签名安装包；原 App 标签、设备构建和 TestFlight 交付保持不变，没有重编 App。
+          This adds the original version's unsigned GitHub/Feather package. The immutable App tag, device build and TestFlight delivery are unchanged; the App was not rebuilt.
+
+          GitHub IPA 未签名，需使用自己的证书签名后安装；它不是 App Store 上传包。新的打包 controller 与原 App 源码分别记录于签名证明和来源 binding。
+          The GitHub IPA is unsigned and requires your own signing certificate to install. It is not an App Store upload package. Attestations and the source binding distinguish the new packaging controller from the original App source.
+          EOF
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$stage/existing-release.json"; then
+            PYTHONPATH=FloeAgent/scripts python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          import historical308_publication as publication
+          stage = Path(os.environ['RUNNER_TEMP']) / 'historical308-publish'
+          release = publication.b.read_json(stage / 'existing-release.json', maximum=1024 * 1024)
+          missing = publication.public_assets(release, stage / 'release-assets', complete=False)
+          (stage / 'missing-assets.txt').write_text(''.join(name + '\n' for name in missing))
+          PY
+            while IFS= read -r name; do
+              gh release upload "$RELEASE_TAG" "$stage/release-assets/$name" --repo "$GITHUB_REPOSITORY"
+            done < "$stage/missing-assets.txt"
+            if jq -e '.draft == true' "$stage/existing-release.json" >/dev/null; then
+              gh release edit "$RELEASE_TAG" --draft=false --latest=false --repo "$GITHUB_REPOSITORY"
+            fi
+          else
+            gh release create "$RELEASE_TAG" \
+              "$stage/release-assets/$ASSET_NAME" "$stage/release-assets/$ASSET_NAME.sha256" \
+              "$stage/release-assets/FLOE-HISTORICAL-SOURCE-BINDING.json" \
+              --verify-tag --latest=false --repo "$GITHUB_REPOSITORY" \
+              --title 'Floe Agent 1.7.67 (build 308)' --notes-file "$stage/release-notes.md"
+          fi
+      - name: Strictly read back the actual published subjects and protected latest
+        if: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/historical308-publish"
+          published="$stage/published"; mkdir "$published"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$published" \
+            --pattern "$ASSET_NAME" --pattern "$ASSET_NAME.sha256" --pattern FLOE-HISTORICAL-SOURCE-BINDING.json
+          python3 FloeAgent/scripts/historical308_publication.py \
+            --authority-root "$AUTHORITY_ROOT" --ipa "$published/$ASSET_NAME" \
+            --binding "$published/FLOE-HISTORICAL-SOURCE-BINDING.json" --report "$stage/verified-public-subjects.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$stage/release.json"
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" > "$stage/tag-ref.json"
+          test "$(jq -r .object.type "$stage/tag-ref.json")" = tag
+          object_sha="$(jq -r .object.sha "$stage/tag-ref.json")"
+          gh api "repos/$GITHUB_REPOSITORY/git/tags/$object_sha" > "$stage/tag-object.json"
+          python3 FloeAgent/scripts/snapshot_github_latest.py --repo "$GITHUB_REPOSITORY" \
+            --expected-tag '${{ steps.authority.outputs.protected_latest }}' --output "$stage/latest-after.json"
+          jq '.release' "$stage/latest-after.json" > "$stage/latest.json"
+          PYTHONPATH=FloeAgent/scripts python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import historical308_publication as publication
+          stage = Path(os.environ['RUNNER_TEMP']) / 'historical308-publish'
+          publication.public_assets(publication.b.read_json(stage / 'release.json', maximum=1024 * 1024),
+                                    stage / 'published', complete=True)
+          for name in [publication.b.IPA_NAME, publication.b.IPA_NAME + '.sha256', publication.b.BINDING_NAME]:
+              publication.require(publication.b.digest(stage / 'published' / name) == publication.b.digest(stage / 'release-assets' / name),
+                                  name, 'Published bytes differ from the original audited preparation subjects')
+          PY
+          python3 FloeAgent/scripts/verify_github_release_publication.py --mode app \
+            --release-json "$stage/release.json" --tag-ref-json "$stage/tag-ref.json" --tag-object-json "$stage/tag-object.json" \
+            --latest-json "$stage/latest.json" --preserve-latest-before-json "$stage/latest-before.json" \
+            --preserve-latest-after-json "$stage/latest-after.json" --expect-tag "$RELEASE_TAG" \
+            --expect-version 1.7.67 --expect-build 308 --expect-source-sha 3368baaf8045023043bfb70d9062374c17a48a1d \
+            --expect-ipa-sha256 "$(jq -r .ipaSHA256 "$stage/verified-producer.json")" \
+            --staged-dir "$published" --report "$stage/strict-publication-readback.json"
+      - name: Retain private authority and readback evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: historical308-publication-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/historical308-publish/*.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  feather:
+    name: Await the existing Feather writer and its live history readback
+    needs: [verify-and-publish]
+    if: ${{ inputs.publish && needs.verify-and-publish.result == 'success' }}
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    uses: ./.github/workflows/publish-feather-source.yml
+    with:
+      tag: ${{ needs.verify-and-publish.outputs.tag }}
+      historical_release: true
+      preserve_latest_tag: ${{ needs.verify-and-publish.outputs.protected_latest }}
