@@ -101,6 +101,8 @@ Android 更接近电脑上的 Agent 工作台：Floe 负责任务、文件、授
 
 ### 4.5 项目 Linux 图形会话与软件安装
 
+**2026-11-09执行分工补充（覆盖本轮较早的桌面优先设想）：** 模型以命令行为主要执行手段。能通过CLI完成的安装、批处理、文件转换、分析、编辑和成果校验，使用任务解析到的Linux环境及`exec.shell`；不把打开、常驻桌面或截图点选作为普通模型任务的前提。Linux桌面主要供用户手动使用专业软件。用户需要时，模型可以准备依赖、文件与启动命令并打开软件供用户接手；GUI交互不作为模型的默认工作通路。手机外部App自动化继续走既有授权的`phone.observe`／`phone.act`，保留明确用户请求的远程能力，不能拿Linux桌面替代手机或切换目标绕过授权。
+
 - ARM64 Linux 环境按项目隔离，同项目任务共享已有软件和图形会话；仅启动正在使用的会话，复用持久项目和已有服务生命周期。
 - 手机默认全屏单应用，平板默认桌面/窗口，用户可切换；接通键鼠、软键盘、滚动、剪贴板、窗口尺寸和暂停/恢复。
 - 提供常用软件安装/启动入口，允许 Agent 经任务 Linux `exec.shell` 安装并补依赖，不另建语言执行或包安装工具别名。
@@ -700,3 +702,14 @@ English: Alpha62 is publicly available and its full in-App Samsung upgrade, reta
 Alpha62验收收尾：自建测试任务已导出并通过正常App删除，实际仅1次Ark Plan／ark-code-latest调用、0工具调用；图形窗口由手动输入验证。累计退役81个自建测试任务（三星34、模拟器47）和12个旧计划，五条原有记录与项目保留。三星常亮恢复0、无障碍未启用、无线调试0并休眠；自有Android模拟器保持关闭。构建打包副本和完成的源码／增量暂存按各自回执清理，内置盘两次实测分别增加2,714,595,328和482,295,808字节可用空间；保留当前包、回退与原始故障、符号和下一构建要用的缓存。
 
 Alpha63代码检查点：主负责人在OpenCode明确要求主线程接手后，确认原任务取消、原生会话idle且写域释放，直接补完共用查看器手势状态机、模式持久化和模式菜单。18项相关JVM检查与实际Play集成Kotlin编译通过，首次绘制接收者编译错误保留；双击不先发左键、相对小幅移动、长按拖拽和取消／切换释放等覆盖真实生产状态机。尚待精确Full APK和三星手势实测，不据单测宣布实机完成。
+
+
+## 2026-11-09 Alpha63双输入模式交付及后续分工
+
+[Alpha63/code89](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.63)已公开，固定源码`914ccff868a00cdee3bcbbc83ae8625b5957f5dd`。18项相关JVM检查、Play集成及Full生产编译、58项原生封装／签名／16KiB检查通过。七份公开附件完整字节、标签来源及实际生产更新解析器已读回，62→63真实增量重建目标；iOS Latest保持独立。三星使用精确私有Full包更新后，主／运行组件实际安装摘要与UID一致，验收触控板相对移动、黑边单击当前指针、双击右键、直接触屏点选，以及关闭后重开保持模式。它们共用Linux／VNC查看器，未另建后端。原参考私有环境关闭依赖安装时出现`session_bus / guest_exit_127`，在进入手势前失败；原记录保留，随后使用已准备项目，没有改断言或重放该失败场景。硬件鼠标、新平板／多指组合、实际长按拖拽与进程退出后的选择恢复未据此宣称通过。
+
+后续N05／N07优先闭合CLI安装、长命令、后台服务、文件处理及成果回收；图形验收针对用户手动使用软件。当前`exec.shell`执行主线和手机／VNC边界继续保留；下一有界模型指引批次需把“命令行优先、Linux桌面主要供用户手动使用”写入普通任务的运行上下文，并调整`graphics.usage`，避免仅提供DISPLAY启动说明而未表达分工。此新增指引不包含在已经冻结的Alpha63内，不能改动其标签或原包。整轮N01–N08继续，不因这次鼠标功能交付而结束。
+
+English: Alpha63/code89 is published from914ccff86 with seven public asset read-backs and an exact62-to63 patch. Samsung verified both touch modes and selection restoration after reopening; broader hardware and other Linux workspaces are not implicitly accepted. Model work should primarily use the resolved task Linux CLI; the graphical desktop serves users operating professional software manually. A subsequent bounded runtime-guidance packet must make that division explicit without changing the frozen Alpha63 artifact.
+
+Alpha63验收清理完成：为已有项目建立的单次Ark Plan／ark-code-latest仅回复会话已导出核对，1次请求／0工具调用；指针动作均由主负责人手动验证。自建任务及精确导出副本已正常删除，累计退役82个测试任务（三星35、模拟器47）及12个旧计划，原有五条记录、两个项目和原失败保留。图形／PRoot自有进程归零；三星恢复直接触屏的原操作习惯，常亮0、无线调试0、无障碍未启用并休眠，未启动模拟器。19处已完成构建副本和源码／增量暂存已清理，内置盘两次可用空间实测分别增加2,714,341,376及448,929,792字节；当前包、必要回退、符号和下一批仍要使用的缓存保留。
