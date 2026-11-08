@@ -372,7 +372,7 @@ public actor UserQuestionStore {
 
     // MARK: - Expiry and cancellation
 
-    /// Expires every optionalDeadline question in this request whose explicit
+    /// Expires every explicitly timed optional question in this request whose
     /// deadline passed. A declared fallback becomes a `deadlineDefault`
     /// answer; otherwise the question is simply `expired` with no answer.
     @discardableResult
@@ -493,21 +493,17 @@ public actor UserQuestionStore {
 
     // MARK: - Optional-answer delivery
 
-    /// Human answers to optionalContinue questions whose request no longer has
-    /// a blocking question. They are returned once and marked delivered so a
-    /// later provider turn cannot quote the same answer twice.
+    /// Human answers and exact declared deadline defaults to optionalContinue
+    /// questions whose request no longer has a blocking question. A read-only
+    /// peek keeps stable identities until the caller explicitly acknowledges.
     public func undeliveredAnswers(conversationID: UUID) async throws -> [UserQuestionAnswerDelivery] {
         let snapshots = try await snapshots(conversationID: conversationID, includeSettled: true)
         var deliveries: [UserQuestionAnswerDelivery] = []
         for snapshot in snapshots where !snapshot.hasBlockingPending {
             let answers = snapshot.questions.compactMap { question -> UserQuestionAnswerRecord? in
-                // Only optionalContinue answers are next-turn deliveries.
-                // Required/deadline answers already traveled in their tool
-                // result; delivering them again would duplicate the answer.
-                guard question.waitPolicy == .optionalContinue,
-                      question.status == .answered,
-                      question.answerSource == .human,
-                      question.deliveredAt == nil,
+                // Timed optionalContinue uses this SAME durable delivery path.
+                // Required/optionalDeadline results still stay in their tool result.
+                guard question.hasUndeliveredOptionalAnswer,
                       let record = question.answerRecord() else { return nil }
                 return record
             }
@@ -636,7 +632,7 @@ public actor UserQuestionStore {
         for index in stored.questions.indices {
             var question = stored.questions[index]
             guard question.status == .pending,
-                  question.waitPolicy == .optionalDeadline,
+                  question.hasPendingOptionalDeadline,
                   let deadline = question.deadlineAt,
                   deadline <= now else { continue }
             question.status = .expired

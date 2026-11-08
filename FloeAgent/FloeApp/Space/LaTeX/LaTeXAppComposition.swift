@@ -295,8 +295,11 @@ extension Notification.Name {static let floeLaTeXDocumentDidChange=Notification.
     static let taskID=UUID(uuidString:"B7D40D04-9BB8-474C-85F6-FA7C97C97763")!
     static let projectID=UUID(uuidString:"D93F3745-3F0E-49E5-B215-60212E2E16D6")!
     static let environmentID="56b967db-cdb7-4af6-b73c-1ee4c13aeb48"
-    static let scriptSHA256="7a6665aebadee515ed4be5925b7582a3b054b6d5f78e926de1179fdd4f46b118"
-    static let scriptBytes=15511
+    static let scriptSHA256="541eaca173448be8a31c1c42eb351134b51f9c28228b32218db037ad44fa6963"
+    static let scriptBytes=15732
+    private static let pipProbeSHA256="46d98b32b1b5f5efd1d04cb7afaf108e8f294c28b80b236dd9bee9a2fe5cce73"
+    private static let pipProbeBytes=4943
+    private var pipProbeOnly=false
     private weak var composition:LaTeXAppComposition?
     private var operationTask:Task<Void,Never>?
     private var cancelTask:Task<Void,Never>?
@@ -368,10 +371,17 @@ extension Notification.Name {static let floeLaTeXDocumentDidChange=Notification.
         persist()
         do {
             let input=ProcessInfo.processInfo.environment
-            guard let encoded=input["FLOE_LATEX_MAINTENANCE_SCRIPT_BASE64"],encoded.utf8.count == ((Self.scriptBytes+2)/3)*4,
-                  let data=Data(base64Encoded:encoded),data.count==Self.scriptBytes,LaTeXDigest.hash(data)==Self.scriptSHA256,
-                  let script=String(data:data,encoding:.utf8),!script.contains("\nFLOE_FIXED_LATEX_RECOVERY\n") else {
-                throw FloeError.validationFailed("Only the reviewed, exact maintenance payload is accepted")
+            let operation=input["FLOE_LATEX_MAINTENANCE_OPERATION"] ?? "configure"
+            try require(operation=="configure" || operation=="pip-readiness","Unknown fixed QA operation")
+            pipProbeOnly=operation=="pip-readiness"
+            let scriptSHA256=pipProbeOnly ? Self.pipProbeSHA256:Self.scriptSHA256
+            let scriptBytes=pipProbeOnly ? Self.pipProbeBytes:Self.scriptBytes
+            let delimiter=pipProbeOnly ? "FLOE_FIXED_PIP_READINESS":"FLOE_FIXED_LATEX_RECOVERY"
+            facts["operation"]=operation;facts["approvedScriptSHA256"]=scriptSHA256;persist()
+            guard let encoded=input["FLOE_LATEX_MAINTENANCE_SCRIPT_BASE64"],encoded.utf8.count == ((scriptBytes+2)/3)*4,
+                  let data=Data(base64Encoded:encoded),data.count==scriptBytes,LaTeXDigest.hash(data)==scriptSHA256,
+                  let script=String(data:data,encoding:.utf8),!script.contains("\n"+delimiter+"\n") else {
+                throw FloeError.validationFailed("Only the reviewed, exact operation payload is accepted")
             }
             guard let composition else{throw PersonalContentError.storageUnavailable}
             let app=try composition.app()
@@ -429,7 +439,7 @@ extension Notification.Name {static let floeLaTeXDocumentDidChange=Notification.
                 try cancellation.throwIfCancelled()
                 // acquire/authorizeOriginal verify the persisted real run
                 // and its exact binding, including for a native QA caller.
-                try await app.runStore.saveRun(.init(id:id,conversationID:Self.taskID,state:"executing",goal:"LaTeX toolchain maintenance QA",startedAt:Date(),executionBinding:pin))
+                try await app.runStore.saveRun(.init(id:id,conversationID:Self.taskID,state:"executing",goal:pipProbeOnly ? "Read-only Python/pip readiness QA":"LaTeX toolchain maintenance QA",startedAt:Date(),executionBinding:pin))
                 saved=true;runID=id;facts["runID"]=id.uuidString;persist()
                 _ = try await app.runStore.appendEvent(runID:id,kind:.status,
                     payloadJSON:try LaTeXNativeRunMetadata(runID:id,conversationID:Self.taskID,projectID:Self.projectID,
@@ -445,7 +455,8 @@ extension Notification.Name {static let floeLaTeXDocumentDidChange=Notification.
                 try require(manifest.id==Self.projectID && manifest.owner == .init(kind:.space,id:Self.projectID),"The retained original changed owner")
                 let manifestHash=LaTeXDigest.hash(try LaTeXDigest.encode(manifest)),mainHash=LaTeXDigest.hash(try await original.store.read(manifest.mainFile))
                 let environmentIDs=Set(await app.environmentRegistry.all().map(\.id))
-                let shell="exec /usr/bin/python3 -I -B - <<'FLOE_FIXED_LATEX_RECOVERY'\n"+script+"\nFLOE_FIXED_LATEX_RECOVERY\n"
+                let interpreter=pipProbeOnly ? "exec /bin/sh":"exec /usr/bin/python3 -I -B -"
+                let shell=interpreter+" <<'"+delimiter+"'\n"+script+"\n"+delimiter+"\n"
                 let payload=try JSONEncoder().encode(LocalShellTool.Arguments(script:shell,cwd:".",maxOutputBytes:262144))
                 guard let runner=ToolRunnerRegistry.shared.runner(named:"exec.shell"),runner.isAvailable() else{throw PersonalContentError.storageUnavailable}
                 try runner.validateArguments(payload)
@@ -513,12 +524,24 @@ extension Notification.Name {static let floeLaTeXDocumentDidChange=Notification.
                     }
                     try require(job.state == .completed && code==0,"The actual maintenance job failed")
                     let output=try retainedOutput(job)
-                    let prefix="FLOE_LATEX_CONFIGURE_RECOVERY "
+                    let prefix=pipProbeOnly ? "FLOE_PIP_READINESS=":"FLOE_LATEX_CONFIGURE_RECOVERY "
                     guard let line=output.split(separator:"\n").first(where:{$0.hasPrefix(prefix)}),
-                          let value=try JSONSerialization.jsonObject(with:Data(line.dropFirst(prefix.count).utf8)) as? [String:Any],
-                          value["phase"] as? String=="configured-and-audited",value["dpkgAuditClean"] as? Bool==true,
-                          value["downloads"] as? Bool==false,value["existingSevenFormatHashesUnchanged"] as? Bool==true else {
-                        throw FloeError.validationFailed("The actual package audit/format preservation receipt is missing")
+                          let value=try JSONSerialization.jsonObject(with:Data(line.dropFirst(prefix.count).utf8)) as? [String:Any] else {
+                        throw FloeError.validationFailed("The actual fixed QA receipt is missing")
+                    }
+                    if pipProbeOnly {
+                        try require(value["system"] as? String=="Linux" &&
+                            ["aarch64","arm64"].contains(value["architecture"] as? String ?? "") &&
+                            value["kind"] as? String=="read-only Python/pip readiness; no preparation/install" &&
+                            value["pipModuleAvailable"] is Bool && value["usingVenv"] is Bool &&
+                            output.split(separator:"\n").contains("FLOE_PIP_PROBE_EXIT=0"),
+                            "The actual read-only pip probe receipt is incomplete")
+                        facts["pipReadinessProbeCaptured"]="true"
+                    } else {
+                        try require(value["phase"] as? String=="configured-and-audited" && value["dpkgAuditClean"] as? Bool==true &&
+                            value["downloads"] as? Bool==false && value["existingSevenFormatHashesUnchanged"] as? Bool==true,
+                            "The actual package audit/format preservation receipt is missing")
+                        facts["dpkgAuditClean"]="true"
                     }
                     let pin=try await TaskExecutionBindingStore(database:owner.app.database).binding(conversationID:Self.taskID)
                     try require(pin?.target==owner.pin.target && pin?.generation==owner.pin.generation,"The task pin changed during maintenance")
@@ -529,7 +552,7 @@ extension Notification.Name {static let floeLaTeXDocumentDidChange=Notification.
                     let manifestHash=LaTeXDigest.hash(try LaTeXDigest.encode(manifest))
                     let mainHash=LaTeXDigest.hash(try await owner.original.store.read(manifest.mainFile))
                     try require(manifestHash==owner.manifestHash && mainHash==owner.mainHash,"The original changed during maintenance; retain the current original")
-                    facts["sourceAndPinUnchanged"]="true";facts["dpkgAuditClean"]="true";facts["pdfVerified"]="false"
+                    facts["sourceAndPinUnchanged"]="true";facts["pdfVerified"]="false"
                     facts["guestEvidencePath"]=value["evidence"] as? String ?? ""
                     await settle(state:"completed");return
                 }

@@ -2,6 +2,7 @@
 #if canImport(UIKit)
 import Foundation
 import CryptoKit
+import FloeCore
 import Darwin
 
 /// A read-only file under a caller's already authorized root. Every component
@@ -109,7 +110,6 @@ nonisolated struct PersonalPreviewFile: Sendable {
 /// Cancellation propagates into bounded blocking reads/hash/decoders, rather
 /// than leaving an unowned detached worker after its row disappears.
 nonisolated func personalPreviewOffMain<T: Sendable>(_ operation: @escaping @Sendable () throws -> T) async throws -> T {
-    let worker = Task.detached(priority: .utility, operation: operation)
-    return try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+    try await NativeValuePreparation.run(operation)
 }
 #endif

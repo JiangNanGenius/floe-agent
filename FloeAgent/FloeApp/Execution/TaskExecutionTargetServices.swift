@@ -81,13 +81,13 @@ extension AppEnvironment {
             // Recover only this mirror’s interrupted local commit before inventory.
             _ = try await taskWorkspaceMirror.recoverInterruptedTransaction(root: root, cancellation: cancellation)
             // /workspace is the existing task-owned host share, not a new copy of the guest disk.
-            return try TaskWorkspaceMirror.files(root: root, cancellation: cancellation)
+            return try await TaskWorkspaceMirror.filesOffMain(root: root, cancellation: cancellation)
         case .macBridge:
             _ = try await taskWorkspaceMirror.recoverInterruptedTransaction(root: root, cancellation: cancellation)
             // Before performs the existing three-way reconciliation and pulls
             // Mac-only changes. Pulling first would reject a local-only edit.
             _ = try await MacBridgeClient.shared.synchronizeBeforeExecution(root: root)
-            return try TaskWorkspaceMirror.files(root: root, cancellation: cancellation)
+            return try await TaskWorkspaceMirror.filesOffMain(root: root, cancellation: cancellation)
         case .remoteSSH:
             let resolved = try await remoteShellTarget(target)
             return try await taskWorkspaceMirror.synchronize(target: resolved, root: root, cancellation: cancellation)

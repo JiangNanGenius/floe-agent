@@ -54,11 +54,29 @@ public struct FloeLogger: Sendable {
     /// No transcript, API key, document body, or audio is accepted here.
     public final class RingBuffer: @unchecked Sendable {
         public static let defaultCapacity = 2_000
+
+        public enum FlushResult: Equatable, Sendable {
+            /// The atomic snapshot write finished successfully.
+            case persisted
+            /// Persistence is unavailable or the write failed. RAM is retained.
+            case notPersisted
+            /// Termination could not wait through completion (deadline or
+            /// writer-queue reentry); the queued write remains owned.
+            case timedOut
+        }
+
         private var entries: [Entry] = []
         private let capacity: Int
         private let lock = NSLock()
-        private let persistenceQueue = DispatchQueue(label: "org.floeagent.log-persistence", qos: .utility)
-        private var pendingWrite: DispatchWorkItem?
+        private let persistenceQueue: DispatchQueue
+        private let persistenceQueueKey = DispatchSpecificKey<UInt8>()
+        // Protected by lock. A blocked writer must not accumulate one queued
+        // closure (and one cancelled timer) for every incoming log line.
+        private var persistenceRequestEnqueued = false
+        private var urgentPersistenceRequested = false
+        // Accessed only on persistenceQueue. Routine traffic shares one timer.
+        private var delayedWriteScheduled = false
+        private var delayedWriteGeneration: UInt64 = 0
         private let persistedURL: URL?
 
         public convenience init(capacity: Int = RingBuffer.defaultCapacity, persists: Bool = false) {
@@ -68,9 +86,17 @@ public struct FloeLogger: Sendable {
             )
         }
 
-        init(capacity: Int, persistedURL: URL?) {
+        init(
+            capacity: Int,
+            persistedURL: URL?,
+            persistenceQueue: DispatchQueue = DispatchQueue(
+                label: "org.floeagent.log-persistence", qos: .utility
+            )
+        ) {
             self.capacity = max(1, capacity)
             self.persistedURL = persistedURL
+            self.persistenceQueue = persistenceQueue
+            persistenceQueue.setSpecific(key: persistenceQueueKey, value: 1)
             if let persistedURL,
                let data = try? Data(contentsOf: persistedURL) {
                 let decoder = JSONDecoder()
@@ -88,14 +114,9 @@ public struct FloeLogger: Sendable {
                 entries.removeFirst(entries.count - capacity)
             }
             lock.unlock()
-            // Errors and warnings persist synchronously so a crash or a fast
-            // relaunch cannot lose the evidence. Routine info/debug lines keep
-            // the debounced background write.
-            if entry.level == "error" || entry.level == "warning" {
-                writeImmediately()
-            } else {
-                schedulePersistence()
-            }
+            // Urgent evidence bypasses the routine delay, but never makes a
+            // UI/actor caller wait for the writer, JSON encoding, or disk.
+            schedulePersistence(immediately: entry.level == "error" || entry.level == "warning")
         }
 
         /// Most recent entries, oldest first.
@@ -116,41 +137,103 @@ public struct FloeLogger: Sendable {
                 .joined(separator: "\n")
         }
 
-        /// Synchronously writes the current buffer to disk. Called from scene
-        /// transitions so a backgrounding or imminent suspension never strands
-        /// the most recent diagnostics.
-        public func flush() {
-            writeImmediately()
-        }
-
-        private func writeImmediately() {
-            guard let persistedURL else { return }
-            persistenceQueue.sync {
-                pendingWrite?.cancel()
-                pendingWrite = nil
-                let snapshot = recentEntries
-                Self.write(snapshot, to: persistedURL)
+        /// Enqueues an atomic snapshot including every entry appended before
+        /// this request. Completion runs on the writer queue, after the actual
+        /// write, not merely after scheduling it. It never recursively logs.
+        /// Scene owners should hold their existing short background lease until
+        /// completion; cancellation of a waiting task does not discard the write.
+        public func flush(completion: @escaping @Sendable (FlushResult) -> Void) {
+            guard let persistedURL else {
+                completion(.notPersisted)
+                return
+            }
+            persistenceQueue.async {
+                // This barrier supersedes the pending routine snapshot. A
+                // later append may arm a new timer with a different generation.
+                self.delayedWriteScheduled = false
+                self.delayedWriteGeneration &+= 1
+                completion(Self.write(self.recentEntries, to: persistedURL))
             }
         }
 
-        private func schedulePersistence() {
+        /// Suspends the caller while the owned write finishes; no thread blocks.
+        public func flush() async -> FlushResult {
+            await withCheckedContinuation { continuation in
+                flush { continuation.resume(returning: $0) }
+            }
+        }
+
+        /// Last best-effort barrier for applicationWillTerminate only. UIKit
+        /// cannot await that callback, and it may never be delivered. Never use
+        /// this for ordinary logging or scene transitions. A timeout leaves the
+        /// queued write intact and makes no durability claim.
+        public func flushBeforeTermination() -> FlushResult {
+            let waiter = TerminationWaiter()
+            flush { waiter.finish($0) }
+            // The logger must not wait on its own serial queue, even briefly.
+            guard DispatchQueue.getSpecific(key: persistenceQueueKey) == nil else {
+                return .timedOut
+            }
+            return waiter.wait()
+        }
+
+        private func schedulePersistence(immediately: Bool) {
             guard let persistedURL else { return }
-            persistenceQueue.async { [weak self] in
-                guard let self else { return }
-                self.pendingWrite?.cancel()
-                let item = DispatchWorkItem { [weak self] in
-                    guard let self else { return }
-                    let snapshot = self.recentEntries
-                    Self.write(snapshot, to: persistedURL)
+            lock.lock()
+            urgentPersistenceRequested = urgentPersistenceRequested || immediately
+            let shouldEnqueue = !persistenceRequestEnqueued
+            persistenceRequestEnqueued = true
+            lock.unlock()
+            guard shouldEnqueue else { return }
+            persistenceQueue.async {
+                self.lock.lock()
+                let urgent = self.urgentPersistenceRequested
+                self.urgentPersistenceRequested = false
+                self.persistenceRequestEnqueued = false
+                self.lock.unlock()
+                if urgent {
+                    _ = Self.write(self.recentEntries, to: persistedURL)
+                } else if !self.delayedWriteScheduled {
+                    self.delayedWriteScheduled = true
+                    self.delayedWriteGeneration &+= 1
+                    let generation = self.delayedWriteGeneration
+                    self.persistenceQueue.asyncAfter(deadline: .now() + 0.75) {
+                        guard self.delayedWriteScheduled,
+                              self.delayedWriteGeneration == generation else { return }
+                        self.delayedWriteScheduled = false
+                        // Always take the snapshot on the serial writer. A
+                        // routine timer cannot overwrite newer urgent evidence.
+                        _ = Self.write(self.recentEntries, to: persistedURL)
+                    }
                 }
-                self.pendingWrite = item
-                self.persistenceQueue.asyncAfter(deadline: .now() + 0.75, execute: item)
+            }
+        }
+
+        private final class TerminationWaiter: @unchecked Sendable {
+            private let finished = DispatchSemaphore(value: 0)
+            private let lock = NSLock()
+            private var result: FlushResult = .timedOut
+
+            func finish(_ result: FlushResult) {
+                lock.lock()
+                self.result = result
+                lock.unlock()
+                finished.signal()
+            }
+
+            func wait() -> FlushResult {
+                guard finished.wait(timeout: .now() + .milliseconds(100)) == .success else {
+                    return .timedOut
+                }
+                lock.lock()
+                defer { lock.unlock() }
+                return result
             }
         }
 
         /// The actual write. Failure is intentionally swallowed — logging must
         /// never crash or recursively log a persistence failure.
-        private static func write(_ snapshot: [Entry], to url: URL) {
+        private static func write(_ snapshot: [Entry], to url: URL) -> FlushResult {
             do {
                 try FileManager.default.createDirectory(
                     at: url.deletingLastPathComponent(),
@@ -159,7 +242,10 @@ public struct FloeLogger: Sendable {
                 let encoder = JSONEncoder()
                 encoder.dateEncodingStrategy = .iso8601
                 try encoder.encode(snapshot).write(to: url, options: .atomic)
-            } catch {}
+                return .persisted
+            } catch {
+                return .notPersisted
+            }
         }
 
         private static func makePersistedURL() -> URL? {

@@ -42,6 +42,7 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
     var environmentForNotesBinding: AppEnvironment { environment }
     private var checkedChoices: [UUID: (choiceID: String, preview: SkillMigrationPreview, requiredSkills: Set<String>)] = [:]
     private var checks: [UUID: UUID] = [:]
+    private var loads: [UUID: UUID] = [:]
     private var jobs: [UUID: Task<Void, Never>] = [:]
     private var cancellations: [UUID: CancellationToken] = [:]
     private let store: TaskExecutionBindingStore
@@ -67,6 +68,9 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
     }
 
     func load(_ conversationID: UUID) async {
+        let loadID = UUID()
+        loads[conversationID] = loadID
+        defer { if loads[conversationID] == loadID { loads.removeValue(forKey: conversationID) } }
         var value = snapshots[conversationID] ?? Snapshot(); value.checking = true
         snapshots[conversationID] = value
         do {
@@ -86,10 +90,12 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
                     .filter { $0.kind == .session && $0.state == .active }.compactMap { try? self.target($0) }
             }
             let lease = try await root(conversationID); defer { lease.release() }
-            let files = try TaskWorkspaceMirror.files(root: lease.url)
+            let files = try await TaskWorkspaceMirror.filesOffMain(root: lease.url)
+            guard loads[conversationID] == loadID else { return }
             value.fileCount = files.count; value.fileBytes = files.reduce(0) { $0 + $1.bytes }
             value.checking = false; snapshots[conversationID] = value
         } catch {
+            guard loads[conversationID] == loadID else { return }
             value.checking = false; value.failure = error.localizedDescription; snapshots[conversationID] = value
         }
     }
@@ -503,7 +509,8 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
                 value.phase = .verifying; value.preparedFileCount = files.count
                 value.preparedBytes = files.reduce(0) { $0 + $1.bytes }
                 value = try await store.update(value, expectedRevision: value.revision); migration = value; publish(value)
-                let current = try TaskWorkspaceMirror.files(root: lease.url, cancellation: cancellation)
+                let current = try await TaskWorkspaceMirror.filesOffMain(root: lease.url, cancellation: cancellation)
+                try cancellation.throwIfCancelled()
                 guard current == files else { throw FloeError.validationFailed(copy("文件在准备期间发生变化，请重试。", "Files changed during preparation. Try again.")) }
                 let manifestEncoder = JSONEncoder(); manifestEncoder.outputFormatting = [.sortedKeys]
                 value.manifestDigest = FloeDigest.sha256Hex(try manifestEncoder.encode(current))

@@ -1,6 +1,6 @@
 // FloeDocuments — document.readSheet agent tool.
 //
-// Reads saved values from an .xlsx workbook into a tab-separated text grid.
+// Reads saved XLSX values, or exact CSV/TSV records with revision-fenced paging.
 // Formula evaluation and the semantic LibreOffice surface remain out of scope
 // on iOS; cached formula values written by the workbook producer are readable.
 
@@ -20,24 +20,46 @@ public struct DocumentReadSheetTool: AgentTool {
         public var path: String
         public var sheet: String?
         public var maxRows: Int?
+        public var offset: Int?
+        public var expectedSHA256: String?
+        public var hasHeader: Bool?
+        public var encoding: ReaderTextEncoding?
+        public var numericColumns: [Int]?
+        public var analysis: DelimitedSheetOutput.Analysis?
+        public var missingPolicy: DelimitedSheetOutput.MissingPolicy?
+        public var binCount: Int?
 
-        public init(path: String, sheet: String? = nil, maxRows: Int? = nil) {
+        public init(path: String, sheet: String? = nil, maxRows: Int? = nil,
+                    offset: Int? = nil, expectedSHA256: String? = nil, hasHeader: Bool? = nil,
+                    encoding: ReaderTextEncoding? = nil, numericColumns: [Int]? = nil,
+                    analysis: DelimitedSheetOutput.Analysis? = nil,
+                    missingPolicy: DelimitedSheetOutput.MissingPolicy? = nil, binCount: Int? = nil) {
             self.path = path
             self.sheet = sheet
-            self.maxRows = maxRows
+            self.maxRows = maxRows; self.offset = offset; self.expectedSHA256 = expectedSHA256
+            self.hasHeader = hasHeader; self.encoding = encoding; self.numericColumns = numericColumns
+            self.analysis = analysis; self.missingPolicy = missingPolicy; self.binCount = binCount
         }
     }
 
     public static let name = "document.readSheet"
     public static let toolDescription =
-        "Read an .xlsx spreadsheet's cell values as a tab-separated text grid. Returns a bounded worksheets JSON catalog with exact tab names, section/part and visibility; use these names rather than guessing. Pass a workspace-relative path and optionally an exact sheet name (omitting it selects the first sheet; a missing name fails, never falls back). Row output is capped. For editable fields/formulas and stable updateText IDs, use document.office.inspect."
+        "Read XLSX saved cells or CSV/TSV literal records. CSV/TSV returns complete structured JSON with raw strings, source SHA256/encoding/BOM, record numbers and physical source lines, total row counts and nextOffset. Continuation requires expectedSHA256 on every page; maxRows and a whole-record byte budget bound each page without skipping records. hasHeader defaults false; no type/header/formula inference. Optional numericColumns prepare current-page-only data.analyze arguments (one column, or two for linearRegression); nonempty nonnumeric values remain raw and block these arguments. Typed arguments for existing document.presentation.createInline can save actual native tables/charts, but this read creates no artifact and computes no statistics. XLSX retains its tab-separated grid and worksheet catalog. Returns a bounded worksheets JSON catalog with exact tab names, section/part and visibility; use these names rather than guessing. Pass a workspace-relative path and optionally an exact sheet name (omitting it selects the first sheet; a missing name fails, never falls back). Row output is capped. For editable fields/formulas and stable updateText IDs, use document.office.inspect."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
-        "path": {"type": "string", "description": "Workspace-relative path to the .xlsx file"},
-        "sheet": {"type": "string", "description": "Sheet name; omit for the first sheet"},
-        "maxRows": {"type": "integer", "description": "Maximum rows to return (default 200, max 1000)"}
+        "path": {"type": "string", "description": "Workspace-relative path to an .xlsx, .csv or .tsv file"},
+        "sheet": {"type": "string", "description": "XLSX only: exact sheet name; omit for the first sheet"},
+        "maxRows": {"type": "integer", "minimum":1,"maximum":1000,"description": "Maximum rows to return (default 200, max 1000); CSV/TSV also uses a whole-record 16 KiB page budget"},
+        "offset":{"type":"integer","minimum":0,"description":"CSV/TSV data-row offset excluding an explicit header; default zero."},
+        "expectedSHA256":{"type":"string","pattern":"^[0-9a-f]{64}$","description":"CSV/TSV original source hash; required for every offset>0 page. Source changes fail, never mix pages."},
+        "hasHeader":{"type":"boolean","description":"CSV/TSV only: explicitly use the first record as a header; default false."},
+        "encoding":{"type":"string","enum":["utf8","utf16LittleEndian","utf16BigEndian","gb18030"],"description":"CSV/TSV only: optional explicit codec; full bytes validate and contradictory BOM fails. GB18030 requires the existing platform codec."},
+        "numericColumns":{"type":"array","minItems":1,"maxItems":2,"uniqueItems":true,"items":{"type":"integer","minimum":1,"maximum":256},"description":"CSV/TSV 1-based numeric columns for RETURNED PAGE ONLY. One column, or two distinct columns x then y for linearRegression. Raw cells remain unchanged."},
+        "analysis":{"type":"string","enum":["summarize","linearRegression","histogram"],"description":"Existing data.analyze operation to prepare; requires numericColumns. Default summarize."},
+        "missingPolicy":{"type":"string","enum":["reject","omit"],"description":"Default reject; omit maps explicit empty cells to null with row/pair alignment preserved. Nonempty invalid numbers and missing fields still block analysis arguments."},
+        "binCount":{"type":"integer","minimum":1,"maximum":128,"description":"Only for histogram."}
       },
       "required": ["path"],
       "additionalProperties": false
@@ -70,8 +92,25 @@ public struct DocumentReadSheetTool: AgentTool {
             try context.authorizeWorkspacePath(args.path)
             let pathGuard = WorkspacePathGuard(rootURL: root)
             let url = try pathGuard.resolve(args.path)
-            guard url.pathExtension.lowercased() == "xlsx" else {
-                return Self.output("status=error error=document.readSheet only supports .xlsx files", exitStatus: 2)
+            let ext = url.pathExtension.lowercased()
+            if ext == "csv" || ext == "tsv" {
+                let canonicalPrefix = pathGuard.rootURL.path + "/"
+                guard url.path.hasPrefix(canonicalPrefix) else { throw WorkspaceToolError.escapesRoot(args.path) }
+                try context.authorizeWorkspacePath(String(url.path.dropFirst(canonicalPrefix.count)))
+                let bytes = try await NativeValuePreparation.run {
+                    try DelimitedSheetOutput.prepare(args, pathGuard: pathGuard, context: context)
+                }
+                try context.cancellation.throwIfCancelled(); try Task.checkCancellation()
+                try context.authorizeWorkspacePath(args.path)
+                return ToolExecutionOutput(digesting: String(decoding: bytes, as: UTF8.self), exitStatus: 0,
+                                           maximumSummaryCharacters: 96 * 1_024)
+            }
+            guard ext == "xlsx" else {
+                return Self.output("status=error error=document.readSheet only supports .xlsx, .csv and .tsv files", exitStatus: 2)
+            }
+            guard args.offset == nil, args.expectedSHA256 == nil, args.hasHeader == nil, args.encoding == nil,
+                  args.numericColumns == nil, args.analysis == nil, args.missingPolicy == nil, args.binCount == nil else {
+                throw FloeError.validationFailed("CSV/TSV paging and numeric selection options do not apply to XLSX.")
             }
             try pathGuard.assertReadableSize(url)
             let limit = min(max(1, args.maxRows ?? 200), 1000)
@@ -82,7 +121,13 @@ public struct DocumentReadSheetTool: AgentTool {
             summary += grid.worksheetMetadata + "\n"
             summary += grid.rows.map { $0.joined(separator: "\t") }.joined(separator: "\n")
             return Self.output(summary, exitStatus: 0)
+        } catch let failure as DelimitedTable.Failure {
+            try context.cancellation.throwIfCancelled(); try Task.checkCancellation()
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            let bytes = try encoder.encode(DelimitedSheetOutput.FailureReceipt(status: "error", path: args.path, failure: failure))
+            return Self.output(String(decoding: bytes, as: UTF8.self), exitStatus: 2)
         } catch {
+            try context.cancellation.throwIfCancelled(); try Task.checkCancellation()
             return Self.output("status=error error=\(error.localizedDescription)", exitStatus: 2)
         }
     }

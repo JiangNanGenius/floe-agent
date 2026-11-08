@@ -49,6 +49,9 @@ final class FloeApplicationDelegate: NSObject, UIApplicationDelegate {
 
     func applicationWillTerminate(_ application: UIApplication) {
         RuntimeDiagnostics.shared.normalTermination()
+        // UIKit cannot await this callback. This last best-effort barrier is
+        // capped at 100ms; ordinary/scene logging never uses a blocking flush.
+        _ = FloeLogger.buffer.flushBeforeTermination()
     }
 
     func application(
@@ -666,9 +669,20 @@ struct RootView: View {
                 if newPhase == .background {
                     Task { await environment.voiceRecognitionPreload.setForeground(false) }
                 }
-                // Persist the diagnostics ring buffer before suspension so a
-                // crash or relaunch never loses the most recent evidence.
-                FloeLogger.buffer.flush()
+                // Let the owned writer finish without holding the scene's UI
+                // callback. Unique names keep concurrent iPad scene leases
+                // separate; policy expiry and later release are idempotent.
+                let logPolicy = router.backgroundPolicy
+                let logLease = logPolicy.beginShortCompletion(
+                    name: "Flush diagnostics \(UUID().uuidString)"
+                )
+                FloeLogger.buffer.flush { _ in
+                    Task { @MainActor in
+                        // Lease callbacks weakly reference their policy. Keep
+                        // this scene's owner alive even if its window closes.
+                        withExtendedLifetime(logPolicy) { logLease.release() }
+                    }
+                }
             }
         }
         .onDisappear {

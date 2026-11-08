@@ -66,11 +66,13 @@ struct ChemistryResultWorkflowTests {
             let initial = try await session.projectForRead()
             context.toolCallID = "science-create-input-file"
             let sourceCSV = "x,y\n0,0\n1,2\n2,0"
-            #expect(try await invoke("workspace.createFile",["path":"Measured-spectrum.csv","content":sourceCSV],context).exitStatus == 0)
+            let inputFile = try await invoke("workspace.createFile",["path":"Measured-spectrum.csv","content":sourceCSV],context)
+            #expect((inputFile.exitStatus ?? 0) == 0)
+            #expect(inputFile.summary.contains("bytes=\(sourceCSV.utf8.count)") && inputFile.summary.contains("sha256=" + StudioToolOutput.hash(Data(sourceCSV.utf8))))
             context.toolCallID = "science-read-input-file"
             let read = try await invoke("workspace.readFile",["path":"Measured-spectrum.csv"],context)
             let inputText = read.capturedOutput ?? read.summary
-            #expect(read.exitStatus == 0 && inputText.contains("truncated=false"))
+            #expect((read.exitStatus ?? 0) == 0 && inputText.contains("truncated=false"))
             let csvSource = try #require(inputText.split(separator:"\n",maxSplits:1,omittingEmptySubsequences:false).last.map(String.init))
             #expect(csvSource == sourceCSV)
             context.toolCallID = "science-import-measured-spectrum"
@@ -116,11 +118,13 @@ struct ChemistryResultWorkflowTests {
             #expect(reread.points.count == 3 && reread.area == 2 && reread.peaks.count == 1)
             #expect(try await invoke("studio.chemistry",arguments,context).outputFiles == exported.outputFiles)
             context.toolCallID = "science-writeback-result-csv"
-            #expect(try await invoke("workspace.createFile",["path":"Native-spectrum-result.csv","content":String(decoding:csv,as:UTF8.self)],context).exitStatus == 0)
+            let writtenFile = try await invoke("workspace.createFile",["path":"Native-spectrum-result.csv","content":String(decoding:csv,as:UTF8.self)],context)
+            #expect((writtenFile.exitStatus ?? 0) == 0)
+            #expect(writtenFile.summary.contains("bytes=\(csv.count)") && writtenFile.summary.contains("sha256=" + StudioToolOutput.hash(csv)))
             context.toolCallID = "science-read-written-csv"
             let written = try await invoke("workspace.readFile",["path":"Native-spectrum-result.csv"],context)
             let writtenText = written.capturedOutput ?? written.summary
-            #expect(written.exitStatus == 0 && writtenText.contains("truncated=false") && writtenText.hasSuffix(String(decoding:csv,as:UTF8.self)))
+            #expect((written.exitStatus ?? 0) == 0 && writtenText.contains("truncated=false") && writtenText.hasSuffix(String(decoding:csv,as:UTF8.self)))
             context.toolCallID = "science-publish-written-csv"
             let republished = try await invoke("workspace.publishOutput",["path":"Native-spectrum-result.csv"],context)
             #expect(republished.outputFiles.first?.sha256 == StudioToolOutput.hash(csv))

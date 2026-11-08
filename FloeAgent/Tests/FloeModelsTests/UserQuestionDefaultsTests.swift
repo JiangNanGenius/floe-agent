@@ -72,6 +72,7 @@ struct UserQuestionDefaultsTests {
     }
     @Test func fallbackIsVisibleBeforeExpiryWithoutSelectingOrAnsweringForThePerson() throws {
         var request = choice(); request.questions[0].fallback?.freeText = "Keep the default spacing"
+        request.questions[0].allowsFreeText = true
         let question = try #require(materialize(request.resolvingDefaults(.init())).first)
         let preview = try #require(UserQuestionFallbackPresentation(question: question))
         #expect(preview.components == ["Compact", "Keep the default spacing"] && !preview.isSensitive)

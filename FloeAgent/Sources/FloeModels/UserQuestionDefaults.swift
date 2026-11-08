@@ -30,13 +30,14 @@ public struct UserQuestionDefaults: Codable, Equatable, Sendable {
 }
 
 extension UserQuestionRequest {
-    /// Required and legacy optionalContinue requests are deliberately unchanged.
+    /// Required and legacy untimed optionalContinue requests stay unchanged.
     /// Missing fallback/invalid explicit values still fail normal validation.
     public func resolvingDefaults(_ defaults: UserQuestionDefaults) throws -> Self {
         var result = self
         for index in questions.indices {
             let question = questions[index]
-            guard question.effectiveWaitPolicy(default: waitPolicy) == .optionalDeadline,
+            let policy = question.effectiveWaitPolicy(default: waitPolicy)
+            guard policy == .optionalDeadline || policy == .optionalContinue,
                   question.answerSensitivity == .ordinary,
                   question.fallback != nil,
                   question.effectiveTimeoutSeconds(default: timeoutSeconds) == nil else { continue }

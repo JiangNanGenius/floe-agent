@@ -71,7 +71,7 @@ struct FloeLoggerBufferTests {
     }
 
     @Test("Persisted ISO-8601 entries restore after relaunch")
-    func persistedEntriesRestore() {
+    func persistedEntriesRestore() async {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("floe-log-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -84,6 +84,7 @@ struct FloeLoggerBufferTests {
             level: "warning",
             message: "persist me"
         ))
+        #expect(await buffer.flush() == .persisted)
 
         let restored = FloeLogger.RingBuffer(capacity: 5, persistedURL: url)
         #expect(restored.recentEntries.map(\.message) == ["persist me"])
@@ -108,5 +109,208 @@ struct FloeLoggerBufferTests {
 
         let restored = FloeLogger.RingBuffer(capacity: 5, persistedURL: url)
         #expect(restored.recentEntries.map(\.message) == ["older", "newer"])
+    }
+}
+
+@Suite("FloeCore.NonblockingLogPersistence")
+struct NonblockingLogPersistenceTests {
+    private final class Receipt: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: FloeLogger.RingBuffer.FlushResult?
+
+        var result: FloeLogger.RingBuffer.FlushResult? {
+            lock.lock()
+            defer { lock.unlock() }
+            return stored
+        }
+
+        func record(_ result: FloeLogger.RingBuffer.FlushResult) {
+            lock.lock()
+            stored = result
+            lock.unlock()
+        }
+    }
+
+    private func fixtureURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-nonblocking-log-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("diagnostics.json")
+    }
+
+    private func entry(_ message: String, level: String = "info") -> FloeLogger.Entry {
+        .init(timestamp: Date(timeIntervalSince1970: 1_725_000_000),
+              category: "app", level: level, message: message)
+    }
+
+    /// Deliberately occupies the *production* writer queue. The fail-safe bounds
+    /// the original sync implementation's failure rather than hanging the host.
+    private func block(_ queue: DispatchQueue, until gate: DispatchSemaphore) async {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume()
+                _ = gate.wait(timeout: .now() + .seconds(2))
+            }
+        }
+    }
+
+    @Test("A blocked writer cannot stall MainActor warning/error or acknowledge a premature flush")
+    @MainActor
+    func blockedWriterDoesNotBlockUIOrCompleteEarly() async {
+        let url = fixtureURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let queue = DispatchQueue(label: "floe.test.blocked-log-writer")
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        let buffer = FloeLogger.RingBuffer(capacity: 5, persistedURL: url, persistenceQueue: queue)
+        await block(queue, until: gate)
+        let start = ContinuousClock.now
+        buffer.append(entry("warning evidence", level: "warning"))
+        buffer.append(entry("error evidence", level: "error"))
+        buffer.append(entry("processNormalTermination"))
+        let (results, continuation) = AsyncStream<FloeLogger.RingBuffer.FlushResult>.makeStream()
+        let receipt = Receipt()
+        buffer.flush { result in
+            receipt.record(result)
+            continuation.yield(result)
+            continuation.finish()
+        }
+        #expect(start.duration(to: .now) < .milliseconds(200))
+        #expect(receipt.result == nil)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        #expect(buffer.recentEntries.map(\.message) == [
+            "warning evidence", "error evidence", "processNormalTermination"
+        ])
+        gate.signal()
+        for await result in results { #expect(result == .persisted) }
+        let restored = FloeLogger.RingBuffer(capacity: 5, persistedURL: url)
+        #expect(restored.recentEntries == buffer.recentEntries)
+    }
+
+    @Test("Flush barriers retain bounded append order across routine and urgent writes")
+    func snapshotsRespectCapacityAndOrder() async throws {
+        let url = fixtureURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let buffer = FloeLogger.RingBuffer(capacity: 12, persistedURL: url)
+        for index in 0..<200 {
+            buffer.append(entry("entry-\(index)", level: index % 3 == 0 ? "warning" : "info"))
+        }
+        #expect(await buffer.flush() == .persisted)
+        let first = FloeLogger.RingBuffer(capacity: 12, persistedURL: url)
+        #expect(first.recentEntries.map(\.message) == (188..<200).map { "entry-\($0)" })
+        buffer.append(entry("latest error", level: "error"))
+        #expect(await buffer.flush() == .persisted)
+        // Let a previously scheduled routine timer become eligible. It must
+        // never restore an older snapshot over the completed urgent barrier.
+        try await Task.sleep(for: .milliseconds(850))
+        let restored = FloeLogger.RingBuffer(capacity: 12, persistedURL: url)
+        #expect(restored.recentEntries == buffer.recentEntries)
+        #expect(restored.recentEntries.last?.message == "latest error")
+    }
+
+    @Test("Warning/error bypass the routine delay without an explicit flush")
+    func urgentEvidenceWritesWithoutFlush() async throws {
+        let url = fixtureURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let queue = DispatchQueue(label: "floe.test.urgent-log-write")
+        let buffer = FloeLogger.RingBuffer(capacity: 5, persistedURL: url, persistenceQueue: queue)
+        buffer.append(entry("warning", level: "warning"))
+        buffer.append(entry("error", level: "error"))
+        // This marker only observes the file after earlier queue work. It
+        // neither requests a flush nor waits out the routine 0.75s timer.
+        let data = await withCheckedContinuation { continuation in
+            queue.async { continuation.resume(returning: try? Data(contentsOf: url)) }
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let entries = try decoder.decode([FloeLogger.Entry].self, from: #require(data))
+        #expect(entries.map(\.message) == ["warning", "error"])
+    }
+
+    @Test("Cancelling a flush waiter does not cancel accepted evidence or report completion early")
+    func cancellationRetainsTheOwnedWrite() async {
+        let url = fixtureURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let queue = DispatchQueue(label: "floe.test.cancelled-log-flush")
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        let buffer = FloeLogger.RingBuffer(capacity: 5, persistedURL: url, persistenceQueue: queue)
+        await block(queue, until: gate)
+        buffer.append(entry("retained warning", level: "warning"))
+        let waiter = Task { await buffer.flush() }
+        waiter.cancel()
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        gate.signal()
+        #expect(await waiter.value == .persisted)
+        let restored = FloeLogger.RingBuffer(capacity: 5, persistedURL: url)
+        #expect(restored.recentEntries.map(\.message) == ["retained warning"])
+    }
+
+    @Test("Termination waits at most 100ms and timed-out evidence remains queued")
+    @MainActor
+    func terminationDeadlineIsBounded() async {
+        let url = fixtureURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let queue = DispatchQueue(label: "floe.test.termination-log-flush")
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        let buffer = FloeLogger.RingBuffer(capacity: 5, persistedURL: url, persistenceQueue: queue)
+        await block(queue, until: gate)
+        buffer.append(entry("processNormalTermination"))
+        let start = ContinuousClock.now
+        #expect(buffer.flushBeforeTermination() == .timedOut)
+        #expect(start.duration(to: .now) < .milliseconds(250))
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        gate.signal()
+        #expect(await buffer.flush() == .persisted)
+        let restored = FloeLogger.RingBuffer(capacity: 5, persistedURL: url)
+        #expect(restored.recentEntries.map(\.message) == ["processNormalTermination"])
+    }
+
+    @Test("A healthy termination barrier really persists the final exit marker")
+    func terminationCompletionWritesExitMarker() {
+        let url = fixtureURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let buffer = FloeLogger.RingBuffer(capacity: 5, persistedURL: url)
+        buffer.append(entry("processNormalTermination"))
+        #expect(buffer.flushBeforeTermination() == .persisted)
+        let restored = FloeLogger.RingBuffer(capacity: 5, persistedURL: url)
+        #expect(restored.recentEntries.map(\.message) == ["processNormalTermination"])
+    }
+
+    @Test("Termination called on the writer queue never waits on itself")
+    func terminationDoesNotSelfWait() async {
+        let url = fixtureURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let queue = DispatchQueue(label: "floe.test.reentrant-log-flush")
+        let buffer = FloeLogger.RingBuffer(capacity: 5, persistedURL: url, persistenceQueue: queue)
+        buffer.append(entry("error on writer", level: "error"))
+        let (result, elapsed) = await withCheckedContinuation { continuation in
+            queue.async {
+                let start = ContinuousClock.now
+                let result = buffer.flushBeforeTermination()
+                continuation.resume(returning: (result, start.duration(to: .now)))
+            }
+        }
+        #expect(result == .timedOut)
+        #expect(elapsed < .milliseconds(75))
+        #expect(await buffer.flush() == .persisted)
+        let restored = FloeLogger.RingBuffer(capacity: 5, persistedURL: url)
+        #expect(restored.recentEntries.map(\.message) == ["error on writer"])
+    }
+
+    @Test("A failed write reports failure and preserves RAM for a real retry")
+    func failedPersistenceKeepsEvidence() async throws {
+        let url = fixtureURL()
+        let directory = url.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("not a directory".utf8).write(to: directory)
+        let buffer = FloeLogger.RingBuffer(capacity: 5, persistedURL: url)
+        buffer.append(entry("error must survive", level: "error"))
+        #expect(await buffer.flush() == .notPersisted)
+        #expect(buffer.recentEntries.map(\.message) == ["error must survive"])
+        try FileManager.default.removeItem(at: directory)
+        #expect(await buffer.flush() == .persisted)
+        let restored = FloeLogger.RingBuffer(capacity: 5, persistedURL: url)
+        #expect(restored.recentEntries.map(\.message) == ["error must survive"])
     }
 }

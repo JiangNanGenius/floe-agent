@@ -82,6 +82,14 @@ actor TaskWorkspaceMirror {
     private static let excluded: Set<String> = [".git", ".floe", ".floe-transfer", ".floe-owner", ".venv", "venv", "node_modules", ".floe-env", ".floe-node", "__pycache__", EnvironmentFileTransaction.directoryName]
     init(ssh: SSHCommandService) { self.ssh = ssh }
 
+    /// The caller keeps its workspace lease until this owned scan has joined.
+    /// Filesystem traversal and full-file digests must not occupy the UI actor.
+    static func filesOffMain(root: URL, cancellation: CancellationToken? = nil) async throws -> [TaskWorkspaceFile] {
+        try await NativeValuePreparation.run {
+            try files(root: root, cancellation: cancellation)
+        }
+    }
+
     /// Local task-tree inventory. The root is resolved once so every returned
     /// path is relative to the exact directory that was scanned.
     static func files(root: URL, cancellation: CancellationToken? = nil) throws -> [TaskWorkspaceFile] {
@@ -115,7 +123,7 @@ actor TaskWorkspaceMirror {
             files.append(TaskWorkspaceFile(
                 path: relative,
                 bytes: bytes,
-                digest: try FloeDigest.sha256Hex(ofFileAt: url, isCancelled: { cancellation?.isCancelled == true }),
+                digest: try FloeDigest.sha256Hex(ofFileAt: url, isCancelled: { cancellation?.isCancelled == true || Task.isCancelled }),
                 executable: (mode & 0o111) != 0
             ))
         }

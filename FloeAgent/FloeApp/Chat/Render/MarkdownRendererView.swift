@@ -27,8 +27,8 @@ struct MarkdownRendererView: View {
     /// the last newline, but the completed portion only changes when a new
     /// line lands; caching it per source makes token ticks re-parse the
     /// unfinished tail only, which is what the streaming contract promised.
-    /// The window is append-only during streaming, so the cached prefix
-    /// stays valid until it grows. The cache object never publishes, so
+    /// One byte-bounded AST entry is reused for the completed prefix or
+    /// terminal document until its exact source bytes change. The cache object never publishes, so
     /// reading/writing it during `body` cannot schedule a render.
     @StateObject private var prefixCache = StreamingPrefixCache()
 
@@ -40,32 +40,22 @@ struct MarkdownRendererView: View {
             // animate; token updates never fade the entire answer.
             MarkdownBlockSequenceView(blocks: parts.completed + parts.tail, animateInsertions: true)
         } else {
-            // Terminal text is parsed once per source change; SwiftUI
-            // reuses the view value while `source` is unchanged.
-            MarkdownBlockSequenceView(blocks: MarkdownBlockParser.parse(source))
+            // Reuse the actual AST across parent/status redraws, not just
+            // the SwiftUI view value. Oversized inputs remain fully rendered.
+            MarkdownBlockSequenceView(blocks: prefixCache.parser.blocks(for: source))
         }
     }
 
     private func streamingParts() -> (completed: [MarkdownBlock], tail: [MarkdownBlock]) {
-        let visibleWindow = source.suffix(MarkdownBlockParser.maximumStreamingCharacters)
-        guard let lastNewline = visibleWindow.lastIndex(of: "\n") else {
-            return ([], MarkdownBlockParser.parse(String(visibleWindow)))
-        }
-        let completedSource = String(visibleWindow[...lastNewline])
-        let tailSource = String(visibleWindow[visibleWindow.index(after: lastNewline)...])
-        if completedSource != prefixCache.source {
-            prefixCache.source = completedSource
-            prefixCache.blocks = MarkdownBlockParser.parse(completedSource)
-        }
-        return (prefixCache.blocks, MarkdownBlockParser.parse(tailSource))
+        prefixCache.parser.streamingParts(for: source)
     }
 }
 
 /// Non-publishing reference cache; `@StateObject` keeps one instance per
 /// view identity without SwiftUI observing its writes.
+@MainActor
 private final class StreamingPrefixCache: ObservableObject {
-    var source: String = ""
-    var blocks: [MarkdownBlock] = []
+    let parser = MarkdownBlockParseCache()
 }
 
 /// A vertical stack of rendered blocks. Recursive: quotes and list

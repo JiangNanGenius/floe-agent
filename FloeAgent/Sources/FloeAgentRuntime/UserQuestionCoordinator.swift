@@ -238,6 +238,9 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
         await emit(.settled(snapshot))
         signal(target.requestID)
         cleanupWaitTasks(for: target.requestID)
+        // A nonblocking request may still contain another timed question.
+        // Reuse the one existing deadline task; no new scheduler is introduced.
+        await startDeadlineTask(requestID: target.requestID)
         if returnedRequestIDs.contains(target.requestID),
            !snapshot.hasBlockingPending,
            let record = receipt.answer {
@@ -320,30 +323,70 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
         await store.purgeEphemeral(conversationID: conversationID)
     }
 
-    private func expireDue(requestID: String) async {
+    private func expireDue(requestID: String, timerDidFire: Bool = false, timerGeneration: Int? = nil) async {
+        let expiryGeneration = generations[requestID, default: 0]
+        if let timerGeneration, timerGeneration != expiryGeneration { return }
+        let receiptAlreadyReturned = returnedRequestIDs.contains(requestID)
+        if timerDidFire { deadlineTasks.removeValue(forKey: requestID) }
+        else { deadlineTasks.removeValue(forKey: requestID)?.cancel() }
+        cancellationTasks.removeValue(forKey: requestID)?.cancel()
         guard let snapshot = try? await store.expire(requestID: requestID, now: now()) else { return }
+        guard expiryGeneration == generations[requestID, default: 0] else {
+            await startDeadlineTask(requestID: requestID)
+            return
+        }
         await emit(.settled(snapshot))
+        // A human answer/cancel may have re-armed a later deadline while the
+        // event handler was suspended. Do not invalidate that newer task.
+        guard expiryGeneration == generations[requestID, default: 0] else {
+            await startDeadlineTask(requestID: requestID)
+            return
+        }
         signal(requestID)
-        cleanupWaitTasks(for: requestID)
+        await startDeadlineTask(requestID: requestID)
+        if receiptAlreadyReturned, !snapshot.hasBlockingPending,
+           let delivery = try? await store.undeliveredAnswers(conversationID: snapshot.conversationID)
+                .first(where: { $0.requestID == requestID && $0.answers.contains(where: { $0.source == .deadlineDefault }) }) {
+            await emit(.answerAvailable(delivery))
+        }
+        if snapshot.isFullySettled { returnedRequestIDs.remove(requestID) }
     }
 
     // MARK: - Queries / delivery
 
     public func pendingSnapshot(conversationID: UUID) async throws -> UserQuestionWaitingSnapshot? {
-        try await store.pendingSnapshot(conversationID: conversationID)
+        try await resumeDeadlines(conversationID: conversationID)
+        return try await store.pendingSnapshot(conversationID: conversationID)
     }
 
     /// Truthful pending question for one exact run, used by recovery/UI to
     /// present the same question after a restart. It never creates a request.
     public func pendingSnapshot(runID: UUID) async throws -> UserQuestionWaitingSnapshot? {
-        try await store.latestPendingSnapshot(runID: runID)
+        if let snapshot = try await store.latestPendingSnapshot(runID: runID) {
+            try await resumeDeadlines(conversationID: snapshot.conversationID)
+        }
+        return try await store.latestPendingSnapshot(runID: runID)
     }
 
     public func snapshots(
         conversationID: UUID,
         includeSettled: Bool = false
     ) async throws -> [UserQuestionWaitingSnapshot] {
-        try await store.snapshots(conversationID: conversationID, includeSettled: includeSettled)
+        if !includeSettled { try await resumeDeadlines(conversationID: conversationID) }
+        return try await store.snapshots(conversationID: conversationID, includeSettled: includeSettled)
+    }
+
+    /// Re-arm persisted deadlines on ordinary restore, or settle a deadline
+    /// already due while the process was gone. Existing dates/defaults are
+    /// never recalculated from the current settings.
+    private func resumeDeadlines(conversationID: UUID) async throws {
+        let snapshots = try await store.snapshots(conversationID: conversationID, includeSettled: false)
+        for snapshot in snapshots {
+            guard let deadline = snapshot.earliestPendingDeadline else { continue }
+            if snapshot.state == .awaitingOptional { returnedRequestIDs.insert(snapshot.requestID) }
+            if deadline <= now() { await expireDue(requestID: snapshot.requestID) }
+            else { await startDeadlineTask(requestID: snapshot.requestID) }
+        }
     }
 
     /// Durable read-only peek for optionalContinue answers. The delivery id
@@ -422,7 +465,8 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
         }
         await startDeadlineTask(requestID: requestID)
         startCancellationTask(requestID: requestID, cancellation: cancellation)
-        defer { cleanupWaitTasks(for: requestID) }
+        var keepDeadline = false
+        defer { cleanupWaitTasks(for: requestID, keepDeadline: keepDeadline) }
 
         while true {
             // Expiry/cancel/settlement may have retired the timers. Re-arm
@@ -449,7 +493,10 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
             // than sleeping past a real change.
             if generations[requestID, default: 0] != generation { continue }
             if !snapshot.hasBlockingPending {
-                if snapshot.state == .awaitingOptional { returnedRequestIDs.insert(requestID) }
+                if snapshot.state == .awaitingOptional {
+                    returnedRequestIDs.insert(requestID)
+                    keepDeadline = snapshot.earliestPendingDeadline != nil
+                }
                 return UserQuestionFormatting.toolReceipt(for: snapshot)
             }
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -472,19 +519,23 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
 
     private func startDeadlineTask(requestID: String) async {
         guard deadlineTasks[requestID] == nil else { return }
+        let generation = generations[requestID, default: 0]
         let snapshot: UserQuestionWaitingSnapshot?
         do {
             snapshot = try await store.snapshot(requestID: requestID)
         } catch {
             return
         }
-        guard let deadline = snapshot?.earliestPendingDeadline else { return }
+        // Store reads suspend this actor. A cancel/answer or another start
+        // may have won while suspended; never install a stale/second timer.
+        guard generation == generations[requestID, default: 0], deadlineTasks[requestID] == nil,
+              let deadline = snapshot?.earliestPendingDeadline else { return }
         let delay = max(0, deadline.timeIntervalSince(now()))
         let nanoseconds = UInt64(min(delay, 86_400) * 1_000_000_000)
         deadlineTasks[requestID] = Task { [weak self] in
             try? await Task.sleep(nanoseconds: nanoseconds)
             guard !Task.isCancelled else { return }
-            await self?.expireDue(requestID: requestID)
+            await self?.expireDue(requestID: requestID, timerDidFire: true, timerGeneration: generation)
         }
     }
 
@@ -502,8 +553,8 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
         }
     }
 
-    private func cleanupWaitTasks(for requestID: String) {
-        deadlineTasks.removeValue(forKey: requestID)?.cancel()
+    private func cleanupWaitTasks(for requestID: String, keepDeadline: Bool = false) {
+        if !keepDeadline { deadlineTasks.removeValue(forKey: requestID)?.cancel() }
         cancellationTasks.removeValue(forKey: requestID)?.cancel()
     }
 

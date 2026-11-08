@@ -6,7 +6,7 @@ import FloeTools
 import FloeModels
 import FloeChemistryCore
 
-struct ChemistryResultProvenance: Encodable {
+nonisolated struct ChemistryResultProvenance: Encodable, Sendable {
     let projectID: UUID
     let calculationID: UUID
     let objectID: UUID
@@ -18,7 +18,7 @@ struct ChemistryResultProvenance: Encodable {
     let engineVersion: String
     let resultSHA256: String
     let calculationOwner: Owner?
-    struct Owner: Encodable {
+    struct Owner: Encodable, Sendable {
         let taskID: UUID
         let hostRunID: UUID
         let callID: String?
@@ -36,20 +36,20 @@ struct ChemistryResultProvenance: Encodable {
         } else { calculationOwner = nil } // Legacy/UI runs never gain invented task/call ownership.
     }
 }
-struct ChemistryResultPageReceipt: Encodable {
+nonisolated struct ChemistryResultPageReceipt: Encodable, Sendable {
     let provenance: ChemistryResultProvenance
     let page: ChemistryResultData.Page
     init(projectID: UUID, run: ChemistryRun, page: ChemistryResultData.Page, owner: ChemistryHostRunOwner? = nil) {
         provenance = .init(projectID: projectID, run: run, resultSHA256: page.resultSHA256, owner: owner); self.page = page
     }
 }
-private struct ChemistryJSONResult: Encodable {
+nonisolated private struct ChemistryJSONResult: Encodable, Sendable {
     let format = "org.floe.chemistry.saved-result"
     let version = 1
     let provenance: ChemistryResultProvenance
     let result: JSONValue
 }
-private struct ChemistryCSVProvenance: Encodable {
+nonisolated private struct ChemistryCSVProvenance: Encodable, Sendable {
     let format = "org.floe.chemistry.result-table"
     let version = 1
     let provenance: ChemistryResultProvenance
@@ -63,45 +63,80 @@ private struct ChemistryCSVProvenance: Encodable {
     let otherResultFields: [String]
     let valuePolicy = "Actual finite numeric cells only; null is an empty cell. No imputation, unit conversion or curve interpolation. Use the JSON export for the complete saved result."
 }
-private struct ChemistryResultExportReceipt: Encodable {
+nonisolated private struct ChemistryResultExportReceipt: Encodable, Sendable {
     let provenance: ChemistryResultProvenance
     let format: String
     let resultKey: String?
     let files: [File]
-    struct File: Encodable { let name: String; let byteCount: Int; let sha256: String }
+    struct File: Encodable, Sendable { let name: String; let byteCount: Int; let sha256: String }
+}
+
+nonisolated struct ChemistryPreparedExport: Sendable {
+    struct File: Sendable { let name: String; let data: Data; let sha256: String }
+    let files: [File]
+    let receipt: Data
+}
+nonisolated enum ChemistryResultPreparation {
+    private static func encode<T: Encodable>(_ value: T) throws -> Data {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(value)
+    }
+    static func export(projectID: UUID, run: ChemistryRun, owner: ChemistryHostRunOwner?, format: String,
+                       resultKey: String?, expectedSHA256: String?,
+                       checkCancellation: @Sendable () throws -> Void) throws -> ChemistryPreparedExport {
+        try checkCancellation()
+        guard let result = run.result else { throw ChemistryError.invalid("No saved calculation result.") }
+        let snapshot = try ChemistryResultData.snapshot(result)
+        if let expectedSHA256, expectedSHA256 != snapshot.sha256 { throw ChemistryError.invalid("The saved result changed.") }
+        let source = ChemistryResultProvenance(projectID: projectID, run: run, resultSHA256: snapshot.sha256, owner: owner)
+        let stem = "Chemistry-" + source.calculationID.uuidString.lowercased()
+        var files: [(name: String, data: Data)]
+        if format == "json" {
+            guard resultKey == nil else { throw ChemistryError.invalid("JSON exports the complete saved result; omit resultKey.") }
+            files = [(stem + ".json", try encode(ChemistryJSONResult(provenance: source, result: result)))]
+        } else {
+            guard let key = resultKey else { throw ChemistryError.invalid("CSV requires an exact numeric resultKey.") }
+            let table = try ChemistryResultData.numericCSV(result, resultKey: key, checkCancellation: checkCancellation)
+            let name = stem + "-" + ChemistryProjectStore.digest(Data(key.utf8)) + ".csv"
+            let manifest = ChemistryCSVProvenance(provenance: source, resultKey: key, columns: table.columns,
+                rowCount: table.rowCount, fileName: name, byteCount: table.csv.count, sha256: ChemistryProjectStore.digest(table.csv),
+                otherResultFields: snapshot.fields.map(\.key).filter { $0 != key })
+            files = [(name, table.csv), (stem + "-provenance.json", try encode(manifest))]
+        }
+        guard files.allSatisfy({ !$0.data.isEmpty && $0.data.count <= ChemistryResultData.maximumResultBytes + 64 * 1_024 }) else {
+            throw ChemistryError.invalid("Result export exceeds its byte budget.")
+        }
+        let prepared = try files.map { file -> ChemistryPreparedExport.File in
+            try checkCancellation()
+            return .init(name: file.name, data: file.data, sha256: ChemistryProjectStore.digest(file.data))
+        }
+        let metadata = prepared.map { ChemistryResultExportReceipt.File(name: $0.name, byteCount: $0.data.count, sha256: $0.sha256) }
+        let receipt = try encode(ChemistryResultExportReceipt(provenance: source, format: format, resultKey: resultKey, files: metadata))
+        guard receipt.count <= 96 * 1_024 else { throw ChemistryError.invalid("Read a smaller page of this result.") }
+        try checkCancellation()
+        return .init(files: prepared, receipt: receipt)
+    }
 }
 
 extension ChemistryProjectSession {
     func exportSavedResult(_ run: ChemistryRun, input: ChemistryNativeInput, context: ToolContext) async throws -> ToolExecutionOutput {
-        guard !closing, run.status == .succeeded, let result = run.result, let format = input.format,
+        guard !closing, run.status == .succeeded, run.result != nil, let format = input.format,
               ["json", "csv"].contains(format) else { throw PersonalContentError.invalidProject }
-        guard try await service.savedResultForExport(projectID, runID: run.id) == run else { throw PersonalContentError.changedDocument }
-        let snapshot = try ChemistryResultData.snapshot(result)
-        if let expected = input.expectedResultSHA256, expected != snapshot.sha256 { throw PersonalContentError.changedDocument }
-        let provenance = ChemistryResultProvenance(projectID: projectID, run: run, resultSHA256: snapshot.sha256, owner: savedRunOwner(run.id))
-        var files: [(name: String, data: Data)] = []
-        let stem = "Chemistry-" + run.id.uuidString.lowercased()
-        if format == "json" {
-            guard input.resultKey == nil else { throw FloeError.validationFailed("JSON exports the complete saved result; omit resultKey.") }
-            let data = try StudioToolOutput.data(ChemistryJSONResult(provenance: provenance, result: result))
-            files = [(stem + ".json", data)]
-        } else {
-            guard let key = input.resultKey else { throw FloeError.validationFailed("CSV requires an exact numeric resultKey from resultFields.") }
-            let table = try ChemistryResultData.numericCSV(result, resultKey: key) { try context.cancellation.throwIfCancelled(); try Task.checkCancellation() }
-            let name = stem + "-" + StudioToolOutput.hash(Data(key.utf8)) + ".csv"
-            let manifest = ChemistryCSVProvenance(provenance: provenance, resultKey: key, columns: table.columns,
-                rowCount: table.rowCount, fileName: name, byteCount: table.csv.count, sha256: StudioToolOutput.hash(table.csv),
-                otherResultFields: snapshot.fields.map(\.key).filter { $0 != key })
-            files = [(name, table.csv), (stem + "-provenance.json", try StudioToolOutput.data(manifest))]
+        guard try await service.savedResultMatchesForExport(projectID, run: run) else { throw PersonalContentError.changedDocument }
+        let id = projectID, owner = savedRunOwner(run.id)
+        let key = input.resultKey, expected = input.expectedResultSHA256, token = context.cancellation
+        let prepared = try await personalPreviewOffMain {
+            try ChemistryResultPreparation.export(projectID: id, run: run, owner: owner, format: format,
+                resultKey: key, expectedSHA256: expected,
+                checkCancellation: { try token.throwIfCancelled(); try Task.checkCancellation() })
         }
-        guard files.allSatisfy({ !$0.data.isEmpty && $0.data.count <= ChemistryResultData.maximumResultBytes + 64 * 1_024 }) else {
-            throw FloeError.validationFailed("Result export exceeds its byte budget.")
-        }
+        let files = prepared.files
         let validate: @MainActor @Sendable () async throws -> Void = { [self] in
             try context.cancellation.throwIfCancelled(); try Task.checkCancellation()
             guard !closing else { throw PersonalContentError.changedDocument }
-            let current = try await service.savedResultForExport(projectID, runID: run.id)
-            guard current == run else { throw PersonalContentError.changedDocument }
+            let matches = try await service.savedResultMatchesForExport(projectID, run: run)
+            try context.cancellation.throwIfCancelled(); try Task.checkCancellation()
+            guard !closing, matches else { throw PersonalContentError.changedDocument }
         }
         try await validate()
         // The verified Chemistry folder belongs to this exact personal original.
@@ -129,9 +164,7 @@ extension ChemistryProjectSession {
                 action: "chemistry-result", fileKey: file.name, context: context, validateSource: validate).file)
         }
         try await validate()
-        let metadata = files.map { ChemistryResultExportReceipt.File(name: $0.name, byteCount: $0.data.count, sha256: StudioToolOutput.hash($0.data)) }
-        var output = try StudioToolOutput.make(ChemistryResultExportReceipt(provenance: provenance, format: format,
-            resultKey: input.resultKey, files: metadata))
+        var output = ToolExecutionOutput(digesting: String(decoding: prepared.receipt, as: UTF8.self), exitStatus: 0)
         output.outputFiles = published
         return output
     }

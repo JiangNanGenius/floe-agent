@@ -1734,9 +1734,15 @@ targets:
       - path: Tests/FloeAgentRuntimeTests/NativeAuthoringGuidanceTests.swift
       - path: Tests/FloeAgentRuntimeTests/NativeAuthoringDiscoveryContractTests.swift
       - path: Tests/FloeAgentRuntimeTests/UserQuestionDefaultPolicyTests.swift
+      - path: Tests/FloeAgentRuntimeTests/UserQuestionContinuingDeadlineTests.swift
+      - path: Tests/FloeModelsTests/UserQuestionContinuingDeadlineModelTests.swift
       - path: Tests/FloeModelsTests/UserQuestionDefaultsTests.swift
       - path: Tests/FloeAppTests/RuntimeDiagnosticStackTests.swift
+      - path: Tests/FloeAppTests/TaskWorkspaceScanResponsivenessTests.swift
+      - path: Tests/FloeAppTests/DelimitedReadSheetWorkflowTests.swift
+      - path: Tests/FloeMarkdownTests/MarkdownBlockParseCacheTests.swift
       - path: Tests/FloeAppTests/ChemistryRunReceiptTests.swift
+      - path: Tests/FloeAppTests/ChemistryOffMainPreparationTests.swift
       - path: Tests/FloeAppTests/ChemistryResultWorkflowTests.swift
       - path: Tests/FloeAppTests/ChatInlineContentPagingTests.swift
       - path: Tests/FloeAppTests/ElectronicsOutputPreviewTests.swift

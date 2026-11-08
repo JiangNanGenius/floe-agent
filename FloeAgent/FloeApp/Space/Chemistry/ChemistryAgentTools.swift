@@ -41,7 +41,7 @@ struct ChemistryNativeInput: Codable {
     var resultKey: String?
     var expectedResultSHA256: String?
 }
-struct ChemistryRunReceipt: Encodable {
+nonisolated struct ChemistryRunReceipt: Encodable, Sendable {
     let projectID: UUID
     let runID: UUID
     let objectID: UUID
@@ -70,6 +70,31 @@ struct ChemistryRunReceipt: Encodable {
             result = .object([:]); resultComplete = false; resultSHA256 = nil; resultBytes = nil; resultFields = []
         }
         openURL = "floe://work/" + projectID.uuidString.lowercased()
+    }
+}
+nonisolated enum ChemistryRunOutputPreparation {
+    static func receipt(projectID: UUID, run: ChemistryRun,
+                        checkCancellation: @Sendable () throws -> Void) throws -> Data {
+        try checkCancellation()
+        let value = try ChemistryRunReceipt(projectID: projectID, run: run)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let bytes = try encoder.encode(value)
+        guard bytes.count <= 96 * 1_024 else { throw ChemistryError.invalid("Read a smaller page of this result.") }
+        try checkCancellation()
+        return bytes
+    }
+    static func page(projectID: UUID, run: ChemistryRun, resultKey: String?, offset: Int, limit: Int,
+                     expectedSHA256: String?, owner: ChemistryHostRunOwner?,
+                     checkCancellation: @Sendable () throws -> Void) throws -> Data {
+        guard let value = run.result else { throw ChemistryError.invalid("No saved calculation result.") }
+        let page = try ChemistryResultData.page(value, resultKey: resultKey, offset: offset, limit: limit,
+            expectedSHA256: expectedSHA256, checkCancellation: checkCancellation)
+        let receipt = ChemistryResultPageReceipt(projectID: projectID, run: run, page: page, owner: owner)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let bytes = try encoder.encode(receipt)
+        guard bytes.count <= 96 * 1_024 else { throw ChemistryError.invalid("Read a smaller page of this result.") }
+        try checkCancellation()
+        return bytes
     }
 }
 struct ChemistryStudioState: Encodable {
@@ -111,6 +136,13 @@ extension ChemistryProjectSession {
             _ = try await service.restore(revision, expectedRevision: expectedRevision)
         }
         await refreshFromHost()
+    }
+    private func validatePreparedResult(_ run: ChemistryRun, context: ToolContext) async throws {
+        try context.cancellation.throwIfCancelled(); try Task.checkCancellation()
+        guard !closing else { throw PersonalContentError.changedDocument }
+        let matches = try await service.savedResultMatchesForRead(projectID, run: run)
+        try context.cancellation.throwIfCancelled(); try Task.checkCancellation()
+        guard !closing, matches else { throw PersonalContentError.changedDocument }
     }
     func nativeTool(action: String, inputJSON: String, context: ToolContext) async throws -> ToolExecutionOutput {
         guard !closing, inputJSON.utf8.count <= 256 * 1_024 else { throw PersonalContentError.invalidProject }
@@ -167,8 +199,12 @@ extension ChemistryProjectSession {
             } onCancel: { [service, projectID] in Task { try? await service.cancel(projectID, runID: runID) } }
             try context.cancellation.throwIfCancelled(); try Task.checkCancellation()
             await refreshFromHost()
-            let receipt = try StudioToolOutput.data(try ChemistryRunReceipt(projectID: projectID, run: run))
-            guard receipt.count <= 96 * 1_024 else { throw PersonalContentError.invalidProject }
+            let id = projectID, token = context.cancellation
+            let receipt = try await personalPreviewOffMain {
+                try ChemistryRunOutputPreparation.receipt(projectID: id, run: run,
+                    checkCancellation: { try token.throwIfCancelled(); try Task.checkCancellation() })
+            }
+            try await validatePreparedResult(run, context: context)
             return .init(summary: String(decoding: receipt, as: UTF8.self), fullOutputSHA256: StudioToolOutput.hash(receipt),
                          exitStatus: run.status == .succeeded ? 0 : 1)
         case "status", "cancel":
@@ -176,14 +212,25 @@ extension ChemistryProjectSession {
             if action == "cancel" { try await service.cancel(projectID, runID: runID); _ = try await service.wait(projectID, runID: runID) }
             guard let run = try await service.project(projectID).runs.first(where: { $0.id == runID }) else { throw PersonalContentError.invalidProject }
             await refreshFromHost()
-            return try StudioToolOutput.make(try ChemistryRunReceipt(projectID: projectID, run: run))
+            let id = projectID, token = context.cancellation
+            let bytes = try await personalPreviewOffMain {
+                try ChemistryRunOutputPreparation.receipt(projectID: id, run: run,
+                    checkCancellation: { try token.throwIfCancelled(); try Task.checkCancellation() })
+            }
+            try await validatePreparedResult(run, context: context)
+            return .init(digesting: String(decoding: bytes, as: UTF8.self), exitStatus: 0)
         case "result":
             guard let runID = input.runID, let run = project.runs.first(where: { $0.id == runID }),
-                  run.status == .succeeded, let value = run.result else { throw PersonalContentError.invalidProject }
-            let page = try ChemistryResultData.page(value, resultKey: input.resultKey, offset: input.offset ?? 0,
-                limit: input.limit ?? 200, expectedSHA256: input.expectedResultSHA256,
-                checkCancellation: { try context.cancellation.throwIfCancelled(); try Task.checkCancellation() })
-            return try StudioToolOutput.make(ChemistryResultPageReceipt(projectID: projectID, run: run, page: page, owner: savedRunOwner(run.id)))
+                  run.status == .succeeded, run.result != nil else { throw PersonalContentError.invalidProject }
+            let id = projectID, token = context.cancellation, owner = savedRunOwner(run.id)
+            let key = input.resultKey, offset = input.offset ?? 0, limit = input.limit ?? 200, hash = input.expectedResultSHA256
+            let bytes = try await personalPreviewOffMain {
+                try ChemistryRunOutputPreparation.page(projectID: id, run: run, resultKey: key,
+                    offset: offset, limit: limit, expectedSHA256: hash, owner: owner,
+                    checkCancellation: { try token.throwIfCancelled(); try Task.checkCancellation() })
+            }
+            try await validatePreparedResult(run, context: context)
+            return .init(digesting: String(decoding: bytes, as: UTF8.self), exitStatus: 0)
         case "apply":
             try await requireReadyForAgentEdit()
             guard let runID = input.runID, let revision = input.expectedObjectRevision else { throw PersonalContentError.invalidProject }
